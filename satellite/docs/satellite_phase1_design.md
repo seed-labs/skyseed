@@ -338,6 +338,252 @@ same example/runtime scope:
   validation, but it still does not provide background topology watching or a
   generic long-term scenario API
 
+## Controller / Node Boundary
+
+The long-term architecture should keep this boundary explicit:
+
+- the `controller` remains responsible for globally informed work:
+  topology snapshot, attachment state, path computation, gateway selection,
+  forwarding/label/route plan generation, and scenario-level consistency
+  decisions
+- the `controller` should not remain a permanent "outside god hand" that edits
+  each container's internal state command-by-command
+- each satellite/gateway/UT node should eventually receive only its own local
+  update plan, and a local in-container agent should apply route, `iptables`,
+  `LFIB`, and interface mutation
+
+So the intended scalability path is:
+
+`controller global decision -> per-node update plan -> node local agent -> in-container execution`
+
+not:
+
+`controller global decision -> controller directly docker-exec into every node forever`
+
+Operationally, this means:
+
+- global decision-making stays centralized
+- local forwarding mutation moves into the node/container
+- nodes should not need global mini-Internet internals
+- the controller may know topology, attachment state, its own generated
+  forwarding plan, and necessary health/ack/error signals
+- the controller should not rely on unrealistic omniscient dataplane reads from
+  arbitrary containers to repair forwarding
+
+The current cleanup/observability/batching step now starts expressing `UT
+egress` execution as a controller-side per-node bundle. It is still executed
+serially by the controller today, but it should be treated as a future
+local-agent contract rather than a permanent shell-orchestration model.
+
+The payload and interface naming should also leave room for the next control
+plane hop:
+
+- current transport remains `controller_serial_docker_exec`
+- future transport should be modeled as
+  `in_emulation_control_plane_delivery`
+- future distribution source may be a `ground_control_host` or `data_center`
+  inside the emulation
+- distribution target should remain a node-local endpoint only; each
+  `node_plan` should contain only node-local forwarding/update information
+  rather than full topology or full mini-Internet routing state
+- this same payload boundary should remain compatible with future
+  `SatelliteNode` / `GatewayNode` wrappers or metadata abstractions inside
+  skyseed, even before any SEED core changes exist
+
+## Distributed Runtime Update Protocol
+
+The current controller-side batch payload should now be treated as an early
+distributed runtime update protocol envelope, even though transport is still
+host-local today.
+
+At the payload level, the protocol should carry:
+
+- `plan_id`, `generation`, `sequence`, and `created_at` so retries and later
+  in-emulation delivery can refer to a stable update instance
+- `replayable` and `idempotency_scope` so replay/retry semantics are explicit
+  instead of being hidden in shell behavior
+- transport-neutral routing of responsibility:
+  `controller_process_on_host -> controller_serial_docker_exec` today,
+  `ground_control_host/data_center -> in_emulation_control_plane_delivery ->
+  node_local_forwarding_agent` later
+
+At the `node_plan` level, the contract should carry:
+
+- `node_plan_id` as the node-local unit of application and retry
+- `apply_mode` as an ordered command list, not an implicit controller loop
+- `replay_policy` and `expected_ack_mode`
+- per-command logical metadata such as `logical_kind`, `command_family`, and
+  `idempotency_key`
+- an agent-facing result contract that can eventually be returned by a local
+  agent even though the current transport is still controller-side
+
+The current implementation does not yet provide a persistent replay store or
+distributed ack path, but the schema should already make those future pieces
+additive rather than disruptive.
+
+## ACK / Error Contract
+
+The response envelope should now be treated as a future agent-facing
+ACK/error/apply-result contract, not just a controller-side debug structure.
+
+It should carry at least:
+
+- envelope identity:
+  `protocol_version`, `agent_schema_version`, `supported_protocol_versions`,
+  `node_plan_id`, `plan_id`, `generation`, `sequence`
+- `ack`:
+  `ack_status`, `expected_ack_mode`
+- `apply_result`:
+  `apply_status`, `applied_commands`, `skipped_commands`, `failed_command`,
+  `stdout_summary`, `stderr_summary`
+- `error`:
+  `error_code`, `error_category`, `error_message`, `error_details`,
+  `failed_command_id`, `failed_command_family`, `failed_logical_kind`,
+  `retryable`, `fatal`, `suggested_action`
+- `timestamps`:
+  `execution_started_at`, `execution_finished_at`
+- `replay_info`:
+  `replay_detected`, `already_applied`, `replay_policy`,
+  `idempotency_scope`
+- `validation_report`:
+  `validation_status`, `validation_errors`, `unsupported_commands`,
+  `unsupported_command_families`, `unsupported_protocol_version`,
+  `malformed_payload`, `missing_required_fields`, plus reserved response paths
+  for validation/capability/protocol rejection
+- `execution_nonce`
+- `agent_health`
+
+The current schema reserves at least these error codes:
+
+- `none`
+- `transport_error`
+- `command_failed`
+- `validation_failed`
+- `replay_conflict`
+- `unsupported_command`
+- `unsupported_protocol_version`
+- `malformed_payload`
+- `internal_error`
+
+Under the current `controller_serial_docker_exec` transport, this contract is
+still filled by the controller-side batch executor. It should be understood as
+the shape that a future local agent will eventually return directly.
+
+The current implementation already has real behavior for:
+
+- `ack.ack_status`
+- `apply_result.apply_status`
+- `apply_result.applied_commands`
+- `apply_result.skipped_commands`
+- `apply_result.failed_command`
+- `error.error_code/error_category/error_message`
+- `execution_nonce`
+- controller-side `agent_health` placeholder
+
+The following are still protocol reservation only:
+
+- true local-agent `agent_health`
+- durable replay detection and `already_applied`
+- protocol/version/payload rejection before execution
+- local-agent-side validation failures
+
+## Replay / Idempotency
+
+Replay semantics should be explicit for the same `node_plan_id`:
+
+- today: replay detection is protocol-only; there is no persistent replay store
+  and no true agent-side duplicate detection
+- today: retries rely on best-effort command idempotency, command ordering, and
+  command-level `idempotency_key` metadata
+- future: a local agent should be able to detect same-`node_plan_id` replay and
+  report `replay_detected`, `already_applied`, or `replay_conflict`
+
+So the current implementation reserves replay fields and same-plan replay
+behavior in the schema, but does not yet implement durable replay tracking.
+
+The current controller-side executor therefore exposes replay semantics in the
+response envelope, but replay detection remains declarative only.
+
+## Node Metadata Boundary
+
+The runtime update protocol should also define what controller-visible node
+metadata is, without letting node metadata silently become a disguised global
+topology dump.
+
+Controller-authoritative examples:
+
+- node type and intended forwarding role
+- controller-visible interface role inventory
+- forwarding/update capabilities that come from the modeled node role
+- current scenario/topology/path/FEC decisions produced by the controller
+
+Node-authoritative examples:
+
+- local interface health
+- neighbor reachability
+- local forwarding/runtime state
+- local agent health and ack/error details
+
+Future `SatelliteNode` / `GatewayNode` abstractions inside skyseed should be
+able to expose metadata such as:
+
+- satellite: `node_type=satellite`, runtime forwarding role, interface roles,
+  MPLS/LFIB support, runtime attach support, future control-plane endpoint
+- gateway: egress/CGNAT role, `supports_bgp`, gateway cluster/region metadata,
+  future control-plane connectivity to a ground control source
+- UT: serving satellite, attachment state, and mobility/runtime-attach
+  capability
+
+The key boundary is that a `node_plan` should contain only node-local mutation
+instructions and node-local metadata. It should not require the node to know
+the full topology or full mini-Internet routing table.
+
+## Transaction Semantics
+
+The current serialized node batch executor should be documented as:
+
+- ordered and replayable
+- best-effort idempotent at the command level
+- non-atomic at the node-plan level
+- partially applicable on failure
+- without rollback today
+
+So the current failure boundary is:
+
+- commands run in-order
+- the batch stops on the first non-allowed failure
+- commands after that point are skipped
+- rollback is not attempted
+- the result/ack schema must report partial application clearly
+
+The current result lifecycle should be documented as:
+
+- ACK lifecycle:
+  `pending -> awaiting_transport_completion -> acknowledged_success|acknowledged_error`
+- Apply lifecycle:
+  `not_started -> in_progress -> applied|partially_applied|transport_error`
+
+If a batch fails in the middle:
+
+- `failed_command` should capture the first non-allowed failure
+- command-level metadata such as command family and logical kind should be
+  reflected in the error contract
+- later commands should be recorded as skipped
+
+For future local-agent work, the same response envelope should also reserve
+non-execution failure paths such as:
+
+- `validation_failed`
+- `unsupported_command`
+- `unsupported_protocol_version`
+- `malformed_payload`
+
+These are schema/interface reservations today, not active validation features.
+
+This keeps current behavior honest while leaving room for future extensions
+such as local-agent replay detection, persisted ack history, or more explicit
+transaction policies.
+
 ## Serialized Runtime Boundary
 
 The current runtime controller must be treated as:

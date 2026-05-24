@@ -325,6 +325,242 @@ python3 satellite/controller.py --release-slot ab-cross-slot0
 - 这已经成为当前 repeated transition validation 的主要 regression/stability 入口，
   但仍然没有后台 topology watcher，或通用长期 scenario API
 
+## Controller / Node Boundary
+
+长期架构方向应明确保持下面这条边界：
+
+- `controller` 继续负责需要全局视角的事情：
+  topology snapshot、attachment state、path computation、gateway selection、
+  forwarding / label / route plan generation，以及 scenario-level consistency decision
+- `controller` 不应长期以“外部上帝之手”的方式逐条修改每个容器内部状态
+- 每个 satellite / gateway / UT node 最终应只接收与自己相关的 local update plan，
+  再由容器内 local agent 执行 route / `iptables` / `LFIB` / interface mutation
+
+因此，后续 runtime scalability 方向应是：
+
+`controller global decision -> per-node update plan -> node local agent -> in-container execution`
+
+而不是：
+
+`controller global decision -> controller 直接逐条 docker exec 修改所有节点`
+
+这条边界的现实语义是：
+
+- 全局决策保持集中式
+- 本地表项更新下沉到 node/container
+- node 不需要知道整个 mini-Internet 或全局 routing 内部细节
+- controller 可以知道拓扑、绑定关系、自己生成的 forwarding plan、以及必要的 health / ack / error
+- controller 不应依赖任意容器内部的“全知读取”去修补 dataplane
+
+当前 cleanup/observability/batching 准备阶段已经先把 `UT egress` execution
+plan 显式整理成 controller-side per-node bundle；它现在仍由 controller
+串行执行，但后续应把这个 bundle 视为 future local-agent contract，而不是
+长期停留在 controller-side shell orchestration。
+
+同时，payload 和接口命名也应给下一跳 control-plane 形态留出空间：
+
+- 当前 transport 仍然是 `controller_serial_docker_exec`
+- 未来 transport 应预留为 `in_emulation_control_plane_delivery`
+- 未来 distribution source 可以是仿真网络内部的 `ground_control_host`
+  或 `data_center`
+- distribution target 应始终保持为 node-local endpoint；
+  每个 `node_plan` 只包含该节点需要知道的 forwarding/update 信息，
+  不应携带整个 topology 或整个 mini-Internet route table
+- 这条 payload 边界还应兼容后续 skyseed 内部可能抽象出的
+  `SatelliteNode` / `GatewayNode` wrapper 或 metadata abstraction，
+  即使当前还没有改动 SEED core
+
+## Distributed Runtime Update Protocol
+
+当前 controller-side batch payload 已经应被视为
+distributed runtime update protocol 的早期 envelope，
+即使今天的 transport 仍然只是 host-local。
+
+在 payload 层面，这个 protocol 应显式携带：
+
+- `plan_id`、`generation`、`sequence`、`created_at`
+  让后续 retry、replay、仿真内投递都能引用稳定的 update instance
+- `replayable` 和 `idempotency_scope`
+  让 replay/retry 语义显式化，而不是隐藏在 shell 行为里
+- transport-neutral 的责任路径：
+  今天是
+  `controller_process_on_host -> controller_serial_docker_exec`，
+  未来则是
+  `ground_control_host/data_center -> in_emulation_control_plane_delivery -> node_local_forwarding_agent`
+
+在 `node_plan` 层面，这个 contract 应显式携带：
+
+- `node_plan_id`，作为 node-local apply/retry 单元
+- `apply_mode`，表达“有序命令列表”，而不是隐式 controller loop
+- `replay_policy` 和 `expected_ack_mode`
+- 每条命令的逻辑元数据，例如 `logical_kind`、`command_family`、
+  `idempotency_key`
+- 未来 local agent 可以直接返回的 ACK/error result contract，
+  即使当前 transport 仍然是 controller-side
+
+当前实现还没有 persistent replay store，也没有 distributed ack path，
+但 schema 应先设计成 future piece 可以增量加入，而不是将来重构爆炸。
+
+## ACK / Error Contract
+
+当前 response envelope 应开始被视为 future agent-facing 的
+ACK/error/apply-result contract，而不只是 controller-side 的调试结构。
+
+它至少应携带：
+
+- envelope identity：
+  `protocol_version`、`agent_schema_version`、`supported_protocol_versions`、
+  `node_plan_id`、`plan_id`、`generation`、`sequence`
+- `ack`：
+  `ack_status`、`expected_ack_mode`
+- `apply_result`：
+  `apply_status`、`applied_commands`、`skipped_commands`、`failed_command`、
+  `stdout_summary`、`stderr_summary`
+- `error`：
+  `error_code`、`error_category`、`error_message`、`error_details`、
+  `failed_command_id`、`failed_command_family`、`failed_logical_kind`、
+  `retryable`、`fatal`、`suggested_action`
+- `timestamps`：
+  `execution_started_at`、`execution_finished_at`
+- `replay_info`：
+  `replay_detected`、`already_applied`、`replay_policy`、
+  `idempotency_scope`
+- `validation_report`：
+  `validation_status`、`validation_errors`、`unsupported_commands`、
+  `unsupported_command_families`、`unsupported_protocol_version`、
+  `malformed_payload`、`missing_required_fields`，以及给
+  validation/capability/protocol reject 预留的 response path
+- `execution_nonce`
+- `agent_health`
+
+当前 schema 至少预留这些 error code：
+
+- `none`
+- `transport_error`
+- `command_failed`
+- `validation_failed`
+- `replay_conflict`
+- `unsupported_command`
+- `unsupported_protocol_version`
+- `malformed_payload`
+- `internal_error`
+
+在当前 `controller_serial_docker_exec` transport 下，这个 contract
+仍然由 controller-side batch executor 填充；但它应被视为 future local
+agent 直接返回的结果形状。
+
+当前已经具备真实行为的部分包括：
+
+- `ack.ack_status`
+- `apply_result.apply_status`
+- `apply_result.applied_commands`
+- `apply_result.skipped_commands`
+- `apply_result.failed_command`
+- `error.error_code/error_category/error_message`
+- `execution_nonce`
+- controller-side `agent_health` placeholder
+
+当前仍然只是 protocol reservation 的部分包括：
+
+- 真正的 local-agent `agent_health`
+- durable replay detection 和 `already_applied`
+- 执行前的 protocol/version/payload reject
+- local-agent-side validation failure
+
+## Replay / Idempotency
+
+对于同一个 `node_plan_id` 的 replay，语义应显式化：
+
+- 今天：replay detection 只是 protocol 预留；没有 persistent replay store，
+  也没有真正的 agent-side duplicate detection
+- 今天：retry 仍然依赖 best-effort command idempotency、
+  command ordering，以及 command-level `idempotency_key`
+- 未来：local agent 应能够识别同一个 `node_plan_id` 的 replay，
+  并报告 `replay_detected`、`already_applied` 或 `replay_conflict`
+
+因此，当前实现已经把 replay 字段和 same-plan replay behavior
+预留在 schema 里，但还没有实现 durable replay tracking。
+
+也就是说，当前 controller-side executor 已经把 replay 语义暴露在
+response envelope 中，但 replay detection 仍然只是声明式预留。
+
+## Node Metadata Boundary
+
+runtime update protocol 也应同步定义 controller-visible node metadata 的边界，
+但不能让 node metadata 偷偷演化成伪装的全局 topology dump。
+
+controller authoritative 的例子：
+
+- node type 和预期 forwarding role
+- controller 可见的 interface role inventory
+- 由建模 node role 决定的 forwarding/update capabilities
+- controller 自己生成的 scenario/topology/path/FEC 决策
+
+node authoritative 的例子：
+
+- local interface health
+- neighbor reachability
+- local forwarding/runtime state
+- local agent health，以及 ack/error 细节
+
+后续 skyseed 内部的 `SatelliteNode` / `GatewayNode` abstraction
+应能够自然暴露这些 metadata：
+
+- satellite: `node_type=satellite`、runtime forwarding role、interface roles、
+  MPLS/LFIB support、runtime attach support、future control-plane endpoint
+- gateway: egress/CGNAT role、`supports_bgp`、gateway cluster/region metadata、
+  future ground-control connectivity
+- UT: serving satellite、attachment state、mobility/runtime-attach capability
+
+关键边界是：`node_plan` 只应包含 node-local mutation instruction
+和 node-local metadata，不应要求节点知道完整 topology
+或整个 mini-Internet route table。
+
+## Transaction Semantics
+
+当前串行 node batch executor 的语义应明确写成：
+
+- ordered and replayable
+- command-level best-effort idempotent
+- node-plan-level non-atomic
+- failure 时允许 partial apply
+- 今天不做 rollback
+
+因此当前 failure boundary 是：
+
+- 命令按顺序执行
+- 遇到第一个不允许失败的命令就停止
+- 后续命令被标记为 skipped
+- 当前不尝试 rollback
+- result/ack schema 必须明确报告 partial application
+
+当前 result lifecycle 还应明确写成：
+
+- ACK lifecycle:
+  `pending -> awaiting_transport_completion -> acknowledged_success|acknowledged_error`
+- Apply lifecycle:
+  `not_started -> in_progress -> applied|partially_applied|transport_error`
+
+如果 batch 在中间失败：
+
+- `failed_command` 应记录第一个不允许失败的命令
+- command family 和 logical kind 等命令元数据应反映到 error contract 中
+- 后续命令应记录为 skipped
+
+对于 future local-agent，这个 response envelope 还应继续预留
+下面这些 non-execution failure path：
+
+- `validation_failed`
+- `unsupported_command`
+- `unsupported_protocol_version`
+- `malformed_payload`
+
+这些目前都还只是 schema/interface reservation，不是已实现的
+validation feature。
+
+这样既忠实描述了当前行为，也给 future local-agent replay detection、
+persisted ack history、或更明确的 transaction policy 留出了演进空间。
+
 ## Serialized Runtime Boundary
 
 当前 runtime controller 必须明确视为：

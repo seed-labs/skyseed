@@ -72,6 +72,17 @@ def scenario_slot_names(scenario_name: str) -> List[str]:
     return list(dict(definition.get("managed_slots", {})).keys())
 
 
+def _ut_is_attached(link_state_path: Path, ut_id: str) -> bool:
+    state = load_link_state(link_state_path)
+    for entry in state.get("slots", []):
+        if entry.get("slot_type") != "ut_access":
+            continue
+        binding = entry.get("binding") or {}
+        if entry.get("occupied", False) and binding.get("ut_id") == ut_id:
+            return True
+    return False
+
+
 def scenario_plan_summary(
     scenario_name: str,
     topology_path: Path,
@@ -152,12 +163,18 @@ def run_scenario_cycle(
             "--cleanup-all-attached-ut-egress-mpls",
         )
     else:
-        controller_action(
-            controller_path,
-            link_state_path,
-            "--cleanup-ut-egress-mpls",
-            verify_ut_id,
-        )
+        if _ut_is_attached(link_state_path, verify_ut_id):
+            controller_action(
+                controller_path,
+                link_state_path,
+                "--cleanup-ut-egress-mpls",
+                verify_ut_id,
+            )
+        else:
+            print(
+                "[mpls-scenario-smoke] cleanup no-op on clean baseline: "
+                f"{verify_ut_id} is not attached yet"
+            )
     controller_action(
         controller_path,
         link_state_path,

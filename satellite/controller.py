@@ -14,7 +14,8 @@ import time
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+from uuid import uuid4
 
 from mpls_control import (
     compute_all_attached_ut_egress_plans,
@@ -51,6 +52,52 @@ BRIDGE_NETFILTER_SYSCTLS = (
     "net.bridge.bridge-nf-call-ip6tables",
     "net.bridge.bridge-nf-call-arptables",
 )
+RUNTIME_PROTOCOL_VERSION = "satellite-distributed-runtime-update-protocol-v1"
+RUNTIME_AGENT_SCHEMA_VERSION = "satellite-runtime-local-agent-v1"
+RUNTIME_PAYLOAD_SCHEMA_VERSION = "satellite-runtime-update-payload-v2"
+RUNTIME_RESPONSE_ENVELOPE_SCHEMA_VERSION = "satellite-runtime-update-response-envelope-v1"
+RUNTIME_NODE_METADATA_SCHEMA_VERSION = "satellite-runtime-node-metadata-v1"
+RUNTIME_ACK_STATUSES = [
+    "pending",
+    "awaiting_transport_completion",
+    "acknowledged_success",
+    "acknowledged_error",
+]
+RUNTIME_APPLY_STATUSES = [
+    "not_started",
+    "in_progress",
+    "applied",
+    "partially_applied",
+    "transport_error",
+]
+RUNTIME_ERROR_CODES = [
+    "none",
+    "transport_error",
+    "command_failed",
+    "validation_failed",
+    "replay_conflict",
+    "unsupported_command",
+    "unsupported_protocol_version",
+    "malformed_payload",
+    "internal_error",
+]
+RUNTIME_ERROR_CATEGORIES = [
+    "none",
+    "transport",
+    "execution",
+    "validation",
+    "replay",
+    "protocol",
+    "payload",
+    "capability",
+    "internal",
+]
+RUNTIME_VALIDATION_STATUSES = [
+    "not_run",
+    "passed",
+    "failed",
+    "rejected",
+]
 SCENARIO_DEFINITIONS: Dict[str, Dict[str, Any]] = {
     "t0": {
         "description": "Initial explicit runtime scenario for MPLS-4 transition validation.",
@@ -432,6 +479,7 @@ class SatelliteController:
         self.args = args
         self.topology = load_json(args.topology_config)
         self.link_state = self._load_link_state(args.link_state)
+        self._active_command_observation: Optional[Dict[str, Any]] = None
 
     def _default_link_state(self) -> Dict[str, Any]:
         return {
@@ -450,6 +498,36 @@ class SatelliteController:
     def _save_link_state(self, state: Dict[str, Any]) -> None:
         write_json(self.args.link_state, state)
         self.link_state = state
+
+    def _utc_timestamp(self) -> str:
+        return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace(
+            "+00:00",
+            "Z",
+        )
+
+    def _runtime_protocol_version(self) -> str:
+        return RUNTIME_PROTOCOL_VERSION
+
+    def _runtime_agent_schema_version(self) -> str:
+        return RUNTIME_AGENT_SCHEMA_VERSION
+
+    def _runtime_supported_ack_statuses(self) -> List[str]:
+        return list(RUNTIME_ACK_STATUSES)
+
+    def _runtime_supported_apply_statuses(self) -> List[str]:
+        return list(RUNTIME_APPLY_STATUSES)
+
+    def _runtime_supported_error_codes(self) -> List[str]:
+        return list(RUNTIME_ERROR_CODES)
+
+    def _runtime_supported_error_categories(self) -> List[str]:
+        return list(RUNTIME_ERROR_CATEGORIES)
+
+    def _runtime_supported_validation_statuses(self) -> List[str]:
+        return list(RUNTIME_VALIDATION_STATUSES)
+
+    def _execution_nonce(self, node_plan_id: str) -> str:
+        return f"{node_plan_id}:{uuid4().hex}"
 
 
     def _slot_inventory(self) -> Dict[str, List[Dict[str, Any]]]:
@@ -513,6 +591,24 @@ class SatelliteController:
             for entry in self.topology.get("user_terminals", [])
             if entry.get("ut_id") is not None
         }
+
+    def _satellite_topology_entry(self, satellite_id: str) -> Dict[str, Any]:
+        for entry in self.topology.get("satellites", []):
+            if entry.get("satellite_id") == satellite_id:
+                return dict(entry)
+        raise ValueError(f"unknown satellite_id: {satellite_id}")
+
+    def _gateway_topology_entry(self, gateway_id: str) -> Dict[str, Any]:
+        for entry in self.topology.get("gateways", []):
+            if entry.get("gateway_id") == gateway_id:
+                return dict(entry)
+        raise ValueError(f"unknown gateway_id: {gateway_id}")
+
+    def _ut_topology_entry(self, ut_id: str) -> Dict[str, Any]:
+        for entry in self.topology.get("user_terminals", []):
+            if entry.get("ut_id") == ut_id:
+                return dict(entry)
+        raise ValueError(f"unknown ut_id: {ut_id}")
 
     def _satellite_orbit(self, satellite_id: str) -> str:
         for entry in self.topology.get("satellites", []):
@@ -612,24 +708,319 @@ class SatelliteController:
         *,
         failure_stage: str,
         allow_failure: bool = False,
+        observation: Optional[Dict[str, Any]] = None,
     ) -> subprocess.CompletedProcess[str]:
         rendered = shlex.join(command)
         print(f"  {rendered}")
+        started_at = time.monotonic()
         result = subprocess.run(
             command,
             capture_output=True,
             text=True,
             check=False,
         )
+        elapsed_seconds = time.monotonic() - started_at
         if result.stdout.strip():
             print(result.stdout.rstrip())
         if result.stderr.strip():
             print(result.stderr.rstrip())
+        self._record_command_execution(
+            command=command,
+            failure_stage=failure_stage,
+            allow_failure=allow_failure,
+            result=result,
+            elapsed_seconds=elapsed_seconds,
+            observation=observation,
+        )
         if result.returncode != 0 and not allow_failure:
             raise RuntimeError(
                 f"{failure_stage}: command failed with exit status {result.returncode}: {rendered}"
             )
         return result
+
+    def _begin_command_observation(self, action_name: str) -> None:
+        if self._active_command_observation is not None:
+            raise RuntimeError(
+                "command observation already active for "
+                f"{self._active_command_observation.get('action')}"
+            )
+        self._active_command_observation = {
+            "action": action_name,
+            "started_at": time.monotonic(),
+            "commands": [],
+        }
+
+    def _end_command_observation(self) -> Dict[str, Any]:
+        if self._active_command_observation is None:
+            return {
+                "action": "none",
+                "total_commands": 0,
+                "elapsed_seconds": 0.0,
+                "node_counts": {},
+                "command_family_counts": {},
+                "logical_category_counts": {},
+                "logical_kind_counts": {},
+                "node_command_family_counts": {},
+                "node_logical_category_counts": {},
+                "node_logical_kind_counts": {},
+            }
+
+        observation = self._active_command_observation
+        self._active_command_observation = None
+        commands = list(observation.get("commands", []))
+        node_counts = Counter(entry["node_id"] for entry in commands)
+        family_counts = Counter(entry["command_family"] for entry in commands)
+        logical_category_counts = Counter(entry["logical_category"] for entry in commands)
+        logical_kind_counts = Counter(entry["logical_kind"] for entry in commands)
+
+        node_family_counts: Dict[str, Counter[str]] = {}
+        node_category_counts: Dict[str, Counter[str]] = {}
+        node_kind_counts: Dict[str, Counter[str]] = {}
+        for entry in commands:
+            node_id = str(entry["node_id"])
+            node_family_counts.setdefault(node_id, Counter())[entry["command_family"]] += 1
+            node_category_counts.setdefault(node_id, Counter())[entry["logical_category"]] += 1
+            node_kind_counts.setdefault(node_id, Counter())[entry["logical_kind"]] += 1
+
+        return {
+            "action": observation.get("action"),
+            "total_commands": len(commands),
+            "elapsed_seconds": round(time.monotonic() - observation["started_at"], 3),
+            "node_counts": dict(sorted(node_counts.items())),
+            "command_family_counts": dict(sorted(family_counts.items())),
+            "logical_category_counts": dict(sorted(logical_category_counts.items())),
+            "logical_kind_counts": dict(sorted(logical_kind_counts.items())),
+            "node_command_family_counts": {
+                node_id: dict(sorted(counter.items()))
+                for node_id, counter in sorted(node_family_counts.items())
+            },
+            "node_logical_category_counts": {
+                node_id: dict(sorted(counter.items()))
+                for node_id, counter in sorted(node_category_counts.items())
+            },
+            "node_logical_kind_counts": {
+                node_id: dict(sorted(counter.items()))
+                for node_id, counter in sorted(node_kind_counts.items())
+            },
+            "commands": commands,
+        }
+
+    def _print_command_observation_summary(
+        self,
+        summary: Dict[str, Any],
+        *,
+        label: str,
+    ) -> None:
+        print(f"{label}: {summary.get('action')}")
+        print(f"  total_commands={summary.get('total_commands')}")
+        print(f"  elapsed_seconds={summary.get('elapsed_seconds')}")
+        print(
+            "  node_counts="
+            + json.dumps(summary.get("node_counts", {}), sort_keys=True)
+        )
+        print(
+            "  command_family_counts="
+            + json.dumps(summary.get("command_family_counts", {}), sort_keys=True)
+        )
+        print(
+            "  logical_category_counts="
+            + json.dumps(summary.get("logical_category_counts", {}), sort_keys=True)
+        )
+        print(
+            "  logical_kind_counts="
+            + json.dumps(summary.get("logical_kind_counts", {}), sort_keys=True)
+        )
+        print(
+            "  node_command_family_counts="
+            + json.dumps(summary.get("node_command_family_counts", {}), sort_keys=True)
+        )
+        print(
+            "  node_logical_kind_counts="
+            + json.dumps(summary.get("node_logical_kind_counts", {}), sort_keys=True)
+        )
+
+    def _command_target_node_and_effective_command(
+        self,
+        command: Sequence[str],
+    ) -> Tuple[str, List[str]]:
+        command_list = list(command)
+        if len(command_list) >= 3 and command_list[0] == "docker" and command_list[1] == "exec":
+            return str(command_list[2]), command_list[3:]
+        if (
+            len(command_list) >= 5
+            and command_list[0] == "docker"
+            and command_list[1] == "network"
+            and command_list[2] in {"connect", "disconnect"}
+        ):
+            return str(command_list[-1]), command_list[:3]
+        return "host", command_list
+
+    def _infer_command_family(self, command: Sequence[str]) -> str:
+        command_list = list(command)
+        if not command_list:
+            return "unknown"
+        if len(command_list) >= 3 and command_list[0] == "docker" and command_list[1] == "network":
+            return f"docker_network_{command_list[2]}"
+        if command_list[0] == "docker":
+            return "docker"
+        if command_list[0] == "ip":
+            if len(command_list) >= 4 and command_list[1] == "-f" and command_list[2] == "mpls":
+                return "ip_mpls_route"
+            if len(command_list) >= 2:
+                subcommand = command_list[1]
+                if subcommand == "route":
+                    return "ip_route"
+                if subcommand == "rule":
+                    return "ip_rule"
+                if subcommand == "link":
+                    return "ip_link"
+                if subcommand == "addr":
+                    return "ip_addr"
+            return "ip"
+        if command_list[0] == "sysctl":
+            return "sysctl"
+        if command_list[0] == "ping":
+            return "ping"
+        if command_list[0] == "sh" and len(command_list) >= 3 and command_list[1] == "-lc":
+            script = command_list[2]
+            if "iptables" in script:
+                return "iptables"
+            if "ip -f mpls route" in script:
+                return "ip_mpls_route"
+            if "ip rule" in script:
+                return "ip_rule"
+            if "ip route" in script:
+                return "ip_route"
+            if "ping " in script:
+                return "ping"
+            return "shell"
+        return command_list[0]
+
+    def _infer_logical_kind(
+        self,
+        *,
+        effective_command: Sequence[str],
+        command_family: str,
+        failure_stage: str,
+    ) -> str:
+        command_list = list(effective_command)
+        stage = failure_stage.lower()
+        if command_family.startswith("docker_network_"):
+            return command_family
+        if command_family == "ip_link":
+            if " name " in f" {' '.join(command_list)} ":
+                return "interface_rename"
+            if " up" in f" {' '.join(command_list)} " or " down" in f" {' '.join(command_list)} ":
+                return "interface_state"
+            if " del " in f" {' '.join(command_list)} ":
+                return "interface_delete"
+            return "ip_link"
+        if command_family == "ip_addr":
+            if " flush " in f" {' '.join(command_list)} ":
+                return "address_flush"
+            if " add " in f" {' '.join(command_list)} ":
+                return "address_add"
+            return "ip_addr"
+        if command_family == "ip_route":
+            if "unreachable" in command_list:
+                return "guardrail_route"
+            if "encap" in command_list and "table" in command_list:
+                return "policy_table_default_route"
+            if "encap" in command_list:
+                return "mpls_encap_route"
+            if " show " in f" {' '.join(command_list)} ":
+                return "route_show"
+            if " replace " in f" {' '.join(command_list)} ":
+                return "route_replace"
+            if " del " in f" {' '.join(command_list)} ":
+                return "route_delete"
+            return "ip_route"
+        if command_family == "ip_rule":
+            if " show " in f" {' '.join(command_list)} ":
+                return "rule_show"
+            if " add " in f" {' '.join(command_list)} " or "add pref" in stage:
+                return "source_policy_rule"
+            return "ip_rule"
+        if command_family == "ip_mpls_route":
+            joined = f" {' '.join(command_list)} "
+            if " show " in joined:
+                return "lfib_show"
+            if " del " in joined:
+                return "lfib_delete"
+            if " as " in joined:
+                return "lfib_swap"
+            if " dev lo " in joined:
+                return "lfib_pop"
+            return "lfib_replace"
+        if command_family == "iptables":
+            if "SNAT" in " ".join(command_list):
+                return "gateway_snat_rule"
+            if "ESTABLISHED,RELATED" in " ".join(command_list):
+                return "gateway_reverse_filter_rule"
+            if "FORWARD" in " ".join(command_list):
+                return "gateway_forward_filter_rule"
+            return "iptables"
+        if command_family == "sysctl":
+            if "net.mpls.conf." in " ".join(command_list):
+                return "mpls_input_sysctl"
+            return "sysctl"
+        if "normalize internal guardrail routes" in stage:
+            return "guardrail_normalize"
+        return command_family
+
+    def _record_command_execution(
+        self,
+        *,
+        command: Sequence[str],
+        failure_stage: str,
+        allow_failure: bool,
+        result: subprocess.CompletedProcess[str],
+        elapsed_seconds: float,
+        observation: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        active = self._active_command_observation
+        if active is None:
+            return
+        observation = observation or {}
+        node_id, effective_command = self._command_target_node_and_effective_command(command)
+        command_family = str(
+            observation.get("command_family")
+            or self._infer_command_family(effective_command)
+        )
+        logical_category = str(
+            observation.get("logical_category")
+            or (
+                "runtime_mutation"
+                if command_family.startswith("docker_network_")
+                or command_family in {"ip_link", "ip_addr"}
+                else "runtime_command"
+            )
+        )
+        logical_kind = str(
+            observation.get("logical_kind")
+            or self._infer_logical_kind(
+                effective_command=effective_command,
+                command_family=command_family,
+                failure_stage=failure_stage,
+            )
+        )
+        commands = active["commands"]
+        commands.append(
+            {
+                "index": len(commands) + 1,
+                "node_id": node_id,
+                "command_family": command_family,
+                "logical_category": logical_category,
+                "logical_kind": logical_kind,
+                "failure_stage": failure_stage,
+                "allow_failure": allow_failure,
+                "returncode": result.returncode,
+                "elapsed_seconds": round(elapsed_seconds, 3),
+                "command": shlex.join(list(command)),
+                "effective_command": shlex.join(effective_command),
+                "shared_key": observation.get("shared_key"),
+            }
+        )
 
     def _docker_network_exists(self, docker_network_name: str) -> bool:
         result = subprocess.run(
@@ -2036,11 +2427,13 @@ class SatelliteController:
         *,
         failure_stage: str,
         allow_failure: bool = False,
+        observation: Optional[Dict[str, Any]] = None,
     ) -> subprocess.CompletedProcess[str]:
         return self._run_command(
             ["docker", "exec", node_id, *command],
             failure_stage=failure_stage,
             allow_failure=allow_failure,
+            observation=observation,
         )
 
     def _spawn_docker_exec_capture(
@@ -2063,6 +2456,12 @@ class SatelliteController:
     ) -> None:
         category_counts = Counter(spec.category for spec in specs)
         node_counts = Counter(spec.node_id for spec in specs)
+        logical_kind_counts = Counter(self._ut_egress_logical_kind(spec) for spec in specs)
+        per_node_update_plan = self._ut_egress_per_node_update_plan(
+            action_name=action_name,
+            specs=specs,
+        )
+        batch_plan = list(per_node_update_plan["node_plans"])
         print(f"UT egress plan: {action_name}")
         print(f"  dry_run={self.args.dry_run}")
         print(f"  total_commands={len(specs)}")
@@ -2074,8 +2473,134 @@ class SatelliteController:
             "  node_counts="
             + json.dumps(dict(sorted(node_counts.items())), sort_keys=True)
         )
+        print(
+            "  logical_kind_counts="
+            + json.dumps(dict(sorted(logical_kind_counts.items())), sort_keys=True)
+        )
+        print(
+            "  node_batch_counts="
+            + json.dumps(
+                {
+                    entry["node_id"]: entry["command_count"]
+                    for entry in batch_plan
+                },
+                sort_keys=True,
+            )
+        )
+        print(
+            "  execution_boundary="
+            + json.dumps(per_node_update_plan["control_boundary"], sort_keys=True)
+        )
+        print(
+            "  payload_header="
+            + json.dumps(
+                {
+                    "schema_version": per_node_update_plan["schema_version"],
+                    "protocol_version": per_node_update_plan["protocol_version"],
+                    "plan_id": per_node_update_plan["plan_id"],
+                    "scope": per_node_update_plan["scope"],
+                    "generation": per_node_update_plan["generation"],
+                    "sequence": per_node_update_plan["sequence"],
+                    "phase": per_node_update_plan["phase"],
+                    "scenario": per_node_update_plan["scenario"],
+                    "created_at": per_node_update_plan["created_at"],
+                    "replayable": per_node_update_plan["replayable"],
+                    "idempotency_scope": per_node_update_plan["idempotency_scope"],
+                    "transaction_boundary": per_node_update_plan["transaction_boundary"],
+                    "distribution_source": per_node_update_plan["distribution_source"],
+                    "expected_transport": per_node_update_plan["expected_transport"],
+                },
+                sort_keys=True,
+            )
+        )
         if not self.args.dry_run:
             return
+        for batch_index, batch in enumerate(batch_plan, start=1):
+            print(
+                "  "
+                f"node_plan[{batch_index:02d}] node={batch['node_id']} commands={batch['command_count']}"
+            )
+            print(f"    node_plan_id={batch['node_plan_id']}")
+            print(f"    generation={batch['generation']}")
+            print(f"    sequence={batch['sequence']}")
+            print(f"    created_at={batch['created_at']}")
+            print(
+                "    categories="
+                + json.dumps(batch["category_counts"], sort_keys=True)
+            )
+            print(
+                "    logical_kinds="
+                + json.dumps(batch["logical_kind_counts"], sort_keys=True)
+            )
+            print(
+                "    target_node_type="
+                + json.dumps(batch["target_node_type"], sort_keys=True)
+            )
+            print(
+                "    distribution="
+                + json.dumps(batch["distribution"], sort_keys=True)
+            )
+            print(
+                "    expected_transport="
+                + json.dumps(batch["expected_transport"], sort_keys=True)
+            )
+            print(f"    apply_mode={batch['apply_mode']}")
+            print(f"    expected_ack_mode={batch['expected_ack_mode']}")
+            print(
+                "    replay_policy="
+                + json.dumps(batch["replay_policy"], sort_keys=True)
+            )
+            print(
+                "    transaction_semantics="
+                + json.dumps(batch["transaction_semantics"], sort_keys=True)
+            )
+            print(
+                "    node_metadata_summary="
+                + json.dumps(
+                    self._summarize_node_metadata(batch["node_metadata"]),
+                    sort_keys=True,
+                )
+            )
+            print(
+                "    response_envelope_summary="
+                + json.dumps(
+                    self._summarize_response_envelope(batch["response_envelope"]),
+                    sort_keys=True,
+                )
+            )
+            print(
+                "    replay_info="
+                + json.dumps(
+                    batch["response_envelope"]["replay_info"],
+                    sort_keys=True,
+                )
+            )
+            print(
+                "    error_contract_summary="
+                + json.dumps(
+                    batch["response_envelope"]["error"],
+                    sort_keys=True,
+                )
+            )
+            print(
+                "    validation_report_summary="
+                + json.dumps(
+                    batch["response_envelope"]["validation_report"],
+                    sort_keys=True,
+                )
+            )
+            for command_entry in batch["commands"]:
+                print(
+                    "    "
+                    f"[{command_entry['index']:02d}] category={command_entry['category']} "
+                    f"kind={command_entry['logical_kind']} stage={command_entry['stage']}"
+                )
+                print("      " + command_entry["command"])
+                if command_entry["shared_key"]:
+                    print(f"      shared_key={command_entry['shared_key']}")
+                print(f"      idempotency_key={command_entry['idempotency_key']}")
+                if command_entry["expected_state"]:
+                    print(f"      expected_state={command_entry['expected_state']}")
         for index, spec in enumerate(specs, start=1):
             print(
                 "  "
@@ -2088,6 +2613,1047 @@ class SatelliteController:
             if spec.expected_state:
                 print(f"    expected_state={spec.expected_state}")
 
+    def _ut_egress_logical_kind(self, spec: UtEgressCommandSpec) -> str:
+        stage = spec.stage.lower()
+        rendered = " ".join(spec.command)
+        if spec.category == "static_guardrail":
+            if "source-policy rule" in stage:
+                return "source_policy_rule"
+            if "normalize internal guardrail routes" in stage:
+                return "guardrail_normalize"
+            return "guardrail_route"
+        if spec.category == "dynamic_lfib":
+            if spec.command[:2] == ("sysctl", "-w"):
+                return "mpls_input"
+            if "reverse lfib" in stage:
+                return "reverse_lfib"
+            if "forward lfib" in stage:
+                return "forward_lfib"
+            if "reverse pop" in stage:
+                return "reverse_pop"
+            if "forward pop" in stage:
+                return "forward_pop"
+            return "mpls_lfib"
+        if spec.category == "dynamic_path":
+            if "ut default egress route" in stage:
+                return "ut_default_route"
+            if "source-policy" in stage or "table" in rendered:
+                return "policy_table_default_route"
+            if "delivery route" in stage:
+                return "ut_delivery_route"
+            return "dynamic_route"
+        if spec.category == "dynamic_gateway_nat":
+            if "snat" in stage:
+                return "gateway_snat"
+            if "reverse ingress route" in stage:
+                return "reverse_ingress_route"
+            if "reverse filter rule" in stage:
+                return "gateway_reverse_filter"
+            if "forward filter rule" in stage:
+                return "gateway_forward_filter"
+            return "gateway_nat"
+        if spec.category == "verify":
+            if spec.command[:4] == ("ip", "-f", "mpls", "route"):
+                return "lfib_show"
+            if spec.command[:2] == ("ip", "route"):
+                return "route_show"
+            if spec.command[:2] == ("ip", "rule"):
+                return "rule_show"
+            if spec.command[:2] == ("sh", "-lc") and "iptables" in rendered:
+                return "iptables_show"
+            return "verify"
+        if spec.category == "cleanup":
+            if spec.command[:2] == ("sysctl", "-w"):
+                return "mpls_input_disable"
+            if spec.command[:4] == ("ip", "-f", "mpls", "route"):
+                if "reverse" in stage:
+                    return "reverse_lfib_cleanup"
+                if "forward" in stage:
+                    return "forward_lfib_cleanup"
+                return "lfib_cleanup"
+            if spec.command[:2] == ("ip", "route"):
+                if "delivery route" in stage:
+                    return "ut_delivery_route_cleanup"
+                if "reverse ingress route" in stage:
+                    return "reverse_ingress_route_cleanup"
+                if "source-policy" in stage:
+                    return "policy_table_default_route_cleanup"
+                if "ut default egress route" in stage:
+                    return "ut_default_route_cleanup"
+                return "route_cleanup"
+            if spec.command[:2] == ("sh", "-lc"):
+                if "SNAT" in rendered:
+                    return "gateway_snat_cleanup"
+                if "ESTABLISHED,RELATED" in rendered:
+                    return "gateway_reverse_filter_cleanup"
+                if "FORWARD" in rendered:
+                    return "gateway_forward_filter_cleanup"
+            return "cleanup"
+        return spec.category
+
+    def _ut_egress_action_context(self, action_name: str) -> Dict[str, Any]:
+        phase = action_name.split(":", 1)[0]
+        return {
+            "plan_id": action_name,
+            "generation": 1,
+            "sequence": 1,
+            "phase": phase,
+            "scenario": None,
+            "scope": "ut_egress_runtime_update",
+            "created_at": self._utc_timestamp(),
+            "replayable": True,
+            "idempotency_scope": "node_plan_command_set",
+        }
+
+    def _runtime_node_type(self, node_id: str) -> str:
+        if node_id in self._satellite_ids():
+            return "satellite"
+        if node_id in self._gateway_ids():
+            return "gateway"
+        if node_id in self._ut_ids():
+            return "user_terminal"
+        return "runtime_node"
+
+    def _slot_interface_role(self, *, node_type: str, slot_type: str) -> str:
+        if slot_type == "ut_access":
+            return "ut_facing" if node_type == "satellite" else "satellite_access"
+        if slot_type == "gw_access":
+            return "gateway_facing" if node_type == "satellite" else "satellite_facing"
+        if slot_type == "cross_plane_isl":
+            return "isl_cross_plane"
+        if slot_type == "fixed_isl":
+            return "isl_fixed"
+        return "runtime_slot_endpoint"
+
+    def _controller_visible_ut_attachment(self, ut_id: str) -> Dict[str, Any]:
+        for slot in self.link_state.get("slots", []):
+            if slot.get("slot_type") != "ut_access":
+                continue
+            if slot.get("owner_node_id") != ut_id:
+                continue
+            binding = slot.get("binding") or {}
+            if slot.get("occupied") and binding.get("satellite_id") is not None:
+                return {
+                    "serving_satellite": str(binding.get("satellite_id")),
+                    "attachment_state": "attached",
+                    "slot_name": slot.get("slot_name"),
+                }
+        return {
+            "serving_satellite": None,
+            "attachment_state": "detached",
+            "slot_name": None,
+        }
+
+    def _controller_visible_interface_roles(self, node_id: str) -> List[Dict[str, Any]]:
+        node_type = self._runtime_node_type(node_id)
+        roles: List[Dict[str, Any]] = []
+
+        def add_role(role: Dict[str, Any]) -> None:
+            roles.append(role)
+
+        if node_type == "satellite":
+            entry = self._satellite_topology_entry(node_id)
+            bootstrap_endpoint = entry.get("bootstrap_network", {}).get("endpoint", {})
+            if bootstrap_endpoint.get("interface_name"):
+                add_role(
+                    {
+                        "interface_name": bootstrap_endpoint.get("interface_name"),
+                        "role": "compile_time_bootstrap",
+                        "source": "topology.bootstrap_network",
+                    }
+                )
+            for link in self._fixed_links():
+                endpoints = list(link.get("endpoints", []))
+                for endpoint in endpoints:
+                    if endpoint.get("node_id") != node_id:
+                        continue
+                    peer = next(
+                        (
+                            candidate
+                            for candidate in endpoints
+                            if candidate.get("node_id") != node_id
+                        ),
+                        None,
+                    )
+                    add_role(
+                        {
+                            "interface_name": endpoint.get("interface_name"),
+                            "role": "isl_fixed",
+                            "source": "topology.fixed_links",
+                            "link_id": link.get("link_id"),
+                            "logical_direction": endpoint.get("logical_direction"),
+                            "peer_node_id": None if peer is None else peer.get("node_id"),
+                            "peer_node_type": None if peer is None else peer.get("node_type"),
+                        }
+                    )
+        elif node_type == "gateway":
+            entry = self._gateway_topology_entry(node_id)
+            bootstrap_endpoint = entry.get("bootstrap_network", {}).get("endpoint", {})
+            if bootstrap_endpoint.get("interface_name"):
+                add_role(
+                    {
+                        "interface_name": bootstrap_endpoint.get("interface_name"),
+                        "role": "compile_time_bootstrap",
+                        "source": "topology.bootstrap_network",
+                    }
+                )
+            uplink = entry.get("internet_uplink", {})
+            if uplink.get("network_name"):
+                add_role(
+                    {
+                        "interface_name": uplink.get("network_name"),
+                        "role": "mini_internet_egress",
+                        "source": "topology.internet_uplink",
+                        "ix_id": uplink.get("ix_id"),
+                    }
+                )
+        elif node_type == "user_terminal":
+            entry = self._ut_topology_entry(node_id)
+            identity_interface = entry.get("identity_interface", {})
+            if identity_interface.get("if_name"):
+                add_role(
+                    {
+                        "interface_name": identity_interface.get("if_name"),
+                        "role": "stable_identity",
+                        "source": "topology.identity_interface",
+                    }
+                )
+            bootstrap_endpoint = entry.get("bootstrap_network", {}).get("endpoint", {})
+            if bootstrap_endpoint.get("interface_name"):
+                add_role(
+                    {
+                        "interface_name": bootstrap_endpoint.get("interface_name"),
+                        "role": "compile_time_bootstrap",
+                        "source": "topology.bootstrap_network",
+                    }
+                )
+
+        for slot in self.link_state.get("slots", []):
+            endpoints = list(slot.get("preconnected_endpoints", [])) + list(
+                slot.get("dynamic_endpoints", [])
+            )
+            for endpoint in endpoints:
+                if endpoint.get("node_id") != node_id:
+                    continue
+                peer = next(
+                    (
+                        candidate
+                        for candidate in endpoints
+                        if candidate.get("node_id") != node_id
+                    ),
+                    None,
+                )
+                add_role(
+                    {
+                        "interface_name": endpoint.get("interface_name"),
+                        "role": self._slot_interface_role(
+                            node_type=node_type,
+                            slot_type=str(slot.get("slot_type")),
+                        ),
+                        "source": (
+                            "link_state.slot_binding"
+                            if slot.get("occupied")
+                            else "link_state.slot_inventory"
+                        ),
+                        "slot_name": slot.get("slot_name"),
+                        "slot_type": slot.get("slot_type"),
+                        "occupied": bool(slot.get("occupied")),
+                        "logical_direction": endpoint.get("logical_direction"),
+                        "peer_node_id": None if peer is None else peer.get("node_id"),
+                        "peer_node_type": None if peer is None else peer.get("node_type"),
+                    }
+                )
+
+        return sorted(
+            roles,
+            key=lambda entry: (
+                str(entry.get("interface_name") or ""),
+                str(entry.get("role") or ""),
+                str(entry.get("slot_name") or ""),
+                str(entry.get("source") or ""),
+            ),
+        )
+
+    def _runtime_node_metadata(self, node_id: str) -> Dict[str, Any]:
+        node_type = self._runtime_node_type(node_id)
+        metadata: Dict[str, Any] = {
+            "schema_version": RUNTIME_NODE_METADATA_SCHEMA_VERSION,
+            "node_id": node_id,
+            "node_type": node_type,
+            "interface_roles": self._controller_visible_interface_roles(node_id),
+            "local_agent_capabilities": {
+                "current": {
+                    "available": False,
+                    "endpoint": None,
+                },
+                "future": {
+                    "expected_endpoint": "node_local_forwarding_agent",
+                    "accepted_transports": [
+                        "in_emulation_control_plane_delivery",
+                    ],
+                    "ack_modes": [
+                        "terminal_node_ack",
+                    ],
+                },
+            },
+            "control_plane_endpoint": {
+                "current": None,
+                "future": "node_local_forwarding_agent",
+            },
+            "metadata_ownership": {
+                "controller_authoritative": [
+                    "node_type",
+                    "runtime_forwarding_role",
+                    "interface_roles",
+                    "forwarding_capabilities",
+                    "control_plane_endpoint",
+                ],
+                "node_authoritative": [
+                    "local_interface_health",
+                    "neighbor_reachability",
+                    "local_runtime_state",
+                    "local_forwarding_state",
+                    "local_agent_health",
+                ],
+            },
+        }
+        if node_type == "satellite":
+            metadata.update(
+                {
+                    "runtime_forwarding_role": "satellite_mpls_forwarder",
+                    "forwarding_capabilities": {
+                        "supports_kernel_routes": True,
+                        "supports_mpls": True,
+                        "supports_lfib": True,
+                        "supports_iptables": False,
+                        "supports_cgnat": False,
+                        "supports_bgp": False,
+                    },
+                    "supports_mpls": True,
+                    "supports_runtime_attach": True,
+                }
+            )
+            return metadata
+        if node_type == "gateway":
+            gateway_entry = self._gateway_topology_entry(node_id)
+            uplink = gateway_entry.get("internet_uplink", {})
+            metadata.update(
+                {
+                    "runtime_forwarding_role": "gateway_cgnat_egress",
+                    "forwarding_capabilities": {
+                        "supports_kernel_routes": True,
+                        "supports_mpls": True,
+                        "supports_lfib": True,
+                        "supports_iptables": True,
+                        "supports_cgnat": True,
+                        "supports_bgp": True,
+                    },
+                    "supports_mpls": True,
+                    "supports_runtime_attach": True,
+                    "supports_cgnat": True,
+                    "supports_egress": True,
+                    "supports_bgp": True,
+                    "gateway_region": None,
+                    "gateway_cluster": uplink.get("network_name"),
+                    "connected_ground_control": None,
+                }
+            )
+            return metadata
+        if node_type == "user_terminal":
+            attachment = self._controller_visible_ut_attachment(node_id)
+            metadata.update(
+                {
+                    "runtime_forwarding_role": "user_terminal_edge",
+                    "forwarding_capabilities": {
+                        "supports_kernel_routes": True,
+                        "supports_mpls": False,
+                        "supports_lfib": False,
+                        "supports_iptables": False,
+                        "supports_cgnat": False,
+                        "supports_bgp": False,
+                    },
+                    "supports_mpls": False,
+                    "supports_runtime_attach": True,
+                    "serving_satellite": attachment["serving_satellite"],
+                    "attachment_state": attachment["attachment_state"],
+                    "attachment_slot_name": attachment["slot_name"],
+                    "mobility_runtime_attach_capable": True,
+                }
+            )
+            return metadata
+        metadata.update(
+            {
+                "runtime_forwarding_role": "runtime_node",
+                "forwarding_capabilities": {},
+                "supports_mpls": False,
+                "supports_runtime_attach": False,
+            }
+        )
+        return metadata
+
+    def _runtime_update_replay_policy(self, *, idempotency_scope: str) -> Dict[str, Any]:
+        return {
+            "replayable": True,
+            "retry_unit": "entire_node_plan",
+            "controller_retry_allowed": True,
+            "replay_detection": "stateless_best_effort_only",
+            "same_node_plan_id_behavior_current": (
+                "protocol_reserved_no_persistent_replay_store"
+            ),
+            "same_node_plan_id_behavior_future": (
+                "detect_replay_and_ack_already_applied_or_replay_conflict"
+            ),
+            "idempotency_scope": idempotency_scope,
+            "idempotency_basis": [
+                "command.idempotency_key",
+                "command.replace_or_check_then_add_shape",
+                "node_local_command_order",
+            ],
+        }
+
+    def _runtime_update_transaction_semantics(self) -> Dict[str, Any]:
+        return {
+            "atomicity": "non_atomic_partial_apply_possible",
+            "ordering": "serial_in_order",
+            "rollback_on_failure": "none",
+            "failure_boundary": "stop_on_first_non_allowed_failure",
+            "replayable": True,
+            "idempotent": "best_effort_command_level",
+        }
+
+    def _initial_runtime_agent_health(self) -> Dict[str, Any]:
+        return {
+            "status": "controller_transport_only",
+            "healthy": None,
+            "source": "controller_serial_docker_exec",
+            "message": "local agent not implemented in current transport",
+        }
+
+    def _initial_runtime_ack(self, *, expected_ack_mode: str) -> Dict[str, Any]:
+        return {
+            "ack_status": "pending",
+            "expected_ack_mode": expected_ack_mode,
+            "supported_ack_statuses": self._runtime_supported_ack_statuses(),
+        }
+
+    def _initial_runtime_apply_result(self) -> Dict[str, Any]:
+        return {
+            "apply_status": "not_started",
+            "supported_apply_statuses": self._runtime_supported_apply_statuses(),
+            "applied_commands": [],
+            "skipped_commands": [],
+            "failed_command": None,
+            "stdout_summary": None,
+            "stderr_summary": None,
+            "transport_returncode": None,
+        }
+
+    def _initial_runtime_error_report(self) -> Dict[str, Any]:
+        return {
+            "error_code": "none",
+            "error_category": "none",
+            "error_message": None,
+            "error_details": None,
+            "failed_command_id": None,
+            "failed_command_family": None,
+            "failed_logical_kind": None,
+            "retryable": False,
+            "fatal": False,
+            "suggested_action": None,
+            "supported_error_codes": self._runtime_supported_error_codes(),
+            "supported_error_categories": self._runtime_supported_error_categories(),
+        }
+
+    def _initial_runtime_replay_info(
+        self,
+        *,
+        replay_policy: Dict[str, Any],
+        idempotency_scope: str,
+    ) -> Dict[str, Any]:
+        return {
+            "replay_detected": False,
+            "already_applied": False,
+            "replay_policy": dict(replay_policy),
+            "idempotency_scope": idempotency_scope,
+        }
+
+    def _initial_runtime_validation_report(self) -> Dict[str, Any]:
+        return {
+            "validation_status": "not_run",
+            "supported_validation_statuses": self._runtime_supported_validation_statuses(),
+            "validation_errors": [],
+            "unsupported_commands": [],
+            "unsupported_command_families": [],
+            "unsupported_protocol_version": None,
+            "malformed_payload": False,
+            "missing_required_fields": [],
+            "current_validation_mode": "protocol_reserved_no_agent_validation_engine",
+            "future_validation_boundary": "node_local_agent_pre_apply_validation",
+            "reserved_error_codes": [
+                "validation_failed",
+                "unsupported_command",
+                "unsupported_protocol_version",
+                "malformed_payload",
+            ],
+            "reserved_failure_paths": [
+                "payload_shape_validation",
+                "protocol_version_validation",
+                "command_capability_validation",
+                "node_local_precondition_validation",
+            ],
+        }
+
+    def _initial_runtime_update_response_envelope(
+        self,
+        *,
+        node_plan_id: str,
+        plan_id: str,
+        generation: int,
+        sequence: int,
+        expected_ack_mode: str,
+        replay_policy: Dict[str, Any],
+        idempotency_scope: str,
+    ) -> Dict[str, Any]:
+        return {
+            "schema_version": RUNTIME_RESPONSE_ENVELOPE_SCHEMA_VERSION,
+            "protocol_version": self._runtime_protocol_version(),
+            "agent_schema_version": self._runtime_agent_schema_version(),
+            "supported_protocol_versions": [
+                self._runtime_protocol_version(),
+            ],
+            "node_plan_id": node_plan_id,
+            "plan_id": plan_id,
+            "generation": generation,
+            "sequence": sequence,
+            "execution_nonce": None,
+            "agent_health": self._initial_runtime_agent_health(),
+            "ack": self._initial_runtime_ack(expected_ack_mode=expected_ack_mode),
+            "apply_result": self._initial_runtime_apply_result(),
+            "error": self._initial_runtime_error_report(),
+            "timestamps": {
+                "execution_started_at": None,
+                "execution_finished_at": None,
+            },
+            "replay_info": self._initial_runtime_replay_info(
+                replay_policy=replay_policy,
+                idempotency_scope=idempotency_scope,
+            ),
+            "validation_report": self._initial_runtime_validation_report(),
+        }
+
+    def _summarize_stream_output(self, text: str) -> Optional[Dict[str, Any]]:
+        cleaned = text.strip()
+        if not cleaned:
+            return None
+        lines = cleaned.splitlines()
+        return {
+            "line_count": len(lines),
+            "head": lines[:3],
+            "tail": lines[-3:],
+        }
+
+    def _summarize_node_metadata(self, node_metadata: Dict[str, Any]) -> Dict[str, Any]:
+        interface_roles = list(node_metadata.get("interface_roles", []))
+        return {
+            "schema_version": node_metadata.get("schema_version"),
+            "node_id": node_metadata.get("node_id"),
+            "node_type": node_metadata.get("node_type"),
+            "runtime_forwarding_role": node_metadata.get("runtime_forwarding_role"),
+            "supports_mpls": node_metadata.get("supports_mpls"),
+            "supports_runtime_attach": node_metadata.get("supports_runtime_attach"),
+            "control_plane_endpoint": node_metadata.get("control_plane_endpoint"),
+            "interface_role_count": len(interface_roles),
+            "interface_role_names": [
+                entry.get("role")
+                for entry in interface_roles
+                if entry.get("role") is not None
+            ],
+            "forwarding_capabilities": node_metadata.get("forwarding_capabilities"),
+            "metadata_ownership": node_metadata.get("metadata_ownership"),
+        }
+
+    def _summarize_response_envelope(self, response_envelope: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "schema_version": response_envelope.get("schema_version"),
+            "protocol_version": response_envelope.get("protocol_version"),
+            "agent_schema_version": response_envelope.get("agent_schema_version"),
+            "supported_protocol_versions": response_envelope.get("supported_protocol_versions"),
+            "node_plan_id": response_envelope.get("node_plan_id"),
+            "plan_id": response_envelope.get("plan_id"),
+            "generation": response_envelope.get("generation"),
+            "sequence": response_envelope.get("sequence"),
+            "execution_nonce": response_envelope.get("execution_nonce"),
+            "ack": response_envelope.get("ack"),
+            "apply_result": {
+                "apply_status": response_envelope.get("apply_result", {}).get("apply_status"),
+                "supported_apply_statuses": response_envelope.get("apply_result", {}).get(
+                    "supported_apply_statuses"
+                ),
+            },
+            "error": {
+                "error_code": response_envelope.get("error", {}).get("error_code"),
+                "error_category": response_envelope.get("error", {}).get("error_category"),
+                "supported_error_codes": response_envelope.get("error", {}).get(
+                    "supported_error_codes"
+                ),
+                "supported_error_categories": response_envelope.get("error", {}).get(
+                    "supported_error_categories"
+                ),
+            },
+            "replay_info": response_envelope.get("replay_info"),
+            "validation_report": {
+                "validation_status": response_envelope.get("validation_report", {}).get(
+                    "validation_status"
+                ),
+                "supported_validation_statuses": response_envelope.get(
+                    "validation_report",
+                    {},
+                ).get("supported_validation_statuses"),
+                "reserved_error_codes": response_envelope.get("validation_report", {}).get(
+                    "reserved_error_codes"
+                ),
+            },
+            "agent_health": response_envelope.get("agent_health"),
+        }
+
+    def _ut_egress_per_node_update_plan(
+        self,
+        *,
+        action_name: str,
+        specs: Sequence[UtEgressCommandSpec],
+    ) -> Dict[str, Any]:
+        action_context = self._ut_egress_action_context(action_name)
+        batches: Dict[str, Dict[str, Any]] = {}
+        node_order: List[str] = []
+        for index, spec in enumerate(specs, start=1):
+            batch = batches.get(spec.node_id)
+            if batch is None:
+                batch = {
+                    "node_id": spec.node_id,
+                    "node_plan_id": f"{action_context['plan_id']}:{spec.node_id}",
+                    "command_count": 0,
+                    "category_counts": Counter(),
+                    "logical_kind_counts": Counter(),
+                    "commands": [],
+                }
+                batches[spec.node_id] = batch
+                node_order.append(spec.node_id)
+            logical_kind = self._ut_egress_logical_kind(spec)
+            batch["command_count"] += 1
+            batch["category_counts"][spec.category] += 1
+            batch["logical_kind_counts"][logical_kind] += 1
+            batch["commands"].append(
+                {
+                    "index": index,
+                    "sequence": index,
+                    "category": spec.category,
+                    "command_family": self._infer_command_family(spec.command),
+                    "logical_kind": logical_kind,
+                    "stage": spec.stage,
+                    "allow_failure": spec.allow_failure,
+                    "argv": list(spec.command),
+                    "command": shlex.join(list(spec.command)),
+                    "shared_key": spec.shared_key,
+                    "idempotency_key": (
+                        spec.shared_key
+                        or f"{action_context['plan_id']}:{spec.node_id}:{index}"
+                    ),
+                    "expected_state": spec.expected_state,
+                }
+            )
+        node_plans: List[Dict[str, Any]] = []
+        for node_sequence, node_id in enumerate(node_order, start=1):
+            batch = batches[node_id]
+            replay_policy = self._runtime_update_replay_policy(
+                idempotency_scope=str(action_context["idempotency_scope"])
+            )
+            node_plans.append(
+                {
+                    "node_id": node_id,
+                    "node_plan_id": batch["node_plan_id"],
+                    "plan_id": action_context["plan_id"],
+                    "generation": action_context["generation"],
+                    "sequence": node_sequence,
+                    "phase": action_context["phase"],
+                    "scenario": action_context["scenario"],
+                    "target_node": node_id,
+                    "target_node_type": self._runtime_node_type(node_id),
+                    "created_at": action_context["created_at"],
+                    "command_count": batch["command_count"],
+                    "apply_mode": "ordered_command_list",
+                    "replay_policy": replay_policy,
+                    "expected_ack_mode": "terminal_node_ack",
+                    "transaction_semantics": self._runtime_update_transaction_semantics(),
+                    "execution_boundary": {
+                        "global_decision_maker": "controller",
+                        "local_execution_target": "node_local_forwarding_agent",
+                        "execution_location": "in_container",
+                        "node_plan_visibility": "node_local_only",
+                    },
+                    "expected_transport": {
+                        "current": "controller_serial_docker_exec",
+                        "future": "in_emulation_control_plane_delivery",
+                    },
+                    "distribution": {
+                        "source": {
+                            "current": "controller_process_on_host",
+                            "future_candidates": [
+                                "ground_control_host",
+                                "data_center",
+                            ],
+                        },
+                        "target": {
+                            "node_id": node_id,
+                            "node_local_endpoint": "node_local_forwarding_agent",
+                            "execution_location": "in_container",
+                        },
+                    },
+                    "node_metadata": self._runtime_node_metadata(node_id),
+                    "category_counts": dict(sorted(batch["category_counts"].items())),
+                    "logical_kind_counts": dict(sorted(batch["logical_kind_counts"].items())),
+                    "commands": batch["commands"],
+                    "response_envelope": self._initial_runtime_update_response_envelope(
+                        node_plan_id=str(batch["node_plan_id"]),
+                        plan_id=str(action_context["plan_id"]),
+                        generation=int(action_context["generation"]),
+                        sequence=node_sequence,
+                        expected_ack_mode="terminal_node_ack",
+                        replay_policy=replay_policy,
+                        idempotency_scope=str(action_context["idempotency_scope"]),
+                    ),
+                }
+            )
+        return {
+            "schema_version": RUNTIME_PAYLOAD_SCHEMA_VERSION,
+            "protocol_version": self._runtime_protocol_version(),
+            "plan_id": action_context["plan_id"],
+            "action": action_name,
+            "scope": action_context["scope"],
+            "generation": action_context["generation"],
+            "sequence": action_context["sequence"],
+            "phase": action_context["phase"],
+            "scenario": action_context["scenario"],
+            "created_at": action_context["created_at"],
+            "replayable": action_context["replayable"],
+            "idempotency_scope": action_context["idempotency_scope"],
+            "control_boundary": {
+                "global_decision_maker": "controller",
+                "global_inputs": [
+                    "topology_snapshot",
+                    "attachment_state",
+                    "path_computation",
+                    "gateway_selection",
+                    "forwarding_plan_generation",
+                    "scenario_level_consistency_decision",
+                ],
+                "local_execution_target": "node_local_forwarding_agent",
+                "current_execution_mode": "controller_serial_docker_exec",
+                "current_parallelism": "none",
+                "node_plan_visibility": "node_local_only",
+            },
+            "transaction_boundary": {
+                "unit": "node_plan",
+                "atomicity": "non_atomic_partial_apply_possible",
+                "rollback_on_failure": "none",
+                "replay_unit": "entire_node_plan",
+                "current_failure_behavior": "stop_on_first_non_allowed_failure",
+            },
+            "distribution_source": {
+                "current": "controller_process_on_host",
+                "future_candidates": [
+                    "ground_control_host",
+                    "data_center",
+                ],
+            },
+            "expected_transport": {
+                "current": "controller_serial_docker_exec",
+                "future": "in_emulation_control_plane_delivery",
+            },
+            "node_plans": node_plans,
+        }
+
+    def _ut_egress_batchable_phase(self, phase: str) -> bool:
+        return phase in {
+            "prepare-ut-egress-policy",
+            "install-ut-egress-mpls",
+            "cleanup-ut-egress-mpls",
+        }
+
+    def _strip_batch_marker_lines(self, text: str) -> str:
+        if not text:
+            return ""
+        kept_lines = [
+            line
+            for line in text.splitlines()
+            if not line.startswith("__SKYSEED_BATCH_")
+        ]
+        return "\n".join(kept_lines)
+
+    def _build_node_batch_script(self, node_plan: Dict[str, Any]) -> str:
+        lines = [
+            "run_cmd() {",
+            '  idx="$1"',
+            '  allow_failure="$2"',
+            "  shift 2",
+            '  printf "__SKYSEED_BATCH_CMD_START__:%s\\n" "$idx"',
+            '  "$@"',
+            '  rc="$?"',
+            '  printf "__SKYSEED_BATCH_CMD_EXIT__:%s:%s\\n" "$idx" "$rc"',
+            '  if [ "$rc" -ne 0 ] && [ "$allow_failure" -ne 1 ]; then',
+            '    printf "__SKYSEED_BATCH_FAIL__:%s:%s\\n" "$idx" "$rc"',
+            '    exit "$rc"',
+            "  fi",
+            "}",
+        ]
+        for command in node_plan["commands"]:
+            allow_failure = "1" if command["allow_failure"] else "0"
+            lines.append(
+                "run_cmd "
+                f"{command['index']} "
+                f"{allow_failure} "
+                + shlex.join(list(command["argv"]))
+            )
+        lines.append('printf "__SKYSEED_BATCH_OK__\\n"')
+        return "\n".join(lines)
+
+    def _apply_node_batch_result_markers(
+        self,
+        *,
+        node_plan: Dict[str, Any],
+        stdout: str,
+        stderr: str,
+        cleaned_stdout: str,
+        cleaned_stderr: str,
+        returncode: int,
+    ) -> None:
+        command_by_index = {
+            int(command["index"]): command
+            for command in node_plan["commands"]
+        }
+        command_exit_codes: Dict[int, int] = {}
+        failed_index: Optional[int] = None
+        failed_returncode: Optional[int] = None
+        marker_stream = "\n".join(value for value in (stdout, stderr) if value)
+        for line in marker_stream.splitlines():
+            if line.startswith("__SKYSEED_BATCH_CMD_START__:"):
+                continue
+            elif line.startswith("__SKYSEED_BATCH_CMD_EXIT__:"):
+                _, index_text, rc_text = line.split(":", 2)
+                index = int(index_text)
+                rc = int(rc_text)
+                command = command_by_index.get(index)
+                if command is None:
+                    continue
+                command_exit_codes[index] = rc
+                if rc != 0 and not bool(command.get("allow_failure")) and failed_index is None:
+                    failed_index = index
+                    failed_returncode = rc
+            elif line.startswith("__SKYSEED_BATCH_FAIL__:") and failed_index is None:
+                _, index_text, rc_text = line.split(":", 2)
+                failed_index = int(index_text)
+                failed_returncode = int(rc_text)
+
+        applied_commands: List[Dict[str, Any]] = []
+        skipped_commands: List[Dict[str, Any]] = []
+        for command in node_plan["commands"]:
+            index = int(command["index"])
+            if index in command_exit_codes:
+                exit_code = command_exit_codes[index]
+                apply_outcome = "applied" if exit_code == 0 else "allowed_failure"
+                applied_commands.append(
+                    {
+                        **command,
+                        "returncode": exit_code,
+                        "apply_outcome": apply_outcome,
+                    }
+                )
+                continue
+            skipped_commands.append(
+                {
+                    **command,
+                    "skip_reason": (
+                        "not_executed_after_batch_abort"
+                        if failed_index is not None
+                        else "not_executed"
+                    ),
+                }
+            )
+
+        response_state = node_plan["response_envelope"]
+        ack_state = response_state["ack"]
+        apply_state = response_state["apply_result"]
+        error_state = response_state["error"]
+        replay_state = response_state["replay_info"]
+        timestamp_state = response_state["timestamps"]
+        ack_state["ack_status"] = (
+            "acknowledged_success" if returncode == 0 else "acknowledged_error"
+        )
+        apply_state["apply_status"] = (
+            "applied"
+            if returncode == 0 and failed_index is None
+            else "partially_applied"
+            if failed_index is not None
+            else "transport_error"
+        )
+        apply_state["applied_commands"] = applied_commands
+        apply_state["skipped_commands"] = skipped_commands
+        apply_state["stdout_summary"] = self._summarize_stream_output(cleaned_stdout)
+        apply_state["stderr_summary"] = self._summarize_stream_output(cleaned_stderr)
+        apply_state["transport_returncode"] = returncode
+        timestamp_state["execution_finished_at"] = self._utc_timestamp()
+        replay_state["replay_detected"] = False
+        replay_state["already_applied"] = False
+        error_state["error_code"] = "none"
+        error_state["error_category"] = "none"
+        error_state["error_message"] = None
+        error_state["error_details"] = None
+        apply_state["failed_command"] = None
+        error_state["failed_command_id"] = None
+        error_state["failed_command_family"] = None
+        error_state["failed_logical_kind"] = None
+        error_state["retryable"] = False
+        error_state["fatal"] = False
+        error_state["suggested_action"] = None
+        if failed_index is not None and failed_index in command_by_index:
+            apply_state["failed_command"] = {
+                **command_by_index[failed_index],
+                "returncode": failed_returncode,
+            }
+            error_state["failed_command_id"] = command_by_index[failed_index].get(
+                "idempotency_key"
+            )
+            error_state["failed_command_family"] = command_by_index[failed_index].get(
+                "command_family"
+            )
+            error_state["failed_logical_kind"] = command_by_index[failed_index].get(
+                "logical_kind"
+            )
+            error_state["error_code"] = "command_failed"
+            error_state["error_category"] = "execution"
+            error_state["error_message"] = command_by_index[failed_index]["stage"]
+            error_state["error_details"] = {
+                "code": "command_failed",
+                "message": command_by_index[failed_index]["stage"],
+                "node_id": node_plan["node_id"],
+                "node_plan_id": node_plan["node_plan_id"],
+                "failed_command_index": failed_index,
+                "failed_command_stage": command_by_index[failed_index]["stage"],
+                "returncode": failed_returncode,
+            }
+            error_state["retryable"] = True
+            error_state["fatal"] = False
+            error_state["suggested_action"] = "inspect failed command and retry node_plan"
+        elif returncode != 0:
+            error_state["error_code"] = "transport_error"
+            error_state["error_category"] = "transport"
+            error_state["error_message"] = (
+                f"node batch exited with status {returncode}"
+            )
+            error_state["error_details"] = {
+                "code": "transport_exit_nonzero",
+                "message": f"node batch exited with status {returncode}",
+                "node_id": node_plan["node_id"],
+                "node_plan_id": node_plan["node_plan_id"],
+                "failed_command_index": None,
+                "failed_command_stage": None,
+                "returncode": returncode,
+            }
+            error_state["retryable"] = True
+            error_state["fatal"] = False
+            error_state["suggested_action"] = "retry transport delivery for node_plan"
+
+    def _run_node_plan_batch(
+        self,
+        *,
+        action_name: str,
+        node_plan: Dict[str, Any],
+    ) -> None:
+        script = self._build_node_batch_script(node_plan)
+        command = ["docker", "exec", node_plan["node_id"], "sh", "-lc", script]
+        print(
+            "  docker exec "
+            f"{node_plan['node_id']} sh -lc "
+            f"'<node-batch plan_id={node_plan['node_plan_id']} "
+            f"commands={node_plan['command_count']}>'"
+        )
+        node_plan["response_envelope"]["ack"]["ack_status"] = "awaiting_transport_completion"
+        node_plan["response_envelope"]["apply_result"]["apply_status"] = "in_progress"
+        node_plan["response_envelope"]["timestamps"]["execution_started_at"] = self._utc_timestamp()
+        node_plan["response_envelope"]["execution_nonce"] = self._execution_nonce(
+            str(node_plan["node_plan_id"])
+        )
+        started_at = time.monotonic()
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        elapsed_seconds = time.monotonic() - started_at
+        stdout = self._strip_batch_marker_lines(result.stdout)
+        stderr = self._strip_batch_marker_lines(result.stderr)
+        if stdout.strip():
+            print(stdout.rstrip())
+        if stderr.strip():
+            print(stderr.rstrip())
+        self._record_command_execution(
+            command=command,
+            failure_stage=f"execute node batch on {node_plan['node_id']} for {action_name}",
+            allow_failure=all(
+                bool(command_entry["allow_failure"])
+                for command_entry in node_plan["commands"]
+            ),
+            result=result,
+            elapsed_seconds=elapsed_seconds,
+            observation={
+                "logical_category": "batched_runtime_update",
+                "logical_kind": "node_batch_exec",
+                "command_family": "docker_exec_batch",
+                "shared_key": node_plan["node_plan_id"],
+            },
+        )
+        self._apply_node_batch_result_markers(
+            node_plan=node_plan,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            cleaned_stdout=stdout,
+            cleaned_stderr=stderr,
+            returncode=result.returncode,
+        )
+        if result.returncode != 0:
+            failed_command = node_plan["response_envelope"]["apply_result"]["failed_command"]
+            if failed_command is not None:
+                raise RuntimeError(
+                    "node batch execution failed on "
+                    f"{node_plan['node_id']}: "
+                    f"{failed_command['stage']} "
+                    f"(command_index={failed_command['index']}, "
+                    f"returncode={failed_command['returncode']})"
+                )
+            raise RuntimeError(
+                "node batch execution failed on "
+                f"{node_plan['node_id']} for {action_name}: "
+                f"exit status {result.returncode}"
+            )
+
+    def _execute_ut_egress_payload_serial_batches(
+        self,
+        *,
+        payload: Dict[str, Any],
+    ) -> Dict[str, float]:
+        node_elapsed_seconds: Dict[str, float] = {}
+        for node_plan in payload["node_plans"]:
+            started_at = time.monotonic()
+            self._run_node_plan_batch(
+                action_name=str(payload["action"]),
+                node_plan=node_plan,
+            )
+            node_elapsed_seconds[str(node_plan["node_id"])] = round(
+                time.monotonic() - started_at,
+                3,
+            )
+        return node_elapsed_seconds
+
     def _execute_ut_egress_specs(
         self,
         *,
@@ -2095,40 +3661,88 @@ class SatelliteController:
         specs: Sequence[UtEgressCommandSpec],
     ) -> Dict[str, Any]:
         self._print_ut_egress_spec_plan(action_name=action_name, specs=specs)
+        logical_kind_counts = Counter(self._ut_egress_logical_kind(spec) for spec in specs)
+        per_node_update_plan = self._ut_egress_per_node_update_plan(
+            action_name=action_name,
+            specs=specs,
+        )
+        action_context = self._ut_egress_action_context(action_name)
+        batch_plan = list(per_node_update_plan["node_plans"])
         if self.args.dry_run:
             return {
                 "action": action_name,
+                "plan_id": per_node_update_plan["plan_id"],
+                "phase": per_node_update_plan["phase"],
                 "total_commands": len(specs),
                 "category_counts": dict(sorted(Counter(spec.category for spec in specs).items())),
                 "node_counts": dict(sorted(Counter(spec.node_id for spec in specs).items())),
+                "logical_kind_counts": dict(sorted(logical_kind_counts.items())),
+                "node_batch_plan": batch_plan,
+                "per_node_update_plan": per_node_update_plan,
                 "dry_run": True,
                 "elapsed_seconds": 0.0,
             }
 
         started_at = time.monotonic()
         category_elapsed: Dict[str, float] = {}
-        for spec in specs:
-            command_started_at = time.monotonic()
-            self._docker_exec(
-                spec.node_id,
-                list(spec.command),
-                failure_stage=spec.stage,
-                allow_failure=spec.allow_failure,
-            )
-            category_elapsed[spec.category] = category_elapsed.get(spec.category, 0.0) + (
-                time.monotonic() - command_started_at
+        self._begin_command_observation(action_name)
+        try:
+            if self._ut_egress_batchable_phase(action_context["phase"]):
+                node_elapsed_seconds = self._execute_ut_egress_payload_serial_batches(
+                    payload=per_node_update_plan,
+                )
+            else:
+                node_elapsed_seconds = {}
+                for spec in specs:
+                    command_started_at = time.monotonic()
+                    self._docker_exec(
+                        spec.node_id,
+                        list(spec.command),
+                        failure_stage=spec.stage,
+                        allow_failure=spec.allow_failure,
+                        observation={
+                            "logical_category": spec.category,
+                            "logical_kind": self._ut_egress_logical_kind(spec),
+                            "shared_key": spec.shared_key,
+                        },
+                    )
+                    category_elapsed[spec.category] = category_elapsed.get(spec.category, 0.0) + (
+                        time.monotonic() - command_started_at
+                    )
+        finally:
+            command_observation = self._end_command_observation()
+            self._print_command_observation_summary(
+                command_observation,
+                label="UT egress execution summary",
             )
         elapsed_seconds = time.monotonic() - started_at
         summary = {
             "action": action_name,
+            "plan_id": per_node_update_plan["plan_id"],
+            "phase": per_node_update_plan["phase"],
             "total_commands": len(specs),
             "category_counts": dict(sorted(Counter(spec.category for spec in specs).items())),
             "node_counts": dict(sorted(Counter(spec.node_id for spec in specs).items())),
+            "logical_kind_counts": dict(sorted(logical_kind_counts.items())),
+            "node_batch_plan": batch_plan,
+            "per_node_update_plan": per_node_update_plan,
+            "transport_command_count": (
+                len(batch_plan)
+                if self._ut_egress_batchable_phase(action_context["phase"])
+                else len(specs)
+            ),
+            "transport_mode": (
+                "controller_serial_node_batch"
+                if self._ut_egress_batchable_phase(action_context["phase"])
+                else "controller_serial_docker_exec"
+            ),
+            "node_elapsed_seconds": node_elapsed_seconds,
             "category_elapsed_seconds": {
                 key: round(value, 3) for key, value in sorted(category_elapsed.items())
             },
             "elapsed_seconds": round(elapsed_seconds, 3),
             "dry_run": False,
+            "command_observation": command_observation,
         }
         if self.args.timing:
             print(
@@ -2342,40 +3956,51 @@ class SatelliteController:
         return {"ut_ids": prepared_ut_ids, "summaries": summaries}
 
     def apply_scenario(self, scenario_name: str) -> Dict[str, Any]:
-        state = self._ensure_runtime_ready_for_scenario()
-        definition = self._scenario_definition(scenario_name)
-        managed_slots = dict(definition.get("managed_slots", {}))
-        state_by_name = self._slot_state_by_name(state)
+        self._begin_command_observation(f"apply-scenario:{scenario_name}")
+        try:
+            state = self._ensure_runtime_ready_for_scenario()
+            definition = self._scenario_definition(scenario_name)
+            managed_slots = dict(definition.get("managed_slots", {}))
+            state_by_name = self._slot_state_by_name(state)
 
-        for slot_name in self._scenario_release_order(managed_slots):
-            slot_entry = state_by_name[slot_name]
-            target = managed_slots.get(slot_name)
-            if self._scenario_slot_matches(slot_entry=slot_entry, target=target):
-                continue
-            if slot_entry.get("occupied", False):
-                self.release_slot(slot_name)
+            for slot_name in self._scenario_release_order(managed_slots):
+                slot_entry = state_by_name[slot_name]
+                target = managed_slots.get(slot_name)
+                if self._scenario_slot_matches(slot_entry=slot_entry, target=target):
+                    continue
+                if slot_entry.get("occupied", False):
+                    self.release_slot(slot_name)
+                    state = self.link_state
+                    state_by_name = self._slot_state_by_name(state)
+
+            for slot_name in self._scenario_attach_order(managed_slots):
+                slot_entry = state_by_name[slot_name]
+                target = managed_slots[slot_name]
+                if self._scenario_slot_matches(slot_entry=slot_entry, target=target):
+                    continue
+                action = str(target.get("action"))
+                request = str(target.get("request"))
+                if action == "attach_ut":
+                    self.attach_ut(request, requested_slot_name=slot_name)
+                elif action == "attach_gw":
+                    self.attach_gateway(request, requested_slot_name=slot_name)
+                elif action == "connect_cross":
+                    self.connect_cross_plane(request, requested_slot_name=slot_name)
+                else:
+                    raise RuntimeError(f"unsupported scenario action: {action}")
                 state = self.link_state
                 state_by_name = self._slot_state_by_name(state)
 
-        for slot_name in self._scenario_attach_order(managed_slots):
-            slot_entry = state_by_name[slot_name]
-            target = managed_slots[slot_name]
-            if self._scenario_slot_matches(slot_entry=slot_entry, target=target):
-                continue
-            action = str(target.get("action"))
-            request = str(target.get("request"))
-            if action == "attach_ut":
-                self.attach_ut(request, requested_slot_name=slot_name)
-            elif action == "attach_gw":
-                self.attach_gateway(request, requested_slot_name=slot_name)
-            elif action == "connect_cross":
-                self.connect_cross_plane(request, requested_slot_name=slot_name)
-            else:
-                raise RuntimeError(f"unsupported scenario action: {action}")
-            state = self.link_state
-            state_by_name = self._slot_state_by_name(state)
+            result = self.verify_scenario(scenario_name)
+        finally:
+            command_observation = self._end_command_observation()
+            self._print_command_observation_summary(
+                command_observation,
+                label="Apply scenario execution summary",
+            )
 
-        return self.verify_scenario(scenario_name)
+        result["execution"] = command_observation
+        return result
 
     def verify_scenario(self, scenario_name: str) -> Dict[str, Any]:
         state = self._require_initialized_state()
