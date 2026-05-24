@@ -1,7 +1,7 @@
 # Satellite Phase 2 Slot-Based Dynamic Link Design
 
 Chinese version:
-[satellite_phase1_design.zh.md](/home/seed/seed-emulator/examples/satellite/docs/satellite_phase1_design.zh.md:1)
+[satellite_phase1_design.zh.md](/home/seed/skyseed/satellite/docs/satellite_phase1_design.zh.md:1)
 
 This document describes the current mainline design for the satellite example.
 The old candidate-link / snapshot-activation mainline is retired for this
@@ -9,7 +9,7 @@ prototype stage.
 
 ## Scope
 
-- keep the prototype inside `examples/satellite/`
+- keep the prototype inside `satellite/`
 - no SEED core changes by default
 - keep the scale fixed at 3 `UT`, 6 `ST`, 3 `GW`
 - restore the full `B00 miniInternet` as the ground-side Internet structure
@@ -130,20 +130,20 @@ For fixed intra-plane links, `slot_type=fixed_isl` and `occupied=true`.
 Initialize all runtime slot bridges and fixed-side preconnects:
 
 ```bash
-python3 examples/satellite/controller.py --init-slot-runtime
+python3 satellite/controller.py --init-slot-runtime
 ```
 
 Show runtime state:
 
 ```bash
-python3 examples/satellite/controller.py --show-link-state
+python3 satellite/controller.py --show-link-state
 ```
 
 Run the read-only `MPLS-0` capability probe:
 
 ```bash
-python3 examples/satellite/controller.py --probe-mpls
-python3 examples/satellite/controller.py --probe-mpls --probe-report examples/satellite/configs/mpls_probe.json
+python3 satellite/controller.py --probe-mpls
+python3 satellite/controller.py --probe-mpls --probe-report satellite/configs/mpls_probe.json
 ```
 
 The probe checks:
@@ -156,40 +156,40 @@ The probe checks:
 Run the current controller-driven `MPLS-2` static LSP workflow:
 
 ```bash
-python3 examples/satellite/controller.py --install-static-mpls-lsp sat-a1:sat-b1:gw1
-python3 examples/satellite/controller.py --verify-static-mpls-lsp sat-a1:sat-b1:gw1
-python3 examples/satellite/controller.py --cleanup-static-mpls-lsp sat-a1:sat-b1:gw1
+python3 satellite/controller.py --install-static-mpls-lsp sat-a1:sat-b1:gw1
+python3 satellite/controller.py --verify-static-mpls-lsp sat-a1:sat-b1:gw1
+python3 satellite/controller.py --cleanup-static-mpls-lsp sat-a1:sat-b1:gw1
 ```
 
 The existing regression wrapper remains available:
 
 ```bash
-python3 examples/satellite/mpls_static_lab.py
-python3 examples/satellite/mpls_static_lab.py --cleanup
+python3 satellite/mpls_static_lab.py
+python3 satellite/mpls_static_lab.py --cleanup
 ```
 
 Attach and detach `UT`:
 
 ```bash
-python3 examples/satellite/controller.py --attach-ut ut1:sat-a1
-python3 examples/satellite/controller.py --attach-ut ut1:sat-a1 --slot-name ut1-access-slot1
-python3 examples/satellite/controller.py --detach-ut ut1
+python3 satellite/controller.py --attach-ut ut1:sat-a1
+python3 satellite/controller.py --attach-ut ut1:sat-a1 --slot-name ut1-access-slot1
+python3 satellite/controller.py --detach-ut ut1
 ```
 
 Attach and detach `GW`:
 
 ```bash
-python3 examples/satellite/controller.py --attach-gw gw1:sat-b1
-python3 examples/satellite/controller.py --attach-gw gw1:sat-b1 --slot-name gw1-gateway-slot1
-python3 examples/satellite/controller.py --detach-gw gw1
+python3 satellite/controller.py --attach-gw gw1:sat-b1
+python3 satellite/controller.py --attach-gw gw1:sat-b1 --slot-name gw1-gateway-slot1
+python3 satellite/controller.py --detach-gw gw1
 ```
 
 Connect and release cross-plane `ISL`:
 
 ```bash
-python3 examples/satellite/controller.py --connect-cross sat-a1:sat-b1:left:right
-python3 examples/satellite/controller.py --connect-cross sat-a1:sat-b1:left:right --slot-name ab-cross-slot2
-python3 examples/satellite/controller.py --release-slot ab-cross-slot0
+python3 satellite/controller.py --connect-cross sat-a1:sat-b1:left:right
+python3 satellite/controller.py --connect-cross sat-a1:sat-b1:left:right --slot-name ab-cross-slot2
+python3 satellite/controller.py --release-slot ab-cross-slot0
 ```
 
 If `--slot-name` is not provided for attach/connect operations, the controller
@@ -249,7 +249,7 @@ The current `MPLS-3` dataplane boundary is now clearer:
   as default Internet egress toward the currently selected gateway
 - with host `bridge netfilter` passthrough prepared (`net.bridge.bridge-nf-call-{iptables,ip6tables,arptables}=0`), the controller-managed `ut1 -> 10.154.0.129` path now runs end-to-end over Linux kernel `MPLS`
 - that host bridge-netfilter preparation is still example/runtime logic and should not be treated as a `SEED core` requirement yet
-- the current regression entrypoint is `examples/satellite/mpls_ut_egress_smoke.py`, which keeps the path fixed at `ut1 -> sat-a1 -> sat-b1 -> gw1 -> 10.154.0.129`, validates layered dataplane evidence, then cleans forwarding state without releasing runtime slots
+- the current regression entrypoint is `satellite/mpls_ut_egress_smoke.py`, which keeps the path fixed at `ut1 -> sat-a1 -> sat-b1 -> gw1 -> 10.154.0.129`, validates layered dataplane evidence, then cleans forwarding state without releasing runtime slots
 - the current return path is intentionally minimal: the selected gateway
   installs Linux `iptables` `SNAT/FORWARD` rules toward its bootstrap-side
   miniInternet IP (`10.65.21.2`, `10.65.22.2`, or `10.65.23.2`) and relies on
@@ -272,11 +272,11 @@ reconciliation:
   `link_state.json` matches the selected scenario and that `ut1` now resolves
   to the expected serving satellite, selected gateway, and shortest satellite
   path
-- `examples/satellite/mpls_scenario_smoke.py` runs
+- `satellite/mpls_scenario_smoke.py` runs
   `cleanup forwarding -> apply scenario -> verify scenario -> install ut1 egress MPLS -> verify dataplane -> cleanup forwarding`
   and proves that topology changes can be applied in-place without restarting
   containers
-- `examples/satellite/mpls_scenario_smoke.py --scenario t0|t1 --all-ut` now
+- `satellite/mpls_scenario_smoke.py --scenario t0|t1 --all-ut` now
   applies the same serial scenario flow to every currently attached supported
   `UT` and additionally exercises an arbitrary miniInternet host target
   (`10.160.0.71`)
@@ -302,9 +302,9 @@ reconciliation:
 `MPLS-4` second-stage work adds the first explicit loop runner while keeping the
 same example/runtime scope:
 
-- `examples/satellite/mpls_scenario_loop.py` repeats the same serial scenario
+- `satellite/mpls_scenario_loop.py` repeats the same serial scenario
   cycle for `t0`, `t1`, `t0`, `t1`, ... without restarting containers
-- running `python3 examples/satellite/mpls_scenario_loop.py` now starts that
+- running `python3 satellite/mpls_scenario_loop.py` now starts that
   demo loop directly with an infinite run and a 5-second interval by default;
   `--max-rounds` can be used for bounded soak runs
 - every round still performs
@@ -407,7 +407,7 @@ The current demo loop is intentionally small and serial:
 
 The demo driver is:
 
-`examples/satellite/demo_runtime_handover.py`
+`satellite/demo_runtime_handover.py`
 
 It runs serially only and prints:
 
@@ -526,17 +526,17 @@ The current correctness baseline is therefore:
 Recommended manual acceptance commands:
 
 ```bash
-python3 examples/satellite/controller.py --prepare-ut-egress-policy ut1 --timing
-python3 examples/satellite/controller.py --apply-scenario t0
-python3 examples/satellite/controller.py --verify-scenario t0
-python3 examples/satellite/controller.py --install-ut-egress-mpls ut1 --timing
-python3 examples/satellite/controller.py --verify-ut-egress-mpls ut1 --timing
+python3 satellite/controller.py --prepare-ut-egress-policy ut1 --timing
+python3 satellite/controller.py --apply-scenario t0
+python3 satellite/controller.py --verify-scenario t0
+python3 satellite/controller.py --install-ut-egress-mpls ut1 --timing
+python3 satellite/controller.py --verify-ut-egress-mpls ut1 --timing
 
-python3 examples/satellite/controller.py --cleanup-ut-egress-mpls ut1 --timing
-python3 examples/satellite/controller.py --apply-scenario t1
-python3 examples/satellite/controller.py --verify-scenario t1
-python3 examples/satellite/controller.py --install-ut-egress-mpls ut1 --timing
-python3 examples/satellite/controller.py --verify-ut-egress-mpls ut1 --timing
+python3 satellite/controller.py --cleanup-ut-egress-mpls ut1 --timing
+python3 satellite/controller.py --apply-scenario t1
+python3 satellite/controller.py --verify-scenario t1
+python3 satellite/controller.py --install-ut-egress-mpls ut1 --timing
+python3 satellite/controller.py --verify-ut-egress-mpls ut1 --timing
 ```
 
 The current `UT egress` plan is now split into explicit categories:

@@ -27,7 +27,7 @@ SEED 只负责创建基础容器和固定轨内链路。
 这个第一阶段 `skyseed` 镜像的命令解释规则是：
 
 - 如果当前目录是 `/home/seed/skyseed`，把历史上的
-  `examples/satellite/...` 命令读成 `satellite/...`
+  `satellite/...` 命令读成 `satellite/...`
 - 如果当前目录是 `/home/seed/skyseed/satellite`，直接使用本地脚本名，
   例如 `python3 controller.py ...`
 
@@ -129,21 +129,21 @@ python3 satellite/controller.py --probe-mpls --probe-report satellite/configs/mp
 运行最小 `MPLS-1` static label lab：
 
 ```bash
-python3 examples/satellite/mpls_static_lab.py
+python3 satellite/mpls_static_lab.py
 ```
 
 清理这个 lab 安装的静态 `MPLS/IP` 路由与接口 `input` 开关：
 
 ```bash
-python3 examples/satellite/mpls_static_lab.py --cleanup
+python3 satellite/mpls_static_lab.py --cleanup
 ```
 
 显式运行当前 `MPLS-2` controller-driven static `LSP` 动作：
 
 ```bash
-python3 examples/satellite/controller.py --install-static-mpls-lsp sat-a1:sat-b1:gw1
-python3 examples/satellite/controller.py --verify-static-mpls-lsp sat-a1:sat-b1:gw1
-python3 examples/satellite/controller.py --cleanup-static-mpls-lsp sat-a1:sat-b1:gw1
+python3 satellite/controller.py --install-static-mpls-lsp sat-a1:sat-b1:gw1
+python3 satellite/controller.py --verify-static-mpls-lsp sat-a1:sat-b1:gw1
+python3 satellite/controller.py --cleanup-static-mpls-lsp sat-a1:sat-b1:gw1
 ```
 
 在这个阶段，`controller` 负责显式 static `LSP` intent，并且会在安装
@@ -170,10 +170,10 @@ Linux `MPLS` 路由前，先根据 `link_state.json` 验证当前 path 是否真
 运行当前 `MPLS-3` 的单 `UT` Internet egress controller 动作：
 
 ```bash
-python3 examples/satellite/controller.py --prepare-ut-egress-policy ut1
-python3 examples/satellite/controller.py --install-ut-egress-mpls ut1
-python3 examples/satellite/controller.py --verify-ut-egress-mpls ut1
-python3 examples/satellite/controller.py --cleanup-ut-egress-mpls ut1
+python3 satellite/controller.py --prepare-ut-egress-policy ut1
+python3 satellite/controller.py --install-ut-egress-mpls ut1
+python3 satellite/controller.py --verify-ut-egress-mpls ut1
+python3 satellite/controller.py --cleanup-ut-egress-mpls ut1
 ```
 
 其中：
@@ -190,46 +190,46 @@ python3 examples/satellite/controller.py --cleanup-ut-egress-mpls ut1
 运行当前已经固化的 `MPLS-3` regression/smoke wrapper：
 
 ```bash
-python3 examples/satellite/mpls_ut_egress_smoke.py
-python3 examples/satellite/mpls_ut_egress_smoke.py --cleanup
+python3 satellite/mpls_ut_egress_smoke.py
+python3 satellite/mpls_ut_egress_smoke.py --cleanup
 ```
 
 运行当前已经支持的“所有已 attach 且受支持 `UT`”的 controller 动作：
 
 ```bash
-python3 examples/satellite/controller.py --install-all-attached-ut-egress-mpls
-python3 examples/satellite/controller.py --verify-all-attached-ut-egress-mpls
-python3 examples/satellite/controller.py --cleanup-all-attached-ut-egress-mpls
-python3 examples/satellite/controller.py --verify-ut-egress-mpls ut1 --ping-target 10.160.0.71
+python3 satellite/controller.py --install-all-attached-ut-egress-mpls
+python3 satellite/controller.py --verify-all-attached-ut-egress-mpls
+python3 satellite/controller.py --cleanup-all-attached-ut-egress-mpls
+python3 satellite/controller.py --verify-ut-egress-mpls ut1 --ping-target 10.160.0.71
 ```
 
 运行当前 `MPLS-4` 第一阶段的 scenario controller 动作：
 
 ```bash
-python3 examples/satellite/controller.py --apply-scenario t0
-python3 examples/satellite/controller.py --verify-scenario t0
-python3 examples/satellite/controller.py --apply-scenario t1
-python3 examples/satellite/controller.py --verify-scenario t1
+python3 satellite/controller.py --apply-scenario t0
+python3 satellite/controller.py --verify-scenario t0
+python3 satellite/controller.py --apply-scenario t1
+python3 satellite/controller.py --verify-scenario t1
 ```
 
 运行当前已经固化的 `MPLS-4` scenario regression/smoke wrapper：
 
 ```bash
-python3 examples/satellite/mpls_scenario_smoke.py --scenario t0
-python3 examples/satellite/mpls_scenario_smoke.py --scenario t1
-python3 examples/satellite/mpls_scenario_smoke.py --sequence t0,t1
-python3 examples/satellite/mpls_scenario_smoke.py --scenario t0 --all-ut
-python3 examples/satellite/mpls_scenario_smoke.py --scenario t1 --all-ut
+python3 satellite/mpls_scenario_smoke.py --scenario t0
+python3 satellite/mpls_scenario_smoke.py --scenario t1
+python3 satellite/mpls_scenario_smoke.py --sequence t0,t1
+python3 satellite/mpls_scenario_smoke.py --scenario t0 --all-ut
+python3 satellite/mpls_scenario_smoke.py --scenario t1 --all-ut
 ```
 
 运行当前 `MPLS-4` 第二阶段的长期串行 scenario loop runner：
 
 ```bash
-python3 examples/satellite/mpls_scenario_loop.py
-python3 examples/satellite/mpls_scenario_loop.py --rounds 4
-python3 examples/satellite/mpls_scenario_loop.py --interval 5 --max-rounds 100
-python3 examples/satellite/mpls_scenario_loop.py --sequence t0,t1 --rounds 0
-python3 examples/satellite/mpls_scenario_loop.py --all-ut --max-rounds 2
+python3 satellite/mpls_scenario_loop.py
+python3 satellite/mpls_scenario_loop.py --rounds 4
+python3 satellite/mpls_scenario_loop.py --interval 5 --max-rounds 100
+python3 satellite/mpls_scenario_loop.py --sequence t0,t1 --rounds 0
+python3 satellite/mpls_scenario_loop.py --all-ut --max-rounds 2
 ```
 
 这个阶段的 `controller` 会：
@@ -301,7 +301,7 @@ active access-link source/interface 负责 Linux dataplane realization”，因�
   `install_all=39.98s`、`verify_all=16.17s`
 - `mpls_scenario_loop.py` 现在会把同一套串行 scenario cycle 组织成 loop runner，
   每一轮都打印当前 scenario、selected gateway、selected path 和 labels
-- 现在直接运行 `python3 examples/satellite/mpls_scenario_loop.py`
+- 现在直接运行 `python3 satellite/mpls_scenario_loop.py`
   就会启动 continuous demo：
   默认无限循环、每轮之间 sleep 5 秒，也可以用 `--max-rounds` 限定轮数
 - `mpls_scenario_loop.py --all-ut` 现在也已经提供出来，
@@ -339,8 +339,8 @@ active access-link source/interface 负责 Linux dataplane realization”，因�
 
 ```bash
 # 当前 attached scenario 下的 all-UT external egress
-python3 examples/satellite/controller.py --install-all-attached-ut-egress-mpls
-python3 examples/satellite/controller.py --verify-all-attached-ut-egress-mpls
+python3 satellite/controller.py --install-all-attached-ut-egress-mpls
+python3 satellite/controller.py --verify-all-attached-ut-egress-mpls
 ```
 
 当前默认的 correctness baseline 只保留 residential / `CGNAT-like`
@@ -358,19 +358,19 @@ python3 examples/satellite/controller.py --verify-all-attached-ut-egress-mpls
 当前推荐的人工验收命令仍然是：
 
 ```bash
-python3 examples/satellite/controller.py --prepare-ut-egress-policy ut1 --timing
-python3 examples/satellite/controller.py --apply-scenario t0
-python3 examples/satellite/controller.py --install-ut-egress-mpls ut1 --timing
-python3 examples/satellite/controller.py --verify-ut-egress-mpls ut1 --timing
+python3 satellite/controller.py --prepare-ut-egress-policy ut1 --timing
+python3 satellite/controller.py --apply-scenario t0
+python3 satellite/controller.py --install-ut-egress-mpls ut1 --timing
+python3 satellite/controller.py --verify-ut-egress-mpls ut1 --timing
 
-python3 examples/satellite/controller.py --cleanup-ut-egress-mpls ut1 --timing
-python3 examples/satellite/controller.py --apply-scenario t1
-python3 examples/satellite/controller.py --install-ut-egress-mpls ut1 --timing
-python3 examples/satellite/controller.py --verify-ut-egress-mpls ut1 --timing
+python3 satellite/controller.py --cleanup-ut-egress-mpls ut1 --timing
+python3 satellite/controller.py --apply-scenario t1
+python3 satellite/controller.py --install-ut-egress-mpls ut1 --timing
+python3 satellite/controller.py --verify-ut-egress-mpls ut1 --timing
 
 # 当前 attached scenario 下的 all-UT external egress
-python3 examples/satellite/controller.py --install-all-attached-ut-egress-mpls
-python3 examples/satellite/controller.py --verify-all-attached-ut-egress-mpls
+python3 satellite/controller.py --install-all-attached-ut-egress-mpls
+python3 satellite/controller.py --verify-all-attached-ut-egress-mpls
 ```
 
 当前的 transition 目标只限于 `t0 <-> t1`：
@@ -397,40 +397,40 @@ docker exec sat-a1 ip -o link show | wc -l
 触发一次 `UT-ST` 动态挂载：
 
 ```bash
-python3 examples/satellite/controller.py --attach-ut ut1:sat-a1
-python3 examples/satellite/controller.py --attach-ut ut1:sat-a1 --slot-name ut1-access-slot1
+python3 satellite/controller.py --attach-ut ut1:sat-a1
+python3 satellite/controller.py --attach-ut ut1:sat-a1 --slot-name ut1-access-slot1
 ```
 
 释放这个 `UT` slot：
 
 ```bash
-python3 examples/satellite/controller.py --detach-ut ut1
+python3 satellite/controller.py --detach-ut ut1
 ```
 
 触发一次 `GW-ST` 动态挂载：
 
 ```bash
-python3 examples/satellite/controller.py --attach-gw gw1:sat-b1
-python3 examples/satellite/controller.py --attach-gw gw1:sat-b1 --slot-name gw1-gateway-slot1
+python3 satellite/controller.py --attach-gw gw1:sat-b1
+python3 satellite/controller.py --attach-gw gw1:sat-b1 --slot-name gw1-gateway-slot1
 ```
 
 释放这个 `GW` slot：
 
 ```bash
-python3 examples/satellite/controller.py --detach-gw gw1
+python3 satellite/controller.py --detach-gw gw1
 ```
 
 触发一次 cross-plane 动态连接：
 
 ```bash
-python3 examples/satellite/controller.py --connect-cross sat-a1:sat-b1:left:right
-python3 examples/satellite/controller.py --connect-cross sat-a1:sat-b1:left:right --slot-name ab-cross-slot2
+python3 satellite/controller.py --connect-cross sat-a1:sat-b1:left:right
+python3 satellite/controller.py --connect-cross sat-a1:sat-b1:left:right --slot-name ab-cross-slot2
 ```
 
 释放这个 cross-plane slot：
 
 ```bash
-python3 examples/satellite/controller.py --release-slot ab-cross-slot0
+python3 satellite/controller.py --release-slot ab-cross-slot0
 ```
 
 查看某个容器里的接口/IP：
@@ -445,12 +445,12 @@ docker exec gw1 ip -o addr show
 
 当前提供一个串行 handover demo 脚本：
 
-`examples/satellite/demo_runtime_handover.py`
+`satellite/demo_runtime_handover.py`
 
 示例：
 
 ```bash
-python3 examples/satellite/demo_runtime_handover.py --interval 5 --iterations 2
+python3 satellite/demo_runtime_handover.py --interval 5 --iterations 2
 ```
 
 这个 demo 会在以下两组状态之间切换：
@@ -509,7 +509,7 @@ slot reuse、状态一致性和可视化观察方式。它不覆盖后面新增�
 - 当前 map 应视为 Docker compiler 生成的编译期拓扑视图
 - 在当前版本里，map 编译期视图应当能看到完整 `B00 miniInternet`、`AS250` satellite side、`AS65000` gateways
 - 不要假设它会实时反映 runtime `docker network connect/disconnect` 的 slot 变化
-- 运行时真相请以 demo 脚本输出和 `python3 examples/satellite/controller.py --show-link-state` 为准
+- 运行时真相请以 demo 脚本输出和 `python3 satellite/controller.py --show-link-state` 为准
 - 当前阶段没有稳定的 `UT -> ground host` ping 目标，因为 forwarding/MPLS 故意不在范围内
 - 这个 demo 复用同一个 `UT` access slot，所以推荐从 `UT` 侧持续 ping 同一个 slot peer IP，并同时观察 `link_state.json` 里的 `binding.satellite_id` 变化：
 
@@ -517,7 +517,7 @@ slot reuse、状态一致性和可视化观察方式。它不覆盖后面新增�
 while true; do
   date
   docker exec ut1 sh -lc 'ping -c 1 -W 1 10.90.11.1 >/dev/null 2>&1 && echo ut1-slot0 up || echo ut1-slot0 down'
-  python3 examples/satellite/controller.py --show-link-state | grep 'ut1-access-slot0'
+  python3 satellite/controller.py --show-link-state | grep 'ut1-access-slot0'
   sleep 1
 done
 ```
@@ -528,7 +528,7 @@ done
 while true; do
   date
   docker exec gw1 sh -lc 'ping -c 1 -W 1 10.91.11.1 >/dev/null 2>&1 && echo gw1-slot0 up || echo gw1-slot0 down'
-  python3 examples/satellite/controller.py --show-link-state | grep 'gw1-gateway-slot0'
+  python3 satellite/controller.py --show-link-state | grep 'gw1-gateway-slot0'
   sleep 1
 done
 ```
@@ -540,7 +540,7 @@ while true; do
   date
   docker exec sat-a1 sh -lc 'ping -c 1 -W 1 10.92.1.2 >/dev/null 2>&1 && echo cross-slot0-from-a1 up || echo cross-slot0-from-a1 down'
   docker exec sat-a2 sh -lc 'ping -c 1 -W 1 10.92.1.2 >/dev/null 2>&1 && echo cross-slot0-from-a2 up || echo cross-slot0-from-a2 down'
-  python3 examples/satellite/controller.py --show-link-state | grep 'ab-cross-slot0'
+  python3 satellite/controller.py --show-link-state | grep 'ab-cross-slot0'
   sleep 1
 done
 ```

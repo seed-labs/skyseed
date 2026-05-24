@@ -19,10 +19,9 @@ SEED creates the base containers, the fixed intra-plane links, and the
 compile-time ground-side `miniInternet` structure, including `IX100-IX105`,
 transit ASes, stub ASes, and the `GW` uplinks toward Internet exchanges.
 
-Migration note for this first-stage `skyseed` mirror:
+Runtime note for this first-stage `skyseed` mirror:
 
-- when running from `/home/seed/skyseed`, interpret historical
-  `examples/satellite/...` commands as `satellite/...`
+- when running from `/home/seed/skyseed`, use `python3 satellite/...`
 - when running from `/home/seed/skyseed/satellite`, use the plain local script
   name such as `python3 controller.py ...`
 
@@ -123,22 +122,22 @@ install routes. It only checks:
 Run the minimal `MPLS-1` static label lab:
 
 ```bash
-python3 examples/satellite/mpls_static_lab.py
+python3 satellite/mpls_static_lab.py
 ```
 
 Clean up the static `MPLS/IP` routes and interface `input` flags installed by
 that lab:
 
 ```bash
-python3 examples/satellite/mpls_static_lab.py --cleanup
+python3 satellite/mpls_static_lab.py --cleanup
 ```
 
 Run the current `MPLS-2` controller-driven static LSP actions explicitly:
 
 ```bash
-python3 examples/satellite/controller.py --install-static-mpls-lsp sat-a1:sat-b1:gw1
-python3 examples/satellite/controller.py --verify-static-mpls-lsp sat-a1:sat-b1:gw1
-python3 examples/satellite/controller.py --cleanup-static-mpls-lsp sat-a1:sat-b1:gw1
+python3 satellite/controller.py --install-static-mpls-lsp sat-a1:sat-b1:gw1
+python3 satellite/controller.py --verify-static-mpls-lsp sat-a1:sat-b1:gw1
+python3 satellite/controller.py --cleanup-static-mpls-lsp sat-a1:sat-b1:gw1
 ```
 
 At this stage, `controller` owns explicit static `LSP` intent and validates
@@ -165,10 +164,10 @@ It explicitly does not yet do:
 Run the current `MPLS-3` single-UT Internet-egress controller actions:
 
 ```bash
-python3 examples/satellite/controller.py --prepare-ut-egress-policy ut1
-python3 examples/satellite/controller.py --install-ut-egress-mpls ut1
-python3 examples/satellite/controller.py --verify-ut-egress-mpls ut1
-python3 examples/satellite/controller.py --cleanup-ut-egress-mpls ut1
+python3 satellite/controller.py --prepare-ut-egress-policy ut1
+python3 satellite/controller.py --install-ut-egress-mpls ut1
+python3 satellite/controller.py --verify-ut-egress-mpls ut1
+python3 satellite/controller.py --cleanup-ut-egress-mpls ut1
 ```
 
 Where:
@@ -187,48 +186,48 @@ Run the repeatable `MPLS-3` regression/smoke wrapper for the current successful
 path:
 
 ```bash
-python3 examples/satellite/mpls_ut_egress_smoke.py
-python3 examples/satellite/mpls_ut_egress_smoke.py --cleanup
+python3 satellite/mpls_ut_egress_smoke.py
+python3 satellite/mpls_ut_egress_smoke.py --cleanup
 ```
 
 Run the current multi-UT `MPLS-3/4` controller actions for all currently
 attached supported UTs:
 
 ```bash
-python3 examples/satellite/controller.py --install-all-attached-ut-egress-mpls
-python3 examples/satellite/controller.py --verify-all-attached-ut-egress-mpls
-python3 examples/satellite/controller.py --cleanup-all-attached-ut-egress-mpls
-python3 examples/satellite/controller.py --verify-ut-egress-mpls ut1 --ping-target 10.160.0.71
+python3 satellite/controller.py --install-all-attached-ut-egress-mpls
+python3 satellite/controller.py --verify-all-attached-ut-egress-mpls
+python3 satellite/controller.py --cleanup-all-attached-ut-egress-mpls
+python3 satellite/controller.py --verify-ut-egress-mpls ut1 --ping-target 10.160.0.71
 ```
 
 Run the first `MPLS-4` scenario actions that reconcile runtime topology and
 then verify `ut1` egress over the updated path without restarting containers:
 
 ```bash
-python3 examples/satellite/controller.py --apply-scenario t0
-python3 examples/satellite/controller.py --verify-scenario t0
-python3 examples/satellite/controller.py --apply-scenario t1
-python3 examples/satellite/controller.py --verify-scenario t1
+python3 satellite/controller.py --apply-scenario t0
+python3 satellite/controller.py --verify-scenario t0
+python3 satellite/controller.py --apply-scenario t1
+python3 satellite/controller.py --verify-scenario t1
 ```
 
 Run the repeatable `MPLS-4` scenario smoke wrapper:
 
 ```bash
-python3 examples/satellite/mpls_scenario_smoke.py --scenario t0
-python3 examples/satellite/mpls_scenario_smoke.py --scenario t1
-python3 examples/satellite/mpls_scenario_smoke.py --sequence t0,t1
-python3 examples/satellite/mpls_scenario_smoke.py --scenario t0 --all-ut
-python3 examples/satellite/mpls_scenario_smoke.py --scenario t1 --all-ut
+python3 satellite/mpls_scenario_smoke.py --scenario t0
+python3 satellite/mpls_scenario_smoke.py --scenario t1
+python3 satellite/mpls_scenario_smoke.py --sequence t0,t1
+python3 satellite/mpls_scenario_smoke.py --scenario t0 --all-ut
+python3 satellite/mpls_scenario_smoke.py --scenario t1 --all-ut
 ```
 
 Run the `MPLS-4` second-stage long-lived serial scenario loop:
 
 ```bash
-python3 examples/satellite/mpls_scenario_loop.py
-python3 examples/satellite/mpls_scenario_loop.py --rounds 4
-python3 examples/satellite/mpls_scenario_loop.py --interval 5 --max-rounds 100
-python3 examples/satellite/mpls_scenario_loop.py --sequence t0,t1 --rounds 0
-python3 examples/satellite/mpls_scenario_loop.py --all-ut --max-rounds 2
+python3 satellite/mpls_scenario_loop.py
+python3 satellite/mpls_scenario_loop.py --rounds 4
+python3 satellite/mpls_scenario_loop.py --interval 5 --max-rounds 100
+python3 satellite/mpls_scenario_loop.py --sequence t0,t1 --rounds 0
+python3 satellite/mpls_scenario_loop.py --all-ut --max-rounds 2
 ```
 
 At this stage the `controller` will:
@@ -292,7 +291,7 @@ The current `MPLS-3` status is intentionally narrow:
   `cleanup_all=11.35s`, `apply_scenario t0=48.51s`, `install_all=39.98s`, and
   `verify_all=16.17s`
 - `mpls_scenario_loop.py` now repeats that same serial scenario cycle as a loop runner, printing the current scenario, selected gateway, selected path, and labels on every successful round
-- running `python3 examples/satellite/mpls_scenario_loop.py` now starts the continuous demo by default: it loops forever, sleeps 5 seconds between rounds, and may be bounded with `--max-rounds`
+- running `python3 satellite/mpls_scenario_loop.py` now starts the continuous demo by default: it loops forever, sleeps 5 seconds between rounds, and may be bounded with `--max-rounds`
 - `mpls_scenario_loop.py --all-ut` exists for explicit all-UT demo runs, but
   the longest repeated-transition soak evidence still centers on the default
   ut1-only loop; use the all-UT smoke wrapper first when validating changes
@@ -312,8 +311,8 @@ Current correctness baseline and recommended manual acceptance commands:
 
 ```bash
 # all-UT external egress in the current attached scenario
-python3 examples/satellite/controller.py --install-all-attached-ut-egress-mpls
-python3 examples/satellite/controller.py --verify-all-attached-ut-egress-mpls
+python3 satellite/controller.py --install-all-attached-ut-egress-mpls
+python3 satellite/controller.py --verify-all-attached-ut-egress-mpls
 ```
 
 The current default correctness baseline is the residential / `CGNAT-like`
@@ -331,18 +330,18 @@ The current default correctness baseline is the residential / `CGNAT-like`
 Recommended manual acceptance commands remain:
 
 ```bash
-python3 examples/satellite/controller.py --prepare-ut-egress-policy ut1 --timing
-python3 examples/satellite/controller.py --apply-scenario t0
-python3 examples/satellite/controller.py --install-ut-egress-mpls ut1 --timing
-python3 examples/satellite/controller.py --verify-ut-egress-mpls ut1 --timing
+python3 satellite/controller.py --prepare-ut-egress-policy ut1 --timing
+python3 satellite/controller.py --apply-scenario t0
+python3 satellite/controller.py --install-ut-egress-mpls ut1 --timing
+python3 satellite/controller.py --verify-ut-egress-mpls ut1 --timing
 
-python3 examples/satellite/controller.py --cleanup-ut-egress-mpls ut1 --timing
-python3 examples/satellite/controller.py --apply-scenario t1
-python3 examples/satellite/controller.py --install-ut-egress-mpls ut1 --timing
-python3 examples/satellite/controller.py --verify-ut-egress-mpls ut1 --timing
+python3 satellite/controller.py --cleanup-ut-egress-mpls ut1 --timing
+python3 satellite/controller.py --apply-scenario t1
+python3 satellite/controller.py --install-ut-egress-mpls ut1 --timing
+python3 satellite/controller.py --verify-ut-egress-mpls ut1 --timing
 
-python3 examples/satellite/controller.py --install-all-attached-ut-egress-mpls
-python3 examples/satellite/controller.py --verify-all-attached-ut-egress-mpls
+python3 satellite/controller.py --install-all-attached-ut-egress-mpls
+python3 satellite/controller.py --verify-all-attached-ut-egress-mpls
 ```
 
 The practical transition goal is now limited to `t0 <-> t1`:
@@ -369,40 +368,40 @@ docker exec sat-a1 ip -o link show | wc -l
 Trigger one `UT-ST` dynamic attach:
 
 ```bash
-python3 examples/satellite/controller.py --attach-ut ut1:sat-a1
-python3 examples/satellite/controller.py --attach-ut ut1:sat-a1 --slot-name ut1-access-slot1
+python3 satellite/controller.py --attach-ut ut1:sat-a1
+python3 satellite/controller.py --attach-ut ut1:sat-a1 --slot-name ut1-access-slot1
 ```
 
 Release that `UT` slot:
 
 ```bash
-python3 examples/satellite/controller.py --detach-ut ut1
+python3 satellite/controller.py --detach-ut ut1
 ```
 
 Trigger one `GW-ST` dynamic attach:
 
 ```bash
-python3 examples/satellite/controller.py --attach-gw gw1:sat-b1
-python3 examples/satellite/controller.py --attach-gw gw1:sat-b1 --slot-name gw1-gateway-slot1
+python3 satellite/controller.py --attach-gw gw1:sat-b1
+python3 satellite/controller.py --attach-gw gw1:sat-b1 --slot-name gw1-gateway-slot1
 ```
 
 Release that `GW` slot:
 
 ```bash
-python3 examples/satellite/controller.py --detach-gw gw1
+python3 satellite/controller.py --detach-gw gw1
 ```
 
 Trigger one cross-plane dynamic connection:
 
 ```bash
-python3 examples/satellite/controller.py --connect-cross sat-a1:sat-b1:left:right
-python3 examples/satellite/controller.py --connect-cross sat-a1:sat-b1:left:right --slot-name ab-cross-slot2
+python3 satellite/controller.py --connect-cross sat-a1:sat-b1:left:right
+python3 satellite/controller.py --connect-cross sat-a1:sat-b1:left:right --slot-name ab-cross-slot2
 ```
 
 Release that cross-plane slot:
 
 ```bash
-python3 examples/satellite/controller.py --release-slot ab-cross-slot0
+python3 satellite/controller.py --release-slot ab-cross-slot0
 ```
 
 Inspect one container after runtime attach:
@@ -417,12 +416,12 @@ docker exec gw1 ip -o addr show
 
 A serial handover demo script is available at:
 
-`examples/satellite/demo_runtime_handover.py`
+`satellite/demo_runtime_handover.py`
 
 Example:
 
 ```bash
-python3 examples/satellite/demo_runtime_handover.py --interval 5 --iterations 2
+python3 satellite/demo_runtime_handover.py --interval 5 --iterations 2
 ```
 
 The demo alternates between:
@@ -482,7 +481,7 @@ workflow; it also does not restore the old forwarding baseline.
 - treat the current map as a compile-time topology view produced by the Docker compiler
 - in the current version, that compile-time view should include the full restored `B00 miniInternet`, the `AS250` satellite side, and the `AS65000` gateways
 - do not assume the map will reflect runtime `docker network connect/disconnect` slot changes in real time
-- use the demo script output plus `python3 examples/satellite/controller.py --show-link-state` for runtime truth
+- use the demo script output plus `python3 satellite/controller.py --show-link-state` for runtime truth
 - this phase does not provide a stable `UT -> ground host` ping target because forwarding/MPLS is intentionally out of scope
 - this demo reuses the same `UT` access slot, so the recommended `UT`-side observation is to keep probing the same slot-peer IP while watching `binding.satellite_id` change:
 
@@ -490,7 +489,7 @@ workflow; it also does not restore the old forwarding baseline.
 while true; do
   date
   docker exec ut1 sh -lc 'ping -c 1 -W 1 10.90.11.1 >/dev/null 2>&1 && echo ut1-slot0 up || echo ut1-slot0 down'
-  python3 examples/satellite/controller.py --show-link-state | grep 'ut1-access-slot0'
+  python3 satellite/controller.py --show-link-state | grep 'ut1-access-slot0'
   sleep 1
 done
 ```
@@ -501,7 +500,7 @@ done
 while true; do
   date
   docker exec gw1 sh -lc 'ping -c 1 -W 1 10.91.11.1 >/dev/null 2>&1 && echo gw1-slot0 up || echo gw1-slot0 down'
-  python3 examples/satellite/controller.py --show-link-state | grep 'gw1-gateway-slot0'
+  python3 satellite/controller.py --show-link-state | grep 'gw1-gateway-slot0'
   sleep 1
 done
 ```
@@ -513,7 +512,7 @@ while true; do
   date
   docker exec sat-a1 sh -lc 'ping -c 1 -W 1 10.92.1.2 >/dev/null 2>&1 && echo cross-slot0-from-a1 up || echo cross-slot0-from-a1 down'
   docker exec sat-a2 sh -lc 'ping -c 1 -W 1 10.92.1.2 >/dev/null 2>&1 && echo cross-slot0-from-a2 up || echo cross-slot0-from-a2 down'
-  python3 examples/satellite/controller.py --show-link-state | grep 'ab-cross-slot0'
+  python3 satellite/controller.py --show-link-state | grep 'ab-cross-slot0'
   sleep 1
 done
 ```

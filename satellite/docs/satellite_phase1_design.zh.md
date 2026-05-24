@@ -1,14 +1,14 @@
 # Satellite Phase 2 Slot-Based Dynamic Link Design 中文说明
 
 英文版：
-[satellite_phase1_design.md](/home/seed/seed-emulator/examples/satellite/docs/satellite_phase1_design.md:1)
+[satellite_phase1_design.md](/home/seed/skyseed/satellite/docs/satellite_phase1_design.md:1)
 
 本文档描述当前主线的 satellite phase2 slot-based dynamic link prototype。
 旧的 candidate-link / snapshot activation 主线在这个阶段不再继续保留为主叙事。
 
 ## 范围
 
-- 主要工作范围保持在 `examples/satellite/`
+- 主要工作范围保持在 `satellite/`
 - 默认不改 SEED core
 - 规模固定为 3 `UT`、6 `ST`、3 `GW`
 - 恢复完整的 `B00 miniInternet` 作为地面互联网结构
@@ -129,20 +129,20 @@
 初始化所有 runtime slot bridges 和固定端预连接：
 
 ```bash
-python3 examples/satellite/controller.py --init-slot-runtime
+python3 satellite/controller.py --init-slot-runtime
 ```
 
 查看 runtime state：
 
 ```bash
-python3 examples/satellite/controller.py --show-link-state
+python3 satellite/controller.py --show-link-state
 ```
 
 运行只读的 `MPLS-0` capability probe：
 
 ```bash
-python3 examples/satellite/controller.py --probe-mpls
-python3 examples/satellite/controller.py --probe-mpls --probe-report examples/satellite/configs/mpls_probe.json
+python3 satellite/controller.py --probe-mpls
+python3 satellite/controller.py --probe-mpls --probe-report satellite/configs/mpls_probe.json
 ```
 
 这个 probe 会检查：
@@ -155,40 +155,40 @@ python3 examples/satellite/controller.py --probe-mpls --probe-report examples/sa
 运行当前 controller-driven 的 `MPLS-2` static `LSP` workflow：
 
 ```bash
-python3 examples/satellite/controller.py --install-static-mpls-lsp sat-a1:sat-b1:gw1
-python3 examples/satellite/controller.py --verify-static-mpls-lsp sat-a1:sat-b1:gw1
-python3 examples/satellite/controller.py --cleanup-static-mpls-lsp sat-a1:sat-b1:gw1
+python3 satellite/controller.py --install-static-mpls-lsp sat-a1:sat-b1:gw1
+python3 satellite/controller.py --verify-static-mpls-lsp sat-a1:sat-b1:gw1
+python3 satellite/controller.py --cleanup-static-mpls-lsp sat-a1:sat-b1:gw1
 ```
 
 现有的 regression wrapper 仍然保留：
 
 ```bash
-python3 examples/satellite/mpls_static_lab.py
-python3 examples/satellite/mpls_static_lab.py --cleanup
+python3 satellite/mpls_static_lab.py
+python3 satellite/mpls_static_lab.py --cleanup
 ```
 
 连接和释放 `UT`：
 
 ```bash
-python3 examples/satellite/controller.py --attach-ut ut1:sat-a1
-python3 examples/satellite/controller.py --attach-ut ut1:sat-a1 --slot-name ut1-access-slot1
-python3 examples/satellite/controller.py --detach-ut ut1
+python3 satellite/controller.py --attach-ut ut1:sat-a1
+python3 satellite/controller.py --attach-ut ut1:sat-a1 --slot-name ut1-access-slot1
+python3 satellite/controller.py --detach-ut ut1
 ```
 
 连接和释放 `GW`：
 
 ```bash
-python3 examples/satellite/controller.py --attach-gw gw1:sat-b1
-python3 examples/satellite/controller.py --attach-gw gw1:sat-b1 --slot-name gw1-gateway-slot1
-python3 examples/satellite/controller.py --detach-gw gw1
+python3 satellite/controller.py --attach-gw gw1:sat-b1
+python3 satellite/controller.py --attach-gw gw1:sat-b1 --slot-name gw1-gateway-slot1
+python3 satellite/controller.py --detach-gw gw1
 ```
 
 连接和释放 cross-plane `ISL`：
 
 ```bash
-python3 examples/satellite/controller.py --connect-cross sat-a1:sat-b1:left:right
-python3 examples/satellite/controller.py --connect-cross sat-a1:sat-b1:left:right --slot-name ab-cross-slot2
-python3 examples/satellite/controller.py --release-slot ab-cross-slot0
+python3 satellite/controller.py --connect-cross sat-a1:sat-b1:left:right
+python3 satellite/controller.py --connect-cross sat-a1:sat-b1:left:right --slot-name ab-cross-slot2
+python3 satellite/controller.py --release-slot ab-cross-slot0
 ```
 
 如果 attach/connect 时不指定 `--slot-name`，controller 会按 slot 名字排序后选择第一个空闲 slot。
@@ -247,7 +247,7 @@ python3 examples/satellite/controller.py --release-slot ab-cross-slot0
   `net.bridge.bridge-nf-call-{iptables,ip6tables,arptables}=0`，
   controller-managed `ut1 -> 10.154.0.129` 就已经可以通过 Linux kernel `MPLS` 跑通端到端
 - 这组 host bridge-netfilter 准备动作目前仍属于 example/runtime 逻辑，不应视为 `SEED core` 抽象
-- 当前固定的 regression 入口是 `examples/satellite/mpls_ut_egress_smoke.py`，
+- 当前固定的 regression 入口是 `satellite/mpls_ut_egress_smoke.py`，
   它会把路径固定在 `ut1 -> sat-a1 -> sat-b1 -> gw1 -> 10.154.0.129`，
   分层验证 dataplane 证据，再清掉 forwarding state，但不释放 runtime slot
 - 当前 return path 是刻意收窄的最小方案：selected gateway 会在自己
@@ -268,10 +268,10 @@ python3 examples/satellite/controller.py --release-slot ab-cross-slot0
 - `controller.py --verify-scenario t0|t1` 会验证当前 `link_state.json`
   是否符合目标 scenario，并检查 `ut1` 当前是否解析到期望的
   serving satellite、selected gateway 和 shortest satellite path
-- `examples/satellite/mpls_scenario_smoke.py` 会顺序执行
+- `satellite/mpls_scenario_smoke.py` 会顺序执行
   `cleanup forwarding -> apply scenario -> verify scenario -> install ut1 egress MPLS -> verify dataplane -> cleanup forwarding`，
   用来证明 topology 切换可以在不重启容器的前提下原地完成
-- `examples/satellite/mpls_scenario_smoke.py --scenario t0|t1 --all-ut`
+- `satellite/mpls_scenario_smoke.py --scenario t0|t1 --all-ut`
   现在会把同样的串行 scenario flow 应用到当前所有已 attach 且受支持的
   `UT`，并额外验证一个任意 miniInternet host 目标（`10.160.0.71`）
 - 真实 runtime 容器里的 `default Internet egress` 现在也已经覆盖默认三个
@@ -292,9 +292,9 @@ python3 examples/satellite/controller.py --release-slot ab-cross-slot0
 `MPLS-4` 第二阶段在保持同样 example/runtime 边界的前提下，
 加入了第一版显式 loop runner：
 
-- `examples/satellite/mpls_scenario_loop.py` 会在不重启容器的前提下，
+- `satellite/mpls_scenario_loop.py` 会在不重启容器的前提下，
   持续重复 `t0 -> t1 -> t0 -> t1 -> ...`
-- 现在直接运行 `python3 examples/satellite/mpls_scenario_loop.py`
+- 现在直接运行 `python3 satellite/mpls_scenario_loop.py`
   就会启动这个 demo loop：默认无限运行、每轮间隔 5 秒，
   也可以用 `--max-rounds` 做 bounded soak run
 - 每一轮仍然严格执行
@@ -394,7 +394,7 @@ python3 examples/satellite/controller.py --release-slot ab-cross-slot0
 
 对应的 demo 驱动脚本是：
 
-`examples/satellite/demo_runtime_handover.py`
+`satellite/demo_runtime_handover.py`
 
 它只做串行 runtime 操作，并打印：
 
@@ -509,17 +509,17 @@ baseline 下的 public inbound、`anchor` ingress，或 per-pair shortcut 状态
 推荐人工验收命令：
 
 ```bash
-python3 examples/satellite/controller.py --prepare-ut-egress-policy ut1 --timing
-python3 examples/satellite/controller.py --apply-scenario t0
-python3 examples/satellite/controller.py --verify-scenario t0
-python3 examples/satellite/controller.py --install-ut-egress-mpls ut1 --timing
-python3 examples/satellite/controller.py --verify-ut-egress-mpls ut1 --timing
+python3 satellite/controller.py --prepare-ut-egress-policy ut1 --timing
+python3 satellite/controller.py --apply-scenario t0
+python3 satellite/controller.py --verify-scenario t0
+python3 satellite/controller.py --install-ut-egress-mpls ut1 --timing
+python3 satellite/controller.py --verify-ut-egress-mpls ut1 --timing
 
-python3 examples/satellite/controller.py --cleanup-ut-egress-mpls ut1 --timing
-python3 examples/satellite/controller.py --apply-scenario t1
-python3 examples/satellite/controller.py --verify-scenario t1
-python3 examples/satellite/controller.py --install-ut-egress-mpls ut1 --timing
-python3 examples/satellite/controller.py --verify-ut-egress-mpls ut1 --timing
+python3 satellite/controller.py --cleanup-ut-egress-mpls ut1 --timing
+python3 satellite/controller.py --apply-scenario t1
+python3 satellite/controller.py --verify-scenario t1
+python3 satellite/controller.py --install-ut-egress-mpls ut1 --timing
+python3 satellite/controller.py --verify-ut-egress-mpls ut1 --timing
 ```
 
 当前 `UT egress` plan 已经拆成显式 category：

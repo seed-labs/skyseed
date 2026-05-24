@@ -1,7 +1,7 @@
 # Satellite Example Local Instructions
 
 This file supplements the repository-root `AGENTS.md` for work under
-`examples/satellite/`.
+`satellite/`.
 
 Keep the existing prototype boundaries, architecture constraints, and
 communication rules from the root `AGENTS.md`. The additional guidance here is
