@@ -1,0 +1,4 @@
+satellite/configs/
+satellite/output/
+**/__pycache__/
+*.pyc
