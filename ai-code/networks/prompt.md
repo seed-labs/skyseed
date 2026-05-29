@@ -6,5 +6,6 @@ Input: I have the satellite network topology graph, which are stored using the d
 
 What I want to do: I am now connecting these containers based on the new topology. I want to use two different approaches and compare them. Please write programs for me, one for each approach:
 - Approach 1: use Linux bridge to connect satellites.
+- Approach 2: use OVS.
 - Approach 2: use the approach used by OpenSN, i.e., using ebpf. 
 
