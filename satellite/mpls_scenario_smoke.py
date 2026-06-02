@@ -10,7 +10,10 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
 from controller import SCENARIO_DEFINITIONS
-from mpls_control import compute_all_attached_ut_egress_plans
+from mpls_control import (
+    compute_all_attached_ut_egress_plans,
+    resolve_ut_egress_ping_target,
+)
 from mpls_ut_egress_smoke import (
     controller_action,
     load_link_state,
@@ -106,6 +109,10 @@ def scenario_plan_summary(
         "forward_mpls_nodes": list(plan.forward_mpls_nodes),
         "forward_labels": list(plan.forward_labels),
         "reverse_labels": list(plan.reverse_labels),
+        "hop_count": max(0, len(plan.forward_mpls_nodes) - 1),
+        "ping_target": resolve_ut_egress_ping_target(plan),
+        "gateway_nat_interface": plan.gateway_nat_interface,
+        "gateway_nat_source_ip": plan.gateway_nat_source_ip,
     }
 
 
@@ -138,6 +145,10 @@ def scenario_all_ut_plan_summaries(
                 "forward_mpls_nodes": list(plan.forward_mpls_nodes),
                 "forward_labels": list(plan.forward_labels),
                 "reverse_labels": list(plan.reverse_labels),
+                "hop_count": max(0, len(plan.forward_mpls_nodes) - 1),
+                "ping_target": resolve_ut_egress_ping_target(plan),
+                "gateway_nat_interface": plan.gateway_nat_interface,
+                "gateway_nat_source_ip": plan.gateway_nat_source_ip,
             }
         )
     return summaries

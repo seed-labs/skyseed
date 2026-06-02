@@ -4,13 +4,14 @@ Chinese version:
 [README.zh.md](/home/seed/skyseed/satellite/README.zh.md:1)
 
 This directory contains the current mainline satellite prototype for SEED
-Emulator. The prototype is intentionally small and controller-driven:
+Emulator. The prototype remains controller-driven, but the active runtime
+baseline is now a mid-sized logical constellation:
 
-- 3 `UT`
-- 6 `ST` on two planes
-- 3 `GW`
+- 6 `UT`
+- 12 `ST` on three logical planes
+- 4 `GW`
 - plus a restored compile-time `B00 miniInternet`
-- fixed intra-plane `ISL`
+- fixed same-plane `ISL` rings
 - slot-based runtime `UT-ST`, `GW-ST`, and cross-plane `ST-ST` links
 
 The runtime control center is
@@ -51,8 +52,9 @@ mobility or concurrency design yet.
 
 - `UT-ST`: each `UT` owns 2 access slots
 - `GW-ST`: each `GW` owns 2 gateway slots
-- cross-plane `ST-ST`: orbit-a and orbit-b share 3 reusable slots
-- intra-plane `ST-ST`: fixed `front/back` links are compile-time created and always on
+- cross-plane `ST-ST`: `A-B` and `B-C` each share 4 reusable slots
+- intra-plane `ST-ST`: fixed `front/back` links are compile-time created as
+  same-plane rings and remain on
 
 Each slot is one Docker bridge network. `UT` and `GW` fixed endpoints are
 preconnected during `--init-slot-runtime`. `ST` endpoints are connected and
@@ -80,6 +82,9 @@ The current prototype distinguishes two different address roles:
   - `ut1 = 100.64.0.1/32`
   - `ut2 = 100.64.0.2/32`
   - `ut3 = 100.64.0.3/32`
+  - `ut4 = 100.64.0.4/32`
+  - `ut5 = 100.64.0.5/32`
+  - `ut6 = 100.64.0.6/32`
   - these addresses live on `dummy0` and remain unchanged across `UT-ST` attach/detach
   - future forwarding/MPLS work should treat them as service endpoints, `FEC` targets, and user identity
 - `UT-ST runtime slot link address`
@@ -92,7 +97,7 @@ The current prototype distinguishes two different address roles:
 ```bash
 python3 satellite/build_topology.py
 cd satellite/output
-docker compose up -d
+docker-compose up -d
 python3 ../controller.py --init-slot-runtime
 ```
 
@@ -200,35 +205,51 @@ python3 satellite/controller.py --cleanup-all-attached-ut-egress-mpls
 python3 satellite/controller.py --verify-ut-egress-mpls ut1 --ping-target 10.160.0.71
 ```
 
-Run the first `MPLS-4` scenario actions that reconcile runtime topology and
-then verify `ut1` egress over the updated path without restarting containers:
+Run the current `MPLS-4` generalized corridor scenarios:
 
 ```bash
-python3 satellite/controller.py --apply-scenario t0
-python3 satellite/controller.py --verify-scenario t0
-python3 satellite/controller.py --apply-scenario t1
-python3 satellite/controller.py --verify-scenario t1
+python3 satellite/controller.py --apply-scenario r0
+python3 satellite/controller.py --verify-scenario r0
+python3 satellite/controller.py --apply-scenario r1
+python3 satellite/controller.py --verify-scenario r1
+python3 satellite/controller.py --apply-scenario r2
+python3 satellite/controller.py --verify-scenario r2
+python3 satellite/controller.py --apply-scenario r3
+python3 satellite/controller.py --verify-scenario r3
 ```
 
 Run the repeatable `MPLS-4` scenario smoke wrapper:
 
 ```bash
-python3 satellite/mpls_scenario_smoke.py --scenario t0
-python3 satellite/mpls_scenario_smoke.py --scenario t1
-python3 satellite/mpls_scenario_smoke.py --sequence t0,t1
-python3 satellite/mpls_scenario_smoke.py --scenario t0 --all-ut
-python3 satellite/mpls_scenario_smoke.py --scenario t1 --all-ut
+python3 satellite/mpls_scenario_smoke.py --scenario r0
+python3 satellite/mpls_scenario_smoke.py --scenario r1
+python3 satellite/mpls_scenario_smoke.py --scenario r2
+python3 satellite/mpls_scenario_smoke.py --scenario r3
+python3 satellite/mpls_scenario_smoke.py --sequence r0,r1,r2,r3
+python3 satellite/mpls_scenario_smoke.py --scenario r0 --all-ut
+python3 satellite/mpls_scenario_smoke.py --scenario r3 --all-ut
 ```
 
-Run the `MPLS-4` second-stage long-lived serial scenario loop:
+Run the lightweight live handover demo:
 
 ```bash
-python3 satellite/mpls_scenario_loop.py
-python3 satellite/mpls_scenario_loop.py --rounds 4
-python3 satellite/mpls_scenario_loop.py --interval 5 --max-rounds 100
-python3 satellite/mpls_scenario_loop.py --sequence t0,t1 --rounds 0
-python3 satellite/mpls_scenario_loop.py --all-ut --max-rounds 2
+python3 satellite/continuous_handover_runner.py --demo-loop --interval 10
+python3 satellite/continuous_handover_runner.py --demo-loop --interval 15
+python3 satellite/continuous_handover_runner.py --demo-loop --max-rounds 6 --interval 2
 ```
+
+Preferred manual observation during the demo:
+
+```bash
+docker exec ut3 ping -I ua-u3s0 10.150.0.71
+docker exec ut3 ping -I ua-u3s0 10.160.0.71
+docker exec ut5 ping -I ua-u5s0 10.160.0.71
+docker exec sat-c1 tcpdump -ni xp4b 'ether proto 0x8847 or icmp'
+docker exec sat-c1 tcpdump -ni link-c1-c2 'ether proto 0x8847 or icmp'
+```
+
+The active scenario names are `r0-r3`. Legacy `t0/t1` aliases remain only for
+compatibility with older notes and one-off scripts.
 
 At this stage the `controller` will:
 

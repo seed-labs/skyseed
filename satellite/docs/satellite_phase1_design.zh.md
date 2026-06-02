@@ -357,6 +357,14 @@ plan 显式整理成 controller-side per-node bundle；它现在仍由 controlle
 串行执行，但后续应把这个 bundle 视为 future local-agent contract，而不是
 长期停留在 controller-side shell orchestration。
 
+因此下一阶段主线应理解为：
+
+- local agent first
+- host-side parallel mutation 只在后续确有必要时再考虑
+
+重点不是让 controller 同时修改更多容器，而是把 node-local execution
+responsibility 移入 node/container，同时保持 controller 继续承担集中式全局决策。
+
 同时，payload 和接口命名也应给下一跳 control-plane 形态留出空间：
 
 - 当前 transport 仍然是 `controller_serial_docker_exec`
@@ -446,8 +454,22 @@ ACK/error/apply-result contract，而不只是 controller-side 的调试结构�
 - `internal_error`
 
 在当前 `controller_serial_docker_exec` transport 下，这个 contract
-仍然由 controller-side batch executor 填充；但它应被视为 future local
-agent 直接返回的结果形状。
+现在由 controller 在目标容器内触发的 transient shell-based local agent CLI
+与 controller-side response mapping 共同形成；但它应被视为 future
+persistent local agent 直接返回的结果形状。
+
+当前 transient shell agent contract 现在也更明确了：
+
+- 输入：
+  controller 注入的 node-local apply script，加上 protocol version、
+  node plan identity、command count、replay scope、supported command
+  families 等 required agent fields
+- 执行：
+  container 内部的 ordered command execution，并显式输出 command start、
+  command exit、apply abort 等 node-local lifecycle markers
+- 输出：
+  agent markers 暴露 ack/apply/error/validation/replay visibility，再由
+  controller 映射进 `response_envelope`
 
 当前已经具备真实行为的部分包括：
 
@@ -458,14 +480,23 @@ agent 直接返回的结果形状。
 - `apply_result.failed_command`
 - `error.error_code/error_category/error_message`
 - `execution_nonce`
-- controller-side `agent_health` placeholder
+- transient shell-agent `agent_health`
 
 当前仍然只是 protocol reservation 的部分包括：
 
-- 真正的 local-agent `agent_health`
+- persistent local-agent `agent_health`
 - durable replay detection 和 `already_applied`
-- 执行前的 protocol/version/payload reject
-- local-agent-side validation failure
+- 超出当前最小检查范围的 rich local-agent validation
+
+当前 transient shell agent 也已经开始具备最小 agent-side validation surface：
+
+- required field check
+- protocol version mismatch reject
+- supported command family check
+- malformed payload detection
+
+这仍然是一个刻意保持最小的 validation 雏形，不是完整 validation engine
+或 replay store。
 
 ## Replay / Idempotency
 
@@ -557,6 +588,35 @@ node authoritative 的例子：
 
 这些目前都还只是 schema/interface reservation，不是已实现的
 validation feature。
+
+在 command lifecycle 层面，当前 transient shell agent 的语义应理解为：
+
+- command start marker 在执行前发出
+- command exit marker 在执行后发出
+- 第一个不允许失败的命令会触发 apply-abort marker，并停止后续命令
+- 后续命令仍由 controller 映射为 skipped
+- stdout/stderr summary 仍由 controller 汇总，但 execution lifecycle marker
+  已经归属于 agent boundary
+
+## Local Agent 过渡边界
+
+当前这一步不应被理解成“host-side parallel docker exec 是长期控制面主线”。
+controller 仍然使用 `controller_serial_docker_exec` 做 delivery，但 batched 的
+`UT egress` runtime path 已经通过一个 transient in-container shell agent CLI
+进入 node 内部。也就是说：
+
+- 当前 delivery：controller host -> docker exec -> transient shell agent CLI
+- 当前 execution：container 内部的 ordered node-local command execution
+- future delivery：ground control/data center -> in-emulation control plane ->
+  persistent node-local agent
+
+当前仍未实现的包括：
+
+- persistent node-local agent process / endpoint
+- in-emulation control-plane delivery
+- distributed / parallel fan-out
+- durable replay store
+- 超出 stateless visibility hook 的 rich local-agent replay detection
 
 这样既忠实描述了当前行为，也给 future local-agent replay detection、
 persisted ack history、或更明确的 transaction policy 留出了演进空间。

@@ -3,12 +3,13 @@
 
 """Build the slot-based satellite prototype topology.
 
-This Phase 2 prototype keeps the topology intentionally small:
+This Phase 2 prototype keeps the topology logically grounded while scaling it to
+an observable mid-sized constellation:
 
-- 3 user terminals
-- 6 satellites split across two orbits
-- 3 gateways
-- fixed intra-plane ISLs compiled by SEED
+- 6 user terminals
+- 12 satellites split across three logical orbital planes
+- 4 gateways mapped to distinct miniInternet regions/IXes
+- fixed same-plane ISLs compiled by SEED
 - slot-based dynamic UT/GW/cross-plane links managed at runtime by controller.py
 """
 
@@ -41,78 +42,191 @@ DEFAULT_TOPOLOGY_JSON = DEFAULT_CONFIG_DIR / "topology.json"
 
 ACCESS_SLOT_COUNT = 2
 GATEWAY_SLOT_COUNT = 2
-CROSS_PLANE_SLOT_COUNT = 3
+CROSS_PLANE_SLOT_COUNT_PER_PAIR = 4
+MPLS_PLATFORM_LABEL_CAPACITY = 2000
 
-SATELLITES = (
-    "sat-a1",
-    "sat-a2",
-    "sat-a3",
-    "sat-b1",
-    "sat-b2",
-    "sat-b3",
+ORBIT_DEFINITIONS = (
+    {
+        "orbit_id": "orbit-a",
+        "plane_label": "Plane A",
+        "plane_index": 1,
+        "satellite_prefix": "a",
+        "satellite_ids": ("sat-a1", "sat-a2", "sat-a3", "sat-a4"),
+    },
+    {
+        "orbit_id": "orbit-b",
+        "plane_label": "Plane B",
+        "plane_index": 2,
+        "satellite_prefix": "b",
+        "satellite_ids": ("sat-b1", "sat-b2", "sat-b3", "sat-b4"),
+    },
+    {
+        "orbit_id": "orbit-c",
+        "plane_label": "Plane C",
+        "plane_index": 3,
+        "satellite_prefix": "c",
+        "satellite_ids": ("sat-c1", "sat-c2", "sat-c3", "sat-c4"),
+    },
 )
 
-GATEWAYS = (
-    "gw1",
-    "gw2",
-    "gw3",
+SATELLITES = tuple(
+    satellite_id
+    for orbit in ORBIT_DEFINITIONS
+    for satellite_id in orbit["satellite_ids"]
+)
+ORBIT_SATELLITES = {
+    str(orbit["orbit_id"]): tuple(str(satellite_id) for satellite_id in orbit["satellite_ids"])
+    for orbit in ORBIT_DEFINITIONS
+}
+
+GATEWAY_DEFINITIONS = (
+    {
+        "gateway_id": "gw1",
+        "gateway_index": 1,
+        "region": "east",
+        "ix_id": 100,
+        "ix_ip_address": "10.100.0.250",
+        "upstream_asn": 2,
+    },
+    {
+        "gateway_id": "gw2",
+        "gateway_index": 2,
+        "region": "west",
+        "ix_id": 101,
+        "ix_ip_address": "10.101.0.250",
+        "upstream_asn": 12,
+    },
+    {
+        "gateway_id": "gw3",
+        "gateway_index": 3,
+        "region": "south",
+        "ix_id": 103,
+        "ix_ip_address": "10.103.0.250",
+        "upstream_asn": 3,
+    },
+    {
+        "gateway_id": "gw4",
+        "gateway_index": 4,
+        "region": "north",
+        "ix_id": 104,
+        "ix_ip_address": "10.104.0.250",
+        "upstream_asn": 4,
+    },
+)
+GATEWAYS = tuple(entry["gateway_id"] for entry in GATEWAY_DEFINITIONS)
+GATEWAY_DEFINITIONS_BY_ID = {
+    str(entry["gateway_id"]): dict(entry) for entry in GATEWAY_DEFINITIONS
+}
+GATEWAY_IX_BINDINGS = {
+    str(entry["gateway_id"]): {
+        "ix_id": int(entry["ix_id"]),
+        "ip_address": str(entry["ix_ip_address"]),
+        "region": str(entry["region"]),
+    }
+    for entry in GATEWAY_DEFINITIONS
+}
+GATEWAY_TRANSIT_PEERINGS = tuple(
+    (int(entry["ix_id"]), int(entry["upstream_asn"]), SATELLITE_OPERATOR_ASN)
+    for entry in GATEWAY_DEFINITIONS
 )
 
-USER_TERMINALS = (
-    "ut1",
-    "ut2",
-    "ut3",
+UT_DEFINITIONS = (
+    {
+        "ut_id": "ut1",
+        "ut_index": 1,
+        "region": "east",
+        "candidate_satellite_ids": ("sat-a1", "sat-a2", "sat-b1"),
+    },
+    {
+        "ut_id": "ut2",
+        "ut_index": 2,
+        "region": "east-center",
+        "candidate_satellite_ids": ("sat-a2", "sat-a3", "sat-b2"),
+    },
+    {
+        "ut_id": "ut3",
+        "ut_index": 3,
+        "region": "center",
+        "candidate_satellite_ids": ("sat-b1", "sat-b2", "sat-c1"),
+    },
+    {
+        "ut_id": "ut4",
+        "ut_index": 4,
+        "region": "center-west",
+        "candidate_satellite_ids": ("sat-b2", "sat-b3", "sat-c2"),
+    },
+    {
+        "ut_id": "ut5",
+        "ut_index": 5,
+        "region": "west",
+        "candidate_satellite_ids": ("sat-c2", "sat-c3", "sat-c4"),
+    },
+    {
+        "ut_id": "ut6",
+        "ut_index": 6,
+        "region": "west-north",
+        "candidate_satellite_ids": ("sat-a3", "sat-a4", "sat-b4"),
+    },
+)
+USER_TERMINALS = tuple(entry["ut_id"] for entry in UT_DEFINITIONS)
+UT_DEFINITIONS_BY_ID = {
+    str(entry["ut_id"]): dict(entry) for entry in UT_DEFINITIONS
+}
+
+CROSS_PLANE_GROUPS = (
+    {
+        "pair_key": "ab",
+        "display_label": "A-B corridor",
+        "orbit_a_id": "orbit-a",
+        "orbit_b_id": "orbit-b",
+    },
+    {
+        "pair_key": "bc",
+        "display_label": "B-C corridor",
+        "orbit_a_id": "orbit-b",
+        "orbit_b_id": "orbit-c",
+    },
 )
 
-ORBIT_A_SATELLITES = ("sat-a1", "sat-a2", "sat-a3")
-ORBIT_B_SATELLITES = ("sat-b1", "sat-b2", "sat-b3")
 
-FIXED_INTRA_ORBIT_LINKS = (
-    (
-        "sat-a1",
-        "sat-a2",
-        "a1-a2",
-        "10.250.201.0/30",
-        "10.250.201.1",
-        "10.250.201.2",
-        "front",
-        "back",
-        "orbit-a",
-    ),
-    (
-        "sat-a2",
-        "sat-a3",
-        "a2-a3",
-        "10.250.202.0/30",
-        "10.250.202.1",
-        "10.250.202.2",
-        "front",
-        "back",
-        "orbit-a",
-    ),
-    (
-        "sat-b1",
-        "sat-b2",
-        "b1-b2",
-        "10.250.203.0/30",
-        "10.250.203.1",
-        "10.250.203.2",
-        "front",
-        "back",
-        "orbit-b",
-    ),
-    (
-        "sat-b2",
-        "sat-b3",
-        "b2-b3",
-        "10.250.204.0/30",
-        "10.250.204.1",
-        "10.250.204.2",
-        "front",
-        "back",
-        "orbit-b",
-    ),
-)
+def _orbit_prefix(orbit_id: str) -> str:
+    for orbit in ORBIT_DEFINITIONS:
+        if orbit["orbit_id"] == orbit_id:
+            return str(orbit["satellite_prefix"])
+    raise ValueError(f"unknown orbit_id: {orbit_id}")
+
+
+def _generated_fixed_intra_orbit_links() -> Tuple[
+    Tuple[str, str, str, str, str, str, str, str, str],
+    ...,
+]:
+    links: List[Tuple[str, str, str, str, str, str, str, str, str]] = []
+    subnet_index = 201
+    for orbit in ORBIT_DEFINITIONS:
+        satellite_ids = list(orbit["satellite_ids"])
+        prefix = _orbit_prefix(str(orbit["orbit_id"]))
+        for index, left in enumerate(satellite_ids):
+            right = satellite_ids[(index + 1) % len(satellite_ids)]
+            left_label = int(left.removeprefix(f"sat-{prefix}"))
+            right_label = int(right.removeprefix(f"sat-{prefix}"))
+            links.append(
+                (
+                    str(left),
+                    str(right),
+                    f"{prefix}{left_label}-{prefix}{right_label}",
+                    f"10.250.{subnet_index}.0/30",
+                    f"10.250.{subnet_index}.1",
+                    f"10.250.{subnet_index}.2",
+                    "front",
+                    "back",
+                    str(orbit["orbit_id"]),
+                )
+            )
+            subnet_index += 1
+    return tuple(links)
+
+
+FIXED_INTRA_ORBIT_LINKS = _generated_fixed_intra_orbit_links()
 
 MINI_INTERNET_IX_DISPLAY_NAMES = {
     100: "NYC-100",
@@ -183,24 +297,18 @@ MINI_INTERNET_PRIVATE_PEERINGS = (
     (105, [11], [171]),
 )
 
-GATEWAY_IX_BINDINGS = {
-    "gw1": {"ix_id": 100, "ip_address": "10.100.0.250"},
-    "gw2": {"ix_id": 101, "ip_address": "10.101.0.250"},
-    "gw3": {"ix_id": 102, "ip_address": "10.102.0.250"},
-}
-
-GATEWAY_TRANSIT_PEERINGS = (
-    (100, 2, SATELLITE_OPERATOR_ASN),
-    (101, 2, SATELLITE_OPERATOR_ASN),
-    (102, 4, SATELLITE_OPERATOR_ASN),
-)
-
 EXTERNAL_TEST_TARGETS = (
     {
         "asn": 154,
         "node_id": "as154-host-new",
         "ip_address": "10.154.0.129",
         "description": "Customized miniInternet host retained from B00 for UT reachability tests.",
+    },
+    {
+        "asn": 160,
+        "node_id": "as160-host1",
+        "ip_address": "10.160.0.71",
+        "description": "Additional miniInternet host used for multi-UT continuous handover verification.",
     },
 )
 
@@ -261,7 +369,7 @@ def create_bootstrap_router(
 
 def enable_mpls_readiness(node) -> None:
     node.appendStartCommand(
-        "sysctl -w net.mpls.platform_labels=1000 || true",
+        f"sysctl -w net.mpls.platform_labels={MPLS_PLATFORM_LABEL_CAPACITY} || true",
         isPostConfigCommand=True,
     )
 
@@ -411,36 +519,26 @@ def build_emulator() -> Emulator:
     operator_as = base.createAutonomousSystem(SATELLITE_OPERATOR_ASN)
 
     satellite_routers: Dict[str, object] = {}
-
-    for satellite_id, subnet, address in (
-        ("sat-a1", "10.250.1.0/24", "10.250.1.2"),
-        ("sat-a2", "10.250.2.0/24", "10.250.2.2"),
-        ("sat-a3", "10.250.3.0/24", "10.250.3.2"),
-        ("sat-b1", "10.250.4.0/24", "10.250.4.2"),
-        ("sat-b2", "10.250.5.0/24", "10.250.5.2"),
-        ("sat-b3", "10.250.6.0/24", "10.250.6.2"),
-    ):
+    for satellite_index, satellite_id in enumerate(SATELLITES, start=1):
         satellite_routers[satellite_id] = create_bootstrap_router(
             satellite_as,
             satellite_id,
             f"{satellite_id}-bootstrap",
-            subnet,
-            address,
+            f"10.250.{satellite_index}.0/24",
+            f"10.250.{satellite_index}.2",
         )
         enable_mpls_readiness(satellite_routers[satellite_id])
 
     gateway_routers: Dict[str, object] = {}
-    for gateway_id, subnet, address in (
-        ("gw1", "10.65.21.0/24", "10.65.21.2"),
-        ("gw2", "10.65.22.0/24", "10.65.22.2"),
-        ("gw3", "10.65.23.0/24", "10.65.23.2"),
-    ):
+    for definition in GATEWAY_DEFINITIONS:
+        gateway_id = str(definition["gateway_id"])
+        gateway_index = int(definition["gateway_index"])
         gateway_routers[gateway_id] = create_bootstrap_router(
             operator_as,
             gateway_id,
             f"{gateway_id}-bootstrap",
-            subnet,
-            address,
+            f"10.65.{20 + gateway_index}.0/24",
+            f"10.65.{20 + gateway_index}.2",
             extra_software=("iptables",),
         )
         enable_mpls_readiness(gateway_routers[gateway_id])
@@ -449,30 +547,17 @@ def build_emulator() -> Emulator:
             GATEWAY_IX_BINDINGS[gateway_id]["ip_address"],
         )
 
-    create_ut_placeholder(
-        satellite_as,
-        "ut1",
-        "ut1-placeholder",
-        "10.250.101.0/30",
-        "10.250.101.1",
-        "10.250.101.2",
-    )
-    create_ut_placeholder(
-        satellite_as,
-        "ut2",
-        "ut2-placeholder",
-        "10.250.102.0/30",
-        "10.250.102.1",
-        "10.250.102.2",
-    )
-    create_ut_placeholder(
-        satellite_as,
-        "ut3",
-        "ut3-placeholder",
-        "10.250.103.0/30",
-        "10.250.103.1",
-        "10.250.103.2",
-    )
+    for definition in UT_DEFINITIONS:
+        ut_id = str(definition["ut_id"])
+        ut_index = int(definition["ut_index"])
+        create_ut_placeholder(
+            satellite_as,
+            ut_id,
+            f"{ut_id}-placeholder",
+            f"10.250.{100 + ut_index}.0/30",
+            f"10.250.{100 + ut_index}.1",
+            f"10.250.{100 + ut_index}.2",
+        )
 
     for left, right, label, prefix, left_ip, right_ip, _left_dir, _right_dir, _orbit in FIXED_INTRA_ORBIT_LINKS:
         create_satellite_link(
@@ -552,7 +637,9 @@ def _endpoint_record(
 
 def build_slot_inventory() -> Dict[str, List[Dict[str, object]]]:
     ut_slots: List[Dict[str, object]] = []
-    for ut_index, ut_id in enumerate(USER_TERMINALS, start=1):
+    for definition in UT_DEFINITIONS:
+        ut_id = str(definition["ut_id"])
+        ut_index = int(definition["ut_index"])
         for slot_index in range(ACCESS_SLOT_COUNT):
             third_octet = ut_index * 10 + slot_index + 1
             interface_name = f"ua-u{ut_index}s{slot_index}"
@@ -565,8 +652,9 @@ def build_slot_inventory() -> Dict[str, List[Dict[str, object]]]:
                     "subnet": f"10.90.{third_octet}.0/29",
                     "bridge_gateway_ip": f"10.90.{third_octet}.6",
                     "ut_id": ut_id,
+                    "region": definition["region"],
                     "slot_index": slot_index,
-                    "candidate_satellite_ids": list(SATELLITES),
+                    "candidate_satellite_ids": list(definition["candidate_satellite_ids"]),
                     "preconnected_endpoint": _endpoint_record(
                         node_id=ut_id,
                         node_type="user_terminal",
@@ -583,7 +671,9 @@ def build_slot_inventory() -> Dict[str, List[Dict[str, object]]]:
             )
 
     gateway_slots: List[Dict[str, object]] = []
-    for gw_index, gateway_id in enumerate(GATEWAYS, start=1):
+    for definition in GATEWAY_DEFINITIONS:
+        gateway_id = str(definition["gateway_id"])
+        gw_index = int(definition["gateway_index"])
         for slot_index in range(GATEWAY_SLOT_COUNT):
             third_octet = gw_index * 10 + slot_index + 1
             interface_name = f"ga-g{gw_index}s{slot_index}"
@@ -596,6 +686,7 @@ def build_slot_inventory() -> Dict[str, List[Dict[str, object]]]:
                     "subnet": f"10.91.{third_octet}.0/29",
                     "bridge_gateway_ip": f"10.91.{third_octet}.6",
                     "gateway_id": gateway_id,
+                    "gateway_region": definition["region"],
                     "slot_index": slot_index,
                     "candidate_satellite_ids": list(SATELLITES),
                     "preconnected_endpoint": _endpoint_record(
@@ -614,34 +705,47 @@ def build_slot_inventory() -> Dict[str, List[Dict[str, object]]]:
             )
 
     cross_plane_slots: List[Dict[str, object]] = []
-    for slot_index in range(CROSS_PLANE_SLOT_COUNT):
-        third_octet = slot_index + 1
-        cross_plane_slots.append(
-            {
-                "slot_name": f"ab-cross-slot{slot_index}",
-                "slot_type": "cross_plane_isl",
-                "network_name": f"ab-cross-slot{slot_index}",
-                "docker_network_name": f"ab-cross-slot{slot_index}",
-                "subnet": f"10.92.{third_octet}.0/29",
-                "bridge_gateway_ip": f"10.92.{third_octet}.6",
-                "slot_index": slot_index,
-                "orbit_pair": ["orbit-a", "orbit-b"],
-                "orbit_a_satellite_ids": list(ORBIT_A_SATELLITES),
-                "orbit_b_satellite_ids": list(ORBIT_B_SATELLITES),
-                "endpoint_a_template": _endpoint_record(
-                    node_id="<runtime-orbit-a-satellite>",
-                    node_type="satellite",
-                    interface_name=f"xp{slot_index}a",
-                    ip_address=f"10.92.{third_octet}.1/29",
-                ),
-                "endpoint_b_template": _endpoint_record(
-                    node_id="<runtime-orbit-b-satellite>",
-                    node_type="satellite",
-                    interface_name=f"xp{slot_index}b",
-                    ip_address=f"10.92.{third_octet}.2/29",
-                ),
-            }
-        )
+    subnet_offset = 1
+    interface_offset = 0
+    for group in CROSS_PLANE_GROUPS:
+        pair_key = str(group["pair_key"])
+        orbit_a_id = str(group["orbit_a_id"])
+        orbit_b_id = str(group["orbit_b_id"])
+        for slot_index in range(CROSS_PLANE_SLOT_COUNT_PER_PAIR):
+            third_octet = subnet_offset
+            interface_index = interface_offset + slot_index
+            cross_plane_slots.append(
+                {
+                    "slot_name": f"{pair_key}-cross-slot{slot_index}",
+                    "slot_type": "cross_plane_isl",
+                    "network_name": f"{pair_key}-cross-slot{slot_index}",
+                    "docker_network_name": f"{pair_key}-cross-slot{slot_index}",
+                    "subnet": f"10.92.{third_octet}.0/29",
+                    "bridge_gateway_ip": f"10.92.{third_octet}.6",
+                    "slot_index": slot_index,
+                    "pair_key": pair_key,
+                    "display_label": group["display_label"],
+                    "orbit_pair": [orbit_a_id, orbit_b_id],
+                    "orbit_a_id": orbit_a_id,
+                    "orbit_b_id": orbit_b_id,
+                    "orbit_a_satellite_ids": list(ORBIT_SATELLITES[orbit_a_id]),
+                    "orbit_b_satellite_ids": list(ORBIT_SATELLITES[orbit_b_id]),
+                    "endpoint_a_template": _endpoint_record(
+                        node_id=f"<runtime-{orbit_a_id}-satellite>",
+                        node_type="satellite",
+                        interface_name=f"xp{interface_index}a",
+                        ip_address=f"10.92.{third_octet}.1/29",
+                    ),
+                    "endpoint_b_template": _endpoint_record(
+                        node_id=f"<runtime-{orbit_b_id}-satellite>",
+                        node_type="satellite",
+                        interface_name=f"xp{interface_index}b",
+                        ip_address=f"10.92.{third_octet}.2/29",
+                    ),
+                }
+            )
+            subnet_offset += 1
+        interface_offset += CROSS_PLANE_SLOT_COUNT_PER_PAIR
 
     return {
         "ut_access": ut_slots,
@@ -697,16 +801,29 @@ def emit_topology_inventory(path: Path) -> None:
         ),
         "logical_port_labels": ["front", "back", "left", "right"],
         "prototype_scope": {
+            "orbital_planes": len(ORBIT_DEFINITIONS),
             "satellites": len(SATELLITES),
             "gateways": len(GATEWAYS),
             "user_terminals": len(USER_TERMINALS),
             "access_slots_per_ut": ACCESS_SLOT_COUNT,
             "gateway_slots_per_gw": GATEWAY_SLOT_COUNT,
-            "cross_plane_slot_count": CROSS_PLANE_SLOT_COUNT,
+            "cross_plane_slot_count": len(CROSS_PLANE_GROUPS)
+            * CROSS_PLANE_SLOT_COUNT_PER_PAIR,
             "internet_exchanges": len(MINI_INTERNET_IX_DISPLAY_NAMES),
             "mini_internet_transit_ases": len(MINI_INTERNET_TRANSIT_AS_LAYOUT),
             "mini_internet_stub_ases": len(MINI_INTERNET_STUB_AS_EXCHANGES),
         },
+        "orbital_planes": [
+            {
+                "orbit_id": orbit["orbit_id"],
+                "plane_label": orbit["plane_label"],
+                "plane_index": orbit["plane_index"],
+                "satellite_ids": list(orbit["satellite_ids"]),
+                "same_plane_neighbor_model": "fixed_ring",
+                "cross_plane_neighbor_model": "runtime_dynamic_slot_pairing",
+            }
+            for orbit in ORBIT_DEFINITIONS
+        ],
         "internet_exchanges": [
             {
                 "ix_id": ix_id,
@@ -718,8 +835,29 @@ def emit_topology_inventory(path: Path) -> None:
         "satellites": [
             {
                 "satellite_id": satellite_id,
-                "orbit_id": "orbit-a" if satellite_id.startswith("sat-a") else "orbit-b",
+                "orbit_id": next(
+                    str(orbit["orbit_id"])
+                    for orbit in ORBIT_DEFINITIONS
+                    if satellite_id in orbit["satellite_ids"]
+                ),
+                "plane_label": next(
+                    str(orbit["plane_label"])
+                    for orbit in ORBIT_DEFINITIONS
+                    if satellite_id in orbit["satellite_ids"]
+                ),
+                "plane_index": next(
+                    int(orbit["plane_index"])
+                    for orbit in ORBIT_DEFINITIONS
+                    if satellite_id in orbit["satellite_ids"]
+                ),
+                "satellite_index_in_plane": int(satellite_id[-1]),
                 "logical_ports": {"front": None, "back": None, "left": None, "right": None},
+                "interface_role_separation": {
+                    "same_plane_isl": ["front", "back"],
+                    "cross_plane_isl": ["left", "right"],
+                    "ut_facing": "runtime_slot",
+                    "gw_facing": "runtime_slot",
+                },
                 "bootstrap_network": _bootstrap_inventory(
                     node_id=satellite_id,
                     node_type="satellite",
@@ -736,6 +874,8 @@ def emit_topology_inventory(path: Path) -> None:
                 "gateway_id": gateway_id,
                 "role": "satellite_operator_border_gateway",
                 "asn": SATELLITE_OPERATOR_ASN,
+                "gateway_region": GATEWAY_DEFINITIONS_BY_ID[gateway_id]["region"],
+                "gateway_index": GATEWAY_DEFINITIONS_BY_ID[gateway_id]["gateway_index"],
                 "bootstrap_network": _bootstrap_inventory(
                     node_id=gateway_id,
                     node_type="gateway",
@@ -749,6 +889,7 @@ def emit_topology_inventory(path: Path) -> None:
                     "network_name": f"ix{GATEWAY_IX_BINDINGS[gateway_id]['ix_id']}",
                     "ip_address": GATEWAY_IX_BINDINGS[gateway_id]["ip_address"],
                     "peering_asn": SATELLITE_OPERATOR_ASN,
+                    "region": GATEWAY_IX_BINDINGS[gateway_id]["region"],
                 },
             }
             for index, gateway_id in enumerate(GATEWAYS, start=1)
@@ -761,6 +902,10 @@ def emit_topology_inventory(path: Path) -> None:
                     "ip_address": f"{resolve_ut_identity_address(ut_id)}/32",
                     "semantics": "stable_internal_identity_not_publicly_advertised",
                 },
+                "region": UT_DEFINITIONS_BY_ID[ut_id]["region"],
+                "candidate_serving_satellite_ids": list(
+                    UT_DEFINITIONS_BY_ID[ut_id]["candidate_satellite_ids"]
+                ),
                 "bootstrap_network": _bootstrap_inventory(
                     node_id=ut_id,
                     node_type="user_terminal",
@@ -837,16 +982,16 @@ def main() -> int:
     print(f"Gateways/AS{SATELLITE_OPERATOR_ASN}: {', '.join(GATEWAYS)}")
     print(f"User terminals: {', '.join(USER_TERMINALS)}")
     print(
-        "MiniInternet: "
-        f"ix={len(MINI_INTERNET_IX_DISPLAY_NAMES)}, "
-        f"transit_as={len(MINI_INTERNET_TRANSIT_AS_LAYOUT)}, "
-        f"stub_as={len(MINI_INTERNET_STUB_AS_EXCHANGES)}"
-    )
+            "MiniInternet: "
+            f"ix={len(MINI_INTERNET_IX_DISPLAY_NAMES)}, "
+            f"transit_as={len(MINI_INTERNET_TRANSIT_AS_LAYOUT)}, "
+            f"stub_as={len(MINI_INTERNET_STUB_AS_EXCHANGES)}"
+        )
     print(
         "Slot inventory: "
         f"ut_access={len(USER_TERMINALS) * ACCESS_SLOT_COUNT}, "
         f"gateway_access={len(GATEWAYS) * GATEWAY_SLOT_COUNT}, "
-        f"cross_plane_isl={CROSS_PLANE_SLOT_COUNT}"
+        f"cross_plane_isl={len(CROSS_PLANE_GROUPS) * CROSS_PLANE_SLOT_COUNT_PER_PAIR}"
     )
     return 0
 

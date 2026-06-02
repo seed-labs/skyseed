@@ -1,21 +1,23 @@
 # Satellite Slot-Based Dynamic Link Prototype 中文说明
 
 本文档对应当前主线的 slot-based dynamic link prototype，不再把旧的
-candidate-link 模型作为长期主线。
+candidate-link 模型作为长期主线；当前 active baseline 已扩成一个中等规模、
+可持续观察 runtime handover 的 logical constellation。
 
 ## 当前原型范围
 
 当前固定规模为：
 
-- 3 个 `UT`
-- 6 个 `ST`
-- 3 个 `GW`
+- 6 个 `UT`
+- 12 个 `ST`
+- 4 个 `GW`
 - 外加一套恢复后的 compile-time `B00 miniInternet`
 
-其中 `ST` 分成两条轨道：
+其中 `ST` 分成三条 logical orbital planes：
 
-- `sat-a1`, `sat-a2`, `sat-a3`
-- `sat-b1`, `sat-b2`, `sat-b3`
+- `sat-a1`, `sat-a2`, `sat-a3`, `sat-a4`
+- `sat-b1`, `sat-b2`, `sat-b3`, `sat-b4`
+- `sat-c1`, `sat-c2`, `sat-c3`, `sat-c4`
 
 核心运行时控制都在
 [controller.py](/home/seed/skyseed/satellite/controller.py:1)。
@@ -57,8 +59,8 @@ example/runtime workflow 里并存；但它仍然不是通用 mobility 设计，
 
 - `UT-ST`：每个 `UT` 预留 2 个 access slots
 - `GW-ST`：每个 `GW` 预留 2 个 gateway slots
-- cross-plane `ST-ST`：两条轨道共享 3 个可复用 slots
-- intra-plane `ST-ST`：固定 `front/back` 链路，compile-time 创建并长期存在
+- cross-plane `ST-ST`：`A-B` 与 `B-C` 各共享 4 个可复用 slots
+- intra-plane `ST-ST`：固定 `front/back` 链路，compile-time 创建成同轨环并长期存在
 
 每个 slot 对应一个 Docker bridge network。
 
@@ -87,6 +89,9 @@ example/runtime workflow 里并存；但它仍然不是通用 mobility 设计，
   - `ut1 = 100.64.0.1/32`
   - `ut2 = 100.64.0.2/32`
   - `ut3 = 100.64.0.3/32`
+  - `ut4 = 100.64.0.4/32`
+  - `ut5 = 100.64.0.5/32`
+  - `ut6 = 100.64.0.6/32`
   - 这些地址挂在 `dummy0` 上，在 `UT-ST` attach/detach 过程中保持不变
   - 后续 forwarding/MPLS 阶段应把它们视为业务 endpoint / `FEC` / 用户身份
 - `UT-ST runtime slot link address`
@@ -99,7 +104,7 @@ example/runtime workflow 里并存；但它仍然不是通用 mobility 设计，
 ```bash
 python3 satellite/build_topology.py
 cd satellite/output
-docker compose up -d
+docker-compose up -d
 python3 ../controller.py --init-slot-runtime
 ```
 
@@ -203,34 +208,50 @@ python3 satellite/controller.py --cleanup-all-attached-ut-egress-mpls
 python3 satellite/controller.py --verify-ut-egress-mpls ut1 --ping-target 10.160.0.71
 ```
 
-运行当前 `MPLS-4` 第一阶段的 scenario controller 动作：
+运行当前 `MPLS-4` generalized corridor scenarios：
 
 ```bash
-python3 satellite/controller.py --apply-scenario t0
-python3 satellite/controller.py --verify-scenario t0
-python3 satellite/controller.py --apply-scenario t1
-python3 satellite/controller.py --verify-scenario t1
+python3 satellite/controller.py --apply-scenario r0
+python3 satellite/controller.py --verify-scenario r0
+python3 satellite/controller.py --apply-scenario r1
+python3 satellite/controller.py --verify-scenario r1
+python3 satellite/controller.py --apply-scenario r2
+python3 satellite/controller.py --verify-scenario r2
+python3 satellite/controller.py --apply-scenario r3
+python3 satellite/controller.py --verify-scenario r3
 ```
 
 运行当前已经固化的 `MPLS-4` scenario regression/smoke wrapper：
 
 ```bash
-python3 satellite/mpls_scenario_smoke.py --scenario t0
-python3 satellite/mpls_scenario_smoke.py --scenario t1
-python3 satellite/mpls_scenario_smoke.py --sequence t0,t1
-python3 satellite/mpls_scenario_smoke.py --scenario t0 --all-ut
-python3 satellite/mpls_scenario_smoke.py --scenario t1 --all-ut
+python3 satellite/mpls_scenario_smoke.py --scenario r0
+python3 satellite/mpls_scenario_smoke.py --scenario r1
+python3 satellite/mpls_scenario_smoke.py --scenario r2
+python3 satellite/mpls_scenario_smoke.py --scenario r3
+python3 satellite/mpls_scenario_smoke.py --sequence r0,r1,r2,r3
+python3 satellite/mpls_scenario_smoke.py --scenario r0 --all-ut
+python3 satellite/mpls_scenario_smoke.py --scenario r3 --all-ut
 ```
 
-运行当前 `MPLS-4` 第二阶段的长期串行 scenario loop runner：
+运行轻量 live handover demo：
 
 ```bash
-python3 satellite/mpls_scenario_loop.py
-python3 satellite/mpls_scenario_loop.py --rounds 4
-python3 satellite/mpls_scenario_loop.py --interval 5 --max-rounds 100
-python3 satellite/mpls_scenario_loop.py --sequence t0,t1 --rounds 0
-python3 satellite/mpls_scenario_loop.py --all-ut --max-rounds 2
+python3 satellite/continuous_handover_runner.py --demo-loop --interval 10
+python3 satellite/continuous_handover_runner.py --demo-loop --interval 15
+python3 satellite/continuous_handover_runner.py --demo-loop --max-rounds 6 --interval 2
 ```
+
+建议在 demo 期间人工观察：
+
+```bash
+docker exec ut3 ping -I ua-u3s0 10.150.0.71
+docker exec ut3 ping -I ua-u3s0 10.160.0.71
+docker exec ut5 ping -I ua-u5s0 10.160.0.71
+docker exec sat-c1 tcpdump -ni xp4b 'ether proto 0x8847 or icmp'
+docker exec sat-c1 tcpdump -ni link-c1-c2 'ether proto 0x8847 or icmp'
+```
+
+当前主 scenario 命名已经是 `r0-r3`；`t0/t1` 只作为旧脚本兼容 alias 保留。
 
 这个阶段的 `controller` 会：
 

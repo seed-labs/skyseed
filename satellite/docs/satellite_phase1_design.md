@@ -375,6 +375,15 @@ egress` execution as a controller-side per-node bundle. It is still executed
 serially by the controller today, but it should be treated as a future
 local-agent contract rather than a permanent shell-orchestration model.
 
+The next mainline should therefore be understood as:
+
+- local agent first
+- host-side parallel mutation later only if it is still needed
+
+The point is not to make the controller mutate more containers at once. The
+point is to move node-local execution responsibility into the node/container
+while the controller remains the centralized decision point.
+
 The payload and interface naming should also leave room for the next control
 plane hop:
 
@@ -466,8 +475,25 @@ The current schema reserves at least these error codes:
 - `internal_error`
 
 Under the current `controller_serial_docker_exec` transport, this contract is
-still filled by the controller-side batch executor. It should be understood as
-the shape that a future local agent will eventually return directly.
+currently produced by a transient shell-based local agent CLI that is invoked
+by the controller inside the target container. The controller still handles
+transport and response mapping today, but the ordered command execution
+responsibility is already moving into the node boundary. This should be
+understood as the shape that a future persistent local agent will eventually
+return directly.
+
+The current transient shell agent contract is now more explicit:
+
+- input:
+  controller-injected node-local apply script plus required agent fields such
+  as protocol version, node plan identity, command count, replay scope, and
+  supported command families
+- execution:
+  ordered command execution inside the container, with node-local markers for
+  command start, command exit, and apply abort
+- output:
+  agent markers for ack/apply/error/validation/replay visibility, which are
+  then mapped into the controller-side `response_envelope`
 
 The current implementation already has real behavior for:
 
@@ -478,14 +504,24 @@ The current implementation already has real behavior for:
 - `apply_result.failed_command`
 - `error.error_code/error_category/error_message`
 - `execution_nonce`
-- controller-side `agent_health` placeholder
+- transient shell-agent `agent_health`
 
 The following are still protocol reservation only:
 
-- true local-agent `agent_health`
+- persistent local-agent `agent_health`
 - durable replay detection and `already_applied`
-- protocol/version/payload rejection before execution
-- local-agent-side validation failures
+- rich local-agent validation beyond the current minimal checks
+
+The transient shell agent now also implements a minimal agent-side validation
+surface:
+
+- required field checks
+- protocol version mismatch rejection
+- supported command family checks
+- malformed payload detection
+
+This is intentionally small. It is not yet a full validation engine or replay
+store.
 
 ## Replay / Idempotency
 
@@ -583,6 +619,38 @@ These are schema/interface reservations today, not active validation features.
 This keeps current behavior honest while leaving room for future extensions
 such as local-agent replay detection, persisted ack history, or more explicit
 transaction policies.
+
+At the command lifecycle level, the transient shell agent should currently be
+understood as:
+
+- command start marker emitted before execution
+- command exit marker emitted after execution
+- first non-allowed failure emits an apply-abort marker and stops remaining
+  commands
+- later commands are still mapped as skipped by the controller
+- stdout/stderr are still summarized by the controller, but the agent now owns
+  the execution lifecycle markers
+
+## Local Agent Transition
+
+The current step should not be interpreted as "controller-side parallel docker
+exec as the long-term control plane." The controller still uses
+`controller_serial_docker_exec` for delivery, but the batched `UT egress`
+runtime path now enters the node through a transient in-container shell agent
+CLI. In other words:
+
+- current delivery: controller host -> docker exec -> transient shell agent CLI
+- current execution: ordered node-local command execution inside the container
+- future delivery: ground control/data center -> in-emulation control plane ->
+  persistent node-local agent
+
+What is still not implemented:
+
+- persistent node-local agent process or endpoint
+- in-emulation control-plane delivery
+- distributed/parallel fan-out
+- durable replay store
+- rich local-agent replay detection beyond stateless visibility hooks
 
 ## Serialized Runtime Boundary
 

@@ -46,6 +46,7 @@ from mpls_control import (
 
 DEFAULT_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG_DIR = DEFAULT_DIR / "configs"
+DEFAULT_RUNTIME_AGENT_SCRIPT = DEFAULT_DIR / "runtime_update_agent.sh"
 VALID_CROSS_DIRECTIONS = {"left", "right"}
 BRIDGE_NETFILTER_SYSCTLS = (
     "net.bridge.bridge-nf-call-iptables",
@@ -98,128 +99,346 @@ RUNTIME_VALIDATION_STATUSES = [
     "failed",
     "rejected",
 ]
+RUNTIME_AGENT_SUPPORTED_COMMAND_FAMILIES = [
+    "ip_mpls_route",
+    "ip_route",
+    "ip_rule",
+    "iptables",
+    "sysctl",
+]
+
+def _scenario_attach_entry(action: str, request: str, binding: Dict[str, str]) -> Dict[str, Any]:
+    return {
+        "action": action,
+        "request": request,
+        "binding": dict(binding),
+    }
+
+
+def _scenario_cross_entry(
+    satellite_a_id: str,
+    satellite_b_id: str,
+    satellite_a_direction: str,
+    satellite_b_direction: str,
+) -> Dict[str, Any]:
+    return _scenario_attach_entry(
+        "connect_cross",
+        (
+            f"{satellite_a_id}:{satellite_b_id}:"
+            f"{satellite_a_direction}:{satellite_b_direction}"
+        ),
+        {
+            "satellite_a_id": satellite_a_id,
+            "satellite_b_id": satellite_b_id,
+            "satellite_a_direction": satellite_a_direction,
+            "satellite_b_direction": satellite_b_direction,
+        },
+    )
+
+
+def _scenario_managed_slots(
+    *,
+    ut_bindings: Dict[str, str],
+    gateway_bindings: Dict[str, str],
+    cross_bindings: Dict[str, Tuple[str, str, str, str]],
+) -> Dict[str, Any]:
+    managed_slots: Dict[str, Any] = {}
+    for ut_id in ("ut1", "ut2", "ut3", "ut4", "ut5", "ut6"):
+        managed_slots[f"{ut_id}-access-slot0"] = _scenario_attach_entry(
+            "attach_ut",
+            f"{ut_id}:{ut_bindings[ut_id]}",
+            {"ut_id": ut_id, "satellite_id": ut_bindings[ut_id]},
+        )
+        managed_slots[f"{ut_id}-access-slot1"] = None
+    for gateway_id in ("gw1", "gw2", "gw3", "gw4"):
+        managed_slots[f"{gateway_id}-gateway-slot0"] = _scenario_attach_entry(
+            "attach_gw",
+            f"{gateway_id}:{gateway_bindings[gateway_id]}",
+            {"gateway_id": gateway_id, "satellite_id": gateway_bindings[gateway_id]},
+        )
+        managed_slots[f"{gateway_id}-gateway-slot1"] = None
+    for slot_name in (
+        "ab-cross-slot0",
+        "ab-cross-slot1",
+        "ab-cross-slot2",
+        "ab-cross-slot3",
+        "bc-cross-slot0",
+        "bc-cross-slot1",
+        "bc-cross-slot2",
+        "bc-cross-slot3",
+    ):
+        binding = cross_bindings.get(slot_name)
+        if binding is None:
+            managed_slots[slot_name] = None
+            continue
+        managed_slots[slot_name] = _scenario_cross_entry(*binding)
+    return managed_slots
+
+
 SCENARIO_DEFINITIONS: Dict[str, Dict[str, Any]] = {
-    "t0": {
-        "description": "Initial explicit runtime scenario for MPLS-4 transition validation.",
-        "managed_slots": {
-            "ut1-access-slot0": {
-                "action": "attach_ut",
-                "request": "ut1:sat-a1",
-                "binding": {"ut_id": "ut1", "satellite_id": "sat-a1"},
+    "r0": {
+        "description": "Baseline snapshot: ut3 crosses the full C/B/A corridor while west-side UTs stay on shorter local egress paths.",
+        "transition_region": "baseline",
+        "observe_ut_ids": ["ut1", "ut3", "ut5", "ut6"],
+        "managed_slots": _scenario_managed_slots(
+            ut_bindings={
+                "ut1": "sat-a1",
+                "ut2": "sat-a3",
+                "ut3": "sat-c1",
+                "ut4": "sat-b2",
+                "ut5": "sat-c2",
+                "ut6": "sat-a4",
             },
-            "ut1-access-slot1": None,
-            "ut2-access-slot0": {
-                "action": "attach_ut",
-                "request": "ut2:sat-a2",
-                "binding": {"ut_id": "ut2", "satellite_id": "sat-a2"},
+            gateway_bindings={
+                "gw1": "sat-a1",
+                "gw2": "sat-a3",
+                "gw3": "sat-b3",
+                "gw4": "sat-a4",
             },
-            "ut2-access-slot1": None,
-            "ut3-access-slot0": {
-                "action": "attach_ut",
-                "request": "ut3:sat-b3",
-                "binding": {"ut_id": "ut3", "satellite_id": "sat-b3"},
+            cross_bindings={
+                "ab-cross-slot0": ("sat-a1", "sat-b1", "left", "right"),
+                "ab-cross-slot1": ("sat-a2", "sat-b2", "left", "right"),
+                "ab-cross-slot2": ("sat-a4", "sat-b4", "left", "right"),
+                "bc-cross-slot0": ("sat-b1", "sat-c1", "left", "right"),
+                "bc-cross-slot1": ("sat-b3", "sat-c2", "left", "right"),
+                "bc-cross-slot2": ("sat-b4", "sat-c4", "left", "right"),
             },
-            "ut3-access-slot1": None,
-            "gw1-gateway-slot0": None,
-            "gw1-gateway-slot1": {
-                "action": "attach_gw",
-                "request": "gw1:sat-b1",
-                "binding": {"gateway_id": "gw1", "satellite_id": "sat-b1"},
-            },
-            "gw2-gateway-slot0": {
-                "action": "attach_gw",
-                "request": "gw2:sat-a3",
-                "binding": {"gateway_id": "gw2", "satellite_id": "sat-a3"},
-            },
-            "gw2-gateway-slot1": None,
-            "gw3-gateway-slot0": None,
-            "gw3-gateway-slot1": None,
-            "ab-cross-slot0": {
-                "action": "connect_cross",
-                "request": "sat-a1:sat-b1:left:right",
-                "binding": {
-                    "satellite_a_id": "sat-a1",
-                    "satellite_b_id": "sat-b1",
-                    "satellite_a_direction": "left",
-                    "satellite_b_direction": "right",
-                },
-            },
-            "ab-cross-slot1": {
-                "action": "connect_cross",
-                "request": "sat-a2:sat-b2:left:right",
-                "binding": {
-                    "satellite_a_id": "sat-a2",
-                    "satellite_b_id": "sat-b2",
-                    "satellite_a_direction": "left",
-                    "satellite_b_direction": "right",
-                },
-            },
-            "ab-cross-slot2": None,
-        },
-        "verify_ut_id": "ut1",
-        "expected_serving_satellite_id": "sat-a1",
+        ),
+        "verify_ut_id": "ut3",
+        "expected_serving_satellite_id": "sat-c1",
         "expected_selected_gateway_id": "gw1",
-        "expected_satellite_path": ["sat-a1", "sat-b1"],
-    },
-    "t1": {
-        "description": "Follow-up explicit runtime scenario for MPLS-4 transition validation.",
-        "managed_slots": {
-            "ut1-access-slot0": {
-                "action": "attach_ut",
-                "request": "ut1:sat-a2",
-                "binding": {"ut_id": "ut1", "satellite_id": "sat-a2"},
+        "expected_satellite_path": ["sat-c1", "sat-b1", "sat-a1"],
+        "expected_ut_paths": {
+            "ut1": {
+                "serving_satellite_id": "sat-a1",
+                "selected_gateway_id": "gw1",
+                "satellite_path": ["sat-a1"],
             },
-            "ut1-access-slot1": None,
-            "ut2-access-slot0": {
-                "action": "attach_ut",
-                "request": "ut2:sat-a3",
-                "binding": {"ut_id": "ut2", "satellite_id": "sat-a3"},
+            "ut2": {
+                "serving_satellite_id": "sat-a3",
+                "selected_gateway_id": "gw2",
+                "satellite_path": ["sat-a3"],
             },
-            "ut2-access-slot1": None,
-            "ut3-access-slot0": {
-                "action": "attach_ut",
-                "request": "ut3:sat-b1",
-                "binding": {"ut_id": "ut3", "satellite_id": "sat-b1"},
+            "ut3": {
+                "serving_satellite_id": "sat-c1",
+                "selected_gateway_id": "gw1",
+                "satellite_path": ["sat-c1", "sat-b1", "sat-a1"],
             },
-            "ut3-access-slot1": None,
-            "gw1-gateway-slot0": None,
-            "gw1-gateway-slot1": None,
-            "gw2-gateway-slot0": {
-                "action": "attach_gw",
-                "request": "gw2:sat-b2",
-                "binding": {"gateway_id": "gw2", "satellite_id": "sat-b2"},
+            "ut4": {
+                "serving_satellite_id": "sat-b2",
+                "selected_gateway_id": "gw3",
+                "satellite_path": ["sat-b2", "sat-b3"],
             },
-            "gw2-gateway-slot1": None,
-            "gw3-gateway-slot0": None,
-            "gw3-gateway-slot1": None,
-            "ab-cross-slot0": {
-                "action": "connect_cross",
-                "request": "sat-a2:sat-b2:left:right",
-                "binding": {
-                    "satellite_a_id": "sat-a2",
-                    "satellite_b_id": "sat-b2",
-                    "satellite_a_direction": "left",
-                    "satellite_b_direction": "right",
-                },
+            "ut5": {
+                "serving_satellite_id": "sat-c2",
+                "selected_gateway_id": "gw3",
+                "satellite_path": ["sat-c2", "sat-b3"],
             },
-            "ab-cross-slot1": {
-                "action": "connect_cross",
-                "request": "sat-a3:sat-b3:left:right",
-                "binding": {
-                    "satellite_a_id": "sat-a3",
-                    "satellite_b_id": "sat-b3",
-                    "satellite_a_direction": "left",
-                    "satellite_b_direction": "right",
-                },
+            "ut6": {
+                "serving_satellite_id": "sat-a4",
+                "selected_gateway_id": "gw4",
+                "satellite_path": ["sat-a4"],
             },
-            "ab-cross-slot2": None,
         },
+    },
+    "r1": {
+        "description": "East corridor handover: ut1 retargets to sat-a2 while gw2 shifts one step west and the long ut3 corridor remains stable.",
+        "transition_region": "east",
+        "observe_ut_ids": ["ut1", "ut2", "ut3", "ut5"],
+        "managed_slots": _scenario_managed_slots(
+            ut_bindings={
+                "ut1": "sat-a2",
+                "ut2": "sat-a3",
+                "ut3": "sat-c1",
+                "ut4": "sat-b2",
+                "ut5": "sat-c2",
+                "ut6": "sat-a4",
+            },
+            gateway_bindings={
+                "gw1": "sat-a1",
+                "gw2": "sat-a2",
+                "gw3": "sat-b3",
+                "gw4": "sat-a4",
+            },
+            cross_bindings={
+                "ab-cross-slot0": ("sat-a1", "sat-b1", "left", "right"),
+                "ab-cross-slot1": ("sat-a3", "sat-b2", "left", "right"),
+                "ab-cross-slot2": ("sat-a4", "sat-b4", "left", "right"),
+                "bc-cross-slot0": ("sat-b1", "sat-c1", "left", "right"),
+                "bc-cross-slot1": ("sat-b3", "sat-c2", "left", "right"),
+                "bc-cross-slot2": ("sat-b4", "sat-c4", "left", "right"),
+            },
+        ),
         "verify_ut_id": "ut1",
         "expected_serving_satellite_id": "sat-a2",
         "expected_selected_gateway_id": "gw2",
-        "expected_satellite_path": ["sat-a2", "sat-b2"],
+        "expected_satellite_path": ["sat-a2"],
+        "expected_ut_paths": {
+            "ut1": {
+                "serving_satellite_id": "sat-a2",
+                "selected_gateway_id": "gw2",
+                "satellite_path": ["sat-a2"],
+            },
+            "ut2": {
+                "serving_satellite_id": "sat-a3",
+                "selected_gateway_id": "gw2",
+                "satellite_path": ["sat-a3", "sat-a2"],
+            },
+            "ut3": {
+                "serving_satellite_id": "sat-c1",
+                "selected_gateway_id": "gw1",
+                "satellite_path": ["sat-c1", "sat-b1", "sat-a1"],
+            },
+            "ut4": {
+                "serving_satellite_id": "sat-b2",
+                "selected_gateway_id": "gw3",
+                "satellite_path": ["sat-b2", "sat-b3"],
+            },
+            "ut5": {
+                "serving_satellite_id": "sat-c2",
+                "selected_gateway_id": "gw3",
+                "satellite_path": ["sat-c2", "sat-b3"],
+            },
+            "ut6": {
+                "serving_satellite_id": "sat-a4",
+                "selected_gateway_id": "gw4",
+                "satellite_path": ["sat-a4"],
+            },
+        },
+    },
+    "r2": {
+        "description": "Center corridor handover: gw3 drops onto sat-c2, pulling ut3/ut4/ut5 into a new center-plane egress corridor while east and west edges hold steady.",
+        "transition_region": "center",
+        "observe_ut_ids": ["ut2", "ut3", "ut4", "ut5"],
+        "managed_slots": _scenario_managed_slots(
+            ut_bindings={
+                "ut1": "sat-a2",
+                "ut2": "sat-a3",
+                "ut3": "sat-c1",
+                "ut4": "sat-c2",
+                "ut5": "sat-c3",
+                "ut6": "sat-a4",
+            },
+            gateway_bindings={
+                "gw1": "sat-a1",
+                "gw2": "sat-a2",
+                "gw3": "sat-c2",
+                "gw4": "sat-a4",
+            },
+            cross_bindings={
+                "ab-cross-slot0": ("sat-a1", "sat-b1", "left", "right"),
+                "ab-cross-slot1": ("sat-a3", "sat-b2", "left", "right"),
+                "ab-cross-slot2": ("sat-a4", "sat-b4", "left", "right"),
+                "bc-cross-slot0": ("sat-b1", "sat-c1", "left", "right"),
+                "bc-cross-slot1": ("sat-b3", "sat-c2", "left", "right"),
+                "bc-cross-slot2": ("sat-b4", "sat-c4", "left", "right"),
+            },
+        ),
+        "verify_ut_id": "ut3",
+        "expected_serving_satellite_id": "sat-c1",
+        "expected_selected_gateway_id": "gw3",
+        "expected_satellite_path": ["sat-c1", "sat-c2"],
+        "expected_ut_paths": {
+            "ut1": {
+                "serving_satellite_id": "sat-a2",
+                "selected_gateway_id": "gw2",
+                "satellite_path": ["sat-a2"],
+            },
+            "ut2": {
+                "serving_satellite_id": "sat-a3",
+                "selected_gateway_id": "gw2",
+                "satellite_path": ["sat-a3", "sat-a2"],
+            },
+            "ut3": {
+                "serving_satellite_id": "sat-c1",
+                "selected_gateway_id": "gw3",
+                "satellite_path": ["sat-c1", "sat-c2"],
+            },
+            "ut4": {
+                "serving_satellite_id": "sat-c2",
+                "selected_gateway_id": "gw3",
+                "satellite_path": ["sat-c2"],
+            },
+            "ut5": {
+                "serving_satellite_id": "sat-c3",
+                "selected_gateway_id": "gw3",
+                "satellite_path": ["sat-c3", "sat-c2"],
+            },
+            "ut6": {
+                "serving_satellite_id": "sat-a4",
+                "selected_gateway_id": "gw4",
+                "satellite_path": ["sat-a4"],
+            },
+        },
+    },
+    "r3": {
+        "description": "West corridor handover: ut5 and ut6 swing onto the b4/c4 edge while the center c2 egress corridor remains fixed.",
+        "transition_region": "west",
+        "observe_ut_ids": ["ut3", "ut5", "ut6"],
+        "managed_slots": _scenario_managed_slots(
+            ut_bindings={
+                "ut1": "sat-a2",
+                "ut2": "sat-a3",
+                "ut3": "sat-c1",
+                "ut4": "sat-c2",
+                "ut5": "sat-c4",
+                "ut6": "sat-b4",
+            },
+            gateway_bindings={
+                "gw1": "sat-a1",
+                "gw2": "sat-a2",
+                "gw3": "sat-c2",
+                "gw4": "sat-b4",
+            },
+            cross_bindings={
+                "ab-cross-slot0": ("sat-a1", "sat-b1", "left", "right"),
+                "ab-cross-slot1": ("sat-a3", "sat-b2", "left", "right"),
+                "ab-cross-slot2": ("sat-a4", "sat-b4", "left", "right"),
+                "bc-cross-slot0": ("sat-b1", "sat-c1", "left", "right"),
+                "bc-cross-slot1": ("sat-b3", "sat-c2", "left", "right"),
+                "bc-cross-slot2": ("sat-b4", "sat-c4", "left", "right"),
+            },
+        ),
+        "verify_ut_id": "ut5",
+        "expected_serving_satellite_id": "sat-c4",
+        "expected_selected_gateway_id": "gw4",
+        "expected_satellite_path": ["sat-c4", "sat-b4"],
+        "expected_ut_paths": {
+            "ut1": {
+                "serving_satellite_id": "sat-a2",
+                "selected_gateway_id": "gw2",
+                "satellite_path": ["sat-a2"],
+            },
+            "ut2": {
+                "serving_satellite_id": "sat-a3",
+                "selected_gateway_id": "gw2",
+                "satellite_path": ["sat-a3", "sat-a2"],
+            },
+            "ut3": {
+                "serving_satellite_id": "sat-c1",
+                "selected_gateway_id": "gw3",
+                "satellite_path": ["sat-c1", "sat-c2"],
+            },
+            "ut4": {
+                "serving_satellite_id": "sat-c2",
+                "selected_gateway_id": "gw3",
+                "satellite_path": ["sat-c2"],
+            },
+            "ut5": {
+                "serving_satellite_id": "sat-c4",
+                "selected_gateway_id": "gw4",
+                "satellite_path": ["sat-c4", "sat-b4"],
+            },
+            "ut6": {
+                "serving_satellite_id": "sat-b4",
+                "selected_gateway_id": "gw4",
+                "satellite_path": ["sat-b4"],
+            },
+        },
     },
 }
+SCENARIO_DEFINITIONS["t0"] = dict(SCENARIO_DEFINITIONS["r0"])
+SCENARIO_DEFINITIONS["t1"] = dict(SCENARIO_DEFINITIONS["r1"])
 
 
 def parse_args() -> argparse.Namespace:
@@ -359,7 +578,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--apply-scenario",
-        help="Apply one supported explicit runtime scenario, such as t0 or t1.",
+        help="Apply one supported explicit runtime scenario, such as r0, r1, r2, or r3.",
     )
     parser.add_argument(
         "--verify-scenario",
@@ -387,7 +606,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--connect-cross",
         help=(
-            "Connect one orbit-a satellite and one orbit-b satellite through a "
+            "Connect two satellites from a supported orbit pair through a "
             "free cross-plane slot: <sat-a>:<sat-b>:<dir-a>:<dir-b>."
         ),
     )
@@ -407,6 +626,15 @@ def parse_args() -> argparse.Namespace:
         "--timing",
         action="store_true",
         help="Print action timing and command-category counts after execution.",
+    )
+    parser.add_argument(
+        "--fast-runtime-apply",
+        action="store_true",
+        help=(
+            "Use lighter runtime apply validation for manual demo loops by "
+            "skipping end-to-end attach ping checks while keeping interface "
+            "configuration and link_state updates intact."
+        ),
     )
 
     args = parser.parse_args()
@@ -480,6 +708,7 @@ class SatelliteController:
         self.topology = load_json(args.topology_config)
         self.link_state = self._load_link_state(args.link_state)
         self._active_command_observation: Optional[Dict[str, Any]] = None
+        self._runtime_agent_template_text: Optional[str] = None
 
     def _default_link_state(self) -> Dict[str, Any]:
         return {
@@ -496,8 +725,14 @@ class SatelliteController:
         return load_json(path_str)
 
     def _save_link_state(self, state: Dict[str, Any]) -> None:
+        started_at = time.monotonic()
         write_json(self.args.link_state, state)
         self.link_state = state
+        self._record_in_memory_observation_event(
+            event_type="link_state_write",
+            elapsed_seconds=time.monotonic() - started_at,
+            details={"path": str(self.args.link_state)},
+        )
 
     def _utc_timestamp(self) -> str:
         return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace(
@@ -526,8 +761,38 @@ class SatelliteController:
     def _runtime_supported_validation_statuses(self) -> List[str]:
         return list(RUNTIME_VALIDATION_STATUSES)
 
+    def _runtime_agent_supported_command_families(self) -> List[str]:
+        return list(RUNTIME_AGENT_SUPPORTED_COMMAND_FAMILIES)
+
+    def _runtime_agent_required_input_fields(self) -> List[str]:
+        return [
+            "SKYSEED_AGENT_PROTOCOL_VERSION",
+            "SKYSEED_AGENT_SCHEMA_VERSION",
+            "SKYSEED_AGENT_RESPONSE_ENVELOPE_SCHEMA_VERSION",
+            "SKYSEED_AGENT_NODE_PLAN_ID",
+            "SKYSEED_AGENT_PLAN_ID",
+            "SKYSEED_AGENT_NODE_ID",
+            "SKYSEED_AGENT_NODE_TYPE",
+            "SKYSEED_AGENT_PHASE",
+            "SKYSEED_AGENT_GENERATION",
+            "SKYSEED_AGENT_SEQUENCE",
+            "SKYSEED_AGENT_COMMAND_COUNT",
+            "SKYSEED_AGENT_COMMAND_INDEXES",
+            "SKYSEED_AGENT_EXPECTED_ACK_MODE",
+            "SKYSEED_AGENT_EXECUTION_NONCE",
+            "SKYSEED_AGENT_IDEMPOTENCY_SCOPE",
+            "SKYSEED_AGENT_REPLAY_DETECTION_MODE",
+        ]
+
     def _execution_nonce(self, node_plan_id: str) -> str:
         return f"{node_plan_id}:{uuid4().hex}"
+
+    def _runtime_agent_template(self) -> str:
+        if self._runtime_agent_template_text is None:
+            self._runtime_agent_template_text = DEFAULT_RUNTIME_AGENT_SCRIPT.read_text(
+                encoding="utf-8"
+            )
+        return self._runtime_agent_template_text
 
 
     def _slot_inventory(self) -> Dict[str, List[Dict[str, Any]]]:
@@ -748,7 +1013,28 @@ class SatelliteController:
             "action": action_name,
             "started_at": time.monotonic(),
             "commands": [],
+            "events": [],
         }
+
+    def _record_in_memory_observation_event(
+        self,
+        *,
+        event_type: str,
+        elapsed_seconds: float,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        active = self._active_command_observation
+        if active is None:
+            return
+        events = active.setdefault("events", [])
+        events.append(
+            {
+                "index": len(events) + 1,
+                "event_type": str(event_type),
+                "elapsed_seconds": round(elapsed_seconds, 3),
+                "details": dict(details or {}),
+            }
+        )
 
     def _end_command_observation(self) -> Dict[str, Any]:
         if self._active_command_observation is None:
@@ -768,19 +1054,41 @@ class SatelliteController:
         observation = self._active_command_observation
         self._active_command_observation = None
         commands = list(observation.get("commands", []))
+        events = list(observation.get("events", []))
         node_counts = Counter(entry["node_id"] for entry in commands)
         family_counts = Counter(entry["command_family"] for entry in commands)
         logical_category_counts = Counter(entry["logical_category"] for entry in commands)
         logical_kind_counts = Counter(entry["logical_kind"] for entry in commands)
+        event_counts = Counter(entry["event_type"] for entry in events)
 
         node_family_counts: Dict[str, Counter[str]] = {}
         node_category_counts: Dict[str, Counter[str]] = {}
         node_kind_counts: Dict[str, Counter[str]] = {}
+        family_elapsed_seconds: Dict[str, float] = {}
+        kind_elapsed_seconds: Dict[str, float] = {}
+        node_elapsed_seconds: Dict[str, float] = {}
+        event_elapsed_seconds: Dict[str, float] = {}
         for entry in commands:
             node_id = str(entry["node_id"])
             node_family_counts.setdefault(node_id, Counter())[entry["command_family"]] += 1
             node_category_counts.setdefault(node_id, Counter())[entry["logical_category"]] += 1
             node_kind_counts.setdefault(node_id, Counter())[entry["logical_kind"]] += 1
+            family_key = str(entry["command_family"])
+            kind_key = str(entry["logical_kind"])
+            family_elapsed_seconds[family_key] = family_elapsed_seconds.get(family_key, 0.0) + float(
+                entry.get("elapsed_seconds", 0.0)
+            )
+            kind_elapsed_seconds[kind_key] = kind_elapsed_seconds.get(kind_key, 0.0) + float(
+                entry.get("elapsed_seconds", 0.0)
+            )
+            node_elapsed_seconds[node_id] = node_elapsed_seconds.get(node_id, 0.0) + float(
+                entry.get("elapsed_seconds", 0.0)
+            )
+        for entry in events:
+            event_key = str(entry["event_type"])
+            event_elapsed_seconds[event_key] = event_elapsed_seconds.get(event_key, 0.0) + float(
+                entry.get("elapsed_seconds", 0.0)
+            )
 
         return {
             "action": observation.get("action"),
@@ -790,6 +1098,18 @@ class SatelliteController:
             "command_family_counts": dict(sorted(family_counts.items())),
             "logical_category_counts": dict(sorted(logical_category_counts.items())),
             "logical_kind_counts": dict(sorted(logical_kind_counts.items())),
+            "command_family_elapsed_seconds": {
+                key: round(value, 3)
+                for key, value in sorted(family_elapsed_seconds.items())
+            },
+            "logical_kind_elapsed_seconds": {
+                key: round(value, 3)
+                for key, value in sorted(kind_elapsed_seconds.items())
+            },
+            "node_elapsed_seconds": {
+                key: round(value, 3)
+                for key, value in sorted(node_elapsed_seconds.items())
+            },
             "node_command_family_counts": {
                 node_id: dict(sorted(counter.items()))
                 for node_id, counter in sorted(node_family_counts.items())
@@ -802,6 +1122,12 @@ class SatelliteController:
                 node_id: dict(sorted(counter.items()))
                 for node_id, counter in sorted(node_kind_counts.items())
             },
+            "in_memory_event_counts": dict(sorted(event_counts.items())),
+            "in_memory_event_elapsed_seconds": {
+                key: round(value, 3)
+                for key, value in sorted(event_elapsed_seconds.items())
+            },
+            "events": events,
             "commands": commands,
         }
 
@@ -845,7 +1171,21 @@ class SatelliteController:
     ) -> Tuple[str, List[str]]:
         command_list = list(command)
         if len(command_list) >= 3 and command_list[0] == "docker" and command_list[1] == "exec":
-            return str(command_list[2]), command_list[3:]
+            index = 2
+            while index < len(command_list):
+                token = command_list[index]
+                if token in {"-i", "--interactive", "-t", "--tty", "-d", "--detach"}:
+                    index += 1
+                    continue
+                if token in {"-u", "--user", "-w", "--workdir", "-e", "--env"}:
+                    index += 2
+                    continue
+                if token.startswith("-"):
+                    index += 1
+                    continue
+                break
+            if index < len(command_list):
+                return str(command_list[index]), command_list[index + 1 :]
         if (
             len(command_list) >= 5
             and command_list[0] == "docker"
@@ -1625,6 +1965,9 @@ class SatelliteController:
             failure_stage=f"ping {target_ip} from {node_id}",
         )
 
+    def _runtime_attach_ping_validation_enabled(self) -> bool:
+        return not bool(getattr(self.args, "fast_runtime_apply", False))
+
     def _set_host_sysctl(self, *, key: str, value: int) -> None:
         self._run_command(
             ["sudo", "sysctl", "-w", f"{key}={value}"],
@@ -1956,6 +2299,8 @@ class SatelliteController:
         self,
         *,
         state: Dict[str, Any],
+        orbit_a_id: str,
+        orbit_b_id: str,
         requested_slot_name: Optional[str],
     ) -> Dict[str, Any]:
         if requested_slot_name is not None:
@@ -1964,6 +2309,13 @@ class SatelliteController:
                 slot_name=requested_slot_name,
                 expected_slot_type="cross_plane_isl",
             )
+            slot_inventory = self._slot_inventory_by_name().get(requested_slot_name, {})
+            orbit_pair = tuple(slot_inventory.get("orbit_pair", []))
+            if orbit_pair != (orbit_a_id, orbit_b_id):
+                raise RuntimeError(
+                    f"{requested_slot_name} is reserved for orbit pair {orbit_pair}, "
+                    f"not {(orbit_a_id, orbit_b_id)}"
+                )
             if slot_state.get("occupied", False):
                 raise RuntimeError(f"{requested_slot_name} is already occupied")
             return slot_state
@@ -1975,6 +2327,12 @@ class SatelliteController:
                     slot
                     for slot in state.get("slots", [])
                     if slot.get("slot_type") == "cross_plane_isl"
+                    and tuple(
+                        self._slot_inventory_by_name()
+                        .get(str(slot.get("slot_name")), {})
+                        .get("orbit_pair", [])
+                    )
+                    == (orbit_a_id, orbit_b_id)
                 ],
                 key=lambda item: str(item.get("slot_name")),
             )
@@ -2051,20 +2409,34 @@ class SatelliteController:
         second_orbit = self._satellite_orbit(second_satellite_id)
         if first_orbit == second_orbit:
             raise ValueError("cross-plane link requires satellites from different orbits")
-
-        if first_orbit == "orbit-a":
-            return {
-                "satellite_a_id": first_satellite_id,
-                "satellite_b_id": second_satellite_id,
-                "satellite_a_direction": first_direction,
-                "satellite_b_direction": second_direction,
-            }
-        return {
-            "satellite_a_id": second_satellite_id,
-            "satellite_b_id": first_satellite_id,
-            "satellite_a_direction": second_direction,
-            "satellite_b_direction": first_direction,
-        }
+        matching_pairs = []
+        for slot in self._slot_inventory().get("cross_plane_isl", []):
+            orbit_pair = tuple(slot.get("orbit_pair", []))
+            if orbit_pair == (first_orbit, second_orbit):
+                matching_pairs.append(
+                    {
+                        "orbit_pair": orbit_pair,
+                        "satellite_a_id": first_satellite_id,
+                        "satellite_b_id": second_satellite_id,
+                        "satellite_a_direction": first_direction,
+                        "satellite_b_direction": second_direction,
+                    }
+                )
+            elif orbit_pair == (second_orbit, first_orbit):
+                matching_pairs.append(
+                    {
+                        "orbit_pair": orbit_pair,
+                        "satellite_a_id": second_satellite_id,
+                        "satellite_b_id": first_satellite_id,
+                        "satellite_a_direction": second_direction,
+                        "satellite_b_direction": first_direction,
+                    }
+                )
+        if not matching_pairs:
+            raise ValueError(
+                f"unsupported orbit pair for cross-plane link: {first_orbit}<->{second_orbit}"
+            )
+        return matching_pairs[0]
 
     def attach_ut(
         self,
@@ -2099,7 +2471,8 @@ class SatelliteController:
                 docker_network_name=str(slot_inventory.get("docker_network_name")),
                 endpoint=dynamic_endpoint,
             )
-            self._ping(node_id=ut_id, target_ip=satellite_target_ip)
+            if self._runtime_attach_ping_validation_enabled():
+                self._ping(node_id=ut_id, target_ip=satellite_target_ip)
         except RuntimeError:
             self._rollback_dynamic_endpoint(
                 docker_network_name=str(slot_inventory.get("docker_network_name")),
@@ -2199,7 +2572,8 @@ class SatelliteController:
                 docker_network_name=str(slot_inventory.get("docker_network_name")),
                 endpoint=dynamic_endpoint,
             )
-            self._ping(node_id=gateway_id, target_ip=satellite_target_ip)
+            if self._runtime_attach_ping_validation_enabled():
+                self._ping(node_id=gateway_id, target_ip=satellite_target_ip)
         except RuntimeError:
             self._rollback_dynamic_endpoint(
                 docker_network_name=str(slot_inventory.get("docker_network_name")),
@@ -2285,13 +2659,26 @@ class SatelliteController:
             if not entry.get("occupied", False):
                 continue
             binding = entry.get("binding") or {}
-            if satellite_a_id in {binding.get("satellite_a_id"), binding.get("satellite_b_id")}:
-                raise RuntimeError(f"{satellite_a_id} already uses cross-plane slot {entry.get('slot_name')}")
-            if satellite_b_id in {binding.get("satellite_a_id"), binding.get("satellite_b_id")}:
-                raise RuntimeError(f"{satellite_b_id} already uses cross-plane slot {entry.get('slot_name')}")
+            occupied_directions = {
+                (str(binding.get("satellite_a_id")), str(binding.get("satellite_a_direction"))),
+                (str(binding.get("satellite_b_id")), str(binding.get("satellite_b_direction"))),
+            }
+            requested_directions = {
+                (satellite_a_id, satellite_a_direction),
+                (satellite_b_id, satellite_b_direction),
+            }
+            overlap = occupied_directions & requested_directions
+            if overlap:
+                satellite_id, logical_direction = sorted(overlap)[0]
+                raise RuntimeError(
+                    f"{satellite_id} already uses logical direction {logical_direction} "
+                    f"on cross-plane slot {entry.get('slot_name')}"
+                )
 
         slot_state = self._select_cross_plane_slot_for_connect(
             state=state,
+            orbit_a_id=str(request["orbit_pair"][0]),
+            orbit_b_id=str(request["orbit_pair"][1]),
             requested_slot_name=requested_slot_name,
         )
         slot_name = str(slot_state.get("slot_name"))
@@ -2333,7 +2720,8 @@ class SatelliteController:
                 endpoint=endpoint_b,
             )
             endpoint_b_connected = True
-            self._ping(node_id=satellite_a_id, target_ip=satellite_b_target_ip)
+            if self._runtime_attach_ping_validation_enabled():
+                self._ping(node_id=satellite_a_id, target_ip=satellite_b_target_ip)
         except RuntimeError:
             if endpoint_b_connected:
                 self._rollback_dynamic_endpoint(
@@ -2558,6 +2946,13 @@ class SatelliteController:
                 "    node_metadata_summary="
                 + json.dumps(
                     self._summarize_node_metadata(batch["node_metadata"]),
+                    sort_keys=True,
+                )
+            )
+            print(
+                "    local_agent_contract_summary="
+                + json.dumps(
+                    self._summarize_local_agent_contract(batch["local_agent_contract"]),
                     sort_keys=True,
                 )
             )
@@ -2883,8 +3278,12 @@ class SatelliteController:
             "interface_roles": self._controller_visible_interface_roles(node_id),
             "local_agent_capabilities": {
                 "current": {
-                    "available": False,
-                    "endpoint": None,
+                    "available": True,
+                    "endpoint": "controller_triggered_shell_agent_cli",
+                    "execution_location": "in_container",
+                    "delivery_mode": "controller_serial_docker_exec",
+                    "persistent": False,
+                    "scope": "batched_runtime_updates_only",
                 },
                 "future": {
                     "expected_endpoint": "node_local_forwarding_agent",
@@ -2897,7 +3296,7 @@ class SatelliteController:
                 },
             },
             "control_plane_endpoint": {
-                "current": None,
+                "current": "controller_triggered_shell_agent_cli",
                 "future": "node_local_forwarding_agent",
             },
             "metadata_ownership": {
@@ -2953,7 +3352,7 @@ class SatelliteController:
                     "supports_cgnat": True,
                     "supports_egress": True,
                     "supports_bgp": True,
-                    "gateway_region": None,
+                    "gateway_region": gateway_entry.get("gateway_region"),
                     "gateway_cluster": uplink.get("network_name"),
                     "connected_ground_control": None,
                 }
@@ -3021,12 +3420,74 @@ class SatelliteController:
             "idempotent": "best_effort_command_level",
         }
 
+    def _runtime_local_agent_contract(
+        self,
+        *,
+        node_plan: Dict[str, Any],
+        replay_policy: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return {
+            "execution_entrypoint": {
+                "current": "controller_triggered_shell_agent_cli",
+                "future": "persistent_node_local_forwarding_agent",
+                "current_transport_wrapper": "docker_exec_stdin_script",
+            },
+            "input_format": {
+                "kind": "shell_agent_apply_node_plan_v1",
+                "required_fields": self._runtime_agent_required_input_fields(),
+                "command_encoding": "ordered_shell_invocation_list",
+                "supported_command_families": (
+                    self._runtime_agent_supported_command_families()
+                ),
+            },
+            "command_lifecycle": {
+                "ordering": "serial_in_order",
+                "command_start_marker": "__SKYSEED_AGENT_CMD_START__",
+                "command_exit_marker": "__SKYSEED_AGENT_CMD_EXIT__",
+                "apply_abort_marker": "__SKYSEED_AGENT_APPLY_ABORT__",
+                "first_failure_behavior": "stop_remaining_commands",
+                "skipped_command_behavior": "controller_maps_remaining_commands_as_skipped",
+                "rollback_on_failure": "none",
+            },
+            "validation_semantics": {
+                "current_mode": "minimal_shell_agent_validation",
+                "required_field_check": True,
+                "protocol_version_check": True,
+                "supported_command_family_check": True,
+                "malformed_payload_detection": True,
+                "reserved_future_validation": [
+                    "node_local_precondition_validation",
+                    "persistent_replay_store_lookup",
+                ],
+            },
+            "replay_semantics": {
+                "node_plan_id_visibility": True,
+                "execution_nonce_visibility": True,
+                "replay_detection_mode": replay_policy.get("replay_detection"),
+                "durable_replay_store": False,
+                "same_node_plan_id_behavior_current": replay_policy.get(
+                    "same_node_plan_id_behavior_current"
+                ),
+            },
+            "logging_semantics": {
+                "agent_markers": "stdout_stderr_machine_readable",
+                "human_readable_output": "failure_or_command_output_only",
+                "stdout_stderr_summary_source": "controller_response_mapping",
+            },
+            "response_envelope_schema": RUNTIME_RESPONSE_ENVELOPE_SCHEMA_VERSION,
+            "node_plan_id": node_plan["node_plan_id"],
+            "node_id": node_plan["node_id"],
+        }
+
     def _initial_runtime_agent_health(self) -> Dict[str, Any]:
         return {
-            "status": "controller_transport_only",
+            "status": "transient_shell_agent_reserved",
             "healthy": None,
-            "source": "controller_serial_docker_exec",
-            "message": "local agent not implemented in current transport",
+            "source": "controller_triggered_shell_agent_cli",
+            "message": (
+                "transient node-local shell agent may execute batched runtime updates "
+                "via controller_serial_docker_exec"
+            ),
         }
 
     def _initial_runtime_ack(self, *, expected_ack_mode: str) -> Dict[str, Any]:
@@ -3075,6 +3536,9 @@ class SatelliteController:
             "already_applied": False,
             "replay_policy": dict(replay_policy),
             "idempotency_scope": idempotency_scope,
+            "agent_visible_node_plan_id": None,
+            "agent_visible_execution_nonce": None,
+            "agent_replay_detection_mode": replay_policy.get("replay_detection"),
         }
 
     def _initial_runtime_validation_report(self) -> Dict[str, Any]:
@@ -3087,7 +3551,7 @@ class SatelliteController:
             "unsupported_protocol_version": None,
             "malformed_payload": False,
             "missing_required_fields": [],
-            "current_validation_mode": "protocol_reserved_no_agent_validation_engine",
+            "current_validation_mode": "minimal_shell_agent_validation",
             "future_validation_boundary": "node_local_agent_pre_apply_validation",
             "reserved_error_codes": [
                 "validation_failed",
@@ -3154,6 +3618,7 @@ class SatelliteController:
 
     def _summarize_node_metadata(self, node_metadata: Dict[str, Any]) -> Dict[str, Any]:
         interface_roles = list(node_metadata.get("interface_roles", []))
+        local_agent_capabilities = dict(node_metadata.get("local_agent_capabilities", {}))
         return {
             "schema_version": node_metadata.get("schema_version"),
             "node_id": node_metadata.get("node_id"),
@@ -3162,6 +3627,7 @@ class SatelliteController:
             "supports_mpls": node_metadata.get("supports_mpls"),
             "supports_runtime_attach": node_metadata.get("supports_runtime_attach"),
             "control_plane_endpoint": node_metadata.get("control_plane_endpoint"),
+            "local_agent_capabilities": local_agent_capabilities,
             "interface_role_count": len(interface_roles),
             "interface_role_names": [
                 entry.get("role")
@@ -3170,6 +3636,31 @@ class SatelliteController:
             ],
             "forwarding_capabilities": node_metadata.get("forwarding_capabilities"),
             "metadata_ownership": node_metadata.get("metadata_ownership"),
+        }
+
+    def _summarize_local_agent_contract(
+        self,
+        local_agent_contract: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return {
+            "execution_entrypoint": local_agent_contract.get("execution_entrypoint"),
+            "input_format": {
+                "kind": local_agent_contract.get("input_format", {}).get("kind"),
+                "required_field_count": len(
+                    local_agent_contract.get("input_format", {}).get("required_fields", [])
+                ),
+                "supported_command_families": local_agent_contract.get(
+                    "input_format",
+                    {},
+                ).get("supported_command_families"),
+            },
+            "command_lifecycle": local_agent_contract.get("command_lifecycle"),
+            "validation_semantics": local_agent_contract.get("validation_semantics"),
+            "replay_semantics": local_agent_contract.get("replay_semantics"),
+            "logging_semantics": local_agent_contract.get("logging_semantics"),
+            "response_envelope_schema": local_agent_contract.get(
+                "response_envelope_schema"
+            ),
         }
 
     def _summarize_response_envelope(self, response_envelope: Dict[str, Any]) -> Dict[str, Any]:
@@ -3267,61 +3758,73 @@ class SatelliteController:
             replay_policy = self._runtime_update_replay_policy(
                 idempotency_scope=str(action_context["idempotency_scope"])
             )
-            node_plans.append(
-                {
-                    "node_id": node_id,
-                    "node_plan_id": batch["node_plan_id"],
-                    "plan_id": action_context["plan_id"],
-                    "generation": action_context["generation"],
-                    "sequence": node_sequence,
-                    "phase": action_context["phase"],
-                    "scenario": action_context["scenario"],
-                    "target_node": node_id,
-                    "target_node_type": self._runtime_node_type(node_id),
-                    "created_at": action_context["created_at"],
-                    "command_count": batch["command_count"],
-                    "apply_mode": "ordered_command_list",
-                    "replay_policy": replay_policy,
-                    "expected_ack_mode": "terminal_node_ack",
-                    "transaction_semantics": self._runtime_update_transaction_semantics(),
-                    "execution_boundary": {
-                        "global_decision_maker": "controller",
-                        "local_execution_target": "node_local_forwarding_agent",
-                        "execution_location": "in_container",
-                        "node_plan_visibility": "node_local_only",
-                    },
-                    "expected_transport": {
-                        "current": "controller_serial_docker_exec",
-                        "future": "in_emulation_control_plane_delivery",
-                    },
-                    "distribution": {
-                        "source": {
-                            "current": "controller_process_on_host",
-                            "future_candidates": [
-                                "ground_control_host",
-                                "data_center",
-                            ],
-                        },
-                        "target": {
-                            "node_id": node_id,
-                            "node_local_endpoint": "node_local_forwarding_agent",
-                            "execution_location": "in_container",
-                        },
-                    },
-                    "node_metadata": self._runtime_node_metadata(node_id),
-                    "category_counts": dict(sorted(batch["category_counts"].items())),
-                    "logical_kind_counts": dict(sorted(batch["logical_kind_counts"].items())),
-                    "commands": batch["commands"],
-                    "response_envelope": self._initial_runtime_update_response_envelope(
-                        node_plan_id=str(batch["node_plan_id"]),
-                        plan_id=str(action_context["plan_id"]),
-                        generation=int(action_context["generation"]),
-                        sequence=node_sequence,
-                        expected_ack_mode="terminal_node_ack",
-                        replay_policy=replay_policy,
-                        idempotency_scope=str(action_context["idempotency_scope"]),
+            transaction_semantics = self._runtime_update_transaction_semantics()
+            node_plan = {
+                "node_id": node_id,
+                "node_plan_id": batch["node_plan_id"],
+                "plan_id": action_context["plan_id"],
+                "generation": action_context["generation"],
+                "sequence": node_sequence,
+                "phase": action_context["phase"],
+                "scenario": action_context["scenario"],
+                "target_node": node_id,
+                "target_node_type": self._runtime_node_type(node_id),
+                "created_at": action_context["created_at"],
+                "command_count": batch["command_count"],
+                "apply_mode": "ordered_command_list",
+                "replay_policy": replay_policy,
+                "expected_ack_mode": "terminal_node_ack",
+                "transaction_semantics": transaction_semantics,
+                "execution_boundary": {
+                    "global_decision_maker": "controller",
+                    "local_execution_target": "node_local_forwarding_agent",
+                    "execution_location": "in_container",
+                    "current_local_execution_entrypoint": (
+                        "controller_triggered_shell_agent_cli"
                     ),
-                }
+                    "future_local_execution_entrypoint": (
+                        "persistent_node_local_forwarding_agent"
+                    ),
+                    "node_plan_visibility": "node_local_only",
+                },
+                "expected_transport": {
+                    "current": "controller_serial_docker_exec",
+                    "future": "in_emulation_control_plane_delivery",
+                },
+                "distribution": {
+                    "source": {
+                        "current": "controller_process_on_host",
+                        "future_candidates": [
+                            "ground_control_host",
+                            "data_center",
+                        ],
+                    },
+                    "target": {
+                        "node_id": node_id,
+                        "node_local_endpoint": "node_local_forwarding_agent",
+                        "execution_location": "in_container",
+                    },
+                },
+                "node_metadata": self._runtime_node_metadata(node_id),
+                "category_counts": dict(sorted(batch["category_counts"].items())),
+                "logical_kind_counts": dict(sorted(batch["logical_kind_counts"].items())),
+                "commands": batch["commands"],
+            }
+            node_plan["local_agent_contract"] = self._runtime_local_agent_contract(
+                node_plan=node_plan,
+                replay_policy=replay_policy,
+            )
+            node_plan["response_envelope"] = self._initial_runtime_update_response_envelope(
+                node_plan_id=str(batch["node_plan_id"]),
+                plan_id=str(action_context["plan_id"]),
+                generation=int(action_context["generation"]),
+                sequence=node_sequence,
+                expected_ack_mode="terminal_node_ack",
+                replay_policy=replay_policy,
+                idempotency_scope=str(action_context["idempotency_scope"]),
+            )
+            node_plans.append(
+                node_plan
             )
         return {
             "schema_version": RUNTIME_PAYLOAD_SCHEMA_VERSION,
@@ -3348,6 +3851,10 @@ class SatelliteController:
                 ],
                 "local_execution_target": "node_local_forwarding_agent",
                 "current_execution_mode": "controller_serial_docker_exec",
+                "current_local_execution_entrypoint": "controller_triggered_shell_agent_cli",
+                "future_local_execution_entrypoint": (
+                    "persistent_node_local_forwarding_agent"
+                ),
                 "current_parallelism": "none",
                 "node_plan_visibility": "node_local_only",
             },
@@ -3379,49 +3886,192 @@ class SatelliteController:
             "cleanup-ut-egress-mpls",
         }
 
-    def _strip_batch_marker_lines(self, text: str) -> str:
+    def _strip_runtime_agent_marker_lines(self, text: str) -> str:
         if not text:
             return ""
         kept_lines = [
             line
             for line in text.splitlines()
-            if not line.startswith("__SKYSEED_BATCH_")
+            if not (
+                line.startswith("__SKYSEED_BATCH_")
+                or line.startswith("__SKYSEED_AGENT_")
+            )
         ]
         return "\n".join(kept_lines)
 
-    def _build_node_batch_script(self, node_plan: Dict[str, Any]) -> str:
+    def _build_node_runtime_agent_script(self, node_plan: Dict[str, Any]) -> str:
+        execution_nonce = self._execution_nonce(str(node_plan["node_plan_id"]))
+        local_agent_contract = node_plan["local_agent_contract"]
         lines = [
-            "run_cmd() {",
-            '  idx="$1"',
-            '  allow_failure="$2"',
-            "  shift 2",
-            '  printf "__SKYSEED_BATCH_CMD_START__:%s\\n" "$idx"',
-            '  "$@"',
-            '  rc="$?"',
-            '  printf "__SKYSEED_BATCH_CMD_EXIT__:%s:%s\\n" "$idx" "$rc"',
-            '  if [ "$rc" -ne 0 ] && [ "$allow_failure" -ne 1 ]; then',
-            '    printf "__SKYSEED_BATCH_FAIL__:%s:%s\\n" "$idx" "$rc"',
-            '    exit "$rc"',
-            "  fi",
-            "}",
+            self._runtime_agent_template().rstrip(),
+            "",
+            f"SKYSEED_AGENT_PROTOCOL_VERSION={shlex.quote(self._runtime_protocol_version())}",
+            f"SKYSEED_AGENT_SCHEMA_VERSION={shlex.quote(self._runtime_agent_schema_version())}",
+            (
+                "SKYSEED_AGENT_RESPONSE_ENVELOPE_SCHEMA_VERSION="
+                + shlex.quote(RUNTIME_RESPONSE_ENVELOPE_SCHEMA_VERSION)
+            ),
+            f"SKYSEED_AGENT_NODE_PLAN_ID={shlex.quote(str(node_plan['node_plan_id']))}",
+            f"SKYSEED_AGENT_PLAN_ID={shlex.quote(str(node_plan['plan_id']))}",
+            f"SKYSEED_AGENT_NODE_ID={shlex.quote(str(node_plan['node_id']))}",
+            f"SKYSEED_AGENT_NODE_TYPE={shlex.quote(str(node_plan['target_node_type']))}",
+            f"SKYSEED_AGENT_PHASE={shlex.quote(str(node_plan['phase']))}",
+            f"SKYSEED_AGENT_SCENARIO={shlex.quote(str(node_plan['scenario']))}",
+            f"SKYSEED_AGENT_GENERATION={shlex.quote(str(node_plan['generation']))}",
+            f"SKYSEED_AGENT_SEQUENCE={shlex.quote(str(node_plan['sequence']))}",
+            f"SKYSEED_AGENT_COMMAND_COUNT={shlex.quote(str(node_plan['command_count']))}",
+            (
+                "SKYSEED_AGENT_COMMAND_INDEXES="
+                + shlex.quote(
+                    ",".join(str(command["index"]) for command in node_plan["commands"])
+                )
+            ),
+            f"SKYSEED_AGENT_EXPECTED_ACK_MODE={shlex.quote(str(node_plan['expected_ack_mode']))}",
+            (
+                "SKYSEED_AGENT_IDEMPOTENCY_SCOPE="
+                + shlex.quote(str(node_plan["response_envelope"]["replay_info"]["idempotency_scope"]))
+            ),
+            (
+                "SKYSEED_AGENT_REPLAY_DETECTION_MODE="
+                + shlex.quote(
+                    str(
+                        node_plan["response_envelope"]["replay_info"]["replay_policy"][
+                            "replay_detection"
+                        ]
+                    )
+                )
+            ),
+            (
+                "SKYSEED_AGENT_SUPPORTED_COMMAND_FAMILIES="
+                + shlex.quote(
+                    ",".join(
+                        local_agent_contract["input_format"]["supported_command_families"]
+                    )
+                )
+            ),
+            f"SKYSEED_AGENT_EXECUTION_NONCE={shlex.quote(execution_nonce)}",
+            "skyseed_agent_begin_apply",
         ]
         for command in node_plan["commands"]:
             allow_failure = "1" if command["allow_failure"] else "0"
             lines.append(
-                "run_cmd "
+                "skyseed_agent_run_cmd "
                 f"{command['index']} "
                 f"{allow_failure} "
+                f"{shlex.quote(str(command['command_family']))} "
+                f"{shlex.quote(str(command['logical_kind']))} "
+                f"{shlex.quote(str(command['idempotency_key']))} "
+                f"{shlex.quote(str(command['stage']))} "
+                "-- "
                 + shlex.join(list(command["argv"]))
             )
-        lines.append('printf "__SKYSEED_BATCH_OK__\\n"')
-        return "\n".join(lines)
+        lines.append("skyseed_agent_end_apply")
+        return "\n".join(lines) + "\n"
+
+    def _parse_runtime_agent_markers(self, stdout: str, stderr: str) -> Dict[str, Any]:
+        report: Dict[str, Any] = {
+            "supported_protocol_versions": [],
+            "validation_errors": [],
+            "missing_required_fields": [],
+            "unsupported_command_families": [],
+            "command_start_indices": [],
+            "command_exit_codes": {},
+            "skipped_due_to_abort": [],
+        }
+        marker_stream = "\n".join(value for value in (stdout, stderr) if value)
+        for line in marker_stream.splitlines():
+            if line.startswith("__SKYSEED_AGENT_SCHEMA_VERSION__:"):
+                report["agent_schema_version"] = line.split(":", 1)[1]
+            elif line.startswith("__SKYSEED_AGENT_PROTOCOL_VERSION__:"):
+                report["protocol_version"] = line.split(":", 1)[1]
+            elif line.startswith("__SKYSEED_AGENT_SUPPORTED_PROTOCOL_VERSION__:"):
+                report["supported_protocol_versions"].append(line.split(":", 1)[1])
+            elif line.startswith("__SKYSEED_AGENT_NODE_PLAN_ID__:"):
+                report["node_plan_id"] = line.split(":", 1)[1]
+            elif line.startswith("__SKYSEED_AGENT_EXECUTION_NONCE__:"):
+                report["execution_nonce"] = line.split(":", 1)[1]
+            elif line.startswith("__SKYSEED_AGENT_HEALTH_STATUS__:"):
+                report["agent_health_status"] = line.split(":", 1)[1]
+            elif line.startswith("__SKYSEED_AGENT_ACK__:"):
+                report["ack_status"] = line.split(":", 1)[1]
+            elif line.startswith("__SKYSEED_AGENT_APPLY_STATUS__:"):
+                report["apply_status"] = line.split(":", 1)[1]
+            elif line.startswith("__SKYSEED_AGENT_ERROR_CODE__:"):
+                report["error_code"] = line.split(":", 1)[1]
+            elif line.startswith("__SKYSEED_AGENT_ERROR_CATEGORY__:"):
+                report["error_category"] = line.split(":", 1)[1]
+            elif line.startswith("__SKYSEED_AGENT_ERROR_MESSAGE__:"):
+                report["error_message"] = line.split(":", 1)[1]
+            elif line.startswith("__SKYSEED_AGENT_FAILED_COMMAND_INDEX__:"):
+                report["failed_command_index"] = line.split(":", 1)[1]
+            elif line.startswith("__SKYSEED_AGENT_FAILED_COMMAND_FAMILY__:"):
+                report["failed_command_family"] = line.split(":", 1)[1]
+            elif line.startswith("__SKYSEED_AGENT_FAILED_LOGICAL_KIND__:"):
+                report["failed_logical_kind"] = line.split(":", 1)[1]
+            elif line.startswith("__SKYSEED_AGENT_VALIDATION_STATUS__:"):
+                report["validation_status"] = line.split(":", 1)[1]
+            elif line.startswith("__SKYSEED_AGENT_VALIDATION_ERROR__:"):
+                report["validation_errors"].append(line.split(":", 1)[1])
+            elif line.startswith("__SKYSEED_AGENT_MISSING_FIELD__:"):
+                report["missing_required_fields"].append(line.split(":", 1)[1])
+            elif line.startswith("__SKYSEED_AGENT_MALFORMED_PAYLOAD__:"):
+                report["malformed_payload"] = line.split(":", 1)[1] == "1"
+            elif line.startswith("__SKYSEED_AGENT_UNSUPPORTED_PROTOCOL_VERSION__:"):
+                report["unsupported_protocol_version"] = line.split(":", 1)[1]
+            elif line.startswith("__SKYSEED_AGENT_UNSUPPORTED_COMMAND_FAMILY__:"):
+                report["unsupported_command_families"].append(line.split(":", 1)[1])
+            elif line.startswith("__SKYSEED_AGENT_REPLAY_MODE__:"):
+                report["replay_detection_mode"] = line.split(":", 1)[1]
+            elif line.startswith("__SKYSEED_AGENT_REPLAY_VISIBLE_NODE_PLAN_ID__:"):
+                report["replay_visible_node_plan_id"] = line.split(":", 1)[1]
+            elif line.startswith("__SKYSEED_AGENT_REPLAY_VISIBLE_EXECUTION_NONCE__:"):
+                report["replay_visible_execution_nonce"] = line.split(":", 1)[1]
+            elif line.startswith("__SKYSEED_AGENT_CMD_START__:"):
+                parts = line.split(":", 3)
+                if len(parts) >= 2:
+                    index_text = parts[1]
+                else:
+                    continue
+                report["command_start_indices"].append(int(index_text))
+            elif line.startswith("__SKYSEED_AGENT_CMD_EXIT__:"):
+                _, index_text, rc_text = line.split(":", 2)
+                report["command_exit_codes"][int(index_text)] = int(rc_text)
+            elif line.startswith("__SKYSEED_AGENT_APPLY_ABORT__:"):
+                _, failed_index_text, skipped_text = line.split(":", 2)
+                report["failed_command_index"] = failed_index_text
+                skipped_indices = [
+                    int(value)
+                    for value in skipped_text.split(",")
+                    if value.strip()
+                ]
+                report["skipped_due_to_abort"] = skipped_indices
+            elif line.startswith("__SKYSEED_BATCH_CMD_EXIT__:"):
+                _, index_text, rc_text = line.split(":", 2)
+                report["command_exit_codes"][int(index_text)] = int(rc_text)
+            elif line.startswith("__SKYSEED_BATCH_FAIL__:"):
+                _, index_text, rc_text = line.split(":", 2)
+                report["failed_command_index"] = index_text
+                report["failed_command_returncode"] = int(rc_text)
+        if not report["supported_protocol_versions"] and report.get("protocol_version"):
+            report["supported_protocol_versions"] = [report["protocol_version"]]
+        report["supported_protocol_versions"] = list(
+            dict.fromkeys(report["supported_protocol_versions"])
+        )
+        report["validation_errors"] = list(dict.fromkeys(report["validation_errors"]))
+        report["missing_required_fields"] = list(
+            dict.fromkeys(report["missing_required_fields"])
+        )
+        report["unsupported_command_families"] = list(
+            dict.fromkeys(report["unsupported_command_families"])
+        )
+        report["command_start_indices"] = list(dict.fromkeys(report["command_start_indices"]))
+        return report
 
     def _apply_node_batch_result_markers(
         self,
         *,
         node_plan: Dict[str, Any],
-        stdout: str,
-        stderr: str,
+        agent_report: Dict[str, Any],
         cleaned_stdout: str,
         cleaned_stderr: str,
         returncode: int,
@@ -3430,28 +4080,18 @@ class SatelliteController:
             int(command["index"]): command
             for command in node_plan["commands"]
         }
-        command_exit_codes: Dict[int, int] = {}
-        failed_index: Optional[int] = None
-        failed_returncode: Optional[int] = None
-        marker_stream = "\n".join(value for value in (stdout, stderr) if value)
-        for line in marker_stream.splitlines():
-            if line.startswith("__SKYSEED_BATCH_CMD_START__:"):
-                continue
-            elif line.startswith("__SKYSEED_BATCH_CMD_EXIT__:"):
-                _, index_text, rc_text = line.split(":", 2)
-                index = int(index_text)
-                rc = int(rc_text)
-                command = command_by_index.get(index)
-                if command is None:
-                    continue
-                command_exit_codes[index] = rc
-                if rc != 0 and not bool(command.get("allow_failure")) and failed_index is None:
-                    failed_index = index
-                    failed_returncode = rc
-            elif line.startswith("__SKYSEED_BATCH_FAIL__:") and failed_index is None:
-                _, index_text, rc_text = line.split(":", 2)
-                failed_index = int(index_text)
-                failed_returncode = int(rc_text)
+        command_exit_codes = {
+            int(index): int(rc)
+            for index, rc in agent_report.get("command_exit_codes", {}).items()
+        }
+        failed_index = (
+            int(agent_report["failed_command_index"])
+            if agent_report.get("failed_command_index") is not None
+            else None
+        )
+        failed_returncode = agent_report.get("failed_command_returncode")
+        if failed_index is not None and failed_returncode is None:
+            failed_returncode = command_exit_codes.get(failed_index)
 
         applied_commands: List[Dict[str, Any]] = []
         skipped_commands: List[Dict[str, Any]] = []
@@ -3465,6 +4105,10 @@ class SatelliteController:
                         **command,
                         "returncode": exit_code,
                         "apply_outcome": apply_outcome,
+                        "agent_execution_status": "completed",
+                        "agent_start_marker_seen": index
+                        in set(agent_report.get("command_start_indices", [])),
+                        "agent_exit_marker_seen": True,
                     }
                 )
                 continue
@@ -3476,6 +4120,9 @@ class SatelliteController:
                         if failed_index is not None
                         else "not_executed"
                     ),
+                    "agent_execution_status": "skipped",
+                    "agent_start_marker_seen": False,
+                    "agent_exit_marker_seen": False,
                 }
             )
 
@@ -3485,10 +4132,22 @@ class SatelliteController:
         error_state = response_state["error"]
         replay_state = response_state["replay_info"]
         timestamp_state = response_state["timestamps"]
-        ack_state["ack_status"] = (
+        agent_health_state = response_state["agent_health"]
+        validation_state = response_state["validation_report"]
+        if agent_report.get("agent_schema_version"):
+            response_state["agent_schema_version"] = agent_report["agent_schema_version"]
+        if agent_report.get("protocol_version"):
+            response_state["protocol_version"] = agent_report["protocol_version"]
+        if agent_report.get("supported_protocol_versions"):
+            response_state["supported_protocol_versions"] = list(
+                agent_report["supported_protocol_versions"]
+            )
+        if agent_report.get("execution_nonce"):
+            response_state["execution_nonce"] = agent_report["execution_nonce"]
+        ack_state["ack_status"] = agent_report.get("ack_status") or (
             "acknowledged_success" if returncode == 0 else "acknowledged_error"
         )
-        apply_state["apply_status"] = (
+        apply_state["apply_status"] = agent_report.get("apply_status") or (
             "applied"
             if returncode == 0 and failed_index is None
             else "partially_applied"
@@ -3503,9 +4162,18 @@ class SatelliteController:
         timestamp_state["execution_finished_at"] = self._utc_timestamp()
         replay_state["replay_detected"] = False
         replay_state["already_applied"] = False
-        error_state["error_code"] = "none"
-        error_state["error_category"] = "none"
-        error_state["error_message"] = None
+        replay_state["agent_visible_node_plan_id"] = agent_report.get(
+            "replay_visible_node_plan_id"
+        )
+        replay_state["agent_visible_execution_nonce"] = agent_report.get(
+            "replay_visible_execution_nonce"
+        )
+        replay_state["agent_replay_detection_mode"] = agent_report.get(
+            "replay_detection_mode"
+        ) or replay_state.get("agent_replay_detection_mode")
+        error_state["error_code"] = agent_report.get("error_code") or "none"
+        error_state["error_category"] = agent_report.get("error_category") or "none"
+        error_state["error_message"] = agent_report.get("error_message")
         error_state["error_details"] = None
         apply_state["failed_command"] = None
         error_state["failed_command_id"] = None
@@ -3514,6 +4182,35 @@ class SatelliteController:
         error_state["retryable"] = False
         error_state["fatal"] = False
         error_state["suggested_action"] = None
+        validation_state["validation_status"] = agent_report.get("validation_status") or (
+            "passed" if returncode == 0 else "not_run"
+        )
+        validation_state["validation_errors"] = list(agent_report.get("validation_errors", []))
+        validation_state["unsupported_command_families"] = list(
+            agent_report.get("unsupported_command_families", [])
+        )
+        validation_state["unsupported_commands"] = []
+        validation_state["unsupported_protocol_version"] = agent_report.get(
+            "unsupported_protocol_version"
+        )
+        validation_state["malformed_payload"] = bool(
+            agent_report.get("malformed_payload", False)
+        )
+        validation_state["missing_required_fields"] = list(
+            agent_report.get("missing_required_fields", [])
+        )
+        agent_health_state.update(
+            {
+                "status": agent_report.get("agent_health_status")
+                or "controller_triggered_shell_agent_cli",
+                "healthy": returncode == 0,
+                "source": "controller_triggered_shell_agent_cli",
+                "message": (
+                    "transient node-local shell agent executed ordered runtime update "
+                    "commands inside the container"
+                ),
+            }
+        )
         if failed_index is not None and failed_index in command_by_index:
             apply_state["failed_command"] = {
                 **command_by_index[failed_index],
@@ -3543,6 +4240,52 @@ class SatelliteController:
             error_state["retryable"] = True
             error_state["fatal"] = False
             error_state["suggested_action"] = "inspect failed command and retry node_plan"
+        elif error_state["error_code"] in {
+            "validation_failed",
+            "unsupported_command",
+            "unsupported_protocol_version",
+            "malformed_payload",
+        }:
+            error_state["failed_command_family"] = agent_report.get(
+                "failed_command_family"
+            )
+            error_state["failed_logical_kind"] = agent_report.get(
+                "failed_logical_kind"
+            )
+            if (
+                failed_index is not None
+                and failed_index in command_by_index
+                and apply_state["failed_command"] is None
+            ):
+                apply_state["failed_command"] = {
+                    **command_by_index[failed_index],
+                    "returncode": failed_returncode,
+                }
+                error_state["failed_command_id"] = command_by_index[failed_index].get(
+                    "idempotency_key"
+                )
+            error_state["error_message"] = error_state["error_message"] or (
+                "agent-side validation rejected node plan"
+            )
+            error_state["error_details"] = {
+                "code": error_state["error_code"],
+                "message": error_state["error_message"],
+                "node_id": node_plan["node_id"],
+                "node_plan_id": node_plan["node_plan_id"],
+                "validation_status": validation_state["validation_status"],
+                "missing_required_fields": validation_state["missing_required_fields"],
+                "unsupported_command_families": validation_state[
+                    "unsupported_command_families"
+                ],
+                "unsupported_protocol_version": validation_state[
+                    "unsupported_protocol_version"
+                ],
+                "malformed_payload": validation_state["malformed_payload"],
+                "returncode": returncode,
+            }
+            error_state["retryable"] = error_state["error_code"] != "unsupported_command"
+            error_state["fatal"] = error_state["error_code"] == "unsupported_protocol_version"
+            error_state["suggested_action"] = "fix node_plan contract before retry"
         elif returncode != 0:
             error_state["error_code"] = "transport_error"
             error_state["error_category"] = "transport"
@@ -3568,30 +4311,29 @@ class SatelliteController:
         action_name: str,
         node_plan: Dict[str, Any],
     ) -> None:
-        script = self._build_node_batch_script(node_plan)
-        command = ["docker", "exec", node_plan["node_id"], "sh", "-lc", script]
+        script = self._build_node_runtime_agent_script(node_plan)
+        command = ["docker", "exec", "-i", node_plan["node_id"], "sh", "-s", "--", "apply-node-plan"]
         print(
-            "  docker exec "
-            f"{node_plan['node_id']} sh -lc "
-            f"'<node-batch plan_id={node_plan['node_plan_id']} "
+            "  docker exec -i "
+            f"{node_plan['node_id']} sh -s -- apply-node-plan "
+            f"'<runtime-agent-cli plan_id={node_plan['node_plan_id']} "
             f"commands={node_plan['command_count']}>'"
         )
         node_plan["response_envelope"]["ack"]["ack_status"] = "awaiting_transport_completion"
         node_plan["response_envelope"]["apply_result"]["apply_status"] = "in_progress"
         node_plan["response_envelope"]["timestamps"]["execution_started_at"] = self._utc_timestamp()
-        node_plan["response_envelope"]["execution_nonce"] = self._execution_nonce(
-            str(node_plan["node_plan_id"])
-        )
         started_at = time.monotonic()
         result = subprocess.run(
             command,
+            input=script,
             capture_output=True,
             text=True,
             check=False,
         )
         elapsed_seconds = time.monotonic() - started_at
-        stdout = self._strip_batch_marker_lines(result.stdout)
-        stderr = self._strip_batch_marker_lines(result.stderr)
+        agent_report = self._parse_runtime_agent_markers(result.stdout, result.stderr)
+        stdout = self._strip_runtime_agent_marker_lines(result.stdout)
+        stderr = self._strip_runtime_agent_marker_lines(result.stderr)
         if stdout.strip():
             print(stdout.rstrip())
         if stderr.strip():
@@ -3607,15 +4349,14 @@ class SatelliteController:
             elapsed_seconds=elapsed_seconds,
             observation={
                 "logical_category": "batched_runtime_update",
-                "logical_kind": "node_batch_exec",
-                "command_family": "docker_exec_batch",
+                "logical_kind": "node_local_agent_exec",
+                "command_family": "docker_exec_agent_cli",
                 "shared_key": node_plan["node_plan_id"],
             },
         )
         self._apply_node_batch_result_markers(
             node_plan=node_plan,
-            stdout=result.stdout,
-            stderr=result.stderr,
+            agent_report=agent_report,
             cleaned_stdout=stdout,
             cleaned_stderr=stderr,
             returncode=result.returncode,
@@ -3662,6 +4403,15 @@ class SatelliteController:
     ) -> Dict[str, Any]:
         self._print_ut_egress_spec_plan(action_name=action_name, specs=specs)
         logical_kind_counts = Counter(self._ut_egress_logical_kind(spec) for spec in specs)
+        spec_command_family_counts = Counter(
+            self._infer_command_family(list(spec.command))
+            for spec in specs
+        )
+        node_spec_command_family_counts: Dict[str, Counter[str]] = {}
+        for spec in specs:
+            node_spec_command_family_counts.setdefault(spec.node_id, Counter())[
+                self._infer_command_family(list(spec.command))
+            ] += 1
         per_node_update_plan = self._ut_egress_per_node_update_plan(
             action_name=action_name,
             specs=specs,
@@ -3677,6 +4427,11 @@ class SatelliteController:
                 "category_counts": dict(sorted(Counter(spec.category for spec in specs).items())),
                 "node_counts": dict(sorted(Counter(spec.node_id for spec in specs).items())),
                 "logical_kind_counts": dict(sorted(logical_kind_counts.items())),
+                "spec_command_family_counts": dict(sorted(spec_command_family_counts.items())),
+                "node_spec_command_family_counts": {
+                    node_id: dict(sorted(counter.items()))
+                    for node_id, counter in sorted(node_spec_command_family_counts.items())
+                },
                 "node_batch_plan": batch_plan,
                 "per_node_update_plan": per_node_update_plan,
                 "dry_run": True,
@@ -3724,6 +4479,11 @@ class SatelliteController:
             "category_counts": dict(sorted(Counter(spec.category for spec in specs).items())),
             "node_counts": dict(sorted(Counter(spec.node_id for spec in specs).items())),
             "logical_kind_counts": dict(sorted(logical_kind_counts.items())),
+            "spec_command_family_counts": dict(sorted(spec_command_family_counts.items())),
+            "node_spec_command_family_counts": {
+                node_id: dict(sorted(counter.items()))
+                for node_id, counter in sorted(node_spec_command_family_counts.items())
+            },
             "node_batch_plan": batch_plan,
             "per_node_update_plan": per_node_update_plan,
             "transport_command_count": (
@@ -3957,8 +4717,28 @@ class SatelliteController:
 
     def apply_scenario(self, scenario_name: str) -> Dict[str, Any]:
         self._begin_command_observation(f"apply-scenario:{scenario_name}")
+        phase_elapsed_seconds: Dict[str, float] = {
+            "ensure_runtime_ready": 0.0,
+            "release_slots": 0.0,
+            "attach_slots": 0.0,
+            "verify_scenario": 0.0,
+            "state_refresh": 0.0,
+        }
+        slot_mutation_counts: Dict[str, int] = {
+            "release_slot": 0,
+            "attach_ut": 0,
+            "attach_gw": 0,
+            "connect_cross": 0,
+        }
+        slot_noop_counts: Dict[str, int] = {
+            "release_slot": 0,
+            "attach_slot": 0,
+        }
+        apply_scenario_summary: Optional[Dict[str, Any]] = None
         try:
+            ready_started_at = time.monotonic()
             state = self._ensure_runtime_ready_for_scenario()
+            phase_elapsed_seconds["ensure_runtime_ready"] += time.monotonic() - ready_started_at
             definition = self._scenario_definition(scenario_name)
             managed_slots = dict(definition.get("managed_slots", {}))
             state_by_name = self._slot_state_by_name(state)
@@ -3967,19 +4747,27 @@ class SatelliteController:
                 slot_entry = state_by_name[slot_name]
                 target = managed_slots.get(slot_name)
                 if self._scenario_slot_matches(slot_entry=slot_entry, target=target):
+                    slot_noop_counts["release_slot"] += 1
                     continue
                 if slot_entry.get("occupied", False):
+                    release_started_at = time.monotonic()
                     self.release_slot(slot_name)
+                    phase_elapsed_seconds["release_slots"] += time.monotonic() - release_started_at
+                    slot_mutation_counts["release_slot"] += 1
+                    refresh_started_at = time.monotonic()
                     state = self.link_state
                     state_by_name = self._slot_state_by_name(state)
+                    phase_elapsed_seconds["state_refresh"] += time.monotonic() - refresh_started_at
 
             for slot_name in self._scenario_attach_order(managed_slots):
                 slot_entry = state_by_name[slot_name]
                 target = managed_slots[slot_name]
                 if self._scenario_slot_matches(slot_entry=slot_entry, target=target):
+                    slot_noop_counts["attach_slot"] += 1
                     continue
                 action = str(target.get("action"))
                 request = str(target.get("request"))
+                attach_started_at = time.monotonic()
                 if action == "attach_ut":
                     self.attach_ut(request, requested_slot_name=slot_name)
                 elif action == "attach_gw":
@@ -3988,18 +4776,76 @@ class SatelliteController:
                     self.connect_cross_plane(request, requested_slot_name=slot_name)
                 else:
                     raise RuntimeError(f"unsupported scenario action: {action}")
+                phase_elapsed_seconds["attach_slots"] += time.monotonic() - attach_started_at
+                slot_mutation_counts[action] = slot_mutation_counts.get(action, 0) + 1
+                refresh_started_at = time.monotonic()
                 state = self.link_state
                 state_by_name = self._slot_state_by_name(state)
+                phase_elapsed_seconds["state_refresh"] += time.monotonic() - refresh_started_at
 
+            verify_started_at = time.monotonic()
             result = self.verify_scenario(scenario_name)
+            phase_elapsed_seconds["verify_scenario"] += time.monotonic() - verify_started_at
         finally:
             command_observation = self._end_command_observation()
             self._print_command_observation_summary(
                 command_observation,
                 label="Apply scenario execution summary",
             )
+            command_family_elapsed_seconds = dict(
+                command_observation.get("command_family_elapsed_seconds", {})
+            )
+            apply_scenario_summary = {
+                "action": f"apply-scenario:{scenario_name}",
+                "scenario": scenario_name,
+                "phase_elapsed_seconds": {
+                    key: round(value, 3)
+                    for key, value in sorted(phase_elapsed_seconds.items())
+                },
+                "slot_mutation_counts": dict(sorted(slot_mutation_counts.items())),
+                "slot_noop_counts": dict(sorted(slot_noop_counts.items())),
+                "command_family_counts": dict(
+                    sorted(command_observation.get("command_family_counts", {}).items())
+                ),
+                "command_family_elapsed_seconds": command_family_elapsed_seconds,
+                "logical_kind_elapsed_seconds": dict(
+                    sorted(command_observation.get("logical_kind_elapsed_seconds", {}).items())
+                ),
+                "node_elapsed_seconds": dict(
+                    sorted(command_observation.get("node_elapsed_seconds", {}).items())
+                ),
+                "in_memory_event_counts": dict(
+                    sorted(command_observation.get("in_memory_event_counts", {}).items())
+                ),
+                "in_memory_event_elapsed_seconds": dict(
+                    sorted(command_observation.get("in_memory_event_elapsed_seconds", {}).items())
+                ),
+                "slot_runtime_mutation_elapsed_seconds": round(
+                    sum(
+                        command_family_elapsed_seconds.get(key, 0.0)
+                        for key in (
+                            "docker_network_connect",
+                            "docker_network_disconnect",
+                            "ip_link",
+                            "ip_addr",
+                        )
+                    ),
+                    3,
+                ),
+                "ping_validation_elapsed_seconds": round(
+                    command_family_elapsed_seconds.get("ping", 0.0),
+                    3,
+                ),
+            }
+            if self.args.timing:
+                print(
+                    "Apply scenario timing: "
+                    + json.dumps(apply_scenario_summary, sort_keys=True)
+                )
 
         result["execution"] = command_observation
+        if apply_scenario_summary is not None:
+            result["timing"] = apply_scenario_summary
         return result
 
     def verify_scenario(self, scenario_name: str) -> Dict[str, Any]:
@@ -4022,23 +4868,37 @@ class SatelliteController:
                 )
 
         verify_ut_id = str(definition.get("verify_ut_id"))
-        plan = self._resolve_ut_egress_plan(verify_ut_id)
-        expected_serving_satellite_id = str(definition.get("expected_serving_satellite_id"))
-        expected_selected_gateway_id = str(definition.get("expected_selected_gateway_id"))
-        expected_satellite_path = list(definition.get("expected_satellite_path", []))
+        expected_ut_paths = dict(definition.get("expected_ut_paths", {}))
+        if verify_ut_id not in expected_ut_paths:
+            expected_ut_paths[verify_ut_id] = {
+                "serving_satellite_id": definition.get("expected_serving_satellite_id"),
+                "selected_gateway_id": definition.get("expected_selected_gateway_id"),
+                "satellite_path": list(definition.get("expected_satellite_path", [])),
+            }
 
-        if plan.serving_satellite_id != expected_serving_satellite_id:
-            mismatches.append(
-                f"{verify_ut_id}: expected serving satellite {expected_serving_satellite_id}, got {plan.serving_satellite_id}"
-            )
-        if plan.selected_gateway_id != expected_selected_gateway_id:
-            mismatches.append(
-                f"{verify_ut_id}: expected selected gateway {expected_selected_gateway_id}, got {plan.selected_gateway_id}"
-            )
-        if list(plan.satellite_path) != expected_satellite_path:
-            mismatches.append(
-                f"{verify_ut_id}: expected satellite path {expected_satellite_path}, got {list(plan.satellite_path)}"
-            )
+        observed_paths: Dict[str, Dict[str, Any]] = {}
+        for ut_id, expected in sorted(expected_ut_paths.items()):
+            plan = self._resolve_ut_egress_plan(str(ut_id))
+            observed_paths[str(ut_id)] = {
+                "serving_satellite_id": plan.serving_satellite_id,
+                "selected_gateway_id": plan.selected_gateway_id,
+                "satellite_path": list(plan.satellite_path),
+            }
+            expected_serving_satellite_id = str(expected.get("serving_satellite_id"))
+            expected_selected_gateway_id = str(expected.get("selected_gateway_id"))
+            expected_satellite_path = list(expected.get("satellite_path", []))
+            if plan.serving_satellite_id != expected_serving_satellite_id:
+                mismatches.append(
+                    f"{ut_id}: expected serving satellite {expected_serving_satellite_id}, got {plan.serving_satellite_id}"
+                )
+            if plan.selected_gateway_id != expected_selected_gateway_id:
+                mismatches.append(
+                    f"{ut_id}: expected selected gateway {expected_selected_gateway_id}, got {plan.selected_gateway_id}"
+                )
+            if list(plan.satellite_path) != expected_satellite_path:
+                mismatches.append(
+                    f"{ut_id}: expected satellite path {expected_satellite_path}, got {list(plan.satellite_path)}"
+                )
 
         if mismatches:
             raise RuntimeError(
@@ -4047,10 +4907,13 @@ class SatelliteController:
 
         return {
             "scenario": scenario_name,
+            "transition_region": definition.get("transition_region"),
             "verify_ut_id": verify_ut_id,
-            "serving_satellite_id": plan.serving_satellite_id,
-            "selected_gateway_id": plan.selected_gateway_id,
-            "satellite_path": list(plan.satellite_path),
+            "observe_ut_ids": list(definition.get("observe_ut_ids", [])),
+            "observed_ut_paths": observed_paths,
+            "serving_satellite_id": observed_paths[verify_ut_id]["serving_satellite_id"],
+            "selected_gateway_id": observed_paths[verify_ut_id]["selected_gateway_id"],
+            "satellite_path": list(observed_paths[verify_ut_id]["satellite_path"]),
         }
 
     def install_ut_egress_mpls(self, ut_id: str) -> Dict[str, Any]:

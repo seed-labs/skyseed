@@ -703,8 +703,12 @@ GATEWAY_NAT_REALIZATIONS: Dict[str, Dict[str, str]] = {
         "nat_source_ip": "10.65.22.2",
     },
     "gw3": {
-        "nat_interface": "ix102",
+        "nat_interface": "ix103",
         "nat_source_ip": "10.65.23.2",
+    },
+    "gw4": {
+        "nat_interface": "ix104",
+        "nat_source_ip": "10.65.24.2",
     },
 }
 
@@ -744,6 +748,37 @@ SUPPORTED_UT_EGRESS_INTENTS = {
         forward_label_seed=500,
         reverse_label_seed=600,
     ),
+    "ut4": UtEgressMplsIntent(
+        intent_id="ut4-egress-to-miniinternet",
+        ut_id="ut4",
+        stable_identity="100.64.0.4",
+        default_ping_target="10.154.0.129",
+        forward_label_seed=700,
+        reverse_label_seed=800,
+    ),
+    "ut5": UtEgressMplsIntent(
+        intent_id="ut5-egress-to-miniinternet",
+        ut_id="ut5",
+        stable_identity="100.64.0.5",
+        default_ping_target="10.154.0.129",
+        forward_label_seed=900,
+        reverse_label_seed=1000,
+    ),
+    "ut6": UtEgressMplsIntent(
+        intent_id="ut6-egress-to-miniinternet",
+        ut_id="ut6",
+        stable_identity="100.64.0.6",
+        default_ping_target="10.154.0.129",
+        forward_label_seed=1100,
+        reverse_label_seed=1200,
+    ),
+}
+
+GATEWAY_DEFAULT_PING_TARGETS = {
+    "gw1": "10.150.0.71",
+    "gw2": "10.152.0.71",
+    "gw3": "10.160.0.71",
+    "gw4": "10.163.0.71",
 }
 
 
@@ -1734,7 +1769,11 @@ def resolve_ut_egress_ping_target(
     plan: UtEgressMplsPlan,
     ping_target: Optional[str] = None,
 ) -> str:
-    resolved_target = ping_target or plan.default_ping_target
+    resolved_target = (
+        ping_target
+        or GATEWAY_DEFAULT_PING_TARGETS.get(plan.selected_gateway_id)
+        or plan.default_ping_target
+    )
     ping_address = ipaddress.ip_address(resolved_target)
     if (
         ping_address.is_unspecified
