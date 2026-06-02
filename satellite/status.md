@@ -52,6 +52,19 @@
   - runtime update architecture still open pending OpenSN investigation
 - Added `docs/iteration2_architecture_understanding.md` as the current
   understanding note.
+- Investigated OpenSN from primary sources:
+  - paper
+  - repository
+  - README
+  - selected daemon and topology-controller source files
+- Added `docs/opensn_investigation_report.md` with verified findings,
+  adoption guidance, and open questions.
+- Added `docs/iteration2_runtime_architecture.md` to define:
+  - current runtime hot paths
+  - logical `RuntimeUpdatePlan`
+  - physical `NetworkMutationPlan`
+  - runtime role boundaries
+  - minimal versus high-performance implementation directions
 
 ## In Progress
 
@@ -64,6 +77,14 @@
   runtime optimization ideas.
 - Refining how `TopologySnapshot` should express `UT`/zone/satellite/gateway
   relationships without prematurely locking a concrete schema.
+- Translating OpenSN investigation findings into Skyseed-specific interface and
+  evaluation criteria without prematurely choosing `etcd`, `eBPF`, or one
+  daemon shape.
+- Converging on a Skyseed-specific runtime architecture that separates:
+  - logical forwarding update contracts
+  - physical topology mutation contracts
+  - host daemon responsibilities
+  - container-local installer responsibilities
 
 ## Open Questions
 
@@ -83,8 +104,19 @@
   installer?
 - What exact `RuntimeUpdatePlan` schema is sufficient for Linux MPLS/runtime
   installers without prematurely constraining future planner designs?
+- What exact `NetworkMutationPlan` schema is sufficient for host-level topology
+  mutation without leaking planner policy into physical execution?
 - How should destination-to-gateway class and destination-to-zone mapping be
   represented so that G/Z planner behavior stays replaceable?
+- Should the first Skyseed runtime-update path be controller-push, node-pull,
+  file or snapshot based, `etcd`-backed, or another abstraction?
+- Should Skyseed adopt a per-container agent, per-host daemon, or hybrid local
+  runtime model?
+- Should Skyseed support optional mounted per-node config payloads in addition
+  to a generic `RuntimeUpdatePlan`, or avoid that coupling at first?
+- If later optimization is needed, should Skyseed first pursue direct Linux
+  device control, stable-interface handover, `eBPF`, or another intermediate
+  step?
 
 ## Risks
 
@@ -100,23 +132,46 @@
   prototype and fail to scale toward much larger constellations.
 - OpenSN ideas could be copied without enough verification if the
   investigation structure is not enforced.
+- OpenSN’s broad daemon scope could be copied too literally and blur Skyseed’s
+  desired boundary among planner, agent, installer, and platform management.
+- Runtime optimization work could accidentally overfit the current
+  `controller.py` slot model instead of producing reusable contracts.
 
 ## Next Recommended Action
 
 - Review and agree on the architectural boundaries in `design_principle.md`.
 - Define the first explicit schemas for `TopologySnapshot`, `ZoneGenerator`,
   and `RuntimeUpdatePlan` before starting Iteration 2 implementation work.
-- Start OpenSN investigation with the structure required by
-  `.skills/opensn_investigation.md`.
+- Use `docs/opensn_investigation_report.md` to draft the first runtime-update
+  architecture options note before any implementation work.
+- Use `docs/iteration2_runtime_architecture.md` to draft the first schema note
+  for `RuntimeUpdatePlan` and `NetworkMutationPlan`.
 - Keep unresolved semantics documented as open questions instead of silently
   fixing them in code.
 
 ## Validation Record
 
-- This status entry was prepared from repository inspection only.
+- This status entry was prepared from local repository inspection plus external
+  OpenSN source investigation.
 - Commands used in this documentation round:
   - `sed -n '1,260p' satellite/design_principle.md`
   - `sed -n '1,260p' satellite/status.md`
   - `sed -n '1,260p' satellite/AGENTS.md`
   - `sed -n '1,260p' satellite/.skills/*.md`
+- Commands and sources used in the OpenSN investigation round:
+  - `git ls-remote https://github.com/OpenSN-Library/OpenSN-Library.git lwh/dev`
+  - `curl -L --silent https://raw.githubusercontent.com/OpenSN-Library/OpenSN-Library/lwh/dev/daemon/main.go`
+  - `curl -L --silent https://raw.githubusercontent.com/OpenSN-Library/OpenSN-Library/lwh/dev/daemon/config/config.json`
+  - `curl -L --silent https://raw.githubusercontent.com/OpenSN-Library/OpenSN-Library/lwh/dev/TopoConfigurators/Standard/main.py`
+  - OpenSN paper:
+    `https://arxiv.org/abs/2507.03248`
+  - OpenSN HTML paper view:
+    `https://ar5iv.labs.arxiv.org/html/2507.03248v1`
+  - OpenSN repository:
+    `https://github.com/OpenSN-Library/OpenSN-Library`
+- Commands used in the runtime architecture design round:
+  - `sed -n '1,320p' satellite/docs/opensn_investigation_report.md`
+  - `sed -n '1,320p' satellite/design_principle.md`
+  - `sed -n '1,320p' satellite/status.md`
+  - `rg -n "docker network|docker exec|subprocess|network connect|network disconnect|link_state|apply_scenario|attach-|detach-|connect_cross|release-slot|prepare-ut-egress-policy|install-ut-egress-mpls|runtime agent|NodeDaemon|VXLAN|ip link|tc |iptables|ip -f mpls|sysctl" satellite/controller.py satellite/mpls_control.py satellite/runtime_update_agent.sh satellite/build_topology.py`
 - No runtime validation commands were executed.
