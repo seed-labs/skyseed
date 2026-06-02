@@ -14,6 +14,20 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 TOPOLOGY_SNAPSHOT_SCHEMA_VERSION = "satellite-iteration2-topology-snapshot-v1alpha1"
 RUNTIME_UPDATE_PLAN_SCHEMA_VERSION = "satellite-iteration2-runtime-update-plan-v1alpha1"
 NETWORK_MUTATION_PLAN_SCHEMA_VERSION = "satellite-iteration2-network-mutation-plan-v1alpha1"
+RUNTIME_ACTION_MODEL_VERSION = "satellite-runtime-update-action-v1alpha1"
+RUNTIME_ACTION_TYPES = (
+    "service_binding",
+    "traffic_classification",
+    "forwarding_entry",
+    "node_capability",
+)
+RUNTIME_ACTION_FORBIDDEN_FIELDS = (
+    "command_family",
+    "argv",
+    "shell_command",
+    "docker_exec_command",
+    "docker_network_operation",
+)
 TOPOLOGY_FORBIDDEN_FIELDS = (
     "mpls_labels",
     "lfib_entries",
@@ -139,6 +153,109 @@ def _collect_forbidden_key_paths(
                 )
             )
     return findings
+
+
+def build_runtime_plan_action(
+    *,
+    action_id: str,
+    action_type: str,
+    target_node_id: str,
+    intent: Dict[str, Any],
+    sequence: Optional[int] = None,
+    lifecycle: Optional[Dict[str, Any]] = None,
+    validation: Optional[Dict[str, Any]] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    action: Dict[str, Any] = {
+        "action_id": action_id,
+        "action_type": action_type,
+        "target_node_id": target_node_id,
+        "intent": dict(intent),
+        "lifecycle": dict(lifecycle or {}),
+        "validation": dict(validation or {}),
+    }
+    if sequence is not None:
+        action["sequence"] = sequence
+    if metadata:
+        action["metadata"] = dict(metadata)
+    return action
+
+
+def _validate_runtime_action_intent_shape(
+    *,
+    action_type: str,
+    action_id: str,
+    intent: Any,
+) -> List[str]:
+    issues: List[str] = []
+    if not isinstance(intent, dict) or len(intent) == 0:
+        return [f"action_intent_missing_or_invalid:{action_id}"]
+
+    def require_field(field_name: str) -> None:
+        if field_name not in intent:
+            issues.append(f"action_intent_missing_field:{action_id}:{field_name}")
+
+    if action_type == "service_binding":
+        require_field("binding_kind")
+        require_field("subject")
+        require_field("target")
+    elif action_type == "traffic_classification":
+        require_field("match")
+        require_field("outcome")
+    elif action_type == "forwarding_entry":
+        require_field("forwarding_plane")
+        require_field("match")
+        require_field("outcome")
+    elif action_type == "node_capability":
+        require_field("capability")
+        require_field("operation")
+
+    for endpoint_field in ("subject", "target"):
+        endpoint = intent.get(endpoint_field)
+        if endpoint is None:
+            continue
+        if not isinstance(endpoint, dict):
+            issues.append(f"action_intent_endpoint_not_object:{action_id}:{endpoint_field}")
+            continue
+        if not endpoint.get("entity_type"):
+            issues.append(f"action_intent_endpoint_missing_entity_type:{action_id}:{endpoint_field}")
+        if not endpoint.get("entity_id"):
+            issues.append(f"action_intent_endpoint_missing_entity_id:{action_id}:{endpoint_field}")
+
+    return issues
+
+
+def validate_runtime_plan_action(action: Dict[str, Any]) -> List[str]:
+    issues: List[str] = []
+    action_id = str(action.get("action_id") or "")
+    action_type = str(action.get("action_type") or "")
+    target_node_id = str(action.get("target_node_id") or "")
+
+    if not action_id:
+        issues.append("action_id_missing")
+    if action_type not in RUNTIME_ACTION_TYPES:
+        issues.append(f"action_type_unsupported:{action_id or '<missing>'}:{action_type}")
+    if not target_node_id:
+        issues.append(f"action_target_node_missing:{action_id or '<missing>'}")
+
+    forbidden_paths = _collect_forbidden_key_paths(
+        action,
+        forbidden_keys=RUNTIME_ACTION_FORBIDDEN_FIELDS,
+        path=f"runtime_action[{action_id or '<missing>'}]",
+    )
+    issues.extend(
+        f"runtime_action_contains_forbidden_field:{path}"
+        for path in forbidden_paths
+    )
+    if action_type in RUNTIME_ACTION_TYPES:
+        issues.extend(
+            _validate_runtime_action_intent_shape(
+                action_type=action_type,
+                action_id=action_id or "<missing>",
+                intent=action.get("intent"),
+            )
+        )
+    return issues
 
 
 @dataclass(frozen=True)
@@ -286,6 +403,10 @@ class RuntimeUpdatePlan:
             issues.append(
                 f"apply_model_unexpected_state_model:{self.apply_model.get('state_model')}"
             )
+        if self.apply_model.get("action_model") != RUNTIME_ACTION_MODEL_VERSION:
+            issues.append(
+                f"apply_model_unexpected_action_model:{self.apply_model.get('action_model')}"
+            )
         forbidden_paths = _collect_forbidden_key_paths(
             asdict(self),
             forbidden_keys=RUNTIME_UPDATE_PLAN_FORBIDDEN_FIELDS,
@@ -302,10 +423,12 @@ class RuntimeUpdatePlan:
             if len(actions) == 0:
                 issues.append(f"node_subplan_without_actions:{node_id}")
             for index, action in enumerate(actions, start=1):
-                if not action.get("command_family"):
-                    issues.append(f"action_missing_command_family:{node_id}:{index}")
                 if action.get("target_node_id") != node_id:
                     issues.append(f"action_target_mismatch:{node_id}:{index}")
+                issues.extend(
+                    f"{node_id}:{index}:{issue}"
+                    for issue in validate_runtime_plan_action(action)
+                )
         return issues
 
     def validation_result(self) -> ContractValidationResult:
@@ -491,6 +614,7 @@ def build_mock_runtime_update_plan(
         },
         apply_model={
             "state_model": "full_state_intent",
+            "action_model": RUNTIME_ACTION_MODEL_VERSION,
             "execution_projection": "node_local_subplans",
             "agent_policy_visibility": "none",
         },
@@ -500,24 +624,55 @@ def build_mock_runtime_update_plan(
                 "target_node_type": "satellite",
                 "apply_mode": "ordered_local_actions",
                 "actions": [
-                    {
-                        "sequence": 10,
-                        "target_node_id": "sat-demo-1",
-                        "logical_kind": "lfib_programming",
-                        "category": "mpls",
-                        "command_family": "ip",
-                        "argv": ["ip", "-f", "mpls", "route", "replace", "100", "via", "inet", "10.99.1.2"],
-                        "expected_state": "label_100_points_to_gw_demo_1",
-                    },
-                    {
-                        "sequence": 20,
-                        "target_node_id": "sat-demo-1",
-                        "logical_kind": "input_enable",
-                        "category": "sysctl",
-                        "command_family": "sysctl",
-                        "argv": ["sysctl", "-w", "net.mpls.conf.ga0.input=1"],
-                        "expected_state": "mpls_input_enabled_on_ga0",
-                    },
+                    build_runtime_plan_action(
+                        action_id="forwarding:sat-demo-1:zone-demo-east",
+                        action_type="forwarding_entry",
+                        target_node_id="sat-demo-1",
+                        sequence=10,
+                        intent={
+                            "forwarding_plane": "label_switching",
+                            "match": {
+                                "destination_scope": {
+                                    "entity_type": "zone",
+                                    "entity_id": "zone-demo-east",
+                                }
+                            },
+                            "outcome": {
+                                "delivery_target": {
+                                    "entity_type": "user_terminal",
+                                    "entity_id": "ut-demo-1",
+                                },
+                                "egress_path": "local_access_delivery",
+                            },
+                        },
+                        validation={
+                            "expected_state": "zone-demo-east traffic resolves toward ut-demo-1 access"
+                        },
+                        metadata={
+                            "planner_semantics": "mock_runtime_update_plan",
+                            "example_policy_family": "mpls_compatible_placeholder",
+                        },
+                    ),
+                    build_runtime_plan_action(
+                        action_id="capability:sat-demo-1:label-switching",
+                        action_type="node_capability",
+                        target_node_id="sat-demo-1",
+                        sequence=20,
+                        intent={
+                            "capability": "forwarding_plane_readiness",
+                            "operation": "ensure_present",
+                            "capability_scope": {
+                                "forwarding_plane": "label_switching",
+                                "interface_scope": "node_local",
+                            },
+                        },
+                        validation={
+                            "expected_state": "sat-demo-1 can host label-switching forwarding state"
+                        },
+                        metadata={
+                            "planner_semantics": "mock_runtime_update_plan",
+                        },
+                    ),
                 ],
                 "validation_expectations": {
                     "post_apply_validation_expected": True,
@@ -724,18 +879,52 @@ def build_runtime_update_plan_from_legacy_payload(
         node_id = str(node_plan.get("node_id"))
         actions = []
         for command in node_plan.get("commands", []):
-            actions.append(
-                {
-                    "sequence": command.get("sequence"),
-                    "target_node_id": node_id,
-                    "logical_kind": command.get("logical_kind"),
-                    "category": command.get("category"),
-                    "command_family": command.get("command_family"),
-                    "argv": list(command.get("argv", [])),
-                    "shared_key": command.get("shared_key"),
-                    "allow_failure": bool(command.get("allow_failure", False)),
-                    "expected_state": command.get("expected_state"),
+            action_type = "node_capability"
+            intent: Dict[str, Any] = {
+                "capability": "legacy_runtime_requirement",
+                "operation": "project_into_runtime_update_plan",
+                "capability_scope": {
+                    "legacy_category": command.get("category"),
+                    "legacy_logical_kind": command.get("logical_kind"),
+                },
+            }
+            command_family = command.get("command_family")
+            if command_family == "sysctl":
+                action_type = "node_capability"
+            elif command_family in {"ip", "iptables"}:
+                action_type = "forwarding_entry"
+                intent = {
+                    "forwarding_plane": (
+                        "label_switching"
+                        if command.get("category") == "mpls"
+                        else "ip_forwarding"
+                    ),
+                    "match": {
+                        "intent_role": command.get("logical_kind"),
+                        "shared_key": command.get("shared_key"),
+                    },
+                    "outcome": {
+                        "expected_state": command.get("expected_state"),
+                    },
                 }
+            actions.append(
+                build_runtime_plan_action(
+                    action_id=(
+                        f"legacy:{node_id}:{command.get('sequence')}:{command.get('shared_key')}"
+                    ),
+                    action_type=action_type,
+                    target_node_id=node_id,
+                    sequence=command.get("sequence"),
+                    intent=intent,
+                    validation={
+                        "expected_state": command.get("expected_state"),
+                    },
+                    metadata={
+                        "source": "legacy_controller_projection",
+                        "legacy_logical_kind": command.get("logical_kind"),
+                        "legacy_category": command.get("category"),
+                    },
+                )
             )
         node_subplans[node_id] = {
             "target_node_id": node_id,
@@ -763,6 +952,7 @@ def build_runtime_update_plan_from_legacy_payload(
         },
         apply_model={
             "state_model": "full_state_intent",
+            "action_model": RUNTIME_ACTION_MODEL_VERSION,
             "execution_projection": "node_local_subplans",
             "agent_policy_visibility": "none",
         },

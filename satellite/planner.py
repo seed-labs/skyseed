@@ -9,12 +9,14 @@ import hashlib
 import json
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from typing import Any, DefaultDict, Dict, Iterable, List, Optional, Tuple
+from typing import Any, DefaultDict, Dict, List, Optional, Tuple
 
 from contracts import (
+    RUNTIME_ACTION_MODEL_VERSION,
     RUNTIME_UPDATE_PLAN_SCHEMA_VERSION,
     RuntimeUpdatePlan,
     TopologySnapshot,
+    build_runtime_plan_action,
     build_mock_topology_snapshot,
 )
 from planner_validation import (
@@ -149,26 +151,32 @@ class DefaultPlannerSkeleton(Planner):
     def _node_action(
         self,
         *,
+        action_id: str,
+        action_type: str,
         node_id: str,
         sequence: int,
-        logical_kind: str,
+        intent: Dict[str, Any],
         expected_state: str,
-        argv: Iterable[str],
-        shared_key: str,
-        details: Dict[str, Any],
+        metadata: Dict[str, Any],
     ) -> Dict[str, Any]:
-        return {
-            "sequence": sequence,
-            "target_node_id": node_id,
-            "logical_kind": logical_kind,
-            "category": "planner_skeleton",
-            "command_family": "planner_placeholder",
-            "argv": list(argv),
-            "shared_key": shared_key,
-            "allow_failure": False,
-            "expected_state": expected_state,
-            "details": details,
-        }
+        return build_runtime_plan_action(
+            action_id=action_id,
+            action_type=action_type,
+            target_node_id=node_id,
+            sequence=sequence,
+            intent=intent,
+            lifecycle={
+                "idempotency_scope": "snapshot_id_and_target_node",
+                "apply_behavior": "replace_or_confirm",
+            },
+            validation={
+                "expected_state": expected_state,
+            },
+            metadata={
+                "planner_family": "planner_skeleton",
+                **metadata,
+            },
+        )
 
     def build_runtime_update_plan(
         self,
@@ -180,18 +188,25 @@ class DefaultPlannerSkeleton(Planner):
             serving_satellite_id = str(zone.get("active_serving_satellite_id"))
             actions_by_node[serving_satellite_id].append(
                 self._node_action(
+                    action_id=f"zone-service:{zone_id}",
+                    action_type="service_binding",
                     node_id=serving_satellite_id,
                     sequence=100 + len(actions_by_node[serving_satellite_id]) * 10,
-                    logical_kind="zone_serving_placeholder",
+                    intent={
+                        "binding_kind": "zone_service",
+                        "subject": {
+                            "entity_type": "zone",
+                            "entity_id": zone_id,
+                        },
+                        "target": {
+                            "entity_type": "satellite",
+                            "entity_id": serving_satellite_id,
+                            "role": "active_responsible_serving_satellite",
+                        },
+                        "binding_scope": "slice_local",
+                    },
                     expected_state=f"zone {zone_id} resolves to {serving_satellite_id}",
-                    argv=(
-                        "planner-placeholder",
-                        "zone-serving",
-                        zone_id,
-                        serving_satellite_id,
-                    ),
-                    shared_key=f"zone-serving:{zone_id}",
-                    details={
+                    metadata={
                         "zone_id": zone_id,
                         "ut_ids": list(zone.get("ut_ids", [])),
                         "planner_semantics": "placeholder_for_future_zone_egress_policy",
@@ -203,13 +218,29 @@ class DefaultPlannerSkeleton(Planner):
             attachment = dict(topology_snapshot.nodes[ut_id].get("attachment", {}))
             actions_by_node[ut_id].append(
                 self._node_action(
+                    action_id=f"ut-classification:{ut_id}",
+                    action_type="traffic_classification",
                     node_id=ut_id,
                     sequence=100 + len(actions_by_node[ut_id]) * 10,
-                    logical_kind="ut_ingress_placeholder",
+                    intent={
+                        "match": {
+                            "traffic_source": {
+                                "entity_type": "user_terminal",
+                                "entity_id": ut_id,
+                            },
+                            "attachment_state": attachment.get("state"),
+                        },
+                        "outcome": {
+                            "zone_id": zone_id,
+                            "serving_satellite_id": attachment.get(
+                                "active_serving_satellite_id"
+                            ),
+                            "traffic_role": "ut_access_ingress",
+                        },
+                        "classification_scope": "node_local_ingress",
+                    },
                     expected_state=f"{ut_id} remains mapped to {zone_id}",
-                    argv=("planner-placeholder", "ut-ingress", ut_id, zone_id),
-                    shared_key=f"ut-zone-membership:{ut_id}",
-                    details={
+                    metadata={
                         "ut_id": ut_id,
                         "zone_id": zone_id,
                         "attachment_state": attachment.get("state"),
@@ -228,18 +259,25 @@ class DefaultPlannerSkeleton(Planner):
             gateway_id, satellite_id = attachment
             actions_by_node[gateway_id].append(
                 self._node_action(
+                    action_id=f"gateway-service:{gateway_id}",
+                    action_type="service_binding",
                     node_id=gateway_id,
                     sequence=100 + len(actions_by_node[gateway_id]) * 10,
-                    logical_kind="gateway_egress_placeholder",
+                    intent={
+                        "binding_kind": "gateway_egress",
+                        "subject": {
+                            "entity_type": "gateway",
+                            "entity_id": gateway_id,
+                        },
+                        "target": {
+                            "entity_type": "satellite",
+                            "entity_id": satellite_id,
+                            "role": "attached_gateway_satellite",
+                        },
+                        "binding_scope": "slice_local",
+                    },
                     expected_state=f"{gateway_id} observed on {satellite_id}",
-                    argv=(
-                        "planner-placeholder",
-                        "gateway-egress",
-                        gateway_id,
-                        satellite_id,
-                    ),
-                    shared_key=f"gateway-egress:{gateway_id}",
-                    details={
+                    metadata={
                         "gateway_id": gateway_id,
                         "attached_satellite_id": satellite_id,
                         "link_id": link.get("link_id"),
@@ -249,18 +287,25 @@ class DefaultPlannerSkeleton(Planner):
             )
             actions_by_node[satellite_id].append(
                 self._node_action(
+                    action_id=f"gateway-anchor:{satellite_id}:{gateway_id}",
+                    action_type="service_binding",
                     node_id=satellite_id,
                     sequence=100 + len(actions_by_node[satellite_id]) * 10,
-                    logical_kind="gateway_attachment_placeholder",
+                    intent={
+                        "binding_kind": "gateway_reachability_anchor",
+                        "subject": {
+                            "entity_type": "satellite",
+                            "entity_id": satellite_id,
+                        },
+                        "target": {
+                            "entity_type": "gateway",
+                            "entity_id": gateway_id,
+                            "role": "local_gateway_egress",
+                        },
+                        "binding_scope": "slice_local",
+                    },
                     expected_state=f"{satellite_id} exposes {gateway_id} egress",
-                    argv=(
-                        "planner-placeholder",
-                        "gateway-attachment",
-                        satellite_id,
-                        gateway_id,
-                    ),
-                    shared_key=f"gateway-attachment:{satellite_id}:{gateway_id}",
-                    details={
+                    metadata={
                         "gateway_id": gateway_id,
                         "satellite_id": satellite_id,
                         "link_id": link.get("link_id"),
@@ -308,6 +353,7 @@ class DefaultPlannerSkeleton(Planner):
             },
             apply_model={
                 "state_model": "full_state_intent",
+                "action_model": RUNTIME_ACTION_MODEL_VERSION,
                 "execution_projection": "node_local_subplans",
                 "agent_policy_visibility": "none",
             },

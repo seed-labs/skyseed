@@ -19,6 +19,9 @@
   `TopologySnapshot` into `RuntimeUpdatePlan` through a replaceable planner
   interface and a default skeleton planner, still without changing the legacy
   runtime execution baseline.
+- `RuntimeUpdatePlan` now carries a typed action model for generic node-local
+  runtime intent, so planner output no longer defaults to command-shaped
+  placeholder actions.
 - Iteration 2 architecture intent is now clearer about fixed `UT` coordinates,
   stable zone membership, unique active zone serving satellites, logical G/Z
   MPLS semantics, and runtime-update architecture remaining undecided pending
@@ -107,6 +110,18 @@
     `TopologySnapshot -> Planner -> RuntimeUpdatePlan` path
   - kept planner output generic and placeholder-oriented instead of embedding
     orbit propagation, MPLS installation logic, or runtime-agent coupling
+- Completed the RuntimeUpdatePlan action-model milestone:
+  - strengthened `RuntimeUpdatePlan` so planner output uses a typed action
+    abstraction instead of command-shaped placeholder actions
+  - added explicit action-model versioning and reusable action helpers in
+    `satellite/contracts.py`
+  - added lightweight action-payload validation for service binding, traffic
+    classification, forwarding entry, and node capability intents
+  - updated the planner skeleton to emit typed generic actions
+  - updated contract-level mock plan builders and legacy projection helpers to
+    target the new action model
+  - kept runtime transport, runtime-agent behavior, Docker decisions, and
+    controller execution paths out of the action contract
 
 ## In Progress
 
@@ -120,6 +135,8 @@
   relationships without prematurely locking a concrete schema.
 - Preparing the first planner-specific policy implementation beyond the
   current placeholder skeleton while preserving planner replaceability.
+- Preparing the first planner policy that can emit richer forwarding-entry
+  actions on top of the new generic action model.
 - Translating OpenSN investigation findings into Skyseed-specific interface and
   evaluation criteria without prematurely choosing `etcd`, `eBPF`, or one
   daemon shape.
@@ -159,6 +176,10 @@
   installer?
 - What exact `RuntimeUpdatePlan` schema is sufficient for Linux MPLS/runtime
   installers without prematurely constraining future planner designs?
+- How should the future installer projection map generic action types such as
+  `forwarding_entry` and `traffic_classification` into Linux-specific
+  realization steps without leaking those details back into the planner
+  contract?
 - What exact `NetworkMutationPlan` schema is sufficient for host-level topology
   mutation without leaking planner policy into physical execution?
 - What exact ownership relationship should exist between scenario transition
@@ -210,12 +231,15 @@
 - The first default planner skeleton could accidentally become the de facto
   policy if later MPLS and IP planners are not implemented against the same
   abstraction boundary.
+- The new action types could still drift toward Linux-specific semantics if
+  later planners overuse `forwarding_entry` details instead of keeping the
+  contract policy-generic.
 
 ## Next Recommended Action
 
-- Use the validated planner abstraction and mock contract flow as the seam for
-  the first real planner-policy slice, likely a minimal G/Z MPLS planner that
-  still emits generic `RuntimeUpdatePlan` node subplans.
+- Use the validated typed action model as the seam for the first real
+  planner-policy slice, likely a minimal forwarding-entry-capable planner that
+  still emits generic `RuntimeUpdatePlan` node-local intent.
 
 Current implementation posture:
 
@@ -291,6 +315,19 @@ Current implementation posture:
   - `python3 -m py_compile satellite/contracts.py satellite/planner.py satellite/planner_validation.py satellite/mock_iteration2_contract_flow.py`
   - `python3 satellite/mock_iteration2_contract_flow.py`
   - `python -m py_compile satellite/contracts.py satellite/controller.py satellite/mpls_control.py satellite/build_topology.py`
+- Commands used in the RuntimeUpdatePlan action-model round:
+  - `sed -n '1,260p' satellite/contracts.py`
+  - `sed -n '261,520p' satellite/contracts.py`
+  - `sed -n '520,860p' satellite/contracts.py`
+  - `sed -n '1,320p' satellite/planner.py`
+  - `sed -n '1,260p' satellite/planner_validation.py`
+  - `sed -n '1,220p' satellite/.skills/planner_design.md`
+  - `sed -n '1,220p' satellite/docs/iteration2_contract_boundaries.md`
+  - `sed -n '1,220p' satellite/docs/iteration2_runtime_architecture.md`
+  - `python3 -m py_compile satellite/contracts.py satellite/planner.py satellite/planner_validation.py satellite/mock_iteration2_contract_flow.py`
+  - `python3 satellite/mock_iteration2_contract_flow.py`
+  - `python3 - <<'PY' ... build_mock_contract_flow() ... PY`
+  - `python3 - <<'PY' ... build_mock_runtime_update_plan(...) ... PY`
 - Commands used in the contract validation helper and mock-flow round:
   - `python -m py_compile satellite/contracts.py satellite/controller.py satellite/mpls_control.py satellite/build_topology.py satellite/mock_iteration2_contract_flow.py`
   - `python satellite/mock_iteration2_contract_flow.py`
