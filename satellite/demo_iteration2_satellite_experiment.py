@@ -24,6 +24,8 @@ from installer_runtime import (
     LinuxMplsDryRunInstaller,
     NodeLocalInstaller,
 )
+from linux_mpls_runtime import MinimalRealLinuxMplsInstaller
+from network_runtime import MinimalRealNetworkMutationExecutor
 from network_mutation import (
     build_network_mutation_plan,
     dynamic_slot_state_from_link_state,
@@ -65,6 +67,12 @@ def parse_args() -> argparse.Namespace:
         help="Choose the experiment topology input family.",
     )
     parser.add_argument(
+        "--scenario",
+        choices=("single-ut-direct", "small-scale-semi-real-internet"),
+        default="small-scale-semi-real-internet",
+        help="Choose the Iteration 2 satellite experiment scenario.",
+    )
+    parser.add_argument(
         "--installer",
         choices=(
             "generic-dry-run",
@@ -79,6 +87,19 @@ def parse_args() -> argparse.Namespace:
         choices=("text", "json"),
         default="text",
         help="Render the experiment report as text or JSON.",
+    )
+    parser.add_argument(
+        "--execute-real",
+        action="store_true",
+        help=(
+            "Opt in to the first minimal real non-legacy Linux/MPLS apply/verify/rollback "
+            "path for one safe slice."
+        ),
+    )
+    parser.add_argument(
+        "--target-slice-id",
+        default="small-scale-slice-0002",
+        help="Slice id to target for real execution when --execute-real is enabled.",
     )
     return parser.parse_args()
 
@@ -112,6 +133,34 @@ def _projection_remains_backend_neutral(installer_plan: Any) -> bool:
         for subplan in installer_plan.node_installer_subplans.values()
         for intent in subplan.get("installer_intents", [])
     )
+
+
+def _ut_side_state_remains_lightweight(runtime_update_plan: Any) -> bool:
+    forbidden_fields = {
+        "satellite_path",
+        "forward_link_ids",
+        "reverse_link_ids",
+        "forward_labels",
+        "reverse_labels",
+        "ping_target_ip",
+        "target_host_node_id",
+        "policy_table_id",
+        "policy_rule_priority",
+        "gateway_access_link_id",
+        "ut_access_link_id",
+    }
+    for subplan in runtime_update_plan.node_subplans.values():
+        if str(subplan.get("target_node_type")) != "user_terminal":
+            continue
+        for action in subplan.get("actions", []):
+            if str(action.get("action_type")) != "forwarding_entry":
+                continue
+            gateway_selection = dict(
+                action.get("intent", {}).get("outcome", {}).get("gateway_selection", {})
+            )
+            if any(field_name in gateway_selection for field_name in forbidden_fields):
+                return False
+    return True
 
 
 def _node_runtime_realization(
@@ -233,11 +282,15 @@ def build_experiment_report(
     topology_path: Path,
     link_state_path: Path,
     input_profile: str,
+    scenario_name: str,
     installer_name: str,
+    execute_real: bool,
+    target_slice_id: str,
 ) -> Dict[str, Any]:
     pipeline = build_experiment_topology_snapshot_pipeline(
         topology_path=topology_path,
         input_profile=input_profile,
+        scenario_name=scenario_name,
     )
     planner = UtInternetExperimentPlanner()
     projector = GenericDryRunProjector()
@@ -246,10 +299,12 @@ def build_experiment_report(
     installer = _build_installer(installer_name)
 
     snapshots = pipeline.produce_snapshots()
-    current_slot_state = dynamic_slot_state_from_link_state(load_link_state(link_state_path))
+    baseline_slot_state = dynamic_slot_state_from_link_state(load_link_state(link_state_path))
+    current_slot_state = dict(baseline_slot_state)
     current_state_id = f"link_state:{link_state_path.name}"
 
     slice_reports: List[Dict[str, Any]] = []
+    slice_contexts: List[Dict[str, Any]] = []
     transition_reports: List[Dict[str, Any]] = []
     previous_snapshot = None
 
@@ -278,6 +333,12 @@ def build_experiment_report(
                 )
             ),
         )
+        baseline_network_mutation_plan = build_network_mutation_plan(
+            source_state=baseline_slot_state,
+            source_state_id=f"link_state:{link_state_path.name}",
+            target_snapshot=snapshot,
+            transition_name=f"baseline_to_{snapshot.time_slice.get('slice_id')}",
+        )
 
         topology_validation = validate_topology_snapshot(snapshot)
         plan_validation = validate_runtime_update_plan(runtime_update_plan)
@@ -291,6 +352,7 @@ def build_experiment_report(
         )
         planner_output_generic = _planner_output_remains_generic(runtime_update_plan)
         projection_backend_neutral = _projection_remains_backend_neutral(installer_plan)
+        ut_side_state_lightweight = _ut_side_state_remains_lightweight(runtime_update_plan)
         all_valid = (
             topology_validation.is_valid
             and plan_validation.is_valid
@@ -299,6 +361,7 @@ def build_experiment_report(
             and node_reports_valid
             and planner_output_generic
             and projection_backend_neutral
+            and ut_side_state_lightweight
         )
 
         slice_report = {
@@ -319,6 +382,10 @@ def build_experiment_report(
                 zone_id: zone.get("active_serving_satellite_id")
                 for zone_id, zone in sorted(snapshot.zones.items())
             },
+            "zone_resolution_states": {
+                zone_id: zone.get("resolution_state", "resolved")
+                for zone_id, zone in sorted(snapshot.zones.items())
+            },
             "network_mutation_plan": network_mutation_plan.to_dict(),
             "network_mutation_summary": summarize_network_mutation_plan(
                 network_mutation_plan
@@ -335,11 +402,22 @@ def build_experiment_report(
                 "planner_flow": planner_flow_validation.to_dict(),
                 "planner_output_generic": planner_output_generic,
                 "projection_backend_neutral": projection_backend_neutral,
+                "ut_side_state_lightweight": ut_side_state_lightweight,
                 "node_reports_all_valid": node_reports_valid,
                 "all_valid": all_valid,
             },
         }
         slice_reports.append(slice_report)
+        slice_contexts.append(
+            {
+                "snapshot": snapshot,
+                "runtime_update_plan": runtime_update_plan,
+                "distribution_batch": distribution_batch,
+                "network_mutation_plan": network_mutation_plan,
+                "baseline_network_mutation_plan": baseline_network_mutation_plan,
+                "slice_report": slice_report,
+            }
+        )
 
         if previous_snapshot is not None:
             transition_reports.append(
@@ -357,15 +435,107 @@ def build_experiment_report(
     overall_valid = all(
         slice_report["validation"]["all_valid"] for slice_report in slice_reports
     )
+    real_execution = None
+    if execute_real:
+        target_context = next(
+            (
+                context
+                for context in slice_contexts
+                if context["snapshot"].time_slice.get("slice_id") == target_slice_id
+            ),
+            None,
+        )
+        if target_context is None:
+            raise RuntimeError(f"unknown target slice for real execution: {target_slice_id}")
+        if target_context["slice_report"]["validation"]["all_valid"] is not True:
+            raise RuntimeError(
+                f"target slice {target_slice_id} is not preview-valid; refusing real execution"
+            )
+        network_executor = MinimalRealNetworkMutationExecutor()
+        host_mutation_apply = network_executor.apply(
+            topology_path=topology_path,
+            link_state_path=link_state_path,
+            network_mutation_plan=target_context["baseline_network_mutation_plan"],
+        ).to_dict()
+        if host_mutation_apply["outcome"]["apply_success"] is not True:
+            raise RuntimeError(
+                f"host-side network mutation failed for target slice {target_slice_id}"
+            )
+        node_local_execution: Dict[str, Any] = {
+            "outcome": {
+                "real_apply_success": False,
+                "ping_success": False,
+                "rollback_completed": False,
+                "failure_reason": "node_local_execution_not_started",
+                "flow_results": [],
+            },
+            "ping_result": {
+                "ut_id": None,
+                "ping_target_ip": None,
+                "target_host_node_id": None,
+                "success": False,
+            },
+            "rollback_verification": {
+                "cleanup_success": False,
+                "contexts": [],
+            },
+        }
+        try:
+            node_local_execution = MinimalRealLinuxMplsInstaller().execute(
+                topology_path=topology_path,
+                topology_snapshot=target_context["snapshot"],
+                runtime_update_plan=target_context["runtime_update_plan"],
+                distribution_batch=target_context["distribution_batch"],
+                require_preview_validation=True,
+                host_runtime_summary=host_mutation_apply["boundary"],
+            ).to_dict()
+        finally:
+            host_mutation_rollback = network_executor.rollback(
+                topology_path=topology_path,
+                link_state_path=link_state_path,
+                network_mutation_plan=target_context["baseline_network_mutation_plan"],
+                applied_operations=host_mutation_apply["outcome"].get("applied_operations", []),
+            ).to_dict()
+        if host_mutation_rollback["outcome"]["rollback_completed"] is not True:
+            raise RuntimeError(
+                f"host-side network mutation rollback failed for target slice {target_slice_id}"
+            )
+        real_execution = {
+            "host_mutation_execution": {
+                "apply": host_mutation_apply,
+                "rollback": host_mutation_rollback,
+            },
+            "node_local_execution": node_local_execution,
+            "outcome": {
+                "real_apply_success": (
+                    host_mutation_apply["outcome"]["apply_success"]
+                    and node_local_execution["outcome"]["real_apply_success"]
+                ),
+                "ping_success": node_local_execution["outcome"]["ping_success"],
+                "rollback_completed": (
+                    host_mutation_rollback["outcome"]["rollback_completed"]
+                    and node_local_execution["outcome"]["rollback_completed"]
+                ),
+                "failure_reason": (
+                    host_mutation_apply["outcome"]["failure_reason"]
+                    or host_mutation_rollback["outcome"]["failure_reason"]
+                    or node_local_execution["outcome"]["failure_reason"]
+                ),
+            },
+        }
+
     return {
         "experiment": {
-            "experiment_name": "iteration2_nonlegacy_satellite_experiment",
+            "experiment_name": "iteration2_small_scale_satellite_internet_example",
             "orbit_input_kind": input_profile,
-            "real_execution_performed": False,
+            "scenario_name": scenario_name,
+            "real_execution_performed": real_execution is not None,
             "validated_execution_preview": overall_valid,
             "legacy_bridge_used": False,
             "installer_backend": installer.metadata(),
             "all_valid": overall_valid,
+            "target_slice_id": target_slice_id,
+            "runtime_architecture_direction": "agent_daemon_runtime_manager_transition",
         },
         "pipeline": {
             **pipeline.metadata(),
@@ -382,6 +552,7 @@ def build_experiment_report(
             "slice_count": len(slice_reports),
             "all_valid": overall_valid,
         },
+        "real_execution": real_execution,
     }
 
 
@@ -402,11 +573,25 @@ def _render_text(report: Dict[str, Any]) -> str:
         f"{pipeline['installer']['installer_name']}"
     )
     lines.append(
+        "Runtime posture: "
+        + report["experiment"]["runtime_architecture_direction"]
+    )
+    lines.append(
         "Network mutation path: "
         f"NetworkMutationPlan -> {pipeline['network_mutation_boundary']}"
     )
     lines.append(f"All slices valid: {report['validation']['all_valid']}")
-    lines.append("Real connectivity: not attempted; validated execution preview only")
+    if report["real_execution"] is None:
+        lines.append("Real connectivity: not attempted; validated execution preview only")
+    else:
+        outcome = report["real_execution"]["outcome"]
+        ping_result = report["real_execution"]["node_local_execution"]["ping_result"]
+        lines.append(
+            "Real execution: "
+            f"apply_success={outcome['real_apply_success']} "
+            f"rollback_completed={outcome['rollback_completed']} "
+            f"ping_success={ping_result['success']}"
+        )
 
     for slice_report in report["slices"]:
         lines.append(
@@ -423,6 +608,10 @@ def _render_text(report: Dict[str, Any]) -> str:
         lines.append(
             "  Zone serving: "
             + json.dumps(slice_report["zone_serving"], sort_keys=True)
+        )
+        lines.append(
+            "  Zone states: "
+            + json.dumps(slice_report["zone_resolution_states"], sort_keys=True)
         )
         mutation_summary = slice_report["network_mutation_summary"]
         lines.append(
@@ -445,6 +634,39 @@ def _render_text(report: Dict[str, Any]) -> str:
             f"{len(transition['changed_links'])} changed links, "
             f"{transition['network_mutation_summary']['operation_count']} mutation ops"
         )
+    if report["real_execution"] is not None:
+        ping_result = report["real_execution"]["node_local_execution"]["ping_result"]
+        flow_results = report["real_execution"]["node_local_execution"]["outcome"].get(
+            "flow_results",
+            [],
+        )
+        lines.append(
+            "Ping result: "
+            f"{ping_result['ut_id']} -> {ping_result['ping_target_ip']} "
+            f"({ping_result['target_host_node_id']}) success={ping_result['success']}"
+        )
+        if flow_results:
+            lines.append(
+                "  All flow pings: "
+                + ", ".join(
+                    f"{flow_result['ut_id']}={flow_result['success']}"
+                    for flow_result in flow_results
+                )
+            )
+        lines.append(
+            "Rollback verification: "
+            + json.dumps(
+                {
+                    "host_mutation": report["real_execution"][
+                        "host_mutation_execution"
+                    ]["rollback"]["rollback_verification"],
+                    "node_local": report["real_execution"]["node_local_execution"][
+                        "rollback_verification"
+                    ],
+                },
+                sort_keys=True,
+            )
+        )
     return "\n".join(lines)
 
 
@@ -454,7 +676,10 @@ def main() -> int:
         topology_path=Path(args.topology_config).resolve(),
         link_state_path=Path(args.link_state).resolve(),
         input_profile=args.input_profile,
+        scenario_name=args.scenario,
         installer_name=args.installer,
+        execute_real=bool(args.execute_real),
+        target_slice_id=str(args.target_slice_id),
     )
     if args.format == "json":
         print(json.dumps(report, indent=2, sort_keys=True))

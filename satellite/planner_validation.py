@@ -55,6 +55,27 @@ def validate_planner_input(
         issues.append("planner_input_missing_zones")
     if len(topology_snapshot.ut_zone_membership) == 0:
         issues.append("planner_input_missing_ut_zone_membership")
+    for zone_id, zone in sorted(topology_snapshot.zones.items()):
+        if str(zone.get("resolution_state", "resolved")) != "resolved":
+            issues.append(
+                f"planner_input_zone_unresolved:{zone_id}:{zone.get('resolution_state')}"
+            )
+        if not zone.get("active_serving_satellite_id"):
+            issues.append(f"planner_input_zone_missing_active_serving_satellite:{zone_id}")
+    for ut_id, zone_id in sorted(topology_snapshot.ut_zone_membership.items()):
+        zone = dict(topology_snapshot.zones.get(zone_id, {}))
+        attachment = dict(topology_snapshot.nodes.get(ut_id, {}).get("attachment", {}))
+        if zone and str(zone.get("resolution_state", "resolved")) != "resolved":
+            continue
+        attachment_satellite_id = attachment.get("active_serving_satellite_id")
+        zone_satellite_id = zone.get("active_serving_satellite_id")
+        if attachment.get("state") != "attached":
+            issues.append(f"planner_input_ut_not_attached:{ut_id}:{zone_id}")
+        if attachment_satellite_id != zone_satellite_id:
+            issues.append(
+                f"planner_input_zone_attachment_mismatch:{ut_id}:{zone_id}:"
+                f"{attachment_satellite_id}:{zone_satellite_id}"
+            )
     return PlannerValidationResult(
         validation_scope="planner_input",
         planner_name=planner_name,
@@ -97,6 +118,30 @@ def validate_planner_output(
                 issues.append(
                     f"planner_output_action_unknown_target:{node_id}:{index}:{action.get('target_node_id')}"
                 )
+            if (
+                topology_snapshot.nodes.get(node_id, {}).get("node_type") == "user_terminal"
+                and action.get("action_type") == "forwarding_entry"
+            ):
+                outcome = dict(action.get("intent", {}).get("outcome", {}))
+                gateway_selection = dict(outcome.get("gateway_selection", {}))
+                forbidden_ut_fields = (
+                    "satellite_path",
+                    "forward_link_ids",
+                    "reverse_link_ids",
+                    "forward_labels",
+                    "reverse_labels",
+                    "ping_target_ip",
+                    "target_host_node_id",
+                    "policy_table_id",
+                    "policy_rule_priority",
+                    "gateway_access_link_id",
+                    "ut_access_link_id",
+                )
+                for field_name in forbidden_ut_fields:
+                    if field_name in gateway_selection:
+                        issues.append(
+                            f"planner_output_ut_gateway_selection_too_heavy:{node_id}:{field_name}"
+                        )
     return PlannerValidationResult(
         validation_scope="planner_output",
         planner_name=planner_name,

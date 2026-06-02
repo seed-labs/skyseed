@@ -40,6 +40,7 @@ class OrbitTopologySlice:
 class VisibilitySlice:
     active_links: List[Dict[str, Any]]
     visibility_model: str
+    candidate_visibility: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -75,7 +76,11 @@ class ZoneGenerator(ABC):
     generator_name: str
 
     @abstractmethod
-    def generate(self, orbit_slice: OrbitTopologySlice) -> ZoneProjection:
+    def generate(
+        self,
+        orbit_slice: OrbitTopologySlice,
+        visibility_slice: VisibilitySlice,
+    ) -> ZoneProjection:
         """Return planner-facing zone membership and active serving ownership."""
 
 
@@ -131,7 +136,11 @@ class ExplicitZoneGenerator(ZoneGenerator):
 
     generator_name = "explicit_zone_generator"
 
-    def generate(self, orbit_slice: OrbitTopologySlice) -> ZoneProjection:
+    def generate(
+        self,
+        orbit_slice: OrbitTopologySlice,
+        visibility_slice: VisibilitySlice,
+    ) -> ZoneProjection:
         zone_input = orbit_slice.zone_generation_input
         return ZoneProjection(
             zones={zone_id: dict(zone) for zone_id, zone in zone_input.zones.items()},
@@ -201,7 +210,7 @@ class TopologySnapshotPipeline:
         snapshots: List[TopologySnapshot] = []
         for orbit_slice in self.orbit_producer.iter_orbit_slices():
             visibility_slice = self.visibility_model.evaluate(orbit_slice)
-            zone_projection = self.zone_generator.generate(orbit_slice)
+            zone_projection = self.zone_generator.generate(orbit_slice, visibility_slice)
             snapshots.append(
                 self.topology_slicer.build_snapshot(
                     orbit_slice,

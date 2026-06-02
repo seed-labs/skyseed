@@ -48,8 +48,8 @@ def _experiment_flow_intent(ut_id: str) -> ExperimentFlowIntent:
     return ExperimentFlowIntent(
         intent_id=f"ut-internet-egress:{ut_id}",
         default_ping_target="10.154.0.129",
-        forward_label_seed=16000 + ut_index * 100,
-        reverse_label_seed=17000 + ut_index * 100,
+        forward_label_seed=100 + (ut_index - 1) * 200,
+        reverse_label_seed=200 + (ut_index - 1) * 200,
         policy_table_id=1000 + ut_index,
         policy_rule_priority=1000 + ut_index,
     )
@@ -504,7 +504,10 @@ class UtInternetExperimentPlanner(Planner):
             candidates.append((gateway_id, satellite_id, link))
         return sorted(candidates, key=lambda item: (item[0], item[1], item[2].get("link_id")))
 
-    def _flow_context(
+    def _gateway_class_id(self, *, zone_id: str, gateway_id: str) -> str:
+        return f"{zone_id}:default-gateway:{gateway_id}"
+
+    def _core_flow_context(
         self,
         *,
         topology_snapshot: TopologySnapshot,
@@ -574,6 +577,37 @@ class UtInternetExperimentPlanner(Planner):
             "policy_rule_priority": intent.policy_rule_priority,
         }
 
+    def _ut_gateway_selection(
+        self,
+        *,
+        topology_snapshot: TopologySnapshot,
+        flow_context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        gateway_id = str(flow_context["selected_gateway_id"])
+        zone_id = str(flow_context["zone_id"])
+        gateway_class_id = self._gateway_class_id(zone_id=zone_id, gateway_id=gateway_id)
+        special_prefix_overrides = list(
+            topology_snapshot.planner_hints.get("special_prefix_overrides", [])
+        )
+        ingress_label = next(iter(flow_context.get("forward_labels", [])), None)
+        return {
+            "flow_id": flow_context["flow_id"],
+            "ut_id": flow_context["ut_id"],
+            "zone_id": zone_id,
+            "default_gateway_class_id": gateway_class_id,
+            "special_prefix_overrides": special_prefix_overrides,
+            "gateway_class_binding": {
+                "gateway_class_id": gateway_class_id,
+                "selected_gateway_id": gateway_id,
+                "serving_satellite_id": flow_context["serving_satellite_id"],
+                "ingress_transport": {
+                    "encapsulation": "mpls_label_impose",
+                    "ingress_label": ingress_label,
+                },
+                "ordinary_traffic_behavior": "default_gateway_class",
+            },
+        }
+
     def build_runtime_update_plan(
         self,
         topology_snapshot: TopologySnapshot,
@@ -581,10 +615,14 @@ class UtInternetExperimentPlanner(Planner):
         actions_by_node: DefaultDict[str, List[Dict[str, Any]]] = defaultdict(list)
 
         for ut_id, zone_id in sorted(topology_snapshot.ut_zone_membership.items()):
-            flow_context = self._flow_context(
+            flow_context = self._core_flow_context(
                 topology_snapshot=topology_snapshot,
                 ut_id=ut_id,
                 zone_id=zone_id,
+            )
+            ut_gateway_selection = self._ut_gateway_selection(
+                topology_snapshot=topology_snapshot,
+                flow_context=flow_context,
             )
             serving_satellite_id = str(flow_context["serving_satellite_id"])
             gateway_id = str(flow_context["selected_gateway_id"])
@@ -607,7 +645,12 @@ class UtInternetExperimentPlanner(Planner):
                         "outcome": {
                             "zone_id": zone_id,
                             "serving_satellite_id": serving_satellite_id,
-                            "selected_gateway_id": gateway_id,
+                            "default_gateway_class_id": ut_gateway_selection[
+                                "default_gateway_class_id"
+                            ],
+                            "special_prefix_overrides": list(
+                                ut_gateway_selection["special_prefix_overrides"]
+                            ),
                             "traffic_role": "ut_internet_egress",
                         },
                         "classification_scope": "node_local_ingress",
@@ -627,20 +670,21 @@ class UtInternetExperimentPlanner(Planner):
                     node_id=ut_id,
                     sequence=110,
                     intent={
-                        "forwarding_plane": "internet_egress_path",
+                        "forwarding_plane": "ut_gateway_class_resolution",
                         "match": {
-                            "flow_id": flow_context["flow_id"],
+                            "gateway_class_id": ut_gateway_selection["default_gateway_class_id"],
                             "node_role": "ut_ingress",
                         },
                         "outcome": {
-                            "flow_context": dict(flow_context),
+                            "gateway_selection": dict(ut_gateway_selection),
                             "local_role": "ut_ingress",
                         },
                     },
                     expected_state=f"{ut_id} forwards via {serving_satellite_id}",
                     metadata={
                         "flow_id": flow_context["flow_id"],
-                        "realization_family": "experiment_label_switched_egress",
+                        "gateway_class_id": ut_gateway_selection["default_gateway_class_id"],
+                        "ut_contract_scope": "lightweight_gateway_selection_only",
                     },
                 )
             )

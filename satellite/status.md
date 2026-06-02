@@ -57,6 +57,16 @@
   separate `NetworkMutationPlan` delta path and a Linux/MPLS dry-run installer
   target without relying on `controller.py` private helpers as the main
   runtime architecture.
+- A first minimal real non-legacy Linux/MPLS runtime realization path now runs
+  for the safest direct-gateway slice, performing real node-local
+  apply/verify/rollback plus a successful `ut1 -> as154-host-new`
+  (`10.154.0.129`) ping without routing through the legacy runtime bridge.
+- A first complete small-scale Iteration 2 satellite Internet example now runs
+  through the new architecture with semi-real multi-slice orbit/position input,
+  separate `RuntimeUpdatePlan` and `NetworkMutationPlan` boundaries, real
+  host-side slot rebinds, real node-local Linux/MPLS apply/verify/rollback,
+  successful `ut1` and `ut2` pings to `as154-host-new`, and verified cleanup
+  back to the baseline runtime state.
 - Iteration 2 architecture intent is now clearer about fixed `UT` coordinates,
   stable zone membership, unique active zone serving satellites, logical G/Z
   MPLS semantics, and runtime-update architecture remaining undecided pending
@@ -305,6 +315,27 @@
   - validated the full non-legacy experiment path locally without Docker or
     real runtime mutation, proving the architecture through dry-run execution
     preview rather than another legacy-backed ping run
+- Completed the first minimal real non-legacy Linux/MPLS runtime realization:
+  - added `satellite/linux_mpls_runtime.py`
+  - introduced `MinimalHostRuntimeManager` so real execution only proceeds
+    when the selected slice has a zero-op `NetworkMutationPlan`
+  - introduced `MinimalRealLinuxMplsInstaller` as the first real
+    backend-specific Iteration 2 runtime target
+  - kept the real execution scope intentionally narrow:
+    - direct-gateway slice only
+    - node-local Linux/MPLS state only
+    - no host-side slot/link mutation apply
+  - extended `satellite/demo_iteration2_satellite_experiment.py` with
+    opt-in `--execute-real`
+  - kept dry-run preview mandatory before real execution
+  - added real preflight capture, real apply, real verify, real ping, and
+    rollback verification
+  - refined the experiment planner label seeds to stay within the current
+    container MPLS platform-label capacity during real execution
+  - verified that the minimal real non-legacy path can:
+    - apply node-local Linux/MPLS state
+    - ping `10.154.0.129` from `ut1`
+    - roll back the applied runtime state cleanly
 
 ## In Progress
 
@@ -599,3 +630,27 @@ Current implementation posture:
 - Commands used in the contract validation helper and mock-flow round:
   - `python -m py_compile satellite/contracts.py satellite/controller.py satellite/mpls_control.py satellite/build_topology.py satellite/mock_iteration2_contract_flow.py`
   - `python satellite/mock_iteration2_contract_flow.py`
+- Commands used in the small-scale Iteration 2 satellite Internet example round:
+  - `python3 -m py_compile satellite/experiment_topology.py satellite/network_runtime.py satellite/linux_mpls_runtime.py satellite/demo_iteration2_satellite_experiment.py`
+  - `python3 satellite/demo_iteration2_satellite_experiment.py`
+  - `python3 satellite/demo_iteration2_satellite_experiment.py --format json`
+  - `python3 satellite/demo_iteration2_satellite_experiment.py --execute-real`
+- Boundary-correction checkpoint for the small-scale Iteration 2 example:
+  - UT-side `RuntimeUpdatePlan` state is now lightweight: UT nodes carry
+    default gateway-class selection, optional special-prefix override slots, and
+    serving-satellite ingress-label binding only.
+  - Zone owner selection is now visibility-qualified: each zone resolves from
+    the intersection of visible UT candidate sets, and unresolved zones are
+    represented explicitly instead of diverging silently from UT attachment.
+  - `NetworkMutationPlan` remains host-side slot/link delta only; UT/satellite/
+    gateway forwarding/MPLS state remains in `RuntimeUpdatePlan`.
+  - Real Linux/MPLS and host-network execution still use transitional direct
+    container/host control, but runtime reports now mark that posture
+    explicitly as a bridge toward node-local agents and host runtime daemons.
+  - Validations run for this correction round:
+    - `python3 -m py_compile satellite/topology_pipeline.py satellite/experiment_topology.py satellite/planner.py satellite/planner_validation.py satellite/installer_runtime.py satellite/linux_mpls_runtime.py satellite/network_runtime.py satellite/demo_iteration2_satellite_experiment.py`
+    - `python3 satellite/demo_iteration2_control_plane.py`
+    - `python3 satellite/demo_iteration2_runtime_realization.py --installer linux-mpls-dry-run`
+    - `python3 satellite/demo_iteration2_satellite_experiment.py`
+    - `python3 satellite/demo_iteration2_satellite_experiment.py --format json`
+    - `python3 satellite/demo_iteration2_satellite_experiment.py --execute-real`

@@ -426,8 +426,57 @@ def _linux_mpls_operation_preview(
 
     if instruction_type == "forwarding_entry_preview":
         outcome = dict(intent.get("outcome", {}))
-        flow_context = dict(outcome.get("flow_context", {}))
         local_role = str(outcome.get("local_role"))
+        if local_role == "ut_ingress":
+            gateway_selection = dict(outcome.get("gateway_selection", {}))
+            gateway_binding = dict(gateway_selection.get("gateway_class_binding", {}))
+            ingress_transport = dict(gateway_binding.get("ingress_transport", {}))
+            operations.extend(
+                [
+                    {
+                        "operation_family": "linux_mpls_dry_run",
+                        "operation_kind": "default_gateway_class_candidate",
+                        "target_node_id": target_node_id,
+                        "candidate_state": {
+                            "flow_id": gateway_selection.get("flow_id"),
+                            "gateway_class_id": gateway_binding.get("gateway_class_id"),
+                            "selected_gateway_id": gateway_binding.get("selected_gateway_id"),
+                            "serving_satellite_id": gateway_binding.get(
+                                "serving_satellite_id"
+                            ),
+                            "ordinary_traffic_behavior": gateway_binding.get(
+                                "ordinary_traffic_behavior"
+                            ),
+                        },
+                        "preview_reason": (
+                            "Model ordinary UT traffic as a default gateway-class selection"
+                        ),
+                    },
+                    {
+                        "operation_family": "linux_mpls_dry_run",
+                        "operation_kind": "gateway_class_ingress_label_candidate",
+                        "target_node_id": target_node_id,
+                        "candidate_state": {
+                            "flow_id": gateway_selection.get("flow_id"),
+                            "gateway_class_id": gateway_binding.get("gateway_class_id"),
+                            "selected_gateway_id": gateway_binding.get("selected_gateway_id"),
+                            "serving_satellite_id": gateway_binding.get(
+                                "serving_satellite_id"
+                            ),
+                            "ingress_transport": ingress_transport,
+                            "special_prefix_overrides": list(
+                                gateway_selection.get("special_prefix_overrides", [])
+                            ),
+                        },
+                        "preview_reason": (
+                            "Model UT handoff as a serving-satellite-provided ingress label only"
+                        ),
+                    },
+                ]
+            )
+            return operations
+
+        flow_context = dict(outcome.get("flow_context", {}))
         base_context = {
             "flow_id": intent.get("match", {}).get("flow_id"),
             "local_role": local_role,
@@ -441,42 +490,7 @@ def _linux_mpls_operation_preview(
             "policy_table_id": flow_context.get("policy_table_id"),
             "policy_rule_priority": flow_context.get("policy_rule_priority"),
         }
-        if local_role == "ut_ingress":
-            operations.extend(
-                [
-                    {
-                        "operation_family": "linux_mpls_dry_run",
-                        "operation_kind": "source_policy_rule_candidate",
-                        "target_node_id": target_node_id,
-                        "candidate_state": {
-                            **base_context,
-                            "ut_access_link_id": flow_context.get("ut_access_link_id"),
-                        },
-                        "preview_reason": (
-                            "Model UT egress steering as source-policy and table selection state"
-                        ),
-                    },
-                    {
-                        "operation_family": "linux_mpls_dry_run",
-                        "operation_kind": "mpls_default_route_candidate",
-                        "target_node_id": target_node_id,
-                        "candidate_state": {
-                            **base_context,
-                            "first_hop_label": next(
-                                iter(flow_context.get("forward_labels", [])),
-                                None,
-                            ),
-                            "serving_satellite_id": flow_context.get(
-                                "serving_satellite_id"
-                            ),
-                        },
-                        "preview_reason": (
-                            "Model UT data-plane handoff as a label-imposing default route"
-                        ),
-                    },
-                ]
-            )
-        elif local_role in {"transit_toward_gateway", "direct_gateway_egress"}:
+        if local_role in {"transit_toward_gateway", "direct_gateway_egress"}:
             operations.append(
                 {
                     "operation_family": "linux_mpls_dry_run",
