@@ -221,6 +221,127 @@ class NodeLocalInstaller(ABC):
         """Build one dry-run installer execution from a node-local envelope."""
 
 
+def _linux_forwarding_operation_preview(
+    *,
+    instruction: Dict[str, Any],
+    target_node_id: str,
+) -> List[Dict[str, Any]]:
+    instruction_type = str(instruction.get("instruction_type"))
+    intent = dict(instruction.get("intent", {}))
+    operations: List[Dict[str, Any]] = []
+
+    if instruction_type == "traffic_classification_preview":
+        outcome = dict(intent.get("outcome", {}))
+        operations.append(
+            {
+                "operation_family": "linux_forwarding_dry_run",
+                "operation_kind": "routing_policy_classification_candidate",
+                "target_node_id": target_node_id,
+                "candidate_state": {
+                    "classification_scope": intent.get("classification_scope"),
+                    "traffic_role": outcome.get("traffic_role"),
+                    "zone_id": outcome.get("zone_id"),
+                    "serving_satellite_id": outcome.get("serving_satellite_id"),
+                },
+                "preview_reason": "Map generic traffic classification intent into Linux policy-routing style state",
+            }
+        )
+        return operations
+
+    if instruction_type == "service_binding_preview":
+        binding_kind = str(intent.get("binding_kind"))
+        target = dict(intent.get("target", {}))
+        subject = dict(intent.get("subject", {}))
+        if binding_kind == "gateway_egress":
+            operations.append(
+                {
+                    "operation_family": "linux_forwarding_dry_run",
+                    "operation_kind": "default_gateway_selection_candidate",
+                    "target_node_id": target_node_id,
+                    "candidate_state": {
+                        "gateway_id": subject.get("entity_id"),
+                        "attached_satellite_id": target.get("entity_id"),
+                        "binding_scope": intent.get("binding_scope"),
+                    },
+                    "preview_reason": "Represent gateway egress binding as Linux egress-role state",
+                }
+            )
+        elif binding_kind == "gateway_reachability_anchor":
+            operations.append(
+                {
+                    "operation_family": "linux_forwarding_dry_run",
+                    "operation_kind": "gateway_reachability_route_candidate",
+                    "target_node_id": target_node_id,
+                    "candidate_state": {
+                        "satellite_id": subject.get("entity_id"),
+                        "gateway_id": target.get("entity_id"),
+                        "gateway_role": target.get("role"),
+                    },
+                    "preview_reason": "Represent gateway reachability anchor as Linux route-oriented state",
+                }
+            )
+        elif binding_kind == "zone_service":
+            operations.append(
+                {
+                    "operation_family": "linux_forwarding_dry_run",
+                    "operation_kind": "local_zone_delivery_role_candidate",
+                    "target_node_id": target_node_id,
+                    "candidate_state": {
+                        "zone_id": subject.get("entity_id"),
+                        "serving_satellite_id": target.get("entity_id"),
+                        "delivery_role": target.get("role"),
+                    },
+                    "preview_reason": "Represent zone service binding as Linux local-delivery role state",
+                }
+            )
+        else:
+            operations.append(
+                {
+                    "operation_family": "linux_forwarding_dry_run",
+                    "operation_kind": "generic_service_binding_candidate",
+                    "target_node_id": target_node_id,
+                    "candidate_state": {
+                        "binding_kind": binding_kind,
+                        "subject_entity_id": subject.get("entity_id"),
+                        "target_entity_id": target.get("entity_id"),
+                    },
+                    "preview_reason": "Preserve generic service binding when no narrower Linux projection rule exists",
+                }
+            )
+        return operations
+
+    if instruction_type == "forwarding_entry_preview":
+        operations.append(
+            {
+                "operation_family": "linux_forwarding_dry_run",
+                "operation_kind": "forwarding_table_entry_candidate",
+                "target_node_id": target_node_id,
+                "candidate_state": {
+                    "forwarding_plane": intent.get("forwarding_plane"),
+                    "match": dict(intent.get("match", {})),
+                    "outcome": dict(intent.get("outcome", {})),
+                },
+                "preview_reason": "Represent generic forwarding entry as Linux forwarding-table state",
+            }
+        )
+        return operations
+
+    operations.append(
+        {
+            "operation_family": "linux_forwarding_dry_run",
+            "operation_kind": "node_capability_candidate",
+            "target_node_id": target_node_id,
+            "candidate_state": {
+                "capability": intent.get("capability"),
+                "operation": intent.get("operation"),
+                "capability_scope": dict(intent.get("capability_scope", {})),
+            },
+            "preview_reason": "Represent generic node capability as Linux runtime readiness state",
+        }
+    )
+    return operations
+
+
 class GenericDryRunInstaller(NodeLocalInstaller):
     """Generic dry-run installer that previews node-local realization steps."""
 
@@ -287,5 +408,98 @@ class GenericDryRunInstaller(NodeLocalInstaller):
                 "pre_apply_validation": "required",
                 "post_apply_validation": "preview_only",
                 "real_linux_mutation": "not_applicable_in_dry_run",
+            },
+        )
+
+
+class LinuxForwardingDryRunInstaller(NodeLocalInstaller):
+    """Backend-specific dry-run installer that previews Linux forwarding realization."""
+
+    installer_name = "linux_forwarding_dry_run_installer"
+    installer_kind = "backend_specific_node_local_installer"
+    installer_version = "0.1.0"
+
+    def validate_input(self, node_envelope: Dict[str, Any]) -> InstallerValidationResult:
+        result = super().validate_input(node_envelope)
+        issues = list(result.issues)
+        for index, instruction in enumerate(node_envelope.get("installer_intents", []), start=1):
+            preview = dict(instruction.get("execution_preview", {}))
+            if preview.get("mode") != "dry_run":
+                issues.append(f"linux_forwarding_input_not_dry_run:{index}")
+        return InstallerValidationResult(
+            validation_scope=result.validation_scope,
+            installer_name=result.installer_name,
+            source_envelope_id=result.source_envelope_id,
+            execution_id=result.execution_id,
+            issues=tuple(issues),
+        )
+
+    def build_execution(self, node_envelope: Dict[str, Any]) -> DryRunInstallerExecution:
+        target_node_id = str(node_envelope.get("target_node_id"))
+        step_results: List[Dict[str, Any]] = []
+        for sequence, instruction in enumerate(node_envelope.get("installer_intents", []), start=1):
+            operation_preview = _linux_forwarding_operation_preview(
+                instruction=instruction,
+                target_node_id=target_node_id,
+            )
+            step_results.append(
+                {
+                    "sequence": sequence,
+                    "instruction_id": instruction.get("instruction_id"),
+                    "instruction_type": instruction.get("instruction_type"),
+                    "target_node_id": target_node_id,
+                    "source_action_id": instruction.get("source_action_id"),
+                    "realization_mode": "dry_run_preview",
+                    "realization_target": "linux_forwarding_dry_run",
+                    "backend_adapter": "linux_forwarding_backend_adapter",
+                    "operation_preview": operation_preview,
+                    "summary": (
+                        "Preview Linux forwarding-state realization for "
+                        f"{instruction.get('instruction_id')}"
+                    ),
+                    "observed_effect": "no_runtime_mutation_performed",
+                }
+            )
+        execution_seed = {
+            "source_envelope_id": node_envelope.get("envelope_id"),
+            "installer": self.metadata(),
+            "instruction_ids": [
+                step_result["instruction_id"] for step_result in step_results
+            ],
+        }
+        execution_id = f"instexec-{_fingerprint(execution_seed)}"
+        return DryRunInstallerExecution(
+            schema_version=INSTALLER_EXECUTION_SCHEMA_VERSION,
+            execution_id=execution_id,
+            source_envelope={
+                "envelope_id": node_envelope.get("envelope_id"),
+                "distribution_mode": node_envelope.get("delivery_contract", {}).get(
+                    "distribution_model"
+                ),
+            },
+            installer={
+                **self.metadata(),
+                "dry_run_mode": True,
+                "planner_policy_visibility": "none",
+                "backend_target": "linux_forwarding_dry_run",
+            },
+            target_node={
+                "node_id": target_node_id,
+                "node_type": node_envelope.get("target_node_type"),
+            },
+            execution_summary={
+                "status": "dry_run_preview_complete",
+                "dry_run_mode": True,
+                "step_count": len(step_results),
+                "requires_runtime_side_effects": False,
+                "backend_specific_preview": True,
+                "backend_target": "linux_forwarding_dry_run",
+            },
+            step_results=step_results,
+            validation_expectations={
+                "pre_apply_validation": "required",
+                "post_apply_validation": "preview_only",
+                "real_linux_mutation": "not_applicable_in_dry_run",
+                "backend_adapter_validation": "required_before_real_execution",
             },
         )

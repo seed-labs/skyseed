@@ -43,6 +43,10 @@
   `-> Distribution / Store Boundary -> Node-Local Agent Boundary`
   `-> Installer Boundary`
   in fully dry-run form across multiple time slices.
+- A first backend-specific dry-run runtime realization target now runs locally
+  without Docker, using a Linux-forwarding realization family only at the
+  installer boundary while keeping planner output and runtime projection
+  backend-neutral upstream.
 - Iteration 2 architecture intent is now clearer about fixed `UT` coordinates,
   stable zone membership, unique active zone serving satellites, logical G/Z
   MPLS semantics, and runtime-update architecture remaining undecided pending
@@ -220,6 +224,24 @@
   - kept transport choice, store choice, node-agent placement, installer
     backend choice, real Linux mutation, Docker mutation, and
     `NetworkMutationPlan` execution out of scope
+- Completed the first backend-specific dry-run realization validation milestone:
+  - extended `satellite/installer_runtime.py` with
+    `LinuxForwardingDryRunInstaller`
+  - kept the installer replaceable while adding one concrete backend target:
+    `linux_forwarding_dry_run`
+  - projected generic installer intents into Linux-forwarding-style realization
+    previews only inside the backend-specific installer adapter
+  - kept runtime projection backend-neutral before the installer adapter by
+    preserving generic instruction families and only advertising Linux as a
+    candidate backend
+  - extended `satellite/demo_iteration2_runtime_realization.py` to validate:
+    - planner output remains generic
+    - runtime projection remains backend-neutral before the adapter
+    - backend-specific preview is isolated to the installer boundary
+    - no real commands are executed
+  - confirmed that the current action model was sufficient for this first
+    backend-specific dry-run target, so no action-model schema refinement was
+    required for this milestone
 
 ## In Progress
 
@@ -246,6 +268,9 @@
 - Preparing the first backend-specific realization target that can refine
   installer previews into one concrete runtime family without committing the
   whole platform to that target.
+- Preparing the first richer planner policy that can emit more concrete
+  forwarding-entry intent for backend validation beyond service-binding and
+  classification placeholders.
 - Translating OpenSN investigation findings into Skyseed-specific interface and
   evaluation criteria without prematurely choosing `etcd`, `eBPF`, or one
   daemon shape.
@@ -286,6 +311,9 @@
 - What should the first backend-specific installer target be:
   Linux forwarding realization, container-local execution contract, host-daemon
   bridge contract, or another dry-run target family?
+- After Linux-forwarding dry-run validation, what is the next target family
+  that best stress-tests abstraction boundaries:
+  Linux MPLS, host-daemon realization, or another runtime backend?
 - What exact `RuntimeUpdatePlan` schema is sufficient for Linux MPLS/runtime
   installers without prematurely constraining future planner designs?
 - How should the future installer projection map generic action types such as
@@ -344,6 +372,9 @@
 - The first distributor/agent/installer dry-run contracts could accidentally
   harden into a single runtime deployment model if backend-specific realization
   work is started without preserving abstraction boundaries.
+- A Linux-forwarding-oriented adapter could accidentally become the default
+  platform definition if later runtime targets are not validated against the
+  same generic projection and installer boundaries.
 
 ## Next Recommended Action
 
@@ -353,6 +384,9 @@
 - Add the first backend-specific dry-run realization target for one concrete
   runtime family such as Linux forwarding realization, while keeping planner,
   distribution, agent, and envelope contracts unchanged.
+- Next, validate a second contrasting backend family such as Linux MPLS or a
+  host-daemon-style realization target to prove the current abstractions are
+  not accidentally Linux-forwarding-specific.
 - Or add a structured agent/installer result envelope that can model success,
   partial failure, rollback intent, and observed state reporting before any
   real runtime mutation is introduced.

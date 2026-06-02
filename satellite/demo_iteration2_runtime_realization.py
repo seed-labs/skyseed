@@ -22,7 +22,11 @@ from distribution_store import (
     EnvelopeDistributor,
     GenericDryRunEnvelopeDistributor,
 )
-from installer_runtime import GenericDryRunInstaller, NodeLocalInstaller
+from installer_runtime import (
+    GenericDryRunInstaller,
+    LinuxForwardingDryRunInstaller,
+    NodeLocalInstaller,
+)
 from node_local_agent import (
     AgentValidationResult,
     GenericDryRunNodeLocalAgent,
@@ -73,6 +77,8 @@ def _build_agent(agent_name: str) -> NodeLocalAgent:
 def _build_installer(installer_name: str) -> NodeLocalInstaller:
     if installer_name == "generic-dry-run":
         return GenericDryRunInstaller()
+    if installer_name == "linux-forwarding-dry-run":
+        return LinuxForwardingDryRunInstaller()
     raise ValueError(f"unsupported installer: {installer_name}")
 
 
@@ -150,6 +156,26 @@ def _node_runtime_realization(
             node_id,
         )
         installer_output = execution_report.installer_execution["validation"]
+        backend_isolated_to_installer = (
+            "operation_preview" not in json.dumps(node_envelope, sort_keys=True)
+            and "backend_adapter" not in json.dumps(node_envelope, sort_keys=True)
+            and "realization_target" not in json.dumps(node_envelope, sort_keys=True)
+            and "operation_preview" not in json.dumps(delivery_view, sort_keys=True)
+            and "backend_adapter" not in json.dumps(delivery_view, sort_keys=True)
+            and "realization_target" not in json.dumps(delivery_view, sort_keys=True)
+        )
+        installer_backend_specific = (
+            execution_report.installer_execution["execution_summary"].get(
+                "backend_target"
+            )
+            == "linux_forwarding_dry_run"
+            or any(
+                step_result.get("realization_target") == "linux_forwarding_dry_run"
+                for step_result in execution_report.installer_execution.get(
+                    "step_results", []
+                )
+            )
+        )
         node_reports[node_id] = {
             "delivery_view": dict(delivery_view),
             "agent_execution_report": execution_report.to_dict(),
@@ -158,11 +184,16 @@ def _node_runtime_realization(
                 "installer_output": installer_output,
                 "agent_input": agent_input.to_dict(),
                 "agent_output": agent_output.to_dict(),
+                "backend_isolation": {
+                    "backend_preview_isolated_to_installer": backend_isolated_to_installer,
+                    "installer_backend_specific_preview_present": installer_backend_specific,
+                },
                 "all_valid": (
                     installer_input.is_valid
                     and installer_output["status"] == "valid"
                     and agent_input.is_valid
                     and agent_output.is_valid
+                    and backend_isolated_to_installer
                 ),
             },
         }
@@ -215,6 +246,21 @@ def _slice_summary(
         node_id: report["agent_execution_report"]
         for node_id, report in node_reports.items()
     }
+    planner_output_remains_generic = all(
+        action.get("action_type") in (
+            "service_binding",
+            "traffic_classification",
+            "forwarding_entry",
+            "node_capability",
+        )
+        for subplan in runtime_update_plan.node_subplans.values()
+        for action in subplan.get("actions", [])
+    )
+    projection_remains_backend_neutral = all(
+        str(intent.get("execution_preview", {}).get("backend_family", "")).startswith("generic_")
+        for subplan in installer_plan.node_installer_subplans.values()
+        for intent in subplan.get("installer_intents", [])
+    )
     return {
         "time_slice_id": snapshot.time_slice.get("slice_id"),
         "snapshot_id": snapshot.snapshot_id,
@@ -260,6 +306,25 @@ def _slice_summary(
             "envelope_output": envelope_output_validation.to_dict(),
             "distribution_input": distribution_input_validation.to_dict(),
             "distribution_output": distribution_output_validation.to_dict(),
+            "backend_architecture": {
+                "planner_output_remains_generic": planner_output_remains_generic,
+                "projection_remains_backend_neutral_before_adapter": (
+                    projection_remains_backend_neutral
+                ),
+                "backend_specific_preview_isolated_to_installer": all(
+                    report["validation"]["backend_isolation"][
+                        "backend_preview_isolated_to_installer"
+                    ]
+                    for report in node_reports.values()
+                ),
+                "no_real_commands_executed": all(
+                    report["agent_execution_report"]["observed_state"][
+                        "runtime_mutation_performed"
+                    ]
+                    is False
+                    for report in node_reports.values()
+                ),
+            },
             "node_runtime": {
                 node_id: report["validation"]
                 for node_id, report in sorted(node_reports.items())
@@ -274,6 +339,8 @@ def _slice_summary(
                 and envelope_output_validation.is_valid
                 and distribution_input_validation.is_valid
                 and distribution_output_validation.is_valid
+                and planner_output_remains_generic
+                and projection_remains_backend_neutral
                 and all(report["validation"]["all_valid"] for report in node_reports.values())
             ),
         },
@@ -498,6 +565,13 @@ def _render_text(report: Dict[str, Any]) -> str:
             f"projection={validation['projection_output']['status']}, "
             f"envelope={validation['envelope_output']['status']}, "
             f"distribution={validation['distribution_output']['status']}"
+        )
+        lines.append(
+            "  Backend proof: "
+            f"generic_plan={validation['backend_architecture']['planner_output_remains_generic']}, "
+            f"neutral_projection={validation['backend_architecture']['projection_remains_backend_neutral_before_adapter']}, "
+            f"isolated_backend_preview={validation['backend_architecture']['backend_specific_preview_isolated_to_installer']}, "
+            f"no_real_commands={validation['backend_architecture']['no_real_commands_executed']}"
         )
         node_runtime_bits = ", ".join(
             f"{node_id}={'valid' if report['validation']['all_valid'] else 'issues_detected'}"

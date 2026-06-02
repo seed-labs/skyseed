@@ -326,7 +326,6 @@ class GenericDryRunProjector(RuntimeProjector):
                 realization_scope="node_local_ingress",
                 candidate_backends=[
                     "container_local_installer",
-                    "linux_forwarding_backend",
                     "research_runtime_backend",
                 ],
                 summary=f"Dry-run classify ingress traffic on {node_id}",
@@ -342,7 +341,6 @@ class GenericDryRunProjector(RuntimeProjector):
                 backend_family="generic_forwarding_state",
                 realization_scope="node_local_forwarding",
                 candidate_backends=[
-                    "linux_forwarding_backend",
                     "container_local_installer",
                     "optimized_runtime_manager",
                 ],
@@ -362,7 +360,6 @@ class GenericDryRunProjector(RuntimeProjector):
                 realization_scope="node_local",
                 candidate_backends=[
                     "container_local_installer",
-                    "linux_forwarding_backend",
                     "research_runtime_backend",
                 ],
                 summary=f"Dry-run ensure node capability on {node_id}",
