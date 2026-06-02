@@ -65,6 +65,12 @@
   - physical `NetworkMutationPlan`
   - runtime role boundaries
   - minimal versus high-performance implementation directions
+- Added `docs/iteration2_contract_boundaries.md` for Iteration 2 Phase 1:
+  - `TopologySnapshot` responsibility boundary
+  - `RuntimeUpdatePlan` responsibility boundary
+  - `NetworkMutationPlan` responsibility boundary
+  - data flow among the three contracts
+  - forbidden coupling rules
 
 ## In Progress
 
@@ -85,6 +91,10 @@
   - physical topology mutation contracts
   - host daemon responsibilities
   - container-local installer responsibilities
+- Converging on contract ownership lines before schema design:
+  - topology facts
+  - planner output
+  - host-level mutation intent
 
 ## Open Questions
 
@@ -106,6 +116,8 @@
   installers without prematurely constraining future planner designs?
 - What exact `NetworkMutationPlan` schema is sufficient for host-level topology
   mutation without leaking planner policy into physical execution?
+- What exact ownership relationship should exist between scenario transition
+  logic and `NetworkMutationPlan` generation?
 - How should destination-to-gateway class and destination-to-zone mapping be
   represented so that G/Z planner behavior stays replaceable?
 - Should the first Skyseed runtime-update path be controller-push, node-pull,
@@ -136,6 +148,8 @@
   desired boundary among planner, agent, installer, and platform management.
 - Runtime optimization work could accidentally overfit the current
   `controller.py` slot model instead of producing reusable contracts.
+- Schema design could accidentally start before the ownership boundaries are
+  truly accepted, causing hidden coupling to be baked into Phase 1 outputs.
 
 ## Next Recommended Action
 
@@ -146,6 +160,8 @@
   architecture options note before any implementation work.
 - Use `docs/iteration2_runtime_architecture.md` to draft the first schema note
   for `RuntimeUpdatePlan` and `NetworkMutationPlan`.
+- Use `docs/iteration2_contract_boundaries.md` as the boundary reference before
+  drafting any final schema fields.
 - Keep unresolved semantics documented as open questions instead of silently
   fixing them in code.
 
@@ -174,4 +190,12 @@
   - `sed -n '1,320p' satellite/design_principle.md`
   - `sed -n '1,320p' satellite/status.md`
   - `rg -n "docker network|docker exec|subprocess|network connect|network disconnect|link_state|apply_scenario|attach-|detach-|connect_cross|release-slot|prepare-ut-egress-policy|install-ut-egress-mpls|runtime agent|NodeDaemon|VXLAN|ip link|tc |iptables|ip -f mpls|sysctl" satellite/controller.py satellite/mpls_control.py satellite/runtime_update_agent.sh satellite/build_topology.py`
+- Commands used in the contract-boundary design round:
+  - `sed -n '1,320p' satellite/AGENTS.md`
+  - `sed -n '1,360p' satellite/design_principle.md`
+  - `sed -n '1,360p' satellite/status.md`
+  - `sed -n '1,360p' satellite/docs/iteration2_architecture_understanding.md`
+  - `sed -n '1,360p' satellite/docs/opensn_investigation_report.md`
+  - `sed -n '1,360p' satellite/docs/iteration2_runtime_architecture.md`
+  - `sed -n '1,260p' satellite/.skills/*.md`
 - No runtime validation commands were executed.
