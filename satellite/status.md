@@ -22,6 +22,9 @@
 - `RuntimeUpdatePlan` now carries a typed action model for generic node-local
   runtime intent, so planner output no longer defaults to command-shaped
   placeholder actions.
+- A first end-to-end Iteration 2 control-plane demo now runs locally without
+  Docker, showing a multi-slice mock orbit/topology producer feeding
+  `TopologySnapshot -> Planner -> RuntimeUpdatePlan` plus transition summaries.
 - Iteration 2 architecture intent is now clearer about fixed `UT` coordinates,
   stable zone membership, unique active zone serving satellites, logical G/Z
   MPLS semantics, and runtime-update architecture remaining undecided pending
@@ -122,6 +125,18 @@
     target the new action model
   - kept runtime transport, runtime-agent behavior, Docker decisions, and
     controller execution paths out of the action contract
+- Completed the first end-to-end Iteration 2 control-plane demo milestone:
+  - added a topology-side producer skeleton with explicit orbit, visibility,
+    zone-generation, and topology-slicer boundaries
+  - added a static multi-slice demo producer that emits two planner-facing
+    `TopologySnapshot` instances without hard-coding a future orbit library
+  - added a standalone CLI demo that runs:
+    `mock topology input -> TopologySnapshot -> Planner -> RuntimeUpdatePlan`
+  - added transition summaries showing how active links, zone serving, and
+    per-node planner actions change across time slices
+  - validated each slice for snapshot, plan, and planner-flow correctness
+  - kept runtime execution, runtime-agent behavior, Docker mutation, and
+    OpenSN-style runtime optimization out of scope for this milestone
 
 ## In Progress
 
@@ -137,6 +152,9 @@
   current placeholder skeleton while preserving planner replaceability.
 - Preparing the first planner policy that can emit richer forwarding-entry
   actions on top of the new generic action model.
+- Preparing the first installer/runtime projection boundary that can consume
+  typed actions without collapsing the planner contract back into shell
+  commands.
 - Translating OpenSN investigation findings into Skyseed-specific interface and
   evaluation criteria without prematurely choosing `etcd`, `eBPF`, or one
   daemon shape.
@@ -180,6 +198,9 @@
   `forwarding_entry` and `traffic_classification` into Linux-specific
   realization steps without leaking those details back into the planner
   contract?
+- What minimal topology-input schema should replace the current static demo
+  slice definitions first: orbit-file-backed input, a visibility snapshot
+  format, or another explicit intermediate artifact?
 - What exact `NetworkMutationPlan` schema is sufficient for host-level topology
   mutation without leaking planner policy into physical execution?
 - What exact ownership relationship should exist between scenario transition
@@ -234,12 +255,17 @@
 - The new action types could still drift toward Linux-specific semantics if
   later planners overuse `forwarding_entry` details instead of keeping the
   contract policy-generic.
+- The first control-plane demo could be mistaken for a topology model if later
+  work does not keep its mock orbit and zone inputs clearly replaceable.
 
 ## Next Recommended Action
 
 - Use the validated typed action model as the seam for the first real
   planner-policy slice, likely a minimal forwarding-entry-capable planner that
   still emits generic `RuntimeUpdatePlan` node-local intent.
+- Keep runtime and OpenSN optimization work separate for now:
+  the next runtime-facing step should be a projection/installer boundary, not
+  Docker mutation or runtime-agent integration.
 
 Current implementation posture:
 
@@ -328,6 +354,17 @@ Current implementation posture:
   - `python3 satellite/mock_iteration2_contract_flow.py`
   - `python3 - <<'PY' ... build_mock_contract_flow() ... PY`
   - `python3 - <<'PY' ... build_mock_runtime_update_plan(...) ... PY`
+- Commands used in the first control-plane demo round:
+  - `sed -n '1,260p' satellite/build_topology.py`
+  - `sed -n '1,260p' satellite/contracts.py`
+  - `sed -n '261,520p' satellite/contracts.py`
+  - `sed -n '1,340p' satellite/planner.py`
+  - `sed -n '1,260p' satellite/planner_validation.py`
+  - `sed -n '1,220p' satellite/.skills/planner_design.md`
+  - `sed -n '1,220p' satellite/.skills/orbit_design.md`
+  - `python3 -m py_compile satellite/contracts.py satellite/planner.py satellite/planner_validation.py satellite/topology_pipeline.py satellite/demo_iteration2_control_plane.py satellite/mock_iteration2_contract_flow.py`
+  - `python3 satellite/demo_iteration2_control_plane.py`
+  - `python3 satellite/demo_iteration2_control_plane.py --format json`
 - Commands used in the contract validation helper and mock-flow round:
   - `python -m py_compile satellite/contracts.py satellite/controller.py satellite/mpls_control.py satellite/build_topology.py satellite/mock_iteration2_contract_flow.py`
   - `python satellite/mock_iteration2_contract_flow.py`
