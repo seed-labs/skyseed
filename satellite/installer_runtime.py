@@ -429,16 +429,23 @@ def _linux_mpls_operation_preview(
         local_role = str(outcome.get("local_role"))
         if local_role == "ut_ingress":
             gateway_selection = dict(outcome.get("gateway_selection", {}))
-            gateway_binding = dict(gateway_selection.get("gateway_class_binding", {}))
-            ingress_transport = dict(gateway_binding.get("ingress_transport", {}))
-            operations.extend(
-                [
+            gateway_bindings = [
+                dict(binding)
+                for binding in gateway_selection.get("gateway_class_bindings", [])
+            ]
+            if not gateway_bindings:
+                gateway_bindings = [
+                    dict(gateway_selection.get("gateway_class_binding", {}))
+                ]
+            for gateway_binding in gateway_bindings:
+                ingress_transport = dict(gateway_binding.get("ingress_transport", {}))
+                operations.append(
                     {
                         "operation_family": "linux_mpls_dry_run",
                         "operation_kind": "default_gateway_class_candidate",
                         "target_node_id": target_node_id,
                         "candidate_state": {
-                            "flow_id": gateway_selection.get("flow_id"),
+                            "flow_id": gateway_binding.get("flow_id"),
                             "gateway_class_id": gateway_binding.get("gateway_class_id"),
                             "selected_gateway_id": gateway_binding.get("selected_gateway_id"),
                             "serving_satellite_id": gateway_binding.get(
@@ -447,17 +454,20 @@ def _linux_mpls_operation_preview(
                             "ordinary_traffic_behavior": gateway_binding.get(
                                 "ordinary_traffic_behavior"
                             ),
+                            "traffic_scope": gateway_binding.get("traffic_scope"),
                         },
                         "preview_reason": (
-                            "Model ordinary UT traffic as a default gateway-class selection"
+                            "Model UT traffic as gateway-class selection without exposing end-to-end path state"
                         ),
-                    },
+                    }
+                )
+                operations.append(
                     {
                         "operation_family": "linux_mpls_dry_run",
                         "operation_kind": "gateway_class_ingress_label_candidate",
                         "target_node_id": target_node_id,
                         "candidate_state": {
-                            "flow_id": gateway_selection.get("flow_id"),
+                            "flow_id": gateway_binding.get("flow_id"),
                             "gateway_class_id": gateway_binding.get("gateway_class_id"),
                             "selected_gateway_id": gateway_binding.get("selected_gateway_id"),
                             "serving_satellite_id": gateway_binding.get(
@@ -469,11 +479,10 @@ def _linux_mpls_operation_preview(
                             ),
                         },
                         "preview_reason": (
-                            "Model UT handoff as a serving-satellite-provided ingress label only"
+                            "Model UT handoff as serving-satellite-provided ingress labels plus prefix-level gateway-class overrides"
                         ),
-                    },
-                ]
-            )
+                    }
+                )
             return operations
 
         flow_context = dict(outcome.get("flow_context", {}))

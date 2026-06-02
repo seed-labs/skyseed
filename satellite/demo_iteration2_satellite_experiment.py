@@ -98,7 +98,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--target-slice-id",
-        default="small-scale-slice-0002",
+        default="small-scale-slice-0001",
         help="Slice id to target for real execution when --execute-real is enabled.",
     )
     return parser.parse_args()
@@ -161,6 +161,65 @@ def _ut_side_state_remains_lightweight(runtime_update_plan: Any) -> bool:
             if any(field_name in gateway_selection for field_name in forbidden_fields):
                 return False
     return True
+
+
+def _ut_gateway_behavior(runtime_update_plan: Any) -> Dict[str, Dict[str, Any]]:
+    behavior: Dict[str, Dict[str, Any]] = {}
+    for subplan in runtime_update_plan.node_subplans.values():
+        if str(subplan.get("target_node_type")) != "user_terminal":
+            continue
+        for action in subplan.get("actions", []):
+            if str(action.get("action_type")) != "forwarding_entry":
+                continue
+            gateway_selection = dict(
+                action.get("intent", {}).get("outcome", {}).get("gateway_selection", {})
+            )
+            ut_id = str(gateway_selection.get("ut_id", subplan.get("target_node_id")))
+            behavior[ut_id] = {
+                "default_gateway_class_id": gateway_selection.get("default_gateway_class_id"),
+                "special_prefix_overrides": list(
+                    gateway_selection.get("special_prefix_overrides", [])
+                ),
+                "gateway_class_bindings": list(
+                    gateway_selection.get("gateway_class_bindings", [])
+                )
+                or [dict(gateway_selection.get("gateway_class_binding", {}))],
+            }
+    return behavior
+
+
+def _targets_reuse_seed_inventory(snapshot: Any) -> bool:
+    integration = dict(snapshot.planner_hints.get("mini_internet_integration", {}))
+    discovered_targets = {
+        str(target.get("node_id"))
+        for target in snapshot.planner_hints.get("internet_validation_targets", [])
+    }
+    external_targets = {
+        str(target_id)
+        for target_id in integration.get("external_test_target_node_ids", [])
+    }
+    return bool(discovered_targets) and discovered_targets.issubset(external_targets)
+
+
+def _gateway_nat_semantics(snapshot: Any) -> Dict[str, Any]:
+    catalog = dict(snapshot.planner_hints.get("gateway_ix_catalog", {}))
+    semantics = {
+        "gateway_nat_required": True,
+        "return_path_model": "gateway_conntrack_and_snat_return_mapping",
+        "satellite_domain_separate_from_mini_internet_routing": True,
+        "gateways": {},
+    }
+    for gateway_id, gateway_info in sorted(catalog.items()):
+        uplink = dict(gateway_info.get("internet_uplink", {}))
+        ix_peering = dict(gateway_info.get("ix_peering", {}))
+        semantics["gateways"][gateway_id] = {
+            "ix_id": ix_peering.get("ix_id"),
+            "uplink_network_name": uplink.get("network_name"),
+            "uplink_ip_address": uplink.get("ip_address"),
+            "gateway_region": gateway_info.get("gateway_region"),
+            "nat_egress_interface": uplink.get("network_name"),
+        }
+    return semantics
 
 
 def _node_runtime_realization(
@@ -353,6 +412,7 @@ def build_experiment_report(
         planner_output_generic = _planner_output_remains_generic(runtime_update_plan)
         projection_backend_neutral = _projection_remains_backend_neutral(installer_plan)
         ut_side_state_lightweight = _ut_side_state_remains_lightweight(runtime_update_plan)
+        targets_reuse_seed_inventory = _targets_reuse_seed_inventory(snapshot)
         all_valid = (
             topology_validation.is_valid
             and plan_validation.is_valid
@@ -362,6 +422,7 @@ def build_experiment_report(
             and planner_output_generic
             and projection_backend_neutral
             and ut_side_state_lightweight
+            and targets_reuse_seed_inventory
         )
 
         slice_report = {
@@ -386,6 +447,15 @@ def build_experiment_report(
                 zone_id: zone.get("resolution_state", "resolved")
                 for zone_id, zone in sorted(snapshot.zones.items())
             },
+            "mini_internet_targets": list(
+                snapshot.planner_hints.get("internet_validation_targets", [])
+            ),
+            "mini_internet_integration": dict(
+                snapshot.planner_hints.get("mini_internet_integration", {})
+            ),
+            "gateway_ix_catalog": dict(snapshot.planner_hints.get("gateway_ix_catalog", {})),
+            "gateway_nat_semantics": _gateway_nat_semantics(snapshot),
+            "ut_gateway_behavior": _ut_gateway_behavior(runtime_update_plan),
             "network_mutation_plan": network_mutation_plan.to_dict(),
             "network_mutation_summary": summarize_network_mutation_plan(
                 network_mutation_plan
@@ -403,6 +473,7 @@ def build_experiment_report(
                 "planner_output_generic": planner_output_generic,
                 "projection_backend_neutral": projection_backend_neutral,
                 "ut_side_state_lightweight": ut_side_state_lightweight,
+                "targets_reuse_seed_inventory": targets_reuse_seed_inventory,
                 "node_reports_all_valid": node_reports_valid,
                 "all_valid": all_valid,
             },
@@ -536,6 +607,19 @@ def build_experiment_report(
             "all_valid": overall_valid,
             "target_slice_id": target_slice_id,
             "runtime_architecture_direction": "agent_daemon_runtime_manager_transition",
+            "mini_internet_targets_discovered": list(
+                snapshots[0].planner_hints.get("internet_validation_targets", [])
+            )
+            if snapshots
+            else [],
+            "mini_internet_integration": dict(
+                snapshots[0].planner_hints.get("mini_internet_integration", {})
+            )
+            if snapshots
+            else {},
+            "gateway_ix_catalog": dict(snapshots[0].planner_hints.get("gateway_ix_catalog", {}))
+            if snapshots
+            else {},
         },
         "pipeline": {
             **pipeline.metadata(),
@@ -581,6 +665,36 @@ def _render_text(report: Dict[str, Any]) -> str:
         f"NetworkMutationPlan -> {pipeline['network_mutation_boundary']}"
     )
     lines.append(f"All slices valid: {report['validation']['all_valid']}")
+    if report["experiment"]["mini_internet_targets_discovered"]:
+        lines.append(
+            "Mini Internet targets: "
+            + ", ".join(
+                f"{target['node_id']}={target['ip_address']}"
+                for target in report["experiment"]["mini_internet_targets_discovered"]
+            )
+        )
+    if report["experiment"]["gateway_ix_catalog"]:
+        lines.append(
+            "Gateway/IX diversity: "
+            + ", ".join(
+                f"{gateway_id}->{gateway_info.get('ix_peering', {}).get('ix_id')}"
+                for gateway_id, gateway_info in sorted(
+                    report["experiment"]["gateway_ix_catalog"].items()
+                )
+            )
+        )
+    if report["experiment"]["mini_internet_integration"]:
+        integration = report["experiment"]["mini_internet_integration"]
+        lines.append(
+            "Mini Internet integration: "
+            f"source={integration.get('inventory_source')} "
+            f"transit_as={integration.get('transit_as_count')} "
+            f"stub_as={integration.get('stub_as_count')}"
+        )
+        lines.append(
+            "Visualization note: "
+            + str(integration.get("visualization_expectation"))
+        )
     if report["real_execution"] is None:
         lines.append("Real connectivity: not attempted; validated execution preview only")
     else:
@@ -612,6 +726,14 @@ def _render_text(report: Dict[str, Any]) -> str:
         lines.append(
             "  Zone states: "
             + json.dumps(slice_report["zone_resolution_states"], sort_keys=True)
+        )
+        lines.append(
+            "  NAT/egress semantics: "
+            + json.dumps(slice_report["gateway_nat_semantics"], sort_keys=True)
+        )
+        lines.append(
+            "  UT gateway behavior: "
+            + json.dumps(slice_report["ut_gateway_behavior"], sort_keys=True)
         )
         mutation_summary = slice_report["network_mutation_summary"]
         lines.append(
@@ -647,9 +769,12 @@ def _render_text(report: Dict[str, Any]) -> str:
         )
         if flow_results:
             lines.append(
-                "  All flow pings: "
+                "  All validation pings: "
                 + ", ".join(
-                    f"{flow_result['ut_id']}={flow_result['success']}"
+                    (
+                        f"{flow_result['ut_id']}:{flow_result['target_host_node_id']}"
+                        f"={flow_result['success']}"
+                    )
                     for flow_result in flow_results
                 )
             )

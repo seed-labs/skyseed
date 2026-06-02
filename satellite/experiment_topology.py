@@ -85,6 +85,14 @@ class ExperimentGatewayProfile:
 
 
 @dataclass(frozen=True)
+class ExperimentPrefixOverridePolicy:
+    policy_name: str
+    destination_prefix: str
+    preferred_gateway_id: str
+    target_node_id: str
+
+
+@dataclass(frozen=True)
 class ExperimentScenario:
     scenario_name: str
     satellite_ids: Sequence[str]
@@ -92,6 +100,8 @@ class ExperimentScenario:
     gateway_profiles: Sequence[ExperimentGatewayProfile]
     ping_target_ip: str
     target_host_node_id: str
+    default_validation_target_node_ids: Sequence[str]
+    special_prefix_override_policies: Sequence[ExperimentPrefixOverridePolicy]
     time_slices: Sequence[ExperimentTimeSlice]
     orbital_reference_time_seconds: float
     min_elevation_deg: float
@@ -219,6 +229,15 @@ SMALL_SCALE_EXPERIMENT_SCENARIO = ExperimentScenario(
     ),
     ping_target_ip="10.154.0.129",
     target_host_node_id="as154-host-new",
+    default_validation_target_node_ids=("as154-host-new", "as160-host1"),
+    special_prefix_override_policies=(
+        ExperimentPrefixOverridePolicy(
+            policy_name="asn160_via_west_gateway",
+            destination_prefix="10.160.0.0/24",
+            preferred_gateway_id="gw2",
+            target_node_id="as160-host1",
+        ),
+    ),
     time_slices=SMALL_SCALE_SEMI_REAL_TIME_SLICES,
     orbital_reference_time_seconds=540.0,
     min_elevation_deg=5.0,
@@ -532,17 +551,121 @@ def _scenario_candidate_links(
                 "candidate_bindings": gateway_candidates,
             }
         )
+
+    for fixed_link in topology.get("fixed_links", {}).get("satellite_satellite", []):
+        endpoint_ids = {
+            str(endpoint.get("node_id"))
+            for endpoint in fixed_link.get("endpoints", [])
+        }
+        if not endpoint_ids.issubset(scenario_satellite_ids):
+            continue
+        candidate_links.append(
+            {
+                "link_id": str(fixed_link.get("link_id")),
+                "slot_type": "fixed_isl",
+                "subnet": fixed_link.get("subnet"),
+                "network_name": fixed_link.get("network_name"),
+                "docker_network_name": fixed_link.get("docker_network_name"),
+                "occupied": True,
+                "binding": {
+                    "satellite_pair": sorted(endpoint_ids),
+                    "link_type": fixed_link.get("link_type"),
+                    "orbit_scope": fixed_link.get("orbit_scope"),
+                },
+                "endpoints": [
+                    dict(endpoint) for endpoint in fixed_link.get("endpoints", [])
+                ],
+                "visibility_relation": "always_on_fixed_satellite_to_satellite_isl",
+            }
+        )
     return candidate_links
 
 
-def _scenario_planner_hints(scenario: ExperimentScenario) -> Dict[str, Any]:
+def _scenario_planner_hints(
+    scenario: ExperimentScenario,
+    topology: Dict[str, Any],
+) -> Dict[str, Any]:
+    external_targets = {
+        str(target.get("node_id")): {
+            "node_id": str(target.get("node_id")),
+            "ip_address": str(target.get("ip_address")),
+            "asn": target.get("asn"),
+            "description": target.get("description"),
+        }
+        for target in topology.get("mini_internet", {}).get("external_test_targets", [])
+    }
+    gateway_ix_peerings = {
+        str(peering.get("gateway_id")): {
+            "gateway_id": str(peering.get("gateway_id")),
+            "ix_id": peering.get("ix_id"),
+            "ip_address": peering.get("ip_address"),
+        }
+        for peering in topology.get("mini_internet", {}).get("gateway_ix_peerings", [])
+    }
+    gateways_by_id = _topology_entry_by_id(topology.get("gateways", []), "gateway_id")
+    validation_targets = [
+        dict(external_targets[target_node_id])
+        for target_node_id in scenario.default_validation_target_node_ids
+        if target_node_id in external_targets
+    ]
+    primary_target = (
+        dict(validation_targets[0])
+        if validation_targets
+        else {
+            "node_id": scenario.target_host_node_id,
+            "ip_address": scenario.ping_target_ip,
+        }
+    )
+    special_prefix_overrides = []
+    for policy in scenario.special_prefix_override_policies:
+        target = external_targets.get(policy.target_node_id)
+        if target is None:
+            continue
+        special_prefix_overrides.append(
+            {
+                "policy_name": policy.policy_name,
+                "destination_prefix": policy.destination_prefix,
+                "preferred_gateway_id": policy.preferred_gateway_id,
+                "target": dict(target),
+            }
+        )
     return {
         "experiment_profile": scenario.scenario_name,
-        "experiment_scope": "small_scale_ut_to_gateway_ping",
+        "experiment_scope": "small_scale_ut_to_gateway_multi_target_validation",
         "gateway_ids": [gateway.gateway_id for gateway in scenario.gateway_profiles],
-        "internet_ping_target_ip": scenario.ping_target_ip,
-        "target_host_node_id": scenario.target_host_node_id,
+        "internet_ping_target_ip": primary_target.get("ip_address"),
+        "target_host_node_id": primary_target.get("node_id"),
         "ut_ids": [terminal.ut_id for terminal in scenario.terminal_profiles],
+        "internet_validation_targets": validation_targets,
+        "special_prefix_overrides": special_prefix_overrides,
+        "gateway_ix_catalog": {
+            gateway_id: {
+                "gateway_region": gateways_by_id.get(gateway_id, {}).get("gateway_region"),
+                "internet_uplink": dict(
+                    gateways_by_id.get(gateway_id, {}).get("internet_uplink", {})
+                ),
+                "ix_peering": dict(gateway_ix_peerings.get(gateway_id, {})),
+            }
+            for gateway_id in [gateway.gateway_id for gateway in scenario.gateway_profiles]
+        },
+        "mini_internet_integration": {
+            "inventory_source": "seed_generated_topology_json",
+            "uses_existing_seed_mini_internet": True,
+            "transit_as_count": len(topology.get("mini_internet", {}).get("transit_ases", [])),
+            "stub_as_count": len(topology.get("mini_internet", {}).get("stub_ases", [])),
+            "selected_validation_target_node_ids": [
+                str(target.get("node_id")) for target in validation_targets
+            ],
+            "external_test_target_node_ids": sorted(external_targets),
+            "gateway_ix_ids": {
+                gateway_id: gateway_ix_peerings.get(gateway_id, {}).get("ix_id")
+                for gateway_id in [gateway.gateway_id for gateway in scenario.gateway_profiles]
+            },
+            "satellite_internet_boundary": "gateway_nat_egress_to_seed_mini_internet",
+            "visualization_expectation": (
+                "reuses_seed_base_topology_and_phase1_ground_internet_structure"
+            ),
+        },
     }
 
 
@@ -971,7 +1094,7 @@ class ScenarioSemiRealOrbitPositionExperimentProducer(OrbitTopologyProducer):
                         ut_zone_membership=ut_zone_membership,
                     ),
                     planner_hints={
-                        **_scenario_planner_hints(scenario),
+                        **_scenario_planner_hints(scenario, self.topology),
                         "orbit_input_kind": "semi_real_orbital_elements",
                     },
                     provenance={
@@ -1011,6 +1134,15 @@ class SyntheticDistanceVisibilityModel(VisibilityModel):
             for node_id, node in orbit_slice.nodes.items()
         }
         for link in orbit_slice.candidate_links:
+            if str(link.get("slot_type")) not in {"ut_access", "gw_access"}:
+                active_links.append(
+                    {
+                        key: value
+                        for key, value in link.items()
+                        if key not in {"visibility_owner_node_id", "candidate_bindings"}
+                    }
+                )
+                continue
             owner_node_id = str(link.get("visibility_owner_node_id"))
             owner_position = positions[owner_node_id]
             visible_candidates = []
@@ -1087,6 +1219,15 @@ class SemiRealLineOfSightVisibilityModel(VisibilityModel):
             for node_id, node in orbit_slice.nodes.items()
         }
         for link in orbit_slice.candidate_links:
+            if str(link.get("slot_type")) not in {"ut_access", "gw_access"}:
+                active_links.append(
+                    {
+                        key: value
+                        for key, value in link.items()
+                        if key not in {"visibility_owner_node_id", "candidate_bindings"}
+                    }
+                )
+                continue
             owner_node_id = str(link.get("visibility_owner_node_id"))
             owner_position = positions[owner_node_id]
             visible_candidates = []

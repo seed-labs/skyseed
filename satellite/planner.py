@@ -507,21 +507,61 @@ class UtInternetExperimentPlanner(Planner):
     def _gateway_class_id(self, *, zone_id: str, gateway_id: str) -> str:
         return f"{zone_id}:default-gateway:{gateway_id}"
 
-    def _core_flow_context(
+    def _flow_intent(
+        self,
+        *,
+        ut_id: str,
+        flow_suffix: str,
+        flow_variant_index: int,
+    ) -> ExperimentFlowIntent:
+        base_intent = _experiment_flow_intent(ut_id)
+        if flow_suffix == "default":
+            return base_intent
+        variant_offset = flow_variant_index * 20
+        return ExperimentFlowIntent(
+            intent_id=f"{base_intent.intent_id}:{flow_suffix}",
+            default_ping_target=base_intent.default_ping_target,
+            forward_label_seed=base_intent.forward_label_seed + variant_offset,
+            reverse_label_seed=base_intent.reverse_label_seed + variant_offset,
+            policy_table_id=base_intent.policy_table_id + flow_variant_index,
+            policy_rule_priority=base_intent.policy_rule_priority + flow_variant_index,
+        )
+
+    def _internet_validation_targets(
+        self,
+        topology_snapshot: TopologySnapshot,
+    ) -> List[Dict[str, Any]]:
+        return [
+            dict(target)
+            for target in topology_snapshot.planner_hints.get(
+                "internet_validation_targets",
+                [],
+            )
+        ]
+
+    def _special_prefix_policies(
+        self,
+        topology_snapshot: TopologySnapshot,
+    ) -> List[Dict[str, Any]]:
+        return [
+            dict(policy)
+            for policy in topology_snapshot.planner_hints.get("special_prefix_overrides", [])
+        ]
+
+    def _resolve_gateway_path(
         self,
         *,
         topology_snapshot: TopologySnapshot,
-        ut_id: str,
-        zone_id: str,
-    ) -> Dict[str, Any]:
-        attachment = dict(topology_snapshot.nodes[ut_id].get("attachment", {}))
-        serving_satellite_id = str(attachment.get("active_serving_satellite_id"))
-        intent = _experiment_flow_intent(ut_id)
+        serving_satellite_id: str,
+        preferred_gateway_id: Optional[str] = None,
+    ) -> Optional[Tuple[str, List[str], Dict[str, Any]]]:
         adjacency = _satellite_adjacency(topology_snapshot)
         candidate_paths: List[Tuple[int, str, List[str], Dict[str, Any]]] = []
         for gateway_id, gateway_satellite_id, gateway_link in self._gateway_candidates(
             topology_snapshot
         ):
+            if preferred_gateway_id is not None and gateway_id != preferred_gateway_id:
+                continue
             path = _shortest_satellite_path(
                 adjacency=adjacency,
                 start_node_id=serving_satellite_id,
@@ -531,11 +571,44 @@ class UtInternetExperimentPlanner(Planner):
                 continue
             candidate_paths.append((len(path) - 1, gateway_id, path, gateway_link))
         if not candidate_paths:
-            raise PlannerError(f"no gateway path available for {ut_id}")
+            return None
         _, selected_gateway_id, satellite_path, gateway_link = min(
             candidate_paths,
             key=lambda item: (item[0], item[1], item[2]),
         )
+        return selected_gateway_id, satellite_path, gateway_link
+
+    def _flow_context(
+        self,
+        *,
+        topology_snapshot: TopologySnapshot,
+        ut_id: str,
+        zone_id: str,
+        flow_suffix: str,
+        flow_variant_index: int,
+        validation_targets: List[Dict[str, Any]],
+        preferred_gateway_id: Optional[str] = None,
+        traffic_scope: str = "ordinary_internet_default",
+        policy_name: Optional[str] = None,
+        destination_prefix: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        attachment = dict(topology_snapshot.nodes[ut_id].get("attachment", {}))
+        serving_satellite_id = str(attachment.get("active_serving_satellite_id"))
+        if not serving_satellite_id:
+            raise PlannerError(f"missing serving satellite for {ut_id}")
+        intent = self._flow_intent(
+            ut_id=ut_id,
+            flow_suffix=flow_suffix,
+            flow_variant_index=flow_variant_index,
+        )
+        gateway_path = self._resolve_gateway_path(
+            topology_snapshot=topology_snapshot,
+            serving_satellite_id=serving_satellite_id,
+            preferred_gateway_id=preferred_gateway_id,
+        )
+        if gateway_path is None:
+            return None
+        selected_gateway_id, satellite_path, gateway_link = gateway_path
         forward_links: List[str] = []
         for first_node_id, second_node_id in zip(satellite_path, satellite_path[1:]):
             link = _link_between_nodes(topology_snapshot, first_node_id, second_node_id)
@@ -547,18 +620,30 @@ class UtInternetExperimentPlanner(Planner):
         forward_links.append(str(gateway_link.get("link_id")))
         reverse_links = list(reversed(forward_links))
         label_count = len(forward_links)
+        primary_target = (
+            dict(validation_targets[0])
+            if validation_targets
+            else {
+                "ip_address": topology_snapshot.planner_hints.get(
+                    "internet_ping_target_ip",
+                    intent.default_ping_target,
+                ),
+                "node_id": topology_snapshot.planner_hints.get(
+                    "target_host_node_id",
+                    "as154-host-new",
+                ),
+            }
+        )
         return {
             "flow_id": intent.intent_id,
             "ut_id": ut_id,
             "zone_id": zone_id,
-            "ping_target_ip": topology_snapshot.planner_hints.get(
-                "internet_ping_target_ip",
-                intent.default_ping_target,
-            ),
-            "target_host_node_id": topology_snapshot.planner_hints.get(
-                "target_host_node_id",
-                "as154-host-new",
-            ),
+            "traffic_scope": traffic_scope,
+            "policy_name": policy_name,
+            "destination_prefix": destination_prefix,
+            "validation_targets": [dict(target) for target in validation_targets],
+            "ping_target_ip": primary_target.get("ip_address"),
+            "target_host_node_id": primary_target.get("node_id"),
             "serving_satellite_id": serving_satellite_id,
             "selected_gateway_id": selected_gateway_id,
             "selected_gateway_satellite_id": satellite_path[-1],
@@ -577,26 +662,28 @@ class UtInternetExperimentPlanner(Planner):
             "policy_rule_priority": intent.policy_rule_priority,
         }
 
-    def _ut_gateway_selection(
+    def _gateway_selection_for_ut(
         self,
         *,
-        topology_snapshot: TopologySnapshot,
-        flow_context: Dict[str, Any],
+        zone_id: str,
+        default_flow_context: Dict[str, Any],
+        override_flow_contexts: List[Dict[str, Any]],
+        unresolved_override_policies: List[Dict[str, Any]],
     ) -> Dict[str, Any]:
-        gateway_id = str(flow_context["selected_gateway_id"])
-        zone_id = str(flow_context["zone_id"])
-        gateway_class_id = self._gateway_class_id(zone_id=zone_id, gateway_id=gateway_id)
-        special_prefix_overrides = list(
-            topology_snapshot.planner_hints.get("special_prefix_overrides", [])
-        )
-        ingress_label = next(iter(flow_context.get("forward_labels", [])), None)
-        return {
-            "flow_id": flow_context["flow_id"],
-            "ut_id": flow_context["ut_id"],
-            "zone_id": zone_id,
-            "default_gateway_class_id": gateway_class_id,
-            "special_prefix_overrides": special_prefix_overrides,
-            "gateway_class_binding": {
+        bindings_by_gateway_class: Dict[str, Dict[str, Any]] = {}
+
+        def register_binding(
+            *,
+            flow_context: Dict[str, Any],
+            traffic_scope: str,
+        ) -> str:
+            gateway_id = str(flow_context["selected_gateway_id"])
+            gateway_class_id = self._gateway_class_id(zone_id=zone_id, gateway_id=gateway_id)
+            if gateway_class_id in bindings_by_gateway_class:
+                return gateway_class_id
+            ingress_label = next(iter(flow_context.get("forward_labels", [])), None)
+            bindings_by_gateway_class[gateway_class_id] = {
+                "flow_id": flow_context["flow_id"],
                 "gateway_class_id": gateway_class_id,
                 "selected_gateway_id": gateway_id,
                 "serving_satellite_id": flow_context["serving_satellite_id"],
@@ -604,8 +691,124 @@ class UtInternetExperimentPlanner(Planner):
                     "encapsulation": "mpls_label_impose",
                     "ingress_label": ingress_label,
                 },
-                "ordinary_traffic_behavior": "default_gateway_class",
-            },
+                "traffic_scope": traffic_scope,
+                "ordinary_traffic_behavior": (
+                    "default_gateway_class"
+                    if traffic_scope == "ordinary_internet_default"
+                    else "special_prefix_override"
+                ),
+            }
+            return gateway_class_id
+
+        default_gateway_class_id = register_binding(
+            flow_context=default_flow_context,
+            traffic_scope="ordinary_internet_default",
+        )
+        special_prefix_overrides: List[Dict[str, Any]] = []
+        for flow_context in override_flow_contexts:
+            gateway_class_id = register_binding(
+                flow_context=flow_context,
+                traffic_scope="special_prefix_override",
+            )
+            special_prefix_overrides.append(
+                {
+                    "policy_name": flow_context.get("policy_name"),
+                    "destination_prefix": flow_context.get("destination_prefix"),
+                    "gateway_class_id": gateway_class_id,
+                    "resolution_state": "resolved",
+                }
+            )
+        special_prefix_overrides.extend(unresolved_override_policies)
+        default_binding = dict(bindings_by_gateway_class[default_gateway_class_id])
+        return {
+            "flow_id": default_flow_context["flow_id"],
+            "ut_id": default_flow_context["ut_id"],
+            "zone_id": zone_id,
+            "default_gateway_class_id": default_gateway_class_id,
+            "special_prefix_overrides": special_prefix_overrides,
+            "gateway_class_binding": default_binding,
+            "gateway_class_bindings": [
+                dict(binding)
+                for _, binding in sorted(bindings_by_gateway_class.items())
+            ],
+        }
+
+    def _core_flow_contexts(
+        self,
+        *,
+        topology_snapshot: TopologySnapshot,
+        ut_id: str,
+        zone_id: str,
+    ) -> Dict[str, Any]:
+        validation_targets = self._internet_validation_targets(topology_snapshot)
+        default_flow_context = self._flow_context(
+            topology_snapshot=topology_snapshot,
+            ut_id=ut_id,
+            zone_id=zone_id,
+            flow_suffix="default",
+            flow_variant_index=0,
+            validation_targets=validation_targets,
+            traffic_scope="ordinary_internet_default",
+        )
+        if default_flow_context is None:
+            raise PlannerError(f"no default gateway path available for {ut_id}")
+
+        override_flow_contexts: List[Dict[str, Any]] = []
+        unresolved_override_policies: List[Dict[str, Any]] = []
+        for variant_index, policy in enumerate(
+            self._special_prefix_policies(topology_snapshot),
+            start=1,
+        ):
+            target = dict(policy.get("target", {}))
+            flow_context = self._flow_context(
+                topology_snapshot=topology_snapshot,
+                ut_id=ut_id,
+                zone_id=zone_id,
+                flow_suffix=f"override:{policy.get('policy_name', variant_index)}",
+                flow_variant_index=variant_index,
+                validation_targets=[target] if target else [],
+                preferred_gateway_id=policy.get("preferred_gateway_id"),
+                traffic_scope="special_prefix_override",
+                policy_name=policy.get("policy_name"),
+                destination_prefix=policy.get("destination_prefix"),
+            )
+            if flow_context is None:
+                unresolved_override_policies.append(
+                    {
+                        "policy_name": policy.get("policy_name"),
+                        "destination_prefix": policy.get("destination_prefix"),
+                        "gateway_class_id": None,
+                        "resolution_state": "preferred_gateway_unreachable",
+                    }
+                )
+                continue
+            if (
+                flow_context["selected_gateway_id"]
+                == default_flow_context["selected_gateway_id"]
+            ):
+                unresolved_override_policies.append(
+                    {
+                        "policy_name": policy.get("policy_name"),
+                        "destination_prefix": policy.get("destination_prefix"),
+                        "gateway_class_id": self._gateway_class_id(
+                            zone_id=zone_id,
+                            gateway_id=str(flow_context["selected_gateway_id"]),
+                        ),
+                        "resolution_state": "resolved_same_as_default",
+                    }
+                )
+                continue
+            override_flow_contexts.append(flow_context)
+        gateway_selection = self._gateway_selection_for_ut(
+            zone_id=zone_id,
+            default_flow_context=default_flow_context,
+            override_flow_contexts=override_flow_contexts,
+            unresolved_override_policies=unresolved_override_policies,
+        )
+        return {
+            "default_flow_context": default_flow_context,
+            "override_flow_contexts": override_flow_contexts,
+            "gateway_selection": gateway_selection,
         }
 
     def build_runtime_update_plan(
@@ -615,18 +818,22 @@ class UtInternetExperimentPlanner(Planner):
         actions_by_node: DefaultDict[str, List[Dict[str, Any]]] = defaultdict(list)
 
         for ut_id, zone_id in sorted(topology_snapshot.ut_zone_membership.items()):
-            flow_context = self._core_flow_context(
+            flow_contexts = self._core_flow_contexts(
                 topology_snapshot=topology_snapshot,
                 ut_id=ut_id,
                 zone_id=zone_id,
             )
-            ut_gateway_selection = self._ut_gateway_selection(
-                topology_snapshot=topology_snapshot,
-                flow_context=flow_context,
-            )
-            serving_satellite_id = str(flow_context["serving_satellite_id"])
-            gateway_id = str(flow_context["selected_gateway_id"])
-            gateway_satellite_id = str(flow_context["selected_gateway_satellite_id"])
+            default_flow_context = dict(flow_contexts["default_flow_context"])
+            gateway_selection = dict(flow_contexts["gateway_selection"])
+            all_flow_contexts = [
+                default_flow_context,
+                *[
+                    dict(flow_context)
+                    for flow_context in flow_contexts["override_flow_contexts"]
+                ],
+            ]
+            serving_satellite_id = str(default_flow_context["serving_satellite_id"])
+            gateway_id = str(default_flow_context["selected_gateway_id"])
 
             actions_by_node[ut_id].append(
                 self._node_action(
@@ -645,11 +852,11 @@ class UtInternetExperimentPlanner(Planner):
                         "outcome": {
                             "zone_id": zone_id,
                             "serving_satellite_id": serving_satellite_id,
-                            "default_gateway_class_id": ut_gateway_selection[
+                            "default_gateway_class_id": gateway_selection[
                                 "default_gateway_class_id"
                             ],
                             "special_prefix_overrides": list(
-                                ut_gateway_selection["special_prefix_overrides"]
+                                gateway_selection["special_prefix_overrides"]
                             ),
                             "traffic_role": "ut_internet_egress",
                         },
@@ -672,18 +879,18 @@ class UtInternetExperimentPlanner(Planner):
                     intent={
                         "forwarding_plane": "ut_gateway_class_resolution",
                         "match": {
-                            "gateway_class_id": ut_gateway_selection["default_gateway_class_id"],
+                            "gateway_class_id": gateway_selection["default_gateway_class_id"],
                             "node_role": "ut_ingress",
                         },
                         "outcome": {
-                            "gateway_selection": dict(ut_gateway_selection),
+                            "gateway_selection": dict(gateway_selection),
                             "local_role": "ut_ingress",
                         },
                     },
                     expected_state=f"{ut_id} forwards via {serving_satellite_id}",
                     metadata={
-                        "flow_id": flow_context["flow_id"],
-                        "gateway_class_id": ut_gateway_selection["default_gateway_class_id"],
+                        "flow_id": default_flow_context["flow_id"],
+                        "gateway_class_id": gateway_selection["default_gateway_class_id"],
                         "ut_contract_scope": "lightweight_gateway_selection_only",
                     },
                 )
@@ -710,86 +917,107 @@ class UtInternetExperimentPlanner(Planner):
                     },
                     expected_state=f"{zone_id} served by {serving_satellite_id}",
                     metadata={
-                        "flow_id": flow_context["flow_id"],
+                        "flow_id": default_flow_context["flow_id"],
                     },
                 )
             )
-            actions_by_node[serving_satellite_id].append(
-                self._node_action(
-                    action_id=f"flow-forwarding:{ut_id}:serving-satellite",
-                    action_type="forwarding_entry",
-                    node_id=serving_satellite_id,
-                    sequence=110,
-                    intent={
-                        "forwarding_plane": "label_switched_internet_egress",
-                        "match": {
+            for flow_context in all_flow_contexts:
+                gateway_satellite_id = str(flow_context["selected_gateway_satellite_id"])
+                selected_gateway_id = str(flow_context["selected_gateway_id"])
+                flow_serving_satellite_id = str(flow_context["serving_satellite_id"])
+                flow_sequence_suffix = str(flow_context["flow_id"]).replace(":", "-")
+                actions_by_node[flow_serving_satellite_id].append(
+                    self._node_action(
+                        action_id=f"flow-forwarding:{ut_id}:{flow_sequence_suffix}:serving-satellite",
+                        action_type="forwarding_entry",
+                        node_id=flow_serving_satellite_id,
+                        sequence=110 + len(actions_by_node[flow_serving_satellite_id]) * 10,
+                        intent={
+                            "forwarding_plane": "label_switched_internet_egress",
+                            "match": {
+                                "flow_id": flow_context["flow_id"],
+                                "node_role": "serving_satellite",
+                            },
+                            "outcome": {
+                                "flow_context": dict(flow_context),
+                                "local_role": (
+                                    "direct_gateway_egress"
+                                    if flow_serving_satellite_id == gateway_satellite_id
+                                    else "transit_toward_gateway"
+                                ),
+                            },
+                        },
+                        expected_state=(
+                            f"{flow_serving_satellite_id} hosts {flow_context['flow_id']}"
+                        ),
+                        metadata={
                             "flow_id": flow_context["flow_id"],
-                            "node_role": "serving_satellite",
+                            "realization_family": "experiment_label_switched_egress",
+                            "traffic_scope": flow_context.get("traffic_scope"),
                         },
-                        "outcome": {
-                            "flow_context": dict(flow_context),
-                            "local_role": (
-                                "direct_gateway_egress"
-                                if serving_satellite_id == gateway_satellite_id
-                                else "transit_toward_gateway"
-                            ),
-                        },
-                    },
-                    expected_state=f"{serving_satellite_id} hosts {flow_context['flow_id']}",
-                    metadata={
-                        "flow_id": flow_context["flow_id"],
-                        "realization_family": "experiment_label_switched_egress",
-                    },
+                    )
                 )
-            )
 
-            actions_by_node[gateway_id].append(
-                self._node_action(
-                    action_id=f"gateway-service:{gateway_id}",
-                    action_type="service_binding",
-                    node_id=gateway_id,
-                    sequence=100,
-                    intent={
-                        "binding_kind": "gateway_egress",
-                        "subject": {
-                            "entity_type": "gateway",
-                            "entity_id": gateway_id,
+                actions_by_node[selected_gateway_id].append(
+                    self._node_action(
+                        action_id=(
+                            f"gateway-service:{selected_gateway_id}:"
+                            f"{flow_context['flow_id']}"
+                        ),
+                        action_type="service_binding",
+                        node_id=selected_gateway_id,
+                        sequence=100 + len(actions_by_node[selected_gateway_id]) * 10,
+                        intent={
+                            "binding_kind": "gateway_egress",
+                            "subject": {
+                                "entity_type": "gateway",
+                                "entity_id": selected_gateway_id,
+                            },
+                            "target": {
+                                "entity_type": "satellite",
+                                "entity_id": gateway_satellite_id,
+                                "role": "attached_gateway_satellite",
+                            },
+                            "binding_scope": "slice_local",
                         },
-                        "target": {
-                            "entity_type": "satellite",
-                            "entity_id": gateway_satellite_id,
-                            "role": "attached_gateway_satellite",
-                        },
-                        "binding_scope": "slice_local",
-                    },
-                    expected_state=f"{gateway_id} attached to {gateway_satellite_id}",
-                    metadata={"flow_id": flow_context["flow_id"]},
-                )
-            )
-            actions_by_node[gateway_id].append(
-                self._node_action(
-                    action_id=f"flow-forwarding:{ut_id}:gateway-egress",
-                    action_type="forwarding_entry",
-                    node_id=gateway_id,
-                    sequence=110,
-                    intent={
-                        "forwarding_plane": "gateway_internet_egress",
-                        "match": {
+                        expected_state=(
+                            f"{selected_gateway_id} attached to {gateway_satellite_id}"
+                        ),
+                        metadata={
                             "flow_id": flow_context["flow_id"],
-                            "node_role": "gateway_egress",
+                            "traffic_scope": flow_context.get("traffic_scope"),
                         },
-                        "outcome": {
-                            "flow_context": dict(flow_context),
-                            "local_role": "gateway_nat_and_return_ingress",
-                        },
-                    },
-                    expected_state=f"{gateway_id} realizes {flow_context['flow_id']}",
-                    metadata={
-                        "flow_id": flow_context["flow_id"],
-                        "realization_family": "experiment_label_switched_egress",
-                    },
+                    )
                 )
-            )
+                actions_by_node[selected_gateway_id].append(
+                    self._node_action(
+                        action_id=(
+                            f"flow-forwarding:{ut_id}:{flow_sequence_suffix}:gateway-egress"
+                        ),
+                        action_type="forwarding_entry",
+                        node_id=selected_gateway_id,
+                        sequence=110 + len(actions_by_node[selected_gateway_id]) * 10,
+                        intent={
+                            "forwarding_plane": "gateway_internet_egress",
+                            "match": {
+                                "flow_id": flow_context["flow_id"],
+                                "node_role": "gateway_egress",
+                            },
+                            "outcome": {
+                                "flow_context": dict(flow_context),
+                                "local_role": "gateway_nat_and_return_ingress",
+                            },
+                        },
+                        expected_state=(
+                            f"{selected_gateway_id} realizes {flow_context['flow_id']}"
+                        ),
+                        metadata={
+                            "flow_id": flow_context["flow_id"],
+                            "realization_family": "experiment_label_switched_egress",
+                            "traffic_scope": flow_context.get("traffic_scope"),
+                        },
+                    )
+                )
 
         node_subplans: Dict[str, Dict[str, Any]] = {}
         for node_id in sorted(actions_by_node):

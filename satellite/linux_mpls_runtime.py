@@ -79,24 +79,41 @@ def _flow_contexts_from_plan(
             local_role = str(outcome.get("local_role", match.get("node_role", "")))
             if local_role == "ut_ingress":
                 gateway_selection = dict(outcome.get("gateway_selection", {}))
-                gateway_binding = dict(gateway_selection.get("gateway_class_binding", {}))
-                ingress_transport = dict(gateway_binding.get("ingress_transport", {}))
                 ut_id = str(gateway_selection.get("ut_id", ""))
                 if selected_ut_ids is not None and ut_id not in selected_ut_ids:
                     continue
-                flow_id = str(gateway_selection.get("flow_id", match.get("flow_id", ut_id)))
-                if not flow_id:
-                    continue
-                flow_contexts.setdefault(flow_id, {}).update(
-                    {
-                        "flow_id": flow_id,
-                        "ut_id": ut_id,
-                        "zone_id": gateway_selection.get("zone_id"),
-                        "serving_satellite_id": gateway_binding.get("serving_satellite_id"),
-                        "selected_gateway_id": gateway_binding.get("selected_gateway_id"),
-                        "ut_ingress_label": ingress_transport.get("ingress_label"),
-                    }
-                )
+                gateway_bindings = [
+                    dict(binding)
+                    for binding in gateway_selection.get("gateway_class_bindings", [])
+                ]
+                if not gateway_bindings:
+                    gateway_bindings = [
+                        dict(gateway_selection.get("gateway_class_binding", {}))
+                    ]
+                for gateway_binding in gateway_bindings:
+                    ingress_transport = dict(gateway_binding.get("ingress_transport", {}))
+                    flow_id = str(
+                        gateway_binding.get(
+                            "flow_id",
+                            gateway_selection.get("flow_id", match.get("flow_id", ut_id)),
+                        )
+                    )
+                    if not flow_id:
+                        continue
+                    flow_contexts.setdefault(flow_id, {}).update(
+                        {
+                            "flow_id": flow_id,
+                            "ut_id": ut_id,
+                            "zone_id": gateway_selection.get("zone_id"),
+                            "serving_satellite_id": gateway_binding.get(
+                                "serving_satellite_id"
+                            ),
+                            "selected_gateway_id": gateway_binding.get(
+                                "selected_gateway_id"
+                            ),
+                            "ut_ingress_label": ingress_transport.get("ingress_label"),
+                        }
+                    )
                 continue
 
             flow_context = dict(outcome.get("flow_context", {}))
@@ -134,6 +151,7 @@ class DirectGatewayExperimentContext:
     gateway_access_peer_ip: str
     gateway_nat_interface: str
     gateway_nat_source_ip: str
+    validation_targets: Tuple[Dict[str, str], ...]
 
     @property
     def return_target_prefix(self) -> str:
@@ -547,6 +565,14 @@ def _realization_contexts(
                     gateway_entry.get("internet_uplink", {}).get("network_name")
                 ),
                 gateway_nat_source_ip=_strip_prefix(str(bootstrap_endpoint.get("ip_address"))),
+                validation_targets=tuple(
+                    {
+                        "node_id": str(target.get("node_id")),
+                        "ip_address": str(target.get("ip_address")),
+                    }
+                    for target in flow_context.get("validation_targets", [])
+                    if target.get("node_id") and target.get("ip_address")
+                ),
             )
         )
     return contexts
@@ -1217,25 +1243,41 @@ class MinimalRealLinuxMplsInstaller:
                             ).to_dict(),
                         }
                     )
-                ping = _run_docker_command(
-                    node_id=context.ut_id,
-                    command=("ping", "-c", "1", "-W", "2", context.ping_target_ip),
-                    phase="verify",
-                    description="ping Mini Internet host from UT",
-                    allow_failure=True,
-                )
-                ping_result = {
-                    "ut_id": context.ut_id,
-                    "ping_target_ip": context.ping_target_ip,
-                    "target_host_node_id": context.target_host_node_id,
-                    "success": ping.returncode == 0,
-                    "stdout": ping.stdout,
-                    "stderr": ping.stderr,
-                    "returncode": ping.returncode,
-                }
-                ping_results.append(ping_result)
+                validation_targets = list(context.validation_targets) or [
+                    {
+                        "node_id": context.target_host_node_id,
+                        "ip_address": context.ping_target_ip,
+                    }
+                ]
+                context_ping_results: List[Dict[str, Any]] = []
+                for validation_target in validation_targets:
+                    ping = _run_docker_command(
+                        node_id=context.ut_id,
+                        command=(
+                            "ping",
+                            "-c",
+                            "1",
+                            "-W",
+                            "2",
+                            str(validation_target["ip_address"]),
+                        ),
+                        phase="verify",
+                        description="ping Mini Internet host from UT",
+                        allow_failure=True,
+                    )
+                    ping_result = {
+                        "ut_id": context.ut_id,
+                        "ping_target_ip": str(validation_target["ip_address"]),
+                        "target_host_node_id": str(validation_target["node_id"]),
+                        "success": ping.returncode == 0,
+                        "stdout": ping.stdout,
+                        "stderr": ping.stderr,
+                        "returncode": ping.returncode,
+                    }
+                    ping_results.append(ping_result)
+                    context_ping_results.append(ping_result)
                 applied_contexts.append((context, preflight))
-                if ping.returncode != 0:
+                if any(result["success"] is not True for result in context_ping_results):
                     failure_reason = f"ut_ping_failed_after_real_apply:{context.ut_id}"
                     break
         except RuntimeCommandFailure as exc:

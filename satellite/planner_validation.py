@@ -124,6 +124,14 @@ def validate_planner_output(
             ):
                 outcome = dict(action.get("intent", {}).get("outcome", {}))
                 gateway_selection = dict(outcome.get("gateway_selection", {}))
+                gateway_bindings = [
+                    dict(binding)
+                    for binding in gateway_selection.get("gateway_class_bindings", [])
+                ]
+                if not gateway_bindings and gateway_selection.get("gateway_class_binding"):
+                    gateway_bindings = [
+                        dict(gateway_selection.get("gateway_class_binding", {}))
+                    ]
                 forbidden_ut_fields = (
                     "satellite_path",
                     "forward_link_ids",
@@ -142,6 +150,20 @@ def validate_planner_output(
                         issues.append(
                             f"planner_output_ut_gateway_selection_too_heavy:{node_id}:{field_name}"
                         )
+                for binding in gateway_bindings:
+                    for field_name in forbidden_ut_fields:
+                        if field_name in binding:
+                            issues.append(
+                                "planner_output_ut_gateway_binding_too_heavy:"
+                                f"{node_id}:{field_name}"
+                            )
+                for override in gateway_selection.get("special_prefix_overrides", []):
+                    for field_name in forbidden_ut_fields:
+                        if field_name in dict(override):
+                            issues.append(
+                                "planner_output_ut_prefix_override_too_heavy:"
+                                f"{node_id}:{field_name}"
+                            )
     return PlannerValidationResult(
         validation_scope="planner_output",
         planner_name=planner_name,

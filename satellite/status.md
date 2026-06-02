@@ -654,3 +654,40 @@ Current implementation posture:
     - `python3 satellite/demo_iteration2_satellite_experiment.py`
     - `python3 satellite/demo_iteration2_satellite_experiment.py --format json`
     - `python3 satellite/demo_iteration2_satellite_experiment.py --execute-real`
+- Multi-target Mini Internet validation checkpoint:
+  - The small-scale semi-real experiment now discovers Mini Internet targets
+    and gateway/IX metadata from `topology.json` instead of treating a single
+    host as a shortcut path.
+  - `RuntimeUpdatePlan` now carries lightweight UT gateway-class state for:
+    default ordinary Internet traffic, prefix-scoped override intent, and
+    serving-satellite ingress-label bindings only.
+  - Fixed intra-orbit ISLs are now part of the planner-facing experiment
+    topology snapshot, so slice-2 special-prefix override behavior is derived
+    from current visibility and gateway reachability rather than slice-id
+    expectations.
+  - Real opt-in execution validated two Mini Internet targets,
+    `as154-host-new` (`10.154.0.129`) and `as160-host1` (`10.160.0.71`), with
+    successful ping results from both `ut1` and `ut2` on the direct-gateway
+    slice and successful rollback/cleanup afterward.
+  - Validations run for this checkpoint:
+    - `python3 -m py_compile satellite/experiment_topology.py satellite/planner.py satellite/planner_validation.py satellite/installer_runtime.py satellite/linux_mpls_runtime.py satellite/demo_iteration2_satellite_experiment.py`
+    - `python3 satellite/demo_iteration2_satellite_experiment.py`
+    - `python3 satellite/demo_iteration2_satellite_experiment.py --execute-real`
+- Mini Internet integration audit checkpoint:
+  - The Iteration 2 small-scale experiment reuses the SEED-generated
+    `topology.json` Mini Internet inventory rather than a duplicate toy
+    Internet. The audit now reports transit/stub AS counts, selected validation
+    targets, and gateway IX attachment metadata directly from that inventory.
+  - Gateway egress semantics are explicit in the experiment report:
+    UT traffic exits through a selected gateway, the gateway performs
+    `SNAT/FORWARD` handling on its SEED IX uplink, and return traffic relies on
+    gateway conntrack/NAT rather than external hosts learning UT-internal
+    routes.
+  - The visualization note is now explicit: the experiment intentionally
+    reuses the SEED/Phase1 base ground topology, so seeing the familiar Mini
+    Internet structure is expected rather than evidence of bypassing Iteration 2.
+  - Validation commands for the audit round:
+    - `python3 -m py_compile satellite/experiment_topology.py satellite/planner.py satellite/planner_validation.py satellite/linux_mpls_runtime.py satellite/demo_iteration2_satellite_experiment.py`
+    - `python3 satellite/demo_iteration2_satellite_experiment.py`
+    - `python3 satellite/demo_iteration2_satellite_experiment.py --format json`
+    - `python3 satellite/demo_iteration2_satellite_experiment.py --execute-real`
