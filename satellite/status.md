@@ -25,6 +25,9 @@
 - A first end-to-end Iteration 2 control-plane demo now runs locally without
   Docker, showing a multi-slice mock orbit/topology producer feeding
   `TopologySnapshot -> Planner -> RuntimeUpdatePlan` plus transition summaries.
+- A first runtime projection pipeline now runs locally without Docker, showing
+  `RuntimeUpdatePlan` typed actions being projected into dry-run installer
+  preview objects without executing real Linux, network, or Docker commands.
 - Iteration 2 architecture intent is now clearer about fixed `UT` coordinates,
   stable zone membership, unique active zone serving satellites, logical G/Z
   MPLS semantics, and runtime-update architecture remaining undecided pending
@@ -137,6 +140,17 @@
   - validated each slice for snapshot, plan, and planner-flow correctness
   - kept runtime execution, runtime-agent behavior, Docker mutation, and
     OpenSN-style runtime optimization out of scope for this milestone
+- Completed the first runtime projection pipeline milestone:
+  - added a replaceable runtime projection layer that consumes
+    `RuntimeUpdatePlan` typed actions
+  - added a dry-run installer preview contract with projection-side validation
+  - added a generic dry-run projector that keeps planner output free of Linux,
+    Docker, and host-specific execution details
+  - added a standalone demo showing:
+    `TopologySnapshot -> Planner -> RuntimeUpdatePlan -> runtime projection`
+  - validated projection input and output for each time slice
+  - kept runtime agents, real installers, host daemons, and physical network
+    mutation out of scope for this milestone
 
 ## In Progress
 
@@ -155,6 +169,8 @@
 - Preparing the first installer/runtime projection boundary that can consume
   typed actions without collapsing the planner contract back into shell
   commands.
+- Preparing the first backend-specific realization adapter that can consume
+  dry-run installer intents while still remaining separate from planner logic.
 - Translating OpenSN investigation findings into Skyseed-specific interface and
   evaluation criteria without prematurely choosing `etcd`, `eBPF`, or one
   daemon shape.
@@ -201,6 +217,9 @@
 - What minimal topology-input schema should replace the current static demo
   slice definitions first: orbit-file-backed input, a visibility snapshot
   format, or another explicit intermediate artifact?
+- What should the first backend-specific dry-run projection target be:
+  Linux forwarding realization, a container-local agent envelope, a host-daemon
+  envelope, or another intermediate installer contract?
 - What exact `NetworkMutationPlan` schema is sufficient for host-level topology
   mutation without leaking planner policy into physical execution?
 - What exact ownership relationship should exist between scenario transition
@@ -257,6 +276,9 @@
   contract policy-generic.
 - The first control-plane demo could be mistaken for a topology model if later
   work does not keep its mock orbit and zone inputs clearly replaceable.
+- The first runtime projector could accidentally become a de facto installer
+  contract if later backends do not remain clearly replaceable and separately
+  validated.
 
 ## Next Recommended Action
 
@@ -266,6 +288,9 @@
 - Keep runtime and OpenSN optimization work separate for now:
   the next runtime-facing step should be a projection/installer boundary, not
   Docker mutation or runtime-agent integration.
+- The next runtime-facing step can now be a backend-specific dry-run adapter or
+  agent envelope on top of the new projection boundary, still without real
+  runtime execution.
 
 Current implementation posture:
 
@@ -365,6 +390,17 @@ Current implementation posture:
   - `python3 -m py_compile satellite/contracts.py satellite/planner.py satellite/planner_validation.py satellite/topology_pipeline.py satellite/demo_iteration2_control_plane.py satellite/mock_iteration2_contract_flow.py`
   - `python3 satellite/demo_iteration2_control_plane.py`
   - `python3 satellite/demo_iteration2_control_plane.py --format json`
+- Commands used in the runtime projection round:
+  - `sed -n '1,220p' satellite/.skills/runtime_agent_design.md`
+  - `sed -n '1,260p' satellite/docs/iteration2_runtime_architecture.md`
+  - `sed -n '1,260p' satellite/docs/iteration2_contract_boundaries.md`
+  - `sed -n '1,360p' satellite/contracts.py`
+  - `sed -n '1,360p' satellite/planner.py`
+  - `sed -n '1,360p' satellite/demo_iteration2_control_plane.py`
+  - `sed -n '1,360p' satellite/topology_pipeline.py`
+  - `python3 -m py_compile satellite/contracts.py satellite/planner.py satellite/planner_validation.py satellite/topology_pipeline.py satellite/demo_iteration2_control_plane.py satellite/runtime_projection.py satellite/demo_iteration2_runtime_projection.py satellite/mock_iteration2_contract_flow.py`
+  - `python3 satellite/demo_iteration2_runtime_projection.py`
+  - `python3 satellite/demo_iteration2_runtime_projection.py --format json`
 - Commands used in the contract validation helper and mock-flow round:
   - `python -m py_compile satellite/contracts.py satellite/controller.py satellite/mpls_control.py satellite/build_topology.py satellite/mock_iteration2_contract_flow.py`
   - `python satellite/mock_iteration2_contract_flow.py`
