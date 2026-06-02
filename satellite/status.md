@@ -10,8 +10,11 @@
   and a default example MPLS workflow in `mpls_control.py`.
 - The present MPLS behavior is useful as a reference implementation, but it is
   not yet the permanent platform architecture.
-- No Iteration 2 runtime implementation work has started yet under the new
-  goal-driven architecture described in `design_principle.md`.
+- Iteration 2 runtime implementation has now started with a contract-skeleton
+  layer inside `satellite/`, while the legacy controller-driven behavior
+  remains the active execution baseline.
+- The contract-skeleton layer now includes explicit validation helpers and a
+  standalone mock flow, without requiring deeper runtime-path integration.
 - Iteration 2 architecture intent is now clearer about fixed `UT` coordinates,
   stable zone membership, unique active zone serving satellites, logical G/Z
   MPLS semantics, and runtime-update architecture remaining undecided pending
@@ -76,6 +79,20 @@
   - `docs/iteration2_runtime_architecture.md`
 - Stopped expanding the `iteration2_*` planning/design document set unless a
   new architectural risk is discovered.
+- Started goal-driven contract skeleton implementation in code:
+  - added `satellite/contracts.py`
+  - introduced initial `TopologySnapshot` skeleton
+  - introduced initial `RuntimeUpdatePlan` skeleton
+  - introduced initial `NetworkMutationPlan` skeleton
+  - added explicit contract validation helpers that check both structural
+    invariants and forbidden cross-boundary fields
+  - added a standalone mock Iteration 2 flow in
+    `satellite/mock_iteration2_contract_flow.py`
+  - added legacy adapter builders that project current `topology.json`,
+    `link_state.json`, UT-egress runtime payloads, and scenario slot mutations
+    into the new contracts
+  - kept the contract skeletons decoupled from current controller runtime paths
+    for this milestone
 
 ## In Progress
 
@@ -102,6 +119,10 @@
   - host-level mutation intent
 - Returning to goal-driven implementation exploration using the current stable
   reference set instead of creating more planning documents.
+- Using the new contract skeleton layer to separate:
+  - topology facts from planner output
+  - planner output from host-level mutation intent
+  - legacy controller transport details from portable runtime plan shape
 
 ## Open Questions
 
@@ -109,6 +130,8 @@
   version?
 - What is the minimal but sufficient `TopologySnapshot` contract for both the
   default G/Z MPLS planner and future IP planners?
+- When should the current per-UT skeleton zone projection be replaced by the
+  first real `ZoneGenerator` output without blocking contract progress?
 - What exact `ZoneGenerator` interface should represent fixed grids,
   HEALPix-like partitioning, or user-defined zones without hard-coding one
   strategy?
@@ -167,10 +190,13 @@
   assumptions across planner, agent, and host-daemon design.
 - Documentation sprawl could delay implementation and weaken goal-driven
   progress if new planning docs continue to be added without a new risk signal.
+- The first contract skeletons could accidentally harden legacy field choices
+  if future implementation does not keep them explicitly replaceable.
 
 ## Next Recommended Action
 
-- Start goal-driven contract skeleton implementation.
+- Use the validated contract skeletons and mock flow as the implementation seam
+  for the first planner/runtime refactor slice.
 
 Current implementation posture:
 
@@ -226,4 +252,13 @@ Current implementation posture:
   - `sed -n '1,420p' satellite/docs/iteration2_contract_boundaries.md`
   - `sed -n '1,420p' satellite/docs/iteration2_runtime_architecture.md`
   - `sed -n '1,420p' satellite/status.md`
-- No runtime validation commands were executed.
+- Commands used in the contract skeleton implementation round:
+  - `sed -n '700,980p' satellite/controller.py`
+  - `sed -n '3080,3365p' satellite/controller.py`
+  - `sed -n '3480,3920p' satellite/controller.py`
+  - `sed -n '4280,4865p' satellite/controller.py`
+  - `sed -n '880,1180p' satellite/mpls_control.py`
+  - `python -m py_compile satellite/contracts.py satellite/controller.py satellite/mpls_control.py satellite/build_topology.py`
+- Commands used in the contract validation helper and mock-flow round:
+  - `python -m py_compile satellite/contracts.py satellite/controller.py satellite/mpls_control.py satellite/build_topology.py satellite/mock_iteration2_contract_flow.py`
+  - `python satellite/mock_iteration2_contract_flow.py`
