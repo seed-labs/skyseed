@@ -15,6 +15,10 @@
   remains the active execution baseline.
 - The contract-skeleton layer now includes explicit validation helpers and a
   standalone mock flow, without requiring deeper runtime-path integration.
+- The contract-skeleton layer now also includes a planner boundary that turns
+  `TopologySnapshot` into `RuntimeUpdatePlan` through a replaceable planner
+  interface and a default skeleton planner, still without changing the legacy
+  runtime execution baseline.
 - Iteration 2 architecture intent is now clearer about fixed `UT` coordinates,
   stable zone membership, unique active zone serving satellites, logical G/Z
   MPLS semantics, and runtime-update architecture remaining undecided pending
@@ -93,18 +97,29 @@
     into the new contracts
   - kept the contract skeletons decoupled from current controller runtime paths
     for this milestone
+- Completed the first Iteration 2 planner skeleton milestone:
+  - added `satellite/planner.py`
+  - added `satellite/planner_validation.py`
+  - introduced a replaceable `Planner` abstraction
+  - introduced `DefaultPlannerSkeleton` as the first default planner module
+  - added planner-side input, output, and end-to-end flow validation helpers
+  - updated `satellite/mock_iteration2_contract_flow.py` to exercise the real
+    `TopologySnapshot -> Planner -> RuntimeUpdatePlan` path
+  - kept planner output generic and placeholder-oriented instead of embedding
+    orbit propagation, MPLS installation logic, or runtime-agent coupling
 
 ## In Progress
 
 - Converging on stable architectural boundaries for:
   - `TopologySnapshot`
-  - planner interface
   - `RuntimeUpdatePlan`
   - node-local runtime agent responsibilities
 - Preparing the project for investigation-first OpenSN review before adopting
   runtime optimization ideas.
 - Refining how `TopologySnapshot` should express `UT`/zone/satellite/gateway
   relationships without prematurely locking a concrete schema.
+- Preparing the first planner-specific policy implementation beyond the
+  current placeholder skeleton while preserving planner replaceability.
 - Translating OpenSN investigation findings into Skyseed-specific interface and
   evaluation criteria without prematurely choosing `etcd`, `eBPF`, or one
   daemon shape.
@@ -192,11 +207,15 @@
   progress if new planning docs continue to be added without a new risk signal.
 - The first contract skeletons could accidentally harden legacy field choices
   if future implementation does not keep them explicitly replaceable.
+- The first default planner skeleton could accidentally become the de facto
+  policy if later MPLS and IP planners are not implemented against the same
+  abstraction boundary.
 
 ## Next Recommended Action
 
-- Use the validated contract skeletons and mock flow as the implementation seam
-  for the first planner/runtime refactor slice.
+- Use the validated planner abstraction and mock contract flow as the seam for
+  the first real planner-policy slice, likely a minimal G/Z MPLS planner that
+  still emits generic `RuntimeUpdatePlan` node subplans.
 
 Current implementation posture:
 
@@ -258,6 +277,19 @@ Current implementation posture:
   - `sed -n '3480,3920p' satellite/controller.py`
   - `sed -n '4280,4865p' satellite/controller.py`
   - `sed -n '880,1180p' satellite/mpls_control.py`
+- Commands used in the planner skeleton implementation round:
+  - `sed -n '1,260p' satellite/AGENTS.md`
+  - `sed -n '1,260p' satellite/design_principle.md`
+  - `sed -n '1,260p' satellite/docs/iteration2_runtime_architecture.md`
+  - `sed -n '1,260p' satellite/docs/iteration2_contract_boundaries.md`
+  - `sed -n '1,260p' satellite/contracts.py`
+  - `sed -n '1,260p' satellite/controller.py`
+  - `sed -n '1,320p' satellite/mpls_control.py`
+  - `sed -n '1,220p' satellite/.skills/planner_design.md`
+  - `sed -n '1,220p' satellite/.skills/orbit_design.md`
+  - `sed -n '1,220p' satellite/.skills/runtime_agent_design.md`
+  - `python3 -m py_compile satellite/contracts.py satellite/planner.py satellite/planner_validation.py satellite/mock_iteration2_contract_flow.py`
+  - `python3 satellite/mock_iteration2_contract_flow.py`
   - `python -m py_compile satellite/contracts.py satellite/controller.py satellite/mpls_control.py satellite/build_topology.py`
 - Commands used in the contract validation helper and mock-flow round:
   - `python -m py_compile satellite/contracts.py satellite/controller.py satellite/mpls_control.py satellite/build_topology.py satellite/mock_iteration2_contract_flow.py`

@@ -7,11 +7,11 @@ from __future__ import annotations
 
 import json
 
-from contracts import build_mock_contract_flow
+from planner import build_mock_planner_flow
 
 
 def main() -> None:
-    print(json.dumps(build_mock_contract_flow(), indent=2, sort_keys=True))
+    print(json.dumps(build_mock_planner_flow(), indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":
