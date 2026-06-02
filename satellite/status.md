@@ -28,6 +28,21 @@
 - A first runtime projection pipeline now runs locally without Docker, showing
   `RuntimeUpdatePlan` typed actions being projected into dry-run installer
   preview objects without executing real Linux, network, or Docker commands.
+- A first complete Iteration 2 architecture pipeline now runs locally without
+  Docker, showing:
+  `Orbit/Topology Producer -> TopologySnapshot -> Planner -> RuntimeUpdatePlan`
+  `-> Runtime Projection -> Agent/Installer Envelope`
+  in dry-run form across multiple time slices.
+- Based on the current implementation review, the first major Iteration 2
+  control-plane architecture goal is now achieved: the control-plane pipeline
+  is connected end to end as a validated dry-run architecture path, while
+  runtime realization and optimization remain intentionally out of scope.
+- A first runtime-realization architecture pipeline now runs locally without
+  Docker, showing:
+  `RuntimeUpdatePlan -> Runtime Projection -> Agent/Installer Envelope`
+  `-> Distribution / Store Boundary -> Node-Local Agent Boundary`
+  `-> Installer Boundary`
+  in fully dry-run form across multiple time slices.
 - Iteration 2 architecture intent is now clearer about fixed `UT` coordinates,
   stable zone membership, unique active zone serving satellites, logical G/Z
   MPLS semantics, and runtime-update architecture remaining undecided pending
@@ -151,6 +166,60 @@
   - validated projection input and output for each time slice
   - kept runtime agents, real installers, host daemons, and physical network
     mutation out of scope for this milestone
+- Completed the first usable Iteration 2 architecture pipeline milestone:
+  - added `satellite/agent_envelope.py`
+  - introduced a replaceable `AgentEnvelopeBuilder` abstraction
+  - introduced a dry-run `AgentInstallerEnvelopeBatch` contract with
+    input/output validation helpers
+  - added `GenericDryRunAgentEnvelopeBuilder` to convert projected
+    installer-intent previews into node-local agent/installer envelopes
+  - refined runtime projection provenance so replacement and validation
+    semantics remain visible downstream without leaking execution details
+  - added `satellite/demo_iteration2_architecture_pipeline.py`
+  - added a standalone multi-slice demo showing:
+    `Orbit/Topology Producer -> TopologySnapshot -> Planner -> RuntimeUpdatePlan`
+    `-> Runtime Projection -> Agent/Installer Envelope`
+  - validated each slice for snapshot, plan, planner-flow, projection-input,
+    projection-output, envelope-input, and envelope-output correctness
+  - kept real runtime mutation, Docker orchestration, `etcd`, `eBPF`, and
+    physical `NetworkMutationPlan` execution out of scope
+- Completed an Iteration 2 architecture review against the current
+  implementation:
+  - confirmed that the current connected path is:
+    `Orbit/Topology Producer -> TopologySnapshot -> Planner -> RuntimeUpdatePlan`
+    `-> Runtime Projection -> Agent/Installer Envelope`
+  - confirmed that "pipeline connected" currently means:
+    multi-slice mock topology input is transformed into validated planner
+    output, validated projection output, and validated node-local dry-run
+    envelopes without bypassing any architecture boundary
+  - concluded that the first major control-plane architecture goal is achieved
+    at dry-run architecture level
+  - recorded that store/distribution, runtime execution, installer backends,
+    Linux realization, Docker/network mutation, and OpenSN-style optimization
+    remain future runtime-realization work rather than missing control-plane
+    wiring
+- Completed the first runtime-realization architecture milestone:
+  - added `satellite/distribution_store.py`
+  - introduced a replaceable `EnvelopeDistributor` abstraction
+  - introduced a dry-run `DistributedEnvelopeBatch` contract with
+    distribution-side input/output validation
+  - added `satellite/node_local_agent.py`
+  - introduced a replaceable `NodeLocalAgent` abstraction and dry-run
+    node-local execution report contract
+  - added `satellite/installer_runtime.py`
+  - introduced a replaceable `NodeLocalInstaller` abstraction and dry-run
+    installer execution report contract
+  - added `satellite/demo_iteration2_runtime_realization.py`
+  - demonstrated the complete dry-run runtime-realization path:
+    `RuntimeUpdatePlan -> Runtime Projection -> Agent/Installer Envelope`
+    `-> Distribution / Store Boundary -> Node-Local Agent Boundary`
+    `-> Installer Boundary`
+  - validated each slice for planner-flow, projection, envelope,
+    distribution-store, agent-input, agent-output, installer-input, and
+    installer-output correctness
+  - kept transport choice, store choice, node-agent placement, installer
+    backend choice, real Linux mutation, Docker mutation, and
+    `NetworkMutationPlan` execution out of scope
 
 ## In Progress
 
@@ -171,6 +240,12 @@
   commands.
 - Preparing the first backend-specific realization adapter that can consume
   dry-run installer intents while still remaining separate from planner logic.
+- Preparing the first dry-run distribution/store boundary that can package
+  node-local agent envelopes without committing to push, pull, file, or
+  `etcd` transport.
+- Preparing the first backend-specific realization target that can refine
+  installer previews into one concrete runtime family without committing the
+  whole platform to that target.
 - Translating OpenSN investigation findings into Skyseed-specific interface and
   evaluation criteria without prematurely choosing `etcd`, `eBPF`, or one
   daemon shape.
@@ -208,6 +283,9 @@
   considered?
 - What should be the rollback and failure-reporting contract between agent and
   installer?
+- What should the first backend-specific installer target be:
+  Linux forwarding realization, container-local execution contract, host-daemon
+  bridge contract, or another dry-run target family?
 - What exact `RuntimeUpdatePlan` schema is sufficient for Linux MPLS/runtime
   installers without prematurely constraining future planner designs?
 - How should the future installer projection map generic action types such as
@@ -220,6 +298,8 @@
 - What should the first backend-specific dry-run projection target be:
   Linux forwarding realization, a container-local agent envelope, a host-daemon
   envelope, or another intermediate installer contract?
+- What minimal response envelope should agent-side dry-run execution report
+  back upstream before any real runtime installer is introduced?
 - What exact `NetworkMutationPlan` schema is sufficient for host-level topology
   mutation without leaking planner policy into physical execution?
 - What exact ownership relationship should exist between scenario transition
@@ -258,6 +338,24 @@
   investigation structure is not enforced.
 - OpenSN’s broad daemon scope could be copied too literally and blur Skyseed’s
   desired boundary among planner, agent, installer, and platform management.
+- The first agent-envelope shape could accidentally become a fixed transport
+  or delivery protocol if dry-run packaging fields are treated as runtime API
+  commitments too early.
+- The first distributor/agent/installer dry-run contracts could accidentally
+  harden into a single runtime deployment model if backend-specific realization
+  work is started without preserving abstraction boundaries.
+
+## Next Recommended Action
+
+- Add a separate dry-run distribution/store boundary that packages node-local
+  agent envelopes for either controller-push or node-pull experiments without
+  committing to a real transport backend.
+- Add the first backend-specific dry-run realization target for one concrete
+  runtime family such as Linux forwarding realization, while keeping planner,
+  distribution, agent, and envelope contracts unchanged.
+- Or add a structured agent/installer result envelope that can model success,
+  partial failure, rollback intent, and observed state reporting before any
+  real runtime mutation is introduced.
 - Runtime optimization work could accidentally overfit the current
   `controller.py` slot model instead of producing reusable contracts.
 - Schema design could accidentally start before the ownership boundaries are

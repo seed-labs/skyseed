@@ -421,6 +421,10 @@ class GenericDryRunProjector(RuntimeProjector):
                 "plan_id": runtime_update_plan.plan_id,
                 "snapshot_id": runtime_update_plan.target_snapshot.get("snapshot_id"),
                 "slice_id": runtime_update_plan.target_snapshot.get("slice_id"),
+                "replacement_semantics": dict(runtime_update_plan.replacement_semantics),
+                "validation_expectations": dict(
+                    runtime_update_plan.validation_expectations
+                ),
             },
             projector={
                 **self.metadata(),
