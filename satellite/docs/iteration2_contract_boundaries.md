@@ -50,6 +50,19 @@ The core rule is:
 Runtime agents, installers, or host daemons should not need to consume raw
 `TopologySnapshot` in the normal runtime path.
 
+### Ownership And Lifecycle Direction
+
+- owned by the topology construction layer
+- planner consumes it but does not own it
+- runtime execution layers should treat it as upstream planning evidence, not
+  as their primary execution contract
+- preferred base model is full-state per slice
+- future multi-slice bundling may exist, but only as packaging or planning
+  convenience, not as a replacement for a single stable slice-level snapshot
+- it should remain referenceable for planning, validation, replay, and audit
+- generation failure must stop downstream planning
+- validation belongs at the topology-slicer boundary before planner execution
+
 ### What It Expresses
 
 `TopologySnapshot` expresses what is true for one time slice from a
@@ -127,6 +140,20 @@ controller state outside the snapshot contract.
 
 The host daemon should not consume `RuntimeUpdatePlan` as its primary physical
 mutation contract unless a specific derived projection is intentionally defined.
+
+### Ownership And Lifecycle Direction
+
+- owned by the planner layer as the logical runtime output
+- runtime agent and installer consume it, but should not reinterpret planner
+  policy
+- preferred base model is logical full-state per target slice
+- future delta execution projection may exist for efficiency, but should not
+  replace the auditable logical full-state intent
+- it should remain referenceable through distribution, installation,
+  validation, rollback analysis, and replay
+- plan-generation failure must stop runtime execution
+- validation exists at planner side, agent side, and installer side, each with
+  its own scope
 
 ### What It Expresses
 
@@ -214,6 +241,19 @@ MPLS or IP policy generation.
 
 Container-local installer should not consume `NetworkMutationPlan` directly as
 its main contract.
+
+### Ownership And Lifecycle Direction
+
+- owned by the physical runtime mutation layer
+- consumed primarily by host daemon and host-scoped validators
+- preferred base model is delta-oriented physical mutation, because runtime
+  topology change is transition-sensitive and performance-critical
+- delta mutation should still be anchored to an auditable target transition
+  context
+- it should remain referenceable for execution, validation, rollback review,
+  transition replay, and performance analysis
+- mutation-planning failure must stop physical topology transition
+- validation is physical-topology-focused rather than planner-policy-focused
 
 ### What It Expresses
 
@@ -328,6 +368,15 @@ But those should be carried through distinct contracts so that:
 - runtime mutation can be optimized independently
 - host-level execution does not need to parse orbit or MPLS policy
 
+### Initial Lifecycle Direction Across The Three Contracts
+
+- `TopologySnapshot`
+  - single-slice, full-state contract
+- `RuntimeUpdatePlan`
+  - logical full-state contract, with possible later delta execution projection
+- `NetworkMutationPlan`
+  - transition-oriented delta contract, anchored to target transition context
+
 ## 5. Explicitly Forbidden Couplings
 
 The following couplings are explicitly forbidden.
@@ -373,6 +422,7 @@ The following remain intentionally open after this boundary-design phase.
   - push
   - pull
   - watch
+- exact lifetime, cache, and replay semantics for each finalized schema
 - per-container versus per-host versus hybrid agent model
 - ordering of OpenSN-inspired optimization adoption
 - rollback and failure-reporting contract details

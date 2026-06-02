@@ -15,6 +15,21 @@ The goal is to define a runtime architecture that:
 
 This document is architectural only. It does not implement runtime code.
 
+## Working Posture
+
+This document is part of the stable implementation reference set for Iteration
+2, together with:
+
+- `design_principle.md`
+- `AGENTS.md`
+- `.skills/*`
+- `iteration2_contract_boundaries.md`
+
+The project is returning to goal-driven implementation exploration. New
+`iteration2_*` planning or design documents should not be added unless a new
+architectural risk is discovered that cannot be handled inside the current
+reference set.
+
 ## Current Skyseed Runtime Hot Paths
 
 The current `satellite/` baseline is still centered on `controller.py`. Based
@@ -422,6 +437,95 @@ small-prototype assumptions.
 This high-performance path should remain optional until real bottlenecks are
 measured.
 
+## Contract Model Tradeoffs
+
+This section consolidates the main lifecycle tradeoffs that affect runtime
+behavior but should not yet be frozen into final schemas.
+
+### Single-Snapshot Model vs Snapshot Bundle Model
+
+Single-snapshot model:
+
+- one `TopologySnapshot` describes one time slice independently
+- advantages:
+  - simpler planner input
+  - easier validation, replay, and failure isolation
+- disadvantages:
+  - repeated data across nearby slices
+  - potentially more storage and planning overhead
+
+Snapshot bundle model:
+
+- one bundle contains multiple snapshots or multi-slice topology packaging
+- advantages:
+  - lower amortized storage or transport overhead
+  - may help future prefetch and multi-slice planning
+- disadvantages:
+  - more complex invalidation, versioning, and failure isolation
+  - easier accidental coupling to future-slice assumptions
+
+Recommended initial direction:
+
+- treat single-snapshot as the base planning model
+- allow bundle support only later as a packaging or optimization layer
+
+### Full RuntimeUpdatePlan Model vs Delta RuntimeUpdatePlan Model
+
+Full model:
+
+- expresses full intended node-local runtime state for the target slice
+- advantages:
+  - easier correctness reasoning
+  - easier replay and recovery
+  - easier drift detection
+- disadvantages:
+  - larger plan size
+  - may require execution-side diffing for efficiency
+
+Delta model:
+
+- expresses only change from previously accepted runtime state
+- advantages:
+  - smaller transport and less execution work
+- disadvantages:
+  - stronger dependence on current-state correctness
+  - harder recovery and audit
+
+Recommended initial direction:
+
+- keep `RuntimeUpdatePlan` logically full-state
+- allow later delta projection as an execution optimization if measurements
+  justify it
+
+### Full NetworkMutationPlan Model vs Delta NetworkMutationPlan Model
+
+Full model:
+
+- expresses complete target physical topology state for the affected runtime
+  scope
+- advantages:
+  - easier target-versus-observed comparison
+  - easier recovery when current state is uncertain
+- disadvantages:
+  - wasteful for frequent local handovers
+  - less natural for transition-oriented host execution
+
+Delta model:
+
+- expresses only the physical mutations required for the transition
+- advantages:
+  - better fit for handover-heavy runtime execution
+  - better fit for performance-critical host mutation work
+- disadvantages:
+  - requires trustworthy current-state understanding
+  - makes rollback and replay trickier
+
+Recommended initial direction:
+
+- keep `NetworkMutationPlan` transition-oriented and delta-focused
+- require explicit target-transition anchoring so it does not degenerate into
+  free-floating imperative mutation logic
+
 ## What Must Not Be Optimized Prematurely
 
 - do not hard-code `etcd` as the required runtime store
@@ -433,6 +537,8 @@ measured.
 - do not treat current Docker slot semantics as permanent architecture
 - do not optimize the current demo path in a way that blocks future planner
   replaceability
+- do not freeze full-vs-delta or bundle-vs-single choices into schema details
+  before contract skeleton implementation reveals real pressure points
 
 ## Open Questions
 
@@ -470,4 +576,5 @@ measured.
   - `NetworkMutationPlan`
   - runtime agent response envelope
   - host-daemon mutation response envelope
-- Do that before changing runtime code.
+- Do that during contract skeleton implementation, not by adding more planning
+  documents first.

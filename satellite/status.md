@@ -71,6 +71,11 @@
   - `NetworkMutationPlan` responsibility boundary
   - data flow among the three contracts
   - forbidden coupling rules
+- Merged contract lifecycle guidance into:
+  - `docs/iteration2_contract_boundaries.md`
+  - `docs/iteration2_runtime_architecture.md`
+- Stopped expanding the `iteration2_*` planning/design document set unless a
+  new architectural risk is discovered.
 
 ## In Progress
 
@@ -95,6 +100,8 @@
   - topology facts
   - planner output
   - host-level mutation intent
+- Returning to goal-driven implementation exploration using the current stable
+  reference set instead of creating more planning documents.
 
 ## Open Questions
 
@@ -118,6 +125,12 @@
   mutation without leaking planner policy into physical execution?
 - What exact ownership relationship should exist between scenario transition
   logic and `NetworkMutationPlan` generation?
+- Should snapshot bundling be only a packaging optimization, or should it
+  become a first-class planning abstraction?
+- When and where should logical full-state plans be compiled into delta
+  execution form?
+- How much target-state anchoring is required for safe delta
+  `NetworkMutationPlan` execution?
 - How should destination-to-gateway class and destination-to-zone mapping be
   represented so that G/Z planner behavior stays replaceable?
 - Should the first Skyseed runtime-update path be controller-push, node-pull,
@@ -150,20 +163,30 @@
   `controller.py` slot model instead of producing reusable contracts.
 - Schema design could accidentally start before the ownership boundaries are
   truly accepted, causing hidden coupling to be baked into Phase 1 outputs.
+- Lifecycle choices could be left implicit and later force inconsistent schema
+  assumptions across planner, agent, and host-daemon design.
+- Documentation sprawl could delay implementation and weaken goal-driven
+  progress if new planning docs continue to be added without a new risk signal.
 
 ## Next Recommended Action
 
-- Review and agree on the architectural boundaries in `design_principle.md`.
-- Define the first explicit schemas for `TopologySnapshot`, `ZoneGenerator`,
-  and `RuntimeUpdatePlan` before starting Iteration 2 implementation work.
-- Use `docs/opensn_investigation_report.md` to draft the first runtime-update
-  architecture options note before any implementation work.
-- Use `docs/iteration2_runtime_architecture.md` to draft the first schema note
-  for `RuntimeUpdatePlan` and `NetworkMutationPlan`.
-- Use `docs/iteration2_contract_boundaries.md` as the boundary reference before
-  drafting any final schema fields.
-- Keep unresolved semantics documented as open questions instead of silently
-  fixing them in code.
+- Start goal-driven contract skeleton implementation.
+
+Current implementation posture:
+
+- Do not continue adding new `iteration2_*` planning/design docs unless a new
+  architectural risk is discovered.
+- Use these documents as the active implementation reference set:
+  - `design_principle.md`
+  - `AGENTS.md`
+  - `.skills/*`
+  - `docs/iteration2_runtime_architecture.md`
+  - `docs/iteration2_contract_boundaries.md`
+- Let Codex decide concrete fields, schema shapes, and directory structure
+  during contract skeleton implementation, as long as those choices remain
+  consistent with the current architectural boundaries.
+- Keep unresolved semantics documented as open questions if implementation
+  reveals a genuine new risk.
 
 ## Validation Record
 
@@ -198,4 +221,9 @@
   - `sed -n '1,360p' satellite/docs/opensn_investigation_report.md`
   - `sed -n '1,360p' satellite/docs/iteration2_runtime_architecture.md`
   - `sed -n '1,260p' satellite/.skills/*.md`
+- Commands used in the lifecycle-merge and cleanup round:
+  - `sed -n '1,420p' satellite/docs/iteration2_contract_lifecycle.md`
+  - `sed -n '1,420p' satellite/docs/iteration2_contract_boundaries.md`
+  - `sed -n '1,420p' satellite/docs/iteration2_runtime_architecture.md`
+  - `sed -n '1,420p' satellite/status.md`
 - No runtime validation commands were executed.
