@@ -25,6 +25,7 @@ from distribution_store import (
 from installer_runtime import (
     GenericDryRunInstaller,
     LinuxForwardingDryRunInstaller,
+    LinuxMplsDryRunInstaller,
     NodeLocalInstaller,
 )
 from node_local_agent import (
@@ -79,6 +80,8 @@ def _build_installer(installer_name: str) -> NodeLocalInstaller:
         return GenericDryRunInstaller()
     if installer_name == "linux-forwarding-dry-run":
         return LinuxForwardingDryRunInstaller()
+    if installer_name == "linux-mpls-dry-run":
+        return LinuxMplsDryRunInstaller()
     raise ValueError(f"unsupported installer: {installer_name}")
 
 
@@ -164,15 +167,16 @@ def _node_runtime_realization(
             and "backend_adapter" not in json.dumps(delivery_view, sort_keys=True)
             and "realization_target" not in json.dumps(delivery_view, sort_keys=True)
         )
-        installer_backend_specific = (
+        installer_backend_specific = bool(
             execution_report.installer_execution["execution_summary"].get(
-                "backend_target"
+                "backend_specific_preview",
+                False,
             )
-            == "linux_forwarding_dry_run"
             or any(
-                step_result.get("realization_target") == "linux_forwarding_dry_run"
+                step_result.get("realization_target") is not None
                 for step_result in execution_report.installer_execution.get(
-                    "step_results", []
+                    "step_results",
+                    [],
                 )
             )
         )

@@ -47,6 +47,16 @@
   without Docker, using a Linux-forwarding realization family only at the
   installer boundary while keeping planner output and runtime projection
   backend-neutral upstream.
+- A first real end-to-end Iteration 2 satellite experiment now runs through
+  the architecture pipeline, using synthetic position-driven orbit/topology
+  input plus a narrow legacy runtime bridge to prove that `ut1` can ping the
+  Mini Internet host `10.154.0.129` (`as154-host-new`) through
+  `TopologySnapshot -> Planner -> RuntimeUpdatePlan -> runtime realization`.
+- A first non-legacy Iteration 2 satellite experiment path now runs locally as
+  a validated execution preview, using semi-real orbital-elements input plus a
+  separate `NetworkMutationPlan` delta path and a Linux/MPLS dry-run installer
+  target without relying on `controller.py` private helpers as the main
+  runtime architecture.
 - Iteration 2 architecture intent is now clearer about fixed `UT` coordinates,
   stable zone membership, unique active zone serving satellites, logical G/Z
   MPLS semantics, and runtime-update architecture remaining undecided pending
@@ -242,6 +252,59 @@
   - confirmed that the current action model was sufficient for this first
     backend-specific dry-run target, so no action-model schema refinement was
     required for this milestone
+- Completed the first real end-to-end Iteration 2 satellite experiment:
+  - added `satellite/experiment_topology.py`
+  - added a synthetic position-driven experiment producer, visibility model,
+    zone generator, and experiment topology slicer for the smallest safe
+    `ut1 -> sat-a1 -> gw1` scenario
+  - extended `satellite/planner.py` with
+    `UtInternetExperimentPlanner`
+  - kept the planner replaceable while adding one concrete G/Z-MPLS-compatible
+    experiment planner that emits generic typed actions plus shared flow
+    context for realization
+  - added `satellite/experiment_runtime_bridge.py`
+  - added a narrow legacy runtime bridge that reuses current MPLS command-spec
+    execution without letting the legacy runtime recompute the planner's path
+    decision
+  - added `satellite/demo_iteration2_satellite_experiment.py`
+  - validated the dry-run architecture path:
+    `synthetic position input -> TopologySnapshot -> Planner -> RuntimeUpdatePlan`
+    `-> Runtime Projection -> Agent Envelope -> Distribution`
+  - validated the first real runtime path:
+    `RuntimeUpdatePlan -> legacy runtime bridge -> real UT ping`
+  - confirmed that `ut1` successfully pinged Mini Internet host
+    `10.154.0.129` (`as154-host-new`)
+  - observed that the largest real-runtime cost for this milestone is still
+    host-side slot-runtime rebuild and baseline link-state replay, not planner
+    contract flow
+  - observed that the host must expose Linux MPLS kernel support
+    (`mpls_router`, `mpls_iptunnel`, `mpls_gso`) before the runtime bridge can
+    realize the experiment path
+- Completed the first non-legacy Iteration 2 satellite experiment path:
+  - upgraded `satellite/experiment_topology.py` so the main experiment input
+    path uses semi-real orbital elements over multiple time slices instead of
+    hand-written active-link state
+  - kept the synthetic position-driven producer only as a fallback input
+    family rather than the main experiment path
+  - removed the direct `mpls_control.py` intent dependency from
+    `satellite/planner.py` while preserving the replaceable
+    `UtInternetExperimentPlanner` boundary
+  - added `satellite/network_mutation.py` to compile
+    `NetworkMutationPlan` as a host-side delta for experiment-managed slots,
+    separate from node-local `RuntimeUpdatePlan` forwarding state
+  - extended `satellite/installer_runtime.py` with
+    `LinuxMplsDryRunInstaller` as the first non-legacy satellite-specific
+    backend realization preview
+  - rewrote `satellite/demo_iteration2_satellite_experiment.py` so the main
+    experiment path is now:
+    `semi-real orbit input -> TopologySnapshot -> Planner -> RuntimeUpdatePlan`
+    `+ NetworkMutationPlan -> Projection -> Envelope -> Distribution -> Agent`
+    `-> Linux/MPLS dry-run installer`
+  - demonstrated two slice transitions with only slot-level delta mutation
+    plans, avoiding full baseline replay for the experiment-managed scope
+  - validated the full non-legacy experiment path locally without Docker or
+    real runtime mutation, proving the architecture through dry-run execution
+    preview rather than another legacy-backed ping run
 
 ## In Progress
 
