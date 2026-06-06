@@ -187,15 +187,32 @@ SYNTHETIC_POSITION_MAP = {
 SMALL_SCALE_SEMI_REAL_TIME_SLICES = (
     ExperimentTimeSlice(
         slice_id="small-scale-slice-0001",
-        relative_time_seconds=0.0,
-        duration_seconds=180.0,
+        relative_time_seconds=-120.0,
+        duration_seconds=100.0,
     ),
     ExperimentTimeSlice(
         slice_id="small-scale-slice-0002",
+        relative_time_seconds=-20.0,
+        duration_seconds=200.0,
+    ),
+    ExperimentTimeSlice(
+        slice_id="small-scale-slice-0003",
         relative_time_seconds=180.0,
-        duration_seconds=180.0,
+        duration_seconds=210.0,
+    ),
+    ExperimentTimeSlice(
+        slice_id="small-scale-slice-0004",
+        relative_time_seconds=390.0,
+        duration_seconds=40.0,
+    ),
+    ExperimentTimeSlice(
+        slice_id="small-scale-slice-0005",
+        relative_time_seconds=430.0,
+        duration_seconds=30.0,
     ),
 )
+
+DYNAMIC_CROSS_PLANE_MAX_DISTANCE_KM = 3300.0
 
 
 SMALL_SCALE_EXPERIMENT_SCENARIO = ExperimentScenario(
@@ -245,8 +262,8 @@ SMALL_SCALE_EXPERIMENT_SCENARIO = ExperimentScenario(
         "ut1": GroundLocation(latitude_deg=42.36, longitude_deg=-71.06),
         "ut2": GroundLocation(latitude_deg=39.95, longitude_deg=-75.16),
         "gw1": GroundLocation(latitude_deg=40.71, longitude_deg=-74.00),
-        # Intentionally semi-real and shifted westward to force a different gateway case.
-        "gw2": GroundLocation(latitude_deg=40.00, longitude_deg=-95.00),
+        # Intentionally semi-real and offset from gw1 so one slice prefers a cross-orbit west-gateway path.
+        "gw2": GroundLocation(latitude_deg=40.00, longitude_deg=-69.00),
     },
     orbital_elements={
         satellite_id: orbital_elements
@@ -576,6 +593,78 @@ def _scenario_candidate_links(
                     dict(endpoint) for endpoint in fixed_link.get("endpoints", [])
                 ],
                 "visibility_relation": "always_on_fixed_satellite_to_satellite_isl",
+            }
+        )
+
+    for slot in topology.get("slot_inventory", {}).get("cross_plane_isl", []):
+        orbit_a_satellite_ids = {
+            str(satellite_id) for satellite_id in slot.get("orbit_a_satellite_ids", [])
+        }
+        orbit_b_satellite_ids = {
+            str(satellite_id) for satellite_id in slot.get("orbit_b_satellite_ids", [])
+        }
+        if not orbit_a_satellite_ids.issubset(scenario_satellite_ids):
+            continue
+        if not orbit_b_satellite_ids.issubset(scenario_satellite_ids):
+            continue
+        endpoint_a_template = dict(slot.get("endpoint_a_template", {}))
+        endpoint_b_template = dict(slot.get("endpoint_b_template", {}))
+        candidate_bindings = []
+        for candidate_pair in slot.get("candidate_pairs", []):
+            satellite_a_id = str(candidate_pair.get("satellite_a_id"))
+            satellite_b_id = str(candidate_pair.get("satellite_b_id"))
+            if satellite_a_id not in scenario_satellite_ids:
+                continue
+            if satellite_b_id not in scenario_satellite_ids:
+                continue
+            candidate_bindings.append(
+                {
+                    "satellite_pair_id": f"{satellite_a_id}:{satellite_b_id}",
+                    "binding": {
+                        "satellite_a_id": satellite_a_id,
+                        "satellite_b_id": satellite_b_id,
+                        "satellite_a_direction": str(
+                            candidate_pair.get("satellite_a_direction", "right")
+                        ),
+                        "satellite_b_direction": str(
+                            candidate_pair.get("satellite_b_direction", "left")
+                        ),
+                        "orbit_pair": list(slot.get("orbit_pair", [])),
+                    },
+                    "endpoints": [
+                        {
+                            "node_id": satellite_a_id,
+                            "node_type": endpoint_a_template.get("node_type"),
+                            "interface_name": endpoint_a_template.get("interface_name"),
+                            "ip_address": endpoint_a_template.get("ip_address"),
+                            "logical_direction": candidate_pair.get(
+                                "satellite_a_direction", "right"
+                            ),
+                        },
+                        {
+                            "node_id": satellite_b_id,
+                            "node_type": endpoint_b_template.get("node_type"),
+                            "interface_name": endpoint_b_template.get("interface_name"),
+                            "ip_address": endpoint_b_template.get("ip_address"),
+                            "logical_direction": candidate_pair.get(
+                                "satellite_b_direction", "left"
+                            ),
+                        },
+                    ],
+                }
+            )
+        candidate_links.append(
+            {
+                "link_id": str(slot.get("slot_name")),
+                "slot_type": "cross_plane_isl",
+                "subnet": slot.get("subnet"),
+                "network_name": slot.get("network_name"),
+                "docker_network_name": slot.get("docker_network_name"),
+                "bridge_gateway_ip": slot.get("bridge_gateway_ip"),
+                "orbit_pair": list(slot.get("orbit_pair", [])),
+                "visibility_relation": "dynamic_cross_plane_candidate_isl",
+                "candidate_bindings": candidate_bindings,
+                "activation_model": "distance_threshold_dynamic_cross_plane",
             }
         )
     return candidate_links
@@ -1134,7 +1223,62 @@ class SyntheticDistanceVisibilityModel(VisibilityModel):
             for node_id, node in orbit_slice.nodes.items()
         }
         for link in orbit_slice.candidate_links:
-            if str(link.get("slot_type")) not in {"ut_access", "gw_access"}:
+            slot_type = str(link.get("slot_type"))
+            if slot_type == "cross_plane_isl":
+                visible_candidates = []
+                for candidate in link.get("candidate_bindings", []):
+                    endpoints = [dict(endpoint) for endpoint in candidate.get("endpoints", [])]
+                    if len(endpoints) != 2:
+                        continue
+                    first_node_id = str(endpoints[0].get("node_id"))
+                    second_node_id = str(endpoints[1].get("node_id"))
+                    first_position = positions[first_node_id]
+                    second_position = positions[second_node_id]
+                    distance_km = _distance_km(first_position, second_position)
+                    if distance_km > DYNAMIC_CROSS_PLANE_MAX_DISTANCE_KM:
+                        continue
+                    visible_candidates.append((distance_km, candidate))
+                candidate_visibility[str(link.get("link_id"))] = [
+                    {
+                        "satellite_pair_id": str(candidate.get("satellite_pair_id")),
+                        "binding": dict(candidate.get("binding", {})),
+                        "endpoints": [
+                            dict(endpoint) for endpoint in candidate.get("endpoints", [])
+                        ],
+                        "slot_type": slot_type,
+                        "cross_plane_distance_km": round(distance_km, 3),
+                    }
+                    for distance_km, candidate in sorted(
+                        visible_candidates,
+                        key=lambda item: (item[0], str(item[1].get("satellite_pair_id"))),
+                    )
+                ]
+                if not visible_candidates:
+                    continue
+                distance_km, candidate = min(
+                    visible_candidates,
+                    key=lambda item: (item[0], str(item[1].get("satellite_pair_id"))),
+                )
+                active_links.append(
+                    {
+                        "link_id": link.get("link_id"),
+                        "slot_type": slot_type,
+                        "subnet": link.get("subnet"),
+                        "network_name": link.get("network_name"),
+                        "docker_network_name": link.get("docker_network_name"),
+                        "bridge_gateway_ip": link.get("bridge_gateway_ip"),
+                        "occupied": True,
+                        "binding": dict(candidate.get("binding", {})),
+                        "endpoints": [
+                            dict(endpoint) for endpoint in candidate.get("endpoints", [])
+                        ],
+                        "visibility_relation": link.get("visibility_relation"),
+                        "cross_plane_distance_km": round(distance_km, 3),
+                        "activation_model": link.get("activation_model"),
+                    }
+                )
+                continue
+            if slot_type not in {"ut_access", "gw_access"}:
                 active_links.append(
                     {
                         key: value
@@ -1219,7 +1363,62 @@ class SemiRealLineOfSightVisibilityModel(VisibilityModel):
             for node_id, node in orbit_slice.nodes.items()
         }
         for link in orbit_slice.candidate_links:
-            if str(link.get("slot_type")) not in {"ut_access", "gw_access"}:
+            slot_type = str(link.get("slot_type"))
+            if slot_type == "cross_plane_isl":
+                visible_candidates = []
+                for candidate in link.get("candidate_bindings", []):
+                    endpoints = [dict(endpoint) for endpoint in candidate.get("endpoints", [])]
+                    if len(endpoints) != 2:
+                        continue
+                    first_node_id = str(endpoints[0].get("node_id"))
+                    second_node_id = str(endpoints[1].get("node_id"))
+                    first_position = positions[first_node_id]
+                    second_position = positions[second_node_id]
+                    distance_km = _distance_km(first_position, second_position)
+                    if distance_km > DYNAMIC_CROSS_PLANE_MAX_DISTANCE_KM:
+                        continue
+                    visible_candidates.append((distance_km, candidate))
+                candidate_visibility[str(link.get("link_id"))] = [
+                    {
+                        "satellite_pair_id": str(candidate.get("satellite_pair_id")),
+                        "binding": dict(candidate.get("binding", {})),
+                        "endpoints": [
+                            dict(endpoint) for endpoint in candidate.get("endpoints", [])
+                        ],
+                        "slot_type": slot_type,
+                        "cross_plane_distance_km": round(distance_km, 3),
+                    }
+                    for distance_km, candidate in sorted(
+                        visible_candidates,
+                        key=lambda item: (item[0], str(item[1].get("satellite_pair_id"))),
+                    )
+                ]
+                if not visible_candidates:
+                    continue
+                distance_km, candidate = min(
+                    visible_candidates,
+                    key=lambda item: (item[0], str(item[1].get("satellite_pair_id"))),
+                )
+                active_links.append(
+                    {
+                        "link_id": link.get("link_id"),
+                        "slot_type": slot_type,
+                        "subnet": link.get("subnet"),
+                        "network_name": link.get("network_name"),
+                        "docker_network_name": link.get("docker_network_name"),
+                        "bridge_gateway_ip": link.get("bridge_gateway_ip"),
+                        "occupied": True,
+                        "binding": dict(candidate.get("binding", {})),
+                        "endpoints": [
+                            dict(endpoint) for endpoint in candidate.get("endpoints", [])
+                        ],
+                        "visibility_relation": link.get("visibility_relation"),
+                        "cross_plane_distance_km": round(distance_km, 3),
+                        "activation_model": link.get("activation_model"),
+                    }
+                )
+                continue
+            if slot_type not in {"ut_access", "gw_access"}:
                 active_links.append(
                     {
                         key: value

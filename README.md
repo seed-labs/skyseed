@@ -9,7 +9,16 @@ Install the local `seedemu` dependency from the development worktree first:
 
 ```bash
 cd /home/seed/seed-emulator-upstream-dev
+git remote set-url origin https://github.com/seed-labs/seed-emulator.git
+git fetch origin development2
+git switch development2
 pip install -e .
+```
+
+The active dependency branch is `development2` from:
+
+```text
+https://github.com/seed-labs/seed-emulator.git
 ```
 
 ## Environment note
@@ -20,8 +29,10 @@ Some shells on this machine export:
 PYTHONPATH=/home/seed/seed-emulator
 ```
 
-To make sure `skyseed` imports the editable dependency from
-`/home/seed/seed-emulator-upstream-dev`, run commands with one of:
+Supported Skyseed app entrypoints now prepend
+`/home/seed/seed-emulator-upstream-dev` to their import path, so they prefer the
+editable `development2` dependency even when that shell variable is present.
+For one-off Python commands or direct `seedemu` imports, use one of:
 
 ```bash
 env -u PYTHONPATH python3 ...

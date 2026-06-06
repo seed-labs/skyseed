@@ -925,6 +925,9 @@ class UtInternetExperimentPlanner(Planner):
                 gateway_satellite_id = str(flow_context["selected_gateway_satellite_id"])
                 selected_gateway_id = str(flow_context["selected_gateway_id"])
                 flow_serving_satellite_id = str(flow_context["serving_satellite_id"])
+                satellite_path = [
+                    str(node_id) for node_id in flow_context.get("satellite_path", [])
+                ]
                 flow_sequence_suffix = str(flow_context["flow_id"]).replace(":", "-")
                 actions_by_node[flow_serving_satellite_id].append(
                     self._node_action(
@@ -957,6 +960,46 @@ class UtInternetExperimentPlanner(Planner):
                         },
                     )
                 )
+                for path_index, satellite_node_id in enumerate(satellite_path[1:], start=1):
+                    actions_by_node[satellite_node_id].append(
+                        self._node_action(
+                            action_id=(
+                                f"flow-forwarding:{ut_id}:{flow_sequence_suffix}:"
+                                f"satellite-hop-{path_index}"
+                            ),
+                            action_type="forwarding_entry",
+                            node_id=satellite_node_id,
+                            sequence=(
+                                110
+                                + len(actions_by_node[satellite_node_id]) * 10
+                            ),
+                            intent={
+                                "forwarding_plane": "label_switched_internet_egress",
+                                "match": {
+                                    "flow_id": flow_context["flow_id"],
+                                    "node_role": "satellite_path_member",
+                                    "path_index": path_index,
+                                },
+                                "outcome": {
+                                    "flow_context": dict(flow_context),
+                                    "local_role": (
+                                        "gateway_satellite_handoff"
+                                        if satellite_node_id == gateway_satellite_id
+                                        else "transit_label_swap"
+                                    ),
+                                },
+                            },
+                            expected_state=(
+                                f"{satellite_node_id} forwards {flow_context['flow_id']}"
+                            ),
+                            metadata={
+                                "flow_id": flow_context["flow_id"],
+                                "realization_family": "experiment_label_switched_egress",
+                                "traffic_scope": flow_context.get("traffic_scope"),
+                                "path_index": path_index,
+                            },
+                        )
+                    )
 
                 actions_by_node[selected_gateway_id].append(
                     self._node_action(

@@ -12,8 +12,9 @@ prototype after the first-stage `skyseed` migration.
 - Local `seedemu` dependency repo:
   - path: `/home/seed/seed-emulator-upstream-dev`
   - remotes:
-    - `origin https://github.com/EMLionHeart/seed-emulator.git`
+    - `origin https://github.com/seed-labs/seed-emulator.git`
     - `upstream https://github.com/seed-labs/seed-emulator.git`
+  - active branch: `development2`
   - role: local editable dependency only for the satellite project
 - Non-active sibling mirror / old worktree:
   - path: `/home/seed/seed-emulator`
@@ -35,6 +36,9 @@ Install the local `seedemu` dependency from the development worktree:
 
 ```bash
 cd /home/seed/seed-emulator-upstream-dev
+git remote set-url origin https://github.com/seed-labs/seed-emulator.git
+git fetch origin development2
+git switch development2
 pip install -e .
 ```
 
@@ -42,8 +46,9 @@ pip install -e .
 
 - Some shells on this machine export:
   - `PYTHONPATH=/home/seed/seed-emulator`
-- To force `skyseed` to import the editable dependency from
-  `/home/seed/seed-emulator-upstream-dev`, prefer:
+- Supported Skyseed app entrypoints prepend
+  `/home/seed/seed-emulator-upstream-dev` to their import path.
+- For one-off Python commands or direct `seedemu` imports, prefer:
 
 ```bash
 env -u PYTHONPATH python3 ...

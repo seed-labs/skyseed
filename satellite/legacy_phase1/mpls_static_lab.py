@@ -11,13 +11,17 @@ import subprocess
 from pathlib import Path
 from typing import Dict, List
 
+from _path_setup import bootstrap_legacy_import_path
+
+SATELLITE_DIR = bootstrap_legacy_import_path()
+
 from mpls_control import DEFAULT_STATIC_LSP_PROFILE, get_static_mpls_profile
 
 
 DEFAULT_DIR = Path(__file__).resolve().parent
-DEFAULT_CONFIG_DIR = DEFAULT_DIR / "configs"
+DEFAULT_CONFIG_DIR = SATELLITE_DIR / "legacy_phase1" / "configs"
 DEFAULT_LINK_STATE = DEFAULT_CONFIG_DIR / "link_state.json"
-DEFAULT_CONTROLLER = DEFAULT_DIR / "controller.py"
+DEFAULT_CONTROLLER = SATELLITE_DIR / "controller.py"
 
 
 def parse_args() -> argparse.Namespace:

@@ -14,6 +14,10 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from _path_setup import bootstrap_legacy_import_path
+
+SATELLITE_DIR = bootstrap_legacy_import_path()
+
 from controller import SCENARIO_DEFINITIONS
 from mpls_control import GATEWAY_DEFAULT_PING_TARGETS, gateway_nat_realization_for_gateway
 from mpls_scenario_loop import observe_runtime_residue
@@ -21,10 +25,10 @@ from mpls_scenario_smoke import scenario_all_ut_plan_summaries
 from mpls_ut_egress_smoke import controller_action, run_command, verify_forwarding_cleanup
 
 DEFAULT_DIR = Path(__file__).resolve().parent
-DEFAULT_CONFIG_DIR = DEFAULT_DIR / "configs"
+DEFAULT_CONFIG_DIR = SATELLITE_DIR / "legacy_phase1" / "configs"
 DEFAULT_LINK_STATE = DEFAULT_CONFIG_DIR / "link_state.json"
 DEFAULT_TOPOLOGY = DEFAULT_CONFIG_DIR / "topology.json"
-DEFAULT_CONTROLLER = DEFAULT_DIR / "controller.py"
+DEFAULT_CONTROLLER = SATELLITE_DIR / "controller.py"
 DEFAULT_SEQUENCE = "r0,r1,r2,r3"
 DEFAULT_PING_TARGET = "auto"
 DEFAULT_UPDATE_MODE = "all-attached"

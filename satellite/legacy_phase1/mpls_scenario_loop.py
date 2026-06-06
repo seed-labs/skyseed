@@ -13,14 +13,18 @@ import time
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Set
 
+from _path_setup import bootstrap_legacy_import_path
+
+SATELLITE_DIR = bootstrap_legacy_import_path()
+
 from controller import SCENARIO_DEFINITIONS
 from mpls_scenario_smoke import run_scenario_cycle
 from mpls_ut_egress_smoke import load_link_state, run_command
 DEFAULT_DIR = Path(__file__).resolve().parent
-DEFAULT_CONFIG_DIR = DEFAULT_DIR / "configs"
+DEFAULT_CONFIG_DIR = SATELLITE_DIR / "legacy_phase1" / "configs"
 DEFAULT_LINK_STATE = DEFAULT_CONFIG_DIR / "link_state.json"
 DEFAULT_TOPOLOGY = DEFAULT_CONFIG_DIR / "topology.json"
-DEFAULT_CONTROLLER = DEFAULT_DIR / "controller.py"
+DEFAULT_CONTROLLER = SATELLITE_DIR / "controller.py"
 FALLBACK_FORWARDING_CLEANUP_COMMANDS: Sequence[tuple[str, List[str], str]] = (
     (
         "ut1",

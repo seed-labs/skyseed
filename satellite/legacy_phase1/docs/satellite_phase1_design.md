@@ -1,7 +1,12 @@
 # Satellite Phase 2 Slot-Based Dynamic Link Design
 
+This document was moved to `satellite/legacy_phase1/docs/` during the
+Iteration 2 cleanup. Script references inside it may still use the old
+`satellite/...` form; when they refer to legacy demo/smoke scripts, read them
+as `satellite/legacy_phase1/...`.
+
 Chinese version:
-[satellite_phase1_design.zh.md](/home/seed/skyseed/satellite/docs/satellite_phase1_design.zh.md:1)
+[satellite_phase1_design.zh.md](/home/seed/skyseed/satellite/legacy_phase1/docs/satellite_phase1_design.zh.md:1)
 
 This document describes the current mainline design for the satellite example.
 The old candidate-link / snapshot-activation mainline is retired for this

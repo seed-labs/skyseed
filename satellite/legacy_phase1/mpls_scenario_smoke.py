@@ -9,6 +9,10 @@ import argparse
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
+from _path_setup import bootstrap_legacy_import_path
+
+SATELLITE_DIR = bootstrap_legacy_import_path()
+
 from controller import SCENARIO_DEFINITIONS
 from mpls_control import (
     compute_all_attached_ut_egress_plans,
@@ -24,10 +28,10 @@ from mpls_ut_egress_smoke import (
     verify_forwarding_cleanup,
 )
 DEFAULT_DIR = Path(__file__).resolve().parent
-DEFAULT_CONFIG_DIR = DEFAULT_DIR / "configs"
+DEFAULT_CONFIG_DIR = SATELLITE_DIR / "legacy_phase1" / "configs"
 DEFAULT_LINK_STATE = DEFAULT_CONFIG_DIR / "link_state.json"
 DEFAULT_TOPOLOGY = DEFAULT_CONFIG_DIR / "topology.json"
-DEFAULT_CONTROLLER = DEFAULT_DIR / "controller.py"
+DEFAULT_CONTROLLER = SATELLITE_DIR / "controller.py"
 
 
 def parse_args() -> argparse.Namespace:

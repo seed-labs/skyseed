@@ -1,7 +1,12 @@
 # Satellite Phase 2 Slot-Based Dynamic Link Design 中文说明
 
+这个文档在 Iteration 2 清理过程中已经迁到
+`satellite/legacy_phase1/docs/`。文中如果仍然出现旧的
+`satellite/...` 路径，而它指向的是 legacy demo/smoke 脚本，请理解为
+`satellite/legacy_phase1/...`。
+
 英文版：
-[satellite_phase1_design.md](/home/seed/skyseed/satellite/docs/satellite_phase1_design.md:1)
+[satellite_phase1_design.md](/home/seed/skyseed/satellite/legacy_phase1/docs/satellite_phase1_design.md:1)
 
 本文档描述当前主线的 satellite phase2 slot-based dynamic link prototype。
 旧的 candidate-link / snapshot activation 主线在这个阶段不再继续保留为主叙事。

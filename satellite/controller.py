@@ -45,7 +45,7 @@ from mpls_control import (
 
 
 DEFAULT_DIR = Path(__file__).resolve().parent
-DEFAULT_CONFIG_DIR = DEFAULT_DIR / "configs"
+DEFAULT_CONFIG_DIR = DEFAULT_DIR / "legacy_phase1" / "configs"
 DEFAULT_RUNTIME_AGENT_SCRIPT = DEFAULT_DIR / "runtime_update_agent.sh"
 VALID_CROSS_DIRECTIONS = {"left", "right"}
 BRIDGE_NETFILTER_SYSCTLS = (
@@ -2743,6 +2743,7 @@ class SatelliteController:
             "satellite_b_id": satellite_b_id,
             "satellite_a_direction": satellite_a_direction,
             "satellite_b_direction": satellite_b_direction,
+            "orbit_pair": list(request["orbit_pair"]),
         }
         self._save_link_state(
             self._replace_slot_state_entry(state=state, updated_entry=updated_entry)

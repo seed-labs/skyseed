@@ -1,4 +1,6 @@
 satellite/configs/
 satellite/output/
+satellite/legacy_phase1/configs/
+satellite/legacy_phase1/output/
 **/__pycache__/
 *.pyc

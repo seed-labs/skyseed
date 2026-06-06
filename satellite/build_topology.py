@@ -17,8 +17,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
+
+SEED_EMULATOR_DEPENDENCY_DIR = Path("/home/seed/seed-emulator-upstream-dev")
+if SEED_EMULATOR_DEPENDENCY_DIR.exists():
+    rendered_seed_path = str(SEED_EMULATOR_DEPENDENCY_DIR)
+    if rendered_seed_path in sys.path:
+        sys.path.remove(rendered_seed_path)
+    sys.path.insert(0, rendered_seed_path)
 
 try:
     from seedemu.compiler import Docker, Platform
@@ -27,7 +35,8 @@ try:
 except ModuleNotFoundError as exc:
     raise SystemExit(
         "seedemu is not importable. Install the local dependency first with "
-        "`cd /home/seed/seed-emulator-upstream-dev && pip install -e .`."
+        "`cd /home/seed/seed-emulator-upstream-dev && "
+        "git switch development2 && pip install -e .`."
     ) from exc
 
 
@@ -36,8 +45,9 @@ SATELLITE_OPERATOR_ASN = 65000
 MINI_INTERNET_HOSTS_PER_STUB_AS = 2
 
 DEFAULT_DIR = Path(__file__).resolve().parent
-DEFAULT_OUTPUT_DIR = DEFAULT_DIR / "output"
-DEFAULT_CONFIG_DIR = DEFAULT_DIR / "configs"
+DEFAULT_LEGACY_DIR = DEFAULT_DIR / "legacy_phase1"
+DEFAULT_OUTPUT_DIR = DEFAULT_LEGACY_DIR / "output"
+DEFAULT_CONFIG_DIR = DEFAULT_LEGACY_DIR / "configs"
 DEFAULT_TOPOLOGY_JSON = DEFAULT_CONFIG_DIR / "topology.json"
 
 ACCESS_SLOT_COUNT = 2
@@ -307,7 +317,7 @@ EXTERNAL_TEST_TARGETS = (
     {
         "asn": 160,
         "node_id": "as160-host1",
-        "ip_address": "10.160.0.71",
+        "ip_address": "10.160.0.72",
         "description": "Additional miniInternet host used for multi-UT continuous handover verification.",
     },
 )

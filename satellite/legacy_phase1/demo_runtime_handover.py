@@ -13,10 +13,13 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Sequence
 
+from _path_setup import bootstrap_legacy_import_path
+
+SATELLITE_DIR = bootstrap_legacy_import_path()
 
 DEFAULT_DIR = Path(__file__).resolve().parent
-DEFAULT_CONTROLLER = DEFAULT_DIR / "controller.py"
-DEFAULT_LINK_STATE = DEFAULT_DIR / "configs" / "link_state.json"
+DEFAULT_CONTROLLER = SATELLITE_DIR / "controller.py"
+DEFAULT_LINK_STATE = SATELLITE_DIR / "legacy_phase1" / "configs" / "link_state.json"
 
 
 STATE_CATALOG: Dict[str, Dict[str, Any]] = {
