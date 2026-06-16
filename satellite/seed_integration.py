@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, Iterable, List, Sequence, Tuple
 
 SEED_EMULATOR_DEPENDENCY_DIR = Path("/home/seed/seed-emulator-upstream-dev")
 if SEED_EMULATOR_DEPENDENCY_DIR.exists():
@@ -142,12 +142,14 @@ def create_bootstrap_router(
     prefix: str,
     address: str,
     extra_software: Tuple[str, ...] = (),
+    include_traceroute: bool = True,
 ):
     the_as.createNetwork(network_name, prefix)
     router = the_as.createRouter(node_name)
     router.joinNetwork(network_name, address)
     router.addSoftware("tcpdump")
-    router.addSoftware("traceroute")
+    if include_traceroute:
+        router.addSoftware("traceroute")
     for software_name in extra_software:
         router.addSoftware(software_name)
     return router
@@ -167,6 +169,7 @@ def create_ut_placeholder(
     prefix: str,
     router_address: str,
     ut_address: str,
+    include_traceroute: bool = True,
 ):
     satellite_as.createNetwork(network_name, prefix)
     bootstrap_router = satellite_as.createRouter(f"{ut_id}-placeholder-rtr")
@@ -183,7 +186,8 @@ def create_ut_placeholder(
     )
     ut.addSoftware("curl")
     ut.addSoftware("tcpdump")
-    ut.addSoftware("traceroute")
+    if include_traceroute:
+        ut.addSoftware("traceroute")
     return ut
 
 
@@ -207,12 +211,13 @@ def create_unique_transit_as(
     asn: int,
     exchanges: List[int],
     intra_ix_links: List[Tuple[int, int]],
+    node_name_prefix: str = "",
 ) -> None:
     transit_as = base.createAutonomousSystem(asn)
     routers: Dict[int, object] = {}
 
     for ix in exchanges:
-        router_name = f"as{asn}-r{ix}"
+        router_name = f"{node_name_prefix}as{asn}-r{ix}"
         routers[ix] = transit_as.createRouter(router_name)
         routers[ix].joinNetwork(f"ix{ix}")
 
@@ -229,63 +234,126 @@ def create_unique_stub_as_with_hosts(
     asn: int,
     exchange: int,
     hosts_total: int,
+    node_name_prefix: str = "",
 ) -> None:
     stub_as = base.createAutonomousSystem(asn)
     stub_as.createNetwork("net0")
 
-    router = stub_as.createRouter(f"as{asn}-router0")
+    router = stub_as.createRouter(f"{node_name_prefix}as{asn}-router0")
     router.joinNetwork("net0")
     router.joinNetwork(f"ix{exchange}")
 
     for host_index in range(hosts_total):
-        host = stub_as.createHost(f"as{asn}-host{host_index}")
+        host = stub_as.createHost(f"{node_name_prefix}as{asn}-host{host_index}")
         host.joinNetwork("net0")
 
 
-def build_mini_internet(base: Base, ebgp: Ebgp) -> None:
+def _shift_ix_id(ix_id: int, ix_id_offset: int) -> int:
+    return int(ix_id) + int(ix_id_offset)
+
+
+def build_mini_internet(
+    base: Base,
+    ebgp: Ebgp,
+    *,
+    node_name_prefix: str = "",
+    ix_id_offset: int = 0,
+    transit_asns: Sequence[int] | None = None,
+    stub_asns: Sequence[int] | None = None,
+) -> None:
+    selected_transit_asns = (
+        {int(asn) for asn in transit_asns}
+        if transit_asns is not None
+        else set(MINI_INTERNET_TRANSIT_AS_LAYOUT)
+    )
+    selected_stub_asns = (
+        {int(asn) for asn in stub_asns}
+        if stub_asns is not None
+        else set(MINI_INTERNET_STUB_AS_EXCHANGES)
+    )
+    selected_ix_ids = {
+        ix_id
+        for asn, layout in MINI_INTERNET_TRANSIT_AS_LAYOUT.items()
+        if asn in selected_transit_asns
+        for ix_id in layout["exchanges"]
+    }
+    selected_ix_ids.update(
+        exchange
+        for asn, exchange in MINI_INTERNET_STUB_AS_EXCHANGES.items()
+        if asn in selected_stub_asns
+    )
     for ix_id, display_name in MINI_INTERNET_IX_DISPLAY_NAMES.items():
-        ix = base.createInternetExchange(ix_id)
+        if ix_id not in selected_ix_ids:
+            continue
+        shifted_ix_id = _shift_ix_id(ix_id, ix_id_offset)
+        ix = base.createInternetExchange(shifted_ix_id)
         ix.getPeeringLan().setDisplayName(display_name)
 
     for asn, layout in MINI_INTERNET_TRANSIT_AS_LAYOUT.items():
+        if asn not in selected_transit_asns:
+            continue
         create_unique_transit_as(
             base,
             asn=asn,
-            exchanges=list(layout["exchanges"]),
-            intra_ix_links=list(layout["links"]),
+            exchanges=[_shift_ix_id(ix_id, ix_id_offset) for ix_id in layout["exchanges"]],
+            intra_ix_links=[
+                (
+                    _shift_ix_id(left_ix, ix_id_offset),
+                    _shift_ix_id(right_ix, ix_id_offset),
+                )
+                for left_ix, right_ix in layout["links"]
+            ],
+            node_name_prefix=node_name_prefix,
         )
 
     for asn, exchange in MINI_INTERNET_STUB_AS_EXCHANGES.items():
+        if asn not in selected_stub_asns:
+            continue
         create_unique_stub_as_with_hosts(
             base,
             asn=asn,
-            exchange=exchange,
+            exchange=_shift_ix_id(exchange, ix_id_offset),
             hosts_total=MINI_INTERNET_HOSTS_PER_STUB_AS,
+            node_name_prefix=node_name_prefix,
         )
 
-    as154 = base.getAutonomousSystem(154)
-    host_new = as154.createHost("as154-host-new")
-    host_new.joinNetwork("net0", address="10.154.0.129")
+    if 154 in selected_stub_asns:
+        as154 = base.getAutonomousSystem(154)
+        host_new = as154.createHost(f"{node_name_prefix}as154-host-new")
+        host_new.joinNetwork("net0", address="10.154.0.129")
 
-    disable_rp_filter = OptionRegistry().sysctl_netipv4_conf_rp_filter(
-        {"all": False, "default": False, "net0": False},
-        mode=OptionMode.RUN_TIME,
-    )
-    host_new.setOption(disable_rp_filter)
-    host_new.setOption(
-        OptionRegistry().sysctl_netipv4_udp_rmem_min(
-            5000,
+        disable_rp_filter = OptionRegistry().sysctl_netipv4_conf_rp_filter(
+            {"all": False, "default": False, "net0": False},
             mode=OptionMode.RUN_TIME,
         )
-    )
+        host_new.setOption(disable_rp_filter)
+        host_new.setOption(
+            OptionRegistry().sysctl_netipv4_udp_rmem_min(
+                5000,
+                mode=OptionMode.RUN_TIME,
+            )
+        )
 
     for ix_id, peers in MINI_INTERNET_RS_PEERS.items():
-        ebgp.addRsPeers(ix_id, peers)
+        eligible_peers = [peer for peer in peers if peer in selected_transit_asns]
+        if ix_id not in selected_ix_ids or not eligible_peers:
+            continue
+        ebgp.addRsPeers(_shift_ix_id(ix_id, ix_id_offset), eligible_peers)
 
     for ix_id, providers, customers in MINI_INTERNET_PRIVATE_PEERINGS:
+        if ix_id not in selected_ix_ids:
+            continue
+        eligible_providers = [asn for asn in providers if asn in selected_transit_asns]
+        eligible_customers = [
+            asn
+            for asn in customers
+            if asn in selected_transit_asns or asn in selected_stub_asns
+        ]
+        if not eligible_providers or not eligible_customers:
+            continue
         ebgp.addPrivatePeerings(
-            ix_id,
-            list(providers),
-            list(customers),
+            _shift_ix_id(ix_id, ix_id_offset),
+            eligible_providers,
+            eligible_customers,
             PeerRelationship.Provider,
         )

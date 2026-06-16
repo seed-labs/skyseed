@@ -10,7 +10,7 @@ import json
 from abc import ABC, abstractmethod
 from collections import defaultdict, deque
 from dataclasses import dataclass
-from typing import Any, DefaultDict, Deque, Dict, List, Optional, Tuple
+from typing import Any, DefaultDict, Deque, Dict, List, Optional, Sequence, Tuple
 
 from contracts import (
     RUNTIME_ACTION_MODEL_VERSION,
@@ -208,7 +208,9 @@ class DefaultPlannerSkeleton(Planner):
         actions_by_node: DefaultDict[str, List[Dict[str, Any]]] = defaultdict(list)
 
         for zone_id, zone in sorted(topology_snapshot.zones.items()):
-            serving_satellite_id = str(zone.get("active_serving_satellite_id"))
+            serving_satellite_id = str(zone.get("active_serving_satellite_id") or "")
+            if str(zone.get("resolution_state", "resolved")) != "resolved" or not serving_satellite_id:
+                continue
             actions_by_node[serving_satellite_id].append(
                 self._node_action(
                     action_id=f"zone-service:{zone_id}",
@@ -400,7 +402,7 @@ def _satellite_adjacency(
     adjacency: Dict[str, set[str]] = defaultdict(set)
     for link in topology_snapshot.active_links:
         slot_type = str(link.get("slot_type"))
-        if slot_type not in {"fixed_isl", "cross_plane_isl"}:
+        if slot_type not in {"same_plane_isl", "fixed_isl", "cross_plane_isl"}:
             continue
         endpoint_ids = [
             str(endpoint.get("node_id"))
@@ -461,7 +463,73 @@ class UtInternetExperimentPlanner(Planner):
 
     planner_name = "ut_internet_experiment_planner"
     planner_kind = "gz_mpls_experiment"
-    planner_version = "0.1.0"
+    planner_version = "0.1.1"
+    _SHARED_LABEL_BLOCK_SIZE = 256
+    _SHARED_FORWARD_LABEL_BASE = 10000
+    _SHARED_REVERSE_LABEL_BASE = 200000
+
+    def __init__(self) -> None:
+        self._reset_runtime_build_state()
+
+    def _reset_runtime_build_state(self) -> None:
+        self._shared_backbone_label_allocations: Dict[str, Dict[str, Any]] = {}
+
+    def _shared_backbone_label_scope_id(
+        self,
+        *,
+        serving_satellite_id: str,
+        selected_gateway_id: str,
+        selected_gateway_satellite_id: str,
+        forward_link_ids: Sequence[str],
+    ) -> str:
+        return f"shared-backbone:{_fingerprint({'serving_satellite_id': serving_satellite_id, 'selected_gateway_id': selected_gateway_id, 'selected_gateway_satellite_id': selected_gateway_satellite_id, 'forward_link_ids': list(forward_link_ids)})}"
+
+    def _shared_backbone_label_seeds(
+        self,
+        *,
+        serving_satellite_id: str,
+        selected_gateway_id: str,
+        selected_gateway_satellite_id: str,
+        forward_link_ids: Sequence[str],
+        label_count: int,
+    ) -> Tuple[int, int, str]:
+        if label_count > self._SHARED_LABEL_BLOCK_SIZE:
+            raise PlannerError(
+                "shared backbone label block exhausted for one path: "
+                f"{serving_satellite_id}->{selected_gateway_id} requires {label_count} labels"
+            )
+        scope_id = self._shared_backbone_label_scope_id(
+            serving_satellite_id=serving_satellite_id,
+            selected_gateway_id=selected_gateway_id,
+            selected_gateway_satellite_id=selected_gateway_satellite_id,
+            forward_link_ids=forward_link_ids,
+        )
+        allocation = self._shared_backbone_label_allocations.get(scope_id)
+        if allocation is None:
+            allocation_index = len(self._shared_backbone_label_allocations)
+            allocation = {
+                "label_count": label_count,
+                "forward_label_seed": (
+                    self._SHARED_FORWARD_LABEL_BASE
+                    + allocation_index * self._SHARED_LABEL_BLOCK_SIZE
+                ),
+                "reverse_label_seed": (
+                    self._SHARED_REVERSE_LABEL_BASE
+                    + allocation_index * self._SHARED_LABEL_BLOCK_SIZE
+                ),
+            }
+            self._shared_backbone_label_allocations[scope_id] = allocation
+        elif int(allocation.get("label_count", 0)) != int(label_count):
+            raise PlannerError(
+                "shared backbone label allocation conflict for "
+                f"{scope_id}: expected {allocation.get('label_count')} labels "
+                f"but received {label_count}"
+            )
+        return (
+            int(allocation["forward_label_seed"]),
+            int(allocation["reverse_label_seed"]),
+            scope_id,
+        )
 
     def _node_action(
         self,
@@ -507,6 +575,129 @@ class UtInternetExperimentPlanner(Planner):
     def _gateway_class_id(self, *, zone_id: str, gateway_id: str) -> str:
         return f"{zone_id}:default-gateway:{gateway_id}"
 
+    def _return_path_intent(
+        self,
+        *,
+        ut_id: str,
+        zone_id: str,
+        zone_return_prefixes: Sequence[str],
+        serving_satellite_id: str,
+        selected_gateway_id: str,
+        selected_gateway_satellite_id: str,
+        reverse_link_ids: Sequence[str],
+        reverse_labels: Sequence[int],
+        shared_backbone_label_scope_id: str,
+    ) -> Dict[str, Any]:
+        shared_return_target = {
+            "target_kind": "gateway_zone_return",
+            "target_key": (
+                f"{selected_gateway_id}:{zone_id}:{serving_satellite_id}"
+            ),
+            "gateway_id": selected_gateway_id,
+            "zone_id": zone_id,
+            "zone_serving_satellite_id": serving_satellite_id,
+            "state_owner": "satellite_backbone",
+            "state_model": "shared_gateway_zone_or_zone_return_reachability",
+        }
+        candidate_zone_route = {
+            "target_kind": "gateway_zone_return_route_candidate",
+            "target_key": f"{shared_return_target['target_key']}:zone-route",
+            "shared_backbone_return_target_key": shared_return_target["target_key"],
+            "route_scope": "zone_or_gateway_zone_return_reachability",
+            "route_owner": "satellite_backbone",
+            "gateway_id": selected_gateway_id,
+            "zone_id": zone_id,
+            "route_prefixes": [
+                str(prefix) for prefix in zone_return_prefixes if str(prefix)
+            ],
+            "zone_serving_satellite_id": serving_satellite_id,
+            "egress_node_id": serving_satellite_id,
+            "current_compatibility_route_scope": "ut_32_return_route",
+            "target_route_scope": "zone_or_gateway_zone_return_target",
+            "state_model": "candidate_shared_zone_return_route",
+            "install_behavior": "installed_by_shared_gz_backbone_runtime",
+        }
+        reverse_path_signature = ":".join(str(link_id) for link_id in reverse_link_ids)
+        candidate_label_stack = {
+            "target_kind": "gateway_zone_return_label_stack_candidate",
+            "target_key": (
+                f"{shared_return_target['target_key']}:reverse-path:"
+                f"{_fingerprint({'reverse_link_ids': list(reverse_link_ids)})}"
+            ),
+            "shared_backbone_return_target_key": shared_return_target["target_key"],
+            "reverse_path_signature": reverse_path_signature,
+            "current_compatibility_label_scope_id": shared_backbone_label_scope_id,
+            "current_compatibility_reverse_label_count": len(list(reverse_labels)),
+            "current_compatibility_reverse_labels": [
+                int(label) for label in reverse_labels
+            ],
+            "state_owner": "satellite_backbone",
+            "state_model": "candidate_shared_gateway_zone_return_label_stack",
+            "install_behavior": "installed_by_shared_gz_backbone_runtime",
+        }
+        return {
+            "intent_kind": "zone_return_delivery",
+            "semantic_scope": "gateway_to_zone_then_local_ut_delivery",
+            "zone_id": zone_id,
+            "ut_id": ut_id,
+            "selected_gateway_id": selected_gateway_id,
+            "selected_gateway_satellite_id": selected_gateway_satellite_id,
+            "zone_serving_satellite_id": serving_satellite_id,
+            "gateway_return_role": "zone_return_ingress",
+            "backbone_forwarding_target": {
+                "target_kind": "zone_responsible_satellite",
+                "entity_type": "zone",
+                "entity_id": zone_id,
+                "resolution": "active_responsible_serving_satellite",
+                "resolved_node_id": serving_satellite_id,
+                "shared_backbone_return_target_key": (
+                    shared_return_target["target_key"]
+                ),
+                "state_owner": "satellite_backbone",
+                "state_model": "shared_gateway_zone_or_zone_return_reachability",
+            },
+            "serving_satellite_delivery_target": {
+                "target_kind": "ut_local_access_delivery",
+                "entity_type": "user_terminal",
+                "entity_id": ut_id,
+                "delivery_scope": "serving_satellite_local_access",
+                "serving_satellite_id": serving_satellite_id,
+                "local_delivery_model": "access_link_delivery_to_ut",
+                "state_owner": "serving_satellite_edge",
+                "state_model": "local_ut_delivery_not_backbone_reachability",
+            },
+            "shared_backbone_return_target": shared_return_target,
+            "candidate_shared_zone_return_route": candidate_zone_route,
+            "candidate_shared_return_label_stack": candidate_label_stack,
+            "edge_local_delivery_target": {
+                "target_kind": "serving_satellite_local_ut_delivery",
+                "serving_satellite_id": serving_satellite_id,
+                "ut_id": ut_id,
+                "state_owner": "serving_satellite_edge",
+                "state_model": "local_ut_delivery_not_backbone_reachability",
+            },
+            "state_ownership": {
+                "backbone": {
+                    "owner": "satellite_backbone",
+                    "state_model": "shared_gateway_zone_or_zone_return_reachability",
+                    "scale_dimension": "gateway_zone_or_zone_target",
+                },
+                "edge": {
+                    "owner": "serving_satellite_edge",
+                    "state_model": "serving_satellite_local_ut_delivery",
+                    "scale_dimension": "local_ut_delivery",
+                },
+            },
+            "scale_target": "backbone_return_state_independent_of_ut_count",
+            "current_linux_realization": {
+                "mode": "shared_gz_backbone",
+                "reason": (
+                    "linux_installer_uses_gateway_zone_return_route_and_shared_reverse_lfib; "
+                    "per_ut_state_is_limited_to_gateway_edge_policy_and_serving_satellite_local_delivery"
+                ),
+            },
+        }
+
     def _flow_intent(
         self,
         *,
@@ -548,20 +739,96 @@ class UtInternetExperimentPlanner(Planner):
             for policy in topology_snapshot.planner_hints.get("special_prefix_overrides", [])
         ]
 
+    def _zone_default_gateway_policy(
+        self,
+        topology_snapshot: TopologySnapshot,
+        *,
+        zone_id: str,
+    ) -> Dict[str, Any]:
+        zone_policies = dict(
+            topology_snapshot.planner_hints.get("zone_default_gateway_preferences", {})
+        )
+        return dict(zone_policies.get(zone_id, {}))
+
+    def _zone_resolution_context(
+        self,
+        topology_snapshot: TopologySnapshot,
+        *,
+        ut_id: str,
+        zone_id: str,
+    ) -> Dict[str, Any]:
+        zone = dict(topology_snapshot.zones.get(zone_id, {}))
+        attachment = dict(topology_snapshot.nodes.get(ut_id, {}).get("attachment", {}))
+        resolution_state = str(zone.get("resolution_state", "resolved"))
+        serving_satellite_id = str(zone.get("active_serving_satellite_id") or "")
+        service_role = str(zone.get("service_role", "required_service"))
+        active_service = bool(
+            zone.get(
+                "active_service",
+                service_role in {"required_service", "optional_service"},
+            )
+        )
+        service_planning_enabled = (
+            active_service and service_role in {"required_service", "optional_service"}
+        )
+        is_resolved = (
+            service_planning_enabled
+            and resolution_state == "resolved"
+            and bool(serving_satellite_id)
+        )
+        return {
+            "zone": zone,
+            "attachment": attachment,
+            "resolution_state": resolution_state,
+            "serving_satellite_id": serving_satellite_id,
+            "service_role": service_role,
+            "active_service": active_service,
+            "service_planning_enabled": service_planning_enabled,
+            "is_resolved": is_resolved,
+        }
+
     def _resolve_gateway_path(
         self,
         *,
         topology_snapshot: TopologySnapshot,
         serving_satellite_id: str,
         preferred_gateway_id: Optional[str] = None,
+        preferred_gateway_ids: Optional[Sequence[str]] = None,
+        selection_mode: str = "shortest_path",
+        fallback_to_shortest_path: bool = True,
+        max_additional_hops_relative_to_best_allowed: Optional[int] = None,
     ) -> Optional[Tuple[str, List[str], Dict[str, Any]]]:
         adjacency = _satellite_adjacency(topology_snapshot)
-        candidate_paths: List[Tuple[int, str, List[str], Dict[str, Any]]] = []
-        for gateway_id, gateway_satellite_id, gateway_link in self._gateway_candidates(
-            topology_snapshot
-        ):
-            if preferred_gateway_id is not None and gateway_id != preferred_gateway_id:
-                continue
+        gateway_candidates = self._gateway_candidates(topology_snapshot)
+        allowlisted_gateway_ids: List[str] = []
+        if preferred_gateway_ids:
+            for gateway_id in preferred_gateway_ids:
+                normalized_gateway_id = str(gateway_id).strip()
+                if normalized_gateway_id and normalized_gateway_id not in allowlisted_gateway_ids:
+                    allowlisted_gateway_ids.append(normalized_gateway_id)
+        if preferred_gateway_id is not None:
+            normalized_gateway_id = str(preferred_gateway_id).strip()
+            if normalized_gateway_id and normalized_gateway_id not in allowlisted_gateway_ids:
+                allowlisted_gateway_ids.append(normalized_gateway_id)
+
+        def _reachable_path_for_gateway(
+            gateway_id: str,
+        ) -> Optional[Tuple[str, List[str], Dict[str, Any]]]:
+            for candidate_gateway_id, gateway_satellite_id, gateway_link in gateway_candidates:
+                if candidate_gateway_id != gateway_id:
+                    continue
+                path = _shortest_satellite_path(
+                    adjacency=adjacency,
+                    start_node_id=serving_satellite_id,
+                    goal_node_id=gateway_satellite_id,
+                )
+                if path is None:
+                    return None
+                return candidate_gateway_id, path, gateway_link
+            return None
+
+        all_candidate_paths: List[Tuple[int, str, List[str], Dict[str, Any]]] = []
+        for gateway_id, gateway_satellite_id, gateway_link in gateway_candidates:
             path = _shortest_satellite_path(
                 adjacency=adjacency,
                 start_node_id=serving_satellite_id,
@@ -569,7 +836,56 @@ class UtInternetExperimentPlanner(Planner):
             )
             if path is None:
                 continue
-            candidate_paths.append((len(path) - 1, gateway_id, path, gateway_link))
+            all_candidate_paths.append((len(path) - 1, gateway_id, path, gateway_link))
+
+        if selection_mode == "stable_preferred_gateway_order" and allowlisted_gateway_ids:
+            ordered_preferred_paths: List[Tuple[str, List[str], Dict[str, Any]]] = []
+            for gateway_id in allowlisted_gateway_ids:
+                preferred_path = _reachable_path_for_gateway(gateway_id)
+                if preferred_path is not None:
+                    ordered_preferred_paths.append(preferred_path)
+            if ordered_preferred_paths:
+                if max_additional_hops_relative_to_best_allowed is None:
+                    return ordered_preferred_paths[0]
+                best_allowed_hops = (
+                    min(hops for hops, _, _, _ in all_candidate_paths)
+                    if fallback_to_shortest_path and all_candidate_paths
+                    else min(len(path) - 1 for _, path, _ in ordered_preferred_paths)
+                )
+                for candidate_gateway_id, candidate_path, candidate_gateway_link in ordered_preferred_paths:
+                    if (len(candidate_path) - 1) <= (
+                        best_allowed_hops + int(max_additional_hops_relative_to_best_allowed)
+                    ):
+                        return (
+                            candidate_gateway_id,
+                            candidate_path,
+                            candidate_gateway_link,
+                        )
+            if not fallback_to_shortest_path:
+                return None
+            if all_candidate_paths:
+                _, selected_gateway_id, satellite_path, gateway_link = min(
+                    all_candidate_paths,
+                    key=lambda item: (item[0], item[1], item[2]),
+                )
+                return selected_gateway_id, satellite_path, gateway_link
+
+        candidate_paths: List[Tuple[int, str, List[str], Dict[str, Any]]] = []
+        for gateway_id, gateway_satellite_id, gateway_link in gateway_candidates:
+            if allowlisted_gateway_ids and gateway_id not in allowlisted_gateway_ids:
+                continue
+            matching_path = next(
+                (
+                    (hops, candidate_gateway_id, path, candidate_gateway_link)
+                    for hops, candidate_gateway_id, path, candidate_gateway_link in all_candidate_paths
+                    if candidate_gateway_id == gateway_id
+                ),
+                None,
+            )
+            if matching_path is not None:
+                candidate_paths.append(matching_path)
+        if not candidate_paths and allowlisted_gateway_ids and fallback_to_shortest_path:
+            candidate_paths = list(all_candidate_paths)
         if not candidate_paths:
             return None
         _, selected_gateway_id, satellite_path, gateway_link = min(
@@ -588,14 +904,33 @@ class UtInternetExperimentPlanner(Planner):
         flow_variant_index: int,
         validation_targets: List[Dict[str, Any]],
         preferred_gateway_id: Optional[str] = None,
+        preferred_gateway_ids: Optional[Sequence[str]] = None,
+        gateway_selection_mode: str = "shortest_path",
+        max_additional_hops_relative_to_best_allowed: Optional[int] = None,
+        fallback_to_shortest_path: bool = True,
         traffic_scope: str = "ordinary_internet_default",
         policy_name: Optional[str] = None,
         destination_prefix: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         attachment = dict(topology_snapshot.nodes[ut_id].get("attachment", {}))
-        serving_satellite_id = str(attachment.get("active_serving_satellite_id"))
+        zone = dict(topology_snapshot.zones.get(zone_id, {}))
+        serving_satellite_id = str(
+            zone.get("active_serving_satellite_id")
+            or attachment.get("active_serving_satellite_id")
+            or ""
+        )
         if not serving_satellite_id:
-            raise PlannerError(f"missing serving satellite for {ut_id}")
+            raise PlannerError(f"missing responsible satellite for {zone_id}/{ut_id}")
+        if str(attachment.get("state")) != "attached":
+            raise PlannerError(
+                f"{ut_id} is not attached to responsible satellite for {zone_id}"
+            )
+        attached_satellite_id = str(attachment.get("active_serving_satellite_id") or "")
+        if attached_satellite_id and attached_satellite_id != serving_satellite_id:
+            raise PlannerError(
+                "UT access attachment does not match zone responsible satellite for "
+                f"{zone_id}/{ut_id}: {attached_satellite_id} != {serving_satellite_id}"
+            )
         intent = self._flow_intent(
             ut_id=ut_id,
             flow_suffix=flow_suffix,
@@ -605,6 +940,12 @@ class UtInternetExperimentPlanner(Planner):
             topology_snapshot=topology_snapshot,
             serving_satellite_id=serving_satellite_id,
             preferred_gateway_id=preferred_gateway_id,
+            preferred_gateway_ids=preferred_gateway_ids,
+            selection_mode=gateway_selection_mode,
+            fallback_to_shortest_path=fallback_to_shortest_path,
+            max_additional_hops_relative_to_best_allowed=(
+                max_additional_hops_relative_to_best_allowed
+            ),
         )
         if gateway_path is None:
             return None
@@ -620,6 +961,23 @@ class UtInternetExperimentPlanner(Planner):
         forward_links.append(str(gateway_link.get("link_id")))
         reverse_links = list(reversed(forward_links))
         label_count = len(forward_links)
+        (
+            forward_label_seed,
+            reverse_label_seed,
+            shared_backbone_label_scope_id,
+        ) = self._shared_backbone_label_seeds(
+            serving_satellite_id=serving_satellite_id,
+            selected_gateway_id=selected_gateway_id,
+            selected_gateway_satellite_id=str(satellite_path[-1]),
+            forward_link_ids=forward_links,
+            label_count=label_count,
+        )
+        forward_labels = [
+            forward_label_seed + offset for offset in range(label_count)
+        ]
+        reverse_labels = [
+            reverse_label_seed + offset for offset in range(label_count)
+        ]
         primary_target = (
             dict(validation_targets[0])
             if validation_targets
@@ -634,13 +992,26 @@ class UtInternetExperimentPlanner(Planner):
                 ),
             }
         )
+        zone = dict(topology_snapshot.zones.get(zone_id, {}))
+        zone_return_prefixes = [
+            str(prefix)
+            for prefix in list(zone.get("return_prefixes", []))
+            if str(prefix)
+        ]
         return {
             "flow_id": intent.intent_id,
             "ut_id": ut_id,
             "zone_id": zone_id,
+            "zone_return_prefixes": list(zone_return_prefixes),
             "traffic_scope": traffic_scope,
             "policy_name": policy_name,
             "destination_prefix": destination_prefix,
+            "gateway_selection_mode": gateway_selection_mode,
+            "preferred_gateway_ids": [
+                str(gateway_id)
+                for gateway_id in (preferred_gateway_ids or [])
+                if str(gateway_id).strip()
+            ],
             "validation_targets": [dict(target) for target in validation_targets],
             "ping_target_ip": primary_target.get("ip_address"),
             "target_host_node_id": primary_target.get("node_id"),
@@ -650,17 +1021,54 @@ class UtInternetExperimentPlanner(Planner):
             "satellite_path": satellite_path,
             "ut_access_link_id": attachment.get("slot_name"),
             "gateway_access_link_id": gateway_link.get("link_id"),
+            "gateway_class_id": self._gateway_class_id(
+                zone_id=zone_id,
+                gateway_id=selected_gateway_id,
+            ),
+            "shared_backbone_label_scope_id": shared_backbone_label_scope_id,
+            "return_path_intent": self._return_path_intent(
+                ut_id=ut_id,
+                zone_id=zone_id,
+                zone_return_prefixes=zone_return_prefixes,
+                serving_satellite_id=serving_satellite_id,
+                selected_gateway_id=selected_gateway_id,
+                selected_gateway_satellite_id=str(satellite_path[-1]),
+                reverse_link_ids=reverse_links,
+                reverse_labels=reverse_labels,
+                shared_backbone_label_scope_id=shared_backbone_label_scope_id,
+            ),
+            "label_allocation_mode": "shared_backbone_path",
             "forward_link_ids": forward_links,
             "reverse_link_ids": reverse_links,
-            "forward_labels": [
-                intent.forward_label_seed + offset for offset in range(label_count)
-            ],
-            "reverse_labels": [
-                intent.reverse_label_seed + offset for offset in range(label_count)
-            ],
+            "forward_labels": forward_labels,
+            "reverse_labels": reverse_labels,
             "policy_table_id": intent.policy_table_id,
             "policy_rule_priority": intent.policy_rule_priority,
         }
+
+    def _satellite_hop_count(
+        self,
+        flow_context: Dict[str, Any],
+    ) -> int:
+        return max(0, len(list(flow_context.get("satellite_path", []))) - 1)
+
+    def _override_is_competitive(
+        self,
+        *,
+        default_flow_context: Dict[str, Any],
+        override_flow_context: Dict[str, Any],
+        policy: Dict[str, Any],
+    ) -> Tuple[bool, str]:
+        if not bool(policy.get("require_competitive_path_vs_default", False)):
+            return True, "competitive_check_disabled"
+        default_hops = self._satellite_hop_count(default_flow_context)
+        override_hops = self._satellite_hop_count(override_flow_context)
+        max_additional_hops = int(
+            policy.get("max_additional_satellite_hops_relative_to_default", 0)
+        )
+        if override_hops > default_hops + max_additional_hops:
+            return False, "preferred_gateway_path_excessive_vs_default"
+        return True, "competitive_vs_default"
 
     def _gateway_selection_for_ut(
         self,
@@ -741,6 +1149,24 @@ class UtInternetExperimentPlanner(Planner):
         zone_id: str,
     ) -> Dict[str, Any]:
         validation_targets = self._internet_validation_targets(topology_snapshot)
+        zone_default_gateway_policy = self._zone_default_gateway_policy(
+            topology_snapshot,
+            zone_id=zone_id,
+        )
+        default_preferred_gateway_ids = [
+            str(gateway_id)
+            for gateway_id in zone_default_gateway_policy.get(
+                "preferred_gateway_ids",
+                zone_default_gateway_policy.get("regional_preferred_gateway_ids", []),
+            )
+            if str(gateway_id).strip()
+        ]
+        if not default_preferred_gateway_ids:
+            default_preferred_gateway_ids = [
+                str(gateway_id)
+                for gateway_id in zone_default_gateway_policy.get("gateway_ids", [])
+                if str(gateway_id).strip()
+            ]
         default_flow_context = self._flow_context(
             topology_snapshot=topology_snapshot,
             ut_id=ut_id,
@@ -748,6 +1174,16 @@ class UtInternetExperimentPlanner(Planner):
             flow_suffix="default",
             flow_variant_index=0,
             validation_targets=validation_targets,
+            preferred_gateway_ids=default_preferred_gateway_ids,
+            gateway_selection_mode=str(
+                zone_default_gateway_policy.get("selection_mode", "shortest_path")
+            ),
+            max_additional_hops_relative_to_best_allowed=zone_default_gateway_policy.get(
+                "max_additional_satellite_hops_relative_to_best_candidate"
+            ),
+            fallback_to_shortest_path=bool(
+                zone_default_gateway_policy.get("fallback_to_shortest_path", True)
+            ),
             traffic_scope="ordinary_internet_default",
         )
         if default_flow_context is None:
@@ -768,6 +1204,13 @@ class UtInternetExperimentPlanner(Planner):
                 flow_variant_index=variant_index,
                 validation_targets=[target] if target else [],
                 preferred_gateway_id=policy.get("preferred_gateway_id"),
+                preferred_gateway_ids=list(policy.get("preferred_gateway_ids", [])),
+                gateway_selection_mode=str(
+                    policy.get("selection_mode", "target_affinity_shortest_path")
+                ),
+                fallback_to_shortest_path=bool(
+                    policy.get("fallback_to_shortest_path", True)
+                ),
                 traffic_scope="special_prefix_override",
                 policy_name=policy.get("policy_name"),
                 destination_prefix=policy.get("destination_prefix"),
@@ -798,6 +1241,29 @@ class UtInternetExperimentPlanner(Planner):
                     }
                 )
                 continue
+            is_competitive, competitive_reason = self._override_is_competitive(
+                default_flow_context=default_flow_context,
+                override_flow_context=flow_context,
+                policy=policy,
+            )
+            if not is_competitive:
+                unresolved_override_policies.append(
+                    {
+                        "policy_name": policy.get("policy_name"),
+                        "destination_prefix": policy.get("destination_prefix"),
+                        "gateway_class_id": self._gateway_class_id(
+                            zone_id=zone_id,
+                            gateway_id=str(flow_context["selected_gateway_id"]),
+                        ),
+                        "resolution_state": competitive_reason,
+                        "default_gateway_id": default_flow_context["selected_gateway_id"],
+                        "default_satellite_hops": self._satellite_hop_count(
+                            default_flow_context
+                        ),
+                        "override_satellite_hops": self._satellite_hop_count(flow_context),
+                    }
+                )
+                continue
             override_flow_contexts.append(flow_context)
         gateway_selection = self._gateway_selection_for_ut(
             zone_id=zone_id,
@@ -815,9 +1281,56 @@ class UtInternetExperimentPlanner(Planner):
         self,
         topology_snapshot: TopologySnapshot,
     ) -> RuntimeUpdatePlan:
+        self._reset_runtime_build_state()
         actions_by_node: DefaultDict[str, List[Dict[str, Any]]] = defaultdict(list)
 
         for ut_id, zone_id in sorted(topology_snapshot.ut_zone_membership.items()):
+            zone_resolution = self._zone_resolution_context(
+                topology_snapshot,
+                ut_id=ut_id,
+                zone_id=zone_id,
+            )
+            if not bool(zone_resolution["is_resolved"]):
+                resolution_state = str(zone_resolution["resolution_state"])
+                if not bool(zone_resolution.get("service_planning_enabled", True)):
+                    resolution_state = "zone_service_not_active"
+                actions_by_node[ut_id].append(
+                    self._node_action(
+                        action_id=f"ut-classification:{ut_id}",
+                        action_type="traffic_classification",
+                        node_id=ut_id,
+                        sequence=100,
+                        intent={
+                            "match": {
+                                "traffic_source": {
+                                    "entity_type": "user_terminal",
+                                    "entity_id": ut_id,
+                                },
+                                "destination_scope": "internet_egress",
+                            },
+                            "outcome": {
+                                "zone_id": zone_id,
+                                "serving_satellite_id": None,
+                                "traffic_role": "ut_internet_egress_unavailable",
+                                "service_state": "temporarily_unavailable",
+                                "resolution_state": resolution_state,
+                            },
+                            "classification_scope": "node_local_ingress",
+                        },
+                        expected_state=(
+                            f"{ut_id} traffic remains blocked until {zone_id} resolves"
+                        ),
+                        metadata={
+                            "ut_id": ut_id,
+                            "zone_id": zone_id,
+                            "zone_service_role": zone_resolution.get("service_role"),
+                            "zone_active_service": zone_resolution.get("active_service"),
+                            "planner_semantics": "ut_to_zone_partition_unresolved",
+                            "resolution_state": resolution_state,
+                        },
+                    )
+                )
+                continue
             flow_contexts = self._core_flow_contexts(
                 topology_snapshot=topology_snapshot,
                 ut_id=ut_id,
@@ -914,10 +1427,19 @@ class UtInternetExperimentPlanner(Planner):
                             "role": "active_responsible_serving_satellite",
                         },
                         "binding_scope": "slice_local",
+                        "return_delivery_semantics": {
+                            "intent_kind": "zone_return_delivery",
+                            "zone_id": zone_id,
+                            "zone_serving_satellite_id": serving_satellite_id,
+                            "serving_satellite_delivery_scope": "local_ut_delivery",
+                            "current_linux_realization": "per_ut_flow_compatibility",
+                            "scale_target": "shared_zone_reachability_before_local_ut_delivery",
+                        },
                     },
                     expected_state=f"{zone_id} served by {serving_satellite_id}",
                     metadata={
                         "flow_id": default_flow_context["flow_id"],
+                        "return_path_boundary": "zone_return_intent",
                     },
                 )
             )

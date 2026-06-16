@@ -1014,7 +1014,7 @@ def compute_ut_egress_plan(
     satellite_links = [
         link
         for link in active_links
-        if link.slot_type in {"fixed_isl", "cross_plane_isl"}
+        if link.slot_type in {"same_plane_isl", "fixed_isl", "cross_plane_isl"}
     ]
     adjacency = _build_satellite_adjacency(satellite_links)
     serving_satellite_id = ut_link.peer_endpoint(ut_id).node_id

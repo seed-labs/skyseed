@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -118,6 +119,16 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=2,
         help="Bounded worker count for per-node real runtime batch execution.",
+    )
+    parser.add_argument(
+        "--max-host-workers",
+        type=int,
+        default=1,
+        help=(
+            "Bounded worker count requested for host-side NetworkMutationPlan "
+            "execution. The current controller-backed transport may still force "
+            "effective serial execution for safety."
+        ),
     )
     parser.add_argument(
         "--continuous-real",
@@ -397,13 +408,99 @@ def _flow_path_change_summary(
     }
 
 
-def _connectivity_summary(flow_results: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+def _connectivity_summary(flow_results: Sequence[Dict[str, Any]] | None) -> Dict[str, Any]:
+    normalized_results = list(flow_results or [])
     return {
-        "result_count": len(flow_results),
-        "ping_success": bool(flow_results)
-        and all(bool(result.get("success")) for result in flow_results),
-        "results": [dict(result) for result in flow_results],
+        "result_count": len(normalized_results),
+        "ping_success": bool(normalized_results)
+        and all(bool(result.get("success")) for result in normalized_results),
+        "results": [dict(result) for result in normalized_results],
     }
+
+
+def _await_initial_real_runtime_readiness(
+    *,
+    gateway_ids: Sequence[str],
+    validation_targets: Sequence[Dict[str, Any]],
+    timeout_seconds: float = 20.0,
+    probe_interval_seconds: float = 2.0,
+) -> Dict[str, Any]:
+    target_ips = [
+        str(target.get("ip_address"))
+        for target in validation_targets
+        if target.get("ip_address")
+    ]
+    started_at = time.perf_counter()
+    attempts: List[Dict[str, Any]] = []
+    if not gateway_ids or not target_ips:
+        return {
+            "attempt_count": 0,
+            "gateway_ids": list(gateway_ids),
+            "target_ips": target_ips,
+            "ready": True,
+            "wall_seconds": 0.0,
+        }
+    while True:
+        attempt_started_at = time.perf_counter()
+        probe_results: List[Dict[str, Any]] = []
+        all_ready = True
+        for gateway_id in gateway_ids:
+            for target_ip in target_ips:
+                completed = subprocess.run(
+                    [
+                        "docker",
+                        "exec",
+                        gateway_id,
+                        "ip",
+                        "route",
+                        "get",
+                        target_ip,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                success = (
+                    completed.returncode == 0
+                    and "unreachable" not in completed.stdout.lower()
+                    and "unreachable" not in completed.stderr.lower()
+                )
+                probe_results.append(
+                    {
+                        "gateway_id": gateway_id,
+                        "target_ip": target_ip,
+                        "success": success,
+                    }
+                )
+                if not success:
+                    all_ready = False
+        attempt_record = {
+            "attempt_index": len(attempts) + 1,
+            "wall_seconds": time.perf_counter() - attempt_started_at,
+            "probe_results": probe_results,
+            "all_ready": all_ready,
+        }
+        attempts.append(attempt_record)
+        if all_ready:
+            return {
+                "attempt_count": len(attempts),
+                "gateway_ids": list(gateway_ids),
+                "target_ips": target_ips,
+                "ready": True,
+                "wall_seconds": time.perf_counter() - started_at,
+                "attempts": attempts,
+            }
+        elapsed = time.perf_counter() - started_at
+        if elapsed >= float(timeout_seconds):
+            return {
+                "attempt_count": len(attempts),
+                "gateway_ids": list(gateway_ids),
+                "target_ips": target_ips,
+                "ready": False,
+                "wall_seconds": elapsed,
+                "attempts": attempts,
+            }
+        time.sleep(float(probe_interval_seconds))
 
 
 def _continuous_timing_summary(iterations: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
@@ -415,18 +512,30 @@ def _continuous_timing_summary(iterations: Sequence[Dict[str, Any]]) -> Dict[str
             "phase_averages": {},
             "dominant_phase_by_average": None,
             "host_operation_wall_seconds": {},
+            "host_delta_totals": {},
+            "host_manager_phase_averages": {},
+            "average_unaccounted_transition_wall_seconds": 0.0,
         }
     phase_fields = {
-        "host_mutation_apply_wall_seconds": "host_mutation",
+        "network_mutation_plan_wall_seconds": "network_mutation_plan",
+        "pre_transition_connectivity_probe_wall_seconds": "pre_transition_connectivity_probe",
+        "node_local_preflight_wall_seconds": "node_local_preflight",
         "node_local_apply_wall_seconds": "node_local_apply",
         "node_local_verify_wall_seconds": "node_local_verify",
+        "node_local_access_link_warmup_wall_seconds": "access_link_warmup",
         "node_local_ping_wall_seconds": "connectivity_probe",
+        "packet_observation_wall_seconds": "packet_observation",
+        "node_local_execution_public_wall_seconds": "report_serialization",
+        "transition_report_wall_seconds": "transition_reporting",
         "node_local_rollback_before_transition_wall_seconds": "node_local_rollback",
     }
     phase_totals = {phase_name: 0.0 for phase_name in phase_fields.values()}
     transition_totals = 0.0
     max_transition_wall_seconds = 0.0
     host_operation_totals: Dict[str, float] = {}
+    host_delta_totals: Dict[str, int] = {}
+    host_manager_phase_totals: Dict[str, float] = {}
+    unaccounted_transition_totals = 0.0
     for iteration in iterations:
         timing = dict(iteration.get("timing", {}))
         transition_wall_seconds = float(timing.get("transition_wall_seconds", 0.0))
@@ -445,6 +554,38 @@ def _continuous_timing_summary(iterations: Sequence[Dict[str, Any]]) -> Dict[str
             host_operation_totals[str(operation_name)] = (
                 host_operation_totals.get(str(operation_name), 0.0) + float(seconds)
             )
+        delta_summary = dict(
+            iteration.get("host_mutation_execution", {})
+            .get("outcome", {})
+            .get("delta_summary", {})
+        )
+        for field_name in (
+            "skipped_slot_count",
+            "reused_slot_count",
+            "changed_slot_count",
+            "created_slot_count",
+            "deleted_slot_count",
+        ):
+            host_delta_totals[field_name] = (
+                host_delta_totals.get(field_name, 0) + int(delta_summary.get(field_name, 0))
+            )
+        manager_timing = dict(
+            iteration.get("host_mutation_execution", {})
+            .get("outcome", {})
+            .get("manager_timing_breakdown", {})
+        )
+        for phase_name, seconds in manager_timing.items():
+            host_manager_phase_totals[str(phase_name)] = (
+                host_manager_phase_totals.get(str(phase_name), 0.0) + float(seconds)
+            )
+        accounted_transition_seconds = sum(
+            float(timing.get(field_name, 0.0))
+            for field_name in phase_fields
+        )
+        unaccounted_transition_totals += max(
+            0.0,
+            transition_wall_seconds - accounted_transition_seconds,
+        )
     phase_averages = {
         phase_name: round(total / len(iterations), 3)
         for phase_name, total in sorted(phase_totals.items())
@@ -463,6 +604,15 @@ def _continuous_timing_summary(iterations: Sequence[Dict[str, Any]]) -> Dict[str
             operation_name: round(seconds, 3)
             for operation_name, seconds in sorted(host_operation_totals.items())
         },
+        "host_delta_totals": dict(sorted(host_delta_totals.items())),
+        "host_manager_phase_averages": {
+            phase_name: round(total / len(iterations), 6)
+            for phase_name, total in sorted(host_manager_phase_totals.items())
+        },
+        "average_unaccounted_transition_wall_seconds": round(
+            unaccounted_transition_totals / len(iterations),
+            6,
+        ),
     }
 
 
@@ -652,6 +802,29 @@ def _build_real_transition_sequence(
     return sequence
 
 
+def _warmup_ut_ids_for_transition(transition: Dict[str, Any]) -> Optional[List[str]]:
+    host_plan = transition.get("host_plan")
+    operations = list(getattr(host_plan, "operations", []) or [])
+    if not operations:
+        return None
+    warmup_ut_ids: set[str] = set()
+    for operation in operations:
+        if str(operation.get("slot_type")) != "ut_access":
+            continue
+        if str(operation.get("operation")) not in {
+            "activate_slot_attachment",
+            "rebind_slot_attachment",
+        }:
+            continue
+        for binding_key in ("source_binding", "target_binding"):
+            binding = dict(operation.get(binding_key, {}) or {})
+            if binding.get("ut_id"):
+                warmup_ut_ids.add(str(binding["ut_id"]))
+    if not warmup_ut_ids:
+        return []
+    return sorted(warmup_ut_ids)
+
+
 def _run_continuous_real_execution(
     *,
     topology_path: Path,
@@ -660,16 +833,55 @@ def _run_continuous_real_execution(
     loop_count: int,
     pacing_interval_seconds: float,
     max_node_workers: int,
+    max_host_workers: int,
     runtime_mode: str,
     observe_selectors: Sequence[str],
     stream_progress: bool,
 ) -> Dict[str, Any]:
     real_installer = MinimalRealLinuxMplsInstaller()
-    network_executor = MinimalRealNetworkMutationExecutor()
+    network_executor = MinimalRealNetworkMutationExecutor(
+        max_host_workers=max_host_workers
+    )
     transition_sequence = _build_real_transition_sequence(
         slice_contexts=slice_contexts,
         loop_count=loop_count,
     )
+    initial_runtime_readiness = _await_initial_real_runtime_readiness(
+        gateway_ids=sorted(
+            str(gateway_id)
+            for gateway_id in dict(
+                slice_contexts[0]["snapshot"].planner_hints.get("gateway_ix_catalog", {})
+            )
+        )
+        if slice_contexts
+        else [],
+        validation_targets=list(
+            slice_contexts[0]["snapshot"].planner_hints.get("internet_validation_targets", [])
+        )
+        if slice_contexts
+        else [],
+    )
+    if initial_runtime_readiness["ready"] is not True:
+        return {
+            "mode": "continuous_multi_slice_real_execution",
+            "loop_count": max(1, loop_count),
+            "pacing_interval_seconds": float(pacing_interval_seconds),
+            "runtime_mode": runtime_mode,
+            "initial_runtime_readiness": initial_runtime_readiness,
+            "iterations": [],
+            "timing_summary": _continuous_timing_summary([]),
+            "final_cleanup": {
+                "node_local": None,
+                "host_rollbacks": [],
+                "all_cleanup_success": True,
+            },
+            "outcome": {
+                "real_apply_success": False,
+                "ping_success": False,
+                "rollback_completed": True,
+                "failure_reason": "initial_runtime_readiness_timeout",
+            },
+        }
     transition_iterations: List[Dict[str, Any]] = []
     host_history: List[Dict[str, Any]] = []
     active_session = None
@@ -684,6 +896,7 @@ def _run_continuous_real_execution(
     try:
         for transition in transition_sequence:
             transition_started_at = time.perf_counter()
+            transition_started_epoch_seconds = time.time()
             _emit_progress(
                 (
                     "[iter2] transition "
@@ -698,7 +911,12 @@ def _run_continuous_real_execution(
             pre_transition_paths: List[Dict[str, Any]] = []
             node_local_rollback = None
             if active_session is not None:
+                pre_transition_probe_started_at = time.perf_counter()
                 pre_transition_connectivity = real_installer.probe_connectivity(active_session)
+                pre_transition_probe_wall_seconds = (
+                    time.perf_counter() - pre_transition_probe_started_at
+                )
+                pre_transition_probe_completed_epoch_seconds = time.time()
                 pre_transition_paths = list(active_session.timing.get("flow_path_observations", []))
                 if runtime_mode == "correctness":
                     node_local_rollback = real_installer.rollback_session(
@@ -710,14 +928,19 @@ def _run_continuous_real_execution(
                             "node-local rollback failed before the next continuous transition"
                         )
                     active_session = None
+            else:
+                pre_transition_probe_wall_seconds = 0.0
+                pre_transition_probe_completed_epoch_seconds = transition_started_epoch_seconds
 
             host_apply_started_at = time.perf_counter()
-            host_apply = network_executor.apply(
+            host_apply_result = network_executor.apply(
                 topology_path=topology_path,
                 link_state_path=link_state_path,
                 network_mutation_plan=transition["host_plan"],
-            ).to_dict()
+            )
+            host_apply = host_apply_result.to_dict()
             host_apply_wall_seconds = time.perf_counter() - host_apply_started_at
+            host_apply_completed_epoch_seconds = time.time()
             if host_apply["outcome"]["apply_success"] is not True:
                 raise RuntimeError(
                     f"host-side network mutation failed for {transition['to_slice_id']}"
@@ -741,14 +964,25 @@ def _run_continuous_real_execution(
                 host_runtime_summary=host_apply["boundary"],
                 max_node_workers=max_node_workers,
                 runtime_mode=runtime_mode,
+                warmup_ut_ids=_warmup_ut_ids_for_transition(transition),
             )
             applied_sessions.append(active_session)
             post_transition_connectivity = _connectivity_summary(active_session.ping_results)
+            packet_observation_started_at = time.perf_counter()
             packet_observation = real_installer.observe_packet_path(
                 active_session,
                 observe_selectors=observe_selectors,
             )
+            packet_observation_wall_seconds = time.perf_counter() - packet_observation_started_at
+            packet_observation_completed_epoch_seconds = time.time()
+            session_public_dict_started_at = time.perf_counter()
+            node_local_execution_public = active_session.to_public_dict()
+            node_local_execution_public_wall_seconds = (
+                time.perf_counter() - session_public_dict_started_at
+            )
+            transition_record_started_at = time.perf_counter()
             transition_wall_seconds = time.perf_counter() - transition_started_at
+            transition_completed_epoch_seconds = time.time()
             _emit_progress(
                 (
                     "[iter2] completed "
@@ -807,21 +1041,62 @@ def _run_continuous_real_execution(
                         {},
                     ),
                     "node_local_rollback_before_transition": node_local_rollback,
-                    "node_local_execution": active_session.to_public_dict(),
+                    "node_local_execution": node_local_execution_public,
+                    "epoch_timestamps": {
+                        "transition_started_epoch_seconds": transition_started_epoch_seconds,
+                        "pre_transition_connectivity_probe_completed_epoch_seconds": (
+                            pre_transition_probe_completed_epoch_seconds
+                        ),
+                        "host_mutation_completed_epoch_seconds": (
+                            host_apply_completed_epoch_seconds
+                        ),
+                        "node_local_session_started_epoch_seconds": float(
+                            active_session.timing.get("session_started_epoch_seconds", 0.0)
+                        ),
+                        "node_local_apply_completed_epoch_seconds": float(
+                            active_session.timing.get("apply_completed_epoch_seconds", 0.0)
+                        ),
+                        "node_local_access_link_warmup_completed_epoch_seconds": float(
+                            active_session.timing.get(
+                                "access_link_warmup_completed_epoch_seconds",
+                                0.0,
+                            )
+                        ),
+                        "node_local_ping_completed_epoch_seconds": float(
+                            active_session.timing.get("ping_completed_epoch_seconds", 0.0)
+                        ),
+                        "packet_observation_completed_epoch_seconds": (
+                            packet_observation_completed_epoch_seconds
+                        ),
+                        "transition_completed_epoch_seconds": (
+                            transition_completed_epoch_seconds
+                        ),
+                    },
                     "timing": {
                         "transition_wall_seconds": transition_wall_seconds,
+                        "network_mutation_plan_wall_seconds": host_apply_wall_seconds,
                         "host_mutation_apply_wall_seconds": host_apply_wall_seconds,
+                        "pre_transition_connectivity_probe_wall_seconds": (
+                            pre_transition_probe_wall_seconds
+                        ),
                         "node_local_apply_wall_seconds": float(
                             active_session.timing.get("apply_wall_seconds", 0.0)
                         ),
                         "node_local_verify_wall_seconds": float(
                             active_session.timing.get("verify_wall_seconds", 0.0)
                         ),
+                        "node_local_access_link_warmup_wall_seconds": float(
+                            active_session.timing.get("access_link_warmup_wall_seconds", 0.0)
+                        ),
                         "node_local_ping_wall_seconds": float(
                             active_session.timing.get("ping_wall_seconds", 0.0)
                         ),
                         "node_local_preflight_wall_seconds": float(
                             active_session.timing.get("preflight_wall_seconds", 0.0)
+                        ),
+                        "packet_observation_wall_seconds": packet_observation_wall_seconds,
+                        "node_local_execution_public_wall_seconds": (
+                            node_local_execution_public_wall_seconds
                         ),
                         "node_local_rollback_before_transition_wall_seconds": (
                             float(node_local_rollback["timing"]["rollback_wall_seconds"])
@@ -835,6 +1110,13 @@ def _run_continuous_real_execution(
                         "failure_reason": None,
                     },
                 }
+            )
+            transition_report_wall_seconds = time.perf_counter() - transition_record_started_at
+            transition_iterations[-1]["timing"]["transition_report_wall_seconds"] = (
+                transition_report_wall_seconds
+            )
+            transition_iterations[-1]["timing"]["transition_wall_seconds"] = (
+                time.perf_counter() - transition_started_at
             )
     except Exception as exc:  # noqa: BLE001
         failure_reason = str(exc)
@@ -925,6 +1207,7 @@ def _run_continuous_real_execution(
         "loop_count": max(1, loop_count),
         "pacing_interval_seconds": float(pacing_interval_seconds),
         "runtime_mode": runtime_mode,
+        "initial_runtime_readiness": initial_runtime_readiness,
         "iterations": transition_iterations,
         "timing_summary": _continuous_timing_summary(transition_iterations),
         "final_cleanup": final_cleanup,
@@ -958,6 +1241,7 @@ def build_experiment_report(
     loop_count: int,
     pacing_interval_seconds: float,
     max_node_workers: int,
+    max_host_workers: int,
     runtime_mode: str,
     observe_selectors: Sequence[str],
     stream_progress: bool,
@@ -1188,6 +1472,7 @@ def build_experiment_report(
                 loop_count=loop_count,
                 pacing_interval_seconds=pacing_interval_seconds,
                 max_node_workers=max_node_workers,
+                max_host_workers=max_host_workers,
                 runtime_mode=runtime_mode,
                 observe_selectors=observe_selectors,
                 stream_progress=stream_progress,
@@ -1214,7 +1499,9 @@ def build_experiment_report(
                         target_context["slice_report"]["real_execution_support"]["blockers"]
                     )
                 )
-            network_executor = MinimalRealNetworkMutationExecutor()
+            network_executor = MinimalRealNetworkMutationExecutor(
+                max_host_workers=max_host_workers
+            )
             real_iterations: List[Dict[str, Any]] = []
             for iteration_index in range(1, max(1, loop_count) + 1):
                 host_mutation_apply = network_executor.apply(
@@ -1344,6 +1631,7 @@ def build_experiment_report(
                 "continuous_real_enabled": bool(execute_real and continuous_real),
                 "target_slice_id": target_slice_id if execute_real else None,
                 "max_node_workers": max(1, max_node_workers),
+                "max_host_workers": max(1, max_host_workers),
                 "pacing_interval_seconds": float(pacing_interval_seconds),
                 "runtime_mode": runtime_mode,
                 "observe_selectors": list(observe_selectors),
@@ -1369,7 +1657,10 @@ def build_experiment_report(
             "envelope_builder": envelope_builder.metadata(),
             "distributor": distributor.metadata(),
             "installer": installer.metadata(),
-            "network_mutation_boundary": "host_network_runtime_manager",
+            "network_mutation_boundary": (
+                "host_runtime_envelope -> in_process_host_runtime_manager -> "
+                "direct_netns_veth_slot_link_namespace_qdisc_installer"
+            ),
         },
         "slices": slice_reports,
         "transitions": transition_reports,
@@ -1414,6 +1705,7 @@ def _render_text(report: Dict[str, Any]) -> str:
         f"real_opt_in={loop_mode['real_execution_is_opt_in']} "
         f"continuous_real={loop_mode['continuous_real_enabled']} "
         f"max_node_workers={loop_mode['max_node_workers']} "
+        f"max_host_workers={loop_mode['max_host_workers']} "
         f"interval={loop_mode['pacing_interval_seconds']}s "
         f"runtime_mode={loop_mode['runtime_mode']}"
     )
@@ -1567,6 +1859,14 @@ def _render_text(report: Dict[str, Any]) -> str:
                             sort_keys=True,
                         )
                     )
+                if timing_summary.get("host_delta_totals"):
+                    lines.append(
+                        "  Host delta totals: "
+                        + json.dumps(
+                            timing_summary.get("host_delta_totals", {}),
+                            sort_keys=True,
+                        )
+                    )
             for iteration in report["real_execution"].get("iterations", []):
                 node_exec = iteration["node_local_execution"]
                 backend = node_exec["backend"]
@@ -1580,6 +1880,7 @@ def _render_text(report: Dict[str, Any]) -> str:
                 lines.append(
                     "  Runtime timing: "
                     f"transition={timing['transition_wall_seconds']:.3f}s "
+                    f"netmut={timing['network_mutation_plan_wall_seconds']:.3f}s "
                     f"host={timing['host_mutation_apply_wall_seconds']:.3f}s "
                     f"node_apply={timing['node_local_apply_wall_seconds']:.3f}s "
                     f"node_verify={timing['node_local_verify_wall_seconds']:.3f}s "
@@ -1592,6 +1893,28 @@ def _render_text(report: Dict[str, Any]) -> str:
                         "  Host ops: "
                         + json.dumps(
                             iteration["host_operation_timing_summary"],
+                            sort_keys=True,
+                        )
+                    )
+                host_delta_summary = (
+                    iteration.get("host_mutation_execution", {})
+                    .get("outcome", {})
+                    .get("delta_summary", {})
+                )
+                if host_delta_summary:
+                    lines.append(
+                        "  Host delta: "
+                        + json.dumps(
+                            {
+                                key: host_delta_summary.get(key)
+                                for key in (
+                                    "skipped_slot_count",
+                                    "reused_slot_count",
+                                    "changed_slot_count",
+                                    "created_slot_count",
+                                    "deleted_slot_count",
+                                )
+                            },
                             sort_keys=True,
                         )
                     )
@@ -1694,6 +2017,7 @@ def main() -> int:
         loop_count=max(1, int(args.loop_count)),
         pacing_interval_seconds=max(0.0, float(args.interval)),
         max_node_workers=max(1, int(args.max_node_workers)),
+        max_host_workers=max(1, int(args.max_host_workers)),
         runtime_mode=str(args.runtime_mode),
         observe_selectors=list(args.observe_flow),
         stream_progress=bool(args.stream_progress),

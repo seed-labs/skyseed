@@ -56,11 +56,8 @@ def validate_planner_input(
     if len(topology_snapshot.ut_zone_membership) == 0:
         issues.append("planner_input_missing_ut_zone_membership")
     for zone_id, zone in sorted(topology_snapshot.zones.items()):
-        if str(zone.get("resolution_state", "resolved")) != "resolved":
-            issues.append(
-                f"planner_input_zone_unresolved:{zone_id}:{zone.get('resolution_state')}"
-            )
-        if not zone.get("active_serving_satellite_id"):
+        resolution_state = str(zone.get("resolution_state", "resolved"))
+        if resolution_state == "resolved" and not zone.get("active_serving_satellite_id"):
             issues.append(f"planner_input_zone_missing_active_serving_satellite:{zone_id}")
     for ut_id, zone_id in sorted(topology_snapshot.ut_zone_membership.items()):
         zone = dict(topology_snapshot.zones.get(zone_id, {}))

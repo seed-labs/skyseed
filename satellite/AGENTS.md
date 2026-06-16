@@ -28,6 +28,14 @@ satellite research platform.
 ## Goal-Driven Workflow
 
 - Work from project goals and stable abstractions, not one-off task lists.
+- For active architecture goals, decide and document the intended dataplane
+  logic before adding more audit/reporting surface. Audits and inspectors must
+  directly support a concrete implementation step; do not spend long sessions
+  stacking peripheral evidence when the core behavior is still unchanged.
+- Prefer making a small reversible implementation step on the main dataplane
+  path over indefinitely protecting the current compatibility behavior. Keep
+  rollback and validation scoped, but accept that early core changes may need
+  follow-up fixes.
 - Prefer interface-first, pluggable design:
   - orbit/visibility/topology slicing
   - zone generation
@@ -74,6 +82,35 @@ satellite research platform.
 ## Validation And Evidence
 
 - Record validation commands whenever they are run, even for partial work.
+- Run `python3 satellite/apps/skyseed_preflight.py` before real Skyseed
+  experiments, especially after reboot or failed runtime attempts.
+- Prefer the `seed310` interpreter for real Skyseed runs and preflight:
+  `/home/seed/miniconda3/envs/seed310/bin/python ...`
+- Do not reintroduce legacy `PYTHONPATH=~/seed-emulator` shell overrides; let
+  the editable `seed310` dependency resolve `seed-emulator-upstream-dev`.
+- Treat preflight and host-prepare as fixed workflow, not optional memory:
+  real `run_starlink_shell_experiment.py --run-mode real-runtime` runs should
+  use runner-enforced host prepare, scoped preflight, scoped cleanup, and
+  post-run preflight unless a task explicitly validates a broken environment.
+- For long or slow real runs, use
+  `/home/seed/miniconda3/envs/seed310/bin/python satellite/apps/inspect_temporal_run.py <run_dir>`
+  as the standard progress check before assuming a hang or deciding to rerun.
+  Distinguish:
+  - live runtime still advancing
+  - live runtime already complete and only rollback/cleanup remains
+  - genuinely stalled progress that needs intervention
+- For long event-time `1-shell` runs, separate timing evidence into bootstrap,
+  live runtime, and post-run teardown. Judge update performance from the live
+  runtime bucket, not from rollback/cleanup wall time.
+- Do not insist on a full rollback/cleanup wait after every successful long
+  run if rollback/cleanup code did not change and a recent clean pass already
+  exists. Re-run full teardown validation when environment lifecycle code,
+  rollback logic, or cleanup logic changes.
+- For failed `72+` cold startup, inspect `run_manifest.json` and
+  `docker_compose.json` before rerunning; prefer supported reuse only when the
+  environment is verified healthy.
+- When a recurring environment or runtime failure is found, update
+  `docs/known_issues_runbook.md` with detection and fix steps.
 - Keep validation scoped to the change:
   - document review commands for documentation-only work
   - schema or unit validation for interface work

@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence
 
+from seed_integration import MINI_INTERNET_STUB_AS_EXCHANGES
+
 from contracts import TOPOLOGY_SNAPSHOT_SCHEMA_VERSION, TopologySnapshot
 from topology_pipeline import (
     OrbitTopologyProducer,
@@ -85,11 +87,35 @@ class ExperimentGatewayProfile:
 
 
 @dataclass(frozen=True)
+class ExperimentZoneProfile:
+    zone_id: str
+    display_name: str
+    region: str
+    latitude_deg: float
+    longitude_deg: float
+    altitude_km: float = 0.0
+    candidate_satellite_ids: Sequence[str] | None = None
+    partition_policy: str = "explicit_zone_catalog"
+    return_prefixes: Sequence[str] = ()
+    service_role: str = "required_service"
+    active_service: bool = True
+    required_for_runtime: bool = True
+    radius_km: float | None = None
+    coverage_margin_deg: float = 2.0
+    default_gateway: str | None = None
+    preferred_gateway_ids: Sequence[str] = ()
+    prefix_overrides: Sequence[Dict[str, Any]] = ()
+
+
+@dataclass(frozen=True)
 class ExperimentPrefixOverridePolicy:
     policy_name: str
     destination_prefix: str
-    preferred_gateway_id: str
+    preferred_gateway_id: str | None
     target_node_id: str
+    preferred_gateway_ids: Sequence[str] = ()
+    selection_mode: str = "target_affinity_shortest_path"
+    fallback_to_shortest_path: bool = True
 
 
 @dataclass(frozen=True)
@@ -107,6 +133,8 @@ class ExperimentScenario:
     min_elevation_deg: float
     ground_locations: Dict[str, GroundLocation]
     orbital_elements: Dict[str, SemiRealOrbitalElements]
+    zone_profiles: Sequence[ExperimentZoneProfile] = ()
+    mini_internet_ix_offset: int = 0
 
 
 DEFAULT_EXPERIMENT_PROFILE = ExperimentProfile(
@@ -359,6 +387,39 @@ def _topology_entry_by_id(
     return result
 
 
+def _zone_profile_by_id(
+    scenario: ExperimentScenario,
+) -> Dict[str, ExperimentZoneProfile]:
+    return {
+        str(profile.zone_id): profile
+        for profile in scenario.zone_profiles
+    }
+
+
+def _derived_zone_profiles_from_terminals(
+    scenario: ExperimentScenario,
+) -> Dict[str, ExperimentZoneProfile]:
+    derived_profiles: Dict[str, ExperimentZoneProfile] = {}
+    for terminal in scenario.terminal_profiles:
+        zone_id = str(terminal.zone_id)
+        if zone_id in derived_profiles:
+            continue
+        location = scenario.ground_locations.get(str(terminal.ut_id))
+        if location is None:
+            continue
+        derived_profiles[zone_id] = ExperimentZoneProfile(
+            zone_id=zone_id,
+            display_name=zone_id,
+            region=zone_id,
+            latitude_deg=float(location.latitude_deg),
+            longitude_deg=float(location.longitude_deg),
+            altitude_km=float(location.altitude_km),
+            candidate_satellite_ids=tuple(str(satellite_id) for satellite_id in scenario.satellite_ids),
+            partition_policy="derived_from_ut_membership",
+        )
+    return derived_profiles
+
+
 def _slot_candidates(
     *,
     profile: ExperimentProfile,
@@ -569,30 +630,54 @@ def _scenario_candidate_links(
             }
         )
 
-    for fixed_link in topology.get("fixed_links", {}).get("satellite_satellite", []):
-        endpoint_ids = {
-            str(endpoint.get("node_id"))
-            for endpoint in fixed_link.get("endpoints", [])
-        }
-        if not endpoint_ids.issubset(scenario_satellite_ids):
+    for slot in topology.get("slot_inventory", {}).get("same_plane_isl", []):
+        candidate_pairs = list(slot.get("candidate_pairs", []))
+        if len(candidate_pairs) != 1:
             continue
+        candidate_pair = dict(candidate_pairs[0])
+        satellite_a_id = str(candidate_pair.get("satellite_a_id"))
+        satellite_b_id = str(candidate_pair.get("satellite_b_id"))
+        if {satellite_a_id, satellite_b_id} - scenario_satellite_ids:
+            continue
+        endpoint_a_template = dict(slot.get("endpoint_a_template", {}))
+        endpoint_b_template = dict(slot.get("endpoint_b_template", {}))
         candidate_links.append(
             {
-                "link_id": str(fixed_link.get("link_id")),
-                "slot_type": "fixed_isl",
-                "subnet": fixed_link.get("subnet"),
-                "network_name": fixed_link.get("network_name"),
-                "docker_network_name": fixed_link.get("docker_network_name"),
+                "link_id": str(slot.get("slot_name")),
+                "slot_type": "same_plane_isl",
+                "subnet": slot.get("subnet"),
+                "network_name": slot.get("network_name"),
+                "docker_network_name": slot.get("docker_network_name"),
                 "occupied": True,
                 "binding": {
-                    "satellite_pair": sorted(endpoint_ids),
-                    "link_type": fixed_link.get("link_type"),
-                    "orbit_scope": fixed_link.get("orbit_scope"),
+                    "satellite_a_id": satellite_a_id,
+                    "satellite_b_id": satellite_b_id,
+                    "satellite_a_direction": str(
+                        candidate_pair.get("satellite_a_direction", "front")
+                    ),
+                    "satellite_b_direction": str(
+                        candidate_pair.get("satellite_b_direction", "back")
+                    ),
+                    "orbit_scope": slot.get("orbit_scope"),
                 },
                 "endpoints": [
-                    dict(endpoint) for endpoint in fixed_link.get("endpoints", [])
+                    {
+                        "node_id": satellite_a_id,
+                        "node_type": "satellite",
+                        "interface_name": endpoint_a_template.get("interface_name"),
+                        "ip_address": endpoint_a_template.get("ip_address"),
+                        "logical_direction": endpoint_a_template.get("logical_direction"),
+                    },
+                    {
+                        "node_id": satellite_b_id,
+                        "node_type": "satellite",
+                        "interface_name": endpoint_b_template.get("interface_name"),
+                        "ip_address": endpoint_b_template.get("ip_address"),
+                        "logical_direction": endpoint_b_template.get("logical_direction"),
+                    },
                 ],
-                "visibility_relation": "always_on_fixed_satellite_to_satellite_isl",
+                "visibility_relation": "always_on_same_plane_satellite_to_satellite_isl",
+                "activation_model": slot.get("activation_model"),
             }
         )
 
@@ -674,6 +759,22 @@ def _scenario_planner_hints(
     scenario: ExperimentScenario,
     topology: Dict[str, Any],
 ) -> Dict[str, Any]:
+    def _great_circle_distance_km(
+        first: GroundLocation,
+        second: GroundLocation,
+    ) -> float:
+        first_lat = math.radians(float(first.latitude_deg))
+        second_lat = math.radians(float(second.latitude_deg))
+        delta_lat = second_lat - first_lat
+        delta_lon = math.radians(float(second.longitude_deg) - float(first.longitude_deg))
+        hav = (
+            math.sin(delta_lat / 2.0) ** 2
+            + math.cos(first_lat)
+            * math.cos(second_lat)
+            * math.sin(delta_lon / 2.0) ** 2
+        )
+        return 2.0 * EARTH_RADIUS_KM * math.asin(min(1.0, math.sqrt(max(0.0, hav))))
+
     external_targets = {
         str(target.get("node_id")): {
             "node_id": str(target.get("node_id")),
@@ -692,6 +793,7 @@ def _scenario_planner_hints(
         for peering in topology.get("mini_internet", {}).get("gateway_ix_peerings", [])
     }
     gateways_by_id = _topology_entry_by_id(topology.get("gateways", []), "gateway_id")
+    user_terminals_by_id = _topology_entry_by_id(topology.get("user_terminals", []), "ut_id")
     validation_targets = [
         dict(external_targets[target_node_id])
         for target_node_id in scenario.default_validation_target_node_ids
@@ -705,16 +807,192 @@ def _scenario_planner_hints(
             "ip_address": scenario.ping_target_ip,
         }
     )
+    zone_membership: Dict[str, List[str]] = {}
+    for terminal in scenario.terminal_profiles:
+        zone_membership.setdefault(str(terminal.zone_id), []).append(str(terminal.ut_id))
+    zone_profiles = _zone_profile_by_id(scenario)
+    if not zone_profiles:
+        zone_profiles = _derived_zone_profiles_from_terminals(scenario)
+
+    zone_default_gateway_preferences: Dict[str, Dict[str, Any]] = {}
+    for zone_id in sorted(set(zone_profiles) | set(zone_membership)):
+        zone_ut_ids = list(zone_membership.get(zone_id, []))
+        zone_profile = zone_profiles.get(zone_id)
+        zone_regions: List[str] = []
+        zone_locations: List[GroundLocation] = []
+        if zone_profile is not None:
+            zone_locations.append(
+                GroundLocation(
+                    latitude_deg=float(zone_profile.latitude_deg),
+                    longitude_deg=float(zone_profile.longitude_deg),
+                    altitude_km=float(zone_profile.altitude_km),
+                )
+            )
+            zone_region = str(zone_profile.region).strip()
+            if zone_region:
+                zone_regions.append(zone_region)
+        for ut_id in zone_ut_ids:
+            ut_entry = dict(user_terminals_by_id.get(ut_id, {}))
+            ut_location = scenario.ground_locations.get(ut_id)
+            if ut_location is None:
+                continue
+            zone_locations.append(ut_location)
+            ut_region = str(ut_entry.get("region", "")).strip()
+            if ut_region and ut_region not in zone_regions:
+                zone_regions.append(ut_region)
+        if not zone_locations:
+            continue
+        ranked_gateways: List[Dict[str, Any]] = []
+        for gateway_profile in scenario.gateway_profiles:
+            gateway_id = str(gateway_profile.gateway_id)
+            gateway_entry = dict(gateways_by_id.get(gateway_id, {}))
+            gateway_coordinates = dict(gateway_entry.get("catalog_coordinates", {}))
+            gateway_location = GroundLocation(
+                latitude_deg=float(gateway_coordinates.get("latitude_deg", 0.0)),
+                longitude_deg=float(gateway_coordinates.get("longitude_deg", 0.0)),
+                altitude_km=float(gateway_coordinates.get("altitude_km", 0.0)),
+            )
+            gateway_region = str(gateway_entry.get("gateway_region", "")).strip()
+            per_ut_distances = [
+                _great_circle_distance_km(ut_location, gateway_location)
+                for ut_location in zone_locations
+            ]
+            ranked_gateways.append(
+                {
+                    "gateway_id": gateway_id,
+                    "gateway_region": gateway_region,
+                    "distance_km": round(sum(per_ut_distances) / len(per_ut_distances), 3),
+                    "min_distance_km": round(min(per_ut_distances), 3),
+                    "max_distance_km": round(max(per_ut_distances), 3),
+                    "region_match_rank": (
+                        0
+                        if zone_regions
+                        and any(
+                            gateway_region == zone_region
+                            or gateway_region.startswith(f"{zone_region}-")
+                            for zone_region in zone_regions
+                        )
+                        else 1
+                    ),
+                }
+            )
+        ranked_gateways.sort(
+            key=lambda entry: (
+                int(entry["region_match_rank"]),
+                float(entry["distance_km"]),
+                float(entry["min_distance_km"]),
+                str(entry["gateway_id"]),
+            )
+        )
+        ranked_gateway_ids = [
+            str(entry["gateway_id"])
+            for entry in ranked_gateways
+        ]
+        explicit_preferred_gateway_ids = []
+        if zone_profile is not None:
+            explicit_preferred_gateway_ids = [
+                str(gateway_id)
+                for gateway_id in (
+                    list(zone_profile.preferred_gateway_ids)
+                    or (
+                        [zone_profile.default_gateway]
+                        if zone_profile.default_gateway
+                        else []
+                    )
+                )
+                if str(gateway_id).strip()
+            ]
+        explicit_preferred_gateway_ids = [
+            gateway_id
+            for gateway_id in explicit_preferred_gateway_ids
+            if gateway_id in ranked_gateway_ids
+        ]
+        gateway_order = [
+            *explicit_preferred_gateway_ids,
+            *[
+                gateway_id
+                for gateway_id in ranked_gateway_ids
+                if gateway_id not in explicit_preferred_gateway_ids
+            ],
+        ]
+        preferred_gateway_pool = [
+            str(entry["gateway_id"])
+            for entry in ranked_gateways[:2]
+        ]
+        if explicit_preferred_gateway_ids:
+            preferred_gateway_pool = gateway_order[:2]
+            ranked_gateway_ids = gateway_order
+        zone_default_gateway_preferences[zone_id] = {
+            "zone_id": zone_id,
+            "ut_ids": list(zone_ut_ids),
+            "zone_region": zone_regions[0] if zone_regions else None,
+            "service_role": (
+                zone_profile.service_role if zone_profile is not None else "required_service"
+            ),
+            "active_service": (
+                bool(zone_profile.active_service) if zone_profile is not None else True
+            ),
+            "required_for_runtime": (
+                bool(zone_profile.required_for_runtime)
+                if zone_profile is not None
+                else True
+            ),
+            "default_gateway": (
+                zone_profile.default_gateway if zone_profile is not None else None
+            ),
+            "selection_mode": "stable_preferred_gateway_order",
+            "fallback_to_shortest_path": True,
+            "max_additional_satellite_hops_relative_to_best_candidate": 2,
+            "candidate_pool_policy": "zone_ranked_gateway_catalog",
+            "preferred_gateway_ids": preferred_gateway_pool,
+            "gateway_ids": ranked_gateway_ids,
+            "regional_preferred_gateway_ids": preferred_gateway_pool,
+            "ranked_candidates": ranked_gateways,
+        }
+    gateway_ix_id_offset = int(getattr(scenario, "mini_internet_ix_offset", 0))
     special_prefix_overrides = []
     for policy in scenario.special_prefix_override_policies:
         target = external_targets.get(policy.target_node_id)
         if target is None:
             continue
+        target_asn = target.get("asn")
+        raw_target_exchange_id = MINI_INTERNET_STUB_AS_EXCHANGES.get(int(target_asn or 0))
+        target_exchange_id = (
+            int(raw_target_exchange_id) + int(gateway_ix_id_offset)
+            if raw_target_exchange_id is not None
+            else None
+        )
+        preferred_gateway_ids = [
+            str(gateway_id)
+            for gateway_id, peering in sorted(gateway_ix_peerings.items())
+            if target_exchange_id is not None and int(peering.get("ix_id", -1)) == int(target_exchange_id)
+        ]
+        if not preferred_gateway_ids:
+            preferred_gateway_ids = [
+                str(gateway_id)
+                for gateway_id in policy.preferred_gateway_ids
+                if str(gateway_id).strip()
+            ]
+        if (
+            not preferred_gateway_ids
+            and policy.preferred_gateway_id is not None
+            and str(policy.preferred_gateway_id).strip()
+        ):
+            preferred_gateway_ids = [str(policy.preferred_gateway_id).strip()]
         special_prefix_overrides.append(
             {
                 "policy_name": policy.policy_name,
                 "destination_prefix": policy.destination_prefix,
                 "preferred_gateway_id": policy.preferred_gateway_id,
+                "preferred_gateway_ids": preferred_gateway_ids,
+                "selection_mode": policy.selection_mode,
+                "fallback_to_shortest_path": bool(policy.fallback_to_shortest_path),
+                "require_competitive_path_vs_default": True,
+                "max_additional_satellite_hops_relative_to_default": 4,
+                "target_asn": target_asn,
+                "target_exchange_id": target_exchange_id,
+                "raw_target_exchange_id": raw_target_exchange_id,
+                "gateway_ix_id_offset": gateway_ix_id_offset,
                 "target": dict(target),
             }
         )
@@ -726,6 +1004,7 @@ def _scenario_planner_hints(
         "target_host_node_id": primary_target.get("node_id"),
         "ut_ids": [terminal.ut_id for terminal in scenario.terminal_profiles],
         "internet_validation_targets": validation_targets,
+        "zone_default_gateway_preferences": zone_default_gateway_preferences,
         "special_prefix_overrides": special_prefix_overrides,
         "gateway_ix_catalog": {
             gateway_id: {
@@ -787,6 +1066,445 @@ def _zone_visible_candidate_sets(
         ]
         for ut_id in zone.get("ut_ids", [])
     }
+
+
+def _satellite_adjacency_from_active_links(
+    active_links: Sequence[Dict[str, Any]],
+) -> Dict[str, set[str]]:
+    adjacency: Dict[str, set[str]] = {}
+    for link in active_links:
+        if str(link.get("slot_type")) not in {"same_plane_isl", "fixed_isl", "cross_plane_isl"}:
+            continue
+        endpoint_ids = [
+            str(endpoint.get("node_id"))
+            for endpoint in list(link.get("endpoints", []))
+            if str(endpoint.get("node_type", "satellite")) == "satellite"
+        ]
+        if len(endpoint_ids) != 2:
+            continue
+        first, second = endpoint_ids
+        adjacency.setdefault(first, set()).add(second)
+        adjacency.setdefault(second, set()).add(first)
+    return adjacency
+
+
+def _shortest_hop_count(
+    *,
+    adjacency: Dict[str, set[str]],
+    start_node_id: str,
+    goal_node_id: str,
+) -> int | None:
+    if start_node_id == goal_node_id:
+        return 0
+    frontier: List[tuple[str, int]] = [(start_node_id, 0)]
+    visited = {start_node_id}
+    while frontier:
+        current, distance = frontier.pop(0)
+        for neighbor in sorted(adjacency.get(current, set())):
+            if neighbor in visited:
+                continue
+            if neighbor == goal_node_id:
+                return distance + 1
+            visited.add(neighbor)
+            frontier.append((neighbor, distance + 1))
+    return None
+
+
+def _active_gateway_satellite_ids(
+    visibility_slice: VisibilitySlice,
+) -> Dict[str, str]:
+    gateway_satellites: Dict[str, str] = {}
+    for link in visibility_slice.active_links:
+        if str(link.get("slot_type")) != "gw_access":
+            continue
+        gateway_id = ""
+        satellite_id = ""
+        for endpoint in list(link.get("endpoints", [])):
+            endpoint_node_id = str(endpoint.get("node_id"))
+            endpoint_type = str(endpoint.get("node_type"))
+            if endpoint_type == "gateway":
+                gateway_id = endpoint_node_id
+            elif endpoint_type == "satellite":
+                satellite_id = endpoint_node_id
+        if gateway_id and satellite_id:
+            gateway_satellites[gateway_id] = satellite_id
+    return gateway_satellites
+
+
+def _zone_position(zone: Dict[str, Any]) -> ExperimentNodePosition | None:
+    position = dict(zone.get("position_state", {}))
+    if not position:
+        return None
+    return ExperimentNodePosition(
+        x_km=float(position.get("x_km", 0.0)),
+        y_km=float(position.get("y_km", 0.0)),
+        z_km=float(position.get("z_km", 0.0)),
+    )
+
+
+class ZoneAnchorQualityGenerator(ZoneGenerator):
+    """Choose a stable responsible satellite from zone-level geometry."""
+
+    generator_name = "zone_anchor_quality_generator_v1"
+
+    def __init__(
+        self,
+        *,
+        hysteresis_score_delta: float = 12.0,
+        coverage_loss_margin_deg: float = 2.0,
+        gateway_hop_penalty: float = 3.0,
+    ) -> None:
+        self.hysteresis_score_delta = float(hysteresis_score_delta)
+        self.coverage_loss_margin_deg = float(coverage_loss_margin_deg)
+        self.gateway_hop_penalty = float(gateway_hop_penalty)
+        self._previous_anchor_by_zone: Dict[str, str] = {}
+
+    def _preferred_gateway_ids(
+        self,
+        *,
+        orbit_slice: OrbitTopologySlice,
+        zone_id: str,
+    ) -> List[str]:
+        policies = dict(orbit_slice.planner_hints.get("zone_default_gateway_preferences", {}))
+        policy = dict(policies.get(zone_id, {}))
+        gateway_ids = [
+            str(gateway_id)
+            for gateway_id in (
+                policy.get("preferred_gateway_ids")
+                or policy.get("regional_preferred_gateway_ids")
+                or policy.get("gateway_ids")
+                or []
+            )
+            if str(gateway_id).strip()
+        ]
+        return gateway_ids
+
+    def _gateway_path_hops(
+        self,
+        *,
+        satellite_id: str,
+        preferred_gateway_ids: Sequence[str],
+        gateway_satellite_ids: Dict[str, str],
+        adjacency: Dict[str, set[str]],
+    ) -> int | None:
+        selected_gateway_ids = [
+            str(gateway_id)
+            for gateway_id in preferred_gateway_ids
+            if str(gateway_id) in gateway_satellite_ids
+        ]
+        if not selected_gateway_ids:
+            selected_gateway_ids = sorted(gateway_satellite_ids)
+        hop_counts: List[int] = []
+        for gateway_id in selected_gateway_ids:
+            gateway_satellite_id = gateway_satellite_ids.get(gateway_id)
+            if not gateway_satellite_id:
+                continue
+            hops = _shortest_hop_count(
+                adjacency=adjacency,
+                start_node_id=satellite_id,
+                goal_node_id=str(gateway_satellite_id),
+            )
+            if hops is not None:
+                hop_counts.append(int(hops))
+        if not hop_counts:
+            return None
+        return min(hop_counts)
+
+    def generate(
+        self,
+        orbit_slice: OrbitTopologySlice,
+        visibility_slice: VisibilitySlice,
+    ) -> ZoneProjection:
+        positions = {
+            node_id: ExperimentNodePosition(
+                x_km=float(node.get("position_state", {}).get("x_km", 0.0)),
+                y_km=float(node.get("position_state", {}).get("y_km", 0.0)),
+                z_km=float(node.get("position_state", {}).get("z_km", 0.0)),
+            )
+            for node_id, node in orbit_slice.nodes.items()
+            if node.get("node_type") == "satellite"
+        }
+        adjacency = _satellite_adjacency_from_active_links(visibility_slice.active_links)
+        gateway_satellite_ids = _active_gateway_satellite_ids(visibility_slice)
+        zones: Dict[str, Dict[str, Any]] = {}
+        for zone_id, zone in orbit_slice.zone_generation_input.zones.items():
+            zone_id = str(zone_id)
+            service_role = str(zone.get("service_role", "required_service"))
+            active_service = bool(
+                zone.get(
+                    "active_service",
+                    service_role in {"required_service", "optional_service"},
+                )
+            )
+            required_for_runtime = bool(
+                zone.get("required_for_runtime", service_role == "required_service")
+            )
+            if service_role == "disabled":
+                zones[zone_id] = {
+                    **dict(zone),
+                    "active_serving_satellite_id": None,
+                    "resolution_state": "disabled",
+                    "anchor_selection": {
+                        "algorithm": self.generator_name,
+                        "geometry_model": "zone_center",
+                        "change_reason": "zone_disabled",
+                    },
+                    "service_planning": {
+                        "service_role": service_role,
+                        "active_service": active_service,
+                        "required_for_runtime": required_for_runtime,
+                        "install_gz_fec": False,
+                    },
+                }
+                continue
+            zone_center = _zone_position(dict(zone))
+            min_elevation_deg = float(zone.get("min_elevation_deg", 0.0))
+            required_coverage_margin_deg = float(
+                zone.get("coverage_margin_deg", self.coverage_loss_margin_deg)
+            )
+            previous_anchor = self._previous_anchor_by_zone.get(zone_id)
+            if zone_center is None:
+                zones[zone_id] = {
+                    **dict(zone),
+                    "active_serving_satellite_id": None,
+                    "resolution_state": "unresolved_missing_zone_geometry",
+                    "anchor_selection": {
+                        "algorithm": self.generator_name,
+                        "geometry_model": "zone_center",
+                        "change_reason": "missing_zone_position_state",
+                    },
+                    "service_planning": {
+                        "service_role": service_role,
+                        "active_service": active_service,
+                        "required_for_runtime": required_for_runtime,
+                        "install_gz_fec": (
+                            active_service
+                            and service_role in {"required_service", "optional_service"}
+                        ),
+                    },
+                }
+                continue
+            preferred_gateways = self._preferred_gateway_ids(
+                orbit_slice=orbit_slice,
+                zone_id=zone_id,
+            )
+            visible_candidate_sets = _zone_visible_candidate_sets(
+                zone=dict(zone),
+                visibility_slice=visibility_slice,
+            )
+            zone_ut_ids = [str(ut_id) for ut_id in zone.get("ut_ids", [])]
+            service_requires_ut_attach = (
+                active_service
+                and service_role in {"required_service", "optional_service"}
+                and bool(zone_ut_ids)
+            )
+            candidate_scores: List[Dict[str, Any]] = []
+            rejected_candidates: List[Dict[str, Any]] = []
+            for satellite_id in sorted(
+                str(candidate_id)
+                for candidate_id in zone.get("candidate_serving_satellite_ids", [])
+            ):
+                candidate_position = positions.get(satellite_id)
+                if candidate_position is None:
+                    rejected_candidates.append(
+                        {
+                            "satellite_id": satellite_id,
+                            "reason": "missing_position",
+                        }
+                    )
+                    continue
+                elevation_deg = _elevation_deg(zone_center, candidate_position)
+                coverage_margin_deg = elevation_deg - min_elevation_deg
+                if coverage_margin_deg < required_coverage_margin_deg:
+                    rejected_candidates.append(
+                        {
+                            "satellite_id": satellite_id,
+                            "reason": (
+                                "below_zone_coverage_margin"
+                                if coverage_margin_deg >= 0.0
+                                else "below_min_elevation"
+                            ),
+                            "zone_center_elevation_deg": round(elevation_deg, 3),
+                            "coverage_margin_deg": round(coverage_margin_deg, 3),
+                            "required_coverage_margin_deg": (
+                                required_coverage_margin_deg
+                            ),
+                        }
+                    )
+                    continue
+                if service_requires_ut_attach:
+                    missing_ut_ids = [
+                        ut_id
+                        for ut_id in zone_ut_ids
+                        if not any(
+                            str(candidate.get("satellite_id")) == satellite_id
+                            for candidate in visible_candidate_sets.get(ut_id, [])
+                        )
+                    ]
+                    if missing_ut_ids:
+                        rejected_candidates.append(
+                            {
+                                "satellite_id": satellite_id,
+                                "reason": "ut_attach_mismatch",
+                                "ut_ids_without_candidate_visibility": missing_ut_ids[
+                                    :8
+                                ],
+                                "missing_ut_count": len(missing_ut_ids),
+                            }
+                        )
+                        continue
+                gateway_hops = self._gateway_path_hops(
+                    satellite_id=satellite_id,
+                    preferred_gateway_ids=preferred_gateways,
+                    gateway_satellite_ids=gateway_satellite_ids,
+                    adjacency=adjacency,
+                )
+                gateway_penalty = (
+                    float(gateway_hops) * self.gateway_hop_penalty
+                    if gateway_hops is not None
+                    else 1000.0
+                )
+                score = (coverage_margin_deg * 10.0) + elevation_deg - gateway_penalty
+                candidate_scores.append(
+                    {
+                        "satellite_id": satellite_id,
+                        "score": round(score, 6),
+                        "zone_center_elevation_deg": round(elevation_deg, 3),
+                        "coverage_margin_deg": round(coverage_margin_deg, 3),
+                        "gateway_path_hops": gateway_hops,
+                        "preferred_gateway_ids": list(preferred_gateways),
+                    }
+                )
+            if not candidate_scores:
+                zones[zone_id] = {
+                    **dict(zone),
+                    "active_serving_satellite_id": None,
+                    "resolution_state": "unresolved_no_zone_visible_satellite",
+                    "anchor_selection": {
+                        "algorithm": self.generator_name,
+                        "geometry_model": "zone_center",
+                        "min_elevation_deg": min_elevation_deg,
+                        "required_coverage_margin_deg": required_coverage_margin_deg,
+                        "previous_anchor": previous_anchor,
+                        "change_reason": "no_candidate_covers_zone_geometry",
+                        "ut_attach_required": service_requires_ut_attach,
+                        "required_ut_count": len(zone_ut_ids),
+                        "rejected_candidates": rejected_candidates[:12],
+                        "rejected_candidate_count": len(rejected_candidates),
+                    },
+                    "service_planning": {
+                        "service_role": service_role,
+                        "active_service": active_service,
+                        "required_for_runtime": required_for_runtime,
+                        "install_gz_fec": (
+                            active_service
+                            and service_role in {"required_service", "optional_service"}
+                        ),
+                    },
+                }
+                continue
+            candidate_scores.sort(
+                key=lambda entry: (
+                    -float(entry["score"]),
+                    -float(entry["coverage_margin_deg"]),
+                    int(entry["gateway_path_hops"])
+                    if entry.get("gateway_path_hops") is not None
+                    else 9999,
+                    str(entry["satellite_id"]),
+                )
+            )
+            selected = dict(candidate_scores[0])
+            change_reason = "best_zone_anchor_score"
+            previous_score = next(
+                (
+                    dict(candidate)
+                    for candidate in candidate_scores
+                    if str(candidate["satellite_id"]) == str(previous_anchor)
+                ),
+                None,
+            )
+            if previous_score is not None and str(selected["satellite_id"]) != str(previous_anchor):
+                score_delta = float(selected["score"]) - float(previous_score["score"])
+                previous_margin = float(previous_score["coverage_margin_deg"])
+                if (
+                    previous_margin > required_coverage_margin_deg
+                    and score_delta < self.hysteresis_score_delta
+                ):
+                    selected = previous_score
+                    change_reason = "hysteresis_keep_current_anchor"
+                elif previous_margin <= required_coverage_margin_deg:
+                    change_reason = "previous_anchor_near_coverage_loss"
+                else:
+                    change_reason = "challenger_exceeded_hysteresis"
+            elif previous_score is not None:
+                change_reason = "stable_existing_anchor"
+            selected_satellite_id = str(selected["satellite_id"])
+            self._previous_anchor_by_zone[zone_id] = selected_satellite_id
+            visible_candidate_sets = _zone_visible_candidate_sets(
+                zone=dict(zone),
+                visibility_slice=visibility_slice,
+            )
+            zones[zone_id] = {
+                **dict(zone),
+                "active_serving_satellite_id": selected_satellite_id,
+                "resolution_state": "resolved",
+                "anchor_selection": {
+                    "algorithm": self.generator_name,
+                    "geometry_model": "zone_center",
+                    "min_elevation_deg": min_elevation_deg,
+                    "selected_satellite_id": selected_satellite_id,
+                    "quality_score": selected["score"],
+                    "coverage_margin_deg": selected["coverage_margin_deg"],
+                    "gateway_path_hops": selected.get("gateway_path_hops"),
+                    "previous_anchor": previous_anchor,
+                    "change_reason": change_reason,
+                    "hysteresis_score_delta": self.hysteresis_score_delta,
+                    "coverage_loss_margin_deg": required_coverage_margin_deg,
+                    "ut_attach_required": service_requires_ut_attach,
+                    "required_ut_count": len(zone_ut_ids),
+                    "candidate_count": len(candidate_scores),
+                    "rejected_candidate_count": len(rejected_candidates),
+                    "top_candidates": candidate_scores[:8],
+                },
+                "service_planning": {
+                    "service_role": service_role,
+                    "active_service": active_service,
+                    "required_for_runtime": required_for_runtime,
+                    "install_gz_fec": (
+                        active_service
+                        and service_role in {"required_service", "optional_service"}
+                    ),
+                },
+                "ut_visibility_audit": {
+                    "audit_role": (
+                        "anchor_selection_constraint_for_active_service_zone"
+                        if service_requires_ut_attach
+                        else "validation_only_not_anchor_selection_input"
+                    ),
+                    "ut_count": len(list(zone.get("ut_ids", []))),
+                    "selected_anchor_visible_to_ut_count": sum(
+                        1
+                        for candidates in visible_candidate_sets.values()
+                        if any(
+                            str(candidate.get("satellite_id")) == selected_satellite_id
+                            for candidate in candidates
+                        )
+                    ),
+                    "ut_ids_without_selected_anchor_visibility": [
+                        ut_id
+                        for ut_id, candidates in sorted(visible_candidate_sets.items())
+                        if not any(
+                            str(candidate.get("satellite_id")) == selected_satellite_id
+                            for candidate in candidates
+                        )
+                    ],
+                },
+            }
+        return ZoneProjection(
+            zones=zones,
+            ut_zone_membership=dict(orbit_slice.zone_generation_input.ut_zone_membership),
+            zone_generator=self.generator_name,
+        )
 
 
 class SyntheticPositionExperimentOrbitProducer(OrbitTopologyProducer):
@@ -1143,15 +1861,9 @@ class ScenarioSemiRealOrbitPositionExperimentProducer(OrbitTopologyProducer):
 
     def iter_orbit_slices(self) -> Sequence[OrbitTopologySlice]:
         scenario = self.scenario
-        zones = {
-            terminal.zone_id: {
-                "zone_id": terminal.zone_id,
-                "membership_mode": "single_ut_experiment_zone",
-                "ut_ids": [terminal.ut_id],
-                "candidate_serving_satellite_ids": list(terminal.candidate_satellite_ids),
-            }
-            for terminal in scenario.terminal_profiles
-        }
+        explicit_zone_profiles = _zone_profile_by_id(scenario)
+        if not explicit_zone_profiles:
+            explicit_zone_profiles = _derived_zone_profiles_from_terminals(scenario)
         ut_zone_membership = {
             terminal.ut_id: terminal.zone_id for terminal in scenario.terminal_profiles
         }
@@ -1161,6 +1873,71 @@ class ScenarioSemiRealOrbitPositionExperimentProducer(OrbitTopologyProducer):
                 scenario.orbital_reference_time_seconds
                 + time_slice.relative_time_seconds
             )
+            zones: Dict[str, Dict[str, Any]] = {}
+            for zone_id, profile in sorted(explicit_zone_profiles.items()):
+                zone_location = GroundLocation(
+                    latitude_deg=float(profile.latitude_deg),
+                    longitude_deg=float(profile.longitude_deg),
+                    altitude_km=float(profile.altitude_km),
+                )
+                zone_position = _ground_position(zone_location)
+                candidate_satellite_ids = (
+                    list(profile.candidate_satellite_ids)
+                    if profile.candidate_satellite_ids is not None
+                    else list(scenario.satellite_ids)
+                )
+                zones[zone_id] = {
+                    "zone_id": zone_id,
+                    "display_name": profile.display_name,
+                    "region": profile.region,
+                    "partition_policy": profile.partition_policy,
+                    "membership_mode": "surface_partition_zone",
+                    "ut_ids": [],
+                    "candidate_serving_satellite_ids": [
+                        str(candidate_satellite_id)
+                        for candidate_satellite_id in candidate_satellite_ids
+                    ],
+                    "fixed_coordinates": {
+                        "coordinate_model": "earth_surface_lat_lon_alt",
+                        "latitude_deg": float(profile.latitude_deg),
+                        "longitude_deg": float(profile.longitude_deg),
+                        "altitude_km": float(profile.altitude_km),
+                    },
+                    "position_state": {
+                        "model": "earth_centered_fixed_km",
+                        "x_km": round(zone_position.x_km, 6),
+                        "y_km": round(zone_position.y_km, 6),
+                        "z_km": round(zone_position.z_km, 6),
+                    },
+                    "min_elevation_deg": float(scenario.min_elevation_deg),
+                }
+            for terminal in scenario.terminal_profiles:
+                zone_id = str(terminal.zone_id)
+                zone_entry = zones.setdefault(
+                    zone_id,
+                    {
+                        "zone_id": zone_id,
+                        "display_name": zone_id,
+                        "region": zone_id,
+                        "partition_policy": "derived_from_ut_membership",
+                        "membership_mode": "surface_partition_zone",
+                        "ut_ids": [],
+                        "candidate_serving_satellite_ids": [],
+                        "min_elevation_deg": float(scenario.min_elevation_deg),
+                    },
+                )
+                if str(terminal.ut_id) not in zone_entry["ut_ids"]:
+                    zone_entry["ut_ids"].append(str(terminal.ut_id))
+                existing_candidates = set(
+                    str(candidate_satellite_id)
+                    for candidate_satellite_id in zone_entry["candidate_serving_satellite_ids"]
+                )
+                for candidate_satellite_id in terminal.candidate_satellite_ids:
+                    candidate_id = str(candidate_satellite_id)
+                    if candidate_id in existing_candidates:
+                        continue
+                    zone_entry["candidate_serving_satellite_ids"].append(candidate_id)
+                    existing_candidates.add(candidate_id)
             slices.append(
                 OrbitTopologySlice(
                     time_slice={
@@ -1178,7 +1955,7 @@ class ScenarioSemiRealOrbitPositionExperimentProducer(OrbitTopologyProducer):
                         topology=self.topology,
                     ),
                     zone_generation_input=ZoneGenerationInput(
-                        membership_mode="multi_zone_experiment",
+                        membership_mode="surface_partition_zone",
                         zones=zones,
                         ut_zone_membership=ut_zone_membership,
                     ),
@@ -1779,7 +2556,7 @@ def build_experiment_topology_snapshot_pipeline(
             visibility_model = SemiRealLineOfSightVisibilityModel()
         else:
             raise ValueError(f"unsupported scenario_name: {scenario_name}")
-        zone_generator: ZoneGenerator = HighestElevationZoneGenerator()
+        zone_generator: ZoneGenerator = ZoneAnchorQualityGenerator()
     elif input_profile == "synthetic-position":
         orbit_producer = SyntheticPositionExperimentOrbitProducer(
             topology_path=topology_path,

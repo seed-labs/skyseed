@@ -11,12 +11,20 @@ import shlex
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from contracts import RuntimeUpdatePlan, TopologySnapshot
 from distribution_store import DistributedEnvelopeBatch
+from mpls_host import ensure_host_mpls_ready
+
+DOCKER_EXEC_TIMEOUT_SECONDS = 120.0
+DOCKER_INSPECT_TIMEOUT_SECONDS = 30.0
+NODE_LOCAL_BATCH_TIMEOUT_SECONDS = 900.0
+DEFAULT_RUNTIME_EPOCH_VALIDATION_SCOPE = "reapplied_gateway_class_sample"
+IPTABLES_WAIT_SECONDS = 10
 
 
 def _fingerprint(payload: Dict[str, Any]) -> str:
@@ -26,6 +34,30 @@ def _fingerprint(payload: Dict[str, Any]) -> str:
 
 def _load_json(path: Path) -> Dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _timed_subprocess_run(
+    command: Sequence[str],
+    *,
+    timeout_seconds: float,
+    input_text: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            list(command),
+            input=input_text,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return subprocess.CompletedProcess(
+            args=list(command),
+            returncode=124,
+            stdout=exc.stdout or "",
+            stderr=((exc.stderr or "") + f"\ncommand timed out after {timeout_seconds:.1f}s").strip(),
+        )
 
 
 def _topology_entry_by_id(
@@ -108,6 +140,9 @@ def _flow_contexts_from_plan(
                             "flow_id": flow_id,
                             "ut_id": ut_id,
                             "zone_id": gateway_selection.get("zone_id"),
+                            "gateway_class_id": gateway_binding.get(
+                                "gateway_class_id"
+                            ),
                             "serving_satellite_id": gateway_binding.get(
                                 "serving_satellite_id"
                             ),
@@ -128,9 +163,16 @@ def _flow_contexts_from_plan(
             flow_id = str(flow_context.get("flow_id", match.get("flow_id", ut_id)))
             if not flow_id:
                 continue
+            if not flow_context.get("gateway_class_id"):
+                zone_id = flow_context.get("zone_id")
+                gateway_id = flow_context.get("selected_gateway_id")
+                if zone_id and gateway_id:
+                    flow_context["gateway_class_id"] = (
+                        f"{zone_id}:default-gateway:{gateway_id}"
+                    )
             flow_contexts.setdefault(flow_id, {}).update(flow_context)
     if not flow_contexts:
-        raise RuntimeError("unable to locate experiment flow context in runtime update plan")
+        return []
     return [flow_contexts[flow_id] for flow_id in sorted(flow_contexts)]
 
 
@@ -146,6 +188,15 @@ def _realization_support_summary(
     blockers: List[str] = []
     direct_flow_ids: List[str] = []
     multi_hop_flow_ids: List[str] = []
+    if not flow_contexts:
+        blockers.append("no_resolved_experiment_flows")
+        return {
+            "supported": False,
+            "total_flow_count": 0,
+            "direct_flow_ids": direct_flow_ids,
+            "multi_hop_flow_ids": multi_hop_flow_ids,
+            "blockers": blockers,
+        }
     flow_ids_by_node: Dict[str, set[str]] = {}
     for node_id, subplan in runtime_update_plan.node_subplans.items():
         for action in subplan.get("actions", []):
@@ -205,9 +256,11 @@ class MplsPathSegment:
 class DirectGatewayExperimentContext:
     flow_id: str
     ut_id: str
+    zone_id: Optional[str]
     serving_satellite_id: str
     selected_gateway_id: str
     selected_gateway_satellite_id: str
+    zone_return_prefixes: Tuple[str, ...]
     ping_target_ip: str
     target_host_node_id: str
     policy_table_id: int
@@ -226,6 +279,8 @@ class DirectGatewayExperimentContext:
     forward_segments: Tuple[MplsPathSegment, ...]
     reverse_segments: Tuple[MplsPathSegment, ...]
     validation_targets: Tuple[Dict[str, str], ...]
+    gateway_class_id: Optional[str] = None
+    return_path_intent: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def return_target_prefix(self) -> str:
@@ -260,6 +315,56 @@ class DirectGatewayExperimentContext:
             if segment.destination_node_type in {"satellite", "gateway"}
         }
         return tuple(sorted(receiving_interfaces))
+
+
+@dataclass(frozen=True)
+class ZoneReturnInstallIntent:
+    target_key: str
+    selected_gateway_id: str
+    zone_id: str
+    zone_serving_satellite_id: str
+    gateway_class_id: str
+    route_prefixes: Tuple[str, ...]
+    reverse_labels: Tuple[int, ...]
+    reverse_segments: Tuple[MplsPathSegment, ...]
+    flow_ids: Tuple[str, ...]
+    ut_ids: Tuple[str, ...]
+    current_linux_realization_mode: str
+    semantic_scope: str = "gateway_to_zone_then_local_ut_delivery"
+    target_backbone_state_model: str = "shared_gateway_zone_or_zone_return_reachability"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class SharedZoneReturnInstallPlan:
+    target_key: str
+    selected_gateway_id: str
+    zone_id: str
+    zone_serving_satellite_id: str
+    gateway_class_id: str
+    route_prefixes: Tuple[str, ...]
+    reverse_labels: Tuple[int, ...]
+    reverse_segments: Tuple[MplsPathSegment, ...]
+    flow_ids: Tuple[str, ...]
+    ut_ids: Tuple[str, ...]
+    install_behavior: str = "installed_shared_zone_return_backbone"
+    planned_owner: str = "satellite_backbone"
+    planned_scope: str = "gateway_zone_or_zone_return_target"
+    planned_route_model: str = "shared_gateway_zone_or_zone_return_reachability"
+    replaces_current_install_points: Tuple[str, ...] = (
+        "gateway_ut32_return_route",
+        "reverse_lfib_label_stack",
+        "reverse_transit_lfib_entry",
+    )
+    preserves_edge_install_points: Tuple[str, ...] = (
+        "serving_satellite_ut32_delivery_route",
+        "gateway_nat_forward_rules",
+    )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass(frozen=True)
@@ -418,15 +523,860 @@ class ActiveRuntimeSession:
     def to_public_dict(self) -> Dict[str, Any]:
         return {
             "session_id": self.session_id,
-            "backend": dict(self.backend),
-            "target_slice": dict(self.target_slice),
-            "host_runtime_boundary": dict(self.host_runtime_boundary),
-            "preflight": dict(self.preflight),
-            "apply_results": list(self.apply_results),
-            "verify_results": list(self.verify_results),
-            "ping_results": list(self.ping_results),
-            "timing": dict(self.timing),
+            "backend": dict(self.backend or {}),
+            "target_slice": dict(self.target_slice or {}),
+            "host_runtime_boundary": dict(self.host_runtime_boundary or {}),
+            "preflight": dict(self.preflight or {}),
+            "apply_results": list(self.apply_results or []),
+            "verify_results": list(self.verify_results or []),
+            "ping_results": list(self.ping_results or []),
+            "timing": dict(self.timing or {}),
         }
+
+
+def _context_signature(context: DirectGatewayExperimentContext) -> str:
+    """Fingerprint dataplane-relevant context so unchanged flows can be held."""
+    return _fingerprint(asdict(context))
+
+
+def _zone_id_from_gateway_class(gateway_class_id: str | None) -> str:
+    rendered = str(gateway_class_id or "").strip()
+    if ":default-gateway:" not in rendered:
+        return ""
+    return rendered.split(":default-gateway:", 1)[0]
+
+
+def _zone_return_target_key(context: DirectGatewayExperimentContext) -> Tuple[str, str, str]:
+    intent = dict(context.return_path_intent or {})
+    explicit_target = dict(intent.get("shared_backbone_return_target") or {})
+    explicit_gateway_id = str(explicit_target.get("gateway_id") or "").strip()
+    explicit_zone_id = str(explicit_target.get("zone_id") or "").strip()
+    explicit_serving_satellite_id = str(
+        explicit_target.get("zone_serving_satellite_id") or ""
+    ).strip()
+    if explicit_gateway_id and explicit_zone_id and explicit_serving_satellite_id:
+        return explicit_gateway_id, explicit_zone_id, explicit_serving_satellite_id
+
+    zone_id = str(
+        intent.get("zone_id")
+        or context.zone_id
+        or _zone_id_from_gateway_class(context.gateway_class_id)
+        or f"legacy-ut:{context.ut_id}"
+    )
+    selected_gateway_id = str(
+        intent.get("selected_gateway_id") or context.selected_gateway_id
+    )
+    zone_serving_satellite_id = str(
+        intent.get("zone_serving_satellite_id") or context.serving_satellite_id
+    )
+    return selected_gateway_id, zone_id, zone_serving_satellite_id
+
+
+def _zone_return_install_intents(
+    contexts: Sequence[DirectGatewayExperimentContext],
+) -> Tuple[ZoneReturnInstallIntent, ...]:
+    grouped: Dict[Tuple[str, str, str], List[DirectGatewayExperimentContext]] = {}
+    for context in contexts:
+        grouped.setdefault(_zone_return_target_key(context), []).append(context)
+
+    intents: List[ZoneReturnInstallIntent] = []
+    for key in sorted(grouped):
+        selected_gateway_id, zone_id, zone_serving_satellite_id = key
+        grouped_contexts = sorted(grouped[key], key=lambda context: context.flow_id)
+        path_signatures = {
+            tuple(
+                (
+                    segment.link_id,
+                    segment.source_node_id,
+                    segment.source_interface,
+                    segment.destination_node_id,
+                    segment.destination_ip,
+                )
+                for segment in context.reverse_segments
+            )
+            for context in grouped_contexts
+        }
+        if len(path_signatures) != 1:
+            raise RuntimeError(
+                "conflicting shared zone return paths for "
+                f"{selected_gateway_id}:{zone_id}:{zone_serving_satellite_id}"
+            )
+        representative = grouped_contexts[0]
+        if (
+            str(representative.reverse_segments[0].source_node_id)
+            != str(selected_gateway_id)
+            or str(representative.reverse_segments[-1].destination_node_id)
+            != str(zone_serving_satellite_id)
+        ):
+            raise RuntimeError(
+                "shared zone return target does not match reverse path endpoints for "
+                f"{selected_gateway_id}:{zone_id}:{zone_serving_satellite_id}"
+            )
+        gateway_class_ids = sorted(
+            {
+                str(context.gateway_class_id or "")
+                for context in grouped_contexts
+                if str(context.gateway_class_id or "")
+            }
+        )
+        route_prefixes = sorted(
+            {
+                str(prefix)
+                for context in grouped_contexts
+                for prefix in (
+                    list(
+                        dict(
+                            dict(context.return_path_intent or {}).get(
+                                "candidate_shared_zone_return_route",
+                                {},
+                            )
+                        ).get("route_prefixes", [])
+                    )
+                    or list(context.zone_return_prefixes)
+                )
+                if str(prefix)
+            }
+        )
+        realization_modes = sorted(
+            {
+                str(
+                    dict(context.return_path_intent or {})
+                    .get("current_linux_realization", {})
+                    .get("mode", "per_ut_flow_compatibility")
+                )
+                for context in grouped_contexts
+            }
+        )
+        intents.append(
+            ZoneReturnInstallIntent(
+                target_key=":".join(key),
+                selected_gateway_id=selected_gateway_id,
+                zone_id=zone_id,
+                zone_serving_satellite_id=zone_serving_satellite_id,
+                gateway_class_id=(
+                    gateway_class_ids[0]
+                    if len(gateway_class_ids) == 1
+                    else ",".join(gateway_class_ids)
+                ),
+                route_prefixes=tuple(route_prefixes),
+                reverse_labels=tuple(representative.reverse_labels),
+                reverse_segments=tuple(representative.reverse_segments),
+                flow_ids=tuple(context.flow_id for context in grouped_contexts),
+                ut_ids=tuple(sorted({context.ut_id for context in grouped_contexts})),
+                current_linux_realization_mode=(
+                    realization_modes[0]
+                    if len(realization_modes) == 1
+                    else ",".join(realization_modes)
+                ),
+            )
+        )
+    return tuple(intents)
+
+
+def _zone_return_install_intents_for_contexts(
+    all_intents: Sequence[ZoneReturnInstallIntent],
+    contexts: Sequence[DirectGatewayExperimentContext],
+) -> Tuple[ZoneReturnInstallIntent, ...]:
+    """Select stable active-group intents touched by a changed context subset."""
+    target_keys = {":".join(_zone_return_target_key(context)) for context in contexts}
+    return tuple(
+        intent
+        for intent in sorted(all_intents, key=lambda item: item.target_key)
+        if intent.target_key in target_keys
+    )
+
+
+def _shared_zone_return_install_plans(
+    intents: Sequence[ZoneReturnInstallIntent],
+) -> Tuple[SharedZoneReturnInstallPlan, ...]:
+    return tuple(
+        SharedZoneReturnInstallPlan(
+            target_key=intent.target_key,
+            selected_gateway_id=intent.selected_gateway_id,
+            zone_id=intent.zone_id,
+            zone_serving_satellite_id=intent.zone_serving_satellite_id,
+            gateway_class_id=intent.gateway_class_id,
+            route_prefixes=tuple(intent.route_prefixes),
+            reverse_labels=tuple(intent.reverse_labels),
+            reverse_segments=tuple(intent.reverse_segments),
+            flow_ids=tuple(intent.flow_ids),
+            ut_ids=tuple(intent.ut_ids),
+        )
+        for intent in sorted(intents, key=lambda item: item.target_key)
+    )
+
+
+def _shared_gz_backbone_intents(
+    intents: Sequence[ZoneReturnInstallIntent],
+) -> Tuple[ZoneReturnInstallIntent, ...]:
+    return tuple(
+        intent
+        for intent in intents
+        if str(intent.current_linux_realization_mode) == "shared_gz_backbone"
+    )
+
+
+def _ratio(numerator: int, denominator: int) -> float:
+    if denominator <= 0:
+        return 0.0
+    return round(float(numerator) / float(denominator), 6)
+
+
+def _compatibility_return_state_counts(
+    contexts: Sequence[DirectGatewayExperimentContext],
+) -> Dict[str, int]:
+    flow_count = len(tuple(contexts))
+    reverse_label_count = sum(len(context.reverse_labels) for context in contexts)
+    reverse_transit_lfib_count = sum(
+        max(0, len(context.reverse_labels) - 1) for context in contexts
+    )
+    return {
+        "flow_count": flow_count,
+        "gateway_ut32_return_route_count": flow_count,
+        "serving_satellite_ut32_delivery_route_count": flow_count,
+        "reverse_label_count": reverse_label_count,
+        "reverse_transit_lfib_entry_count": reverse_transit_lfib_count,
+        "gateway_nat_forward_rule_count": flow_count * 3,
+        "current_backbone_return_state_item_count": (
+            flow_count + reverse_label_count + reverse_transit_lfib_count
+        ),
+        "current_edge_return_state_item_count": flow_count + (flow_count * 3),
+    }
+
+
+def _context_linux_realization_mode(context: DirectGatewayExperimentContext) -> str:
+    return str(
+        dict(context.return_path_intent or {})
+        .get("current_linux_realization", {})
+        .get("mode", "per_ut_flow_compatibility")
+    )
+
+
+def _uses_shared_gz_backbone(
+    contexts: Sequence[DirectGatewayExperimentContext],
+) -> bool:
+    realized_contexts = [
+        context
+        for context in contexts
+        if dict(context.return_path_intent or {}).get("intent_kind")
+        == "zone_return_delivery"
+    ]
+    return bool(realized_contexts) and all(
+        _context_linux_realization_mode(context) == "shared_gz_backbone"
+        for context in realized_contexts
+    )
+
+
+def _shared_gz_return_state_counts(
+    contexts: Sequence[DirectGatewayExperimentContext],
+    intents: Sequence[ZoneReturnInstallIntent],
+) -> Dict[str, int]:
+    flow_count = len(tuple(contexts))
+    intent_count = len(tuple(intents))
+    shared_zone_route_count = sum(
+        max(1, len(tuple(intent.route_prefixes))) for intent in intents
+    )
+    shared_reverse_label_entry_count = sum(len(intent.reverse_labels) for intent in intents)
+    shared_reverse_transit_lfib_count = sum(
+        max(0, len(intent.reverse_labels) - 1) for intent in intents
+    )
+    shared_reverse_pop_lfib_count = sum(1 for intent in intents if intent.reverse_labels)
+    return {
+        "flow_count": flow_count,
+        "gateway_ut32_return_route_count": 0,
+        "serving_satellite_ut32_delivery_route_count": flow_count,
+        "reverse_label_count": 0,
+        "reverse_transit_lfib_entry_count": 0,
+        "gateway_nat_forward_rule_count": flow_count * 3,
+        "current_backbone_return_state_item_count": intent_count,
+        "current_edge_return_state_item_count": flow_count + (flow_count * 3),
+        "shared_gz_backbone_group_count": intent_count,
+        "shared_gz_conceptual_backbone_state_item_count": intent_count,
+        "forbidden_legacy_backbone_state_item_count": 0,
+        "linux_shared_zone_route_count": shared_zone_route_count,
+        "linux_shared_reverse_label_entry_count": shared_reverse_label_entry_count,
+        "linux_shared_reverse_lfib_entry_count": shared_reverse_label_entry_count,
+        "linux_shared_reverse_transit_lfib_entry_count": shared_reverse_transit_lfib_count,
+        "linux_shared_reverse_pop_lfib_entry_count": shared_reverse_pop_lfib_count,
+        "linux_shared_backbone_command_state_item_count": (
+            shared_zone_route_count + shared_reverse_label_entry_count
+        ),
+    }
+
+
+def _actual_return_state_counts(
+    contexts: Sequence[DirectGatewayExperimentContext],
+    intents: Sequence[ZoneReturnInstallIntent],
+) -> Dict[str, int]:
+    if _uses_shared_gz_backbone(contexts):
+        return _shared_gz_return_state_counts(contexts, intents)
+    return _compatibility_return_state_counts(contexts)
+
+
+def _candidate_shared_return_label_stack_keys(
+    contexts: Sequence[DirectGatewayExperimentContext],
+) -> Tuple[str, ...]:
+    keys = set()
+    for context in contexts:
+        intent = dict(context.return_path_intent or {})
+        candidate = dict(intent.get("candidate_shared_return_label_stack") or {})
+        target_key = str(candidate.get("target_key") or "").strip()
+        if target_key:
+            keys.add(target_key)
+            continue
+        shared_target = dict(intent.get("shared_backbone_return_target") or {})
+        shared_target_key = str(shared_target.get("target_key") or "").strip()
+        if not shared_target_key:
+            continue
+        reverse_signature = ":".join(segment.link_id for segment in context.reverse_segments)
+        keys.add(f"{shared_target_key}:reverse-path:{reverse_signature}")
+    return tuple(sorted(keys))
+
+
+def _candidate_shared_zone_return_route_keys(
+    contexts: Sequence[DirectGatewayExperimentContext],
+) -> Tuple[str, ...]:
+    keys = set()
+    for context in contexts:
+        intent = dict(context.return_path_intent or {})
+        candidate = dict(intent.get("candidate_shared_zone_return_route") or {})
+        target_key = str(candidate.get("target_key") or "").strip()
+        if target_key:
+            keys.add(target_key)
+            continue
+        shared_target = dict(intent.get("shared_backbone_return_target") or {})
+        shared_target_key = str(shared_target.get("target_key") or "").strip()
+        if shared_target_key:
+            keys.add(f"{shared_target_key}:zone-route")
+    return tuple(sorted(keys))
+
+
+def _zone_return_install_boundary_payload(
+    *,
+    all_contexts: Sequence[DirectGatewayExperimentContext],
+    reapplied_contexts: Sequence[DirectGatewayExperimentContext],
+    all_intents: Sequence[ZoneReturnInstallIntent],
+    reapplied_intents: Sequence[ZoneReturnInstallIntent],
+) -> Dict[str, Any]:
+    all_counts = _actual_return_state_counts(all_contexts, all_intents)
+    reapplied_counts = _actual_return_state_counts(reapplied_contexts, reapplied_intents)
+    all_legacy_projection_counts = _compatibility_return_state_counts(all_contexts)
+    reapplied_legacy_projection_counts = _compatibility_return_state_counts(
+        reapplied_contexts
+    )
+    all_target_count = len(tuple(all_intents))
+    reapplied_target_count = len(tuple(reapplied_intents))
+    all_candidate_label_stack_keys = _candidate_shared_return_label_stack_keys(
+        all_contexts
+    )
+    reapplied_candidate_label_stack_keys = _candidate_shared_return_label_stack_keys(
+        reapplied_contexts
+    )
+    all_candidate_zone_route_keys = _candidate_shared_zone_return_route_keys(
+        all_contexts
+    )
+    reapplied_candidate_zone_route_keys = _candidate_shared_zone_return_route_keys(
+        reapplied_contexts
+    )
+    all_shared_zone_return_install_plans = _shared_zone_return_install_plans(
+        all_intents
+    )
+    reapplied_shared_zone_return_install_plans = _shared_zone_return_install_plans(
+        reapplied_intents
+    )
+    return {
+        "boundary_kind": "derived_shared_zone_return_targets",
+        "install_behavior": (
+            "shared_gz_backbone"
+            if _uses_shared_gz_backbone(all_contexts)
+            else "shared_zone_return_backbone_with_edge_compatibility"
+        ),
+        "shared_zone_return_install_plan_behavior": (
+            "installed_shared_zone_return_backbone"
+        ),
+        "candidate_shared_zone_route_behavior": (
+            "installed_as_shared_zone_return_backbone"
+        ),
+        "candidate_shared_label_stack_behavior": (
+            "installed_as_shared_zone_return_backbone"
+        ),
+        "state_count_model": {
+            "current_backbone_return_state_item_count": (
+                "conceptual shared G/Z backbone group count when install_behavior "
+                "is shared_gz_backbone; legacy per-UT backbone item count otherwise"
+            ),
+            "forbidden_legacy_backbone_counts": (
+                "gateway_ut32_return_route_count, reverse_label_count, and "
+                "reverse_transit_lfib_entry_count are actual forbidden legacy "
+                "backbone install counts, not historical projections"
+            ),
+            "legacy_compatibility_projection": (
+                "what the old per-UT/per-flow compatibility model would have "
+                "installed for the same active flows"
+            ),
+            "linux_shared_backbone_command_counts": (
+                "actual Linux command-state entries for shared G/Z route, LFIB, "
+                "transit swap, and Z pop"
+            ),
+            "edge_counts": (
+                "serving-satellite local UT delivery and gateway edge policy remain "
+                "per-UT/per-flow edge state, outside backbone MPLS return semantics"
+            ),
+        },
+        "scale_summary": {
+            "all": {
+                **all_counts,
+                "legacy_compatibility_projection": all_legacy_projection_counts,
+                "target_shared_backbone_return_state_item_count": all_target_count,
+                "candidate_shared_zone_route_count": len(
+                    all_candidate_zone_route_keys
+                ),
+                "candidate_shared_label_stack_count": len(
+                    all_candidate_label_stack_keys
+                ),
+                "current_to_target_backbone_state_ratio": _ratio(
+                    int(all_counts["current_backbone_return_state_item_count"]),
+                    all_target_count,
+                ),
+                "current_reverse_labels_to_candidate_label_stack_ratio": _ratio(
+                    int(all_counts["reverse_label_count"]),
+                    len(all_candidate_label_stack_keys),
+                ),
+            },
+            "reapplied": {
+                **reapplied_counts,
+                "legacy_compatibility_projection": reapplied_legacy_projection_counts,
+                "target_shared_backbone_return_state_item_count": reapplied_target_count,
+                "candidate_shared_zone_route_count": len(
+                    reapplied_candidate_zone_route_keys
+                ),
+                "candidate_shared_label_stack_count": len(
+                    reapplied_candidate_label_stack_keys
+                ),
+                "current_to_target_backbone_state_ratio": _ratio(
+                    int(reapplied_counts["current_backbone_return_state_item_count"]),
+                    reapplied_target_count,
+                ),
+                "current_reverse_labels_to_candidate_label_stack_ratio": _ratio(
+                    int(reapplied_counts["reverse_label_count"]),
+                    len(reapplied_candidate_label_stack_keys),
+                ),
+            },
+        },
+        "all_intent_count": all_target_count,
+        "reapplied_intent_count": reapplied_target_count,
+        "all_candidate_shared_zone_route_count": len(all_candidate_zone_route_keys),
+        "reapplied_candidate_shared_zone_route_count": len(
+            reapplied_candidate_zone_route_keys
+        ),
+        "all_shared_zone_return_install_plan_count": len(
+            all_shared_zone_return_install_plans
+        ),
+        "reapplied_shared_zone_return_install_plan_count": len(
+            reapplied_shared_zone_return_install_plans
+        ),
+        "all_candidate_shared_label_stack_count": len(all_candidate_label_stack_keys),
+        "reapplied_candidate_shared_label_stack_count": len(
+            reapplied_candidate_label_stack_keys
+        ),
+        "all_candidate_shared_zone_route_keys": list(all_candidate_zone_route_keys),
+        "reapplied_candidate_shared_zone_route_keys": list(
+            reapplied_candidate_zone_route_keys
+        ),
+        "all_candidate_shared_label_stack_keys": list(all_candidate_label_stack_keys),
+        "reapplied_candidate_shared_label_stack_keys": list(
+            reapplied_candidate_label_stack_keys
+        ),
+        "all_intents": [intent.to_dict() for intent in all_intents],
+        "reapplied_intents": [intent.to_dict() for intent in reapplied_intents],
+        "all_shared_zone_return_install_plans": [
+            plan.to_dict() for plan in all_shared_zone_return_install_plans
+        ],
+        "reapplied_shared_zone_return_install_plans": [
+            plan.to_dict() for plan in reapplied_shared_zone_return_install_plans
+        ],
+        "install_mapping": _shared_zone_return_install_mapping(
+            all_intents=all_intents,
+            reapplied_intents=reapplied_intents,
+        ),
+    }
+
+
+def _shared_zone_return_apply_specs(
+    intents: Sequence[ZoneReturnInstallIntent],
+) -> List[RuntimeCommandSpec]:
+    specs: List[RuntimeCommandSpec] = []
+    for intent in intents:
+        if not intent.route_prefixes:
+            raise RuntimeError(
+                "shared zone return install requires at least one route prefix for "
+                f"{intent.target_key}"
+            )
+        if not intent.reverse_labels or not intent.reverse_segments:
+            raise RuntimeError(
+                "shared zone return install requires reverse labels and segments for "
+                f"{intent.target_key}"
+            )
+        first_segment = intent.reverse_segments[0]
+        for route_prefix in intent.route_prefixes:
+            specs.append(
+                RuntimeCommandSpec(
+                    node_id=intent.selected_gateway_id,
+                    phase="apply",
+                    description=(
+                        "install shared gateway zone-return ingress route "
+                        f"for {intent.target_key}"
+                    ),
+                    command=(
+                        "ip",
+                        "route",
+                        "replace",
+                        str(route_prefix),
+                        "encap",
+                        "mpls",
+                        str(intent.reverse_labels[0]),
+                        "via",
+                        "inet",
+                        first_segment.destination_ip,
+                        "dev",
+                        first_segment.source_interface,
+                    ),
+                )
+            )
+        for index, segment in enumerate(intent.reverse_segments[1:], start=1):
+            specs.append(
+                RuntimeCommandSpec(
+                    node_id=segment.source_node_id,
+                    phase="apply",
+                    description=(
+                        "install shared reverse LFIB on "
+                        f"{segment.source_node_id} for {intent.target_key}"
+                    ),
+                    command=(
+                        "ip",
+                        "-f",
+                        "mpls",
+                        "route",
+                        "replace",
+                        str(intent.reverse_labels[index - 1]),
+                        "as",
+                        str(intent.reverse_labels[index]),
+                        "via",
+                        "inet",
+                        segment.destination_ip,
+                        "dev",
+                        segment.source_interface,
+                    ),
+                )
+            )
+        specs.append(
+            RuntimeCommandSpec(
+                node_id=intent.zone_serving_satellite_id,
+                phase="apply",
+                description=(
+                    "install shared serving-satellite reverse pop entry "
+                    f"for {intent.target_key}"
+                ),
+                command=(
+                    "ip",
+                    "-f",
+                    "mpls",
+                    "route",
+                    "replace",
+                    str(intent.reverse_labels[-1]),
+                    "dev",
+                    "lo",
+                ),
+            )
+        )
+    return specs
+
+
+def _shared_zone_return_rollback_specs(
+    intents: Sequence[ZoneReturnInstallIntent],
+) -> List[RuntimeCommandSpec]:
+    specs: List[RuntimeCommandSpec] = []
+    for intent in intents:
+        for route_prefix in intent.route_prefixes:
+            specs.append(
+                RuntimeCommandSpec(
+                    node_id=intent.selected_gateway_id,
+                    phase="rollback",
+                    description=(
+                        "delete shared gateway zone-return ingress route "
+                        f"for {intent.target_key}"
+                    ),
+                    command=("ip", "route", "del", str(route_prefix)),
+                    allow_failure=True,
+                )
+            )
+        for label in intent.reverse_labels:
+            specs.append(
+                RuntimeCommandSpec(
+                    node_id=(
+                        intent.zone_serving_satellite_id
+                        if int(label) == int(intent.reverse_labels[-1])
+                        else next(
+                            (
+                                segment.source_node_id
+                                for index, segment in enumerate(
+                                    intent.reverse_segments[1:],
+                                    start=1,
+                                )
+                                if int(intent.reverse_labels[index - 1]) == int(label)
+                            ),
+                            intent.selected_gateway_id,
+                        )
+                    ),
+                    phase="rollback",
+                    description=(
+                        "delete shared zone-return MPLS entry "
+                        f"for {intent.target_key}"
+                    ),
+                    command=("ip", "-f", "mpls", "route", "del", str(label)),
+                    allow_failure=True,
+                )
+            )
+    return specs
+
+
+def _shared_zone_return_rollback_specs_for_contexts(
+    contexts: Sequence[DirectGatewayExperimentContext],
+    *,
+    preserve_target_keys: Sequence[str] = (),
+) -> List[RuntimeCommandSpec]:
+    preserved = {str(target_key) for target_key in preserve_target_keys}
+    intents = tuple(
+        intent
+        for intent in _shared_gz_backbone_intents(
+            _zone_return_install_intents(contexts)
+        )
+        if intent.target_key not in preserved
+    )
+    return _shared_zone_return_rollback_specs(intents)
+
+
+def _command_specs_payload(specs: Sequence[RuntimeCommandSpec]) -> List[Dict[str, Any]]:
+    return [spec.to_dict() for spec in specs]
+
+
+def _shared_zone_return_install_mapping(
+    *,
+    all_intents: Sequence[ZoneReturnInstallIntent],
+    reapplied_intents: Sequence[ZoneReturnInstallIntent],
+) -> Dict[str, Any]:
+    all_apply_specs = _shared_zone_return_apply_specs(all_intents)
+    reapplied_apply_specs = _shared_zone_return_apply_specs(reapplied_intents)
+    all_rollback_specs = _shared_zone_return_rollback_specs(all_intents)
+    forbidden_legacy_backbone_command_families = [
+        {
+            "blocker_id": "gateway_ut32_return_route",
+            "legacy_command_family": "ip route replace <ut /32> encap mpls <per-flow reverse label>",
+            "replacement": "ip route replace <zone return prefix> encap mpls <shared G/Z reverse label>",
+            "actual_install_count": 0,
+        },
+        {
+            "blocker_id": "reverse_lfib_label_stack",
+            "legacy_command_family": "ip -f mpls route replace <per-flow reverse label>",
+            "replacement": "one shared reverse label stack per (GW, zone, responsible satellite)",
+            "actual_install_count": 0,
+        },
+        {
+            "blocker_id": "reverse_transit_lfib_entry",
+            "legacy_command_family": "ip -f mpls route replace <per-flow reverse transit label>",
+            "replacement": "shared reverse transit LFIB per G/Z reverse path hop",
+            "actual_install_count": 0,
+        },
+    ]
+    return {
+        "mapping_kind": "gz_shared_return_install_mapping",
+        "current_linux_realization": "shared_gz_backbone",
+        "intent_scope": "(selected_gateway, zone, responsible_satellite)",
+        "all_intent_count": len(tuple(all_intents)),
+        "reapplied_intent_count": len(tuple(reapplied_intents)),
+        "forbidden_legacy_backbone_command_families": forbidden_legacy_backbone_command_families,
+        "preserved_edge_command_families": [
+            "gateway NAT/session edge policy",
+            "serving-satellite local/access route to UT after label pop",
+        ],
+        "all_intents": [intent.to_dict() for intent in all_intents],
+        "reapplied_intents": [intent.to_dict() for intent in reapplied_intents],
+        "all_shared_apply_specs": _command_specs_payload(all_apply_specs),
+        "reapplied_shared_apply_specs": _command_specs_payload(reapplied_apply_specs),
+        "all_shared_rollback_specs": _command_specs_payload(all_rollback_specs),
+        "all_shared_apply_command_count": len(all_apply_specs),
+        "reapplied_shared_apply_command_count": len(reapplied_apply_specs),
+        "all_shared_rollback_command_count": len(all_rollback_specs),
+    }
+
+
+def _subset_active_runtime_session(
+    session: ActiveRuntimeSession,
+    *,
+    flow_ids: Sequence[str],
+) -> ActiveRuntimeSession:
+    selected = {str(flow_id) for flow_id in flow_ids}
+    filtered_contexts: List[DirectGatewayExperimentContext] = []
+    filtered_preflights: List[Dict[str, Any]] = []
+    for context, preflight in zip(session.contexts, session.context_preflights):
+        if str(context.flow_id) not in selected:
+            continue
+        filtered_contexts.append(context)
+        filtered_preflights.append(dict(preflight))
+    target_slice = dict(session.target_slice or {})
+    target_slice["executed_ut_ids"] = [context.ut_id for context in filtered_contexts]
+    target_slice["executed_flow_ids"] = [context.flow_id for context in filtered_contexts]
+    target_slice["contains_multi_hop"] = any(
+        not context.is_direct_gateway_path for context in filtered_contexts
+    )
+    return ActiveRuntimeSession(
+        session_id=f"{session.session_id}:subset:{','.join(sorted(selected))}",
+        backend=dict(session.backend or {}),
+        target_slice=target_slice,
+        host_runtime_boundary=dict(session.host_runtime_boundary or {}),
+        preflight=dict(session.preflight or {}),
+        apply_results=list(session.apply_results or []),
+        verify_results=list(session.verify_results or []),
+        ping_results=[
+            result
+            for result in list(session.ping_results or [])
+            if str(result.get("flow_id")) in selected
+        ],
+        timing=dict(session.timing or {}),
+        contexts=tuple(filtered_contexts),
+        context_preflights=tuple(filtered_preflights),
+    )
+
+
+def _select_incremental_runtime_contexts(
+    *,
+    all_contexts: Sequence[DirectGatewayExperimentContext],
+    existing_session: Optional[ActiveRuntimeSession],
+) -> Dict[str, Any]:
+    unchanged_flow_ids: set[str] = set()
+    incremental_cleanup_flow_ids: List[str] = []
+    existing_preflights_by_flow_id: Dict[str, Dict[str, Any]] = {}
+    if existing_session is not None:
+        existing_preflights_by_flow_id = {
+            str(context.flow_id): dict(preflight)
+            for context, preflight in zip(
+                existing_session.contexts,
+                existing_session.context_preflights,
+            )
+        }
+        desired_signatures = {
+            str(context.flow_id): _context_signature(context) for context in all_contexts
+        }
+        existing_signatures = {
+            str(context.flow_id): _context_signature(context)
+            for context in existing_session.contexts
+        }
+        unchanged_flow_ids = {
+            flow_id
+            for flow_id, desired_signature in desired_signatures.items()
+            if existing_signatures.get(flow_id) == desired_signature
+        }
+        incremental_cleanup_flow_ids = [
+            flow_id
+            for flow_id in existing_signatures
+            if flow_id not in unchanged_flow_ids
+        ]
+    changed_contexts = tuple(
+        context
+        for context in all_contexts
+        if str(context.flow_id) not in unchanged_flow_ids
+    )
+    return {
+        "all_contexts": tuple(all_contexts),
+        "changed_contexts": changed_contexts,
+        "unchanged_flow_ids": unchanged_flow_ids,
+        "incremental_cleanup_flow_ids": incremental_cleanup_flow_ids,
+        "existing_preflights_by_flow_id": existing_preflights_by_flow_id,
+    }
+
+
+def _runtime_ping_gateway_class_key(context: DirectGatewayExperimentContext) -> str:
+    gateway_class_id = getattr(context, "gateway_class_id", "")
+    return str(gateway_class_id or context.selected_gateway_id)
+
+
+def _select_runtime_ping_validation_contexts(
+    *,
+    all_contexts: Sequence[DirectGatewayExperimentContext],
+    reapplied_contexts: Sequence[DirectGatewayExperimentContext],
+    validation_scope: str,
+) -> Dict[str, Any]:
+    normalized_scope = str(validation_scope or DEFAULT_RUNTIME_EPOCH_VALIDATION_SCOPE)
+    if normalized_scope not in {
+        "all_active_flows",
+        "reapplied_flows",
+        DEFAULT_RUNTIME_EPOCH_VALIDATION_SCOPE,
+    }:
+        raise RuntimeError(f"unsupported ping_validation_scope: {validation_scope}")
+
+    fallback_reason: Optional[str] = None
+    sample_source = normalized_scope
+    if normalized_scope == "all_active_flows":
+        selected_contexts = tuple(all_contexts)
+        source_contexts = selected_contexts
+    elif normalized_scope == "reapplied_flows":
+        selected_contexts = tuple(reapplied_contexts)
+        if not selected_contexts and all_contexts:
+            selected_contexts = tuple(all_contexts)
+            fallback_reason = "no_reapplied_flows"
+            sample_source = "all_active_flows_fallback"
+        source_contexts = selected_contexts
+    else:
+        source_contexts = tuple(reapplied_contexts)
+        if not source_contexts and all_contexts:
+            source_contexts = tuple(all_contexts)
+            fallback_reason = "no_reapplied_flows"
+            sample_source = "all_active_flows_fallback"
+        representatives: Dict[str, DirectGatewayExperimentContext] = {}
+        for context in source_contexts:
+            gateway_class_key = _runtime_ping_gateway_class_key(context)
+            representatives.setdefault(gateway_class_key, context)
+        selected_contexts = tuple(
+            representatives[gateway_class_key]
+            for gateway_class_key in sorted(representatives)
+        )
+
+    representative_by_gateway_class = {
+        _runtime_ping_gateway_class_key(context): context.flow_id
+        for context in selected_contexts
+    }
+    source_gateway_class_keys = {
+        _runtime_ping_gateway_class_key(context) for context in source_contexts
+    }
+    selected_gateway_class_keys = {
+        _runtime_ping_gateway_class_key(context) for context in selected_contexts
+    }
+    return {
+        "validation_scope": normalized_scope,
+        "sample_source": sample_source,
+        "active_flow_count": len(tuple(all_contexts)),
+        "reapplied_flow_count": len(tuple(reapplied_contexts)),
+        "sample_source_flow_count": len(source_contexts),
+        "sample_source_gateway_class_count": len(source_gateway_class_keys),
+        "selected_flow_count": len(selected_contexts),
+        "selected_gateway_class_count": len(selected_gateway_class_keys),
+        "gateway_class_sample_reduction_count": max(
+            0,
+            len(source_contexts) - len(selected_contexts),
+        ),
+        "selected_to_sample_source_flow_ratio": _ratio(
+            len(selected_contexts),
+            len(source_contexts),
+        ),
+        "selected_contexts": selected_contexts,
+        "target_flow_ids": [context.flow_id for context in selected_contexts],
+        "target_ut_ids": [context.ut_id for context in selected_contexts],
+        "target_gateway_class_keys": [
+            _runtime_ping_gateway_class_key(context) for context in selected_contexts
+        ],
+        "representative_flow_by_gateway_class": representative_by_gateway_class,
+        "fallback_reason": fallback_reason,
+    }
 
 
 def _run_docker_command(
@@ -437,12 +1387,15 @@ def _run_docker_command(
     description: str,
     allow_failure: bool = False,
 ) -> RuntimeCommandResult:
-    completed = subprocess.run(
+    completed = _timed_subprocess_run(
         ["docker", "exec", node_id, *command],
-        capture_output=True,
-        text=True,
-        check=False,
+        timeout_seconds=DOCKER_EXEC_TIMEOUT_SECONDS,
     )
+    if completed.returncode == 127:
+        completed = _run_host_netns_command(
+            node_id=node_id,
+            command=command,
+        )
     result = RuntimeCommandResult(
         node_id=node_id,
         phase=phase,
@@ -465,19 +1418,59 @@ def _batch_shell_line(spec: RuntimeCommandSpec) -> str:
     return command_line
 
 
+@lru_cache(maxsize=None)
+def _container_pid(node_id: str) -> int:
+    completed = _timed_subprocess_run(
+        ["docker", "inspect", "-f", "{{.State.Pid}}", node_id],
+        timeout_seconds=DOCKER_INSPECT_TIMEOUT_SECONDS,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"unable to resolve container pid for {node_id}: {completed.stderr.strip()}"
+        )
+    return int(completed.stdout.strip())
+
+
+def _run_host_netns_command(
+    *,
+    node_id: str,
+    command: Sequence[str],
+) -> subprocess.CompletedProcess[str]:
+    return _timed_subprocess_run(
+        ["sudo", "-n", "nsenter", "-t", str(_container_pid(node_id)), "-n", "--", *command],
+        timeout_seconds=DOCKER_EXEC_TIMEOUT_SECONDS,
+    )
+
+
+def _run_host_netns_batch(
+    *,
+    node_id: str,
+    script: str,
+) -> subprocess.CompletedProcess[str]:
+    return _timed_subprocess_run(
+        ["sudo", "-n", "nsenter", "-t", str(_container_pid(node_id)), "-n", "--", "sh", "-s"],
+        timeout_seconds=NODE_LOCAL_BATCH_TIMEOUT_SECONDS,
+        input_text=script,
+    )
+
+
 def _run_node_local_batch(batch: NodeLocalBatchSpec) -> NodeLocalBatchResult:
     started_at = time.perf_counter()
     script_lines = ["set -eu"]
     for spec in batch.command_specs:
         script_lines.append(f"printf '%s\\n' {shlex.quote(f'[{spec.phase}] {spec.description}')}")
         script_lines.append(_batch_shell_line(spec))
-    completed = subprocess.run(
+    script = "\n".join(script_lines) + "\n"
+    completed = _timed_subprocess_run(
         ["docker", "exec", "-i", batch.node_id, "sh", "-s"],
-        input="\n".join(script_lines) + "\n",
-        capture_output=True,
-        text=True,
-        check=False,
+        timeout_seconds=NODE_LOCAL_BATCH_TIMEOUT_SECONDS,
+        input_text=script,
     )
+    if completed.returncode == 127:
+        completed = _run_host_netns_batch(
+            node_id=batch.node_id,
+            script=script,
+        )
     result = NodeLocalBatchResult(
         node_id=batch.node_id,
         phase=batch.phase,
@@ -497,8 +1490,18 @@ def _group_node_local_batches(
     specs: Sequence[RuntimeCommandSpec],
 ) -> List[NodeLocalBatchSpec]:
     grouped: Dict[Tuple[str, str], List[RuntimeCommandSpec]] = {}
+    seen_by_group: Dict[
+        Tuple[str, str],
+        set[Tuple[Tuple[str, ...], bool]],
+    ] = {}
     for spec in specs:
-        grouped.setdefault((spec.node_id, spec.phase), []).append(spec)
+        group_key = (spec.node_id, spec.phase)
+        command_key = (tuple(spec.command), bool(spec.allow_failure))
+        seen = seen_by_group.setdefault(group_key, set())
+        if command_key in seen:
+            continue
+        seen.add(command_key)
+        grouped.setdefault(group_key, []).append(spec)
     return [
         NodeLocalBatchSpec(
             node_id=node_id,
@@ -555,15 +1558,55 @@ def _batch_timing_summary(
     }
 
 
+def _probe_marker_command(probe_id: str, command: Sequence[str]) -> Tuple[str, ...]:
+    begin_marker = f"__SKYSEED_PROBE_BEGIN_{probe_id}__"
+    end_marker = f"__SKYSEED_PROBE_END_{probe_id}__"
+    return (
+        "sh",
+        "-lc",
+        (
+            f"printf '%s\\n' {shlex.quote(begin_marker)}; "
+            f"{shlex.join(command)} || true; "
+            f"printf '\\n%s\\n' {shlex.quote(end_marker)}"
+        ),
+    )
+
+
+def _parse_probe_outputs(
+    batch_results: Sequence[NodeLocalBatchResult],
+    *,
+    probe_ids: Sequence[str],
+) -> Dict[str, str]:
+    combined_stdout = "\n".join(result.stdout for result in batch_results)
+    outputs: Dict[str, str] = {}
+    for probe_id in probe_ids:
+        begin_marker = f"__SKYSEED_PROBE_BEGIN_{probe_id}__"
+        end_marker = f"__SKYSEED_PROBE_END_{probe_id}__"
+        begin_index = combined_stdout.find(begin_marker)
+        if begin_index < 0:
+            outputs[probe_id] = ""
+            continue
+        content_start = begin_index + len(begin_marker)
+        end_index = combined_stdout.find(end_marker, content_start)
+        if end_index < 0:
+            outputs[probe_id] = combined_stdout[content_start:].strip()
+            continue
+        outputs[probe_id] = combined_stdout[content_start:end_index].strip()
+    return outputs
+
+
 def _context_path_summary(context: DirectGatewayExperimentContext) -> Dict[str, Any]:
     target_ids = [str(target.get("node_id")) for target in context.validation_targets]
     target_ips = [str(target.get("ip_address")) for target in context.validation_targets]
     return {
         "flow_id": context.flow_id,
         "ut_id": context.ut_id,
+        "zone_id": context.zone_id,
         "serving_satellite_id": context.serving_satellite_id,
         "selected_gateway_id": context.selected_gateway_id,
         "selected_gateway_satellite_id": context.selected_gateway_satellite_id,
+        "gateway_class_id": context.gateway_class_id,
+        "zone_return_target_key": ":".join(_zone_return_target_key(context)),
         "satellite_path": list(context.satellite_path),
         "path_hop_count": len(context.satellite_path),
         "path_string": " -> ".join(
@@ -623,8 +1666,18 @@ def _ping_validation_targets(
     *,
     phase: str,
     description: str,
+    primary_only: bool = False,
 ) -> Tuple[List[Dict[str, Any]], float]:
-    validation_targets = list(context.validation_targets) or [
+    validation_targets = (
+        [
+            {
+                "node_id": context.target_host_node_id,
+                "ip_address": context.ping_target_ip,
+            }
+        ]
+        if primary_only
+        else list(context.validation_targets)
+    ) or [
         {
             "node_id": context.target_host_node_id,
             "ip_address": context.ping_target_ip,
@@ -633,20 +1686,36 @@ def _ping_validation_targets(
     ping_results: List[Dict[str, Any]] = []
     started_at = time.perf_counter()
     for validation_target in validation_targets:
-        ping = _run_docker_command(
-            node_id=context.ut_id,
-            command=(
-                "ping",
-                "-c",
-                "1",
-                "-W",
-                "2",
-                str(validation_target["ip_address"]),
-            ),
-            phase=phase,
-            description=description,
-            allow_failure=True,
-        )
+        ping = None
+        attempts: List[Dict[str, Any]] = []
+        for attempt_index in range(3):
+            ping = _run_docker_command(
+                node_id=context.ut_id,
+                command=(
+                    "ping",
+                    "-c",
+                    "1",
+                    "-W",
+                    "2",
+                    str(validation_target["ip_address"]),
+                ),
+                phase=phase,
+                description=description,
+                allow_failure=True,
+            )
+            attempts.append(
+                {
+                    "attempt": attempt_index + 1,
+                    "returncode": ping.returncode,
+                    "stdout": ping.stdout,
+                    "stderr": ping.stderr,
+                }
+            )
+            if ping.returncode == 0:
+                break
+            if attempt_index < 2:
+                time.sleep(0.2)
+        assert ping is not None
         ping_results.append(
             {
                 "flow_id": context.flow_id,
@@ -674,9 +1743,55 @@ def _ping_validation_targets(
                 "stdout": ping.stdout,
                 "stderr": ping.stderr,
                 "returncode": ping.returncode,
+                "attempt_count": len(attempts),
+                "attempts": attempts,
             }
         )
     return ping_results, time.perf_counter() - started_at
+
+
+def _warm_direct_access_link(
+    *,
+    node_id: str,
+    target_ip: str,
+    phase: str,
+    description: str,
+) -> Dict[str, Any]:
+    attempts: List[Dict[str, Any]] = []
+    started_at = time.perf_counter()
+    ping = None
+    for attempt_index in range(3):
+        ping = _run_docker_command(
+            node_id=node_id,
+            command=("ping", "-c", "1", "-W", "1", target_ip),
+            phase=phase,
+            description=description,
+            allow_failure=True,
+        )
+        attempts.append(
+            {
+                "attempt": attempt_index + 1,
+                "returncode": ping.returncode,
+                "stdout": ping.stdout,
+                "stderr": ping.stderr,
+            }
+        )
+        if ping.returncode == 0:
+            break
+        if attempt_index < 2:
+            time.sleep(0.2)
+    assert ping is not None
+    return {
+        "node_id": node_id,
+        "target_ip": target_ip,
+        "success": ping.returncode == 0,
+        "returncode": ping.returncode,
+        "stdout": ping.stdout,
+        "stderr": ping.stderr,
+        "attempt_count": len(attempts),
+        "attempts": attempts,
+        "wall_seconds": time.perf_counter() - started_at,
+    }
 
 
 def _rule_probe_command(
@@ -701,7 +1816,11 @@ def _iptables_probe_command(
 ) -> Tuple[str, ...]:
     table_prefix = f"-t {table_name} " if table_name is not None else ""
     joined_args = " ".join(rule_args)
-    return ("sh", "-lc", f"iptables {table_prefix}-C {joined_args}")
+    return (
+        "sh",
+        "-lc",
+        f"iptables -w {IPTABLES_WAIT_SECONDS} {table_prefix}-C {joined_args}",
+    )
 
 
 def _sysctl_read_command(interface_name: str) -> Tuple[str, ...]:
@@ -1023,6 +2142,11 @@ def _realization_contexts(
         serving_satellite_id = str(flow_context["serving_satellite_id"])
         selected_gateway_id = str(flow_context["selected_gateway_id"])
         selected_gateway_satellite_id = str(flow_context["selected_gateway_satellite_id"])
+        gateway_class_id = str(flow_context.get("gateway_class_id") or "")
+        if not gateway_class_id and flow_context.get("zone_id"):
+            gateway_class_id = (
+                f"{flow_context['zone_id']}:default-gateway:{selected_gateway_id}"
+            )
         if not satellite_path or satellite_path[0] != serving_satellite_id:
             raise RuntimeError(f"invalid satellite path for {flow_context.get('flow_id')}")
         if satellite_path[-1] != selected_gateway_satellite_id:
@@ -1089,13 +2213,30 @@ def _realization_contexts(
         bootstrap_endpoint = dict(
             gateway_entry.get("bootstrap_network", {}).get("endpoint", {})
         )
+        internet_uplink = dict(gateway_entry.get("internet_uplink", {}))
+        gateway_nat_source_ip = _strip_prefix(
+            str(
+                bootstrap_endpoint.get("ip_address")
+                or internet_uplink.get("ip_address")
+            )
+        )
         contexts.append(
             DirectGatewayExperimentContext(
                 flow_id=str(flow_context["flow_id"]),
                 ut_id=str(flow_context["ut_id"]),
+                zone_id=(
+                    str(flow_context.get("zone_id"))
+                    if flow_context.get("zone_id") is not None
+                    else None
+                ),
                 serving_satellite_id=serving_satellite_id,
                 selected_gateway_id=selected_gateway_id,
                 selected_gateway_satellite_id=selected_gateway_satellite_id,
+                zone_return_prefixes=tuple(
+                    str(prefix)
+                    for prefix in list(flow_context.get("zone_return_prefixes", []))
+                    if str(prefix)
+                ),
                 ping_target_ip=str(flow_context["ping_target_ip"]),
                 target_host_node_id=str(flow_context["target_host_node_id"]),
                 policy_table_id=int(flow_context["policy_table_id"]),
@@ -1109,10 +2250,8 @@ def _realization_contexts(
                 gateway_access_interface=str(forward_segments[-1].destination_interface),
                 gateway_access_ip=str(forward_segments[-1].destination_ip),
                 gateway_access_peer_ip=str(reverse_segments[0].destination_ip),
-                gateway_nat_interface=str(
-                    gateway_entry.get("internet_uplink", {}).get("network_name")
-                ),
-                gateway_nat_source_ip=_strip_prefix(str(bootstrap_endpoint.get("ip_address"))),
+                gateway_nat_interface=str(internet_uplink.get("network_name")),
+                gateway_nat_source_ip=gateway_nat_source_ip,
                 forward_segments=tuple(forward_segments),
                 reverse_segments=tuple(reverse_segments),
                 validation_targets=tuple(
@@ -1123,6 +2262,8 @@ def _realization_contexts(
                     for target in flow_context.get("validation_targets", [])
                     if target.get("node_id") and target.get("ip_address")
                 ),
+                gateway_class_id=gateway_class_id or None,
+                return_path_intent=dict(flow_context.get("return_path_intent", {})),
             )
         )
     return contexts
@@ -1227,11 +2368,14 @@ class MinimalRealLinuxMplsInstaller:
         *,
         observe_selectors: Sequence[str],
     ) -> Dict[str, Any]:
+        started_at = time.perf_counter()
         normalized_selectors = [str(selector).strip() for selector in observe_selectors if str(selector).strip()]
         if not normalized_selectors:
             return {
                 "enabled": False,
                 "observations": [],
+                "selector_count": 0,
+                "wall_seconds": 0.0,
             }
         observations: List[Dict[str, Any]] = []
         for selector in normalized_selectors:
@@ -1325,7 +2469,9 @@ class MinimalRealLinuxMplsInstaller:
             )
         return {
             "enabled": True,
+            "selector_count": len(normalized_selectors),
             "observations": observations,
+            "wall_seconds": time.perf_counter() - started_at,
         }
 
     def assess_realization(
@@ -1476,87 +2622,25 @@ class MinimalRealLinuxMplsInstaller:
                     ),
                 )
             )
-        specs.extend(
-            [
-                RuntimeCommandSpec(
-                    node_id=context.selected_gateway_id,
-                    phase="apply",
-                    description="install gateway forward pop entry",
-                    command=(
-                        "ip",
-                        "-f",
-                        "mpls",
-                        "route",
-                        "replace",
-                        str(context.forward_labels[-1]),
-                        "dev",
-                        "lo",
-                    ),
+        specs.append(
+            RuntimeCommandSpec(
+                node_id=context.selected_gateway_id,
+                phase="apply",
+                description="install gateway forward pop entry",
+                command=(
+                    "ip",
+                    "-f",
+                    "mpls",
+                    "route",
+                    "replace",
+                    str(context.forward_labels[-1]),
+                    "dev",
+                    "lo",
                 ),
-                RuntimeCommandSpec(
-                    node_id=context.selected_gateway_id,
-                    phase="apply",
-                    description="install gateway reverse ingress route",
-                    command=(
-                        "ip",
-                        "route",
-                        "replace",
-                        context.return_target_prefix,
-                        "encap",
-                        "mpls",
-                        str(context.reverse_labels[0]),
-                        "via",
-                        "inet",
-                        context.reverse_segments[0].destination_ip,
-                        "dev",
-                        context.reverse_segments[0].source_interface,
-                    ),
-                ),
-            ]
-        )
-        for index, segment in enumerate(context.reverse_segments[1:], start=1):
-            specs.append(
-                RuntimeCommandSpec(
-                    node_id=segment.source_node_id,
-                    phase="apply",
-                    description=(
-                        f"install reverse LFIB on {segment.source_node_id} "
-                        f"for label {context.reverse_labels[index - 1]}"
-                    ),
-                    command=(
-                        "ip",
-                        "-f",
-                        "mpls",
-                        "route",
-                        "replace",
-                        str(context.reverse_labels[index - 1]),
-                        "as",
-                        str(context.reverse_labels[index]),
-                        "via",
-                        "inet",
-                        segment.destination_ip,
-                        "dev",
-                        segment.source_interface,
-                    ),
-                )
             )
+        )
         specs.extend(
             [
-                RuntimeCommandSpec(
-                    node_id=context.serving_satellite_id,
-                    phase="apply",
-                    description="install serving-satellite reverse pop entry",
-                    command=(
-                        "ip",
-                        "-f",
-                        "mpls",
-                        "route",
-                        "replace",
-                        str(context.reverse_labels[-1]),
-                        "dev",
-                        "lo",
-                    ),
-                ),
                 RuntimeCommandSpec(
                     node_id=context.selected_gateway_id,
                     phase="apply",
@@ -1565,11 +2649,11 @@ class MinimalRealLinuxMplsInstaller:
                         "sh",
                         "-lc",
                         (
-                            "iptables -C FORWARD "
+                            f"iptables -w {IPTABLES_WAIT_SECONDS} -C FORWARD "
                             f"-i {context.gateway_access_interface} "
                             f"-o {context.gateway_nat_interface} "
                             f"-s {context.ut_access_ip}/32 -j ACCEPT 2>/dev/null || "
-                            "iptables -A FORWARD "
+                            f"iptables -w {IPTABLES_WAIT_SECONDS} -A FORWARD "
                             f"-i {context.gateway_access_interface} "
                             f"-o {context.gateway_nat_interface} "
                             f"-s {context.ut_access_ip}/32 -j ACCEPT"
@@ -1584,13 +2668,13 @@ class MinimalRealLinuxMplsInstaller:
                         "sh",
                         "-lc",
                         (
-                            "iptables -C FORWARD "
+                            f"iptables -w {IPTABLES_WAIT_SECONDS} -C FORWARD "
                             f"-i {context.gateway_nat_interface} "
                             f"-o {context.gateway_access_interface} "
                             f"-d {context.ut_access_ip}/32 "
                             "-m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT "
                             "2>/dev/null || "
-                            "iptables -A FORWARD "
+                            f"iptables -w {IPTABLES_WAIT_SECONDS} -A FORWARD "
                             f"-i {context.gateway_nat_interface} "
                             f"-o {context.gateway_access_interface} "
                             f"-d {context.ut_access_ip}/32 "
@@ -1606,12 +2690,12 @@ class MinimalRealLinuxMplsInstaller:
                         "sh",
                         "-lc",
                         (
-                            "iptables -t nat -C POSTROUTING "
+                            f"iptables -w {IPTABLES_WAIT_SECONDS} -t nat -C POSTROUTING "
                             f"-s {context.ut_access_ip}/32 "
                             f"-o {context.gateway_nat_interface} "
                             f"-j SNAT --to-source {context.gateway_nat_source_ip} "
                             "2>/dev/null || "
-                            "iptables -t nat -A POSTROUTING "
+                            f"iptables -w {IPTABLES_WAIT_SECONDS} -t nat -A POSTROUTING "
                             f"-s {context.ut_access_ip}/32 "
                             f"-o {context.gateway_nat_interface} "
                             f"-j SNAT --to-source {context.gateway_nat_source_ip}"
@@ -1675,7 +2759,7 @@ class MinimalRealLinuxMplsInstaller:
                 node_id=context.selected_gateway_id,
                 phase="verify",
                 description="show gateway NAT table",
-                command=("sh", "-lc", "iptables -t nat -S"),
+                command=("sh", "-lc", f"iptables -w {IPTABLES_WAIT_SECONDS} -t nat -S"),
             ),
         ]
         for node_id in dict.fromkeys(
@@ -1701,6 +2785,9 @@ class MinimalRealLinuxMplsInstaller:
             1000,
             max(context.forward_labels) + 1,
             max(context.reverse_labels) + 1,
+        )
+        shared_gz_backbone_mode = (
+            _context_linux_realization_mode(context) == "shared_gz_backbone"
         )
         if not preflight["ut_default_route_present"]:
             specs.append(
@@ -1739,7 +2826,7 @@ class MinimalRealLinuxMplsInstaller:
                         "sh",
                         "-lc",
                         (
-                            "iptables -t nat -D POSTROUTING "
+                            f"iptables -w {IPTABLES_WAIT_SECONDS} -t nat -D POSTROUTING "
                             f"-s {context.ut_access_ip}/32 "
                             f"-o {context.gateway_nat_interface} "
                             f"-j SNAT --to-source {context.gateway_nat_source_ip}"
@@ -1758,7 +2845,7 @@ class MinimalRealLinuxMplsInstaller:
                         "sh",
                         "-lc",
                         (
-                            "iptables -D FORWARD "
+                            f"iptables -w {IPTABLES_WAIT_SECONDS} -D FORWARD "
                             f"-i {context.gateway_access_interface} "
                             f"-o {context.gateway_nat_interface} "
                             f"-s {context.ut_access_ip}/32 -j ACCEPT"
@@ -1777,7 +2864,7 @@ class MinimalRealLinuxMplsInstaller:
                         "sh",
                         "-lc",
                         (
-                            "iptables -D FORWARD "
+                            f"iptables -w {IPTABLES_WAIT_SECONDS} -D FORWARD "
                             f"-i {context.gateway_nat_interface} "
                             f"-o {context.gateway_access_interface} "
                             f"-d {context.ut_access_ip}/32 "
@@ -1826,55 +2913,56 @@ class MinimalRealLinuxMplsInstaller:
                     allow_failure=True,
                 )
             )
-        for index, segment in enumerate(context.reverse_segments[1:], start=1):
-            state_key = f"{segment.source_node_id}:{context.reverse_labels[index - 1]}"
-            if not str(preflight.get("reverse_lfib_state", {}).get(state_key, "")).strip():
+        if not shared_gz_backbone_mode:
+            for index, segment in enumerate(context.reverse_segments[1:], start=1):
+                state_key = f"{segment.source_node_id}:{context.reverse_labels[index - 1]}"
+                if not str(preflight.get("reverse_lfib_state", {}).get(state_key, "")).strip():
+                    specs.append(
+                        RuntimeCommandSpec(
+                            node_id=segment.source_node_id,
+                            phase="rollback",
+                            description=(
+                                f"delete reverse LFIB on {segment.source_node_id} "
+                                f"for label {context.reverse_labels[index - 1]}"
+                            ),
+                            command=(
+                                "ip",
+                                "-f",
+                                "mpls",
+                                "route",
+                                "del",
+                                str(context.reverse_labels[index - 1]),
+                            ),
+                            allow_failure=True,
+                        )
+                    )
+            if not preflight["gw_reverse_route_present"]:
                 specs.append(
                     RuntimeCommandSpec(
-                        node_id=segment.source_node_id,
+                        node_id=context.selected_gateway_id,
                         phase="rollback",
-                        description=(
-                            f"delete reverse LFIB on {segment.source_node_id} "
-                            f"for label {context.reverse_labels[index - 1]}"
-                        ),
+                        description="delete gateway reverse ingress route",
+                        command=("ip", "route", "del", context.return_target_prefix),
+                        allow_failure=True,
+                    )
+                )
+            if not preflight["sat_reverse_pop_present"]:
+                specs.append(
+                    RuntimeCommandSpec(
+                        node_id=context.serving_satellite_id,
+                        phase="rollback",
+                        description="delete serving-satellite reverse pop entry",
                         command=(
                             "ip",
                             "-f",
                             "mpls",
                             "route",
                             "del",
-                            str(context.reverse_labels[index - 1]),
+                            str(context.reverse_labels[-1]),
                         ),
                         allow_failure=True,
                     )
                 )
-        if not preflight["gw_reverse_route_present"]:
-            specs.append(
-                RuntimeCommandSpec(
-                    node_id=context.selected_gateway_id,
-                    phase="rollback",
-                    description="delete gateway reverse ingress route",
-                    command=("ip", "route", "del", context.return_target_prefix),
-                    allow_failure=True,
-                )
-            )
-        if not preflight["sat_reverse_pop_present"]:
-            specs.append(
-                RuntimeCommandSpec(
-                    node_id=context.serving_satellite_id,
-                    phase="rollback",
-                    description="delete serving-satellite reverse pop entry",
-                    command=(
-                        "ip",
-                        "-f",
-                        "mpls",
-                        "route",
-                        "del",
-                        str(context.reverse_labels[-1]),
-                    ),
-                    allow_failure=True,
-                )
-            )
         if not preflight["sat_delivery_route_present"]:
             specs.append(
                 RuntimeCommandSpec(
@@ -2008,6 +3096,301 @@ class MinimalRealLinuxMplsInstaller:
             and not any(transit_reverse_state.values()),
         }
 
+    def _rollback_verification_probe_plan(
+        self,
+        contexts: Sequence[DirectGatewayExperimentContext],
+        *,
+        preserve_shared_zone_return_target_keys: Sequence[str] = (),
+    ) -> Dict[str, Any]:
+        specs: List[RuntimeCommandSpec] = []
+        probe_ids: List[str] = []
+        context_probes: List[Dict[str, Any]] = []
+        shared_zone_return_group_probes: List[Dict[str, Any]] = []
+        probe_by_command: Dict[Tuple[str, Tuple[str, ...]], str] = {}
+        preserved_shared_target_keys = {
+            str(target_key) for target_key in preserve_shared_zone_return_target_keys
+        }
+
+        def add_probe(
+            *,
+            node_id: str,
+            description: str,
+            command: Sequence[str],
+        ) -> str:
+            command_key = (str(node_id), tuple(command))
+            existing_probe_id = probe_by_command.get(command_key)
+            if existing_probe_id is not None:
+                return existing_probe_id
+            probe_id = f"p{len(probe_ids):04d}"
+            probe_by_command[command_key] = probe_id
+            probe_ids.append(probe_id)
+            specs.append(
+                RuntimeCommandSpec(
+                    node_id=str(node_id),
+                    phase="rollback_verify",
+                    description=f"{description} ({probe_id})",
+                    command=_probe_marker_command(probe_id, command),
+                )
+            )
+            return probe_id
+
+        for intent in _shared_gz_backbone_intents(_zone_return_install_intents(contexts)):
+            if intent.target_key in preserved_shared_target_keys:
+                shared_zone_return_group_probes.append(
+                    {
+                        "target_key": intent.target_key,
+                        "selected_gateway_id": intent.selected_gateway_id,
+                        "zone_id": intent.zone_id,
+                        "zone_serving_satellite_id": intent.zone_serving_satellite_id,
+                        "shared_group_cleanup_verification_skipped": True,
+                        "skip_reason": "shared_zone_return_target_preserved_for_active_flows",
+                        "route_probes": {},
+                        "mpls_label_probes": {},
+                    }
+                )
+                continue
+            route_probes = {
+                str(route_prefix): add_probe(
+                    node_id=intent.selected_gateway_id,
+                    description=(
+                        "verify shared gateway zone-return route cleanup "
+                        f"for {intent.target_key}"
+                    ),
+                    command=_route_show_command(str(route_prefix)),
+                )
+                for route_prefix in intent.route_prefixes
+            }
+            mpls_label_probes: Dict[str, str] = {}
+            if intent.reverse_labels:
+                mpls_label_probes[
+                    f"{intent.zone_serving_satellite_id}:{intent.reverse_labels[-1]}"
+                ] = add_probe(
+                    node_id=intent.zone_serving_satellite_id,
+                    description=(
+                        "verify shared serving-satellite reverse pop cleanup "
+                        f"for {intent.target_key}"
+                    ),
+                    command=_mpls_route_show_command(intent.reverse_labels[-1]),
+                )
+            for index, segment in enumerate(intent.reverse_segments[1:], start=1):
+                label = intent.reverse_labels[index - 1]
+                mpls_label_probes[f"{segment.source_node_id}:{label}"] = add_probe(
+                    node_id=segment.source_node_id,
+                    description=(
+                        "verify shared reverse LFIB cleanup on "
+                        f"{segment.source_node_id} for {intent.target_key}"
+                    ),
+                    command=_mpls_route_show_command(label),
+                )
+            shared_zone_return_group_probes.append(
+                {
+                    "target_key": intent.target_key,
+                    "selected_gateway_id": intent.selected_gateway_id,
+                    "zone_id": intent.zone_id,
+                    "zone_serving_satellite_id": intent.zone_serving_satellite_id,
+                    "shared_group_cleanup_verification_skipped": False,
+                    "route_probes": route_probes,
+                    "mpls_label_probes": mpls_label_probes,
+                }
+            )
+
+        for context in contexts:
+            transit_forward_probes: Dict[str, str] = {}
+            for index, segment in enumerate(context.forward_segments[1:], start=1):
+                state_key = f"{segment.source_node_id}:{context.forward_labels[index - 1]}"
+                transit_forward_probes[state_key] = add_probe(
+                    node_id=segment.source_node_id,
+                    description=(
+                        f"verify forward LFIB cleanup on {segment.source_node_id} "
+                        f"for label {context.forward_labels[index - 1]}"
+                    ),
+                    command=_mpls_route_show_command(context.forward_labels[index - 1]),
+                )
+            shared_target_key = ":".join(_zone_return_target_key(context))
+            skip_shared_reverse_cleanup_verification = (
+                _context_linux_realization_mode(context) == "shared_gz_backbone"
+                and shared_target_key in preserved_shared_target_keys
+            )
+            transit_reverse_probes: Dict[str, str] = {}
+            if not skip_shared_reverse_cleanup_verification:
+                for index, segment in enumerate(context.reverse_segments[1:], start=1):
+                    state_key = f"{segment.source_node_id}:{context.reverse_labels[index - 1]}"
+                    transit_reverse_probes[state_key] = add_probe(
+                        node_id=segment.source_node_id,
+                        description=(
+                            f"verify reverse LFIB cleanup on {segment.source_node_id} "
+                            f"for label {context.reverse_labels[index - 1]}"
+                        ),
+                        command=_mpls_route_show_command(context.reverse_labels[index - 1]),
+                    )
+            context_probes.append(
+                {
+                    "ut_id": context.ut_id,
+                    "zone_return_target_key": shared_target_key,
+                    "shared_reverse_cleanup_verification_skipped": (
+                        skip_shared_reverse_cleanup_verification
+                    ),
+                    "ut_default_route_probe": add_probe(
+                        node_id=context.ut_id,
+                        description="verify UT default route cleanup",
+                        command=_route_show_command("default"),
+                    ),
+                    "sat_policy_default_probe": add_probe(
+                        node_id=context.serving_satellite_id,
+                        description="verify serving-satellite policy default cleanup",
+                        command=_route_show_command(
+                            "table",
+                            str(context.policy_table_id),
+                            "default",
+                        ),
+                    ),
+                    "gw_forward_pop_probe": add_probe(
+                        node_id=context.selected_gateway_id,
+                        description="verify gateway forward pop cleanup",
+                        command=_mpls_route_show_command(context.forward_labels[-1]),
+                    ),
+                    "transit_forward_probes": transit_forward_probes,
+                    "transit_reverse_probes": transit_reverse_probes,
+                }
+            )
+        return {
+            "probe_ids": probe_ids,
+            "specs": specs,
+            "context_probes": context_probes,
+            "shared_zone_return_group_probes": shared_zone_return_group_probes,
+        }
+
+    def _rollback_verification_many(
+        self,
+        contexts: Sequence[DirectGatewayExperimentContext],
+        *,
+        max_node_workers: int,
+        preserve_shared_zone_return_target_keys: Sequence[str] = (),
+    ) -> Dict[str, Any]:
+        started_at = time.perf_counter()
+        plan = self._rollback_verification_probe_plan(
+            contexts,
+            preserve_shared_zone_return_target_keys=(
+                preserve_shared_zone_return_target_keys
+            ),
+        )
+        probe_specs = list(plan["specs"])
+        probe_batches = _group_node_local_batches(probe_specs)
+        probe_batch_plan = [batch.to_dict() for batch in probe_batches]
+        probe_batch_results = _execute_node_local_batches(
+            probe_batches,
+            max_workers=max_node_workers,
+        )
+        probe_outputs = _parse_probe_outputs(
+            probe_batch_results,
+            probe_ids=list(plan["probe_ids"]),
+        )
+        shared_zone_return_group_verifications: List[Dict[str, Any]] = []
+        for group_probe in list(plan["shared_zone_return_group_probes"]):
+            route_state = {
+                prefix: bool(probe_outputs.get(probe_id, "").strip())
+                for prefix, probe_id in dict(group_probe["route_probes"]).items()
+            }
+            label_state = {
+                state_key: bool(probe_outputs.get(probe_id, "").strip())
+                for state_key, probe_id in dict(group_probe["mpls_label_probes"]).items()
+            }
+            skipped = bool(
+                group_probe.get("shared_group_cleanup_verification_skipped")
+            )
+            shared_zone_return_group_verifications.append(
+                {
+                    "target_key": group_probe["target_key"],
+                    "selected_gateway_id": group_probe["selected_gateway_id"],
+                    "zone_id": group_probe["zone_id"],
+                    "zone_serving_satellite_id": group_probe[
+                        "zone_serving_satellite_id"
+                    ],
+                    "shared_group_cleanup_verification_skipped": skipped,
+                    "skip_reason": group_probe.get("skip_reason"),
+                    "gateway_zone_routes_present": route_state,
+                    "shared_mpls_label_entries_present": label_state,
+                    "cleanup_success": skipped
+                    or (
+                        not any(route_state.values())
+                        and not any(label_state.values())
+                    ),
+                }
+            )
+        rollback_verifications: List[Dict[str, Any]] = []
+        for context_probe in list(plan["context_probes"]):
+            transit_forward_state = {
+                state_key: bool(probe_outputs.get(probe_id, "").strip())
+                for state_key, probe_id in dict(
+                    context_probe["transit_forward_probes"]
+                ).items()
+            }
+            transit_reverse_state = {
+                state_key: bool(probe_outputs.get(probe_id, "").strip())
+                for state_key, probe_id in dict(
+                    context_probe["transit_reverse_probes"]
+                ).items()
+            }
+            ut_default_route_present = bool(
+                probe_outputs.get(
+                    str(context_probe["ut_default_route_probe"]),
+                    "",
+                ).strip()
+            )
+            sat_policy_default_present = bool(
+                probe_outputs.get(
+                    str(context_probe["sat_policy_default_probe"]),
+                    "",
+                ).strip()
+            )
+            gw_forward_pop_present = bool(
+                probe_outputs.get(
+                    str(context_probe["gw_forward_pop_probe"]),
+                    "",
+                ).strip()
+            )
+            rollback_verifications.append(
+                {
+                    "ut_id": context_probe["ut_id"],
+                    "ut_default_route_present": ut_default_route_present,
+                    "zone_return_target_key": context_probe["zone_return_target_key"],
+                    "shared_reverse_cleanup_verification_skipped": bool(
+                        context_probe.get(
+                            "shared_reverse_cleanup_verification_skipped"
+                        )
+                    ),
+                    "sat_policy_default_present": sat_policy_default_present,
+                    "gw_forward_pop_present": gw_forward_pop_present,
+                    "transit_forward_entries_present": transit_forward_state,
+                    "transit_reverse_entries_present": transit_reverse_state,
+                    "cleanup_success": not ut_default_route_present
+                    and not sat_policy_default_present
+                    and not gw_forward_pop_present
+                    and not any(transit_forward_state.values())
+                    and not any(transit_reverse_state.values()),
+                }
+            )
+        cleanup_success = all(
+            bool(verification.get("cleanup_success"))
+            for verification in rollback_verifications
+        ) and all(
+            bool(verification.get("cleanup_success"))
+            for verification in shared_zone_return_group_verifications
+        )
+        return {
+            "contexts": rollback_verifications,
+            "shared_zone_return_groups": shared_zone_return_group_verifications,
+            "cleanup_success": cleanup_success,
+            "verification_mode": "batched_node_local_probe",
+            "node_local_batch_plan": probe_batch_plan,
+            "timing": {
+                "rollback_verification_wall_seconds": time.perf_counter() - started_at,
+                "rollback_verification_batch_timing": _batch_timing_summary(
+                    probe_batch_results
+                ),
+            },
+        }
+
     def apply_and_validate(
         self,
         *,
@@ -2017,11 +3400,17 @@ class MinimalRealLinuxMplsInstaller:
         distribution_batch: DistributedEnvelopeBatch,
         require_preview_validation: bool = True,
         target_ut_ids: Optional[Sequence[str]] = None,
+        existing_session: Optional[ActiveRuntimeSession] = None,
         host_runtime_summary: Optional[Dict[str, Any]] = None,
         max_node_workers: int = 2,
         runtime_mode: str = "correctness",
+        warmup_ut_ids: Optional[Sequence[str]] = None,
+        ping_validation_mode: str = "full",
+        ping_validation_scope: str = DEFAULT_RUNTIME_EPOCH_VALIDATION_SCOPE,
     ) -> ActiveRuntimeSession:
         session_started_at = time.perf_counter()
+        session_started_epoch_seconds = time.time()
+        host_mpls_summary = ensure_host_mpls_ready(auto_prepare=True)
         preview_targets = sorted(distribution_batch.node_delivery_views)
         realization_support = self.assess_realization(
             runtime_update_plan=runtime_update_plan,
@@ -2032,13 +3421,37 @@ class MinimalRealLinuxMplsInstaller:
                 "minimal real runtime path is not available for this slice: "
                 + ", ".join(realization_support["blockers"])
             )
-        contexts = tuple(
+        all_contexts = tuple(
             _realization_contexts(
                 topology_path=topology_path,
                 topology_snapshot=topology_snapshot,
                 runtime_update_plan=runtime_update_plan,
                 target_ut_ids=target_ut_ids,
             )
+        )
+        all_zone_return_install_intents = _zone_return_install_intents(all_contexts)
+        incremental_selection = _select_incremental_runtime_contexts(
+            all_contexts=all_contexts,
+            existing_session=existing_session,
+        )
+        existing_preflights_by_flow_id = dict(
+            incremental_selection["existing_preflights_by_flow_id"]
+        )
+        unchanged_flow_ids = set(incremental_selection["unchanged_flow_ids"])
+        incremental_cleanup_flow_ids = list(
+            incremental_selection["incremental_cleanup_flow_ids"]
+        )
+        incremental_cleanup_report: Dict[str, Any] | None = None
+        contexts = tuple(incremental_selection["changed_contexts"])
+        reapplied_zone_return_install_intents = _zone_return_install_intents_for_contexts(
+            all_zone_return_install_intents,
+            contexts,
+        )
+        zone_return_install_boundary = _zone_return_install_boundary_payload(
+            all_contexts=all_contexts,
+            reapplied_contexts=contexts,
+            all_intents=all_zone_return_install_intents,
+            reapplied_intents=reapplied_zone_return_install_intents,
         )
         if require_preview_validation:
             required_node_ids = {
@@ -2066,13 +3479,87 @@ class MinimalRealLinuxMplsInstaller:
         apply_batch_results: List[NodeLocalBatchResult] = []
         verify_batch_results: List[NodeLocalBatchResult] = []
         failure_reason: Optional[str] = None
+        failure_exception: Optional[BaseException] = None
+        access_link_warmup_results: List[Dict[str, Any]] = []
         phase_timing: Dict[str, float] = {
+            "host_mpls_prepare_wall_seconds": float(host_mpls_summary.get("wall_seconds", 0.0)),
             "preflight_wall_seconds": 0.0,
             "apply_wall_seconds": 0.0,
             "verify_wall_seconds": 0.0,
+            "access_link_warmup_wall_seconds": 0.0,
             "ping_wall_seconds": 0.0,
+            "incremental_cleanup_wall_seconds": 0.0,
+        }
+        phase_epoch_seconds: Dict[str, float] = {
+            "session_started_epoch_seconds": session_started_epoch_seconds,
+        }
+        final_contexts = list(all_contexts)
+        final_context_preflights: List[Dict[str, Any]] = []
+        selected_warmup_ut_ids = (
+            {str(ut_id) for ut_id in warmup_ut_ids}
+            if warmup_ut_ids is not None
+            else None
+        )
+        if ping_validation_mode not in {"full", "none"}:
+            raise RuntimeError(
+                f"unsupported ping_validation_mode: {ping_validation_mode}"
+            )
+        ping_validation_selection = _select_runtime_ping_validation_contexts(
+            all_contexts=final_contexts,
+            reapplied_contexts=contexts,
+            validation_scope=ping_validation_scope,
+        )
+        target_slice_payload = {
+            "slice_id": topology_snapshot.time_slice.get("slice_id"),
+            "snapshot_id": topology_snapshot.snapshot_id,
+            "contains_multi_hop": any(
+                not context.is_direct_gateway_path for context in all_contexts
+            ),
+            "executed_ut_ids": [context.ut_id for context in all_contexts],
+            "executed_flow_ids": [context.flow_id for context in all_contexts],
+            "reapplied_flow_ids": [context.flow_id for context in contexts],
+            "held_flow_ids": sorted(unchanged_flow_ids),
+            "incremental_cleanup_flow_ids": list(incremental_cleanup_flow_ids),
+            "active_flow_count": len(all_contexts),
+            "reapplied_flow_count": len(contexts),
+            "held_flow_count": len(unchanged_flow_ids),
+            "incremental_cleanup_flow_count": len(incremental_cleanup_flow_ids),
+            "reapplied_to_active_flow_ratio": _ratio(
+                len(contexts),
+                len(all_contexts),
+            ),
+            "held_to_active_flow_ratio": _ratio(
+                len(unchanged_flow_ids),
+                len(all_contexts),
+            ),
+            "zone_return_install_intent_count": len(all_zone_return_install_intents),
+            "reapplied_zone_return_install_intent_count": len(
+                reapplied_zone_return_install_intents
+            ),
         }
         try:
+            if incremental_cleanup_flow_ids:
+                incremental_cleanup_started_at = time.perf_counter()
+                incremental_cleanup_report = self.rollback_session(
+                    _subset_active_runtime_session(
+                        existing_session,
+                        flow_ids=incremental_cleanup_flow_ids,
+                    ),
+                    max_node_workers=max_node_workers,
+                    preserve_shared_zone_return_target_keys=(
+                        intent.target_key for intent in all_zone_return_install_intents
+                    ),
+                )
+                phase_timing["incremental_cleanup_wall_seconds"] = (
+                    time.perf_counter() - incremental_cleanup_started_at
+                )
+                if (
+                    incremental_cleanup_report["rollback_verification"]["cleanup_success"]
+                    is not True
+                ):
+                    raise RuntimeError(
+                        "incremental cleanup failed before node-local apply for changed flows"
+                    )
             preflight_started_at = time.perf_counter()
             for context in contexts:
                 if runtime_mode == "fast-demo":
@@ -2089,12 +3576,18 @@ class MinimalRealLinuxMplsInstaller:
                 )
                 context_preflights.append(preflight)
             phase_timing["preflight_wall_seconds"] = time.perf_counter() - preflight_started_at
+            phase_epoch_seconds["preflight_completed_epoch_seconds"] = time.time()
 
             apply_specs = [
                 spec
                 for context, preflight in zip(contexts, context_preflights)
                 for spec in self._apply_specs(context, preflight)
             ]
+            apply_specs.extend(
+                _shared_zone_return_apply_specs(
+                    _shared_gz_backbone_intents(reapplied_zone_return_install_intents)
+                )
+            )
             apply_batches = _group_node_local_batches(apply_specs)
             apply_batch_plan = [batch.to_dict() for batch in apply_batches]
             apply_started_at = time.perf_counter()
@@ -2103,6 +3596,7 @@ class MinimalRealLinuxMplsInstaller:
                 max_workers=max_node_workers,
             )
             phase_timing["apply_wall_seconds"] = time.perf_counter() - apply_started_at
+            phase_epoch_seconds["apply_completed_epoch_seconds"] = time.time()
             apply_results = [batch.to_dict() for batch in apply_batch_results]
 
             if runtime_mode == "fast-demo":
@@ -2126,39 +3620,110 @@ class MinimalRealLinuxMplsInstaller:
                     max_workers=max_node_workers,
                 )
                 phase_timing["verify_wall_seconds"] = time.perf_counter() - verify_started_at
+                phase_epoch_seconds["verify_completed_epoch_seconds"] = time.time()
                 verify_results = [batch.to_dict() for batch in verify_batch_results]
+            if "verify_completed_epoch_seconds" not in phase_epoch_seconds:
+                phase_epoch_seconds["verify_completed_epoch_seconds"] = time.time()
 
-            for context in contexts:
-                context_ping_results, ping_seconds = _ping_validation_targets(
-                    context,
-                    phase="verify",
-                    description="ping Mini Internet host from UT",
-                )
-                phase_timing["ping_wall_seconds"] += ping_seconds
-                ping_results.extend(context_ping_results)
-                if any(result["success"] is not True for result in context_ping_results):
-                    failure_reason = f"ut_ping_failed_after_real_apply:{context.ut_id}"
-                    break
+            final_context_preflights: List[Dict[str, Any]] = []
+            new_preflights_by_flow_id = {
+                str(context.flow_id): dict(preflight)
+                for context, preflight in zip(contexts, context_preflights)
+            }
+            for final_context in final_contexts:
+                flow_id = str(final_context.flow_id)
+                if flow_id in unchanged_flow_ids:
+                    final_context_preflights.append(
+                        dict(existing_preflights_by_flow_id[flow_id])
+                    )
+                else:
+                    final_context_preflights.append(
+                        dict(new_preflights_by_flow_id[flow_id])
+                    )
+
+            if ping_validation_mode == "full":
+                warmed_access_links: set[Tuple[str, str, str, str]] = set()
+                for context in ping_validation_selection["selected_contexts"]:
+                    access_link_key = (
+                        context.ut_id,
+                        context.ut_access_ip,
+                        context.serving_satellite_id,
+                        context.ut_access_peer_ip,
+                    )
+                    warmup_selected = (
+                        selected_warmup_ut_ids is None
+                        or context.ut_id in selected_warmup_ut_ids
+                    )
+                    if warmup_selected and access_link_key not in warmed_access_links:
+                        access_link_warmup_results.append(
+                            _warm_direct_access_link(
+                                node_id=context.ut_id,
+                                target_ip=context.ut_access_peer_ip,
+                                phase="warmup",
+                                description="warm direct UT access link",
+                            )
+                        )
+                        phase_timing["access_link_warmup_wall_seconds"] += float(
+                            access_link_warmup_results[-1]["wall_seconds"]
+                        )
+                        warmed_access_links.add(access_link_key)
+                    context_ping_results, ping_seconds = _ping_validation_targets(
+                        context,
+                        phase="verify",
+                        description="ping Mini Internet host from UT",
+                    )
+                    phase_timing["ping_wall_seconds"] += ping_seconds
+                    ping_results.extend(context_ping_results)
+                    if any(result["success"] is not True for result in context_ping_results):
+                        failure_reason = f"ut_ping_failed_after_real_apply:{context.ut_id}"
+                        break
+            phase_epoch_seconds["access_link_warmup_completed_epoch_seconds"] = time.time()
+            phase_epoch_seconds["ping_completed_epoch_seconds"] = time.time()
         except (RuntimeCommandFailure, NodeLocalBatchFailure) as exc:
             failure_reason = str(exc)
+            failure_exception = exc
 
         if failure_reason is not None:
             cleanup_session = ActiveRuntimeSession(
                 session_id="failed-session-cleanup",
                 backend={},
-                target_slice={
-                    "slice_id": topology_snapshot.time_slice.get("slice_id"),
-                    "snapshot_id": topology_snapshot.snapshot_id,
-                },
+                target_slice=dict(target_slice_payload),
                 host_runtime_boundary={},
                 preflight={
                     "contexts": preflight_results,
                     "preview_targets": preview_targets,
                     "realization_support": realization_support,
+                    "host_mpls_preparation": host_mpls_summary,
+                    "access_link_warmup_results": access_link_warmup_results,
+                    "zone_return_install_boundary": dict(zone_return_install_boundary),
+                    "incremental_cleanup": (
+                        {
+                            "flow_ids": list(incremental_cleanup_flow_ids),
+                            **dict(incremental_cleanup_report or {}),
+                        }
+                        if incremental_cleanup_flow_ids
+                        else {
+                            "flow_ids": [],
+                            "rollback_results": [],
+                            "rollback_verification": {"contexts": [], "cleanup_success": True},
+                            "timing": {"rollback_wall_seconds": 0.0},
+                            "node_local_batch_plan": [],
+                        }
+                    ),
                     "node_local_batch_plan": {
                         "apply": apply_batch_plan,
                         "verify": verify_batch_plan,
                         "rollback": [],
+                    },
+                    "runtime_mode": runtime_mode,
+                    "ping_validation_mode": ping_validation_mode,
+                    "ping_validation_scope": ping_validation_selection[
+                        "validation_scope"
+                    ],
+                    "ping_validation_selection": {
+                        key: value
+                        for key, value in ping_validation_selection.items()
+                        if key != "selected_contexts"
                     },
                 },
                 apply_results=apply_results,
@@ -2166,12 +3731,26 @@ class MinimalRealLinuxMplsInstaller:
                 ping_results=ping_results,
                 timing={
                     **phase_timing,
+                    **phase_epoch_seconds,
                     "total_wall_seconds": time.perf_counter() - session_started_at,
+                    "total_completed_epoch_seconds": time.time(),
                     "apply_batch_timing": _batch_timing_summary(apply_batch_results),
                     "verify_batch_timing": _batch_timing_summary(verify_batch_results),
                     "flow_path_observations": [
-                        _context_path_summary(context) for context in contexts
+                        _context_path_summary(context) for context in all_contexts
                     ],
+                    "zone_return_install_boundary": dict(zone_return_install_boundary),
+                    "runtime_mode": runtime_mode,
+                    "ping_validation_mode": ping_validation_mode,
+                    "ping_validation_scope": ping_validation_selection[
+                        "validation_scope"
+                    ],
+                    "ping_validation_target_count": len(
+                        ping_validation_selection["selected_contexts"]
+                    ),
+                    "ping_validation_target_flow_ids": list(
+                        ping_validation_selection["target_flow_ids"]
+                    ),
                 },
                 contexts=contexts,
                 context_preflights=tuple(context_preflights),
@@ -2182,7 +3761,7 @@ class MinimalRealLinuxMplsInstaller:
             )
             raise RuntimeError(
                 f"{failure_reason}; cleanup_success={rollback_report['rollback_verification']['cleanup_success']}"
-            )
+            ) from failure_exception
 
         execution_seed = {
             "slice_id": topology_snapshot.time_slice.get("slice_id"),
@@ -2203,20 +3782,17 @@ class MinimalRealLinuxMplsInstaller:
                 "future_runtime_target": "node_local_agent_or_daemon",
                 "concurrency_model": "per_node_serial_bounded_parallelism",
                 "max_node_workers": max(1, int(max_node_workers)),
+                "incremental_reapply_mode": (
+                    "changed_flow_subset"
+                    if existing_session is not None
+                    else "full_slice_apply"
+                ),
                 "node_local_execution_split": {
                     "external_orchestrator_role": "publish_per_node_ordered_batches",
                     "node_local_role": "execute_ordered_batch_within_node_namespace",
                 },
             },
-            target_slice={
-                "slice_id": topology_snapshot.time_slice.get("slice_id"),
-                "snapshot_id": topology_snapshot.snapshot_id,
-                "contains_multi_hop": any(
-                    not context.is_direct_gateway_path for context in contexts
-                ),
-                "executed_ut_ids": [context.ut_id for context in contexts],
-                "executed_flow_ids": [context.flow_id for context in contexts],
-            },
+            target_slice=dict(target_slice_payload),
             host_runtime_boundary=(
                 dict(host_runtime_summary)
                 if host_runtime_summary is not None
@@ -2229,47 +3805,114 @@ class MinimalRealLinuxMplsInstaller:
                 "contexts": preflight_results,
                 "preview_targets": preview_targets,
                 "realization_support": realization_support,
+                "host_mpls_preparation": host_mpls_summary,
+                "access_link_warmup_results": access_link_warmup_results,
+                "zone_return_install_boundary": dict(zone_return_install_boundary),
+                "incremental_cleanup": (
+                    {
+                        "flow_ids": list(incremental_cleanup_flow_ids),
+                        **dict(incremental_cleanup_report or {}),
+                    }
+                    if incremental_cleanup_flow_ids
+                    else {
+                        "flow_ids": [],
+                        "rollback_results": [],
+                        "rollback_verification": {"contexts": [], "cleanup_success": True},
+                        "timing": {"rollback_wall_seconds": 0.0},
+                        "node_local_batch_plan": [],
+                    }
+                ),
                 "node_local_batch_plan": {
                     "apply": apply_batch_plan,
                     "verify": verify_batch_plan,
                     "rollback": [],
                 },
                 "runtime_mode": runtime_mode,
+                "ping_validation_mode": ping_validation_mode,
+                "ping_validation_scope": ping_validation_selection[
+                    "validation_scope"
+                ],
+                "ping_validation_selection": {
+                    key: value
+                    for key, value in ping_validation_selection.items()
+                    if key != "selected_contexts"
+                },
             },
             apply_results=apply_results,
             verify_results=verify_results,
             ping_results=ping_results,
             timing={
                 **phase_timing,
+                **phase_epoch_seconds,
                 "total_wall_seconds": time.perf_counter() - session_started_at,
+                "total_completed_epoch_seconds": time.time(),
                 "apply_batch_timing": _batch_timing_summary(apply_batch_results),
                 "verify_batch_timing": _batch_timing_summary(verify_batch_results),
                 "flow_path_observations": [
-                    _context_path_summary(context) for context in contexts
+                    _context_path_summary(context) for context in all_contexts
                 ],
+                "zone_return_install_boundary": dict(zone_return_install_boundary),
                 "runtime_mode": runtime_mode,
+                "ping_validation_mode": ping_validation_mode,
+                "ping_validation_scope": ping_validation_selection[
+                    "validation_scope"
+                ],
+                "ping_validation_target_count": len(
+                    ping_validation_selection["selected_contexts"]
+                ),
+                "ping_validation_target_flow_ids": list(
+                    ping_validation_selection["target_flow_ids"]
+                ),
             },
-            contexts=contexts,
-            context_preflights=tuple(context_preflights),
+            contexts=all_contexts,
+            context_preflights=tuple(final_context_preflights),
         )
 
     def probe_connectivity(
         self,
         session: ActiveRuntimeSession,
+        *,
+        primary_only: bool = False,
+        warm_access_links: bool = False,
     ) -> Dict[str, Any]:
         started_at = time.perf_counter()
         flow_results: List[Dict[str, Any]] = []
+        access_link_warmup_results: List[Dict[str, Any]] = []
+        warmed_access_links: set[Tuple[str, str, str, str]] = set()
         for context in session.contexts:
+            if warm_access_links:
+                access_link_key = (
+                    context.ut_id,
+                    context.ut_access_ip,
+                    context.serving_satellite_id,
+                    context.ut_access_peer_ip,
+                )
+                if access_link_key not in warmed_access_links:
+                    access_link_warmup_results.append(
+                        _warm_direct_access_link(
+                            node_id=context.ut_id,
+                            target_ip=context.ut_access_peer_ip,
+                            phase="observe",
+                            description="warm direct UT access link before connectivity probe",
+                        )
+                    )
+                    warmed_access_links.add(access_link_key)
             context_ping_results, _ping_seconds = _ping_validation_targets(
                 context,
                 phase="observe",
                 description="probe Mini Internet host from UT before transition",
+                primary_only=primary_only,
             )
             flow_results.extend(context_ping_results)
         return {
             "slice_id": session.target_slice.get("slice_id"),
             "wall_seconds": time.perf_counter() - started_at,
             "flow_results": flow_results,
+            "access_link_warmup_results": access_link_warmup_results,
+            "access_link_warmup_wall_seconds": sum(
+                float(result.get("wall_seconds", 0.0))
+                for result in access_link_warmup_results
+            ),
             "ping_success": bool(flow_results)
             and all(result["success"] for result in flow_results),
         }
@@ -2279,16 +3922,24 @@ class MinimalRealLinuxMplsInstaller:
         session: ActiveRuntimeSession,
         *,
         max_node_workers: int = 2,
+        preserve_shared_zone_return_target_keys: Sequence[str] = (),
     ) -> Dict[str, Any]:
         started_at = time.perf_counter()
-        rollback_specs = [
+        preserved_shared_target_keys = {
+            str(target_key) for target_key in preserve_shared_zone_return_target_keys
+        }
+        rollback_specs = _shared_zone_return_rollback_specs_for_contexts(
+            session.contexts,
+            preserve_target_keys=preserved_shared_target_keys,
+        )
+        rollback_specs.extend([
             spec
             for context, preflight in zip(
                 reversed(session.contexts),
                 reversed(session.context_preflights),
             )
             for spec in self._rollback_specs(context, preflight)
-        ]
+        ])
         rollback_batches = _group_node_local_batches(rollback_specs)
         rollback_batch_plan = [batch.to_dict() for batch in rollback_batches]
         rollback_batch_results = _execute_node_local_batches(
@@ -2296,28 +3947,33 @@ class MinimalRealLinuxMplsInstaller:
             max_workers=max_node_workers,
         )
         rollback_results = [batch.to_dict() for batch in rollback_batch_results]
-        rollback_verifications = [
-            {
-                "ut_id": context.ut_id,
-                **self._rollback_verification(context),
-            }
-            for context in reversed(session.contexts)
-        ]
-        cleanup_success = all(
-            bool(verification.get("cleanup_success"))
-            for verification in rollback_verifications
+        verification_report = self._rollback_verification_many(
+            tuple(reversed(session.contexts)),
+            max_node_workers=max_node_workers,
+            preserve_shared_zone_return_target_keys=preserved_shared_target_keys,
         )
         return {
             "rollback_results": rollback_results,
             "rollback_verification": {
-                "contexts": rollback_verifications,
-                "cleanup_success": cleanup_success,
+                "contexts": list(verification_report["contexts"]),
+                "shared_zone_return_groups": list(
+                    verification_report["shared_zone_return_groups"]
+                ),
+                "cleanup_success": bool(verification_report["cleanup_success"]),
+                "verification_mode": verification_report["verification_mode"],
             },
             "timing": {
                 "rollback_wall_seconds": time.perf_counter() - started_at,
                 "rollback_batch_timing": _batch_timing_summary(rollback_batch_results),
+                **dict(verification_report["timing"]),
             },
             "node_local_batch_plan": rollback_batch_plan,
+            "preserved_shared_zone_return_target_keys": sorted(
+                preserved_shared_target_keys
+            ),
+            "rollback_verification_batch_plan": list(
+                verification_report["node_local_batch_plan"]
+            ),
         }
 
     def execute(
@@ -2348,7 +4004,7 @@ class MinimalRealLinuxMplsInstaller:
             session,
             max_node_workers=max_node_workers,
         )
-        ping_results = list(session.ping_results)
+        ping_results = list(session.ping_results or [])
         primary_ping_result = ping_results[0] if ping_results else {
             "ut_id": None,
             "ping_target_ip": None,
@@ -2360,13 +4016,13 @@ class MinimalRealLinuxMplsInstaller:
         }
         return RuntimeExecutionResult(
             execution_id=session.session_id,
-            backend={**session.backend, "execution_mode": "real_apply_verify_rollback"},
-            target_slice=dict(session.target_slice),
-            host_runtime_boundary=dict(session.host_runtime_boundary),
+            backend={**dict(session.backend or {}), "execution_mode": "real_apply_verify_rollback"},
+            target_slice=dict(session.target_slice or {}),
+            host_runtime_boundary=dict(session.host_runtime_boundary or {}),
             preflight={
-                **dict(session.preflight),
+                **dict(session.preflight or {}),
                 "node_local_batch_plan": {
-                    **dict(session.preflight.get("node_local_batch_plan", {})),
+                    **dict((session.preflight or {}).get("node_local_batch_plan", {})),
                     "rollback": list(rollback_report["node_local_batch_plan"]),
                 },
             },
@@ -2376,10 +4032,10 @@ class MinimalRealLinuxMplsInstaller:
             rollback_results=list(rollback_report["rollback_results"]),
             rollback_verification=dict(rollback_report["rollback_verification"]),
             timing={
-                **dict(session.timing),
+                **dict(session.timing or {}),
                 **dict(rollback_report["timing"]),
                 "total_wall_seconds": (
-                    float(session.timing.get("total_wall_seconds", 0.0))
+                    float((session.timing or {}).get("total_wall_seconds", 0.0))
                     + float(rollback_report["timing"].get("rollback_wall_seconds", 0.0))
                 ),
             },

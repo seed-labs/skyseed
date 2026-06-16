@@ -86,26 +86,7 @@ run_preclean() {
 }
 
 prepare_host_mpls() {
-  printf 'Host MPLS preparation started at %s\n' "$(date '+%Y-%m-%d %H:%M:%S')"
-  printf 'user=%s\n' "$(whoami)"
-  printf '\n$ sudo -n true\n'
-  sudo -n true
-
-  for module in mpls_router mpls_iptunnel mpls_gso; do
-    printf '\n$ sudo -n modprobe %s\n' "${module}"
-    sudo -n modprobe "${module}"
-  done
-
-  printf '\n$ sudo -n sysctl -w net.mpls.platform_labels=1048575\n'
-  sudo -n sysctl -w net.mpls.platform_labels=1048575
-
-  printf '\nLoaded MPLS modules:\n'
-  lsmod | grep '^mpls_' || true
-  printf '\nHost MPLS sysctl:\n'
-  sysctl net.mpls.platform_labels
-  printf '\nHost MPLS route family smoke:\n'
-  ip -f mpls route show
-  printf '\nHost MPLS preparation finished at %s\n' "$(date '+%Y-%m-%d %H:%M:%S')"
+  python3 satellite/apps/prepare_host_mpls.py --format text
 }
 
 wait_for_containers() {

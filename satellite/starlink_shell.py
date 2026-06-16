@@ -1,0 +1,629 @@
+#!/usr/bin/env python3
+# encoding: utf-8
+
+"""Starlink shell selection plus real/planned propagation helpers."""
+
+from __future__ import annotations
+
+import math
+from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Sequence
+
+from orbit_data import ParsedTleRecord
+
+
+EARTH_RADIUS_KM = 6371.0
+EARTH_MU_KM3_S2 = 398600.4418
+
+
+@dataclass(frozen=True)
+class PlannedShellPreset:
+    shell_id: str
+    plane_count: int
+    satellites_per_plane: int
+    altitude_km: float
+    inclination_deg: float
+
+    @property
+    def satellite_count(self) -> int:
+        return int(self.plane_count * self.satellites_per_plane)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "shell_id": self.shell_id,
+            "plane_count": self.plane_count,
+            "satellites_per_plane": self.satellites_per_plane,
+            "satellite_count": self.satellite_count,
+            "altitude_km": self.altitude_km,
+            "inclination_deg": self.inclination_deg,
+        }
+
+
+PLANNED_STARLINK_PHASE1_SHELL_PRESETS: Dict[str, PlannedShellPreset] = {
+    "S1": PlannedShellPreset("S1", plane_count=72, satellites_per_plane=22, altitude_km=550.0, inclination_deg=53.0),
+    "S2": PlannedShellPreset("S2", plane_count=72, satellites_per_plane=22, altitude_km=540.0, inclination_deg=53.2),
+    "S3": PlannedShellPreset("S3", plane_count=36, satellites_per_plane=20, altitude_km=570.0, inclination_deg=70.0),
+    "S4": PlannedShellPreset("S4", plane_count=6, satellites_per_plane=58, altitude_km=560.0, inclination_deg=97.6),
+    "S5": PlannedShellPreset("S5", plane_count=4, satellites_per_plane=43, altitude_km=560.0, inclination_deg=97.6),
+}
+
+
+def satellite_node_id(norad_id: int) -> str:
+    return f"stl-{norad_id}"
+
+
+def _mean_motion_to_altitude_km(mean_motion_rev_per_day: float) -> float:
+    mean_motion_rad_per_second = mean_motion_rev_per_day * 2.0 * math.pi / 86400.0
+    semi_major_axis_km = (EARTH_MU_KM3_S2 / (mean_motion_rad_per_second**2)) ** (1.0 / 3.0)
+    return semi_major_axis_km - EARTH_RADIUS_KM
+
+
+def _altitude_km_to_mean_motion_rev_per_day(altitude_km: float) -> float:
+    semi_major_axis_km = EARTH_RADIUS_KM + altitude_km
+    mean_motion_rad_per_second = math.sqrt(EARTH_MU_KM3_S2 / (semi_major_axis_km**3))
+    return mean_motion_rad_per_second * 86400.0 / (2.0 * math.pi)
+
+
+def _circular_angle_delta_deg(first: float, second: float) -> float:
+    delta = abs((first - second) % 360.0)
+    return min(delta, 360.0 - delta)
+
+
+def _sample_evenly(records: Sequence[ParsedTleRecord], count: int) -> List[ParsedTleRecord]:
+    if count >= len(records):
+        return list(records)
+    if count <= 0:
+        return []
+    sampled: List[ParsedTleRecord] = []
+    seen_indices: set[int] = set()
+    for index in range(count):
+        target = round(index * (len(records) - 1) / max(1, count - 1))
+        while target in seen_indices and target + 1 < len(records):
+            target += 1
+        seen_indices.add(target)
+        sampled.append(records[target])
+    return sampled
+
+
+@dataclass(frozen=True)
+class ShellCluster:
+    inclination_bucket_deg: float
+    altitude_bucket_km: float
+    records: Sequence[ParsedTleRecord]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "inclination_bucket_deg": self.inclination_bucket_deg,
+            "altitude_bucket_km": self.altitude_bucket_km,
+            "record_count": len(self.records),
+            "norad_ids": [record.norad_id for record in self.records],
+        }
+
+
+@dataclass(frozen=True)
+class ShellPlane:
+    plane_id: str
+    plane_index: int
+    mean_raan_deg: float
+    records: Sequence[ParsedTleRecord]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "plane_id": self.plane_id,
+            "plane_index": self.plane_index,
+            "mean_raan_deg": round(self.mean_raan_deg, 6),
+            "record_count": len(self.records),
+            "norad_ids": [record.norad_id for record in self.records],
+        }
+
+
+@dataclass(frozen=True)
+class ShellSelectionResult:
+    selection_method: str
+    cluster: ShellCluster
+    selected_planes: Sequence[ShellPlane]
+    selected_records: Sequence[ParsedTleRecord]
+    manifest: Dict[str, Any]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "selection_method": self.selection_method,
+            "cluster": self.cluster.to_dict(),
+            "selected_planes": [plane.to_dict() for plane in self.selected_planes],
+            "selected_records": [record.to_dict() for record in self.selected_records],
+            "manifest": dict(self.manifest),
+        }
+
+
+@dataclass(frozen=True)
+class PropagatedSatelliteState:
+    satellite_node_id: str
+    norad_id: int
+    timestamp_utc: str
+    x_km: float
+    y_km: float
+    z_km: float
+    vx_km_s: float
+    vy_km_s: float
+    vz_km_s: float
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class PropagatedOrbitSlice:
+    slice_id: str
+    relative_time_seconds: float
+    timestamp_utc: str
+    satellite_states: Dict[str, PropagatedSatelliteState]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "slice_id": self.slice_id,
+            "relative_time_seconds": self.relative_time_seconds,
+            "timestamp_utc": self.timestamp_utc,
+            "satellite_states": {
+                node_id: state.to_dict()
+                for node_id, state in sorted(self.satellite_states.items())
+            },
+        }
+
+
+def planned_shell_preset(shell_id: str) -> PlannedShellPreset:
+    normalized = str(shell_id).upper()
+    if normalized not in PLANNED_STARLINK_PHASE1_SHELL_PRESETS:
+        raise ValueError(f"unknown planned shell preset: {shell_id}")
+    return PLANNED_STARLINK_PHASE1_SHELL_PRESETS[normalized]
+
+
+def generate_planned_shell_records(
+    *,
+    shell_id: str,
+    epoch_utc: datetime | None = None,
+) -> Sequence[ParsedTleRecord]:
+    preset = planned_shell_preset(shell_id)
+    epoch = (epoch_utc or datetime(2026, 1, 1, tzinfo=timezone.utc)).astimezone(timezone.utc)
+    epoch_text = epoch.isoformat().replace("+00:00", "Z")
+    mean_motion = _altitude_km_to_mean_motion_rev_per_day(preset.altitude_km)
+    preset_index = list(PLANNED_STARLINK_PHASE1_SHELL_PRESETS).index(preset.shell_id) + 1
+    base_norad_id = 900000 + (preset_index * 10000)
+    records: List[ParsedTleRecord] = []
+    for plane_index in range(preset.plane_count):
+        raan_deg = (360.0 * plane_index) / preset.plane_count
+        plane_phase_offset_deg = (180.0 * (plane_index % 2)) / preset.satellites_per_plane
+        for satellite_index in range(preset.satellites_per_plane):
+            mean_anomaly_deg = (
+                (360.0 * satellite_index) / preset.satellites_per_plane
+                + plane_phase_offset_deg
+            ) % 360.0
+            norad_id = base_norad_id + (plane_index * preset.satellites_per_plane) + satellite_index + 1
+            records.append(
+                ParsedTleRecord(
+                    satellite_name=(
+                        f"STARLINK-{preset.shell_id}-P{plane_index + 1:02d}-"
+                        f"S{satellite_index + 1:02d}"
+                    ),
+                    norad_id=norad_id,
+                    epoch_utc=epoch_text,
+                    inclination_deg=preset.inclination_deg,
+                    eccentricity=0.0,
+                    mean_motion_rev_per_day=round(mean_motion, 9),
+                    raan_deg=round(raan_deg, 6),
+                    argument_of_perigee_deg=0.0,
+                    mean_anomaly_deg=round(mean_anomaly_deg, 6),
+                    line1=f"PLANNED {preset.shell_id} {norad_id}",
+                    line2=(
+                        f"{preset.inclination_deg:.4f} {raan_deg:.4f} "
+                        f"{mean_anomaly_deg:.4f} {mean_motion:.9f}"
+                    ),
+                )
+            )
+    return tuple(records)
+
+
+def cluster_shell_candidates(
+    records: Sequence[ParsedTleRecord],
+    *,
+    inclination_bucket_deg: float = 0.5,
+    altitude_bucket_km: float = 25.0,
+) -> List[ShellCluster]:
+    grouped: Dict[tuple[float, float], List[ParsedTleRecord]] = {}
+    for record in records:
+        altitude_km = _mean_motion_to_altitude_km(record.mean_motion_rev_per_day)
+        inclination_bucket = (
+            round(record.inclination_deg / inclination_bucket_deg) * inclination_bucket_deg
+        )
+        altitude_bucket = (
+            round(altitude_km / altitude_bucket_km) * altitude_bucket_km
+        )
+        grouped.setdefault((inclination_bucket, altitude_bucket), []).append(record)
+    clusters = [
+        ShellCluster(
+            inclination_bucket_deg=key[0],
+            altitude_bucket_km=key[1],
+            records=tuple(
+                sorted(
+                    grouped[key],
+                    key=lambda record: (
+                        record.raan_deg,
+                        record.mean_anomaly_deg,
+                        record.norad_id,
+                    ),
+                )
+            ),
+        )
+        for key in sorted(
+            grouped,
+            key=lambda item: (-len(grouped[item]), item[0], item[1]),
+        )
+    ]
+    return clusters
+
+
+def cluster_records_into_planes(
+    records: Sequence[ParsedTleRecord],
+    *,
+    raan_gap_threshold_deg: float = 2.5,
+) -> List[ShellPlane]:
+    if not records:
+        return []
+    ordered = sorted(records, key=lambda record: (record.raan_deg, record.mean_anomaly_deg))
+    groups: List[List[ParsedTleRecord]] = [[ordered[0]]]
+    for record in ordered[1:]:
+        if _circular_angle_delta_deg(record.raan_deg, groups[-1][-1].raan_deg) <= raan_gap_threshold_deg:
+            groups[-1].append(record)
+        else:
+            groups.append([record])
+    if len(groups) > 1 and _circular_angle_delta_deg(groups[0][0].raan_deg, groups[-1][-1].raan_deg) <= raan_gap_threshold_deg:
+        merged = groups[-1] + groups[0]
+        groups = [merged] + groups[1:-1]
+    planes: List[ShellPlane] = []
+    for index, group in enumerate(
+        sorted(
+            groups,
+            key=lambda item: (
+                sum(record.raan_deg for record in item) / len(item),
+                len(item),
+            ),
+        ),
+        start=1,
+    ):
+        mean_raan = sum(record.raan_deg for record in group) / len(group)
+        planes.append(
+            ShellPlane(
+                plane_id=f"shell-plane-{index:03d}",
+                plane_index=index,
+                mean_raan_deg=mean_raan % 360.0,
+                records=tuple(
+                    sorted(group, key=lambda record: (record.mean_anomaly_deg, record.norad_id))
+                ),
+            )
+        )
+    return planes
+
+
+def select_starlink_shell(
+    records: Sequence[ParsedTleRecord],
+    *,
+    max_satellites: int,
+) -> ShellSelectionResult:
+    if max_satellites <= 0:
+        raise ValueError("max_satellites must be positive")
+    clusters = cluster_shell_candidates(records)
+    if not clusters:
+        raise ValueError("no Starlink records are available for shell selection")
+    cluster = clusters[0]
+    all_planes = cluster_records_into_planes(cluster.records)
+    if not all_planes:
+        raise ValueError("shell cluster did not produce any RAAN plane groupings")
+
+    selected_plane_count = min(len(all_planes), max(3, max_satellites // 4))
+    chosen_plane_indices = sorted(
+        {
+            min(
+                len(all_planes) - 1,
+                round(index * (len(all_planes) - 1) / max(1, selected_plane_count - 1)),
+            )
+            for index in range(selected_plane_count)
+        }
+    )
+    selected_planes = [all_planes[index] for index in chosen_plane_indices]
+    while len(selected_planes) < selected_plane_count:
+        for plane in all_planes:
+            if plane not in selected_planes:
+                selected_planes.append(plane)
+                break
+
+    base_quota = max_satellites // len(selected_planes)
+    extra = max_satellites % len(selected_planes)
+    selected_records: List[ParsedTleRecord] = []
+    selected_by_plane_id: Dict[str, List[ParsedTleRecord]] = {
+        plane.plane_id: []
+        for plane in all_planes
+    }
+    for plane_index, plane in enumerate(selected_planes):
+        quota = base_quota + (1 if plane_index < extra else 0)
+        plane_records = _sample_evenly(list(plane.records), quota)
+        selected_records.extend(plane_records)
+        selected_by_plane_id[plane.plane_id].extend(plane_records)
+
+    selected_ids = {record.norad_id for record in selected_records}
+    prioritized_planes = list(selected_planes) + [
+        plane
+        for plane in all_planes
+        if plane not in selected_planes
+    ]
+    while len(selected_records) < min(max_satellites, len(cluster.records)):
+        added_record = False
+        for plane in prioritized_planes:
+            next_record = next(
+                (
+                    record
+                    for record in plane.records
+                    if record.norad_id not in selected_ids
+                ),
+                None,
+            )
+            if next_record is None:
+                continue
+            selected_records.append(next_record)
+            selected_ids.add(next_record.norad_id)
+            selected_by_plane_id[plane.plane_id].append(next_record)
+            added_record = True
+            if len(selected_records) >= min(max_satellites, len(cluster.records)):
+                break
+        if not added_record:
+            break
+
+    selected_planes = [
+        plane
+        for plane in prioritized_planes
+        if selected_by_plane_id[plane.plane_id]
+    ]
+    plane_manifests: List[Dict[str, Any]] = []
+    for plane in selected_planes:
+        plane_records = sorted(
+            selected_by_plane_id[plane.plane_id],
+            key=lambda record: (record.mean_anomaly_deg, record.norad_id),
+        )
+        plane_manifests.append(
+            {
+                "plane_id": plane.plane_id,
+                "plane_index": plane.plane_index,
+                "mean_raan_deg": round(plane.mean_raan_deg, 6),
+                "available_record_count": len(plane.records),
+                "selected_record_count": len(plane_records),
+                "norad_ids": [record.norad_id for record in plane_records],
+            }
+        )
+
+    selected_records = sorted(
+        selected_records,
+        key=lambda record: (
+            next(
+                plane.plane_index
+                for plane in selected_planes
+                if record in plane.records
+            ),
+            record.mean_anomaly_deg,
+            record.norad_id,
+        ),
+    )
+    selected_altitudes = [
+        _mean_motion_to_altitude_km(record.mean_motion_rev_per_day)
+        for record in selected_records
+    ]
+    manifest = {
+        "selection_method": (
+            "densest inclination/altitude cluster, then balanced RAAN plane sampling"
+        ),
+        "cluster_inclination_bucket_deg": cluster.inclination_bucket_deg,
+        "cluster_altitude_bucket_km": cluster.altitude_bucket_km,
+        "cluster_record_count": len(cluster.records),
+        "plane_count_in_cluster": len(all_planes),
+        "selected_plane_count": len(selected_planes),
+        "selected_satellite_count": len(selected_records),
+        "max_satellites_requested": max_satellites,
+        "included_satellite_ids": [record.norad_id for record in selected_records],
+        "parameter_bands": {
+            "inclination_deg_min": round(
+                min(record.inclination_deg for record in selected_records),
+                6,
+            ),
+            "inclination_deg_max": round(
+                max(record.inclination_deg for record in selected_records),
+                6,
+            ),
+            "estimated_altitude_km_min": round(min(selected_altitudes), 3),
+            "estimated_altitude_km_max": round(max(selected_altitudes), 3),
+            "mean_motion_rev_per_day_min": round(
+                min(record.mean_motion_rev_per_day for record in selected_records),
+                9,
+            ),
+            "mean_motion_rev_per_day_max": round(
+                max(record.mean_motion_rev_per_day for record in selected_records),
+                9,
+            ),
+        },
+        "plane_manifest": plane_manifests,
+    }
+    return ShellSelectionResult(
+        selection_method=str(manifest["selection_method"]),
+        cluster=cluster,
+        selected_planes=tuple(selected_planes),
+        selected_records=tuple(selected_records),
+        manifest=manifest,
+    )
+
+
+def propagate_starlink_records(
+    records: Sequence[ParsedTleRecord],
+    *,
+    start_time: datetime,
+    step_seconds: float,
+    slice_count: int,
+    slice_id_prefix: str = "starlink-shell-slice",
+) -> Sequence[PropagatedOrbitSlice]:
+    if slice_count <= 0:
+        raise ValueError("slice_count must be positive")
+    if step_seconds <= 0.0:
+        raise ValueError("step_seconds must be positive")
+    try:
+        from sgp4.api import Satrec, jday
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "sgp4 is required for Starlink shell propagation. Install it with `pip install sgp4`."
+        ) from exc
+
+    satrecs = {
+        record.norad_id: Satrec.twoline2rv(record.line1, record.line2)
+        for record in records
+    }
+    slices: List[PropagatedOrbitSlice] = []
+    utc_start = start_time.astimezone(timezone.utc)
+    for slice_index in range(slice_count):
+        timestamp = utc_start + timedelta(seconds=step_seconds * slice_index)
+        second_with_fraction = timestamp.second + (timestamp.microsecond / 1_000_000.0)
+        jd, fraction = jday(
+            timestamp.year,
+            timestamp.month,
+            timestamp.day,
+            timestamp.hour,
+            timestamp.minute,
+            second_with_fraction,
+        )
+        satellite_states: Dict[str, PropagatedSatelliteState] = {}
+        for record in records:
+            error_code, position_km, velocity_km_s = satrecs[record.norad_id].sgp4(jd, fraction)
+            if error_code != 0:
+                raise RuntimeError(
+                    f"sgp4 propagation failed for NORAD {record.norad_id} with code {error_code}"
+                )
+            node_id = satellite_node_id(record.norad_id)
+            satellite_states[node_id] = PropagatedSatelliteState(
+                satellite_node_id=node_id,
+                norad_id=record.norad_id,
+                timestamp_utc=timestamp.isoformat().replace("+00:00", "Z"),
+                x_km=round(float(position_km[0]), 6),
+                y_km=round(float(position_km[1]), 6),
+                z_km=round(float(position_km[2]), 6),
+                vx_km_s=round(float(velocity_km_s[0]), 9),
+                vy_km_s=round(float(velocity_km_s[1]), 9),
+                vz_km_s=round(float(velocity_km_s[2]), 9),
+            )
+        slices.append(
+            PropagatedOrbitSlice(
+                slice_id=f"{slice_id_prefix}-{slice_index + 1:04d}",
+                relative_time_seconds=round(step_seconds * slice_index, 6),
+                timestamp_utc=timestamp.isoformat().replace("+00:00", "Z"),
+                satellite_states=satellite_states,
+            )
+        )
+    return tuple(slices)
+
+
+def propagate_planned_shell_records(
+    records: Sequence[ParsedTleRecord],
+    *,
+    start_time: datetime,
+    step_seconds: float,
+    slice_count: int,
+    slice_id_prefix: str = "starlink-shell-slice",
+) -> Sequence[PropagatedOrbitSlice]:
+    if slice_count <= 0:
+        raise ValueError("slice_count must be positive")
+    if step_seconds <= 0.0:
+        raise ValueError("step_seconds must be positive")
+    utc_start = start_time.astimezone(timezone.utc)
+    slices: List[PropagatedOrbitSlice] = []
+    for slice_index in range(slice_count):
+        timestamp = utc_start + timedelta(seconds=step_seconds * slice_index)
+        satellite_states: Dict[str, PropagatedSatelliteState] = {}
+        for record in records:
+            epoch = datetime.fromisoformat(record.epoch_utc.replace("Z", "+00:00"))
+            delta_seconds = (timestamp - epoch).total_seconds()
+            semi_major_axis_km = EARTH_RADIUS_KM + _mean_motion_to_altitude_km(
+                record.mean_motion_rev_per_day
+            )
+            true_anomaly_rad = math.radians(
+                (
+                    record.mean_anomaly_deg
+                    + (record.mean_motion_rev_per_day * 360.0 * delta_seconds / 86400.0)
+                )
+                % 360.0
+            )
+            raan_rad = math.radians(record.raan_deg)
+            inclination_rad = math.radians(record.inclination_deg)
+            argument_of_perigee_rad = math.radians(record.argument_of_perigee_deg)
+            orbital_speed_km_s = math.sqrt(EARTH_MU_KM3_S2 / semi_major_axis_km)
+
+            cos_nu = math.cos(true_anomaly_rad)
+            sin_nu = math.sin(true_anomaly_rad)
+            perifocal_position = (
+                semi_major_axis_km * cos_nu,
+                semi_major_axis_km * sin_nu,
+                0.0,
+            )
+            perifocal_velocity = (
+                -orbital_speed_km_s * sin_nu,
+                orbital_speed_km_s * cos_nu,
+                0.0,
+            )
+
+            cos_raan = math.cos(raan_rad)
+            sin_raan = math.sin(raan_rad)
+            cos_inc = math.cos(inclination_rad)
+            sin_inc = math.sin(inclination_rad)
+            cos_arg = math.cos(argument_of_perigee_rad)
+            sin_arg = math.sin(argument_of_perigee_rad)
+
+            rotation = (
+                (
+                    cos_raan * cos_arg - sin_raan * sin_arg * cos_inc,
+                    -cos_raan * sin_arg - sin_raan * cos_arg * cos_inc,
+                    sin_raan * sin_inc,
+                ),
+                (
+                    sin_raan * cos_arg + cos_raan * sin_arg * cos_inc,
+                    -sin_raan * sin_arg + cos_raan * cos_arg * cos_inc,
+                    -cos_raan * sin_inc,
+                ),
+                (
+                    sin_arg * sin_inc,
+                    cos_arg * sin_inc,
+                    cos_inc,
+                ),
+            )
+
+            def _rotate(vector: tuple[float, float, float]) -> tuple[float, float, float]:
+                return (
+                    (rotation[0][0] * vector[0]) + (rotation[0][1] * vector[1]) + (rotation[0][2] * vector[2]),
+                    (rotation[1][0] * vector[0]) + (rotation[1][1] * vector[1]) + (rotation[1][2] * vector[2]),
+                    (rotation[2][0] * vector[0]) + (rotation[2][1] * vector[1]) + (rotation[2][2] * vector[2]),
+                )
+
+            position_km = _rotate(perifocal_position)
+            velocity_km_s = _rotate(perifocal_velocity)
+            node_id = satellite_node_id(record.norad_id)
+            satellite_states[node_id] = PropagatedSatelliteState(
+                satellite_node_id=node_id,
+                norad_id=record.norad_id,
+                timestamp_utc=timestamp.isoformat().replace("+00:00", "Z"),
+                x_km=round(position_km[0], 6),
+                y_km=round(position_km[1], 6),
+                z_km=round(position_km[2], 6),
+                vx_km_s=round(velocity_km_s[0], 9),
+                vy_km_s=round(velocity_km_s[1], 9),
+                vz_km_s=round(velocity_km_s[2], 9),
+            )
+        slices.append(
+            PropagatedOrbitSlice(
+                slice_id=f"{slice_id_prefix}-{slice_index + 1:04d}",
+                relative_time_seconds=round(step_seconds * slice_index, 6),
+                timestamp_utc=timestamp.isoformat().replace("+00:00", "Z"),
+                satellite_states=satellite_states,
+            )
+        )
+    return tuple(slices)

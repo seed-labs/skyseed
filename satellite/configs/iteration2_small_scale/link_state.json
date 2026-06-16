@@ -1,0 +1,243 @@
+{
+  "host_runtime_backend": "direct_linux_netns_veth_qdisc",
+  "host_runtime_prepared": true,
+  "last_host_runtime_prepare_epoch_seconds": 1780839671.415,
+  "runtime_initialized": true,
+  "schema_version": "satellite-phase2-slot-state-v1",
+  "slots": [
+    {
+      "binding": null,
+      "bridge_gateway_ip": "10.92.1.6",
+      "docker_network_name": "ab-cross-slot0",
+      "dynamic_endpoints": [],
+      "network_name": "ab-cross-slot0",
+      "occupied": false,
+      "owner_node_id": null,
+      "preconnected_endpoints": [],
+      "runtime_parameters": {
+        "bridge_gateway_ip": "10.92.1.6",
+        "docker_network_name": "ab-cross-slot0",
+        "network_name": "ab-cross-slot0",
+        "owner_node_id": null,
+        "subnet": "10.92.1.0/29"
+      },
+      "slot_name": "ab-cross-slot0",
+      "slot_type": "cross_plane_isl",
+      "subnet": "10.92.1.0/29"
+    },
+    {
+      "binding": {
+        "satellite_a_id": "sat-a1",
+        "satellite_b_id": "sat-a2"
+      },
+      "bridge_gateway_ip": null,
+      "docker_network_name": "link-a1-a2",
+      "dynamic_endpoints": [],
+      "network_name": "link-a1-a2",
+      "occupied": true,
+      "owner_node_id": null,
+      "preconnected_endpoints": [
+        {
+          "docker_network_name": "link-a1-a2",
+          "interface_name": "link-a1-a2",
+          "ip_address": "10.250.201.1",
+          "logical_direction": "front",
+          "network_name": "link-a1-a2",
+          "node_id": "sat-a1",
+          "node_type": "satellite"
+        },
+        {
+          "docker_network_name": "link-a1-a2",
+          "interface_name": "link-a1-a2",
+          "ip_address": "10.250.201.2",
+          "logical_direction": "back",
+          "network_name": "link-a1-a2",
+          "node_id": "sat-a2",
+          "node_type": "satellite"
+        }
+      ],
+      "slot_name": "fixed-a1-a2",
+      "slot_type": "fixed_isl",
+      "subnet": "10.250.201.0/30"
+    },
+    {
+      "binding": {
+        "satellite_a_id": "sat-a2",
+        "satellite_b_id": "sat-a3"
+      },
+      "bridge_gateway_ip": null,
+      "docker_network_name": "link-a2-a3",
+      "dynamic_endpoints": [],
+      "network_name": "link-a2-a3",
+      "occupied": true,
+      "owner_node_id": null,
+      "preconnected_endpoints": [
+        {
+          "docker_network_name": "link-a2-a3",
+          "interface_name": "link-a2-a3",
+          "ip_address": "10.250.202.1",
+          "logical_direction": "front",
+          "network_name": "link-a2-a3",
+          "node_id": "sat-a2",
+          "node_type": "satellite"
+        },
+        {
+          "docker_network_name": "link-a2-a3",
+          "interface_name": "link-a2-a3",
+          "ip_address": "10.250.202.2",
+          "logical_direction": "back",
+          "network_name": "link-a2-a3",
+          "node_id": "sat-a3",
+          "node_type": "satellite"
+        }
+      ],
+      "slot_name": "fixed-a2-a3",
+      "slot_type": "fixed_isl",
+      "subnet": "10.250.202.0/30"
+    },
+    {
+      "binding": {
+        "satellite_a_id": "sat-b1",
+        "satellite_b_id": "sat-b2"
+      },
+      "bridge_gateway_ip": null,
+      "docker_network_name": "link-b1-b2",
+      "dynamic_endpoints": [],
+      "network_name": "link-b1-b2",
+      "occupied": true,
+      "owner_node_id": null,
+      "preconnected_endpoints": [
+        {
+          "docker_network_name": "link-b1-b2",
+          "interface_name": "link-b1-b2",
+          "ip_address": "10.250.205.1",
+          "logical_direction": "front",
+          "network_name": "link-b1-b2",
+          "node_id": "sat-b1",
+          "node_type": "satellite"
+        },
+        {
+          "docker_network_name": "link-b1-b2",
+          "interface_name": "link-b1-b2",
+          "ip_address": "10.250.205.2",
+          "logical_direction": "back",
+          "network_name": "link-b1-b2",
+          "node_id": "sat-b2",
+          "node_type": "satellite"
+        }
+      ],
+      "slot_name": "fixed-b1-b2",
+      "slot_type": "fixed_isl",
+      "subnet": "10.250.205.0/30"
+    },
+    {
+      "binding": null,
+      "bridge_gateway_ip": "10.91.11.6",
+      "docker_network_name": "gw1-gateway-slot0",
+      "dynamic_endpoints": [],
+      "network_name": "gw1-gateway-slot0",
+      "occupied": false,
+      "owner_node_id": "gw1",
+      "preconnected_endpoints": [
+        {
+          "interface_name": "ga-g1s0",
+          "ip_address": "10.91.11.2/29",
+          "node_id": "gw1",
+          "node_type": "gateway"
+        }
+      ],
+      "runtime_parameters": {
+        "bridge_gateway_ip": "10.91.11.6",
+        "docker_network_name": "gw1-gateway-slot0",
+        "network_name": "gw1-gateway-slot0",
+        "owner_node_id": "gw1",
+        "subnet": "10.91.11.0/29"
+      },
+      "slot_name": "gw1-gateway-slot0",
+      "slot_type": "gw_access",
+      "subnet": "10.91.11.0/29"
+    },
+    {
+      "binding": null,
+      "bridge_gateway_ip": "10.91.21.6",
+      "docker_network_name": "gw2-gateway-slot0",
+      "dynamic_endpoints": [],
+      "network_name": "gw2-gateway-slot0",
+      "occupied": false,
+      "owner_node_id": "gw2",
+      "preconnected_endpoints": [
+        {
+          "interface_name": "ga-g2s0",
+          "ip_address": "10.91.21.2/29",
+          "node_id": "gw2",
+          "node_type": "gateway"
+        }
+      ],
+      "runtime_parameters": {
+        "bridge_gateway_ip": "10.91.21.6",
+        "docker_network_name": "gw2-gateway-slot0",
+        "network_name": "gw2-gateway-slot0",
+        "owner_node_id": "gw2",
+        "subnet": "10.91.21.0/29"
+      },
+      "slot_name": "gw2-gateway-slot0",
+      "slot_type": "gw_access",
+      "subnet": "10.91.21.0/29"
+    },
+    {
+      "binding": null,
+      "bridge_gateway_ip": "10.90.11.6",
+      "docker_network_name": "ut1-access-slot0",
+      "dynamic_endpoints": [],
+      "network_name": "ut1-access-slot0",
+      "occupied": false,
+      "owner_node_id": "ut1",
+      "preconnected_endpoints": [
+        {
+          "interface_name": "ua-u1s0",
+          "ip_address": "10.90.11.2/29",
+          "node_id": "ut1",
+          "node_type": "user_terminal"
+        }
+      ],
+      "runtime_parameters": {
+        "bridge_gateway_ip": "10.90.11.6",
+        "docker_network_name": "ut1-access-slot0",
+        "network_name": "ut1-access-slot0",
+        "owner_node_id": "ut1",
+        "subnet": "10.90.11.0/29"
+      },
+      "slot_name": "ut1-access-slot0",
+      "slot_type": "ut_access",
+      "subnet": "10.90.11.0/29"
+    },
+    {
+      "binding": null,
+      "bridge_gateway_ip": "10.90.21.6",
+      "docker_network_name": "ut2-access-slot0",
+      "dynamic_endpoints": [],
+      "network_name": "ut2-access-slot0",
+      "occupied": false,
+      "owner_node_id": "ut2",
+      "preconnected_endpoints": [
+        {
+          "interface_name": "ua-u2s0",
+          "ip_address": "10.90.21.2/29",
+          "node_id": "ut2",
+          "node_type": "user_terminal"
+        }
+      ],
+      "runtime_parameters": {
+        "bridge_gateway_ip": "10.90.21.6",
+        "docker_network_name": "ut2-access-slot0",
+        "network_name": "ut2-access-slot0",
+        "owner_node_id": "ut2",
+        "subnet": "10.90.21.0/29"
+      },
+      "slot_name": "ut2-access-slot0",
+      "slot_type": "ut_access",
+      "subnet": "10.90.21.0/29"
+    }
+  ],
+  "topology_schema_version": "satellite-iteration2-small-scale-topology-v1"
+}

@@ -275,16 +275,18 @@ class TopologySnapshot:
                 issues.append(f"duplicate_zone_id:{zone_id}")
             seen_zone_ids.add(zone_id)
             ut_ids = list(zone.get("ut_ids", []))
-            if len(ut_ids) == 0:
-                issues.append(f"zone_without_ut_members:{zone_id}")
+            resolution_state = str(zone.get("resolution_state", "resolved"))
             active_serving_satellite_id = zone.get("active_serving_satellite_id")
-            if active_serving_satellite_id is None:
+            if active_serving_satellite_id is None and resolution_state == "resolved":
                 issues.append(f"zone_missing_active_serving_satellite:{zone_id}")
-            elif str(active_serving_satellite_id) not in self.nodes:
+            elif active_serving_satellite_id is not None and str(active_serving_satellite_id) not in self.nodes:
                 issues.append(
                     f"zone_active_serving_satellite_unknown:{zone_id}:{active_serving_satellite_id}"
                 )
-            elif self.nodes[str(active_serving_satellite_id)].get("node_type") != "satellite":
+            elif (
+                active_serving_satellite_id is not None
+                and self.nodes[str(active_serving_satellite_id)].get("node_type") != "satellite"
+            ):
                 issues.append(
                     f"zone_active_serving_satellite_not_satellite:{zone_id}:{active_serving_satellite_id}"
                 )

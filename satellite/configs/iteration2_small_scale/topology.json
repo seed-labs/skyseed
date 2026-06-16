@@ -1,0 +1,874 @@
+{
+  "schema_version": "satellite-iteration2-small-scale-topology-v1",
+  "description": "Clean SEED-generated Iteration 2 small-scale satellite Internet example.",
+  "logical_port_labels": [
+    "front",
+    "back",
+    "left",
+    "right"
+  ],
+  "prototype_scope": {
+    "orbital_planes": 2,
+    "satellites": 5,
+    "gateways": 2,
+    "user_terminals": 2,
+    "access_slots_per_ut": 1,
+    "gateway_slots_per_gw": 1,
+    "cross_plane_slot_count": 1,
+    "internet_exchanges": 6,
+    "mini_internet_transit_ases": 5,
+    "mini_internet_stub_ases": 12,
+    "example_profile": "iteration2_small_scale_clean_seed_generated"
+  },
+  "orbital_planes": [
+    {
+      "orbit_id": "orbit-a",
+      "plane_label": "Plane A",
+      "plane_index": 1,
+      "satellite_ids": [
+        "sat-a1",
+        "sat-a2",
+        "sat-a3"
+      ],
+      "same_plane_neighbor_model": "fixed_linear_or_ring_subset",
+      "cross_plane_neighbor_model": "runtime_dynamic_slot_pairing"
+    },
+    {
+      "orbit_id": "orbit-b",
+      "plane_label": "Plane B",
+      "plane_index": 2,
+      "satellite_ids": [
+        "sat-b1",
+        "sat-b2"
+      ],
+      "same_plane_neighbor_model": "fixed_linear_or_ring_subset",
+      "cross_plane_neighbor_model": "runtime_dynamic_slot_pairing"
+    }
+  ],
+  "internet_exchanges": [
+    {
+      "ix_id": 100,
+      "network_name": "ix100",
+      "display_name": "NYC-100"
+    },
+    {
+      "ix_id": 101,
+      "network_name": "ix101",
+      "display_name": "San Jose-101"
+    },
+    {
+      "ix_id": 102,
+      "network_name": "ix102",
+      "display_name": "Chicago-102"
+    },
+    {
+      "ix_id": 103,
+      "network_name": "ix103",
+      "display_name": "Miami-103"
+    },
+    {
+      "ix_id": 104,
+      "network_name": "ix104",
+      "display_name": "Boston-104"
+    },
+    {
+      "ix_id": 105,
+      "network_name": "ix105",
+      "display_name": "Huston-105"
+    }
+  ],
+  "satellites": [
+    {
+      "satellite_id": "sat-a1",
+      "orbit_id": "orbit-a",
+      "plane_label": "Plane A",
+      "plane_index": 1,
+      "satellite_index_in_plane": 1,
+      "logical_ports": {
+        "front": null,
+        "back": null,
+        "left": null,
+        "right": null
+      },
+      "interface_role_separation": {
+        "same_plane_isl": [
+          "front",
+          "back"
+        ],
+        "cross_plane_isl": [
+          "left",
+          "right"
+        ],
+        "ut_facing": "runtime_slot",
+        "gw_facing": "runtime_slot"
+      },
+      "bootstrap_network": {
+        "network_name": "sat-a1-bootstrap",
+        "docker_network_name": "sat-a1-bootstrap",
+        "subnet": "10.250.1.0/24",
+        "purpose": "compile_time_carrier",
+        "endpoint": {
+          "node_id": "sat-a1",
+          "node_type": "satellite",
+          "network_name": "sat-a1-bootstrap",
+          "docker_network_name": "sat-a1-bootstrap",
+          "interface_name": "sat-a1-bootstrap",
+          "ip_address": "10.250.1.2/24"
+        }
+      }
+    },
+    {
+      "satellite_id": "sat-a2",
+      "orbit_id": "orbit-a",
+      "plane_label": "Plane A",
+      "plane_index": 1,
+      "satellite_index_in_plane": 2,
+      "logical_ports": {
+        "front": null,
+        "back": null,
+        "left": null,
+        "right": null
+      },
+      "interface_role_separation": {
+        "same_plane_isl": [
+          "front",
+          "back"
+        ],
+        "cross_plane_isl": [
+          "left",
+          "right"
+        ],
+        "ut_facing": "runtime_slot",
+        "gw_facing": "runtime_slot"
+      },
+      "bootstrap_network": {
+        "network_name": "sat-a2-bootstrap",
+        "docker_network_name": "sat-a2-bootstrap",
+        "subnet": "10.250.2.0/24",
+        "purpose": "compile_time_carrier",
+        "endpoint": {
+          "node_id": "sat-a2",
+          "node_type": "satellite",
+          "network_name": "sat-a2-bootstrap",
+          "docker_network_name": "sat-a2-bootstrap",
+          "interface_name": "sat-a2-bootstrap",
+          "ip_address": "10.250.2.2/24"
+        }
+      }
+    },
+    {
+      "satellite_id": "sat-a3",
+      "orbit_id": "orbit-a",
+      "plane_label": "Plane A",
+      "plane_index": 1,
+      "satellite_index_in_plane": 3,
+      "logical_ports": {
+        "front": null,
+        "back": null,
+        "left": null,
+        "right": null
+      },
+      "interface_role_separation": {
+        "same_plane_isl": [
+          "front",
+          "back"
+        ],
+        "cross_plane_isl": [
+          "left",
+          "right"
+        ],
+        "ut_facing": "runtime_slot",
+        "gw_facing": "runtime_slot"
+      },
+      "bootstrap_network": {
+        "network_name": "sat-a3-bootstrap",
+        "docker_network_name": "sat-a3-bootstrap",
+        "subnet": "10.250.3.0/24",
+        "purpose": "compile_time_carrier",
+        "endpoint": {
+          "node_id": "sat-a3",
+          "node_type": "satellite",
+          "network_name": "sat-a3-bootstrap",
+          "docker_network_name": "sat-a3-bootstrap",
+          "interface_name": "sat-a3-bootstrap",
+          "ip_address": "10.250.3.2/24"
+        }
+      }
+    },
+    {
+      "satellite_id": "sat-b1",
+      "orbit_id": "orbit-b",
+      "plane_label": "Plane B",
+      "plane_index": 2,
+      "satellite_index_in_plane": 1,
+      "logical_ports": {
+        "front": null,
+        "back": null,
+        "left": null,
+        "right": null
+      },
+      "interface_role_separation": {
+        "same_plane_isl": [
+          "front",
+          "back"
+        ],
+        "cross_plane_isl": [
+          "left",
+          "right"
+        ],
+        "ut_facing": "runtime_slot",
+        "gw_facing": "runtime_slot"
+      },
+      "bootstrap_network": {
+        "network_name": "sat-b1-bootstrap",
+        "docker_network_name": "sat-b1-bootstrap",
+        "subnet": "10.250.4.0/24",
+        "purpose": "compile_time_carrier",
+        "endpoint": {
+          "node_id": "sat-b1",
+          "node_type": "satellite",
+          "network_name": "sat-b1-bootstrap",
+          "docker_network_name": "sat-b1-bootstrap",
+          "interface_name": "sat-b1-bootstrap",
+          "ip_address": "10.250.4.2/24"
+        }
+      }
+    },
+    {
+      "satellite_id": "sat-b2",
+      "orbit_id": "orbit-b",
+      "plane_label": "Plane B",
+      "plane_index": 2,
+      "satellite_index_in_plane": 2,
+      "logical_ports": {
+        "front": null,
+        "back": null,
+        "left": null,
+        "right": null
+      },
+      "interface_role_separation": {
+        "same_plane_isl": [
+          "front",
+          "back"
+        ],
+        "cross_plane_isl": [
+          "left",
+          "right"
+        ],
+        "ut_facing": "runtime_slot",
+        "gw_facing": "runtime_slot"
+      },
+      "bootstrap_network": {
+        "network_name": "sat-b2-bootstrap",
+        "docker_network_name": "sat-b2-bootstrap",
+        "subnet": "10.250.5.0/24",
+        "purpose": "compile_time_carrier",
+        "endpoint": {
+          "node_id": "sat-b2",
+          "node_type": "satellite",
+          "network_name": "sat-b2-bootstrap",
+          "docker_network_name": "sat-b2-bootstrap",
+          "interface_name": "sat-b2-bootstrap",
+          "ip_address": "10.250.5.2/24"
+        }
+      }
+    }
+  ],
+  "gateways": [
+    {
+      "gateway_id": "gw1",
+      "role": "satellite_operator_border_gateway",
+      "asn": 65000,
+      "gateway_region": "east",
+      "gateway_index": 1,
+      "bootstrap_network": {
+        "network_name": "gw1-bootstrap",
+        "docker_network_name": "gw1-bootstrap",
+        "subnet": "10.65.21.0/24",
+        "purpose": "compile_time_carrier",
+        "endpoint": {
+          "node_id": "gw1",
+          "node_type": "gateway",
+          "network_name": "gw1-bootstrap",
+          "docker_network_name": "gw1-bootstrap",
+          "interface_name": "gw1-bootstrap",
+          "ip_address": "10.65.21.2/24"
+        }
+      },
+      "internet_uplink": {
+        "ix_id": 100,
+        "network_name": "ix100",
+        "ip_address": "10.100.0.250",
+        "peering_asn": 65000,
+        "region": "east"
+      }
+    },
+    {
+      "gateway_id": "gw2",
+      "role": "satellite_operator_border_gateway",
+      "asn": 65000,
+      "gateway_region": "west",
+      "gateway_index": 2,
+      "bootstrap_network": {
+        "network_name": "gw2-bootstrap",
+        "docker_network_name": "gw2-bootstrap",
+        "subnet": "10.65.22.0/24",
+        "purpose": "compile_time_carrier",
+        "endpoint": {
+          "node_id": "gw2",
+          "node_type": "gateway",
+          "network_name": "gw2-bootstrap",
+          "docker_network_name": "gw2-bootstrap",
+          "interface_name": "gw2-bootstrap",
+          "ip_address": "10.65.22.2/24"
+        }
+      },
+      "internet_uplink": {
+        "ix_id": 101,
+        "network_name": "ix101",
+        "ip_address": "10.101.0.250",
+        "peering_asn": 65000,
+        "region": "west"
+      }
+    }
+  ],
+  "user_terminals": [
+    {
+      "ut_id": "ut1",
+      "identity_interface": {
+        "if_name": "dummy0",
+        "ip_address": "100.64.0.1/32",
+        "semantics": "stable_internal_identity_not_publicly_advertised"
+      },
+      "region": "east",
+      "candidate_serving_satellite_ids": [
+        "sat-a1",
+        "sat-a2",
+        "sat-b1"
+      ],
+      "bootstrap_network": {
+        "network_name": "ut1-placeholder",
+        "docker_network_name": "ut1-placeholder",
+        "subnet": "10.250.101.0/30",
+        "purpose": "compile_time_carrier_only",
+        "endpoint": {
+          "node_id": "ut1",
+          "node_type": "user_terminal",
+          "network_name": "ut1-placeholder",
+          "docker_network_name": "ut1-placeholder",
+          "interface_name": "ut1-placeholder",
+          "ip_address": "10.250.101.2/30"
+        }
+      }
+    },
+    {
+      "ut_id": "ut2",
+      "identity_interface": {
+        "if_name": "dummy0",
+        "ip_address": "100.64.0.2/32",
+        "semantics": "stable_internal_identity_not_publicly_advertised"
+      },
+      "region": "east-center",
+      "candidate_serving_satellite_ids": [
+        "sat-a2",
+        "sat-a3",
+        "sat-b2"
+      ],
+      "bootstrap_network": {
+        "network_name": "ut2-placeholder",
+        "docker_network_name": "ut2-placeholder",
+        "subnet": "10.250.102.0/30",
+        "purpose": "compile_time_carrier_only",
+        "endpoint": {
+          "node_id": "ut2",
+          "node_type": "user_terminal",
+          "network_name": "ut2-placeholder",
+          "docker_network_name": "ut2-placeholder",
+          "interface_name": "ut2-placeholder",
+          "ip_address": "10.250.102.2/30"
+        }
+      }
+    }
+  ],
+  "fixed_links": {
+    "satellite_satellite": [
+      {
+        "link_id": "fixed-a1-a2",
+        "link_type": "satellite_satellite_fixed_intra_orbit",
+        "network_name": "link-a1-a2",
+        "docker_network_name": "link-a1-a2",
+        "subnet": "10.250.201.0/30",
+        "orbit_scope": "orbit-a",
+        "endpoints": [
+          {
+            "node_id": "sat-a1",
+            "node_type": "satellite",
+            "interface_name": "link-a1-a2",
+            "ip_address": "10.250.201.1",
+            "logical_direction": "front",
+            "network_name": "link-a1-a2",
+            "docker_network_name": "link-a1-a2"
+          },
+          {
+            "node_id": "sat-a2",
+            "node_type": "satellite",
+            "interface_name": "link-a1-a2",
+            "ip_address": "10.250.201.2",
+            "logical_direction": "back",
+            "network_name": "link-a1-a2",
+            "docker_network_name": "link-a1-a2"
+          }
+        ]
+      },
+      {
+        "link_id": "fixed-a2-a3",
+        "link_type": "satellite_satellite_fixed_intra_orbit",
+        "network_name": "link-a2-a3",
+        "docker_network_name": "link-a2-a3",
+        "subnet": "10.250.202.0/30",
+        "orbit_scope": "orbit-a",
+        "endpoints": [
+          {
+            "node_id": "sat-a2",
+            "node_type": "satellite",
+            "interface_name": "link-a2-a3",
+            "ip_address": "10.250.202.1",
+            "logical_direction": "front",
+            "network_name": "link-a2-a3",
+            "docker_network_name": "link-a2-a3"
+          },
+          {
+            "node_id": "sat-a3",
+            "node_type": "satellite",
+            "interface_name": "link-a2-a3",
+            "ip_address": "10.250.202.2",
+            "logical_direction": "back",
+            "network_name": "link-a2-a3",
+            "docker_network_name": "link-a2-a3"
+          }
+        ]
+      },
+      {
+        "link_id": "fixed-b1-b2",
+        "link_type": "satellite_satellite_fixed_intra_orbit",
+        "network_name": "link-b1-b2",
+        "docker_network_name": "link-b1-b2",
+        "subnet": "10.250.205.0/30",
+        "orbit_scope": "orbit-b",
+        "endpoints": [
+          {
+            "node_id": "sat-b1",
+            "node_type": "satellite",
+            "interface_name": "link-b1-b2",
+            "ip_address": "10.250.205.1",
+            "logical_direction": "front",
+            "network_name": "link-b1-b2",
+            "docker_network_name": "link-b1-b2"
+          },
+          {
+            "node_id": "sat-b2",
+            "node_type": "satellite",
+            "interface_name": "link-b1-b2",
+            "ip_address": "10.250.205.2",
+            "logical_direction": "back",
+            "network_name": "link-b1-b2",
+            "docker_network_name": "link-b1-b2"
+          }
+        ]
+      }
+    ]
+  },
+  "mini_internet": {
+    "transit_ases": [
+      {
+        "asn": 2,
+        "exchange_ids": [
+          100,
+          101,
+          102,
+          105
+        ],
+        "internal_links": [
+          [
+            100,
+            101
+          ],
+          [
+            101,
+            102
+          ],
+          [
+            100,
+            105
+          ]
+        ]
+      },
+      {
+        "asn": 3,
+        "exchange_ids": [
+          100,
+          103,
+          104,
+          105
+        ],
+        "internal_links": [
+          [
+            100,
+            103
+          ],
+          [
+            100,
+            105
+          ],
+          [
+            103,
+            105
+          ],
+          [
+            103,
+            104
+          ]
+        ]
+      },
+      {
+        "asn": 4,
+        "exchange_ids": [
+          100,
+          102,
+          104
+        ],
+        "internal_links": [
+          [
+            100,
+            104
+          ],
+          [
+            102,
+            104
+          ]
+        ]
+      },
+      {
+        "asn": 11,
+        "exchange_ids": [
+          102,
+          105
+        ],
+        "internal_links": [
+          [
+            102,
+            105
+          ]
+        ]
+      },
+      {
+        "asn": 12,
+        "exchange_ids": [
+          101,
+          104
+        ],
+        "internal_links": [
+          [
+            101,
+            104
+          ]
+        ]
+      }
+    ],
+    "stub_ases": [
+      {
+        "asn": 150,
+        "exchange_id": 100,
+        "host_node_ids": [
+          "as150-host0",
+          "as150-host1"
+        ]
+      },
+      {
+        "asn": 151,
+        "exchange_id": 100,
+        "host_node_ids": [
+          "as151-host0",
+          "as151-host1"
+        ]
+      },
+      {
+        "asn": 152,
+        "exchange_id": 101,
+        "host_node_ids": [
+          "as152-host0",
+          "as152-host1"
+        ]
+      },
+      {
+        "asn": 153,
+        "exchange_id": 101,
+        "host_node_ids": [
+          "as153-host0",
+          "as153-host1"
+        ]
+      },
+      {
+        "asn": 154,
+        "exchange_id": 102,
+        "host_node_ids": [
+          "as154-host0",
+          "as154-host1",
+          "as154-host-new"
+        ]
+      },
+      {
+        "asn": 160,
+        "exchange_id": 103,
+        "host_node_ids": [
+          "as160-host0",
+          "as160-host1"
+        ]
+      },
+      {
+        "asn": 161,
+        "exchange_id": 103,
+        "host_node_ids": [
+          "as161-host0",
+          "as161-host1"
+        ]
+      },
+      {
+        "asn": 162,
+        "exchange_id": 103,
+        "host_node_ids": [
+          "as162-host0",
+          "as162-host1"
+        ]
+      },
+      {
+        "asn": 163,
+        "exchange_id": 104,
+        "host_node_ids": [
+          "as163-host0",
+          "as163-host1"
+        ]
+      },
+      {
+        "asn": 164,
+        "exchange_id": 104,
+        "host_node_ids": [
+          "as164-host0",
+          "as164-host1"
+        ]
+      },
+      {
+        "asn": 170,
+        "exchange_id": 105,
+        "host_node_ids": [
+          "as170-host0",
+          "as170-host1"
+        ]
+      },
+      {
+        "asn": 171,
+        "exchange_id": 105,
+        "host_node_ids": [
+          "as171-host0",
+          "as171-host1"
+        ]
+      }
+    ],
+    "external_test_targets": [
+      {
+        "asn": 154,
+        "node_id": "as154-host-new",
+        "ip_address": "10.154.0.129",
+        "description": "Customized miniInternet host retained from B00 for UT reachability tests."
+      },
+      {
+        "asn": 160,
+        "node_id": "as160-host1",
+        "ip_address": "10.160.0.72",
+        "description": "Additional miniInternet host used for multi-UT continuous handover verification."
+      }
+    ],
+    "gateway_ix_peerings": [
+      {
+        "gateway_id": "gw1",
+        "ix_id": 100,
+        "ip_address": "10.100.0.250"
+      },
+      {
+        "gateway_id": "gw2",
+        "ix_id": 101,
+        "ip_address": "10.101.0.250"
+      }
+    ]
+  },
+  "slot_inventory": {
+    "ut_access": [
+      {
+        "slot_name": "ut1-access-slot0",
+        "slot_type": "ut_access",
+        "network_name": "ut1-access-slot0",
+        "docker_network_name": "ut1-access-slot0",
+        "subnet": "10.90.11.0/29",
+        "bridge_gateway_ip": "10.90.11.6",
+        "ut_id": "ut1",
+        "region": "east",
+        "slot_index": 0,
+        "candidate_satellite_ids": [
+          "sat-a1",
+          "sat-a2",
+          "sat-b1"
+        ],
+        "preconnected_endpoint": {
+          "node_id": "ut1",
+          "node_type": "user_terminal",
+          "interface_name": "ua-u1s0",
+          "ip_address": "10.90.11.2/29"
+        },
+        "dynamic_endpoint_template": {
+          "node_id": "<runtime-satellite>",
+          "node_type": "satellite",
+          "interface_name": "ua-u1s0",
+          "ip_address": "10.90.11.1/29"
+        }
+      },
+      {
+        "slot_name": "ut2-access-slot0",
+        "slot_type": "ut_access",
+        "network_name": "ut2-access-slot0",
+        "docker_network_name": "ut2-access-slot0",
+        "subnet": "10.90.21.0/29",
+        "bridge_gateway_ip": "10.90.21.6",
+        "ut_id": "ut2",
+        "region": "east-center",
+        "slot_index": 0,
+        "candidate_satellite_ids": [
+          "sat-a2",
+          "sat-a3",
+          "sat-b2"
+        ],
+        "preconnected_endpoint": {
+          "node_id": "ut2",
+          "node_type": "user_terminal",
+          "interface_name": "ua-u2s0",
+          "ip_address": "10.90.21.2/29"
+        },
+        "dynamic_endpoint_template": {
+          "node_id": "<runtime-satellite>",
+          "node_type": "satellite",
+          "interface_name": "ua-u2s0",
+          "ip_address": "10.90.21.1/29"
+        }
+      }
+    ],
+    "gateway_access": [
+      {
+        "slot_name": "gw1-gateway-slot0",
+        "slot_type": "gw_access",
+        "network_name": "gw1-gateway-slot0",
+        "docker_network_name": "gw1-gateway-slot0",
+        "subnet": "10.91.11.0/29",
+        "bridge_gateway_ip": "10.91.11.6",
+        "gateway_id": "gw1",
+        "gateway_region": "east",
+        "slot_index": 0,
+        "candidate_satellite_ids": [
+          "sat-a1",
+          "sat-a2",
+          "sat-a3",
+          "sat-b1",
+          "sat-b2"
+        ],
+        "preconnected_endpoint": {
+          "node_id": "gw1",
+          "node_type": "gateway",
+          "interface_name": "ga-g1s0",
+          "ip_address": "10.91.11.2/29"
+        },
+        "dynamic_endpoint_template": {
+          "node_id": "<runtime-satellite>",
+          "node_type": "satellite",
+          "interface_name": "ga-g1s0",
+          "ip_address": "10.91.11.1/29"
+        }
+      },
+      {
+        "slot_name": "gw2-gateway-slot0",
+        "slot_type": "gw_access",
+        "network_name": "gw2-gateway-slot0",
+        "docker_network_name": "gw2-gateway-slot0",
+        "subnet": "10.91.21.0/29",
+        "bridge_gateway_ip": "10.91.21.6",
+        "gateway_id": "gw2",
+        "gateway_region": "west",
+        "slot_index": 0,
+        "candidate_satellite_ids": [
+          "sat-a1",
+          "sat-a2",
+          "sat-a3",
+          "sat-b1",
+          "sat-b2"
+        ],
+        "preconnected_endpoint": {
+          "node_id": "gw2",
+          "node_type": "gateway",
+          "interface_name": "ga-g2s0",
+          "ip_address": "10.91.21.2/29"
+        },
+        "dynamic_endpoint_template": {
+          "node_id": "<runtime-satellite>",
+          "node_type": "satellite",
+          "interface_name": "ga-g2s0",
+          "ip_address": "10.91.21.1/29"
+        }
+      }
+    ],
+    "cross_plane_isl": [
+      {
+        "slot_name": "ab-cross-slot0",
+        "slot_type": "cross_plane_isl",
+        "network_name": "ab-cross-slot0",
+        "docker_network_name": "ab-cross-slot0",
+        "subnet": "10.92.1.0/29",
+        "bridge_gateway_ip": "10.92.1.6",
+        "slot_index": 0,
+        "pair_key": "ab",
+        "display_label": "Plane A <-> Plane B",
+        "orbit_pair": [
+          "orbit-a",
+          "orbit-b"
+        ],
+        "orbit_a_id": "orbit-a",
+        "orbit_b_id": "orbit-b",
+        "orbit_a_satellite_ids": [
+          "sat-a1",
+          "sat-a2",
+          "sat-a3"
+        ],
+        "orbit_b_satellite_ids": [
+          "sat-b1",
+          "sat-b2"
+        ],
+        "endpoint_a_template": {
+          "node_id": "<runtime-orbit-a-satellite>",
+          "node_type": "satellite",
+          "interface_name": "xp0a",
+          "ip_address": "10.92.1.1/29"
+        },
+        "endpoint_b_template": {
+          "node_id": "<runtime-orbit-b-satellite>",
+          "node_type": "satellite",
+          "interface_name": "xp0b",
+          "ip_address": "10.92.1.2/29"
+        },
+        "candidate_pairs": [
+          {
+            "satellite_a_id": "sat-a2",
+            "satellite_b_id": "sat-b1",
+            "satellite_a_direction": "right",
+            "satellite_b_direction": "left"
+          }
+        ]
+      }
+    ]
+  }
+}

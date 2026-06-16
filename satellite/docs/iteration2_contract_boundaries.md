@@ -165,6 +165,8 @@ that must be installed for a slice, such as:
 - node-local subplans
 - forwarding or classification intent at node scope
 - label allocation results relevant to runtime nodes
+- zone return intent, when a gateway-to-zone return path should be treated as
+  shared backbone reachability before serving-satellite local UT delivery
 - local route, MPLS, rule, NAT, and related runtime expectations
 - validation expectations
 - replacement, supersession, cleanup, or rollback intent
@@ -213,6 +215,27 @@ The agent and installer must not need to understand:
 - why one MPLS or IP policy was chosen
 
 They only need to apply the plan correctly and report the outcome.
+
+For the current `1-shell` G/Z MPLS experiment, this boundary is especially
+important for return traffic. The planner may emit a `zone_return_delivery`
+intent that says GW return traffic should target the active responsible
+satellite for a zone, after which that satellite performs local UT delivery.
+The current Linux installer may still realize that intent through per-UT `/32`
+routes, per-flow reverse LFIB labels, and per-UT gateway NAT/FORWARD rules as a
+compatibility implementation. That compatibility mode is not the architecture
+target: future runtime projections should move backbone return state toward
+shared zone reachability while keeping local UT delivery at the serving
+satellite edge.
+
+Planner return-path intents should therefore keep two targets visible even
+while Linux remains in compatibility mode:
+
+- `shared_backbone_return_target`: the gateway/zone/serving-satellite return
+  target owned by the satellite backbone and intended to scale with gateway-zone
+  or zone count rather than UT count
+- `edge_local_delivery_target`: the serving-satellite local delivery target
+  owned by the access edge, where UT-specific delivery is allowed to remain
+  local instead of becoming backbone reachability state
 
 ## 3. NetworkMutationPlan
 
