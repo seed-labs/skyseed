@@ -1,0 +1,1744 @@
+{
+  "attach_attempted": true,
+  "blocked": false,
+  "blockers": [],
+  "counter_summary": {
+    "drop_bad_packet": 0,
+    "drop_inactive": 2,
+    "drop_loss": 3,
+    "drop_missing_generation": 2,
+    "drop_missing_parameter": 2,
+    "future_generation_not_used": 7,
+    "parameter_entry_hit": 7,
+    "parameter_generation_hit": 9,
+    "pass_count": 2
+  },
+  "environment": {
+    "kernel": {
+      "bpffs_exists": true,
+      "bpffs_is_dir": true,
+      "bpffs_mount": {
+        "args": [
+          "findmnt",
+          "-rn",
+          "-T",
+          "/sys/fs/bpf"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": "/sys/fs/bpf none bpf rw,nosuid,nodev,noexec,relatime,mode=700"
+      },
+      "uname": "Linux VM 5.4.0-54-generic #60-Ubuntu SMP Fri Nov 6 10:37:59 UTC 2020 x86_64 x86_64 x86_64 GNU/Linux"
+    },
+    "python": {
+      "executable": "/home/seed/miniconda3/envs/seed310/bin/python",
+      "version": "3.10.20"
+    },
+    "sudo": {
+      "euid": 1000,
+      "noninteractive_sudo": true,
+      "sudo_check": {
+        "args": [
+          "sudo",
+          "-n",
+          "true"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      "uid": 1000
+    },
+    "tools": {
+      "bpftool": {
+        "available": true,
+        "path": "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+        "version": "/usr/lib/linux-tools/5.4.0-216-generic/bpftool v5.4.291",
+        "version_returncode": 0
+      },
+      "clang": {
+        "available": true,
+        "path": "/usr/bin/clang",
+        "version": "clang version 10.0.0-4ubuntu1 \nTarget: x86_64-pc-linux-gnu\nThread model: posix\nInstalledDir: /usr/bin",
+        "version_returncode": 0
+      },
+      "ip": {
+        "available": true,
+        "path": "/usr/sbin/ip",
+        "version": "ip utility, iproute2-ss200127",
+        "version_returncode": 0
+      },
+      "ping": {
+        "available": true,
+        "path": "/usr/bin/ping",
+        "version": "ping from iputils s20190709",
+        "version_returncode": 0
+      },
+      "tc": {
+        "available": true,
+        "path": "/usr/sbin/tc",
+        "version": "tc utility, iproute2-ss200127",
+        "version_returncode": 0
+      }
+    }
+  },
+  "experiment": {
+    "cleanup": {
+      "residue": {
+        "clean": true,
+        "link_hits": [],
+        "namespace_hits": [],
+        "pinned_maps": {
+          "future_param_gen": false,
+          "param_status": false,
+          "parameter_counters": false,
+          "parameter_generation": false,
+          "parameter_values": false
+        },
+        "tc_filter_residue_possible": false
+      },
+      "steps": [
+        {
+          "args": [
+            "sudo",
+            "-n",
+            "ip",
+            "netns",
+            "exec",
+            "sspmsv95799",
+            "tc",
+            "qdisc",
+            "del",
+            "dev",
+            "spms95799",
+            "clsact"
+          ],
+          "returncode": 0,
+          "stderr": "",
+          "stdout": ""
+        },
+        {
+          "args": [
+            "sudo",
+            "-n",
+            "rm",
+            "-f",
+            "/sys/fs/bpf/tc/globals/parameter_generation"
+          ],
+          "returncode": 0,
+          "stderr": "",
+          "stdout": ""
+        },
+        {
+          "args": [
+            "sudo",
+            "-n",
+            "rm",
+            "-f",
+            "/sys/fs/bpf/tc/globals/param_status"
+          ],
+          "returncode": 0,
+          "stderr": "",
+          "stdout": ""
+        },
+        {
+          "args": [
+            "sudo",
+            "-n",
+            "rm",
+            "-f",
+            "/sys/fs/bpf/tc/globals/parameter_values"
+          ],
+          "returncode": 0,
+          "stderr": "",
+          "stdout": ""
+        },
+        {
+          "args": [
+            "sudo",
+            "-n",
+            "rm",
+            "-f",
+            "/sys/fs/bpf/tc/globals/parameter_counters"
+          ],
+          "returncode": 0,
+          "stderr": "",
+          "stdout": ""
+        },
+        {
+          "args": [
+            "sudo",
+            "-n",
+            "rm",
+            "-f",
+            "/sys/fs/bpf/tc/globals/future_param_gen"
+          ],
+          "returncode": 0,
+          "stderr": "",
+          "stdout": ""
+        },
+        {
+          "args": [
+            "sudo",
+            "-n",
+            "ip",
+            "netns",
+            "del",
+            "sspmcl95799"
+          ],
+          "returncode": 0,
+          "stderr": "",
+          "stdout": ""
+        },
+        {
+          "args": [
+            "sudo",
+            "-n",
+            "ip",
+            "netns",
+            "del",
+            "sspmsv95799"
+          ],
+          "returncode": 0,
+          "stderr": "",
+          "stdout": ""
+        }
+      ]
+    },
+    "compile": {
+      "args": [
+        "clang",
+        "-O2",
+        "-target",
+        "bpf",
+        "-D__TARGET_ARCH_x86",
+        "-I",
+        "/usr/include/x86_64-linux-gnu",
+        "-c",
+        "/home/seed/skyseed/satellite/experimental/bpf/skyseed_tc_parameter_map.c",
+        "-o",
+        "/tmp/skyseed-bpf-parameter-map-ltgl_2i2/skyseed_tc_parameter_map.o"
+      ],
+      "returncode": 0,
+      "stderr": "",
+      "stdout": ""
+    },
+    "names": {
+      "if_client": "spmc95799",
+      "if_server": "spms95799",
+      "ns_client": "sspmcl95799",
+      "ns_server": "sspmsv95799"
+    },
+    "ok": true,
+    "parameter_suite": {
+      "attach": [
+        {
+          "args": [
+            "sudo",
+            "-n",
+            "ip",
+            "netns",
+            "exec",
+            "sspmsv95799",
+            "tc",
+            "qdisc",
+            "del",
+            "dev",
+            "spms95799",
+            "clsact"
+          ],
+          "returncode": 2,
+          "stderr": "Error: Cannot find specified qdisc on specified device.",
+          "stdout": ""
+        },
+        {
+          "args": [
+            "sudo",
+            "-n",
+            "ip",
+            "netns",
+            "exec",
+            "sspmsv95799",
+            "tc",
+            "qdisc",
+            "add",
+            "dev",
+            "spms95799",
+            "clsact"
+          ],
+          "returncode": 0,
+          "stderr": "",
+          "stdout": ""
+        },
+        {
+          "args": [
+            "sudo",
+            "-n",
+            "ip",
+            "netns",
+            "exec",
+            "sspmsv95799",
+            "tc",
+            "filter",
+            "add",
+            "dev",
+            "spms95799",
+            "ingress",
+            "bpf",
+            "da",
+            "obj",
+            "/tmp/skyseed-bpf-parameter-map-ltgl_2i2/skyseed_tc_parameter_map.o",
+            "sec",
+            "classifier/parameter"
+          ],
+          "returncode": 0,
+          "stderr": "",
+          "stdout": ""
+        }
+      ],
+      "attach_ok": true,
+      "counters": {
+        "counters": {
+          "drop_bad_packet": 0,
+          "drop_inactive": 2,
+          "drop_loss": 3,
+          "drop_missing_generation": 2,
+          "drop_missing_parameter": 2,
+          "future_generation_not_used": 7,
+          "parameter_entry_hit": 7,
+          "parameter_generation_hit": 9,
+          "pass_count": 2
+        },
+        "dump": {
+          "command": {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "-j",
+              "map",
+              "dump",
+              "id",
+              "230"
+            ],
+            "returncode": 0,
+            "stderr": "",
+            "stdout": "[{\"key\":[\"0x00\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x09\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x01\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x07\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x02\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x02\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x03\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x02\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x04\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x03\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x05\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x02\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x06\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x02\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x07\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x07\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x08\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x09\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x0a\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x0b\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x0c\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x0d\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x0e\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x0f\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]}]"
+          },
+          "map_reference": {
+            "id": 230,
+            "kernel_name": "parameter_count",
+            "kind": "id_by_shape",
+            "logical_name": "parameter_counters",
+            "shape": {
+              "bytes_key": 4,
+              "bytes_value": 8,
+              "max_entries": 16,
+              "type": "array"
+            }
+          },
+          "parsed": [
+            {
+              "key": [
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x09",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x01",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x07",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x02",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x02",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x03",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x02",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x04",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x03",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x05",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x02",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x06",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x02",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x07",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x07",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x08",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x09",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x0a",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x0b",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x0c",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x0d",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x0e",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x0f",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            }
+          ]
+        }
+      },
+      "fail_closed_ok": true,
+      "future_generation_not_used_ok": true,
+      "gen0_ok": true,
+      "gen1_ok": true,
+      "gen2_ok": true,
+      "initialize_maps": {
+        "ok": true,
+        "updates": [
+          {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "map",
+              "update",
+              "id",
+              "227",
+              "key",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00",
+              "value",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00"
+            ],
+            "map_reference": {
+              "id": 227,
+              "kernel_name": "parameter_gener",
+              "kind": "id_by_shape",
+              "logical_name": "parameter_generation",
+              "shape": {
+                "bytes_key": 4,
+                "bytes_value": 4,
+                "max_entries": 1,
+                "type": "array"
+              }
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": ""
+          },
+          {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "map",
+              "update",
+              "id",
+              "231",
+              "key",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00",
+              "value",
+              "hex",
+              "01",
+              "00",
+              "00",
+              "00"
+            ],
+            "map_reference": {
+              "id": 231,
+              "kernel_name": "future_param_ge",
+              "kind": "id_by_shape",
+              "logical_name": "future_param_gen",
+              "shape": {
+                "bytes_key": 4,
+                "bytes_value": 4,
+                "max_entries": 2,
+                "type": "array"
+              }
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": ""
+          },
+          {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "map",
+              "update",
+              "id",
+              "228",
+              "key",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00",
+              "value",
+              "hex",
+              "01",
+              "00",
+              "00",
+              "00"
+            ],
+            "map_reference": {
+              "id": 228,
+              "kernel_name": "param_status",
+              "kind": "id_by_shape",
+              "logical_name": "param_status",
+              "shape": {
+                "bytes_key": 4,
+                "bytes_value": 4,
+                "max_entries": 8,
+                "type": "array"
+              }
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": ""
+          },
+          {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "map",
+              "update",
+              "id",
+              "228",
+              "key",
+              "hex",
+              "01",
+              "00",
+              "00",
+              "00",
+              "value",
+              "hex",
+              "01",
+              "00",
+              "00",
+              "00"
+            ],
+            "map_reference": {
+              "id": 228,
+              "kernel_name": "param_status",
+              "kind": "id_by_shape",
+              "logical_name": "param_status",
+              "shape": {
+                "bytes_key": 4,
+                "bytes_value": 4,
+                "max_entries": 8,
+                "type": "array"
+              }
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": ""
+          },
+          {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "map",
+              "update",
+              "id",
+              "228",
+              "key",
+              "hex",
+              "02",
+              "00",
+              "00",
+              "00",
+              "value",
+              "hex",
+              "01",
+              "00",
+              "00",
+              "00"
+            ],
+            "map_reference": {
+              "id": 228,
+              "kernel_name": "param_status",
+              "kind": "id_by_shape",
+              "logical_name": "param_status",
+              "shape": {
+                "bytes_key": 4,
+                "bytes_value": 4,
+                "max_entries": 8,
+                "type": "array"
+              }
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": ""
+          },
+          {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "map",
+              "update",
+              "id",
+              "229",
+              "key",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00",
+              "01",
+              "00",
+              "00",
+              "00",
+              "01",
+              "00",
+              "00",
+              "00",
+              "value",
+              "hex",
+              "01",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "11",
+              "00",
+              "00"
+            ],
+            "map_reference": {
+              "id": 229,
+              "kernel_name": "parameter_value",
+              "kind": "id_by_shape",
+              "logical_name": "parameter_values",
+              "shape": {
+                "bytes_key": 12,
+                "bytes_value": 12,
+                "max_entries": 128,
+                "type": "hash"
+              }
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": ""
+          },
+          {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "map",
+              "update",
+              "id",
+              "229",
+              "key",
+              "hex",
+              "01",
+              "00",
+              "00",
+              "00",
+              "01",
+              "00",
+              "00",
+              "00",
+              "01",
+              "00",
+              "00",
+              "00",
+              "value",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "01",
+              "11",
+              "00",
+              "00"
+            ],
+            "map_reference": {
+              "id": 229,
+              "kernel_name": "parameter_value",
+              "kind": "id_by_shape",
+              "logical_name": "parameter_values",
+              "shape": {
+                "bytes_key": 12,
+                "bytes_value": 12,
+                "max_entries": 128,
+                "type": "hash"
+              }
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": ""
+          },
+          {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "map",
+              "update",
+              "id",
+              "229",
+              "key",
+              "hex",
+              "02",
+              "00",
+              "00",
+              "00",
+              "01",
+              "00",
+              "00",
+              "00",
+              "01",
+              "00",
+              "00",
+              "00",
+              "value",
+              "hex",
+              "01",
+              "00",
+              "00",
+              "00",
+              "40",
+              "42",
+              "0f",
+              "00",
+              "02",
+              "11",
+              "00",
+              "00"
+            ],
+            "map_reference": {
+              "id": 229,
+              "kernel_name": "parameter_value",
+              "kind": "id_by_shape",
+              "logical_name": "parameter_values",
+              "shape": {
+                "bytes_key": 12,
+                "bytes_value": 12,
+                "max_entries": 128,
+                "type": "hash"
+              }
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": ""
+          }
+        ]
+      },
+      "ok": true,
+      "probes": [
+        {
+          "counter_delta": {
+            "drop_bad_packet": 0,
+            "drop_inactive": 0,
+            "drop_loss": 0,
+            "drop_missing_generation": 0,
+            "drop_missing_parameter": 0,
+            "future_generation_not_used": 2,
+            "parameter_entry_hit": 2,
+            "parameter_generation_hit": 2,
+            "pass_count": 2
+          },
+          "counter_ok": true,
+          "destination": "10.92.0.2",
+          "expected_counters": [
+            "parameter_generation_hit",
+            "parameter_entry_hit",
+            "pass_count",
+            "future_generation_not_used"
+          ],
+          "expected_ping": "pass",
+          "generation": 0,
+          "name": "gen0_future_gen1_preloaded_active_pass",
+          "observed_ping": "pass",
+          "ok": true,
+          "ping": {
+            "args": [
+              "sudo",
+              "-n",
+              "ip",
+              "netns",
+              "exec",
+              "sspmcl95799",
+              "ping",
+              "-c",
+              "2",
+              "-W",
+              "1",
+              "10.92.0.2"
+            ],
+            "parsed": {
+              "packet_loss_pct": 0.0,
+              "received": 2,
+              "rtt_avg_ms": 0.046,
+              "rtt_max_ms": 0.054,
+              "rtt_mdev_ms": 0.007,
+              "rtt_min_ms": 0.039,
+              "transmitted": 2
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": "PING 10.92.0.2 (10.92.0.2) 56(84) bytes of data.\n64 bytes from 10.92.0.2: icmp_seq=1 ttl=64 time=0.039 ms\n64 bytes from 10.92.0.2: icmp_seq=2 ttl=64 time=0.054 ms\n\n--- 10.92.0.2 ping statistics ---\n2 packets transmitted, 2 received, 0% packet loss, time 1010ms\nrtt min/avg/max/mdev = 0.039/0.046/0.054/0.007 ms"
+          },
+          "set_generation": {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "map",
+              "update",
+              "id",
+              "227",
+              "key",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00",
+              "value",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00"
+            ],
+            "map_reference": {
+              "id": 227,
+              "kernel_name": "parameter_gener",
+              "kind": "id_by_shape",
+              "logical_name": "parameter_generation",
+              "shape": {
+                "bytes_key": 4,
+                "bytes_value": 4,
+                "max_entries": 1,
+                "type": "array"
+              }
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": ""
+          }
+        },
+        {
+          "counter_delta": {
+            "drop_bad_packet": 0,
+            "drop_inactive": 2,
+            "drop_loss": 0,
+            "drop_missing_generation": 0,
+            "drop_missing_parameter": 0,
+            "future_generation_not_used": 0,
+            "parameter_entry_hit": 2,
+            "parameter_generation_hit": 2,
+            "pass_count": 0
+          },
+          "counter_ok": true,
+          "destination": "10.92.0.2",
+          "expected_counters": [
+            "parameter_generation_hit",
+            "parameter_entry_hit",
+            "drop_inactive"
+          ],
+          "expected_ping": "drop",
+          "generation": 1,
+          "name": "gen1_inactive_drop",
+          "observed_ping": "drop",
+          "ok": true,
+          "ping": {
+            "args": [
+              "sudo",
+              "-n",
+              "ip",
+              "netns",
+              "exec",
+              "sspmcl95799",
+              "ping",
+              "-c",
+              "2",
+              "-W",
+              "1",
+              "10.92.0.2"
+            ],
+            "parsed": {
+              "packet_loss_pct": 100.0,
+              "received": 0,
+              "transmitted": 2
+            },
+            "returncode": 1,
+            "stderr": "",
+            "stdout": "PING 10.92.0.2 (10.92.0.2) 56(84) bytes of data.\n\n--- 10.92.0.2 ping statistics ---\n2 packets transmitted, 0 received, 100% packet loss, time 1027ms"
+          },
+          "set_generation": {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "map",
+              "update",
+              "id",
+              "227",
+              "key",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00",
+              "value",
+              "hex",
+              "01",
+              "00",
+              "00",
+              "00"
+            ],
+            "map_reference": {
+              "id": 227,
+              "kernel_name": "parameter_gener",
+              "kind": "id_by_shape",
+              "logical_name": "parameter_generation",
+              "shape": {
+                "bytes_key": 4,
+                "bytes_value": 4,
+                "max_entries": 1,
+                "type": "array"
+              }
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": ""
+          }
+        },
+        {
+          "counter_delta": {
+            "drop_bad_packet": 0,
+            "drop_inactive": 0,
+            "drop_loss": 3,
+            "drop_missing_generation": 0,
+            "drop_missing_parameter": 0,
+            "future_generation_not_used": 3,
+            "parameter_entry_hit": 3,
+            "parameter_generation_hit": 3,
+            "pass_count": 0
+          },
+          "counter_ok": true,
+          "destination": "10.92.0.2",
+          "expected_counters": [
+            "parameter_generation_hit",
+            "parameter_entry_hit",
+            "drop_loss"
+          ],
+          "expected_ping": "drop",
+          "generation": 2,
+          "name": "gen2_active_loss_drop",
+          "observed_ping": "drop",
+          "ok": true,
+          "ping": {
+            "args": [
+              "sudo",
+              "-n",
+              "ip",
+              "netns",
+              "exec",
+              "sspmcl95799",
+              "ping",
+              "-c",
+              "3",
+              "-W",
+              "1",
+              "10.92.0.2"
+            ],
+            "parsed": {
+              "packet_loss_pct": 100.0,
+              "received": 0,
+              "transmitted": 3
+            },
+            "returncode": 1,
+            "stderr": "",
+            "stdout": "PING 10.92.0.2 (10.92.0.2) 56(84) bytes of data.\n\n--- 10.92.0.2 ping statistics ---\n3 packets transmitted, 0 received, 100% packet loss, time 2052ms"
+          },
+          "set_generation": {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "map",
+              "update",
+              "id",
+              "227",
+              "key",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00",
+              "value",
+              "hex",
+              "02",
+              "00",
+              "00",
+              "00"
+            ],
+            "map_reference": {
+              "id": 227,
+              "kernel_name": "parameter_gener",
+              "kind": "id_by_shape",
+              "logical_name": "parameter_generation",
+              "shape": {
+                "bytes_key": 4,
+                "bytes_value": 4,
+                "max_entries": 1,
+                "type": "array"
+              }
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": ""
+          }
+        },
+        {
+          "counter_delta": {
+            "drop_bad_packet": 0,
+            "drop_inactive": 0,
+            "drop_loss": 0,
+            "drop_missing_generation": 2,
+            "drop_missing_parameter": 0,
+            "future_generation_not_used": 0,
+            "parameter_entry_hit": 0,
+            "parameter_generation_hit": 0,
+            "pass_count": 0
+          },
+          "counter_ok": true,
+          "destination": "10.92.0.2",
+          "expected_counters": [
+            "drop_missing_generation"
+          ],
+          "expected_ping": "drop",
+          "generation": 7,
+          "name": "missing_generation_fail_closed",
+          "observed_ping": "drop",
+          "ok": true,
+          "ping": {
+            "args": [
+              "sudo",
+              "-n",
+              "ip",
+              "netns",
+              "exec",
+              "sspmcl95799",
+              "ping",
+              "-c",
+              "2",
+              "-W",
+              "1",
+              "10.92.0.2"
+            ],
+            "parsed": {
+              "packet_loss_pct": 100.0,
+              "received": 0,
+              "transmitted": 2
+            },
+            "returncode": 1,
+            "stderr": "",
+            "stdout": "PING 10.92.0.2 (10.92.0.2) 56(84) bytes of data.\n\n--- 10.92.0.2 ping statistics ---\n2 packets transmitted, 0 received, 100% packet loss, time 1029ms"
+          },
+          "set_generation": {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "map",
+              "update",
+              "id",
+              "227",
+              "key",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00",
+              "value",
+              "hex",
+              "07",
+              "00",
+              "00",
+              "00"
+            ],
+            "map_reference": {
+              "id": 227,
+              "kernel_name": "parameter_gener",
+              "kind": "id_by_shape",
+              "logical_name": "parameter_generation",
+              "shape": {
+                "bytes_key": 4,
+                "bytes_value": 4,
+                "max_entries": 1,
+                "type": "array"
+              }
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": ""
+          }
+        },
+        {
+          "counter_delta": {
+            "drop_bad_packet": 0,
+            "drop_inactive": 0,
+            "drop_loss": 0,
+            "drop_missing_generation": 0,
+            "drop_missing_parameter": 2,
+            "future_generation_not_used": 2,
+            "parameter_entry_hit": 0,
+            "parameter_generation_hit": 2,
+            "pass_count": 0
+          },
+          "counter_ok": true,
+          "destination": "10.92.0.99",
+          "expected_counters": [
+            "parameter_generation_hit",
+            "drop_missing_parameter"
+          ],
+          "expected_ping": "drop",
+          "generation": 0,
+          "name": "missing_parameter_fail_closed",
+          "observed_ping": "drop",
+          "ok": true,
+          "ping": {
+            "args": [
+              "sudo",
+              "-n",
+              "ip",
+              "netns",
+              "exec",
+              "sspmcl95799",
+              "ping",
+              "-c",
+              "2",
+              "-W",
+              "1",
+              "10.92.0.99"
+            ],
+            "parsed": {
+              "packet_loss_pct": 100.0,
+              "received": 0,
+              "transmitted": 2
+            },
+            "returncode": 1,
+            "stderr": "",
+            "stdout": "PING 10.92.0.99 (10.92.0.99) 56(84) bytes of data.\n\n--- 10.92.0.99 ping statistics ---\n2 packets transmitted, 0 received, 100% packet loss, time 1009ms"
+          },
+          "set_generation": {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "map",
+              "update",
+              "id",
+              "227",
+              "key",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00",
+              "value",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00"
+            ],
+            "map_reference": {
+              "id": 227,
+              "kernel_name": "parameter_gener",
+              "kind": "id_by_shape",
+              "logical_name": "parameter_generation",
+              "shape": {
+                "bytes_key": 4,
+                "bytes_value": 4,
+                "max_entries": 1,
+                "type": "array"
+              }
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": ""
+          }
+        }
+      ]
+    },
+    "setup": [
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "add",
+          "sspmcl95799"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "add",
+          "sspmsv95799"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "link",
+          "add",
+          "spmc95799",
+          "type",
+          "veth",
+          "peer",
+          "name",
+          "spms95799"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "link",
+          "set",
+          "spmc95799",
+          "netns",
+          "sspmcl95799"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "link",
+          "set",
+          "spms95799",
+          "netns",
+          "sspmsv95799"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "sspmcl95799",
+          "ip",
+          "link",
+          "set",
+          "lo",
+          "up"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "sspmcl95799",
+          "sysctl",
+          "-q",
+          "-w",
+          "net.ipv6.conf.all.disable_ipv6=1"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "sspmcl95799",
+          "sysctl",
+          "-q",
+          "-w",
+          "net.ipv6.conf.default.disable_ipv6=1"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "sspmsv95799",
+          "ip",
+          "link",
+          "set",
+          "lo",
+          "up"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "sspmsv95799",
+          "sysctl",
+          "-q",
+          "-w",
+          "net.ipv6.conf.all.disable_ipv6=1"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "sspmsv95799",
+          "sysctl",
+          "-q",
+          "-w",
+          "net.ipv6.conf.default.disable_ipv6=1"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "sspmcl95799",
+          "ip",
+          "addr",
+          "add",
+          "10.92.0.1/24",
+          "dev",
+          "spmc95799"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "sspmsv95799",
+          "ip",
+          "addr",
+          "add",
+          "10.92.0.2/24",
+          "dev",
+          "spms95799"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "sspmsv95799",
+          "ip",
+          "addr",
+          "add",
+          "10.92.0.99/32",
+          "dev",
+          "spms95799"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "sspmcl95799",
+          "ip",
+          "link",
+          "set",
+          "spmc95799",
+          "up"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "sspmsv95799",
+          "ip",
+          "link",
+          "set",
+          "spms95799",
+          "up"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      }
+    ]
+  },
+  "goal": "Skyseed Goal 11 isolated ParameterEpoch BPF parameter-map prototype",
+  "notes": {
+    "canonical_runtime_changed": false,
+    "delay_bandwidth_rate_reordering_modeled": false,
+    "experiment_scope": "isolated netns/veth only",
+    "external_kernel_module_installed": false,
+    "parameter_epoch_scheduler_changed": false,
+    "qdisc_timeline_changed": false,
+    "real_dataplane_touched": false,
+    "runtime_epoch_scheduler_changed": false,
+    "satellite_output_written": false
+  },
+  "parameter_suite_ok": true,
+  "residue": {
+    "clean": true,
+    "link_hits": [],
+    "namespace_hits": [],
+    "pinned_maps": {
+      "future_param_gen": false,
+      "param_status": false,
+      "parameter_counters": false,
+      "parameter_generation": false,
+      "parameter_values": false
+    },
+    "tc_filter_residue_possible": false
+  },
+  "schema_version": 1,
+  "source": "/home/seed/skyseed/satellite/experimental/bpf/skyseed_tc_parameter_map.c",
+  "tc_bpf_attach": {
+    "attempted": true,
+    "ok": true,
+    "parameter_attach_ok": true,
+    "reason": null
+  },
+  "timestamp_unix": 1781966468.9251776
+}
