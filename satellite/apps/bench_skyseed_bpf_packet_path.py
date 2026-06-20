@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -31,6 +32,18 @@ PINNED_MAPS = [
     "lookup_pad",
 ]
 PIN_BASE = Path("/sys/fs/bpf/tc/globals")
+KERNEL_MAP_NAMES = {
+    "active_generation": "active_generati",
+    "generation_policy": "generation_poli",
+    "packet_counters": "packet_counters",
+    "lookup_pad": "lookup_pad",
+}
+MAP_SPECS = {
+    "active_generation": {"type": "array", "bytes_key": 4, "bytes_value": 4, "max_entries": 1},
+    "generation_policy": {"type": "array", "bytes_key": 4, "bytes_value": 4, "max_entries": 16},
+    "packet_counters": {"type": "array", "bytes_key": 4, "bytes_value": 8, "max_entries": 8},
+    "lookup_pad": {"type": "array", "bytes_key": 4, "bytes_value": 4, "max_entries": 4},
+}
 
 
 def run_command(
@@ -71,17 +84,35 @@ def run_command(
         }
 
 
+def resolve_bpftool() -> str:
+    candidates: list[str] = []
+    path = shutil.which("bpftool")
+    if path:
+        candidates.append(path)
+    candidates.extend(str(candidate) for candidate in sorted(Path("/usr/lib/linux-tools").glob("*/bpftool")))
+    candidates.extend(str(candidate) for candidate in sorted(Path("/usr/lib").glob("linux-tools-*/bpftool")))
+    for candidate in candidates:
+        result = run_command([candidate, "version"], timeout=5.0)
+        if result["returncode"] == 0:
+            return candidate
+    return path or "bpftool"
+
+
+BPFTOOL = resolve_bpftool()
+
+
 def first_lines(value: str, limit: int = 4) -> str:
     return "\n".join(value.splitlines()[:limit])
 
 
 def tool_status(name: str, version_args: list[str]) -> dict[str, Any]:
-    path = shutil.which(name)
+    path = BPFTOOL if name == "bpftool" else shutil.which(name)
     result: dict[str, Any] = {"path": path, "available": path is not None}
     if path:
         version = run_command([path] + version_args, timeout=5.0)
         result["version"] = first_lines(version["stdout"] or version["stderr"])
         result["version_returncode"] = version["returncode"]
+        result["available"] = version["returncode"] == 0
     return result
 
 
@@ -93,6 +124,22 @@ def sudo_status() -> dict[str, Any]:
         "noninteractive_sudo": result["returncode"] == 0,
         "sudo_check": result,
     }
+
+
+def package_status(packages: list[str]) -> dict[str, Any]:
+    result = run_command(["dpkg-query", "-W", "-f=${Package} ${Version} ${Status}\n", *packages])
+    records: dict[str, Any] = {package: {"installed": False} for package in packages}
+    if result["stdout"]:
+        for line in result["stdout"].splitlines():
+            parts = line.split(maxsplit=4)
+            if len(parts) >= 5:
+                records[parts[0]] = {
+                    "installed": parts[4] == "installed",
+                    "version": parts[1],
+                    "status": parts[2:],
+                }
+    records["_command"] = result
+    return records
 
 
 def collect_environment() -> dict[str, Any]:
@@ -116,6 +163,24 @@ def collect_environment() -> dict[str, Any]:
             "btf_vmlinux_exists": btf.exists(),
         },
         "sudo": sudo_status(),
+        "apt_packages": package_status(
+            [
+                "clang",
+                "llvm",
+                "linux-tools-common",
+                "linux-tools-generic",
+                "linux-tools-5.4.0-216",
+                "linux-tools-5.4.0-216-generic",
+                "gcc",
+                "make",
+                "pkg-config",
+                "libbpf-dev",
+            ]
+        ),
+        "python": {
+            "executable": sys.executable,
+            "version": sys.version.split()[0],
+        },
     }
 
 
@@ -140,7 +205,6 @@ def compile_bpf(source: Path, object_path: Path) -> dict[str, Any]:
         [
             "clang",
             "-O2",
-            "-g",
             "-target",
             "bpf",
             "-D__TARGET_ARCH_x86",
@@ -163,20 +227,67 @@ def tc_exec(namespace: str, args: list[str], *, timeout: float = 10.0) -> dict[s
 
 
 def bpftool(args: list[str], *, timeout: float = 10.0) -> dict[str, Any]:
-    return run_command(["bpftool"] + args, timeout=timeout, privileged=True)
+    return run_command([BPFTOOL] + args, timeout=timeout, privileged=True)
+
+
+def map_reference(map_name: str) -> tuple[list[str], dict[str, Any]]:
+    pinned = PIN_BASE / map_name
+    if privileged_path_exists(pinned):
+        return ["pinned", str(pinned)], {"kind": "pinned", "path": str(pinned)}
+
+    show = bpftool(["-j", "map", "show"], timeout=8.0)
+    maps: list[dict[str, Any]] = []
+    if show["stdout"]:
+        try:
+            parsed = json.loads(show["stdout"])
+            if isinstance(parsed, list):
+                maps = [item for item in parsed if isinstance(item, dict)]
+        except json.JSONDecodeError:
+            maps = []
+    kernel_name = KERNEL_MAP_NAMES.get(map_name, map_name[:15])
+    matches = [item for item in maps if item.get("name") == kernel_name]
+    if matches:
+        selected = sorted(matches, key=lambda item: int(item.get("id", -1)))[-1]
+        return ["id", str(selected["id"])], {
+            "kind": "id",
+            "logical_name": map_name,
+            "kernel_name": kernel_name,
+            "id": selected["id"],
+        }
+    spec = MAP_SPECS[map_name]
+    shape_matches = [
+        item
+        for item in maps
+        if all(item.get(key) == value for key, value in spec.items())
+    ]
+    if shape_matches:
+        selected = sorted(shape_matches, key=lambda item: int(item.get("id", -1)))[-1]
+        return ["id", str(selected["id"])], {
+            "kind": "id_by_shape",
+            "logical_name": map_name,
+            "kernel_name": kernel_name,
+            "id": selected["id"],
+            "shape": spec,
+        }
+    return ["pinned", str(pinned)], {
+        "kind": "missing",
+        "logical_name": map_name,
+        "kernel_name": kernel_name,
+        "bpftool_map_show": show,
+    }
 
 
 def hex_u32(value: int) -> list[str]:
     return [(value & 0xFFFFFFFF).to_bytes(4, "little").hex()[index : index + 2] for index in range(0, 8, 2)]
 
 
-def update_u32_map(path: Path, key: int, value: int) -> dict[str, Any]:
-    return bpftool(
+def update_u32_map(map_name: str, key: int, value: int) -> dict[str, Any]:
+    ref_args, ref_meta = map_reference(map_name)
+    result = bpftool(
         [
             "map",
             "update",
-            "pinned",
-            str(path),
+            *ref_args,
             "key",
             "hex",
             *hex_u32(key),
@@ -185,17 +296,20 @@ def update_u32_map(path: Path, key: int, value: int) -> dict[str, Any]:
             *hex_u32(value),
         ]
     )
+    result["map_reference"] = ref_meta
+    return result
 
 
-def dump_map(path: Path) -> dict[str, Any]:
-    result = bpftool(["-j", "map", "dump", "pinned", str(path)], timeout=8.0)
+def dump_map(map_name: str) -> dict[str, Any]:
+    ref_args, ref_meta = map_reference(map_name)
+    result = bpftool(["-j", "map", "dump", *ref_args], timeout=8.0)
     parsed: Any = None
     if result["stdout"]:
         try:
             parsed = json.loads(result["stdout"])
         except json.JSONDecodeError:
             parsed = None
-    return {"command": result, "parsed": parsed}
+    return {"command": result, "map_reference": ref_meta, "parsed": parsed}
 
 
 def cleanup(names: dict[str, str]) -> dict[str, Any]:
@@ -328,25 +442,29 @@ def ping_once(names: dict[str, str], *, count: int, timeout_s: int = 1) -> dict[
     return result
 
 
-def initialize_maps() -> dict[str, Any]:
+def initialize_maps(map_names: list[str]) -> dict[str, Any]:
     updates: list[dict[str, Any]] = []
-    active = PIN_BASE / "active_generation"
-    policy = PIN_BASE / "generation_policy"
-    pad = PIN_BASE / "lookup_pad"
-    updates.append(update_u32_map(active, 0, 0))
-    updates.append(update_u32_map(policy, 0, 1))
-    updates.append(update_u32_map(policy, 1, 0))
-    updates.append(update_u32_map(policy, 2, 1))
-    updates.append(update_u32_map(pad, 0, 1))
-    return {"updates": updates}
+    if "active_generation" in map_names:
+        updates.append(update_u32_map("active_generation", 0, 0))
+    if "generation_policy" in map_names:
+        updates.append(update_u32_map("generation_policy", 0, 1))
+        updates.append(update_u32_map("generation_policy", 1, 0))
+        updates.append(update_u32_map("generation_policy", 2, 1))
+    if "lookup_pad" in map_names:
+        updates.append(update_u32_map("lookup_pad", 0, 1))
+    return {"ok": all(update["returncode"] == 0 for update in updates), "updates": updates}
+
+
+def attach_ok(attach: list[dict[str, Any]]) -> bool:
+    return bool(attach) and attach[-1]["returncode"] == 0
 
 
 def generation_switch_test(names: dict[str, str], object_path: Path, ping_count: int) -> dict[str, Any]:
     attach = attach_section(names, object_path, "classifier/generation")
-    init = initialize_maps()
+    init = initialize_maps(["active_generation", "generation_policy"])
     phases: list[dict[str, Any]] = []
     for generation in [0, 1, 2]:
-        update = update_u32_map(PIN_BASE / "active_generation", 0, generation)
+        update = update_u32_map("active_generation", 0, generation)
         ping_result = ping_once(names, count=ping_count)
         expected_pass = generation in [0, 2]
         observed_pass = ping_result["returncode"] == 0
@@ -362,17 +480,19 @@ def generation_switch_test(names: dict[str, str], object_path: Path, ping_count:
         )
     return {
         "attach": attach,
+        "attach_ok": attach_ok(attach),
         "initialize_maps": init,
         "phases": phases,
-        "counters": dump_map(PIN_BASE / "packet_counters"),
-        "ok": all(phase["ok"] for phase in phases),
+        "counters": dump_map("packet_counters"),
+        "ok": attach_ok(attach) and init["ok"] and all(phase["ok"] for phase in phases),
     }
 
 
 def ping_overhead(names: dict[str, str], object_path: Path, ping_count: int) -> dict[str, Any]:
     cases: list[dict[str, Any]] = []
+    detach = tc_exec(names["ns_a"], ["qdisc", "del", "dev", names["veth_a"], "clsact"], timeout=4.0)
     baseline = ping_once(names, count=ping_count)
-    cases.append({"name": "no_bpf_baseline", "ping": baseline})
+    cases.append({"name": "no_bpf_baseline", "detach": detach, "ping": baseline})
     for name, section in [
         ("empty_bpf", "classifier/empty"),
         ("lookup1", "classifier/lookup1"),
@@ -380,14 +500,21 @@ def ping_overhead(names: dict[str, str], object_path: Path, ping_count: int) -> 
         ("counter_update", "classifier/counter"),
     ]:
         attach = attach_section(names, object_path, section)
-        init = initialize_maps()
+        init_maps = {
+            "empty_bpf": [],
+            "lookup1": ["active_generation"],
+            "lookup3": ["active_generation", "generation_policy", "lookup_pad"],
+            "counter_update": [],
+        }[name]
+        init = initialize_maps(init_maps)
         ping_result = ping_once(names, count=ping_count)
-        counters = dump_map(PIN_BASE / "packet_counters") if name == "counter_update" else None
+        counters = dump_map("packet_counters") if name == "counter_update" else None
         cases.append(
             {
                 "name": name,
                 "section": section,
                 "attach": attach,
+                "attach_ok": attach_ok(attach),
                 "initialize_maps": init,
                 "ping": ping_result,
                 "counters": counters,
@@ -464,11 +591,59 @@ def run_isolated_experiment(source: Path, ping_count: int, run_throughput: bool)
             result["cleanup"] = cleanup(names)
 
 
+def ping_summary(ping: dict[str, Any]) -> str:
+    parsed = ping.get("parsed") or {}
+    if "rtt_avg_ms" in parsed:
+        return (
+            f"rc={ping.get('returncode')} recv={parsed.get('received')}/"
+            f"{parsed.get('transmitted')} loss={parsed.get('packet_loss_pct')}% "
+            f"avg={parsed.get('rtt_avg_ms')}ms"
+        )
+    if parsed:
+        return (
+            f"rc={ping.get('returncode')} recv={parsed.get('received')}/"
+            f"{parsed.get('transmitted')} loss={parsed.get('packet_loss_pct')}%"
+        )
+    return f"rc={ping.get('returncode')}"
+
+
+def format_text(report: dict[str, Any]) -> str:
+    lines = [
+        f"Goal: {report['goal']}",
+        f"Blocked: {report['blocked']} blockers={report['blockers']}",
+        f"tc-BPF attach: {report['tc_bpf_attach']}",
+        f"Residue clean: {(report.get('residue') or {}).get('clean')}",
+    ]
+    tools = report["environment"]["tools"]
+    lines.append(
+        "Tools: "
+        f"clang={tools['clang'].get('version', tools['clang'].get('path'))!r}; "
+        f"llc={tools['llc'].get('version', tools['llc'].get('path'))!r}; "
+        f"bpftool={tools['bpftool'].get('version', tools['bpftool'].get('path'))!r}; "
+        f"tc={tools['tc'].get('version', tools['tc'].get('path'))!r}"
+    )
+    if report.get("pass_drop_pass") and not report["pass_drop_pass"].get("skipped"):
+        lines.append("Pass/drop/pass:")
+        for phase in report["pass_drop_pass"].get("phases", []):
+            lines.append(
+                "  "
+                f"gen{phase['generation']} expected={phase['expected']} "
+                f"observed={phase['observed']} ok={phase['ok']} "
+                f"ping={ping_summary(phase['ping'])}"
+            )
+    if report.get("packet_path_overhead") and not report["packet_path_overhead"].get("skipped"):
+        lines.append("Packet-path ping overhead cases:")
+        for case in report["packet_path_overhead"].get("cases", []):
+            lines.append(f"  {case['name']}: {ping_summary(case['ping'])}")
+    return "\n".join(lines)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bpf-source", type=Path, default=DEFAULT_SOURCE)
     parser.add_argument("--json-out", type=Path, default=DEFAULT_JSON)
-    parser.add_argument("--ping-count", type=int, default=20)
+    parser.add_argument("--format", choices=["json", "text"], default="json")
+    parser.add_argument("--ping-count", type=int, default=5)
     parser.add_argument("--skip-throughput", action="store_true")
     args = parser.parse_args()
 
@@ -506,7 +681,14 @@ def main() -> int:
         report["experiment"] = experiment
         report["tc_bpf_attach"] = {
             "attempted": True,
-            "ok": bool(experiment.get("ok")),
+            "generation_attach_ok": bool(
+                (experiment.get("generation_switch") or {}).get("attach_ok")
+            ),
+            "overhead_attach_ok": all(
+                case.get("name") == "no_bpf_baseline" or case.get("attach_ok")
+                for case in (experiment.get("overhead") or {}).get("cases", [])
+            ),
+            "ok": bool((experiment.get("generation_switch") or {}).get("attach_ok")),
             "reason": experiment.get("reason"),
         }
         report["pass_drop_pass"] = experiment.get("generation_switch")
@@ -516,7 +698,10 @@ def main() -> int:
     if args.json_out:
         args.json_out.parent.mkdir(parents=True, exist_ok=True)
         args.json_out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(json.dumps(report, indent=2, sort_keys=True))
+    if args.format == "text":
+        print(format_text(report))
+    else:
+        print(json.dumps(report, indent=2, sort_keys=True))
     return 0
 
 

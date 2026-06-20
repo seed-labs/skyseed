@@ -1,6 +1,7 @@
 # Skyseed BPF Packet-Path Prototype
 
-Goal 7 is an isolated RuntimeEpoch packet-path probe. It does not change the
+Goal 7.5 reran the isolated RuntimeEpoch packet-path probe after enabling a
+minimal BPF toolchain. It does not change the
 canonical runtime, does not change G/Z semantics, does not connect to the real
 Skyseed dataplane, and only operates inside test netns/veth namespaces when the
 local tc-BPF toolchain is present.
@@ -51,63 +52,119 @@ cleans all namespaces, veths, qdiscs, and pinned maps in a `finally` path.
 
 ## Current Toolchain Status
 
-Evidence from this VM on 2026-06-20:
+Evidence from this VM on 2026-06-20 after Goal 7.5:
 
 | item | status |
 | --- | --- |
-| `clang` | missing from `PATH` |
-| `llc` | missing from `PATH` |
-| `bpftool` | missing from `PATH` |
+| `clang` | available: `/usr/bin/clang`, version 10.0.0 |
+| `llc` | available: `/usr/bin/llc`, LLVM 10.0.0 |
+| `bpftool` | available via linux-tools real binary: `/usr/lib/linux-tools/5.4.0-216-generic/bpftool`, v5.4.291 |
 | `tc` | available: `/usr/sbin/tc`, `iproute2-ss200127` |
 | `/sys/fs/bpf` | exists and is mounted as bpffs |
 | `/sys/kernel/btf/vmlinux` | absent |
 | passwordless sudo | available (`sudo -n true` succeeds) |
+| Python runner | `/home/seed/miniconda3/envs/seed310/bin/python`, Python 3.10.20 |
 
-Because `clang` and `bpftool` are missing, the isolated attach experiment is
-blocked on this host. The runner records this as
-`toolchain_or_privilege_blocked` and does not fabricate attach, pass/drop, or
-overhead results.
-
-Minimum package set to unblock this VM class:
+Installed through Ubuntu apt official sources for Goal 7.5:
 
 - `clang`
-- `llvm` or an equivalent package that provides `llc`
-- `bpftool`
-- `iproute2`
-- `iputils-ping`
-- optional: `iperf3` for throughput smoke tests
+- `llvm`
+- `linux-tools-common`
+- `linux-tools-generic`
+- `linux-tools-5.4.0-216`
+- `linux-tools-5.4.0-216-generic`
 
-`/sys/kernel/btf/vmlinux` is useful for CO-RE workflows, but this prototype is
-written against classic tc ELF maps and does not require BTF for the first
-attach smoke.
+Already present before or after dependency resolution:
+
+- `gcc`
+- `make`
+- `pkg-config`
+
+Not installed:
+
+- `libbpf-dev`: package name was unavailable in the configured focal apt
+  sources.
+
+The Ubuntu `/usr/sbin/bpftool` wrapper still warns that a matching
+`linux-tools-5.4.0-54-generic` package is missing for the running kernel. The
+runner resolves and uses the actual newer linux-tools binary directly. This is
+adequate for map show/update/dump in the isolated test.
+
+`/sys/kernel/btf/vmlinux` remains absent. The prototype compiles without `-g`
+and uses classic tc ELF maps, so BTF is not required for this attach smoke.
 
 ## Current Results
 
-The summary JSON for this run reports:
+The summary JSON for the final Goal 7.5 run reports:
 
-- tc-BPF attach attempted: no.
-- Blocked reason: missing `clang`, missing `bpftool`; `llc` also missing and
-  recorded.
-- pass/drop/pass validation: skipped because attach is unavailable.
-- packet-path overhead: skipped because attach is unavailable.
-- throughput smoke: skipped because attach is unavailable.
+- tc-BPF attach attempted: yes.
+- tc-BPF attach success: yes for generation, empty, lookup, and counter
+  sections.
+- Map access: yes. This old tc/kernel path did not expose map names or pinned
+  map paths, so the runner falls back from pinned path/name lookup to
+  `bpftool map show` shape matching and updates maps by id.
+- pass/drop/pass validation: success.
+- packet-path overhead: measured with 5 ping probes per case.
+- throughput smoke: skipped because `iperf3` is not installed and is outside
+  the authorized install set for this goal.
 - residue: clean for Goal 7-owned namespace/veth names and pinned map names.
+
+Pass/drop/pass:
+
+| generation | expected | observed | ping |
+| --- | --- | --- | --- |
+| gen0 | pass | pass | 5/5 received, avg 0.077 ms |
+| gen1 | drop | drop | 0/5 received, 100% loss |
+| gen2 | pass | pass | 5/5 received, avg 0.077 ms |
+
+BPF counters after the generation section:
+
+| counter key | meaning | value |
+| --- | --- | ---: |
+| 0 | pass counter | 18 |
+| 1 | drop counter | 10 |
+
+The counter values are packet-path counters, not ping request counts; they
+include tc-visible egress packets such as ARP and ICMP traffic around the ping
+phases.
+
+Ping RTT overhead smoke:
+
+| case | avg RTT |
+| --- | ---: |
+| no BPF baseline | 0.061 ms |
+| empty tc-BPF | 0.070 ms |
+| 1 map lookup | 0.086 ms |
+| 3 map lookups | 0.048 ms |
+| counter update | 0.271 ms |
+
+These are tiny 5-ping smoke measurements on a veth pair, so they should be read
+as feasibility evidence, not as a stable performance distribution. The result
+does show that map lookup and counter sections can run on the real tc packet
+path.
 
 No canonical runtime file was changed and no `satellite/output/` artifact was
 created.
 
 ## Readiness For G/Z Forwarding BPF Shadow
 
-Not ready on this VM yet. The control-plane map write evidence is promising,
-but the missing toolchain means this run still does not prove:
+Ready to enter the next isolated G/Z forwarding BPF shadow prototype, but not
+ready to replace or alter canonical G/Z runtime behavior.
 
-- tc-BPF verifier acceptance for the generation classifier;
-- attach to a veth packet path;
-- runtime map updates visible to the classifier;
-- gen0 pass, gen1 drop, gen2 pass behavior;
-- per-packet map lookup/counter overhead;
-- redirect or forwarding behavior needed by a future G/Z shadow backend.
+Evidence now proven:
 
-The source and runner are ready to rerun on a prepared host. A positive next
-result should be treated as a shadow-backend prerequisite, not as permission to
-replace canonical G/Z semantics.
+- tc-BPF verifier/load path accepts the prototype sections.
+- tc-BPF attaches to a test veth in an isolated namespace.
+- BPF programs read `active_generation` and `generation_policy` maps.
+- Userspace map updates change packet-path behavior.
+- gen0 pass, gen1 drop, gen2 pass works.
+- Packet counters update in the packet path.
+- Residue cleanup is clean.
+
+Still unproven:
+
+- redirect or forwarding behavior;
+- G/Z route/neighbor semantics;
+- inactive future-state hiding for a real forwarding table;
+- multi-link or multi-zone scale;
+- integration with canonical observer/audit semantics.
