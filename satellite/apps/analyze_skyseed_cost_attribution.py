@@ -142,6 +142,122 @@ def _operation_counter(records: Sequence[Dict[str, Any]], epoch_type: str, key: 
     return dict(sorted(counter.items()))
 
 
+def _merge_counter_values(target: Counter[str], values: Any) -> None:
+    for name, value in _as_dict(values).items():
+        target[str(name)] += int(_num(value))
+
+
+def _merge_seconds_values(target: Counter[str], values: Any) -> None:
+    for name, value in _as_dict(values).items():
+        target[str(name)] += float(_num(value))
+
+
+def _typed_metrics_summary(payloads: Sequence[Dict[str, Any]], *, expected_count: int) -> Dict[str, Any]:
+    family_counts: Counter[str] = Counter()
+    operation_counts: Counter[str] = Counter()
+    family_seconds: Counter[str] = Counter()
+    operation_seconds: Counter[str] = Counter()
+    returncodes: Counter[str] = Counter()
+    command_count = 0
+    success_count = 0
+    failure_count = 0
+    total_wall_seconds = 0.0
+    batch_count = 0
+    batch_wall_seconds = 0.0
+    per_command_timing_available = False
+    for payload in payloads:
+        command_count += int(_num(payload.get("command_count")))
+        success_count += int(_num(payload.get("success_count")))
+        failure_count += int(_num(payload.get("failure_count")))
+        total_wall_seconds += _num(payload.get("total_wall_seconds"))
+        batch_count += int(_num(payload.get("batch_count")))
+        batch_wall_seconds += _num(payload.get("batch_wall_seconds"))
+        per_command_timing_available = per_command_timing_available or bool(
+            payload.get("per_command_timing_available")
+        )
+        _merge_counter_values(family_counts, payload.get("counts_by_family"))
+        _merge_counter_values(operation_counts, payload.get("counts_by_operation"))
+        _merge_seconds_values(family_seconds, payload.get("wall_seconds_by_family"))
+        _merge_seconds_values(operation_seconds, payload.get("wall_seconds_by_operation"))
+        _merge_counter_values(returncodes, payload.get("returncode_counts"))
+    return {
+        "available": bool(payloads),
+        "available_record_count": len(payloads),
+        "missing_record_count": max(0, int(expected_count) - len(payloads)),
+        "command_count": command_count,
+        "success_count": success_count,
+        "failure_count": failure_count,
+        "total_wall_seconds": round(total_wall_seconds, 6),
+        "batch_count": batch_count,
+        "batch_wall_seconds": round(batch_wall_seconds, 6),
+        "per_command_timing_available": per_command_timing_available,
+        "counts_by_family": dict(sorted(family_counts.items())),
+        "counts_by_operation": dict(sorted(operation_counts.items())),
+        "wall_seconds_by_family": {
+            key: round(value, 6) for key, value in sorted(family_seconds.items())
+        },
+        "wall_seconds_by_operation": {
+            key: round(value, 6) for key, value in sorted(operation_seconds.items())
+        },
+        "returncode_counts": dict(sorted(returncodes.items())),
+    }
+
+
+def _typed_metrics_from_records(
+    records: Sequence[Dict[str, Any]],
+    epoch_type: str,
+    key: str,
+) -> Dict[str, Any]:
+    selected = [record for record in records if record.get("epoch_type") == epoch_type]
+    payloads = [
+        _as_dict(record.get(key))
+        for record in selected
+        if isinstance(record.get(key), dict) and record.get(key)
+    ]
+    return _typed_metrics_summary(payloads, expected_count=len(selected))
+
+
+def _node_typed_metrics_from_records(
+    records: Sequence[Dict[str, Any]],
+    epoch_type: str,
+    timing_key: str,
+) -> Dict[str, Any]:
+    selected = [record for record in records if record.get("epoch_type") == epoch_type]
+    payloads: List[Dict[str, Any]] = []
+    for record in selected:
+        timing = _as_dict(_as_dict(record.get("node_local_execution")).get("timing"))
+        payload = _as_dict(timing.get(timing_key))
+        if payload:
+            payloads.append(payload)
+    return _typed_metrics_summary(payloads, expected_count=len(selected))
+
+
+def _artifact_file_inventory(run_dir: Path) -> Dict[str, Any]:
+    names = (
+        "timing.json",
+        "epoch_execution_details.jsonl",
+        "real_runtime_report.json",
+        "return_path_audit.json",
+        "gz_update_diff_summary.json",
+        "run_manifest.json",
+    )
+    files: List[Dict[str, Any]] = []
+    for name in names:
+        path = run_dir / name
+        if not path.exists() or not path.is_file():
+            continue
+        try:
+            size_bytes = path.stat().st_size
+        except OSError:
+            size_bytes = 0
+        files.append({"name": name, "bytes": int(size_bytes)})
+    return {
+        "tracked_file_count": len(files),
+        "tracked_total_bytes": sum(int(item["bytes"]) for item in files),
+        "files": files,
+    }
+
+
 def _parameter_trigger_counts(records: Sequence[Dict[str, Any]]) -> Dict[str, int]:
     counter: Counter[str] = Counter()
     for record in records:
@@ -319,9 +435,16 @@ def _cleanup_summary(run_dir: Path, timing: Dict[str, Any]) -> Dict[str, Any]:
         _num(_as_dict(_as_dict(item.get("outcome")).get("operation_timing_summary")).get("total_wall_seconds"))
         for item in host_rollbacks
     ]
+    host_typed_payloads = [
+        _as_dict(_as_dict(item.get("outcome")).get("typed_operation_metrics"))
+        for item in host_rollbacks
+        if _as_dict(_as_dict(item.get("outcome")).get("typed_operation_metrics"))
+    ]
     node_wall = [_num(item.get("wall_seconds")) for item in node_results]
     node_command_counts = [int(_num(item.get("command_count"))) for item in node_results]
     node_phase_counts: Counter[str] = Counter(str(item.get("phase")) for item in node_results)
+    node_rollback_typed = _as_dict(node_timing.get("rollback_typed_operation_metrics"))
+    host_artifact_typed = _as_dict(host_artifacts.get("typed_operation_metrics"))
 
     node_rollback = _num(node_timing.get("rollback_wall_seconds"))
     host_rollback = sum(host_rollback_seconds)
@@ -342,7 +465,16 @@ def _cleanup_summary(run_dir: Path, timing: Dict[str, Any]) -> Dict[str, Any]:
         "host_rollback_wall_seconds": _stats(host_rollback_seconds),
         "host_rollback_operation_count": int(sum(host_operation_counts)),
         "host_rollback_operation_wall_seconds": _stats(host_operation_wall),
+        "host_rollback_typed_operation_metrics": _typed_metrics_summary(
+            host_typed_payloads,
+            expected_count=len(host_rollbacks),
+        ),
         "host_artifact_cleanup_seconds": round(host_artifact_cleanup, 6),
+        "host_artifact_cleanup_typed_operation_metrics": _typed_metrics_summary(
+            [host_artifact_typed] if host_artifact_typed else [],
+            expected_count=1 if host_artifacts else 0,
+        ),
+        "run_artifact_file_inventory": _artifact_file_inventory(run_dir),
         "host_artifact_cleanup_removed": {
             "bridge_count": int(_num(host_artifacts.get("removed_bridge_count"))),
             "host_interface_count": int(_num(host_artifacts.get("removed_host_interface_count"))),
@@ -358,40 +490,45 @@ def _cleanup_summary(run_dir: Path, timing: Dict[str, Any]) -> Dict[str, Any]:
         "deeper_breakdown_available": {
             "node_local_batch_wall_seconds": True,
             "node_local_command_count": True,
+            "node_local_rollback_typed_operation_metrics": bool(node_rollback_typed),
             "host_rollback_per_epoch_wall_seconds": True,
             "host_artifact_cleanup_removed_counts": True,
-            "route_mpls_nat_per_command_timing": False,
-            "host_artifact_cleanup_per_interface_timing": False,
+            "route_mpls_nat_per_command_timing": bool(node_rollback_typed),
+            "host_artifact_cleanup_per_interface_timing": bool(host_artifact_typed),
         },
+        "node_local_rollback_typed_operation_metrics": _typed_metrics_summary(
+            [node_rollback_typed] if node_rollback_typed else [],
+            expected_count=1 if node_local else 0,
+        ),
     }
 
 
 def _backend_visibility() -> Dict[str, Any]:
     return {
         "qdisc_add_change_delete_count": {
-            "status": "gap",
-            "available": "qdisc_apply_wall_seconds and host slot operation counts",
-            "missing": "tc add/change/delete command counts and per-command errors",
+            "status": "optional_in_new_artifacts",
+            "available": "host_typed_operation_metrics counts tc qdisc command families when present",
+            "missing": "old 2h artifacts lack typed_operation_metrics",
         },
         "linux_route_mpls_add_change_delete_count": {
-            "status": "partial",
-            "available": "node-local batch command_count and descriptions",
-            "missing": "typed route/MPLS add/change/delete counters and per-command timing",
+            "status": "optional_in_new_artifacts",
+            "available": "node-local typed batch command counts for route/MPLS/NAT when present",
+            "missing": "node-local shell batches remain batch-timed rather than per-command timed",
         },
         "veth_netns_link_operation_count": {
-            "status": "partial",
-            "available": "host slot operation counts and artifact cleanup removed interface/bridge counts",
-            "missing": "typed veth/netns/link create/delete/change counters per epoch",
+            "status": "optional_in_new_artifacts",
+            "available": "host_typed_operation_metrics counts veth/netns/link operations when present",
+            "missing": "old 2h artifacts lack typed_operation_metrics",
         },
         "subprocess_command_count": {
-            "status": "partial",
-            "available": "node-local batch command_count",
-            "missing": "host-side subprocess/netlink command counts and per-command timing",
+            "status": "optional_in_new_artifacts",
+            "available": "host typed command_count and wall seconds when present",
+            "missing": "direct netlink-vs-subprocess split remains unavailable",
         },
         "docker_exec_batch_count": {
-            "status": "partial",
-            "available": "node-local apply/rollback batch records with node_local_batch=true",
-            "missing": "explicit Docker exec transport count separated from node-local logical batch count",
+            "status": "available_batch_level",
+            "available": "node-local apply/verify/rollback batch records and typed command counts",
+            "missing": "per-command timing inside docker exec shell batch",
         },
         "artifact_write_blocking": {
             "status": "partial",
@@ -493,6 +630,21 @@ def build_cost_attribution(run_dir: Path) -> Dict[str, Any]:
             "host_operation_counts": _operation_counter(records, "runtime_epoch", "operation_counts"),
             "host_delta_category_counts": _operation_counter(records, "runtime_epoch", "delta_category_counts"),
             "host_slot_type_counts": _operation_counter(records, "runtime_epoch", "slot_type_counts"),
+            "host_typed_operation_metrics": _typed_metrics_from_records(
+                records,
+                "runtime_epoch",
+                "host_typed_operation_metrics",
+            ),
+            "node_local_apply_typed_operation_metrics": _node_typed_metrics_from_records(
+                records,
+                "runtime_epoch",
+                "apply_typed_operation_metrics",
+            ),
+            "node_local_verify_typed_operation_metrics": _node_typed_metrics_from_records(
+                records,
+                "runtime_epoch",
+                "verify_typed_operation_metrics",
+            ),
             "fec_diff": _fec_totals(diffs),
             "host_apply_correlation": _host_apply_correlation(runtime_records, diff_by_slice),
             "host_apply_long_tail_examples": _long_tail_runtime_examples(runtime_records, diff_by_slice),
@@ -515,6 +667,16 @@ def build_cost_attribution(run_dir: Path) -> Dict[str, Any]:
             "host_operation_counts": _operation_counter(records, "parameter_epoch", "operation_counts"),
             "host_delta_category_counts": _operation_counter(records, "parameter_epoch", "delta_category_counts"),
             "host_slot_type_counts": _operation_counter(records, "parameter_epoch", "slot_type_counts"),
+            "host_typed_operation_metrics": _typed_metrics_from_records(
+                records,
+                "parameter_epoch",
+                "host_typed_operation_metrics",
+            ),
+            "node_local_apply_typed_operation_metrics": _node_typed_metrics_from_records(
+                records,
+                "parameter_epoch",
+                "apply_typed_operation_metrics",
+            ),
             "trigger_reason_counts": _parameter_trigger_counts(records),
             "hidden_full_apply_or_recovery": _parameter_guard_counts(records),
             "timing_scope_note": (
@@ -633,6 +795,15 @@ def render_text(report: Dict[str, Any]) -> str:
             f"{runtime['operation_count']['sum']}/{runtime['operation_count']['max']}"
         ),
         (
+            "  Host typed metrics available/missing records: "
+            f"{runtime['host_typed_operation_metrics']['available_record_count']}/"
+            f"{runtime['host_typed_operation_metrics']['missing_record_count']}"
+        ),
+        (
+            "  Node-local apply typed command count: "
+            f"{runtime['node_local_apply_typed_operation_metrics']['command_count']}"
+        ),
+        (
             "  FEC diff changed G/GZ/skipped totals: "
             f"{runtime['fec_diff']['fec_groups']['changed_g_total']}/"
             f"{runtime['fec_diff']['fec_groups']['changed_gz_total']}/"
@@ -666,17 +837,31 @@ def render_text(report: Dict[str, Any]) -> str:
         ),
         f"  Trigger reasons: {parameter['trigger_reason_counts']}",
         f"  Hidden full apply/recovery: {parameter['hidden_full_apply_or_recovery']}",
+        (
+            "  Host typed metrics available/missing records: "
+            f"{parameter['host_typed_operation_metrics']['available_record_count']}/"
+            f"{parameter['host_typed_operation_metrics']['missing_record_count']}"
+        ),
         "",
         "Rollback/cleanup",
         f"  Node-local rollback: {cleanup['node_local_rollback_seconds']}s",
         f"  Host rollback: {cleanup['host_rollback_seconds']}s across {cleanup['host_rollback_count']} records",
         f"  Host artifact cleanup: {cleanup['host_artifact_cleanup_seconds']}s",
+        (
+            "  Node-local rollback typed command count: "
+            f"{cleanup['node_local_rollback_typed_operation_metrics']['command_count']}"
+        ),
+        (
+            "  Host rollback typed metrics available/missing records: "
+            f"{cleanup['host_rollback_typed_operation_metrics']['available_record_count']}/"
+            f"{cleanup['host_rollback_typed_operation_metrics']['missing_record_count']}"
+        ),
         f"  Post-run preflight: {cleanup['post_run_preflight_seconds']}s",
         "",
         "Instrumentation gaps",
-        "  Missing typed qdisc add/change/delete counts and per-command timing.",
-        "  Missing typed route/MPLS/NAT add/change/delete counts and per-command timing.",
-        "  Missing host-side subprocess/netlink command counts and artifact write split by file.",
+        "  New typed_operation_metrics are optional; old artifacts report missing records here.",
+        "  Node-local batch internals still have batch-level timing, not per-command timing.",
+        "  Artifact serialization/write timing is still not split by file in runtime rows.",
     ]
     return "\n".join(lines)
 

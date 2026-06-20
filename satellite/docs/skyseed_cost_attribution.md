@@ -202,6 +202,65 @@ Recommended next timing marks and counters:
 - rollback cleanup per-resource timing:
   per interface, bridge, qdisc, route, and namespace cleanup groups.
 
+## Goal 5 Optional Typed Instrumentation
+
+Goal 5 adds optional diagnostics fields for future runs. These fields are
+backward-compatible: old 2h artifacts do not contain them, and the analyzer
+reports the missing records as an instrumentation gap instead of failing.
+
+Semantic fields remain unchanged:
+
+- `RuntimeEpoch` and `ParameterEpoch` event behavior.
+- G/Z intent, FEC grouping, route semantics, and no-future-state audit
+  expectations.
+- Existing Goal 1 regression metrics and baseline gates.
+
+Backend-specific optional fields:
+
+- `host_typed_operation_metrics` in `epoch_execution_details.jsonl`.
+  This summarizes host-side command families and operation classes observed by
+  the direct host runtime wrapper, including qdisc, veth/link, netns, route,
+  MPLS route, iptables, Docker, and shell-batch categories where visible.
+- `host_mutation_execution.outcome.typed_operation_metrics` and host rollback
+  `outcome.typed_operation_metrics`.
+  These are backend diagnostics parallel to the existing
+  `operation_timing_summary`; they do not alter slot mutation semantics.
+- `node_local_execution.timing.apply_typed_operation_metrics`,
+  `verify_typed_operation_metrics`, `rollback_typed_operation_metrics`, and
+  `rollback_verification_typed_operation_metrics`.
+  These provide typed command counts from the node-local batch plan plus
+  batch-level wall time. They include `docker_exec_batch_count` and
+  `node_local_command_batch_count` aliases for the batch count. Per-command
+  timing inside a Docker exec shell batch is still not available.
+- `host_artifact_cleanup.typed_operation_metrics`.
+  This reports host cleanup subprocess categories when present, next to the
+  existing removed/remaining bridge and interface counts.
+- Analyzer-only `run_artifact_file_inventory`.
+  This records tracked top-level artifact file count and bytes for visibility.
+  Runtime artifact serialization/write timing is still represented by the
+  existing timing rows rather than split by file.
+
+Typed operation examples:
+
+- qdisc: `qdisc_add`, `qdisc_change`, `qdisc_replace`, `qdisc_delete`
+- route: `route_add`, `route_replace`, `route_delete`, `route_show`
+- MPLS: `mpls_route_add`, `mpls_route_replace`, `mpls_route_delete`,
+  `mpls_route_show`
+- NAT/iptables: `iptables_add`, `iptables_delete`, `iptables_check`
+- host substrate: `veth_create`, `veth_delete`, `veth_move_netns`,
+  `veth_rename`, `veth_up`, `veth_down`, `netns_add`, `netns_delete`
+- transport/batch: `docker_exec`, `docker_inspect`, `shell_batch`
+
+Current limitations:
+
+- Node-local apply/rollback commands are still executed as per-node shell
+  batches, so Goal 5 records batch-level timing plus typed command counts,
+  not per-command timing inside the batch.
+- Shell snippets containing multiple commands are classified as `shell_batch`
+  unless they can be safely recognized as a single command.
+- The new fields are diagnostics only. They should not become hard regression
+  gates until a follow-up baseline explicitly adopts them.
+
 ## Scale Caveat / Future Workload Risk
 
 This 2h run is the canonical stability baseline. It is not the final large-scale

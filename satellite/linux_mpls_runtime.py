@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from contracts import RuntimeUpdatePlan, TopologySnapshot
 from distribution_store import DistributedEnvelopeBatch
 from mpls_host import ensure_host_mpls_ready
+from runtime_operation_metrics import summarize_node_local_batches
 
 DOCKER_EXEC_TIMEOUT_SECONDS = 120.0
 DOCKER_INSPECT_TIMEOUT_SECONDS = 30.0
@@ -42,8 +43,9 @@ def _timed_subprocess_run(
     timeout_seconds: float,
     input_text: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    started_at = time.perf_counter()
     try:
-        return subprocess.run(
+        completed = subprocess.run(
             list(command),
             input=input_text,
             capture_output=True,
@@ -51,13 +53,17 @@ def _timed_subprocess_run(
             check=False,
             timeout=timeout_seconds,
         )
+        completed.skyseed_wall_seconds = time.perf_counter() - started_at  # type: ignore[attr-defined]
+        return completed
     except subprocess.TimeoutExpired as exc:
-        return subprocess.CompletedProcess(
+        completed = subprocess.CompletedProcess(
             args=list(command),
             returncode=124,
             stdout=exc.stdout or "",
             stderr=((exc.stderr or "") + f"\ncommand timed out after {timeout_seconds:.1f}s").strip(),
         )
+        completed.skyseed_wall_seconds = time.perf_counter() - started_at  # type: ignore[attr-defined]
+        return completed
 
 
 def _topology_entry_by_id(
@@ -395,6 +401,7 @@ class RuntimeCommandResult:
     stdout: str
     stderr: str
     allow_failure: bool
+    wall_seconds: float = 0.0
 
     @property
     def success(self) -> bool:
@@ -411,6 +418,7 @@ class RuntimeCommandResult:
             "stderr": self.stderr,
             "allow_failure": self.allow_failure,
             "success": self.success,
+            "wall_seconds": self.wall_seconds,
         }
 
 
@@ -1405,6 +1413,7 @@ def _run_docker_command(
         stdout=completed.stdout.strip(),
         stderr=completed.stderr.strip(),
         allow_failure=allow_failure,
+        wall_seconds=float(getattr(completed, "skyseed_wall_seconds", 0.0)),
     )
     if completed.returncode != 0 and not allow_failure:
         raise RuntimeCommandFailure(result)
@@ -3388,6 +3397,10 @@ class MinimalRealLinuxMplsInstaller:
                 "rollback_verification_batch_timing": _batch_timing_summary(
                     probe_batch_results
                 ),
+                "rollback_verification_typed_operation_metrics": summarize_node_local_batches(
+                    probe_batch_plan,
+                    [batch.to_dict() for batch in probe_batch_results],
+                ),
             },
         }
 
@@ -3736,6 +3749,14 @@ class MinimalRealLinuxMplsInstaller:
                     "total_completed_epoch_seconds": time.time(),
                     "apply_batch_timing": _batch_timing_summary(apply_batch_results),
                     "verify_batch_timing": _batch_timing_summary(verify_batch_results),
+                    "apply_typed_operation_metrics": summarize_node_local_batches(
+                        apply_batch_plan,
+                        apply_results,
+                    ),
+                    "verify_typed_operation_metrics": summarize_node_local_batches(
+                        verify_batch_plan,
+                        verify_results,
+                    ),
                     "flow_path_observations": [
                         _context_path_summary(context) for context in all_contexts
                     ],
@@ -3848,6 +3869,14 @@ class MinimalRealLinuxMplsInstaller:
                 "total_completed_epoch_seconds": time.time(),
                 "apply_batch_timing": _batch_timing_summary(apply_batch_results),
                 "verify_batch_timing": _batch_timing_summary(verify_batch_results),
+                "apply_typed_operation_metrics": summarize_node_local_batches(
+                    apply_batch_plan,
+                    apply_results,
+                ),
+                "verify_typed_operation_metrics": summarize_node_local_batches(
+                    verify_batch_plan,
+                    verify_results,
+                ),
                 "flow_path_observations": [
                     _context_path_summary(context) for context in all_contexts
                 ],
@@ -3965,6 +3994,10 @@ class MinimalRealLinuxMplsInstaller:
             "timing": {
                 "rollback_wall_seconds": time.perf_counter() - started_at,
                 "rollback_batch_timing": _batch_timing_summary(rollback_batch_results),
+                "rollback_typed_operation_metrics": summarize_node_local_batches(
+                    rollback_batch_plan,
+                    rollback_results,
+                ),
                 **dict(verification_report["timing"]),
             },
             "node_local_batch_plan": rollback_batch_plan,

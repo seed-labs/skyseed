@@ -5276,6 +5276,9 @@ def _run_live_temporal_runtime(
                 "host_operation_timing_summary": _safe_dict(
                     host_apply["outcome"].get("operation_timing_summary")
                 ),
+                "host_typed_operation_metrics": _safe_dict(
+                    host_apply["outcome"].get("typed_operation_metrics")
+                ),
                 "timing": {
                     "transition_wall_seconds": round(transition_wall_seconds, 6),
                     "network_mutation_plan_wall_seconds": round(host_apply_wall_seconds, 6),

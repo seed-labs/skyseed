@@ -1040,6 +1040,10 @@ def _run_continuous_real_execution(
                         "operation_timing_summary",
                         {},
                     ),
+                    "host_typed_operation_metrics": host_apply["outcome"].get(
+                        "typed_operation_metrics",
+                        {},
+                    ),
                     "node_local_rollback_before_transition": node_local_rollback,
                     "node_local_execution": node_local_execution_public,
                     "epoch_timestamps": {

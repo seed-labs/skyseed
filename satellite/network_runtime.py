@@ -22,6 +22,7 @@ from typing import Any, Callable, Dict, List, Mapping, Sequence
 from contracts import NetworkMutationPlan
 from controller import SatelliteController
 from network_mutation import dynamic_slot_state_from_link_state
+from runtime_operation_metrics import RuntimeOperationMetrics
 
 
 BRIDGE_NETFILTER_SYSCTLS = (
@@ -366,6 +367,7 @@ class ControllerBackedSlotLinkNamespaceQdiscInstaller:
         }
         self._last_setup_summary: Dict[str, Any] | None = None
         self._last_cleanup_summary: Dict[str, Any] | None = None
+        self._operation_metrics = RuntimeOperationMetrics()
         self._pending_prewarm_reconcile_signature: Dict[str, Any] | None = None
         self._last_cleanup_summary: Dict[str, Any] | None = None
 
@@ -390,6 +392,12 @@ class ControllerBackedSlotLinkNamespaceQdiscInstaller:
 
     def consume_setup_timing(self) -> Dict[str, float]:
         return dict(self._last_setup_timing)
+
+    def reset_operation_metrics(self) -> None:
+        self._operation_metrics.reset()
+
+    def consume_operation_metrics(self, *, reset: bool = True) -> Dict[str, Any]:
+        return self._operation_metrics.snapshot(reset=reset)
 
     def last_setup_summary(self) -> Dict[str, Any] | None:
         return (
@@ -584,6 +592,7 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
         }
         self._last_setup_summary: Dict[str, Any] | None = None
         self._last_cleanup_summary: Dict[str, Any] | None = None
+        self._operation_metrics = RuntimeOperationMetrics()
 
     def _host_interface_name_set(self) -> set[str]:
         result = self._run_command(["ip", "-o", "link", "show"])
@@ -626,6 +635,12 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
 
     def consume_setup_timing(self) -> Dict[str, float]:
         return dict(self._last_setup_timing)
+
+    def reset_operation_metrics(self) -> None:
+        self._operation_metrics.reset()
+
+    def consume_operation_metrics(self, *, reset: bool = True) -> Dict[str, Any]:
+        return self._operation_metrics.snapshot(reset=reset)
 
     def last_setup_summary(self) -> Dict[str, Any] | None:
         return (
@@ -1172,6 +1187,7 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
         allow_failure: bool = False,
     ) -> subprocess.CompletedProcess[str]:
         timeout_seconds = _command_timeout_seconds(command)
+        started_at = time.perf_counter()
         try:
             completed = subprocess.run(
                 list(command),
@@ -1190,11 +1206,19 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
                     + f"\ncommand timed out after {timeout_seconds:.1f}s"
                 ).strip(),
             )
+        try:
+            self._operation_metrics.record_command(
+                command,
+                wall_seconds=time.perf_counter() - started_at,
+                returncode=int(completed.returncode),
+            )
+        except Exception:
+            pass
         if completed.returncode != 0 and not allow_failure:
             raise RuntimeError(
                 f"command failed ({completed.returncode}): {' '.join(command)}: "
                 f"{completed.stderr.strip() or completed.stdout.strip()}"
-        )
+            )
         return completed
 
     def _prepare_bridge_netfilter_passthrough(self) -> None:
@@ -2377,6 +2401,17 @@ class InProcessHostRuntimeManager:
             runtime_initialized=bool(_load_json(link_state_path).get("runtime_initialized", False)),
         )
 
+    def _reset_installer_operation_metrics(self) -> None:
+        reset = getattr(self._installer, "reset_operation_metrics", None)
+        if callable(reset):
+            reset()
+
+    def _consume_installer_operation_metrics(self) -> Dict[str, Any] | None:
+        consume = getattr(self._installer, "consume_operation_metrics", None)
+        if not callable(consume):
+            return None
+        return dict(consume(reset=True))
+
     def _replace_cached_runtime_state(
         self,
         *,
@@ -2887,6 +2922,7 @@ class InProcessHostRuntimeManager:
             "manager_resync_reconciliation_wall_seconds": 0.0,
             "total_wall_seconds": 0.0,
         }
+        self._reset_installer_operation_metrics()
         if reconcile_mode == "auto":
             effective_reconcile_mode = (
                 "apply" if self._last_mutation_id is None else "trusted_skip"
@@ -3089,6 +3125,7 @@ class InProcessHostRuntimeManager:
                 "operation_count": len(network_mutation_plan.operations),
                 "applied_operations": applied_operations,
                 "operation_timing_summary": _summarize_operation_results(apply_results),
+                "typed_operation_metrics": self._consume_installer_operation_metrics(),
                 "delta_summary": delta_summary,
                 "parallelism": dict(envelope.parallelism),
                 "parallel_execution_summary": dict(parallel_execution_summary or {}),
@@ -3111,6 +3148,7 @@ class InProcessHostRuntimeManager:
         network_mutation_plan: NetworkMutationPlan,
         applied_operations: Sequence[Dict[str, Any]],
     ) -> NetworkMutationRollbackResult:
+        self._reset_installer_operation_metrics()
         rollback_results: List[Dict[str, Any]] = []
         rollback_failure_reason: str | None = None
         rollback_controller = self._installer.controller(
@@ -3158,6 +3196,7 @@ class InProcessHostRuntimeManager:
                 "failure_reason": rollback_failure_reason,
                 "operation_count": len(applied_operations),
                 "operation_timing_summary": _summarize_operation_results(rollback_results),
+                "typed_operation_metrics": self._consume_installer_operation_metrics(),
                 "host_runtime_state": self.public_state_summary(),
             },
         )
@@ -3178,6 +3217,7 @@ class InProcessHostRuntimeManager:
         after every individual epoch rollback.
         """
         requests = [dict(request) for request in rollback_requests]
+        self._reset_installer_operation_metrics()
         final_source_operations_by_slot: Dict[str, Dict[str, Any]] = {}
         for request in requests:
             for operation in list(request.get("applied_operations") or []):
@@ -3317,6 +3357,7 @@ class InProcessHostRuntimeManager:
                 "operation_timing_summary": _summarize_operation_results(
                     all_rollback_results
                 ),
+                "typed_operation_metrics": self._consume_installer_operation_metrics(),
                 "host_runtime_state": self.public_state_summary(),
             },
             "timing": {
@@ -3351,10 +3392,14 @@ class InProcessHostRuntimeManager:
         topology_path: Path,
         link_state_path: Path,
     ) -> Dict[str, Any]:
+        self._reset_installer_operation_metrics()
         cleanup_summary = self._installer.cleanup_runtime_artifacts(
             topology_path=topology_path,
             link_state_path=link_state_path,
         )
+        operation_metrics = self._consume_installer_operation_metrics()
+        if operation_metrics is not None:
+            cleanup_summary["typed_operation_metrics"] = operation_metrics
         self._cached_state_by_slot = {}
         self._cached_link_state_path = None
         self._runtime_initialized = False
