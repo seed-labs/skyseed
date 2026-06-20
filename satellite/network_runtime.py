@@ -1821,33 +1821,116 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
                 known_container_interfaces_by_node[node_id] = cached
                 return cached
 
+            def _unique_strings(values: Sequence[str]) -> tuple[List[str], int]:
+                seen: set[str] = set()
+                unique: List[str] = []
+                duplicate_count = 0
+                for value in values:
+                    rendered = str(value)
+                    if rendered in seen:
+                        duplicate_count += 1
+                        continue
+                    seen.add(rendered)
+                    unique.append(rendered)
+                return unique, duplicate_count
+
+            def _unique_endpoints(
+                values: Sequence[Mapping[str, str]],
+            ) -> tuple[List[Dict[str, str]], int]:
+                seen: set[tuple[str, str]] = set()
+                unique: List[Dict[str, str]] = []
+                duplicate_count = 0
+                for endpoint in values:
+                    key = (
+                        str(endpoint.get("node_id", "")),
+                        str(endpoint.get("interface_name", "")),
+                    )
+                    if key in seen:
+                        duplicate_count += 1
+                        continue
+                    seen.add(key)
+                    unique.append({"node_id": key[0], "interface_name": key[1]})
+                return unique, duplicate_count
+
+            temp_host_interface_names, duplicate_temp_host_interfaces = _unique_strings(
+                artifact_inventory["temp_host_interface_names"]
+            )
+            host_interface_names, duplicate_host_interfaces = _unique_strings(
+                artifact_inventory["host_interface_names"]
+            )
+            bridge_names, duplicate_bridges = _unique_strings(
+                artifact_inventory["bridge_names"]
+            )
+            container_interface_names, duplicate_container_interfaces = _unique_endpoints(
+                artifact_inventory["container_interface_names"]
+            )
+            cleanup_metrics: Dict[str, Any] = {
+                "raw_resource_count": (
+                    len(artifact_inventory["temp_host_interface_names"])
+                    + len(artifact_inventory["host_interface_names"])
+                    + len(artifact_inventory["container_interface_names"])
+                    + len(artifact_inventory["bridge_names"])
+                ),
+                "unique_resource_count": (
+                    len(temp_host_interface_names)
+                    + len(host_interface_names)
+                    + len(container_interface_names)
+                    + len(bridge_names)
+                ),
+                "duplicate_cleanup_skipped_count": (
+                    duplicate_temp_host_interfaces
+                    + duplicate_host_interfaces
+                    + duplicate_container_interfaces
+                    + duplicate_bridges
+                ),
+                "skipped_noop_count": 0,
+                "cleanup_resource_attempted_count": 0,
+                "cleanup_resource_succeeded_count": 0,
+                "cleanup_resource_failed_count": 0,
+                "host_cleanup_grouped_operation_count": 4,
+                "resource_groups": {
+                    "temp_host_interface": len(temp_host_interface_names),
+                    "host_interface": len(host_interface_names),
+                    "container_interface": len(container_interface_names),
+                    "bridge": len(bridge_names),
+                },
+            }
+
             removed_host_interfaces: List[str] = []
             removed_temp_host_interfaces: List[str] = []
             removed_container_interfaces: List[Dict[str, str]] = []
             removed_bridges: List[str] = []
-            for interface_name in artifact_inventory["temp_host_interface_names"]:
+            for interface_name in temp_host_interface_names:
                 if self._host_interface_exists(
                     interface_name,
                     known_interfaces=known_host_interfaces,
                 ):
+                    cleanup_metrics["cleanup_resource_attempted_count"] += 1
                     self._delete_host_interface_if_present(
                         interface_name,
                         known_interfaces=known_host_interfaces,
                     )
                     removed_temp_host_interfaces.append(interface_name)
-            for interface_name in artifact_inventory["host_interface_names"]:
+                    cleanup_metrics["cleanup_resource_succeeded_count"] += 1
+                else:
+                    cleanup_metrics["skipped_noop_count"] += 1
+            for interface_name in host_interface_names:
                 if self._host_interface_exists(
                     interface_name,
                     known_interfaces=known_host_interfaces,
                 ):
+                    cleanup_metrics["cleanup_resource_attempted_count"] += 1
                     self._delete_host_interface_if_present(
                         interface_name,
                         known_interfaces=known_host_interfaces,
                     )
                     removed_host_interfaces.append(interface_name)
+                    cleanup_metrics["cleanup_resource_succeeded_count"] += 1
+                else:
+                    cleanup_metrics["skipped_noop_count"] += 1
             # Host-side veth deletion removes the paired container endpoint when it is still
             # attached, so container-side cleanup is only a best-effort fallback for residue.
-            for endpoint in artifact_inventory["container_interface_names"]:
+            for endpoint in container_interface_names:
                 node_id = str(endpoint["node_id"])
                 interface_name = str(endpoint["interface_name"])
                 known_container_interfaces = _known_container_interfaces(node_id)
@@ -1856,6 +1939,7 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
                     interface_name=interface_name,
                     known_interfaces=known_container_interfaces,
                 ):
+                    cleanup_metrics["cleanup_resource_attempted_count"] += 1
                     self._delete_container_interface_if_present(
                         node_id=node_id,
                         interface_name=interface_name,
@@ -1864,11 +1948,15 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
                     removed_container_interfaces.append(
                         {"node_id": node_id, "interface_name": interface_name}
                     )
-            for bridge_name in artifact_inventory["bridge_names"]:
+                    cleanup_metrics["cleanup_resource_succeeded_count"] += 1
+                else:
+                    cleanup_metrics["skipped_noop_count"] += 1
+            for bridge_name in bridge_names:
                 if self._bridge_exists(
                     bridge_name,
                     known_interfaces=known_host_interfaces,
                 ):
+                    cleanup_metrics["cleanup_resource_attempted_count"] += 1
                     self._run_command(
                         ["sudo", "-n", "ip", "link", "set", bridge_name, "down"],
                         allow_failure=True,
@@ -1879,9 +1967,12 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
                     )
                     known_host_interfaces.discard(bridge_name)
                     removed_bridges.append(bridge_name)
+                    cleanup_metrics["cleanup_resource_succeeded_count"] += 1
+                else:
+                    cleanup_metrics["skipped_noop_count"] += 1
             remaining_host_interfaces = [
                 interface_name
-                for interface_name in artifact_inventory["host_interface_names"]
+                for interface_name in host_interface_names
                 if self._host_interface_exists(
                     interface_name,
                     known_interfaces=known_host_interfaces,
@@ -1889,7 +1980,7 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
             ]
             remaining_temp_host_interfaces = [
                 interface_name
-                for interface_name in artifact_inventory["temp_host_interface_names"]
+                for interface_name in temp_host_interface_names
                 if self._host_interface_exists(
                     interface_name,
                     known_interfaces=known_host_interfaces,
@@ -1897,7 +1988,7 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
             ]
             remaining_bridges = [
                 bridge_name
-                for bridge_name in artifact_inventory["bridge_names"]
+                for bridge_name in bridge_names
                 if self._bridge_exists(
                     bridge_name,
                     known_interfaces=known_host_interfaces,
@@ -1926,6 +2017,7 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
                 "remaining_bridges": remaining_bridges,
                 "remaining_host_interfaces": remaining_host_interfaces,
                 "remaining_temp_host_interfaces": remaining_temp_host_interfaces,
+                "cleanup_metrics": cleanup_metrics,
                 "cleanup_completed": (
                     not remaining_bridges
                     and not remaining_host_interfaces
@@ -2411,6 +2503,83 @@ class InProcessHostRuntimeManager:
         if not callable(consume):
             return None
         return dict(consume(reset=True))
+
+    def _compact_final_rollback_operations(
+        self,
+        *,
+        requests: Sequence[Mapping[str, Any]],
+        current_state: Mapping[str, Mapping[str, Any]],
+    ) -> tuple[List[Dict[str, Any]], Dict[str, Any], Dict[str, Dict[str, Any]]]:
+        final_source_operations_by_slot: Dict[str, Dict[str, Any]] = {}
+        requested_operation_count = 0
+        for request in requests:
+            for operation in list(request.get("applied_operations") or []):
+                requested_operation_count += 1
+                slot_name = str(operation.get("slot_name"))
+                final_source_operations_by_slot.setdefault(slot_name, dict(operation))
+
+        compact_operations: List[Dict[str, Any]] = []
+        skipped_noop_count = 0
+        for slot_name, source_operation in sorted(final_source_operations_by_slot.items()):
+            desired_state = _state_entry_from_operation(source_operation, source=True)
+            current_entry = dict(current_state.get(slot_name, {}) or {})
+            current_summary = _slot_summary(current_entry)
+            desired_summary = _slot_summary(desired_state)
+            if current_summary == desired_summary:
+                skipped_noop_count += 1
+                continue
+            source_occupied = bool(current_entry.get("occupied", False))
+            target_occupied = bool(desired_state.get("occupied", False))
+            if source_occupied and target_occupied:
+                if current_summary["binding"] == desired_summary["binding"]:
+                    operation_name = "update_slot_parameters"
+                else:
+                    operation_name = "rebind_slot_attachment"
+            elif source_occupied:
+                operation_name = "deactivate_slot_attachment"
+            else:
+                operation_name = "activate_slot_attachment"
+            compact_operations.append(
+                {
+                    **dict(source_operation),
+                    "operation": operation_name,
+                    "source_occupied": source_occupied,
+                    "target_occupied": target_occupied,
+                    "source_binding": dict(current_entry.get("binding", {}) or {}),
+                    "target_binding": dict(desired_state.get("binding", {}) or {}),
+                    "source_endpoints": [
+                        dict(endpoint) for endpoint in current_entry.get("endpoints", []) or []
+                    ],
+                    "target_endpoints": [
+                        dict(endpoint) for endpoint in desired_state.get("endpoints", []) or []
+                    ],
+                    "source_runtime_parameters": dict(
+                        current_entry.get("runtime_parameters", {}) or {}
+                    ),
+                    "target_runtime_parameters": dict(
+                        desired_state.get("runtime_parameters", {}) or {}
+                    ),
+                    "rollback_compaction": {
+                        "source": "final_teardown_current_state_to_original_source",
+                        "original_requested_operation_count": requested_operation_count,
+                    },
+                }
+            )
+        cleanup_metrics = {
+            "requested_entry_count": len(requests),
+            "requested_operation_count": requested_operation_count,
+            "unique_slot_count": len(final_source_operations_by_slot),
+            "compact_operation_count": len(compact_operations),
+            "skipped_noop_count": skipped_noop_count,
+            "duplicate_cleanup_skipped_count": max(
+                0,
+                requested_operation_count
+                - len(compact_operations)
+                - skipped_noop_count,
+            ),
+            "rollback_attempted_count": len(compact_operations),
+        }
+        return compact_operations, cleanup_metrics, final_source_operations_by_slot
 
     def _replace_cached_runtime_state(
         self,
@@ -3218,12 +3387,6 @@ class InProcessHostRuntimeManager:
         """
         requests = [dict(request) for request in rollback_requests]
         self._reset_installer_operation_metrics()
-        final_source_operations_by_slot: Dict[str, Dict[str, Any]] = {}
-        for request in requests:
-            for operation in list(request.get("applied_operations") or []):
-                slot_name = str(operation.get("slot_name"))
-                final_source_operations_by_slot.setdefault(slot_name, dict(operation))
-
         rollback_controller = self._installer.controller(
             topology_path=topology_path,
             link_state_path=link_state_path,
@@ -3231,53 +3394,70 @@ class InProcessHostRuntimeManager:
         refresh_started_at = time.perf_counter()
         rollback_state = self._refresh_runtime_state(link_state_path=link_state_path)
         initial_refresh_wall_seconds = time.perf_counter() - refresh_started_at
+        (
+            compact_operations,
+            cleanup_metrics,
+            final_source_operations_by_slot,
+        ) = self._compact_final_rollback_operations(
+            requests=requests,
+            current_state=rollback_state,
+        )
 
         host_rollbacks: List[Dict[str, Any]] = []
         all_rollback_results: List[Dict[str, Any]] = []
         rollback_failure_reason: str | None = None
         total_requests = len(requests)
-        for rollback_index, request in enumerate(reversed(requests), start=1):
-            network_mutation_plan = request["host_plan"]
-            applied_operations = list(request.get("applied_operations") or [])
-            entry_started_at = time.perf_counter()
-            entry_results: List[Dict[str, Any]] = []
-            entry_failure_reason: str | None = None
+        entry_started_at = time.perf_counter()
+        entry_results: List[Dict[str, Any]] = []
+        entry_failure_reason: str | None = None
+        apply_timing: Dict[str, float] = {
+            "operation_apply_wall_seconds": 0.0,
+            "batched_state_persist_wall_seconds": 0.0,
+            "post_apply_state_refresh_wall_seconds": 0.0,
+            "post_apply_verification_wall_seconds": 0.0,
+            "automatic_rollback_wall_seconds": 0.0,
+        }
+        parallel_execution_summary: Dict[str, Any] = {}
+        if compact_operations:
             try:
-                for operation in reversed(applied_operations):
-                    entry_results.append(
-                        self._installer.apply_operation(
-                            controller=rollback_controller,
-                            link_state_path=link_state_path,
-                            operation=_inverse_operation(operation),
-                            state_by_name=rollback_state,
-                        )
-                    )
+                (
+                    entry_results,
+                    _applied_operations,
+                    _apply_verification,
+                    apply_timing,
+                    parallel_execution_summary,
+                ) = self._apply_operations(
+                    controller=rollback_controller,
+                    link_state_path=link_state_path,
+                    operations=compact_operations,
+                    working_state=rollback_state,
+                    parallelism=self._parallelism_decision(compact_operations),
+                )
             except Exception as exc:  # noqa: BLE001
                 entry_failure_reason = str(exc)
                 rollback_failure_reason = entry_failure_reason
 
-            entry_verification = self._verify_plan_state(
-                state_by_name=rollback_state,
-                operations=network_mutation_plan.operations,
-                source=True,
-            )
-            if entry_failure_reason is not None:
-                entry_verification["rollback_failure_reason"] = entry_failure_reason
-
+        entry_verification = self._verify_plan_state(
+            state_by_name=rollback_state,
+            operations=list(final_source_operations_by_slot.values()),
+            source=True,
+        )
+        if entry_failure_reason is not None:
+            entry_verification["rollback_failure_reason"] = entry_failure_reason
+        if requests:
             execution_seed = {
-                "mutation_id": network_mutation_plan.mutation_id,
-                "operation_count": len(applied_operations),
+                "mutation_id": "final_teardown_compact",
+                "operation_count": len(compact_operations),
                 "executor_name": self.executor_name,
-                "phase": "batched_rollback",
-                "rollback_index": rollback_index,
+                "phase": "compacted_batched_rollback",
             }
             rollback_result = NetworkMutationRollbackResult(
                 execution_id=f"hostmut-{_fingerprint(execution_seed)}",
                 boundary={
                     **self._boundary_summary(
-                        parallelism=self._parallelism_decision(applied_operations)
+                        parallelism=self._parallelism_decision(compact_operations)
                     ),
-                    "rollback_batch_mode": "final_teardown_shared_state_refresh",
+                    "rollback_batch_mode": "final_teardown_compacted_current_to_source",
                 },
                 rollback_results=entry_results,
                 rollback_verification=entry_verification,
@@ -3285,34 +3465,40 @@ class InProcessHostRuntimeManager:
                     "rollback_completed": entry_failure_reason is None
                     and bool(entry_verification.get("all_valid")),
                     "failure_reason": entry_failure_reason,
-                    "operation_count": len(applied_operations),
+                    "operation_count": len(compact_operations),
+                    "requested_operation_count": cleanup_metrics[
+                        "requested_operation_count"
+                    ],
                     "operation_timing_summary": _summarize_operation_results(
                         entry_results
                     ),
+                    "cleanup_metrics": dict(cleanup_metrics),
+                    "parallel_execution_summary": dict(parallel_execution_summary),
                     "host_runtime_state": self.public_state_summary(),
                 },
             ).to_dict()
             rollback_result["timing"] = {
                 "rollback_wall_seconds": time.perf_counter() - entry_started_at,
+                **{key: round(value, 6) for key, value in apply_timing.items()},
             }
             host_rollbacks.append(rollback_result)
             all_rollback_results.extend(entry_results)
             if progress_callback is not None:
                 progress_callback(
                     {
-                        "completed_host_rollbacks": rollback_index,
+                        "completed_host_rollbacks": total_requests,
                         "total_host_rollbacks": total_requests,
+                        "compacted_host_rollback_records": 1,
                         "rollback_completed": rollback_result["outcome"].get(
                             "rollback_completed"
                         ),
                         "rollback_wall_seconds": rollback_result["timing"].get(
                             "rollback_wall_seconds"
                         ),
-                        "rollback_batch_mode": "final_teardown_shared_state_refresh",
+                        "rollback_batch_mode": "final_teardown_compacted_current_to_source",
+                        "cleanup_metrics": dict(cleanup_metrics),
                     }
                 )
-            if entry_failure_reason is not None:
-                break
 
         final_refresh_started_at = time.perf_counter()
         final_state = self._refresh_runtime_state(link_state_path=link_state_path)
@@ -3324,6 +3510,11 @@ class InProcessHostRuntimeManager:
         )
         if rollback_failure_reason is not None:
             final_verification["rollback_failure_reason"] = rollback_failure_reason
+        typed_operation_metrics = self._consume_installer_operation_metrics()
+        if host_rollbacks:
+            host_rollbacks[-1].setdefault("outcome", {})[
+                "typed_operation_metrics"
+            ] = typed_operation_metrics
 
         return {
             "host_rollbacks": host_rollbacks,
@@ -3342,11 +3533,12 @@ class InProcessHostRuntimeManager:
                 "requested_entry_count": total_requests,
                 "final_source_verification": final_verification,
                 "failure_reason": rollback_failure_reason,
+                "cleanup_metrics": dict(cleanup_metrics),
             },
             "outcome": {
                 "rollback_completed": (
                     rollback_failure_reason is None
-                    and len(host_rollbacks) == total_requests
+                    and (not requests or len(host_rollbacks) == 1)
                     and bool(final_verification.get("all_valid"))
                 ),
                 "failure_reason": rollback_failure_reason,
@@ -3354,10 +3546,29 @@ class InProcessHostRuntimeManager:
                     int(rollback.get("outcome", {}).get("operation_count", 0) or 0)
                     for rollback in host_rollbacks
                 ),
+                "requested_operation_count": cleanup_metrics[
+                    "requested_operation_count"
+                ],
                 "operation_timing_summary": _summarize_operation_results(
                     all_rollback_results
                 ),
-                "typed_operation_metrics": self._consume_installer_operation_metrics(),
+                "typed_operation_metrics": typed_operation_metrics,
+                "cleanup_metrics": {
+                    **dict(cleanup_metrics),
+                    "rollback_succeeded_count": sum(
+                        int(
+                            rollback.get("outcome", {}).get(
+                                "rollback_completed",
+                                False,
+                            )
+                            is True
+                        )
+                        for rollback in host_rollbacks
+                    ),
+                    "rollback_failed_count": (
+                        1 if rollback_failure_reason is not None else 0
+                    ),
+                },
                 "host_runtime_state": self.public_state_summary(),
             },
             "timing": {
@@ -3382,7 +3593,7 @@ class InProcessHostRuntimeManager:
                     ),
                     6,
                 ),
-                "rollback_batch_mode": "final_teardown_shared_state_refresh",
+                "rollback_batch_mode": "final_teardown_compacted_current_to_source",
             },
         }
 

@@ -1541,6 +1541,26 @@ def _execute_node_local_batches(
     return [result for _index, result in sorted(results, key=lambda item: item[0])]
 
 
+def _node_local_batch_cleanup_metrics(
+    *,
+    requested_specs: Sequence[RuntimeCommandSpec],
+    batches: Sequence[NodeLocalBatchSpec],
+    max_workers: int,
+) -> Dict[str, Any]:
+    requested_count = len(requested_specs)
+    grouped_count = sum(batch.command_count for batch in batches)
+    worker_count = max(0, min(max(1, int(max_workers)), len(batches))) if batches else 0
+    return {
+        "requested_command_count": requested_count,
+        "grouped_command_count": grouped_count,
+        "duplicate_cleanup_skipped_count": max(0, requested_count - grouped_count),
+        "skipped_noop_count": max(0, requested_count - grouped_count),
+        "bounded_parallel_worker_count": worker_count,
+        "node_local_rollback_worker_count": worker_count,
+        "node_local_command_batch_count": len(batches),
+    }
+
+
 def _batch_timing_summary(
     batch_results: Sequence[NodeLocalBatchResult],
 ) -> Dict[str, Any]:
@@ -3970,6 +3990,11 @@ class MinimalRealLinuxMplsInstaller:
             for spec in self._rollback_specs(context, preflight)
         ])
         rollback_batches = _group_node_local_batches(rollback_specs)
+        rollback_cleanup_metrics = _node_local_batch_cleanup_metrics(
+            requested_specs=rollback_specs,
+            batches=rollback_batches,
+            max_workers=max_node_workers,
+        )
         rollback_batch_plan = [batch.to_dict() for batch in rollback_batches]
         rollback_batch_results = _execute_node_local_batches(
             rollback_batches,
@@ -3990,6 +4015,7 @@ class MinimalRealLinuxMplsInstaller:
                 ),
                 "cleanup_success": bool(verification_report["cleanup_success"]),
                 "verification_mode": verification_report["verification_mode"],
+                "cleanup_metrics": dict(rollback_cleanup_metrics),
             },
             "timing": {
                 "rollback_wall_seconds": time.perf_counter() - started_at,
@@ -4001,6 +4027,7 @@ class MinimalRealLinuxMplsInstaller:
                 **dict(verification_report["timing"]),
             },
             "node_local_batch_plan": rollback_batch_plan,
+            "cleanup_metrics": dict(rollback_cleanup_metrics),
             "preserved_shared_zone_return_target_keys": sorted(
                 preserved_shared_target_keys
             ),

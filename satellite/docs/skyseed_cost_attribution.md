@@ -261,6 +261,47 @@ Current limitations:
 - The new fields are diagnostics only. They should not become hard regression
   gates until a follow-up baseline explicitly adopts them.
 
+## Goal 6 Final Cleanup Optimization
+
+Goal 6 keeps normal `RuntimeEpoch` and `ParameterEpoch` behavior unchanged and
+only optimizes final teardown.
+
+Final host rollback now compacts historical slot rollback operations into a
+current-state-to-original-source plan per slot. This avoids replaying every
+intermediate no-op when only the final clean state matters. The final verifier
+still checks the original source state for every affected slot before cleanup
+is considered successful.
+
+Final host artifact cleanup now deduplicates the artifact inventory before
+delete attempts and records no-op skips for resources that are already absent.
+It still uses the post-cleanup artifact/preflight checks as the success gate.
+
+Node-local rollback already executes as bounded per-node batches. Goal 6 adds
+explicit cleanup metrics for that path:
+
+- `requested_command_count`
+- `grouped_command_count`
+- `duplicate_cleanup_skipped_count`
+- `skipped_noop_count`
+- `node_local_rollback_worker_count`
+- `node_local_command_batch_count`
+
+Host rollback and artifact cleanup add:
+
+- `requested_operation_count`
+- `unique_slot_count`
+- `compact_operation_count`
+- `rollback_attempted_count`
+- `rollback_succeeded_count`
+- `rollback_failed_count`
+- `cleanup_resource_attempted_count`
+- `cleanup_resource_succeeded_count`
+- `cleanup_resource_failed_count`
+- `host_cleanup_grouped_operation_count`
+
+These are optimization diagnostics. They are not semantic inputs and do not
+change G/Z intent, active forwarding, or epoch scheduling.
+
 ## Scale Caveat / Future Workload Risk
 
 This 2h run is the canonical stability baseline. It is not the final large-scale

@@ -5601,8 +5601,19 @@ def _run_live_temporal_runtime(
                 phase="runtime_rollback:host",
                 event_type="runtime_cleanup_host_batch_completed",
                 phase_detail={
-                    "completed_host_rollbacks": len(host_rollbacks),
+                    "completed_host_rollbacks": (
+                        total_host_rollbacks
+                        if host_rollback_batch.get("outcome", {}).get(
+                            "rollback_completed"
+                        )
+                        is True
+                        else len(host_rollbacks)
+                    ),
                     "total_host_rollbacks": total_host_rollbacks,
+                    "compacted_host_rollback_records": len(host_rollbacks),
+                    "cleanup_metrics": host_rollback_batch.get("outcome", {}).get(
+                        "cleanup_metrics"
+                    ),
                     "rollback_completed": host_rollback_batch.get("outcome", {}).get(
                         "rollback_completed"
                     ),

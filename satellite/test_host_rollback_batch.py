@@ -2,9 +2,12 @@
 # encoding: utf-8
 
 import unittest
+import sys
 from tempfile import TemporaryDirectory
 from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from contracts import NETWORK_MUTATION_PLAN_SCHEMA_VERSION, NetworkMutationPlan
 from network_runtime import (
@@ -106,7 +109,7 @@ class _FakeHostInstaller:
 
 
 class HostRollbackBatchTests(unittest.TestCase):
-    def test_rollback_many_reuses_state_refresh_and_preserves_reverse_order(self) -> None:
+    def test_rollback_many_compacts_final_teardown_by_slot(self) -> None:
         op1 = _operation(
             slot_name="ut101-access-slot0",
             source_binding={},
@@ -147,20 +150,59 @@ class HostRollbackBatchTests(unittest.TestCase):
 
         self.assertTrue(result["outcome"]["rollback_completed"])
         self.assertTrue(result["rollback_verification"]["all_valid"])
-        self.assertEqual(len(result["host_rollbacks"]), 2)
+        self.assertEqual(len(result["host_rollbacks"]), 1)
         self.assertEqual(fake_installer.state_refresh_count, 2)
         self.assertEqual(progress[-1]["completed_host_rollbacks"], 2)
+        self.assertEqual(progress[-1]["total_host_rollbacks"], 2)
+        self.assertEqual(progress[-1]["compacted_host_rollback_records"], 1)
+        self.assertEqual(result["outcome"]["requested_operation_count"], 2)
+        self.assertEqual(result["outcome"]["operation_count"], 1)
+        self.assertEqual(
+            result["outcome"]["cleanup_metrics"]["duplicate_cleanup_skipped_count"],
+            1,
+        )
         self.assertEqual(
             [operation["target_binding"] for operation in fake_installer.applied_operations],
-            [
-                _inverse_operation(op2)["target_binding"],
-                _inverse_operation(op1)["target_binding"],
-            ],
+            [_inverse_operation(op1)["target_binding"]],
         )
         self.assertEqual(
             fake_installer.state["ut101-access-slot0"],
             _state_entry_from_operation(op1, source=True),
         )
+
+    def test_rollback_many_skips_current_state_noop(self) -> None:
+        op1 = _operation(
+            slot_name="ut101-access-slot0",
+            source_binding={},
+            target_binding={"ut_id": "ut101", "satellite_id": "stl-950001"},
+            source_parameters={},
+            target_parameters={"delay_ms": 1.0},
+        )
+        fake_installer = _FakeHostInstaller(
+            {
+                "ut101-access-slot0": _state_entry_from_operation(
+                    op1,
+                    source=True,
+                )
+            }
+        )
+        manager = InProcessHostRuntimeManager(installer=fake_installer)
+
+        with TemporaryDirectory() as tmpdir:
+            link_state_path = Path(tmpdir) / "link_state.json"
+            link_state_path.write_text('{"runtime_initialized": true}\n', encoding="utf-8")
+            result = manager.rollback_many(
+                topology_path=Path("topology.json"),
+                link_state_path=link_state_path,
+                rollback_requests=[
+                    {"host_plan": _plan("mut-1", op1), "applied_operations": [op1]},
+                ],
+            )
+
+        self.assertTrue(result["outcome"]["rollback_completed"])
+        self.assertEqual(result["outcome"]["operation_count"], 0)
+        self.assertEqual(result["outcome"]["cleanup_metrics"]["skipped_noop_count"], 1)
+        self.assertEqual(fake_installer.applied_operations, [])
 
 
 if __name__ == "__main__":
