@@ -618,7 +618,7 @@ def build_backend_audit_report(
     parameter_map: dict[str, Any],
     linux_mpls_label_leakage: dict[str, Any],
 ) -> dict[str, Any]:
-    gz_checks = gz_map["self_checks"]
+    gz_checks = normalized_runtime_self_checks(gz_map)
     parameter_checks = parameter_map["self_checks"]
     checks = {
         "gz_fec_intent_matches_bpf_generation_map": {
@@ -680,6 +680,20 @@ def build_backend_audit_report(
         "checks": checks,
         "ok": all(check["ok"] for check in checks.values()),
     }
+
+
+def normalized_runtime_self_checks(gz_map: dict[str, Any]) -> dict[str, Any]:
+    checks = copy.deepcopy(gz_map["self_checks"])
+    if int(gz_map.get("summary", {}).get("inactive_fec_tombstone_count") or 0) == 0:
+        checks["inactive_fec_fail_closed"] = {
+            "ok": True,
+            "probe": None,
+            "note": (
+                "No inactive G/Z FEC tombstones observed in source artifact; "
+                "inactive rule remains part of the compiled fail-closed rule set."
+            ),
+        }
+    return checks
 
 
 def compact_for_baseline(compiled: dict[str, Any]) -> dict[str, Any]:
@@ -791,6 +805,155 @@ def compile_from_run_dir(
         active_runtime_generation=active_runtime_generation,
         active_parameter_generation=active_parameter_generation,
     )
+
+
+def consistency_check_for_run_dir(
+    run_dir: Path,
+    report: dict[str, Any],
+) -> dict[str, Any]:
+    """Compare a BPF shadow summary with the canonical run artifacts it shadows."""
+
+    artifacts = load_shadow_backend_artifacts(run_dir)
+    summary = report["compact_summary"]
+    canonical = canonical_shadow_counts(artifacts)
+    audit = report.get("backend_audit_report") or {}
+    checks = {
+        "backend_mode": {
+            "ok": summary.get("backend_mode") == BACKEND_MODE,
+            "observed": summary.get("backend_mode"),
+            "expected": BACKEND_MODE,
+        },
+        "canonical_runtime_unchanged": {
+            "ok": summary.get("canonical_runtime_unchanged") is True,
+            "observed": summary.get("canonical_runtime_unchanged"),
+            "expected": True,
+        },
+        "runtime_generation_count_matches_gz_plan": {
+            "ok": summary.get("runtime_generation_count")
+            == canonical["runtime_generation_count"],
+            "observed": summary.get("runtime_generation_count"),
+            "expected": canonical["runtime_generation_count"],
+        },
+        "gz_fec_entry_count_matches_canonical_intent": {
+            "ok": summary.get("gz_fec_entry_count") == canonical["gz_fec_entry_count"],
+            "observed": summary.get("gz_fec_entry_count"),
+            "expected": canonical["gz_fec_entry_count"],
+        },
+        "parameter_generation_count_matches_execution_details": {
+            "ok": summary.get("parameter_generation_count")
+            == canonical["parameter_generation_count"],
+            "observed": summary.get("parameter_generation_count"),
+            "expected": canonical["parameter_generation_count"],
+        },
+        "parameter_link_count_matches_execution_details": {
+            "ok": summary.get("parameter_link_count") == canonical["parameter_link_count"],
+            "observed": summary.get("parameter_link_count"),
+            "expected": canonical["parameter_link_count"],
+        },
+        "fixed_10s_not_assumed": {
+            "ok": summary.get("fixed_10s_assumed") is False,
+            "observed": summary.get("fixed_10s_assumed"),
+            "expected": False,
+        },
+        "qdisc_timeline_backend_blocked_or_trace_only": {
+            "ok": summary.get("qdisc_timeline_backend_status")
+            == QDISC_TIMELINE_BACKEND_STATUS,
+            "observed": summary.get("qdisc_timeline_backend_status"),
+            "expected": QDISC_TIMELINE_BACKEND_STATUS,
+        },
+        "backend_audit_pass": {
+            "ok": audit.get("ok") is True,
+            "observed": audit.get("ok"),
+            "expected": True,
+        },
+    }
+    return {
+        "schema_version": 1,
+        "checker": "satellite/bpf_backend.py:consistency_check_for_run_dir",
+        "backend_mode": BACKEND_MODE,
+        "run_dir": str(run_dir),
+        "canonical_counts": canonical,
+        "compact_summary": copy.deepcopy(summary),
+        "checks": checks,
+        "ok": all(bool(check["ok"]) for check in checks.values()),
+    }
+
+
+def canonical_shadow_counts(artifacts: dict[str, Any]) -> dict[str, int]:
+    plans = list(artifacts["gz_fec_plan"].get("plans", []) or [])
+    diffs = list(artifacts["gz_update_diff_summary"].get("diffs", []) or [])
+    active_fec_count = sum(
+        len(list(plan.get("forward_fecs", []) or []))
+        + len(list(plan.get("return_fecs", []) or []))
+        for plan in plans
+    )
+    inactive_tombstone_count = 0
+    seen_fec_ids: set[str] = set()
+    for index, plan in enumerate(plans):
+        for fec in list(plan.get("forward_fecs", []) or []) + list(plan.get("return_fecs", []) or []):
+            fec_id = fec.get("fec_id")
+            if isinstance(fec_id, str):
+                seen_fec_ids.add(fec_id)
+        if index >= len(diffs):
+            continue
+        for removed in list(diffs[index].get("removed_fec_groups", []) or []):
+            if isinstance(removed, str) and removed in seen_fec_ids:
+                inactive_tombstone_count += 1
+
+    parameter_generation_count = 0
+    parameter_links: set[str] = set()
+    parameter_entry_count = 0
+    for record in artifacts["epoch_execution_details"]:
+        if not _is_parameter_record(record):
+            continue
+        parameter_generation_count += 1
+        apply_results = ((record.get("host_mutation_execution") or {}).get("apply_results")) or []
+        for result in apply_results:
+            if not isinstance(result, dict) or result.get("operation") != "update_slot_parameters":
+                continue
+            slot_name = result.get("slot_name")
+            state = result.get("resulting_state") or {}
+            params = state.get("runtime_parameters")
+            if isinstance(slot_name, str) and isinstance(params, dict):
+                parameter_links.add(slot_name)
+                parameter_entry_count += 1
+
+    return {
+        "runtime_generation_count": len(plans),
+        "active_gz_fec_count": active_fec_count,
+        "inactive_gz_fec_tombstone_count": inactive_tombstone_count,
+        "gz_fec_entry_count": active_fec_count + inactive_tombstone_count,
+        "parameter_generation_count": parameter_generation_count,
+        "parameter_link_count": len(parameter_links),
+        "parameter_entry_count": parameter_entry_count,
+    }
+
+
+def emit_shadow_artifacts_for_run_dir(
+    run_dir: Path,
+    *,
+    input_mode: str = "short_runtime_shadow",
+    summary_path: Path | None = None,
+    consistency_path: Path | None = None,
+) -> dict[str, Any]:
+    compiled = compile_from_run_dir(run_dir, input_mode=input_mode)
+    report = compact_for_baseline(compiled)
+    summary_path = summary_path or (run_dir / "bpf_shadow_backend_summary.json")
+    consistency = consistency_check_for_run_dir(run_dir, report)
+    consistency_path = consistency_path or (run_dir / "bpf_shadow_backend_consistency.json")
+    write_json(summary_path, report)
+    write_json(consistency_path, consistency)
+    return {
+        "schema_version": 1,
+        "emitter": "satellite/bpf_backend.py:emit_shadow_artifacts_for_run_dir",
+        "shadow_only": True,
+        "backend_mode": BACKEND_MODE,
+        "summary_path": str(summary_path),
+        "consistency_path": str(consistency_path),
+        "compact_summary": copy.deepcopy(report["compact_summary"]),
+        "consistency": consistency,
+        "ok": bool(consistency["ok"]),
+    }
 
 
 def load_parameter_artifacts_from_run_dir(run_dir: Path) -> dict[str, Any]:

@@ -3,11 +3,15 @@
 
 from __future__ import annotations
 
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
 from satellite.bpf_backend import (
     BACKEND_MODE,
     compile_bpf_shadow_backend,
+    emit_shadow_artifacts_for_run_dir,
     parameter_lookup_decision,
 )
 
@@ -126,6 +130,42 @@ class BpfShadowBackendTests(unittest.TestCase):
             "inactive_parameter",
         )
 
+    def test_emits_run_dir_shadow_summary_and_consistency(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="skyseed-bpf-shadow-test-") as tmp:
+            run_dir = Path(tmp)
+            artifacts = self._artifacts()
+            self._write_run_dir_artifacts(run_dir, artifacts)
+
+            emission = emit_shadow_artifacts_for_run_dir(run_dir)
+
+            self.assertTrue(emission["ok"])
+            self.assertTrue(Path(emission["summary_path"]).exists())
+            self.assertTrue(Path(emission["consistency_path"]).exists())
+            summary = json.loads(Path(emission["summary_path"]).read_text())
+            consistency = json.loads(Path(emission["consistency_path"]).read_text())
+            self.assertEqual(
+                summary["compact_summary"]["backend_mode"],
+                "experimental_bpf_shadow",
+            )
+            self.assertTrue(consistency["ok"])
+            self.assertTrue(
+                consistency["checks"]["canonical_runtime_unchanged"]["ok"]
+            )
+
+    def test_no_inactive_fec_tombstone_is_recorded_as_unobserved_rule(self) -> None:
+        artifacts = self._artifacts()
+        artifacts["gz_update_diff_summary"]["diffs"][1]["removed_fec_groups"] = []
+
+        report = compile_bpf_shadow_backend(artifacts)
+        runtime_fail_closed = report["backend_audit_report"]["checks"][
+            "runtime_fail_closed"
+        ]
+
+        self.assertTrue(runtime_fail_closed["ok"])
+        inactive_check = runtime_fail_closed["checks"]["inactive_fec_fail_closed"]
+        self.assertTrue(inactive_check["ok"])
+        self.assertIn("No inactive G/Z FEC tombstones", inactive_check["note"])
+
     @staticmethod
     def _artifacts() -> dict:
         return {
@@ -196,6 +236,25 @@ class BpfShadowBackendTests(unittest.TestCase):
                 ),
             ],
         }
+
+    @staticmethod
+    def _write_run_dir_artifacts(run_dir: Path, artifacts: dict) -> None:
+        for key, filename in [
+            ("gz_fec_plan", "gz_fec_plan.json"),
+            ("gz_update_diff_summary", "gz_update_diff_summary.json"),
+            ("temporal_plan", "temporal_plan.json"),
+            ("parameter_epoch_summary", "parameter_epoch_summary.json"),
+        ]:
+            (run_dir / filename).write_text(
+                json.dumps(artifacts[key], indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+        with (run_dir / "epoch_execution_details.jsonl").open(
+            "w",
+            encoding="utf-8",
+        ) as handle:
+            for record in artifacts["epoch_execution_details"]:
+                handle.write(json.dumps(record, sort_keys=True) + "\n")
 
 
 if __name__ == "__main__":

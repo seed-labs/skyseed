@@ -69,6 +69,7 @@ from skyseed_preflight import (
     direct_backend_host_artifacts_report,
     run_skyseed_preflight,
 )
+from bpf_backend import emit_shadow_artifacts_for_run_dir
 from contracts import NetworkMutationPlan
 from return_path_audit import audit_planner_preview
 from temporal_planning import enrich_snapshot_runtime_parameters
@@ -634,6 +635,15 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Prepare host MPLS and bridge-netfilter prerequisites before real-runtime work. "
             "'auto' is the durable default for real runs; 'off' skips host preparation."
+        ),
+    )
+    parser.add_argument(
+        "--emit-bpf-shadow",
+        action="store_true",
+        help=(
+            "After bounded real-runtime artifacts are written, emit experimental BPF "
+            "shadow summary and consistency artifacts. This is shadow-only and does "
+            "not alter canonical apply, forwarding, or rollback behavior."
         ),
     )
     parser.add_argument(
@@ -7086,6 +7096,7 @@ def _experiment_summary_payload(
     preflight_report: Dict[str, Any] | None,
     host_prepare_report: Dict[str, Any] | None,
     post_run_preflight_report: Dict[str, Any] | None,
+    bpf_shadow_emission: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     resolved_max_host_workers = _resolved_max_host_workers(args=args)
     runtime_outcome = (
@@ -7201,6 +7212,7 @@ def _experiment_summary_payload(
         "mini_internet_summary": mini_internet_summary,
         "continuous_operation_summary": continuous_operation_summary,
         "temporal_audit": None if runtime_report is None else runtime_report.get("temporal_audit"),
+        "bpf_shadow_emission": bpf_shadow_emission,
         "data_provenance": data_provenance,
         "generated_artifacts": artifacts,
     }
@@ -7605,6 +7617,7 @@ def main() -> int:
     host_prepare_report: Dict[str, Any] | None = None
     preflight_report: Dict[str, Any] | None = None
     post_run_preflight_report: Dict[str, Any] | None = None
+    bpf_shadow_emission: Dict[str, Any] | None = None
     compose_environment_reuse_summary: Dict[str, Any] | None = None
     compose_up_stage_results_summary: List[Dict[str, Any]] = []
     force_compose_down_after = False
@@ -8982,6 +8995,40 @@ def main() -> int:
                 }
             )
 
+    if bool(args.emit_bpf_shadow):
+        if str(args.run_mode) != "real-runtime":
+            bpf_shadow_emission = {
+                "enabled": True,
+                "emitted": False,
+                "ok": False,
+                "reason": "bpf_shadow_emission_requires_real_runtime_mode",
+                "shadow_only": True,
+            }
+        elif runtime_report is None:
+            bpf_shadow_emission = {
+                "enabled": True,
+                "emitted": False,
+                "ok": False,
+                "reason": "runtime_report_unavailable",
+                "shadow_only": True,
+            }
+        else:
+            bpf_shadow_emission = emit_shadow_artifacts_for_run_dir(run_dir)
+            bpf_shadow_emission["enabled"] = True
+            bpf_shadow_emission["emitted"] = True
+        events.append(
+            {
+                "timestamp_utc": _timestamp_utc(),
+                "event_type": "bpf_shadow_emission_completed",
+                "enabled": True,
+                "emitted": bool((bpf_shadow_emission or {}).get("emitted")),
+                "ok": bool((bpf_shadow_emission or {}).get("ok")),
+                "summary_path": (bpf_shadow_emission or {}).get("summary_path"),
+                "consistency_path": (bpf_shadow_emission or {}).get("consistency_path"),
+                "reason": (bpf_shadow_emission or {}).get("reason"),
+            }
+        )
+
     selected_ut_ids = [
         str(entry.get("ut_id"))
         for entry in list(shell_manifest.get("ground_model", {}).get("selected_uts", []))
@@ -9080,6 +9127,15 @@ def main() -> int:
         "runtime_progress_json": str(run_dir / "runtime_progress.json"),
         "runtime_lock_metadata_json": str(run_dir / "runtime_lock_metadata.json"),
     }
+    if bpf_shadow_emission is not None:
+        if bpf_shadow_emission.get("summary_path"):
+            generated_artifacts["bpf_shadow_backend_summary_json"] = str(
+                bpf_shadow_emission["summary_path"]
+            )
+        if bpf_shadow_emission.get("consistency_path"):
+            generated_artifacts["bpf_shadow_backend_consistency_json"] = str(
+                bpf_shadow_emission["consistency_path"]
+            )
     if startup_strategy is not None:
         startup_strategy = {
             **dict(startup_strategy),
@@ -9110,6 +9166,7 @@ def main() -> int:
         preflight_report=preflight_report,
         host_prepare_report=host_prepare_report,
         post_run_preflight_report=post_run_preflight_report,
+        bpf_shadow_emission=bpf_shadow_emission,
     )
     _write_json(run_dir / "run_manifest.json", summary)
     events.append(
@@ -9180,6 +9237,12 @@ def main() -> int:
         )
     else:
         print("Runtime not requested.")
+    if bpf_shadow_emission is not None:
+        print(
+            "BPF shadow emission: "
+            f"emitted={_bool_text(bool(bpf_shadow_emission.get('emitted')))} "
+            f"consistency_ok={_bool_text(bool(bpf_shadow_emission.get('ok')))}"
+        )
     print(f"Commands: {run_dir / 'commands.md'}")
     return 0
 

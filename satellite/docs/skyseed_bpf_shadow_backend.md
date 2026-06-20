@@ -51,6 +51,37 @@ python satellite/apps/compile_skyseed_bpf_shadow_backend.py \
 
 Do not commit generated files under `satellite/output`.
 
+## Real-Runtime Shadow Emission
+
+Bounded real-runtime runs can emit the same shadow artifacts directly by
+passing `--emit-bpf-shadow` to `run_starlink_shell_experiment.py`:
+
+```bash
+python satellite/apps/run_starlink_shell_experiment.py \
+  --run-mode real-runtime \
+  --emit-bpf-shadow \
+  <normal short-run arguments>
+```
+
+This switch runs after canonical runtime artifacts have been written. It reads
+the run directory and writes:
+
+- `bpf_shadow_backend_summary.json`
+- `bpf_shadow_backend_consistency.json`
+
+The switch does not change apply, forwarding, validation, rollback, or
+post-run preflight behavior. The canonical Linux/direct runtime remains the
+only real dataplane. BPF shadow emission is a consistency sanity artifact, not
+an optimized backend replacement.
+
+The consistency report compares the shadow summary with canonical artifacts:
+
+- G/Z FEC plan and diff counts.
+- ParameterEpoch execution detail generations, links, and parameter entries.
+- backend audit pass/fail.
+- `canonical_runtime_unchanged=true`.
+- `fixed_10s_assumed=false`.
+
 ## Generation And Cadence
 
 The compiler does not assume a fixed 10s slice. Runtime generation metadata is
