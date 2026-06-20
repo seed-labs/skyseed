@@ -1,0 +1,5185 @@
+{
+  "attach_attempted": true,
+  "blocked": false,
+  "blockers": [],
+  "counter_summary": {
+    "drop_bad_packet": 0,
+    "drop_inactive": 2,
+    "drop_missing_fec": 2,
+    "drop_missing_generation": 2,
+    "fec_hit": 8,
+    "future_generation_not_used": 6,
+    "generation_hit": 8,
+    "local_delivery": 2,
+    "next_hop_gw1": 2,
+    "next_hop_gw2": 2,
+    "redirect_pass": 6,
+    "shadow_pass": 4
+  },
+  "environment": {
+    "apt_packages": {
+      "_command": {
+        "args": [
+          "dpkg-query",
+          "-W",
+          "-f=${Package} ${Version} ${Status}\n",
+          "clang",
+          "llvm",
+          "linux-tools-common",
+          "linux-tools-generic",
+          "linux-tools-5.4.0-216",
+          "linux-tools-5.4.0-216-generic",
+          "gcc",
+          "make",
+          "pkg-config"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": "clang 1:10.0-50~exp1 install ok installed\ngcc 4:9.3.0-1ubuntu2 install ok installed\nlinux-tools-5.4.0-216 5.4.0-216.236 install ok installed\nlinux-tools-5.4.0-216-generic 5.4.0-216.236 install ok installed\nlinux-tools-common 5.4.0-216.236 install ok installed\nlinux-tools-generic 5.4.0.216.208 install ok installed\nllvm 1:10.0-50~exp1 install ok installed\nmake 4.2.1-1.2 install ok installed\npkg-config 0.29.1-0ubuntu4 install ok installed"
+      },
+      "clang": {
+        "installed": true,
+        "status": [
+          "install",
+          "ok",
+          "installed"
+        ],
+        "version": "1:10.0-50~exp1"
+      },
+      "gcc": {
+        "installed": true,
+        "status": [
+          "install",
+          "ok",
+          "installed"
+        ],
+        "version": "4:9.3.0-1ubuntu2"
+      },
+      "linux-tools-5.4.0-216": {
+        "installed": true,
+        "status": [
+          "install",
+          "ok",
+          "installed"
+        ],
+        "version": "5.4.0-216.236"
+      },
+      "linux-tools-5.4.0-216-generic": {
+        "installed": true,
+        "status": [
+          "install",
+          "ok",
+          "installed"
+        ],
+        "version": "5.4.0-216.236"
+      },
+      "linux-tools-common": {
+        "installed": true,
+        "status": [
+          "install",
+          "ok",
+          "installed"
+        ],
+        "version": "5.4.0-216.236"
+      },
+      "linux-tools-generic": {
+        "installed": true,
+        "status": [
+          "install",
+          "ok",
+          "installed"
+        ],
+        "version": "5.4.0.216.208"
+      },
+      "llvm": {
+        "installed": true,
+        "status": [
+          "install",
+          "ok",
+          "installed"
+        ],
+        "version": "1:10.0-50~exp1"
+      },
+      "make": {
+        "installed": true,
+        "status": [
+          "install",
+          "ok",
+          "installed"
+        ],
+        "version": "4.2.1-1.2"
+      },
+      "pkg-config": {
+        "installed": true,
+        "status": [
+          "install",
+          "ok",
+          "installed"
+        ],
+        "version": "0.29.1-0ubuntu4"
+      }
+    },
+    "kernel": {
+      "bpffs_exists": true,
+      "bpffs_is_dir": true,
+      "bpffs_mount": {
+        "args": [
+          "findmnt",
+          "-rn",
+          "-T",
+          "/sys/fs/bpf"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": "/sys/fs/bpf none bpf rw,nosuid,nodev,noexec,relatime,mode=700"
+      },
+      "btf_vmlinux_exists": false,
+      "uname": "Linux VM 5.4.0-54-generic #60-Ubuntu SMP Fri Nov 6 10:37:59 UTC 2020 x86_64 x86_64 x86_64 GNU/Linux"
+    },
+    "python": {
+      "executable": "/home/seed/miniconda3/envs/seed310/bin/python",
+      "version": "3.10.20"
+    },
+    "sudo": {
+      "euid": 1000,
+      "noninteractive_sudo": true,
+      "sudo_check": {
+        "args": [
+          "sudo",
+          "-n",
+          "true"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      "uid": 1000
+    },
+    "tools": {
+      "bpftool": {
+        "available": true,
+        "path": "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+        "version": "/usr/lib/linux-tools/5.4.0-216-generic/bpftool v5.4.291",
+        "version_returncode": 0
+      },
+      "clang": {
+        "available": true,
+        "path": "/usr/bin/clang",
+        "version": "clang version 10.0.0-4ubuntu1 \nTarget: x86_64-pc-linux-gnu\nThread model: posix\nInstalledDir: /usr/bin",
+        "version_returncode": 0
+      },
+      "ip": {
+        "available": true,
+        "path": "/usr/sbin/ip",
+        "version": "ip utility, iproute2-ss200127",
+        "version_returncode": 0
+      },
+      "llc": {
+        "available": true,
+        "path": "/usr/bin/llc",
+        "version": "LLVM (http://llvm.org/):\n  LLVM version 10.0.0\n  \n  Optimized build.",
+        "version_returncode": 0
+      },
+      "ping": {
+        "available": true,
+        "path": "/usr/bin/ping",
+        "version": "ping from iputils s20190709",
+        "version_returncode": 0
+      },
+      "tc": {
+        "available": true,
+        "path": "/usr/sbin/tc",
+        "version": "tc utility, iproute2-ss200127",
+        "version_returncode": 0
+      }
+    }
+  },
+  "experiment": {
+    "cleanup": {
+      "residue": {
+        "clean": true,
+        "link_hits": [],
+        "namespace_hits": [],
+        "pinned_maps": {
+          "active_generation": false,
+          "fec_forwarding": false,
+          "future_generation": false,
+          "generation_status": false,
+          "packet_counters": false
+        },
+        "tc_filter_residue_possible": false
+      },
+      "steps": [
+        {
+          "args": [
+            "sudo",
+            "-n",
+            "ip",
+            "netns",
+            "exec",
+            "ssgzfw89447",
+            "tc",
+            "qdisc",
+            "del",
+            "dev",
+            "sgfu89447",
+            "clsact"
+          ],
+          "returncode": 0,
+          "stderr": "",
+          "stdout": ""
+        },
+        {
+          "args": [
+            "sudo",
+            "-n",
+            "rm",
+            "-f",
+            "/sys/fs/bpf/tc/globals/active_generation"
+          ],
+          "returncode": 0,
+          "stderr": "",
+          "stdout": ""
+        },
+        {
+          "args": [
+            "sudo",
+            "-n",
+            "rm",
+            "-f",
+            "/sys/fs/bpf/tc/globals/generation_status"
+          ],
+          "returncode": 0,
+          "stderr": "",
+          "stdout": ""
+        },
+        {
+          "args": [
+            "sudo",
+            "-n",
+            "rm",
+            "-f",
+            "/sys/fs/bpf/tc/globals/fec_forwarding"
+          ],
+          "returncode": 0,
+          "stderr": "",
+          "stdout": ""
+        },
+        {
+          "args": [
+            "sudo",
+            "-n",
+            "rm",
+            "-f",
+            "/sys/fs/bpf/tc/globals/packet_counters"
+          ],
+          "returncode": 0,
+          "stderr": "",
+          "stdout": ""
+        },
+        {
+          "args": [
+            "sudo",
+            "-n",
+            "rm",
+            "-f",
+            "/sys/fs/bpf/tc/globals/future_generation"
+          ],
+          "returncode": 0,
+          "stderr": "",
+          "stdout": ""
+        },
+        {
+          "args": [
+            "sudo",
+            "-n",
+            "ip",
+            "netns",
+            "del",
+            "ssgzut89447"
+          ],
+          "returncode": 0,
+          "stderr": "",
+          "stdout": ""
+        },
+        {
+          "args": [
+            "sudo",
+            "-n",
+            "ip",
+            "netns",
+            "del",
+            "ssgzfw89447"
+          ],
+          "returncode": 0,
+          "stderr": "",
+          "stdout": ""
+        },
+        {
+          "args": [
+            "sudo",
+            "-n",
+            "ip",
+            "netns",
+            "del",
+            "ssgzgw189447"
+          ],
+          "returncode": 0,
+          "stderr": "",
+          "stdout": ""
+        },
+        {
+          "args": [
+            "sudo",
+            "-n",
+            "ip",
+            "netns",
+            "del",
+            "ssgzgw289447"
+          ],
+          "returncode": 0,
+          "stderr": "",
+          "stdout": ""
+        }
+      ]
+    },
+    "compile": {
+      "args": [
+        "clang",
+        "-O2",
+        "-target",
+        "bpf",
+        "-D__TARGET_ARCH_x86",
+        "-I",
+        "/usr/include/x86_64-linux-gnu",
+        "-c",
+        "/home/seed/skyseed/satellite/experimental/bpf/skyseed_tc_gz_shadow.c",
+        "-o",
+        "/tmp/skyseed-bpf-gz-shadow-4a7gqzkd/skyseed_tc_gz_shadow.o"
+      ],
+      "returncode": 0,
+      "stderr": "",
+      "stdout": ""
+    },
+    "forwarding_metadata": {
+      "gw1_dst_mac": {
+        "command": {
+          "args": [
+            "sudo",
+            "-n",
+            "ip",
+            "netns",
+            "exec",
+            "ssgzgw189447",
+            "cat",
+            "/sys/class/net/sgg189447/address"
+          ],
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "4e:d6:42:87:a7:67"
+        },
+        "mac": "4e:d6:42:87:a7:67"
+      },
+      "gw1_ifindex": {
+        "command": {
+          "args": [
+            "sudo",
+            "-n",
+            "ip",
+            "netns",
+            "exec",
+            "ssgzfw89447",
+            "cat",
+            "/sys/class/net/sgf189447/ifindex"
+          ],
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "6301"
+        },
+        "value": 6301
+      },
+      "gw1_src_mac": {
+        "command": {
+          "args": [
+            "sudo",
+            "-n",
+            "ip",
+            "netns",
+            "exec",
+            "ssgzfw89447",
+            "cat",
+            "/sys/class/net/sgf189447/address"
+          ],
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "1a:5b:fc:24:b9:0d"
+        },
+        "mac": "1a:5b:fc:24:b9:0d"
+      },
+      "gw2_dst_mac": {
+        "command": {
+          "args": [
+            "sudo",
+            "-n",
+            "ip",
+            "netns",
+            "exec",
+            "ssgzgw289447",
+            "cat",
+            "/sys/class/net/sgg289447/address"
+          ],
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "66:73:e8:23:fc:79"
+        },
+        "mac": "66:73:e8:23:fc:79"
+      },
+      "gw2_ifindex": {
+        "command": {
+          "args": [
+            "sudo",
+            "-n",
+            "ip",
+            "netns",
+            "exec",
+            "ssgzfw89447",
+            "cat",
+            "/sys/class/net/sgf289447/ifindex"
+          ],
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "6303"
+        },
+        "value": 6303
+      },
+      "gw2_src_mac": {
+        "command": {
+          "args": [
+            "sudo",
+            "-n",
+            "ip",
+            "netns",
+            "exec",
+            "ssgzfw89447",
+            "cat",
+            "/sys/class/net/sgf289447/address"
+          ],
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "c6:16:46:cb:6e:3b"
+        },
+        "mac": "c6:16:46:cb:6e:3b"
+      }
+    },
+    "names": {
+      "if_fwd_gw1": "sgf189447",
+      "if_fwd_gw2": "sgf289447",
+      "if_fwd_ut": "sgfu89447",
+      "if_gw1": "sgg189447",
+      "if_gw2": "sgg289447",
+      "if_ut": "sgut89447",
+      "ns_fwd": "ssgzfw89447",
+      "ns_gw1": "ssgzgw189447",
+      "ns_gw2": "ssgzgw289447",
+      "ns_ut": "ssgzut89447"
+    },
+    "ok": true,
+    "redirect": {
+      "attach": [
+        {
+          "args": [
+            "sudo",
+            "-n",
+            "ip",
+            "netns",
+            "exec",
+            "ssgzfw89447",
+            "tc",
+            "qdisc",
+            "del",
+            "dev",
+            "sgfu89447",
+            "clsact"
+          ],
+          "returncode": 2,
+          "stderr": "Error: Cannot find specified qdisc on specified device.",
+          "stdout": ""
+        },
+        {
+          "args": [
+            "sudo",
+            "-n",
+            "ip",
+            "netns",
+            "exec",
+            "ssgzfw89447",
+            "tc",
+            "qdisc",
+            "add",
+            "dev",
+            "sgfu89447",
+            "clsact"
+          ],
+          "returncode": 0,
+          "stderr": "",
+          "stdout": ""
+        },
+        {
+          "args": [
+            "sudo",
+            "-n",
+            "ip",
+            "netns",
+            "exec",
+            "ssgzfw89447",
+            "tc",
+            "filter",
+            "add",
+            "dev",
+            "sgfu89447",
+            "ingress",
+            "bpf",
+            "da",
+            "obj",
+            "/tmp/skyseed-bpf-gz-shadow-4a7gqzkd/skyseed_tc_gz_shadow.o",
+            "sec",
+            "classifier/redirect"
+          ],
+          "returncode": 0,
+          "stderr": "",
+          "stdout": ""
+        }
+      ],
+      "attach_ok": true,
+      "counters": {
+        "counters": {
+          "drop_bad_packet": 0,
+          "drop_inactive": 2,
+          "drop_missing_fec": 2,
+          "drop_missing_generation": 2,
+          "fec_hit": 8,
+          "future_generation_not_used": 6,
+          "generation_hit": 8,
+          "local_delivery": 2,
+          "next_hop_gw1": 2,
+          "next_hop_gw2": 2,
+          "redirect_pass": 6,
+          "shadow_pass": 0
+        },
+        "dump": {
+          "command": {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "-j",
+              "map",
+              "dump",
+              "id",
+              "175"
+            ],
+            "returncode": 0,
+            "stderr": "",
+            "stdout": "[{\"key\":[\"0x00\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x08\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x01\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x08\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x02\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x06\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x03\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x02\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x04\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x02\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x05\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x02\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x06\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x06\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x07\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x02\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x08\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x09\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x02\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x0a\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x02\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x0b\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x0c\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x0d\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x0e\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x0f\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]}]"
+          },
+          "map_reference": {
+            "id": 175,
+            "kernel_name": "packet_counters",
+            "kind": "id_by_shape",
+            "logical_name": "packet_counters",
+            "shape": {
+              "bytes_key": 4,
+              "bytes_value": 8,
+              "max_entries": 16,
+              "type": "array"
+            }
+          },
+          "parsed": [
+            {
+              "key": [
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x08",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x01",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x08",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x02",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x06",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x03",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x02",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x04",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x02",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x05",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x02",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x06",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x06",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x07",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x02",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x08",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x09",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x02",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x0a",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x02",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x0b",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x0c",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x0d",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x0e",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x0f",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            }
+          ]
+        }
+      },
+      "end_to_end_ping_ok": false,
+      "fail_closed_ok": true,
+      "initialize_maps": {
+        "ok": true,
+        "updates": [
+          {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "map",
+              "update",
+              "id",
+              "172",
+              "key",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00",
+              "value",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00"
+            ],
+            "map_reference": {
+              "id": 172,
+              "kernel_name": "active_generati",
+              "kind": "id_by_shape",
+              "logical_name": "active_generation",
+              "shape": {
+                "bytes_key": 4,
+                "bytes_value": 4,
+                "max_entries": 1,
+                "type": "array"
+              }
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": ""
+          },
+          {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "map",
+              "update",
+              "id",
+              "176",
+              "key",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00",
+              "value",
+              "hex",
+              "01",
+              "00",
+              "00",
+              "00"
+            ],
+            "map_reference": {
+              "id": 176,
+              "kernel_name": "future_generat",
+              "kind": "id_by_shape",
+              "logical_name": "future_generation",
+              "shape": {
+                "bytes_key": 4,
+                "bytes_value": 4,
+                "max_entries": 2,
+                "type": "array"
+              }
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": ""
+          },
+          {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "map",
+              "update",
+              "id",
+              "173",
+              "key",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00",
+              "value",
+              "hex",
+              "01",
+              "00",
+              "00",
+              "00"
+            ],
+            "map_reference": {
+              "id": 173,
+              "kernel_name": "generation_stat",
+              "kind": "id_by_shape",
+              "logical_name": "generation_status",
+              "shape": {
+                "bytes_key": 4,
+                "bytes_value": 4,
+                "max_entries": 8,
+                "type": "array"
+              }
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": ""
+          },
+          {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "map",
+              "update",
+              "id",
+              "173",
+              "key",
+              "hex",
+              "01",
+              "00",
+              "00",
+              "00",
+              "value",
+              "hex",
+              "01",
+              "00",
+              "00",
+              "00"
+            ],
+            "map_reference": {
+              "id": 173,
+              "kernel_name": "generation_stat",
+              "kind": "id_by_shape",
+              "logical_name": "generation_status",
+              "shape": {
+                "bytes_key": 4,
+                "bytes_value": 4,
+                "max_entries": 8,
+                "type": "array"
+              }
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": ""
+          },
+          {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "map",
+              "update",
+              "id",
+              "173",
+              "key",
+              "hex",
+              "02",
+              "00",
+              "00",
+              "00",
+              "value",
+              "hex",
+              "01",
+              "00",
+              "00",
+              "00"
+            ],
+            "map_reference": {
+              "id": 173,
+              "kernel_name": "generation_stat",
+              "kind": "id_by_shape",
+              "logical_name": "generation_status",
+              "shape": {
+                "bytes_key": 4,
+                "bytes_value": 4,
+                "max_entries": 8,
+                "type": "array"
+              }
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": ""
+          },
+          {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "map",
+              "update",
+              "id",
+              "174",
+              "key",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00",
+              "01",
+              "00",
+              "00",
+              "00",
+              "value",
+              "hex",
+              "01",
+              "00",
+              "00",
+              "00",
+              "01",
+              "00",
+              "00",
+              "00",
+              "9d",
+              "18",
+              "00",
+              "00",
+              "01",
+              "00",
+              "00",
+              "00",
+              "4e",
+              "d6",
+              "42",
+              "87",
+              "a7",
+              "67",
+              "1a",
+              "5b",
+              "fc",
+              "24",
+              "b9",
+              "0d"
+            ],
+            "map_reference": {
+              "id": 174,
+              "kernel_name": "fec_forwarding",
+              "kind": "id_by_shape",
+              "logical_name": "fec_forwarding",
+              "shape": {
+                "bytes_key": 8,
+                "bytes_value": 28,
+                "max_entries": 64,
+                "type": "hash"
+              }
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": ""
+          },
+          {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "map",
+              "update",
+              "id",
+              "174",
+              "key",
+              "hex",
+              "01",
+              "00",
+              "00",
+              "00",
+              "01",
+              "00",
+              "00",
+              "00",
+              "value",
+              "hex",
+              "01",
+              "00",
+              "00",
+              "00",
+              "01",
+              "00",
+              "00",
+              "00",
+              "9f",
+              "18",
+              "00",
+              "00",
+              "02",
+              "00",
+              "00",
+              "00",
+              "66",
+              "73",
+              "e8",
+              "23",
+              "fc",
+              "79",
+              "c6",
+              "16",
+              "46",
+              "cb",
+              "6e",
+              "3b"
+            ],
+            "map_reference": {
+              "id": 174,
+              "kernel_name": "fec_forwarding",
+              "kind": "id_by_shape",
+              "logical_name": "fec_forwarding",
+              "shape": {
+                "bytes_key": 8,
+                "bytes_value": 28,
+                "max_entries": 64,
+                "type": "hash"
+              }
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": ""
+          },
+          {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "map",
+              "update",
+              "id",
+              "174",
+              "key",
+              "hex",
+              "02",
+              "00",
+              "00",
+              "00",
+              "01",
+              "00",
+              "00",
+              "00",
+              "value",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00",
+              "01",
+              "00",
+              "00",
+              "00",
+              "9d",
+              "18",
+              "00",
+              "00",
+              "01",
+              "00",
+              "00",
+              "00",
+              "4e",
+              "d6",
+              "42",
+              "87",
+              "a7",
+              "67",
+              "1a",
+              "5b",
+              "fc",
+              "24",
+              "b9",
+              "0d"
+            ],
+            "map_reference": {
+              "id": 174,
+              "kernel_name": "fec_forwarding",
+              "kind": "id_by_shape",
+              "logical_name": "fec_forwarding",
+              "shape": {
+                "bytes_key": 8,
+                "bytes_value": 28,
+                "max_entries": 64,
+                "type": "hash"
+              }
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": ""
+          },
+          {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "map",
+              "update",
+              "id",
+              "174",
+              "key",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00",
+              "02",
+              "00",
+              "00",
+              "00",
+              "value",
+              "hex",
+              "01",
+              "00",
+              "00",
+              "00",
+              "02",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00"
+            ],
+            "map_reference": {
+              "id": 174,
+              "kernel_name": "fec_forwarding",
+              "kind": "id_by_shape",
+              "logical_name": "fec_forwarding",
+              "shape": {
+                "bytes_key": 8,
+                "bytes_value": 28,
+                "max_entries": 64,
+                "type": "hash"
+              }
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": ""
+          }
+        ]
+      },
+      "local_delivery_ok": true,
+      "next_hop_redirect_ok": true,
+      "ok": true,
+      "probes": [
+        {
+          "counter_delta": {
+            "drop_bad_packet": 0,
+            "drop_inactive": 0,
+            "drop_missing_fec": 0,
+            "drop_missing_generation": 0,
+            "fec_hit": 2,
+            "future_generation_not_used": 2,
+            "generation_hit": 2,
+            "local_delivery": 0,
+            "next_hop_gw1": 2,
+            "next_hop_gw2": 0,
+            "redirect_pass": 2,
+            "shadow_pass": 0
+          },
+          "counter_ok": true,
+          "destination": "10.91.0.100",
+          "expected_counter": "future_generation_not_used",
+          "expected_ping": "pass",
+          "expected_rx": "gw1",
+          "generation": 0,
+          "name": "future_preloaded_gen0_fec_g_to_gw1",
+          "observed_ping": "drop",
+          "ok": false,
+          "ping": {
+            "args": [
+              "sudo",
+              "-n",
+              "ip",
+              "netns",
+              "exec",
+              "ssgzut89447",
+              "ping",
+              "-c",
+              "2",
+              "-W",
+              "1",
+              "10.91.0.100"
+            ],
+            "parsed": {
+              "packet_loss_pct": 100.0,
+              "received": 0,
+              "transmitted": 2
+            },
+            "returncode": 1,
+            "stderr": "",
+            "stdout": "PING 10.91.0.100 (10.91.0.100) 56(84) bytes of data.\n\n--- 10.91.0.100 ping statistics ---\n2 packets transmitted, 0 received, 100% packet loss, time 1012ms"
+          },
+          "rx_after": {
+            "gw1_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw189447",
+                  "cat",
+                  "/sys/class/net/sgg189447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            },
+            "gw2_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw289447",
+                  "cat",
+                  "/sys/class/net/sgg289447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "0"
+              },
+              "value": 0
+            }
+          },
+          "rx_before": {
+            "gw1_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw189447",
+                  "cat",
+                  "/sys/class/net/sgg189447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "0"
+              },
+              "value": 0
+            },
+            "gw2_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw289447",
+                  "cat",
+                  "/sys/class/net/sgg289447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "0"
+              },
+              "value": 0
+            }
+          },
+          "rx_delta": {
+            "gw1_rx_packets": 2,
+            "gw2_rx_packets": 0
+          },
+          "rx_ok": true,
+          "set_generation": {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "map",
+              "update",
+              "id",
+              "172",
+              "key",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00",
+              "value",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00"
+            ],
+            "map_reference": {
+              "id": 172,
+              "kernel_name": "active_generati",
+              "kind": "id_by_shape",
+              "logical_name": "active_generation",
+              "shape": {
+                "bytes_key": 4,
+                "bytes_value": 4,
+                "max_entries": 1,
+                "type": "array"
+              }
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": ""
+          }
+        },
+        {
+          "counter_delta": {
+            "drop_bad_packet": 0,
+            "drop_inactive": 0,
+            "drop_missing_fec": 0,
+            "drop_missing_generation": 0,
+            "fec_hit": 2,
+            "future_generation_not_used": 0,
+            "generation_hit": 2,
+            "local_delivery": 0,
+            "next_hop_gw1": 0,
+            "next_hop_gw2": 2,
+            "redirect_pass": 2,
+            "shadow_pass": 0
+          },
+          "counter_ok": true,
+          "destination": "10.91.0.100",
+          "expected_counter": "next_hop_gw2",
+          "expected_ping": "pass",
+          "expected_rx": "gw2",
+          "generation": 1,
+          "name": "gen1_fec_g_to_gw2",
+          "observed_ping": "drop",
+          "ok": false,
+          "ping": {
+            "args": [
+              "sudo",
+              "-n",
+              "ip",
+              "netns",
+              "exec",
+              "ssgzut89447",
+              "ping",
+              "-c",
+              "2",
+              "-W",
+              "1",
+              "10.91.0.100"
+            ],
+            "parsed": {
+              "packet_loss_pct": 100.0,
+              "received": 0,
+              "transmitted": 2
+            },
+            "returncode": 1,
+            "stderr": "",
+            "stdout": "PING 10.91.0.100 (10.91.0.100) 56(84) bytes of data.\n\n--- 10.91.0.100 ping statistics ---\n2 packets transmitted, 0 received, 100% packet loss, time 1026ms"
+          },
+          "rx_after": {
+            "gw1_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw189447",
+                  "cat",
+                  "/sys/class/net/sgg189447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            },
+            "gw2_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw289447",
+                  "cat",
+                  "/sys/class/net/sgg289447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            }
+          },
+          "rx_before": {
+            "gw1_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw189447",
+                  "cat",
+                  "/sys/class/net/sgg189447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            },
+            "gw2_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw289447",
+                  "cat",
+                  "/sys/class/net/sgg289447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "0"
+              },
+              "value": 0
+            }
+          },
+          "rx_delta": {
+            "gw1_rx_packets": 0,
+            "gw2_rx_packets": 2
+          },
+          "rx_ok": true,
+          "set_generation": {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "map",
+              "update",
+              "id",
+              "172",
+              "key",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00",
+              "value",
+              "hex",
+              "01",
+              "00",
+              "00",
+              "00"
+            ],
+            "map_reference": {
+              "id": 172,
+              "kernel_name": "active_generati",
+              "kind": "id_by_shape",
+              "logical_name": "active_generation",
+              "shape": {
+                "bytes_key": 4,
+                "bytes_value": 4,
+                "max_entries": 1,
+                "type": "array"
+              }
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": ""
+          }
+        },
+        {
+          "counter_delta": {
+            "drop_bad_packet": 0,
+            "drop_inactive": 2,
+            "drop_missing_fec": 0,
+            "drop_missing_generation": 0,
+            "fec_hit": 2,
+            "future_generation_not_used": 2,
+            "generation_hit": 2,
+            "local_delivery": 0,
+            "next_hop_gw1": 0,
+            "next_hop_gw2": 0,
+            "redirect_pass": 0,
+            "shadow_pass": 0
+          },
+          "counter_ok": true,
+          "destination": "10.91.0.100",
+          "expected_counter": "drop_inactive",
+          "expected_ping": "drop",
+          "expected_rx": "none",
+          "generation": 2,
+          "name": "gen2_fec_g_inactive",
+          "observed_ping": "drop",
+          "ok": true,
+          "ping": {
+            "args": [
+              "sudo",
+              "-n",
+              "ip",
+              "netns",
+              "exec",
+              "ssgzut89447",
+              "ping",
+              "-c",
+              "2",
+              "-W",
+              "1",
+              "10.91.0.100"
+            ],
+            "parsed": {
+              "packet_loss_pct": 100.0,
+              "received": 0,
+              "transmitted": 2
+            },
+            "returncode": 1,
+            "stderr": "",
+            "stdout": "PING 10.91.0.100 (10.91.0.100) 56(84) bytes of data.\n\n--- 10.91.0.100 ping statistics ---\n2 packets transmitted, 0 received, 100% packet loss, time 1048ms"
+          },
+          "rx_after": {
+            "gw1_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw189447",
+                  "cat",
+                  "/sys/class/net/sgg189447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            },
+            "gw2_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw289447",
+                  "cat",
+                  "/sys/class/net/sgg289447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            }
+          },
+          "rx_before": {
+            "gw1_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw189447",
+                  "cat",
+                  "/sys/class/net/sgg189447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            },
+            "gw2_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw289447",
+                  "cat",
+                  "/sys/class/net/sgg289447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            }
+          },
+          "rx_delta": {
+            "gw1_rx_packets": 0,
+            "gw2_rx_packets": 0
+          },
+          "rx_ok": true,
+          "set_generation": {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "map",
+              "update",
+              "id",
+              "172",
+              "key",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00",
+              "value",
+              "hex",
+              "02",
+              "00",
+              "00",
+              "00"
+            ],
+            "map_reference": {
+              "id": 172,
+              "kernel_name": "active_generati",
+              "kind": "id_by_shape",
+              "logical_name": "active_generation",
+              "shape": {
+                "bytes_key": 4,
+                "bytes_value": 4,
+                "max_entries": 1,
+                "type": "array"
+              }
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": ""
+          }
+        },
+        {
+          "counter_delta": {
+            "drop_bad_packet": 0,
+            "drop_inactive": 0,
+            "drop_missing_fec": 2,
+            "drop_missing_generation": 0,
+            "fec_hit": 0,
+            "future_generation_not_used": 0,
+            "generation_hit": 0,
+            "local_delivery": 0,
+            "next_hop_gw1": 0,
+            "next_hop_gw2": 0,
+            "redirect_pass": 0,
+            "shadow_pass": 0
+          },
+          "counter_ok": true,
+          "destination": "10.91.0.250",
+          "expected_counter": "drop_missing_fec",
+          "expected_ping": "drop",
+          "expected_rx": "none",
+          "generation": 0,
+          "name": "missing_fec",
+          "observed_ping": "drop",
+          "ok": true,
+          "ping": {
+            "args": [
+              "sudo",
+              "-n",
+              "ip",
+              "netns",
+              "exec",
+              "ssgzut89447",
+              "ping",
+              "-c",
+              "2",
+              "-W",
+              "1",
+              "10.91.0.250"
+            ],
+            "parsed": {
+              "packet_loss_pct": 100.0,
+              "received": 0,
+              "transmitted": 2
+            },
+            "returncode": 1,
+            "stderr": "",
+            "stdout": "PING 10.91.0.250 (10.91.0.250) 56(84) bytes of data.\n\n--- 10.91.0.250 ping statistics ---\n2 packets transmitted, 0 received, 100% packet loss, time 1018ms"
+          },
+          "rx_after": {
+            "gw1_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw189447",
+                  "cat",
+                  "/sys/class/net/sgg189447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            },
+            "gw2_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw289447",
+                  "cat",
+                  "/sys/class/net/sgg289447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            }
+          },
+          "rx_before": {
+            "gw1_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw189447",
+                  "cat",
+                  "/sys/class/net/sgg189447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            },
+            "gw2_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw289447",
+                  "cat",
+                  "/sys/class/net/sgg289447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            }
+          },
+          "rx_delta": {
+            "gw1_rx_packets": 0,
+            "gw2_rx_packets": 0
+          },
+          "rx_ok": true,
+          "set_generation": {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "map",
+              "update",
+              "id",
+              "172",
+              "key",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00",
+              "value",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00"
+            ],
+            "map_reference": {
+              "id": 172,
+              "kernel_name": "active_generati",
+              "kind": "id_by_shape",
+              "logical_name": "active_generation",
+              "shape": {
+                "bytes_key": 4,
+                "bytes_value": 4,
+                "max_entries": 1,
+                "type": "array"
+              }
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": ""
+          }
+        },
+        {
+          "counter_delta": {
+            "drop_bad_packet": 0,
+            "drop_inactive": 0,
+            "drop_missing_fec": 0,
+            "drop_missing_generation": 2,
+            "fec_hit": 0,
+            "future_generation_not_used": 0,
+            "generation_hit": 0,
+            "local_delivery": 0,
+            "next_hop_gw1": 0,
+            "next_hop_gw2": 0,
+            "redirect_pass": 0,
+            "shadow_pass": 0
+          },
+          "counter_ok": true,
+          "destination": "10.91.0.100",
+          "expected_counter": "drop_missing_generation",
+          "expected_ping": "drop",
+          "expected_rx": "none",
+          "generation": 7,
+          "name": "missing_generation",
+          "observed_ping": "drop",
+          "ok": true,
+          "ping": {
+            "args": [
+              "sudo",
+              "-n",
+              "ip",
+              "netns",
+              "exec",
+              "ssgzut89447",
+              "ping",
+              "-c",
+              "2",
+              "-W",
+              "1",
+              "10.91.0.100"
+            ],
+            "parsed": {
+              "packet_loss_pct": 100.0,
+              "received": 0,
+              "transmitted": 2
+            },
+            "returncode": 1,
+            "stderr": "",
+            "stdout": "PING 10.91.0.100 (10.91.0.100) 56(84) bytes of data.\n\n--- 10.91.0.100 ping statistics ---\n2 packets transmitted, 0 received, 100% packet loss, time 1031ms"
+          },
+          "rx_after": {
+            "gw1_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw189447",
+                  "cat",
+                  "/sys/class/net/sgg189447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            },
+            "gw2_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw289447",
+                  "cat",
+                  "/sys/class/net/sgg289447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            }
+          },
+          "rx_before": {
+            "gw1_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw189447",
+                  "cat",
+                  "/sys/class/net/sgg189447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            },
+            "gw2_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw289447",
+                  "cat",
+                  "/sys/class/net/sgg289447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            }
+          },
+          "rx_delta": {
+            "gw1_rx_packets": 0,
+            "gw2_rx_packets": 0
+          },
+          "rx_ok": true,
+          "set_generation": {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "map",
+              "update",
+              "id",
+              "172",
+              "key",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00",
+              "value",
+              "hex",
+              "07",
+              "00",
+              "00",
+              "00"
+            ],
+            "map_reference": {
+              "id": 172,
+              "kernel_name": "active_generati",
+              "kind": "id_by_shape",
+              "logical_name": "active_generation",
+              "shape": {
+                "bytes_key": 4,
+                "bytes_value": 4,
+                "max_entries": 1,
+                "type": "array"
+              }
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": ""
+          }
+        },
+        {
+          "counter_delta": {
+            "drop_bad_packet": 0,
+            "drop_inactive": 0,
+            "drop_missing_fec": 0,
+            "drop_missing_generation": 0,
+            "fec_hit": 2,
+            "future_generation_not_used": 2,
+            "generation_hit": 2,
+            "local_delivery": 2,
+            "next_hop_gw1": 0,
+            "next_hop_gw2": 0,
+            "redirect_pass": 2,
+            "shadow_pass": 0
+          },
+          "counter_ok": true,
+          "destination": "10.91.0.200",
+          "expected_counter": "local_delivery",
+          "expected_ping": "pass",
+          "expected_rx": "none",
+          "generation": 0,
+          "name": "fec_z_local_delivery",
+          "observed_ping": "pass",
+          "ok": true,
+          "ping": {
+            "args": [
+              "sudo",
+              "-n",
+              "ip",
+              "netns",
+              "exec",
+              "ssgzut89447",
+              "ping",
+              "-c",
+              "2",
+              "-W",
+              "1",
+              "10.91.0.200"
+            ],
+            "parsed": {
+              "packet_loss_pct": 0.0,
+              "received": 2,
+              "rtt_avg_ms": 0.035,
+              "rtt_max_ms": 0.041,
+              "rtt_mdev_ms": 0.006,
+              "rtt_min_ms": 0.029,
+              "transmitted": 2
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": "PING 10.91.0.200 (10.91.0.200) 56(84) bytes of data.\n64 bytes from 10.91.0.200: icmp_seq=1 ttl=64 time=0.029 ms\n64 bytes from 10.91.0.200: icmp_seq=2 ttl=64 time=0.041 ms\n\n--- 10.91.0.200 ping statistics ---\n2 packets transmitted, 2 received, 0% packet loss, time 1027ms\nrtt min/avg/max/mdev = 0.029/0.035/0.041/0.006 ms"
+          },
+          "rx_after": {
+            "gw1_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw189447",
+                  "cat",
+                  "/sys/class/net/sgg189447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            },
+            "gw2_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw289447",
+                  "cat",
+                  "/sys/class/net/sgg289447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            }
+          },
+          "rx_before": {
+            "gw1_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw189447",
+                  "cat",
+                  "/sys/class/net/sgg189447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            },
+            "gw2_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw289447",
+                  "cat",
+                  "/sys/class/net/sgg289447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            }
+          },
+          "rx_delta": {
+            "gw1_rx_packets": 0,
+            "gw2_rx_packets": 0
+          },
+          "rx_ok": true,
+          "set_generation": {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "map",
+              "update",
+              "id",
+              "172",
+              "key",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00",
+              "value",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00"
+            ],
+            "map_reference": {
+              "id": 172,
+              "kernel_name": "active_generati",
+              "kind": "id_by_shape",
+              "logical_name": "active_generation",
+              "shape": {
+                "bytes_key": 4,
+                "bytes_value": 4,
+                "max_entries": 1,
+                "type": "array"
+              }
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": ""
+          }
+        }
+      ]
+    },
+    "redirect_blocker": "end_to_end_ping_reply_failed_after_expected_next_hop_rx",
+    "redirect_end_to_end_ping_success": false,
+    "redirect_success": true,
+    "setup": [
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "add",
+          "ssgzut89447"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "add",
+          "ssgzfw89447"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "add",
+          "ssgzgw189447"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "add",
+          "ssgzgw289447"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "link",
+          "add",
+          "sgut89447",
+          "type",
+          "veth",
+          "peer",
+          "name",
+          "sgfu89447"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "link",
+          "add",
+          "sgf189447",
+          "type",
+          "veth",
+          "peer",
+          "name",
+          "sgg189447"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "link",
+          "add",
+          "sgf289447",
+          "type",
+          "veth",
+          "peer",
+          "name",
+          "sgg289447"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "link",
+          "set",
+          "sgut89447",
+          "netns",
+          "ssgzut89447"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "link",
+          "set",
+          "sgfu89447",
+          "netns",
+          "ssgzfw89447"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "link",
+          "set",
+          "sgf189447",
+          "netns",
+          "ssgzfw89447"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "link",
+          "set",
+          "sgg189447",
+          "netns",
+          "ssgzgw189447"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "link",
+          "set",
+          "sgf289447",
+          "netns",
+          "ssgzfw89447"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "link",
+          "set",
+          "sgg289447",
+          "netns",
+          "ssgzgw289447"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "ssgzut89447",
+          "ip",
+          "link",
+          "set",
+          "lo",
+          "up"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "ssgzut89447",
+          "sysctl",
+          "-q",
+          "-w",
+          "net.ipv6.conf.all.disable_ipv6=1"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "ssgzut89447",
+          "sysctl",
+          "-q",
+          "-w",
+          "net.ipv6.conf.default.disable_ipv6=1"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "ssgzut89447",
+          "sysctl",
+          "-q",
+          "-w",
+          "net.ipv4.conf.all.rp_filter=0"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "ssgzut89447",
+          "sysctl",
+          "-q",
+          "-w",
+          "net.ipv4.conf.default.rp_filter=0"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "ssgzfw89447",
+          "ip",
+          "link",
+          "set",
+          "lo",
+          "up"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "ssgzfw89447",
+          "sysctl",
+          "-q",
+          "-w",
+          "net.ipv6.conf.all.disable_ipv6=1"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "ssgzfw89447",
+          "sysctl",
+          "-q",
+          "-w",
+          "net.ipv6.conf.default.disable_ipv6=1"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "ssgzfw89447",
+          "sysctl",
+          "-q",
+          "-w",
+          "net.ipv4.conf.all.rp_filter=0"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "ssgzfw89447",
+          "sysctl",
+          "-q",
+          "-w",
+          "net.ipv4.conf.default.rp_filter=0"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "ssgzgw189447",
+          "ip",
+          "link",
+          "set",
+          "lo",
+          "up"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "ssgzgw189447",
+          "sysctl",
+          "-q",
+          "-w",
+          "net.ipv6.conf.all.disable_ipv6=1"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "ssgzgw189447",
+          "sysctl",
+          "-q",
+          "-w",
+          "net.ipv6.conf.default.disable_ipv6=1"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "ssgzgw189447",
+          "sysctl",
+          "-q",
+          "-w",
+          "net.ipv4.conf.all.rp_filter=0"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "ssgzgw189447",
+          "sysctl",
+          "-q",
+          "-w",
+          "net.ipv4.conf.default.rp_filter=0"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "ssgzgw289447",
+          "ip",
+          "link",
+          "set",
+          "lo",
+          "up"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "ssgzgw289447",
+          "sysctl",
+          "-q",
+          "-w",
+          "net.ipv6.conf.all.disable_ipv6=1"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "ssgzgw289447",
+          "sysctl",
+          "-q",
+          "-w",
+          "net.ipv6.conf.default.disable_ipv6=1"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "ssgzgw289447",
+          "sysctl",
+          "-q",
+          "-w",
+          "net.ipv4.conf.all.rp_filter=0"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "ssgzgw289447",
+          "sysctl",
+          "-q",
+          "-w",
+          "net.ipv4.conf.default.rp_filter=0"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "ssgzut89447",
+          "ip",
+          "addr",
+          "add",
+          "10.90.0.2/24",
+          "dev",
+          "sgut89447"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "ssgzfw89447",
+          "ip",
+          "addr",
+          "add",
+          "10.90.0.1/24",
+          "dev",
+          "sgfu89447"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "ssgzfw89447",
+          "ip",
+          "addr",
+          "add",
+          "10.90.1.1/24",
+          "dev",
+          "sgf189447"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "ssgzgw189447",
+          "ip",
+          "addr",
+          "add",
+          "10.90.1.2/24",
+          "dev",
+          "sgg189447"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "ssgzfw89447",
+          "ip",
+          "addr",
+          "add",
+          "10.90.2.1/24",
+          "dev",
+          "sgf289447"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "ssgzgw289447",
+          "ip",
+          "addr",
+          "add",
+          "10.90.2.2/24",
+          "dev",
+          "sgg289447"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "ssgzfw89447",
+          "ip",
+          "addr",
+          "add",
+          "10.91.0.200/32",
+          "dev",
+          "sgfu89447"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "ssgzgw189447",
+          "ip",
+          "addr",
+          "add",
+          "10.91.0.100/32",
+          "dev",
+          "sgg189447"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "ssgzgw289447",
+          "ip",
+          "addr",
+          "add",
+          "10.91.0.100/32",
+          "dev",
+          "sgg289447"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "ssgzut89447",
+          "ip",
+          "link",
+          "set",
+          "sgut89447",
+          "up"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "ssgzfw89447",
+          "ip",
+          "link",
+          "set",
+          "sgfu89447",
+          "up"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "ssgzfw89447",
+          "ip",
+          "link",
+          "set",
+          "sgf189447",
+          "up"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "ssgzgw189447",
+          "ip",
+          "link",
+          "set",
+          "sgg189447",
+          "up"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "ssgzfw89447",
+          "ip",
+          "link",
+          "set",
+          "sgf289447",
+          "up"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "ssgzgw289447",
+          "ip",
+          "link",
+          "set",
+          "sgg289447",
+          "up"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "ssgzfw89447",
+          "sysctl",
+          "-q",
+          "-w",
+          "net.ipv4.ip_forward=1"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "ssgzut89447",
+          "ip",
+          "route",
+          "add",
+          "10.91.0.0/24",
+          "via",
+          "10.90.0.1",
+          "dev",
+          "sgut89447"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "ssgzgw189447",
+          "ip",
+          "route",
+          "add",
+          "10.90.0.0/24",
+          "via",
+          "10.90.1.1",
+          "dev",
+          "sgg189447"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      {
+        "args": [
+          "sudo",
+          "-n",
+          "ip",
+          "netns",
+          "exec",
+          "ssgzgw289447",
+          "ip",
+          "route",
+          "add",
+          "10.90.0.0/24",
+          "via",
+          "10.90.2.1",
+          "dev",
+          "sgg289447"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      }
+    ],
+    "shadow": {
+      "attach": [
+        {
+          "args": [
+            "sudo",
+            "-n",
+            "ip",
+            "netns",
+            "exec",
+            "ssgzfw89447",
+            "tc",
+            "qdisc",
+            "del",
+            "dev",
+            "sgfu89447",
+            "clsact"
+          ],
+          "returncode": 0,
+          "stderr": "",
+          "stdout": ""
+        },
+        {
+          "args": [
+            "sudo",
+            "-n",
+            "ip",
+            "netns",
+            "exec",
+            "ssgzfw89447",
+            "tc",
+            "qdisc",
+            "add",
+            "dev",
+            "sgfu89447",
+            "clsact"
+          ],
+          "returncode": 0,
+          "stderr": "",
+          "stdout": ""
+        },
+        {
+          "args": [
+            "sudo",
+            "-n",
+            "ip",
+            "netns",
+            "exec",
+            "ssgzfw89447",
+            "tc",
+            "filter",
+            "add",
+            "dev",
+            "sgfu89447",
+            "ingress",
+            "bpf",
+            "da",
+            "obj",
+            "/tmp/skyseed-bpf-gz-shadow-4a7gqzkd/skyseed_tc_gz_shadow.o",
+            "sec",
+            "classifier/shadow"
+          ],
+          "returncode": 0,
+          "stderr": "",
+          "stdout": ""
+        }
+      ],
+      "attach_ok": true,
+      "counters": {
+        "counters": {
+          "drop_bad_packet": 0,
+          "drop_inactive": 2,
+          "drop_missing_fec": 2,
+          "drop_missing_generation": 2,
+          "fec_hit": 8,
+          "future_generation_not_used": 6,
+          "generation_hit": 8,
+          "local_delivery": 2,
+          "next_hop_gw1": 2,
+          "next_hop_gw2": 2,
+          "redirect_pass": 6,
+          "shadow_pass": 4
+        },
+        "dump": {
+          "command": {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "-j",
+              "map",
+              "dump",
+              "id",
+              "180"
+            ],
+            "returncode": 0,
+            "stderr": "",
+            "stdout": "[{\"key\":[\"0x00\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x08\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x01\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x08\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x02\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x06\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x03\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x02\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x04\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x02\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x05\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x02\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x06\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x06\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x07\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x02\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x08\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x09\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x02\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x0a\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x02\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x0b\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x04\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x0c\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x0d\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x0e\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]},{\"key\":[\"0x0f\",\"0x00\",\"0x00\",\"0x00\"],\"value\":[\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\",\"0x00\"]}]"
+          },
+          "map_reference": {
+            "id": 180,
+            "kernel_name": "packet_counters",
+            "kind": "id_by_shape",
+            "logical_name": "packet_counters",
+            "shape": {
+              "bytes_key": 4,
+              "bytes_value": 8,
+              "max_entries": 16,
+              "type": "array"
+            }
+          },
+          "parsed": [
+            {
+              "key": [
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x08",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x01",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x08",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x02",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x06",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x03",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x02",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x04",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x02",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x05",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x02",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x06",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x06",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x07",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x02",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x08",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x09",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x02",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x0a",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x02",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x0b",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x04",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x0c",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x0d",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x0e",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            },
+            {
+              "key": [
+                "0x0f",
+                "0x00",
+                "0x00",
+                "0x00"
+              ],
+              "value": [
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00",
+                "0x00"
+              ]
+            }
+          ]
+        }
+      },
+      "initialize_maps": {
+        "ok": true,
+        "updates": [
+          {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "map",
+              "update",
+              "id",
+              "177",
+              "key",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00",
+              "value",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00"
+            ],
+            "map_reference": {
+              "id": 177,
+              "kernel_name": "active_generati",
+              "kind": "id_by_shape",
+              "logical_name": "active_generation",
+              "shape": {
+                "bytes_key": 4,
+                "bytes_value": 4,
+                "max_entries": 1,
+                "type": "array"
+              }
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": ""
+          },
+          {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "map",
+              "update",
+              "id",
+              "181",
+              "key",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00",
+              "value",
+              "hex",
+              "01",
+              "00",
+              "00",
+              "00"
+            ],
+            "map_reference": {
+              "id": 181,
+              "kernel_name": "future_generat",
+              "kind": "id_by_shape",
+              "logical_name": "future_generation",
+              "shape": {
+                "bytes_key": 4,
+                "bytes_value": 4,
+                "max_entries": 2,
+                "type": "array"
+              }
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": ""
+          },
+          {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "map",
+              "update",
+              "id",
+              "178",
+              "key",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00",
+              "value",
+              "hex",
+              "01",
+              "00",
+              "00",
+              "00"
+            ],
+            "map_reference": {
+              "id": 178,
+              "kernel_name": "generation_stat",
+              "kind": "id_by_shape",
+              "logical_name": "generation_status",
+              "shape": {
+                "bytes_key": 4,
+                "bytes_value": 4,
+                "max_entries": 8,
+                "type": "array"
+              }
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": ""
+          },
+          {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "map",
+              "update",
+              "id",
+              "178",
+              "key",
+              "hex",
+              "01",
+              "00",
+              "00",
+              "00",
+              "value",
+              "hex",
+              "01",
+              "00",
+              "00",
+              "00"
+            ],
+            "map_reference": {
+              "id": 178,
+              "kernel_name": "generation_stat",
+              "kind": "id_by_shape",
+              "logical_name": "generation_status",
+              "shape": {
+                "bytes_key": 4,
+                "bytes_value": 4,
+                "max_entries": 8,
+                "type": "array"
+              }
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": ""
+          },
+          {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "map",
+              "update",
+              "id",
+              "178",
+              "key",
+              "hex",
+              "02",
+              "00",
+              "00",
+              "00",
+              "value",
+              "hex",
+              "01",
+              "00",
+              "00",
+              "00"
+            ],
+            "map_reference": {
+              "id": 178,
+              "kernel_name": "generation_stat",
+              "kind": "id_by_shape",
+              "logical_name": "generation_status",
+              "shape": {
+                "bytes_key": 4,
+                "bytes_value": 4,
+                "max_entries": 8,
+                "type": "array"
+              }
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": ""
+          },
+          {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "map",
+              "update",
+              "id",
+              "179",
+              "key",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00",
+              "01",
+              "00",
+              "00",
+              "00",
+              "value",
+              "hex",
+              "01",
+              "00",
+              "00",
+              "00",
+              "01",
+              "00",
+              "00",
+              "00",
+              "9d",
+              "18",
+              "00",
+              "00",
+              "01",
+              "00",
+              "00",
+              "00",
+              "4e",
+              "d6",
+              "42",
+              "87",
+              "a7",
+              "67",
+              "1a",
+              "5b",
+              "fc",
+              "24",
+              "b9",
+              "0d"
+            ],
+            "map_reference": {
+              "id": 179,
+              "kernel_name": "fec_forwarding",
+              "kind": "id_by_shape",
+              "logical_name": "fec_forwarding",
+              "shape": {
+                "bytes_key": 8,
+                "bytes_value": 28,
+                "max_entries": 64,
+                "type": "hash"
+              }
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": ""
+          },
+          {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "map",
+              "update",
+              "id",
+              "179",
+              "key",
+              "hex",
+              "01",
+              "00",
+              "00",
+              "00",
+              "01",
+              "00",
+              "00",
+              "00",
+              "value",
+              "hex",
+              "01",
+              "00",
+              "00",
+              "00",
+              "01",
+              "00",
+              "00",
+              "00",
+              "9f",
+              "18",
+              "00",
+              "00",
+              "02",
+              "00",
+              "00",
+              "00",
+              "66",
+              "73",
+              "e8",
+              "23",
+              "fc",
+              "79",
+              "c6",
+              "16",
+              "46",
+              "cb",
+              "6e",
+              "3b"
+            ],
+            "map_reference": {
+              "id": 179,
+              "kernel_name": "fec_forwarding",
+              "kind": "id_by_shape",
+              "logical_name": "fec_forwarding",
+              "shape": {
+                "bytes_key": 8,
+                "bytes_value": 28,
+                "max_entries": 64,
+                "type": "hash"
+              }
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": ""
+          },
+          {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "map",
+              "update",
+              "id",
+              "179",
+              "key",
+              "hex",
+              "02",
+              "00",
+              "00",
+              "00",
+              "01",
+              "00",
+              "00",
+              "00",
+              "value",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00",
+              "01",
+              "00",
+              "00",
+              "00",
+              "9d",
+              "18",
+              "00",
+              "00",
+              "01",
+              "00",
+              "00",
+              "00",
+              "4e",
+              "d6",
+              "42",
+              "87",
+              "a7",
+              "67",
+              "1a",
+              "5b",
+              "fc",
+              "24",
+              "b9",
+              "0d"
+            ],
+            "map_reference": {
+              "id": 179,
+              "kernel_name": "fec_forwarding",
+              "kind": "id_by_shape",
+              "logical_name": "fec_forwarding",
+              "shape": {
+                "bytes_key": 8,
+                "bytes_value": 28,
+                "max_entries": 64,
+                "type": "hash"
+              }
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": ""
+          },
+          {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "map",
+              "update",
+              "id",
+              "179",
+              "key",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00",
+              "02",
+              "00",
+              "00",
+              "00",
+              "value",
+              "hex",
+              "01",
+              "00",
+              "00",
+              "00",
+              "02",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00",
+              "00"
+            ],
+            "map_reference": {
+              "id": 179,
+              "kernel_name": "fec_forwarding",
+              "kind": "id_by_shape",
+              "logical_name": "fec_forwarding",
+              "shape": {
+                "bytes_key": 8,
+                "bytes_value": 28,
+                "max_entries": 64,
+                "type": "hash"
+              }
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": ""
+          }
+        ]
+      },
+      "ok": true,
+      "probes": [
+        {
+          "counter_delta": {
+            "drop_bad_packet": 0,
+            "drop_inactive": 0,
+            "drop_missing_fec": 0,
+            "drop_missing_generation": 0,
+            "fec_hit": 2,
+            "future_generation_not_used": 2,
+            "generation_hit": 2,
+            "local_delivery": 0,
+            "next_hop_gw1": 2,
+            "next_hop_gw2": 0,
+            "redirect_pass": 2,
+            "shadow_pass": 2
+          },
+          "counter_ok": true,
+          "destination": "10.91.0.100",
+          "expected_counter": "next_hop_gw1",
+          "expected_ping": "drop",
+          "expected_rx": null,
+          "generation": 0,
+          "name": "shadow_gen0_fec_g_decides_gw1",
+          "observed_ping": "drop",
+          "ok": true,
+          "ping": {
+            "args": [
+              "sudo",
+              "-n",
+              "ip",
+              "netns",
+              "exec",
+              "ssgzut89447",
+              "ping",
+              "-c",
+              "2",
+              "-W",
+              "1",
+              "10.91.0.100"
+            ],
+            "parsed": {
+              "packet_loss_pct": 100.0,
+              "received": 0,
+              "transmitted": 2
+            },
+            "returncode": 1,
+            "stderr": "",
+            "stdout": "PING 10.91.0.100 (10.91.0.100) 56(84) bytes of data.\nFrom 10.90.0.1 icmp_seq=1 Destination Net Unreachable\nFrom 10.90.0.1 icmp_seq=2 Destination Net Unreachable\n\n--- 10.91.0.100 ping statistics ---\n2 packets transmitted, 0 received, +2 errors, 100% packet loss, time 1032ms"
+          },
+          "rx_after": {
+            "gw1_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw189447",
+                  "cat",
+                  "/sys/class/net/sgg189447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            },
+            "gw2_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw289447",
+                  "cat",
+                  "/sys/class/net/sgg289447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            }
+          },
+          "rx_before": {
+            "gw1_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw189447",
+                  "cat",
+                  "/sys/class/net/sgg189447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            },
+            "gw2_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw289447",
+                  "cat",
+                  "/sys/class/net/sgg289447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            }
+          },
+          "rx_delta": {
+            "gw1_rx_packets": 0,
+            "gw2_rx_packets": 0
+          },
+          "rx_ok": true,
+          "set_generation": {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "map",
+              "update",
+              "id",
+              "177",
+              "key",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00",
+              "value",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00"
+            ],
+            "map_reference": {
+              "id": 177,
+              "kernel_name": "active_generati",
+              "kind": "id_by_shape",
+              "logical_name": "active_generation",
+              "shape": {
+                "bytes_key": 4,
+                "bytes_value": 4,
+                "max_entries": 1,
+                "type": "array"
+              }
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": ""
+          }
+        },
+        {
+          "counter_delta": {
+            "drop_bad_packet": 0,
+            "drop_inactive": 0,
+            "drop_missing_fec": 0,
+            "drop_missing_generation": 0,
+            "fec_hit": 2,
+            "future_generation_not_used": 0,
+            "generation_hit": 2,
+            "local_delivery": 0,
+            "next_hop_gw1": 0,
+            "next_hop_gw2": 2,
+            "redirect_pass": 2,
+            "shadow_pass": 2
+          },
+          "counter_ok": true,
+          "destination": "10.91.0.100",
+          "expected_counter": "next_hop_gw2",
+          "expected_ping": "drop",
+          "expected_rx": null,
+          "generation": 1,
+          "name": "shadow_gen1_fec_g_decides_gw2",
+          "observed_ping": "drop",
+          "ok": true,
+          "ping": {
+            "args": [
+              "sudo",
+              "-n",
+              "ip",
+              "netns",
+              "exec",
+              "ssgzut89447",
+              "ping",
+              "-c",
+              "2",
+              "-W",
+              "1",
+              "10.91.0.100"
+            ],
+            "parsed": {
+              "packet_loss_pct": 100.0,
+              "received": 0,
+              "transmitted": 2
+            },
+            "returncode": 1,
+            "stderr": "",
+            "stdout": "PING 10.91.0.100 (10.91.0.100) 56(84) bytes of data.\nFrom 10.90.0.1 icmp_seq=1 Destination Net Unreachable\n\n--- 10.91.0.100 ping statistics ---\n2 packets transmitted, 0 received, +1 errors, 100% packet loss, time 1017ms"
+          },
+          "rx_after": {
+            "gw1_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw189447",
+                  "cat",
+                  "/sys/class/net/sgg189447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            },
+            "gw2_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw289447",
+                  "cat",
+                  "/sys/class/net/sgg289447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            }
+          },
+          "rx_before": {
+            "gw1_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw189447",
+                  "cat",
+                  "/sys/class/net/sgg189447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            },
+            "gw2_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw289447",
+                  "cat",
+                  "/sys/class/net/sgg289447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            }
+          },
+          "rx_delta": {
+            "gw1_rx_packets": 0,
+            "gw2_rx_packets": 0
+          },
+          "rx_ok": true,
+          "set_generation": {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "map",
+              "update",
+              "id",
+              "177",
+              "key",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00",
+              "value",
+              "hex",
+              "01",
+              "00",
+              "00",
+              "00"
+            ],
+            "map_reference": {
+              "id": 177,
+              "kernel_name": "active_generati",
+              "kind": "id_by_shape",
+              "logical_name": "active_generation",
+              "shape": {
+                "bytes_key": 4,
+                "bytes_value": 4,
+                "max_entries": 1,
+                "type": "array"
+              }
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": ""
+          }
+        },
+        {
+          "counter_delta": {
+            "drop_bad_packet": 0,
+            "drop_inactive": 2,
+            "drop_missing_fec": 0,
+            "drop_missing_generation": 0,
+            "fec_hit": 2,
+            "future_generation_not_used": 2,
+            "generation_hit": 2,
+            "local_delivery": 0,
+            "next_hop_gw1": 0,
+            "next_hop_gw2": 0,
+            "redirect_pass": 0,
+            "shadow_pass": 0
+          },
+          "counter_ok": true,
+          "destination": "10.91.0.100",
+          "expected_counter": "drop_inactive",
+          "expected_ping": "drop",
+          "expected_rx": null,
+          "generation": 2,
+          "name": "shadow_gen2_fec_g_inactive",
+          "observed_ping": "drop",
+          "ok": true,
+          "ping": {
+            "args": [
+              "sudo",
+              "-n",
+              "ip",
+              "netns",
+              "exec",
+              "ssgzut89447",
+              "ping",
+              "-c",
+              "2",
+              "-W",
+              "1",
+              "10.91.0.100"
+            ],
+            "parsed": {
+              "packet_loss_pct": 100.0,
+              "received": 0,
+              "transmitted": 2
+            },
+            "returncode": 1,
+            "stderr": "",
+            "stdout": "PING 10.91.0.100 (10.91.0.100) 56(84) bytes of data.\n\n--- 10.91.0.100 ping statistics ---\n2 packets transmitted, 0 received, 100% packet loss, time 1006ms"
+          },
+          "rx_after": {
+            "gw1_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw189447",
+                  "cat",
+                  "/sys/class/net/sgg189447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            },
+            "gw2_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw289447",
+                  "cat",
+                  "/sys/class/net/sgg289447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            }
+          },
+          "rx_before": {
+            "gw1_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw189447",
+                  "cat",
+                  "/sys/class/net/sgg189447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            },
+            "gw2_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw289447",
+                  "cat",
+                  "/sys/class/net/sgg289447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            }
+          },
+          "rx_delta": {
+            "gw1_rx_packets": 0,
+            "gw2_rx_packets": 0
+          },
+          "rx_ok": true,
+          "set_generation": {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "map",
+              "update",
+              "id",
+              "177",
+              "key",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00",
+              "value",
+              "hex",
+              "02",
+              "00",
+              "00",
+              "00"
+            ],
+            "map_reference": {
+              "id": 177,
+              "kernel_name": "active_generati",
+              "kind": "id_by_shape",
+              "logical_name": "active_generation",
+              "shape": {
+                "bytes_key": 4,
+                "bytes_value": 4,
+                "max_entries": 1,
+                "type": "array"
+              }
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": ""
+          }
+        },
+        {
+          "counter_delta": {
+            "drop_bad_packet": 0,
+            "drop_inactive": 0,
+            "drop_missing_fec": 2,
+            "drop_missing_generation": 0,
+            "fec_hit": 0,
+            "future_generation_not_used": 0,
+            "generation_hit": 0,
+            "local_delivery": 0,
+            "next_hop_gw1": 0,
+            "next_hop_gw2": 0,
+            "redirect_pass": 0,
+            "shadow_pass": 0
+          },
+          "counter_ok": true,
+          "destination": "10.91.0.250",
+          "expected_counter": "drop_missing_fec",
+          "expected_ping": "drop",
+          "expected_rx": null,
+          "generation": 0,
+          "name": "shadow_missing_fec",
+          "observed_ping": "drop",
+          "ok": true,
+          "ping": {
+            "args": [
+              "sudo",
+              "-n",
+              "ip",
+              "netns",
+              "exec",
+              "ssgzut89447",
+              "ping",
+              "-c",
+              "2",
+              "-W",
+              "1",
+              "10.91.0.250"
+            ],
+            "parsed": {
+              "packet_loss_pct": 100.0,
+              "received": 0,
+              "transmitted": 2
+            },
+            "returncode": 1,
+            "stderr": "",
+            "stdout": "PING 10.91.0.250 (10.91.0.250) 56(84) bytes of data.\n\n--- 10.91.0.250 ping statistics ---\n2 packets transmitted, 0 received, 100% packet loss, time 1009ms"
+          },
+          "rx_after": {
+            "gw1_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw189447",
+                  "cat",
+                  "/sys/class/net/sgg189447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            },
+            "gw2_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw289447",
+                  "cat",
+                  "/sys/class/net/sgg289447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            }
+          },
+          "rx_before": {
+            "gw1_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw189447",
+                  "cat",
+                  "/sys/class/net/sgg189447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            },
+            "gw2_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw289447",
+                  "cat",
+                  "/sys/class/net/sgg289447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            }
+          },
+          "rx_delta": {
+            "gw1_rx_packets": 0,
+            "gw2_rx_packets": 0
+          },
+          "rx_ok": true,
+          "set_generation": {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "map",
+              "update",
+              "id",
+              "177",
+              "key",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00",
+              "value",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00"
+            ],
+            "map_reference": {
+              "id": 177,
+              "kernel_name": "active_generati",
+              "kind": "id_by_shape",
+              "logical_name": "active_generation",
+              "shape": {
+                "bytes_key": 4,
+                "bytes_value": 4,
+                "max_entries": 1,
+                "type": "array"
+              }
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": ""
+          }
+        },
+        {
+          "counter_delta": {
+            "drop_bad_packet": 0,
+            "drop_inactive": 0,
+            "drop_missing_fec": 0,
+            "drop_missing_generation": 2,
+            "fec_hit": 0,
+            "future_generation_not_used": 0,
+            "generation_hit": 0,
+            "local_delivery": 0,
+            "next_hop_gw1": 0,
+            "next_hop_gw2": 0,
+            "redirect_pass": 0,
+            "shadow_pass": 0
+          },
+          "counter_ok": true,
+          "destination": "10.91.0.100",
+          "expected_counter": "drop_missing_generation",
+          "expected_ping": "drop",
+          "expected_rx": null,
+          "generation": 7,
+          "name": "shadow_missing_generation",
+          "observed_ping": "drop",
+          "ok": true,
+          "ping": {
+            "args": [
+              "sudo",
+              "-n",
+              "ip",
+              "netns",
+              "exec",
+              "ssgzut89447",
+              "ping",
+              "-c",
+              "2",
+              "-W",
+              "1",
+              "10.91.0.100"
+            ],
+            "parsed": {
+              "packet_loss_pct": 100.0,
+              "received": 0,
+              "transmitted": 2
+            },
+            "returncode": 1,
+            "stderr": "",
+            "stdout": "PING 10.91.0.100 (10.91.0.100) 56(84) bytes of data.\n\n--- 10.91.0.100 ping statistics ---\n2 packets transmitted, 0 received, 100% packet loss, time 1015ms"
+          },
+          "rx_after": {
+            "gw1_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw189447",
+                  "cat",
+                  "/sys/class/net/sgg189447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            },
+            "gw2_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw289447",
+                  "cat",
+                  "/sys/class/net/sgg289447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            }
+          },
+          "rx_before": {
+            "gw1_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw189447",
+                  "cat",
+                  "/sys/class/net/sgg189447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            },
+            "gw2_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw289447",
+                  "cat",
+                  "/sys/class/net/sgg289447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            }
+          },
+          "rx_delta": {
+            "gw1_rx_packets": 0,
+            "gw2_rx_packets": 0
+          },
+          "rx_ok": true,
+          "set_generation": {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "map",
+              "update",
+              "id",
+              "177",
+              "key",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00",
+              "value",
+              "hex",
+              "07",
+              "00",
+              "00",
+              "00"
+            ],
+            "map_reference": {
+              "id": 177,
+              "kernel_name": "active_generati",
+              "kind": "id_by_shape",
+              "logical_name": "active_generation",
+              "shape": {
+                "bytes_key": 4,
+                "bytes_value": 4,
+                "max_entries": 1,
+                "type": "array"
+              }
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": ""
+          }
+        },
+        {
+          "counter_delta": {
+            "drop_bad_packet": 0,
+            "drop_inactive": 0,
+            "drop_missing_fec": 0,
+            "drop_missing_generation": 0,
+            "fec_hit": 2,
+            "future_generation_not_used": 2,
+            "generation_hit": 2,
+            "local_delivery": 2,
+            "next_hop_gw1": 0,
+            "next_hop_gw2": 0,
+            "redirect_pass": 2,
+            "shadow_pass": 0
+          },
+          "counter_ok": true,
+          "destination": "10.91.0.200",
+          "expected_counter": "local_delivery",
+          "expected_ping": "pass",
+          "expected_rx": null,
+          "generation": 0,
+          "name": "shadow_fec_z_local_delivery",
+          "observed_ping": "pass",
+          "ok": true,
+          "ping": {
+            "args": [
+              "sudo",
+              "-n",
+              "ip",
+              "netns",
+              "exec",
+              "ssgzut89447",
+              "ping",
+              "-c",
+              "2",
+              "-W",
+              "1",
+              "10.91.0.200"
+            ],
+            "parsed": {
+              "packet_loss_pct": 0.0,
+              "received": 2,
+              "rtt_avg_ms": 0.035,
+              "rtt_max_ms": 0.046,
+              "rtt_mdev_ms": 0.01,
+              "rtt_min_ms": 0.025,
+              "transmitted": 2
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": "PING 10.91.0.200 (10.91.0.200) 56(84) bytes of data.\n64 bytes from 10.91.0.200: icmp_seq=1 ttl=64 time=0.025 ms\n64 bytes from 10.91.0.200: icmp_seq=2 ttl=64 time=0.046 ms\n\n--- 10.91.0.200 ping statistics ---\n2 packets transmitted, 2 received, 0% packet loss, time 1011ms\nrtt min/avg/max/mdev = 0.025/0.035/0.046/0.010 ms"
+          },
+          "rx_after": {
+            "gw1_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw189447",
+                  "cat",
+                  "/sys/class/net/sgg189447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            },
+            "gw2_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw289447",
+                  "cat",
+                  "/sys/class/net/sgg289447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            }
+          },
+          "rx_before": {
+            "gw1_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw189447",
+                  "cat",
+                  "/sys/class/net/sgg189447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            },
+            "gw2_rx_packets": {
+              "command": {
+                "args": [
+                  "sudo",
+                  "-n",
+                  "ip",
+                  "netns",
+                  "exec",
+                  "ssgzgw289447",
+                  "cat",
+                  "/sys/class/net/sgg289447/statistics/rx_packets"
+                ],
+                "returncode": 0,
+                "stderr": "",
+                "stdout": "2"
+              },
+              "value": 2
+            }
+          },
+          "rx_delta": {
+            "gw1_rx_packets": 0,
+            "gw2_rx_packets": 0
+          },
+          "rx_ok": true,
+          "set_generation": {
+            "args": [
+              "sudo",
+              "-n",
+              "/usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+              "map",
+              "update",
+              "id",
+              "177",
+              "key",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00",
+              "value",
+              "hex",
+              "00",
+              "00",
+              "00",
+              "00"
+            ],
+            "map_reference": {
+              "id": 177,
+              "kernel_name": "active_generati",
+              "kind": "id_by_shape",
+              "logical_name": "active_generation",
+              "shape": {
+                "bytes_key": 4,
+                "bytes_value": 4,
+                "max_entries": 1,
+                "type": "array"
+              }
+            },
+            "returncode": 0,
+            "stderr": "",
+            "stdout": ""
+          }
+        }
+      ]
+    }
+  },
+  "goal": "Skyseed Goal 8 isolated G/Z forwarding BPF shadow prototype",
+  "notes": {
+    "canonical_runtime_changed": false,
+    "experiment_scope": "isolated netns/veth only",
+    "external_kernel_module_installed": false,
+    "gz_semantics_changed": false,
+    "netlink_batch_direction": false,
+    "real_dataplane_touched": false
+  },
+  "redirect_blocker": "end_to_end_ping_reply_failed_after_expected_next_hop_rx",
+  "redirect_end_to_end_ping_success": false,
+  "redirect_success": true,
+  "residue": {
+    "clean": true,
+    "link_hits": [],
+    "namespace_hits": [],
+    "pinned_maps": {
+      "active_generation": false,
+      "fec_forwarding": false,
+      "future_generation": false,
+      "generation_status": false,
+      "packet_counters": false
+    },
+    "tc_filter_residue_possible": false
+  },
+  "schema_version": 1,
+  "source": "/home/seed/skyseed/satellite/experimental/bpf/skyseed_tc_gz_shadow.c",
+  "tc_bpf_attach": {
+    "attempted": true,
+    "ok": true,
+    "reason": null,
+    "redirect_attach_ok": true,
+    "shadow_attach_ok": true
+  },
+  "timestamp_unix": 1781964363.9677565
+}

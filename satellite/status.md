@@ -1,5 +1,37 @@
 # Satellite Iteration 2 Status
 
+## 2026-06-20 - Isolated G/Z BPF Shadow Prototype
+
+- Goal 8 added an isolated tc-BPF G/Z forwarding shadow prototype:
+  `apps/bench_skyseed_bpf_gz_shadow.py`,
+  `experimental/bpf/skyseed_tc_gz_shadow.c`,
+  `docs/skyseed_bpf_gz_shadow.md`, and
+  `baselines/skyseed_bpf_gz_shadow_summary.json`.
+- The prototype keeps canonical runtime, G/Z semantics, real Skyseed dataplane,
+  `satellite/output`, netlink batch direction, and external kernel modules out
+  of scope. It only creates temporary `ssgz*` netns/veth topology and cleans it
+  in a `finally` path.
+- Validation on this VM: tc-BPF attach succeeded for redirect and shadow
+  sections; BPF read `active_generation`; `(generation, FEC)` map lookups drove
+  gen0 `FEC_G -> gw1`, gen1 `FEC_G -> gw2`, and gen2 inactive/drop; missing
+  FEC, missing generation, and inactive edge all failed closed.
+- tc redirect to next-hop was validated by gateway RX counters: gen0 packets
+  reached only `gw1`, gen1 packets reached only `gw2`. End-to-end redirected
+  ICMP replies did not complete, recorded as
+  `end_to_end_ping_reply_failed_after_expected_next_hop_rx`; this is not
+  claimed as a complete L3 dataplane.
+- Packet counters recorded generation hits, FEC hits, redirect/pass decisions,
+  required fail-closed drops, future-generation-not-used, local delivery, and
+  gw1/gw2 next-hop decisions. Residue check was clean for test namespaces,
+  veths, pinned maps, and tc filter residue possibility.
+- Validation commands run:
+  `python -m py_compile satellite/apps/bench_skyseed_bpf_gz_shadow.py`,
+  `python satellite/apps/bench_skyseed_bpf_gz_shadow.py --format text`, and
+  `git diff --check`.
+- Next recommended action: build a Skyseed G/Z FEC intent to BPF generation map
+  compiler against this isolated schema before considering any canonical
+  runtime backend work.
+
 ## 2026-06-15 - Stable Runtime Route Cleanup Checkpoint
 
 - The current canonical real-runtime path is planned-shell `S5` full
