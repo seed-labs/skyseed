@@ -88,7 +88,7 @@ struct bpf_elf_map SEC("maps") generation_status = {
     .type = BPF_MAP_TYPE_ARRAY,
     .size_key = sizeof(__u32),
     .size_value = sizeof(__u32),
-    .max_elem = 8,
+    .max_elem = 32,
     .pinning = PIN_GLOBAL_NS,
 };
 
@@ -96,7 +96,7 @@ struct bpf_elf_map SEC("maps") fec_forwarding = {
     .type = BPF_MAP_TYPE_HASH,
     .size_key = sizeof(struct route_key),
     .size_value = sizeof(struct route_value),
-    .max_elem = 64,
+    .max_elem = 512,
     .pinning = PIN_GLOBAL_NS,
 };
 

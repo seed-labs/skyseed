@@ -40,8 +40,8 @@ KERNEL_MAP_NAMES = {
 }
 MAP_SPECS = {
     "active_generation": {"type": "array", "bytes_key": 4, "bytes_value": 4, "max_entries": 1},
-    "generation_status": {"type": "array", "bytes_key": 4, "bytes_value": 4, "max_entries": 8},
-    "fec_forwarding": {"type": "hash", "bytes_key": 8, "bytes_value": 28, "max_entries": 64},
+    "generation_status": {"type": "array", "bytes_key": 4, "bytes_value": 4, "max_entries": 32},
+    "fec_forwarding": {"type": "hash", "bytes_key": 8, "bytes_value": 28, "max_entries": 512},
     "packet_counters": {"type": "array", "bytes_key": 4, "bytes_value": 8, "max_entries": 16},
     "future_generation": {"type": "array", "bytes_key": 4, "bytes_value": 4, "max_entries": 2},
 }

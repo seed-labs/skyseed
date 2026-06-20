@@ -1,0 +1,557 @@
+{
+  "blocked": false,
+  "blockers": [],
+  "counter_summary": {
+    "artifact_fec_entry_count": 33,
+    "drop_bad_packet": 0,
+    "drop_inactive": 2,
+    "drop_missing_fec": 2,
+    "drop_missing_generation": 2,
+    "fec_hit": 8,
+    "future_generation_not_used": 6,
+    "generation_hit": 8,
+    "loaded_fec_count": 4,
+    "loaded_generation_count": 3,
+    "local_delivery": 2,
+    "next_hop_counters": {
+      "gw1": 2,
+      "gw2": 2
+    },
+    "next_hop_gw1": 2,
+    "next_hop_gw2": 2,
+    "redirect_pass": 6,
+    "redirect_pass_counters": {
+      "local_delivery": 2,
+      "redirect_pass": 6,
+      "shadow_pass": 0
+    },
+    "replayed_generation_count": 3,
+    "shadow_pass": 0
+  },
+  "experiment": {
+    "cleanup": {
+      "residue": {
+        "clean": true,
+        "link_hits": [],
+        "namespace_hits": [],
+        "pinned_maps": {
+          "active_generation": false,
+          "fec_forwarding": false,
+          "future_generation": false,
+          "generation_status": false,
+          "packet_counters": false
+        },
+        "tc_filter_residue_possible": false
+      }
+    },
+    "compile_ok": true,
+    "ok": true,
+    "reason": null,
+    "replay": {
+      "attach_ok": true,
+      "fail_closed_ok": true,
+      "generation_switch_ok": true,
+      "initialize_maps_ok": true,
+      "local_delivery_ok": true,
+      "probe_count": 6,
+      "probes": [
+        {
+          "behavior": "next_hop",
+          "behavior_ok": true,
+          "counter_delta": {
+            "drop_bad_packet": 0,
+            "drop_inactive": 0,
+            "drop_missing_fec": 0,
+            "drop_missing_generation": 0,
+            "fec_hit": 2,
+            "future_generation_not_used": 2,
+            "generation_hit": 2,
+            "local_delivery": 0,
+            "next_hop_gw1": 2,
+            "next_hop_gw2": 0,
+            "redirect_pass": 2,
+            "shadow_pass": 0
+          },
+          "counter_ok": true,
+          "destination": "10.91.0.100",
+          "expected_counter": "future_generation_not_used",
+          "expected_rx": "gw1",
+          "generation": 0,
+          "name": "future_preloaded_active_gen_still_gw1",
+          "observed_ping": "drop",
+          "ok": true,
+          "rx_delta": {
+            "gw1_rx_packets": 2,
+            "gw2_rx_packets": 0
+          },
+          "rx_ok": true
+        },
+        {
+          "behavior": "next_hop",
+          "behavior_ok": true,
+          "counter_delta": {
+            "drop_bad_packet": 0,
+            "drop_inactive": 0,
+            "drop_missing_fec": 0,
+            "drop_missing_generation": 0,
+            "fec_hit": 2,
+            "future_generation_not_used": 0,
+            "generation_hit": 2,
+            "local_delivery": 0,
+            "next_hop_gw1": 0,
+            "next_hop_gw2": 2,
+            "redirect_pass": 2,
+            "shadow_pass": 0
+          },
+          "counter_ok": true,
+          "destination": "10.91.0.100",
+          "expected_counter": "next_hop_gw2",
+          "expected_rx": "gw2",
+          "generation": 1,
+          "name": "activated_generation_gw2",
+          "observed_ping": "drop",
+          "ok": true,
+          "rx_delta": {
+            "gw1_rx_packets": 0,
+            "gw2_rx_packets": 2
+          },
+          "rx_ok": true
+        },
+        {
+          "behavior": "drop",
+          "behavior_ok": true,
+          "counter_delta": {
+            "drop_bad_packet": 0,
+            "drop_inactive": 2,
+            "drop_missing_fec": 0,
+            "drop_missing_generation": 0,
+            "fec_hit": 2,
+            "future_generation_not_used": 2,
+            "generation_hit": 2,
+            "local_delivery": 0,
+            "next_hop_gw1": 0,
+            "next_hop_gw2": 0,
+            "redirect_pass": 0,
+            "shadow_pass": 0
+          },
+          "counter_ok": true,
+          "destination": "10.91.0.100",
+          "expected_counter": "drop_inactive",
+          "expected_rx": "none",
+          "generation": 2,
+          "name": "inactive_tombstone_drop",
+          "observed_ping": "drop",
+          "ok": true,
+          "rx_delta": {
+            "gw1_rx_packets": 0,
+            "gw2_rx_packets": 0
+          },
+          "rx_ok": true
+        },
+        {
+          "behavior": "drop",
+          "behavior_ok": true,
+          "counter_delta": {
+            "drop_bad_packet": 0,
+            "drop_inactive": 0,
+            "drop_missing_fec": 0,
+            "drop_missing_generation": 2,
+            "fec_hit": 0,
+            "future_generation_not_used": 0,
+            "generation_hit": 0,
+            "local_delivery": 0,
+            "next_hop_gw1": 0,
+            "next_hop_gw2": 0,
+            "redirect_pass": 0,
+            "shadow_pass": 0
+          },
+          "counter_ok": true,
+          "destination": "10.91.0.100",
+          "expected_counter": "drop_missing_generation",
+          "expected_rx": "none",
+          "generation": 1002,
+          "name": "missing_generation_drop",
+          "observed_ping": "drop",
+          "ok": true,
+          "rx_delta": {
+            "gw1_rx_packets": 0,
+            "gw2_rx_packets": 0
+          },
+          "rx_ok": true
+        },
+        {
+          "behavior": "drop",
+          "behavior_ok": true,
+          "counter_delta": {
+            "drop_bad_packet": 0,
+            "drop_inactive": 0,
+            "drop_missing_fec": 2,
+            "drop_missing_generation": 0,
+            "fec_hit": 0,
+            "future_generation_not_used": 0,
+            "generation_hit": 0,
+            "local_delivery": 0,
+            "next_hop_gw1": 0,
+            "next_hop_gw2": 0,
+            "redirect_pass": 0,
+            "shadow_pass": 0
+          },
+          "counter_ok": true,
+          "destination": "10.91.0.250",
+          "expected_counter": "drop_missing_fec",
+          "expected_rx": "none",
+          "generation": 0,
+          "name": "missing_fec_drop",
+          "observed_ping": "drop",
+          "ok": true,
+          "rx_delta": {
+            "gw1_rx_packets": 0,
+            "gw2_rx_packets": 0
+          },
+          "rx_ok": true
+        },
+        {
+          "behavior": "local",
+          "behavior_ok": true,
+          "counter_delta": {
+            "drop_bad_packet": 0,
+            "drop_inactive": 0,
+            "drop_missing_fec": 0,
+            "drop_missing_generation": 0,
+            "fec_hit": 2,
+            "future_generation_not_used": 2,
+            "generation_hit": 2,
+            "local_delivery": 2,
+            "next_hop_gw1": 0,
+            "next_hop_gw2": 0,
+            "redirect_pass": 2,
+            "shadow_pass": 0
+          },
+          "counter_ok": true,
+          "destination": "10.91.0.200",
+          "expected_counter": "local_delivery",
+          "expected_rx": "none",
+          "generation": 0,
+          "name": "local_delivery_pass",
+          "observed_ping": "pass",
+          "ok": true,
+          "rx_delta": {
+            "gw1_rx_packets": 0,
+            "gw2_rx_packets": 0
+          },
+          "rx_ok": true
+        }
+      ]
+    },
+    "setup_ok": true
+  },
+  "generated_at": "not_recorded_for_reproducible_baseline",
+  "generation_cadence": {
+    "fixed_10s_assumed": false,
+    "selected_generations": [
+      {
+        "artifact_active_fec_count": 10,
+        "artifact_fec_count": 10,
+        "artifact_inactive_fec_count": 0,
+        "epoch_id": "runtimeepoch-621c33e95c418d6b",
+        "generation_id": 0,
+        "plan_id": "rtplan-7d2717ff97f559c3",
+        "runtime_epoch": {
+          "activation_relative_time_seconds": 0.0,
+          "activation_time_utc": "2026-06-11T09:57:20Z",
+          "epoch_id": "runtimeepoch-621c33e95c418d6b",
+          "matched": true
+        },
+        "target_snapshot": {
+          "slice_id": "starlink-shell-slice-0001",
+          "snapshot_id": "topsnap-250d6872529ed598"
+        }
+      },
+      {
+        "artifact_active_fec_count": 10,
+        "artifact_fec_count": 11,
+        "artifact_inactive_fec_count": 1,
+        "epoch_id": "runtimeepoch-12bf4e0d664c67f9",
+        "generation_id": 1,
+        "plan_id": "rtplan-557ab5a2a20af2be",
+        "runtime_epoch": {
+          "activation_relative_time_seconds": 10.0,
+          "activation_time_utc": "2026-06-11T09:57:30Z",
+          "epoch_id": "runtimeepoch-12bf4e0d664c67f9",
+          "matched": true
+        },
+        "target_snapshot": {
+          "slice_id": "starlink-shell-slice-0002",
+          "snapshot_id": "topsnap-97b48e0866d16cc0"
+        }
+      },
+      {
+        "artifact_active_fec_count": 10,
+        "artifact_fec_count": 12,
+        "artifact_inactive_fec_count": 2,
+        "epoch_id": "runtimeepoch-c31519e103cf22d5",
+        "generation_id": 2,
+        "plan_id": "rtplan-04c177a37ad17091",
+        "runtime_epoch": {
+          "activation_relative_time_seconds": 20.0,
+          "activation_time_utc": "2026-06-11T09:57:40Z",
+          "epoch_id": "runtimeepoch-c31519e103cf22d5",
+          "matched": true
+        },
+        "target_snapshot": {
+          "slice_id": "starlink-shell-slice-0003",
+          "snapshot_id": "topsnap-d0b047c3de484e11"
+        }
+      }
+    ],
+    "source": "artifact generation sequence and optional RuntimeEpoch activation annotations"
+  },
+  "goal": "Skyseed Goal 10 BPF shadow compiler plus isolated packet-path replay",
+  "input_artifacts": {
+    "gz_fec_plan_path": "satellite/output/starlink_shell_experiments/gz-z6metadata-2h-gated-20260611-0824/gz_fec_plan.json",
+    "gz_update_diff_summary_path": "satellite/output/starlink_shell_experiments/gz-z6metadata-2h-gated-20260611-0824/gz_update_diff_summary.json",
+    "source_root": "satellite/output/starlink_shell_experiments/gz-z6metadata-2h-gated-20260611-0824",
+    "temporal_plan_path": "satellite/output/starlink_shell_experiments/gz-z6metadata-2h-gated-20260611-0824/temporal_plan.json"
+  },
+  "projection": {
+    "active_generation_id": 0,
+    "artifact_fec_entry_count": 33,
+    "future_generation_id": 1,
+    "generation_summaries": [
+      {
+        "artifact_active_fec_count": 10,
+        "artifact_fec_count": 10,
+        "artifact_inactive_fec_count": 0,
+        "epoch_id": "runtimeepoch-621c33e95c418d6b",
+        "generation_id": 0,
+        "plan_id": "rtplan-7d2717ff97f559c3",
+        "runtime_epoch": {
+          "activation_relative_time_seconds": 0.0,
+          "activation_time_utc": "2026-06-11T09:57:20Z",
+          "epoch_id": "runtimeepoch-621c33e95c418d6b",
+          "matched": true
+        },
+        "target_snapshot": {
+          "slice_id": "starlink-shell-slice-0001",
+          "snapshot_id": "topsnap-250d6872529ed598"
+        }
+      },
+      {
+        "artifact_active_fec_count": 10,
+        "artifact_fec_count": 11,
+        "artifact_inactive_fec_count": 1,
+        "epoch_id": "runtimeepoch-12bf4e0d664c67f9",
+        "generation_id": 1,
+        "plan_id": "rtplan-557ab5a2a20af2be",
+        "runtime_epoch": {
+          "activation_relative_time_seconds": 10.0,
+          "activation_time_utc": "2026-06-11T09:57:30Z",
+          "epoch_id": "runtimeepoch-12bf4e0d664c67f9",
+          "matched": true
+        },
+        "target_snapshot": {
+          "slice_id": "starlink-shell-slice-0002",
+          "snapshot_id": "topsnap-97b48e0866d16cc0"
+        }
+      },
+      {
+        "artifact_active_fec_count": 10,
+        "artifact_fec_count": 12,
+        "artifact_inactive_fec_count": 2,
+        "epoch_id": "runtimeepoch-c31519e103cf22d5",
+        "generation_id": 2,
+        "plan_id": "rtplan-04c177a37ad17091",
+        "runtime_epoch": {
+          "activation_relative_time_seconds": 20.0,
+          "activation_time_utc": "2026-06-11T09:57:40Z",
+          "epoch_id": "runtimeepoch-c31519e103cf22d5",
+          "matched": true
+        },
+        "target_snapshot": {
+          "slice_id": "starlink-shell-slice-0003",
+          "snapshot_id": "topsnap-d0b047c3de484e11"
+        }
+      }
+    ],
+    "gw1_probe_generation_id": 0,
+    "gw2_probe_generation_id": 1,
+    "inactive_probe_generation_id": 2,
+    "loaded_fec_count": 4,
+    "loaded_generation_count": 3,
+    "missing_generation_id": 1002,
+    "route_entries": [
+      {
+        "action": "forward",
+        "active": true,
+        "bpf_fec": 1,
+        "fec_slot": "FEC_G",
+        "generation_id": 0,
+        "next_hop": "gw1",
+        "source_fec": {
+          "action": "forward",
+          "active": true,
+          "epoch_id": "runtimeepoch-621c33e95c418d6b",
+          "expected_counter_labels": [
+            "generation_hit",
+            "fec_hit",
+            "redirect_pass",
+            "next_hop_gateway"
+          ],
+          "fec_id": "zone-north:default-gateway:gw1:stl-950119:895879cfa9954fe9",
+          "fec_key_u32": 1758398389,
+          "fec_kind": "G",
+          "generation_id": 0,
+          "local_delivery_marker": {
+            "available": false,
+            "basis": "G gateway-exit FEC is not a zone local-delivery marker",
+            "value": false
+          },
+          "next_hop": {
+            "basis": "forward_link_ids and selected gateway",
+            "logical_edge": "gw1-gateway-slot0",
+            "logical_node": "gw1"
+          },
+          "responsible_satellite_id": "stl-950119",
+          "selected_gateway_id": "gw1",
+          "source": "gz_fec_plan",
+          "zone_id": "zone-north"
+        }
+      },
+      {
+        "action": "forward",
+        "active": true,
+        "bpf_fec": 1,
+        "fec_slot": "FEC_G",
+        "generation_id": 1,
+        "next_hop": "gw2",
+        "source_fec": {
+          "action": "forward",
+          "active": true,
+          "epoch_id": "runtimeepoch-12bf4e0d664c67f9",
+          "expected_counter_labels": [
+            "generation_hit",
+            "fec_hit",
+            "redirect_pass",
+            "next_hop_gateway"
+          ],
+          "fec_id": "zone-antarctic:default-gateway:gw6:stl-950090:f234625280938bc5",
+          "fec_key_u32": 1302395058,
+          "fec_kind": "G",
+          "generation_id": 1,
+          "local_delivery_marker": {
+            "available": false,
+            "basis": "G gateway-exit FEC is not a zone local-delivery marker",
+            "value": false
+          },
+          "next_hop": {
+            "basis": "forward_link_ids and selected gateway",
+            "logical_edge": "gw6-gateway-slot0",
+            "logical_node": "gw6"
+          },
+          "responsible_satellite_id": "stl-950090",
+          "selected_gateway_id": "gw6",
+          "source": "gz_fec_plan",
+          "zone_id": "zone-antarctic"
+        }
+      },
+      {
+        "action": "drop",
+        "active": false,
+        "bpf_fec": 1,
+        "fec_slot": "FEC_G",
+        "generation_id": 2,
+        "next_hop": "drop",
+        "source_fec": {
+          "action": "drop",
+          "active": false,
+          "epoch_id": "runtimeepoch-c31519e103cf22d5",
+          "expected_counter_labels": [
+            "drop_inactive"
+          ],
+          "fec_id": "gw1:zone-north:stl-950119",
+          "fec_key_u32": 1251379571,
+          "fec_kind": "GZ",
+          "generation_id": 2,
+          "local_delivery_marker": {
+            "available": true,
+            "basis": "GZ zone_serving_satellite_id equals satellite_path terminal when available",
+            "value": false
+          },
+          "next_hop": null,
+          "responsible_satellite_id": "stl-950119",
+          "selected_gateway_id": "gw1",
+          "source": "gz_update_diff_summary.removed_fec_groups",
+          "zone_id": "zone-north"
+        }
+      },
+      {
+        "action": "local",
+        "active": true,
+        "bpf_fec": 2,
+        "fec_slot": "FEC_Z",
+        "generation_id": 0,
+        "next_hop": "local",
+        "source_fec": {
+          "action": "forward",
+          "active": true,
+          "epoch_id": "runtimeepoch-621c33e95c418d6b",
+          "expected_counter_labels": [
+            "generation_hit",
+            "fec_hit",
+            "local_delivery",
+            "next_hop_responsible_satellite"
+          ],
+          "fec_id": "gw1:zone-north:stl-950119",
+          "fec_key_u32": 1251379571,
+          "fec_kind": "GZ",
+          "generation_id": 0,
+          "local_delivery_marker": {
+            "available": true,
+            "basis": "GZ zone_serving_satellite_id equals satellite_path terminal when available",
+            "value": true
+          },
+          "next_hop": {
+            "basis": "reverse_link_ids and zone responsible satellite",
+            "logical_edge": "gw1-gateway-slot0",
+            "logical_node": "stl-950119"
+          },
+          "responsible_satellite_id": "stl-950119",
+          "selected_gateway_id": "gw1",
+          "source": "gz_fec_plan",
+          "zone_id": "zone-north"
+        }
+      }
+    ]
+  },
+  "residue": {
+    "clean": true,
+    "link_hits": [],
+    "namespace_hits": [],
+    "pinned_maps": {
+      "active_generation": false,
+      "fec_forwarding": false,
+      "future_generation": false,
+      "generation_status": false,
+      "packet_counters": false
+    },
+    "tc_filter_residue_possible": false
+  },
+  "results": {
+    "attach_attempted": true,
+    "attach_ok": true,
+    "fail_closed_ok": true,
+    "generation_switch_ok": true,
+    "local_delivery_ok": true,
+    "ok": true,
+    "reason": null
+  },
+  "schema_version": 1,
+  "scope": {
+    "canonical_runtime_changed": false,
+    "gz_semantics_changed": false,
+    "long_real_runtime": false,
+    "parameter_epoch_or_qdisc_timeline": false,
+    "real_dataplane_touched": false,
+    "shadow_only": true
+  }
+}
