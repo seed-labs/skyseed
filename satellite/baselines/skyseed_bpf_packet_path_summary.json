@@ -1,0 +1,110 @@
+{
+  "attach_attempted": false,
+  "blocked": true,
+  "blockers": [
+    "missing_clang",
+    "missing_bpftool"
+  ],
+  "environment": {
+    "kernel": {
+      "bpffs_exists": true,
+      "bpffs_is_dir": true,
+      "bpffs_mount": {
+        "args": [
+          "findmnt",
+          "-rn",
+          "-T",
+          "/sys/fs/bpf"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": "/sys/fs/bpf none bpf rw,nosuid,nodev,noexec,relatime,mode=700"
+      },
+      "btf_vmlinux_exists": false,
+      "uname": "Linux VM 5.4.0-54-generic #60-Ubuntu SMP Fri Nov 6 10:37:59 UTC 2020 x86_64 x86_64 x86_64 GNU/Linux"
+    },
+    "sudo": {
+      "euid": 1000,
+      "noninteractive_sudo": true,
+      "sudo_check": {
+        "args": [
+          "sudo",
+          "-n",
+          "true"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": ""
+      },
+      "uid": 1000
+    },
+    "tools": {
+      "bpftool": {
+        "available": false,
+        "path": null
+      },
+      "clang": {
+        "available": false,
+        "path": null
+      },
+      "ip": {
+        "available": true,
+        "path": "/usr/sbin/ip",
+        "version": "ip utility, iproute2-ss200127",
+        "version_returncode": 0
+      },
+      "iperf3": {
+        "available": false,
+        "path": null
+      },
+      "llc": {
+        "available": false,
+        "path": null
+      },
+      "ping": {
+        "available": true,
+        "path": "/usr/bin/ping",
+        "version": "ping from iputils s20190709",
+        "version_returncode": 0
+      },
+      "tc": {
+        "available": true,
+        "path": "/usr/sbin/tc",
+        "version": "tc utility, iproute2-ss200127",
+        "version_returncode": 0
+      }
+    }
+  },
+  "goal": "Skyseed Goal 7 RuntimeEpoch BPF packet-path prototype",
+  "notes": {
+    "canonical_runtime_changed": false,
+    "experiment_scope": "isolated netns/veth only",
+    "real_dataplane_touched": false
+  },
+  "packet_path_overhead": {
+    "reason": "tc_bpf_attach_not_available",
+    "skipped": true
+  },
+  "pass_drop_pass": {
+    "reason": "tc_bpf_attach_not_available",
+    "skipped": true
+  },
+  "residue": {
+    "clean": true,
+    "link_hits": [],
+    "namespace_hits": [],
+    "pinned_maps": {
+      "active_generation": false,
+      "generation_policy": false,
+      "lookup_pad": false,
+      "packet_counters": false
+    }
+  },
+  "schema_version": 1,
+  "source": "/home/seed/skyseed/satellite/experimental/bpf/skyseed_tc_generation_path.c",
+  "tc_bpf_attach": {
+    "reason": "toolchain_or_privilege_blocked",
+    "skipped": true
+  },
+  "timestamp_unix": 1781961739.4404209
+}
