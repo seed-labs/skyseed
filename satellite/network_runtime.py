@@ -3511,10 +3511,27 @@ class InProcessHostRuntimeManager:
         if rollback_failure_reason is not None:
             final_verification["rollback_failure_reason"] = rollback_failure_reason
         typed_operation_metrics = self._consume_installer_operation_metrics()
+        rollback_completed = (
+            rollback_failure_reason is None
+            and (not requests or len(host_rollbacks) == 1)
+            and bool(final_verification.get("all_valid"))
+        )
+        finalized_cleanup_metrics = {
+            **dict(cleanup_metrics),
+            "rollback_succeeded_count": (
+                len(compact_operations) if rollback_completed else 0
+            ),
+            "rollback_failed_count": (
+                0 if rollback_completed else len(compact_operations)
+            ),
+        }
         if host_rollbacks:
-            host_rollbacks[-1].setdefault("outcome", {})[
-                "typed_operation_metrics"
-            ] = typed_operation_metrics
+            host_rollbacks[-1].setdefault("outcome", {}).update(
+                {
+                    "cleanup_metrics": dict(finalized_cleanup_metrics),
+                    "typed_operation_metrics": typed_operation_metrics,
+                }
+            )
 
         return {
             "host_rollbacks": host_rollbacks,
@@ -3533,14 +3550,10 @@ class InProcessHostRuntimeManager:
                 "requested_entry_count": total_requests,
                 "final_source_verification": final_verification,
                 "failure_reason": rollback_failure_reason,
-                "cleanup_metrics": dict(cleanup_metrics),
+                "cleanup_metrics": dict(finalized_cleanup_metrics),
             },
             "outcome": {
-                "rollback_completed": (
-                    rollback_failure_reason is None
-                    and (not requests or len(host_rollbacks) == 1)
-                    and bool(final_verification.get("all_valid"))
-                ),
+                "rollback_completed": rollback_completed,
                 "failure_reason": rollback_failure_reason,
                 "operation_count": sum(
                     int(rollback.get("outcome", {}).get("operation_count", 0) or 0)
@@ -3553,22 +3566,7 @@ class InProcessHostRuntimeManager:
                     all_rollback_results
                 ),
                 "typed_operation_metrics": typed_operation_metrics,
-                "cleanup_metrics": {
-                    **dict(cleanup_metrics),
-                    "rollback_succeeded_count": sum(
-                        int(
-                            rollback.get("outcome", {}).get(
-                                "rollback_completed",
-                                False,
-                            )
-                            is True
-                        )
-                        for rollback in host_rollbacks
-                    ),
-                    "rollback_failed_count": (
-                        1 if rollback_failure_reason is not None else 0
-                    ),
-                },
+                "cleanup_metrics": dict(finalized_cleanup_metrics),
                 "host_runtime_state": self.public_state_summary(),
             },
             "timing": {

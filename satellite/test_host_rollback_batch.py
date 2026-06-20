@@ -162,6 +162,18 @@ class HostRollbackBatchTests(unittest.TestCase):
             1,
         )
         self.assertEqual(
+            result["host_rollbacks"][0]["outcome"]["cleanup_metrics"][
+                "rollback_succeeded_count"
+            ],
+            1,
+        )
+        self.assertEqual(
+            result["host_rollbacks"][0]["outcome"]["cleanup_metrics"][
+                "rollback_failed_count"
+            ],
+            0,
+        )
+        self.assertEqual(
             [operation["target_binding"] for operation in fake_installer.applied_operations],
             [_inverse_operation(op1)["target_binding"]],
         )

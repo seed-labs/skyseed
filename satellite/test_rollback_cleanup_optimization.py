@@ -8,8 +8,10 @@ from typing import Any
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent / "apps"))
 
 import linux_mpls_runtime
+from run_starlink_shell_experiment import _aggregate_node_local_cleanup_reports
 from linux_mpls_runtime import (
     NodeLocalBatchResult,
     RuntimeCommandSpec,
@@ -187,6 +189,36 @@ class RollbackCleanupOptimizationTests(unittest.TestCase):
 
         self.assertEqual([result.node_id for result in results], ["sat-0", "sat-1", "sat-2"])
         self.assertEqual(sum(result.command_count for result in results), 3)
+
+    def test_node_local_cleanup_report_aggregation_keeps_worker_metrics(self) -> None:
+        metrics = _aggregate_node_local_cleanup_reports(
+            [
+                {
+                    "cleanup_metrics": {
+                        "requested_command_count": 4,
+                        "grouped_command_count": 3,
+                        "duplicate_cleanup_skipped_count": 1,
+                        "skipped_noop_count": 1,
+                        "node_local_rollback_worker_count": 2,
+                        "bounded_parallel_worker_count": 2,
+                        "node_local_command_batch_count": 2,
+                    },
+                    "rollback_results": [
+                        {"success": True, "command_count": 2},
+                        {"success": False, "command_count": 1},
+                    ],
+                }
+            ]
+        )
+
+        self.assertEqual(metrics["requested_command_count"], 4)
+        self.assertEqual(metrics["grouped_command_count"], 3)
+        self.assertEqual(metrics["duplicate_cleanup_skipped_count"], 1)
+        self.assertEqual(metrics["skipped_noop_count"], 1)
+        self.assertEqual(metrics["node_local_rollback_worker_count"], 2)
+        self.assertEqual(metrics["rollback_attempted_count"], 3)
+        self.assertEqual(metrics["rollback_succeeded_count"], 2)
+        self.assertEqual(metrics["rollback_failed_count"], 1)
 
     def test_host_artifact_cleanup_dedupes_and_reports_noops(self) -> None:
         installer = _FakeCleanupInstaller()

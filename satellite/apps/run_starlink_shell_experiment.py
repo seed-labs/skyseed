@@ -3818,6 +3818,57 @@ def _compact_epoch_execution_record(
     return compact
 
 
+def _aggregate_node_local_cleanup_reports(
+    cleanup_reports: Sequence[Dict[str, Any]],
+) -> Dict[str, Any]:
+    aggregate: Dict[str, Any] = {
+        "requested_command_count": 0,
+        "grouped_command_count": 0,
+        "duplicate_cleanup_skipped_count": 0,
+        "skipped_noop_count": 0,
+        "bounded_parallel_worker_count": 0,
+        "node_local_rollback_worker_count": 0,
+        "node_local_command_batch_count": 0,
+        "rollback_attempted_count": 0,
+        "rollback_succeeded_count": 0,
+        "rollback_failed_count": 0,
+    }
+    for report in cleanup_reports:
+        metrics = dict(report.get("cleanup_metrics") or {})
+        for key in (
+            "requested_command_count",
+            "grouped_command_count",
+            "duplicate_cleanup_skipped_count",
+            "skipped_noop_count",
+            "node_local_command_batch_count",
+        ):
+            aggregate[key] += int(metrics.get(key, 0) or 0)
+        worker_count = int(metrics.get("node_local_rollback_worker_count", 0) or 0)
+        aggregate["node_local_rollback_worker_count"] = max(
+            aggregate["node_local_rollback_worker_count"],
+            worker_count,
+        )
+        aggregate["bounded_parallel_worker_count"] = max(
+            aggregate["bounded_parallel_worker_count"],
+            int(metrics.get("bounded_parallel_worker_count", worker_count) or 0),
+        )
+        rollback_results = list(report.get("rollback_results") or [])
+        aggregate["rollback_attempted_count"] += int(
+            metrics.get("grouped_command_count", 0) or 0
+        )
+        aggregate["rollback_succeeded_count"] += sum(
+            int(result.get("command_count", 0) or 0)
+            for result in rollback_results
+            if bool(result.get("success"))
+        )
+        aggregate["rollback_failed_count"] += sum(
+            int(result.get("command_count", 0) or 0)
+            for result in rollback_results
+            if not bool(result.get("success"))
+        )
+    return aggregate
+
+
 def _selected_access_prewarm_resource_scope_by_slot(
     *,
     snapshot_preview_path: Path,
@@ -5573,6 +5624,9 @@ def _run_live_temporal_runtime(
                             for report in cleanup_reports
                         ),
                     },
+                    "cleanup_metrics": _aggregate_node_local_cleanup_reports(
+                        cleanup_reports
+                    ),
                     "session_cleanup_count": len(cleanup_reports),
                 }
         host_rollbacks: List[Dict[str, Any]] = []
