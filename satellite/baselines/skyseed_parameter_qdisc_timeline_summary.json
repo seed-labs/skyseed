@@ -1,0 +1,2601 @@
+{
+  "division_of_labor": {
+    "bpf": [
+      "active_gate",
+      "loss_drop",
+      "counter",
+      "mark",
+      "fail_closed"
+    ],
+    "qdisc": [
+      "delay",
+      "rate",
+      "bandwidth",
+      "queueing",
+      "reordering"
+    ]
+  },
+  "generated_at": "not_recorded_for_reproducible_baseline",
+  "generation_cadence": {
+    "cadence_source": "artifact ParameterEpoch event-time activation records",
+    "fixed_10s_assumed": false,
+    "observed_activation_interval_seconds": {
+      "count": 274,
+      "max": 150.0,
+      "min": 10.0,
+      "unique_sample": [
+        10.0,
+        20.0,
+        30.0,
+        40.0,
+        50.0,
+        60.0,
+        70.0,
+        80.0,
+        90.0,
+        100.0
+      ]
+    }
+  },
+  "goal": "Skyseed Goal 12 ParameterEpoch qdisc timeline compiler",
+  "input_artifacts": {
+    "epoch_execution_details_path": "satellite/output/starlink_shell_experiments/gz-z6metadata-2h-gated-20260611-0824/epoch_execution_details.jsonl",
+    "parameter_epoch_summary_path": "satellite/output/starlink_shell_experiments/gz-z6metadata-2h-gated-20260611-0824/parameter_epoch_summary.json",
+    "source_root": "satellite/output/starlink_shell_experiments/gz-z6metadata-2h-gated-20260611-0824",
+    "temporal_plan_path": "satellite/output/starlink_shell_experiments/gz-z6metadata-2h-gated-20260611-0824/temporal_plan.json"
+  },
+  "isolated_fallback_demo_scaffold": {
+    "loads_external_kernel_module": false,
+    "note": "The fallback scaffold is a trace generator and userspace tc-change replay plan only; it is not a custom kernel qdisc and does not claim TheaterQ timing fidelity.",
+    "purpose": "format and semantic validation before any optimized backend landing",
+    "runs_kernel_qdisc": false,
+    "theaterq_extended_trace_samples": {
+      "gw1-gateway-slot0": [
+        "30000000,2793620,0,559915333,4361883,1000,0,0,0,0",
+        "50000000,2602489,0,596809333,3996209,1000,0,0,0,0",
+        "30000000,2732184,0,571000000,4252018,1000,0,0,0,0"
+      ],
+      "gw2-gateway-slot0": [
+        "30000000,7317917,0,266895333,7266140,1000,0,0,0,0",
+        "100000000,7171579,0,271324000,7222245,1000,0,0,0,0",
+        "120000000,7186328,0,270873333,7226712,1000,0,0,0,0"
+      ],
+      "gw3-gateway-slot0": [
+        "30000000,3903594,0,428528667,5664117,1000,0,0,0,0",
+        "20000000,3948881,0,424836667,5700710,1000,0,0,0,0",
+        "10000000,4053482,0,416629333,5782057,1000,0,0,0,0"
+      ]
+    },
+    "userspace_tc_change_replay_samples": {
+      "gw1-gateway-slot0": [
+        "tc qdisc change dev <ifname> root netem delay 2.79362ms rate 559.915333mbit loss 0.101558%",
+        "tc qdisc change dev <ifname> root netem delay 2.602489ms rate 596.809333mbit loss 0.093044%",
+        "tc qdisc change dev <ifname> root netem delay 2.732184ms rate 571.0mbit loss 0.099%"
+      ],
+      "gw2-gateway-slot0": [
+        "tc qdisc change dev <ifname> root netem delay 7.317917ms rate 266.895333mbit loss 0.169178%",
+        "tc qdisc change dev <ifname> root netem delay 7.171579ms rate 271.324mbit loss 0.168156%",
+        "tc qdisc change dev <ifname> root netem delay 7.186328ms rate 270.873333mbit loss 0.16826%"
+      ],
+      "gw3-gateway-slot0": [
+        "tc qdisc change dev <ifname> root netem delay 3.903594ms rate 428.528667mbit loss 0.131878%",
+        "tc qdisc change dev <ifname> root netem delay 3.948881ms rate 424.836667mbit loss 0.13273%",
+        "tc qdisc change dev <ifname> root netem delay 4.053482ms rate 416.629333mbit loss 0.134624%"
+      ]
+    }
+  },
+  "link_timeline_summaries": [
+    {
+      "first_segment": {
+        "activation_relative_time_seconds": 30.0,
+        "activation_time_utc": "2026-06-11T09:57:50Z",
+        "binding": {
+          "gateway_id": "gw1",
+          "satellite_id": "stl-950118"
+        },
+        "end_relative_time_seconds": 60.0,
+        "end_time_utc": "2026-06-11T09:58:20Z",
+        "epoch_id": "parameterepoch-6c334aa8915ae25a",
+        "link_id": "gw1-gateway-slot0",
+        "parameter_generation": 0,
+        "qdisc_parameters": {
+          "delay": {
+            "delay_ms": 2.79362,
+            "jitter_ms": null,
+            "source_field": "runtime_parameters.delay_ms"
+          },
+          "loss": {
+            "loss_percent": 0.101558,
+            "loss_scaled_u32": 4361883,
+            "source_field": "runtime_parameters.loss_percent"
+          },
+          "queue": {
+            "limit_bytes": null,
+            "limit_packets": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "rate": {
+            "bandwidth_mbps": 559.915333,
+            "rate_bps": 559915333,
+            "source_field": "runtime_parameters.bandwidth_mbps"
+          },
+          "reorder": {
+            "enabled": false,
+            "queue_id": null,
+            "route_id": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "routing_cost": {
+            "qdisc_direct_field": false,
+            "source_field": "runtime_parameters.routing_cost",
+            "value": 279
+          }
+        },
+        "sample_id": "orbitsample-0004",
+        "slice_id": "starlink-shell-slice-0004",
+        "slot_type": "gw_access",
+        "snapshot_id": "topsnap-687df80b5480f9de",
+        "trigger_reasons": [
+          "routing_cost_changed"
+        ]
+      },
+      "last_segment": {
+        "activation_relative_time_seconds": 7140.0,
+        "activation_time_utc": "2026-06-11T11:56:20Z",
+        "binding": {
+          "gateway_id": "gw1",
+          "satellite_id": "stl-950059"
+        },
+        "end_relative_time_seconds": null,
+        "end_time_utc": null,
+        "epoch_id": "parameterepoch-301275658ea640b6",
+        "link_id": "gw1-gateway-slot0",
+        "parameter_generation": 274,
+        "qdisc_parameters": {
+          "delay": {
+            "delay_ms": 3.327016,
+            "jitter_ms": null,
+            "source_field": "runtime_parameters.delay_ms"
+          },
+          "loss": {
+            "loss_percent": 0.118958,
+            "loss_scaled_u32": 5109207,
+            "source_field": "runtime_parameters.loss_percent"
+          },
+          "queue": {
+            "limit_bytes": null,
+            "limit_packets": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "rate": {
+            "bandwidth_mbps": 484.515333,
+            "rate_bps": 484515333,
+            "source_field": "runtime_parameters.bandwidth_mbps"
+          },
+          "reorder": {
+            "enabled": false,
+            "queue_id": null,
+            "route_id": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "routing_cost": {
+            "qdisc_direct_field": false,
+            "source_field": "runtime_parameters.routing_cost",
+            "value": 333
+          }
+        },
+        "sample_id": null,
+        "slice_id": "starlink-shell-slice-0025",
+        "slot_type": "gw_access",
+        "snapshot_id": "topsnap-bbaf3ddb8a5e1d9e",
+        "trigger_reasons": [
+          "routing_cost_changed",
+          "bandwidth_threshold_exceeded"
+        ]
+      },
+      "link_id": "gw1-gateway-slot0",
+      "segment_count": 179,
+      "slot_type": "gw_access"
+    },
+    {
+      "first_segment": {
+        "activation_relative_time_seconds": 3380.0,
+        "activation_time_utc": "2026-06-11T10:53:40Z",
+        "binding": {
+          "gateway_id": "gw2",
+          "satellite_id": "stl-950064"
+        },
+        "end_relative_time_seconds": 3410.0,
+        "end_time_utc": "2026-06-11T10:54:10Z",
+        "epoch_id": "parameterepoch-d57aab4c53e45ba9",
+        "link_id": "gw2-gateway-slot0",
+        "parameter_generation": 137,
+        "qdisc_parameters": {
+          "delay": {
+            "delay_ms": 7.317917,
+            "jitter_ms": null,
+            "source_field": "runtime_parameters.delay_ms"
+          },
+          "loss": {
+            "loss_percent": 0.169178,
+            "loss_scaled_u32": 7266140,
+            "source_field": "runtime_parameters.loss_percent"
+          },
+          "queue": {
+            "limit_bytes": null,
+            "limit_packets": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "rate": {
+            "bandwidth_mbps": 266.895333,
+            "rate_bps": 266895333,
+            "source_field": "runtime_parameters.bandwidth_mbps"
+          },
+          "reorder": {
+            "enabled": false,
+            "queue_id": null,
+            "route_id": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "routing_cost": {
+            "qdisc_direct_field": false,
+            "source_field": "runtime_parameters.routing_cost",
+            "value": 732
+          }
+        },
+        "sample_id": null,
+        "slice_id": "starlink-shell-slice-0009",
+        "slot_type": "gw_access",
+        "snapshot_id": "topsnap-70862ca1214067bb",
+        "trigger_reasons": [
+          "routing_cost_changed",
+          "bandwidth_threshold_exceeded"
+        ]
+      },
+      "last_segment": {
+        "activation_relative_time_seconds": 7100.0,
+        "activation_time_utc": "2026-06-11T11:55:40Z",
+        "binding": {
+          "gateway_id": "gw2",
+          "satellite_id": "stl-950078"
+        },
+        "end_relative_time_seconds": null,
+        "end_time_utc": null,
+        "epoch_id": "parameterepoch-1583d2dc5d992f57",
+        "link_id": "gw2-gateway-slot0",
+        "parameter_generation": 272,
+        "qdisc_parameters": {
+          "delay": {
+            "delay_ms": 3.34388,
+            "jitter_ms": null,
+            "source_field": "runtime_parameters.delay_ms"
+          },
+          "loss": {
+            "loss_percent": 0.119404,
+            "loss_scaled_u32": 5128363,
+            "source_field": "runtime_parameters.loss_percent"
+          },
+          "queue": {
+            "limit_bytes": null,
+            "limit_packets": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "rate": {
+            "bandwidth_mbps": 482.582667,
+            "rate_bps": 482582667,
+            "source_field": "runtime_parameters.bandwidth_mbps"
+          },
+          "reorder": {
+            "enabled": false,
+            "queue_id": null,
+            "route_id": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "routing_cost": {
+            "qdisc_direct_field": false,
+            "source_field": "runtime_parameters.routing_cost",
+            "value": 334
+          }
+        },
+        "sample_id": null,
+        "slice_id": "starlink-shell-slice-0021",
+        "slot_type": "gw_access",
+        "snapshot_id": "topsnap-222a8feb397b3745",
+        "trigger_reasons": [
+          "routing_cost_changed",
+          "bandwidth_threshold_exceeded"
+        ]
+      },
+      "link_id": "gw2-gateway-slot0",
+      "segment_count": 55,
+      "slot_type": "gw_access"
+    },
+    {
+      "first_segment": {
+        "activation_relative_time_seconds": 30.0,
+        "activation_time_utc": "2026-06-11T09:57:50Z",
+        "binding": {
+          "gateway_id": "gw3",
+          "satellite_id": "stl-950023"
+        },
+        "end_relative_time_seconds": 60.0,
+        "end_time_utc": "2026-06-11T09:58:20Z",
+        "epoch_id": "parameterepoch-6c334aa8915ae25a",
+        "link_id": "gw3-gateway-slot0",
+        "parameter_generation": 0,
+        "qdisc_parameters": {
+          "delay": {
+            "delay_ms": 3.903594,
+            "jitter_ms": null,
+            "source_field": "runtime_parameters.delay_ms"
+          },
+          "loss": {
+            "loss_percent": 0.131878,
+            "loss_scaled_u32": 5664117,
+            "source_field": "runtime_parameters.loss_percent"
+          },
+          "queue": {
+            "limit_bytes": null,
+            "limit_packets": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "rate": {
+            "bandwidth_mbps": 428.528667,
+            "rate_bps": 428528667,
+            "source_field": "runtime_parameters.bandwidth_mbps"
+          },
+          "reorder": {
+            "enabled": false,
+            "queue_id": null,
+            "route_id": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "routing_cost": {
+            "qdisc_direct_field": false,
+            "source_field": "runtime_parameters.routing_cost",
+            "value": 390
+          }
+        },
+        "sample_id": "orbitsample-0004",
+        "slice_id": "starlink-shell-slice-0004",
+        "slot_type": "gw_access",
+        "snapshot_id": "topsnap-687df80b5480f9de",
+        "trigger_reasons": [
+          "routing_cost_changed"
+        ]
+      },
+      "last_segment": {
+        "activation_relative_time_seconds": 7110.0,
+        "activation_time_utc": "2026-06-11T11:55:50Z",
+        "binding": {
+          "gateway_id": "gw3",
+          "satellite_id": "stl-950112"
+        },
+        "end_relative_time_seconds": null,
+        "end_time_utc": null,
+        "epoch_id": "parameterepoch-b7331f1fd369b03b",
+        "link_id": "gw3-gateway-slot0",
+        "parameter_generation": 273,
+        "qdisc_parameters": {
+          "delay": {
+            "delay_ms": 3.585845,
+            "jitter_ms": null,
+            "source_field": "runtime_parameters.delay_ms"
+          },
+          "loss": {
+            "loss_percent": 0.125296,
+            "loss_scaled_u32": 5381422,
+            "source_field": "runtime_parameters.loss_percent"
+          },
+          "queue": {
+            "limit_bytes": null,
+            "limit_packets": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "rate": {
+            "bandwidth_mbps": 457.050667,
+            "rate_bps": 457050667,
+            "source_field": "runtime_parameters.bandwidth_mbps"
+          },
+          "reorder": {
+            "enabled": false,
+            "queue_id": null,
+            "route_id": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "routing_cost": {
+            "qdisc_direct_field": false,
+            "source_field": "runtime_parameters.routing_cost",
+            "value": 359
+          }
+        },
+        "sample_id": null,
+        "slice_id": "starlink-shell-slice-0022",
+        "slot_type": "gw_access",
+        "snapshot_id": "topsnap-524b775b4c3313cc",
+        "trigger_reasons": [
+          "routing_cost_changed",
+          "bandwidth_threshold_exceeded"
+        ]
+      },
+      "link_id": "gw3-gateway-slot0",
+      "segment_count": 180,
+      "slot_type": "gw_access"
+    },
+    {
+      "first_segment": {
+        "activation_relative_time_seconds": 70.0,
+        "activation_time_utc": "2026-06-11T09:58:30Z",
+        "binding": {
+          "gateway_id": "gw4",
+          "satellite_id": "stl-950066"
+        },
+        "end_relative_time_seconds": 110.0,
+        "end_time_utc": "2026-06-11T09:59:10Z",
+        "epoch_id": "parameterepoch-98df058ffb0d2a8c",
+        "link_id": "gw4-gateway-slot0",
+        "parameter_generation": 2,
+        "qdisc_parameters": {
+          "delay": {
+            "delay_ms": 6.450779,
+            "jitter_ms": null,
+            "source_field": "runtime_parameters.delay_ms"
+          },
+          "loss": {
+            "loss_percent": 0.162686,
+            "loss_scaled_u32": 6987310,
+            "source_field": "runtime_parameters.loss_percent"
+          },
+          "queue": {
+            "limit_bytes": null,
+            "limit_packets": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "rate": {
+            "bandwidth_mbps": 295.027333,
+            "rate_bps": 295027333,
+            "source_field": "runtime_parameters.bandwidth_mbps"
+          },
+          "reorder": {
+            "enabled": false,
+            "queue_id": null,
+            "route_id": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "routing_cost": {
+            "qdisc_direct_field": false,
+            "source_field": "runtime_parameters.routing_cost",
+            "value": 645
+          }
+        },
+        "sample_id": "orbitsample-0008",
+        "slice_id": "starlink-shell-slice-0008",
+        "slot_type": "gw_access",
+        "snapshot_id": "topsnap-061c2ecbe79960d6",
+        "trigger_reasons": [
+          "routing_cost_changed"
+        ]
+      },
+      "last_segment": {
+        "activation_relative_time_seconds": 7140.0,
+        "activation_time_utc": "2026-06-11T11:56:20Z",
+        "binding": {
+          "gateway_id": "gw4",
+          "satellite_id": "stl-950154"
+        },
+        "end_relative_time_seconds": null,
+        "end_time_utc": null,
+        "epoch_id": "parameterepoch-301275658ea640b6",
+        "link_id": "gw4-gateway-slot0",
+        "parameter_generation": 274,
+        "qdisc_parameters": {
+          "delay": {
+            "delay_ms": 2.234953,
+            "jitter_ms": null,
+            "source_field": "runtime_parameters.delay_ms"
+          },
+          "loss": {
+            "loss_percent": 0.069842,
+            "loss_scaled_u32": 2999691,
+            "source_field": "runtime_parameters.loss_percent"
+          },
+          "queue": {
+            "limit_bytes": null,
+            "limit_packets": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "rate": {
+            "bandwidth_mbps": 697.351333,
+            "rate_bps": 697351333,
+            "source_field": "runtime_parameters.bandwidth_mbps"
+          },
+          "reorder": {
+            "enabled": false,
+            "queue_id": null,
+            "route_id": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "routing_cost": {
+            "qdisc_direct_field": false,
+            "source_field": "runtime_parameters.routing_cost",
+            "value": 223
+          }
+        },
+        "sample_id": null,
+        "slice_id": "starlink-shell-slice-0025",
+        "slot_type": "gw_access",
+        "snapshot_id": "topsnap-bbaf3ddb8a5e1d9e",
+        "trigger_reasons": [
+          "routing_cost_changed",
+          "bandwidth_threshold_exceeded"
+        ]
+      },
+      "link_id": "gw4-gateway-slot0",
+      "segment_count": 159,
+      "slot_type": "gw_access"
+    },
+    {
+      "first_segment": {
+        "activation_relative_time_seconds": 30.0,
+        "activation_time_utc": "2026-06-11T09:57:50Z",
+        "binding": {
+          "gateway_id": "gw5",
+          "satellite_id": "stl-950027"
+        },
+        "end_relative_time_seconds": 60.0,
+        "end_time_utc": "2026-06-11T09:58:20Z",
+        "epoch_id": "parameterepoch-6c334aa8915ae25a",
+        "link_id": "gw5-gateway-slot0",
+        "parameter_generation": 0,
+        "qdisc_parameters": {
+          "delay": {
+            "delay_ms": 3.301025,
+            "jitter_ms": null,
+            "source_field": "runtime_parameters.delay_ms"
+          },
+          "loss": {
+            "loss_percent": 0.118262,
+            "loss_scaled_u32": 5079314,
+            "source_field": "runtime_parameters.loss_percent"
+          },
+          "queue": {
+            "limit_bytes": null,
+            "limit_packets": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "rate": {
+            "bandwidth_mbps": 487.531333,
+            "rate_bps": 487531333,
+            "source_field": "runtime_parameters.bandwidth_mbps"
+          },
+          "reorder": {
+            "enabled": false,
+            "queue_id": null,
+            "route_id": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "routing_cost": {
+            "qdisc_direct_field": false,
+            "source_field": "runtime_parameters.routing_cost",
+            "value": 330
+          }
+        },
+        "sample_id": "orbitsample-0004",
+        "slice_id": "starlink-shell-slice-0004",
+        "slot_type": "gw_access",
+        "snapshot_id": "topsnap-687df80b5480f9de",
+        "trigger_reasons": [
+          "routing_cost_changed"
+        ]
+      },
+      "last_segment": {
+        "activation_relative_time_seconds": 7110.0,
+        "activation_time_utc": "2026-06-11T11:55:50Z",
+        "binding": {
+          "gateway_id": "gw5",
+          "satellite_id": "stl-950108"
+        },
+        "end_relative_time_seconds": null,
+        "end_time_utc": null,
+        "epoch_id": "parameterepoch-b7331f1fd369b03b",
+        "link_id": "gw5-gateway-slot0",
+        "parameter_generation": 273,
+        "qdisc_parameters": {
+          "delay": {
+            "delay_ms": 2.753384,
+            "jitter_ms": null,
+            "source_field": "runtime_parameters.delay_ms"
+          },
+          "loss": {
+            "loss_percent": 0.0999,
+            "loss_scaled_u32": 4290672,
+            "source_field": "runtime_parameters.loss_percent"
+          },
+          "queue": {
+            "limit_bytes": null,
+            "limit_packets": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "rate": {
+            "bandwidth_mbps": 567.1,
+            "rate_bps": 567100000,
+            "source_field": "runtime_parameters.bandwidth_mbps"
+          },
+          "reorder": {
+            "enabled": false,
+            "queue_id": null,
+            "route_id": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "routing_cost": {
+            "qdisc_direct_field": false,
+            "source_field": "runtime_parameters.routing_cost",
+            "value": 275
+          }
+        },
+        "sample_id": null,
+        "slice_id": "starlink-shell-slice-0022",
+        "slot_type": "gw_access",
+        "snapshot_id": "topsnap-524b775b4c3313cc",
+        "trigger_reasons": [
+          "routing_cost_changed",
+          "bandwidth_threshold_exceeded"
+        ]
+      },
+      "link_id": "gw5-gateway-slot0",
+      "segment_count": 188,
+      "slot_type": "gw_access"
+    },
+    {
+      "first_segment": {
+        "activation_relative_time_seconds": 30.0,
+        "activation_time_utc": "2026-06-11T09:57:50Z",
+        "binding": {
+          "gateway_id": "gw6",
+          "satellite_id": "stl-950090"
+        },
+        "end_relative_time_seconds": 80.0,
+        "end_time_utc": "2026-06-11T09:58:40Z",
+        "epoch_id": "parameterepoch-6c334aa8915ae25a",
+        "link_id": "gw6-gateway-slot0",
+        "parameter_generation": 0,
+        "qdisc_parameters": {
+          "delay": {
+            "delay_ms": 2.606157,
+            "jitter_ms": null,
+            "source_field": "runtime_parameters.delay_ms"
+          },
+          "loss": {
+            "loss_percent": 0.093224,
+            "loss_scaled_u32": 4003940,
+            "source_field": "runtime_parameters.loss_percent"
+          },
+          "queue": {
+            "limit_bytes": null,
+            "limit_packets": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "rate": {
+            "bandwidth_mbps": 596.029333,
+            "rate_bps": 596029333,
+            "source_field": "runtime_parameters.bandwidth_mbps"
+          },
+          "reorder": {
+            "enabled": false,
+            "queue_id": null,
+            "route_id": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "routing_cost": {
+            "qdisc_direct_field": false,
+            "source_field": "runtime_parameters.routing_cost",
+            "value": 261
+          }
+        },
+        "sample_id": "orbitsample-0004",
+        "slice_id": "starlink-shell-slice-0004",
+        "slot_type": "gw_access",
+        "snapshot_id": "topsnap-687df80b5480f9de",
+        "trigger_reasons": [
+          "routing_cost_changed"
+        ]
+      },
+      "last_segment": {
+        "activation_relative_time_seconds": 7140.0,
+        "activation_time_utc": "2026-06-11T11:56:20Z",
+        "binding": {
+          "gateway_id": "gw6",
+          "satellite_id": "stl-950002"
+        },
+        "end_relative_time_seconds": null,
+        "end_time_utc": null,
+        "epoch_id": "parameterepoch-301275658ea640b6",
+        "link_id": "gw6-gateway-slot0",
+        "parameter_generation": 274,
+        "qdisc_parameters": {
+          "delay": {
+            "delay_ms": 1.869075,
+            "jitter_ms": null,
+            "source_field": "runtime_parameters.delay_ms"
+          },
+          "loss": {
+            "loss_percent": 0.005,
+            "loss_scaled_u32": 214748,
+            "source_field": "runtime_parameters.loss_percent"
+          },
+          "queue": {
+            "limit_bytes": null,
+            "limit_packets": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "rate": {
+            "bandwidth_mbps": 982.094667,
+            "rate_bps": 982094667,
+            "source_field": "runtime_parameters.bandwidth_mbps"
+          },
+          "reorder": {
+            "enabled": false,
+            "queue_id": null,
+            "route_id": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "routing_cost": {
+            "qdisc_direct_field": false,
+            "source_field": "runtime_parameters.routing_cost",
+            "value": 187
+          }
+        },
+        "sample_id": null,
+        "slice_id": "starlink-shell-slice-0025",
+        "slot_type": "gw_access",
+        "snapshot_id": "topsnap-bbaf3ddb8a5e1d9e",
+        "trigger_reasons": [
+          "routing_cost_changed",
+          "bandwidth_threshold_exceeded"
+        ]
+      },
+      "link_id": "gw6-gateway-slot0",
+      "segment_count": 182,
+      "slot_type": "gw_access"
+    },
+    {
+      "first_segment": {
+        "activation_relative_time_seconds": 30.0,
+        "activation_time_utc": "2026-06-11T09:57:50Z",
+        "binding": {
+          "orbit_pair": [
+            "shell-plane-001",
+            "shell-plane-002"
+          ],
+          "satellite_a_direction": "right",
+          "satellite_a_id": "stl-950008",
+          "satellite_b_direction": "left",
+          "satellite_b_id": "stl-950051"
+        },
+        "end_relative_time_seconds": 60.0,
+        "end_time_utc": "2026-06-11T09:58:20Z",
+        "epoch_id": "parameterepoch-6c334aa8915ae25a",
+        "link_id": "p001p002-cross-slot0",
+        "parameter_generation": 0,
+        "qdisc_parameters": {
+          "delay": {
+            "delay_ms": 3.195351,
+            "jitter_ms": null,
+            "source_field": "runtime_parameters.delay_ms"
+          },
+          "loss": {
+            "loss_percent": 0.008,
+            "loss_scaled_u32": 343597,
+            "source_field": "runtime_parameters.loss_percent"
+          },
+          "queue": {
+            "limit_bytes": null,
+            "limit_packets": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "rate": {
+            "bandwidth_mbps": 1713.785198,
+            "rate_bps": 1713785198,
+            "source_field": "runtime_parameters.bandwidth_mbps"
+          },
+          "reorder": {
+            "enabled": false,
+            "queue_id": null,
+            "route_id": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "routing_cost": {
+            "qdisc_direct_field": false,
+            "source_field": "runtime_parameters.routing_cost",
+            "value": 320
+          }
+        },
+        "sample_id": "orbitsample-0004",
+        "slice_id": "starlink-shell-slice-0004",
+        "slot_type": "cross_plane_isl",
+        "snapshot_id": "topsnap-687df80b5480f9de",
+        "trigger_reasons": [
+          "routing_cost_changed"
+        ]
+      },
+      "last_segment": {
+        "activation_relative_time_seconds": 7140.0,
+        "activation_time_utc": "2026-06-11T11:56:20Z",
+        "binding": {
+          "orbit_pair": [
+            "shell-plane-001",
+            "shell-plane-002"
+          ],
+          "satellite_a_direction": "right",
+          "satellite_a_id": "stl-950019",
+          "satellite_b_direction": "left",
+          "satellite_b_id": "stl-950062"
+        },
+        "end_relative_time_seconds": null,
+        "end_time_utc": null,
+        "epoch_id": "parameterepoch-301275658ea640b6",
+        "link_id": "p001p002-cross-slot0",
+        "parameter_generation": 274,
+        "qdisc_parameters": {
+          "delay": {
+            "delay_ms": 3.18011,
+            "jitter_ms": null,
+            "source_field": "runtime_parameters.delay_ms"
+          },
+          "loss": {
+            "loss_percent": 0.008,
+            "loss_scaled_u32": 343597,
+            "source_field": "runtime_parameters.loss_percent"
+          },
+          "queue": {
+            "limit_bytes": null,
+            "limit_packets": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "rate": {
+            "bandwidth_mbps": 1714.196444,
+            "rate_bps": 1714196444,
+            "source_field": "runtime_parameters.bandwidth_mbps"
+          },
+          "reorder": {
+            "enabled": false,
+            "queue_id": null,
+            "route_id": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "routing_cost": {
+            "qdisc_direct_field": false,
+            "source_field": "runtime_parameters.routing_cost",
+            "value": 318
+          }
+        },
+        "sample_id": null,
+        "slice_id": "starlink-shell-slice-0025",
+        "slot_type": "cross_plane_isl",
+        "snapshot_id": "topsnap-bbaf3ddb8a5e1d9e",
+        "trigger_reasons": [
+          "routing_cost_changed",
+          "bandwidth_threshold_exceeded"
+        ]
+      },
+      "link_id": "p001p002-cross-slot0",
+      "segment_count": 166,
+      "slot_type": "cross_plane_isl"
+    },
+    {
+      "first_segment": {
+        "activation_relative_time_seconds": 60.0,
+        "activation_time_utc": "2026-06-11T09:58:20Z",
+        "binding": {
+          "orbit_pair": [
+            "shell-plane-002",
+            "shell-plane-003"
+          ],
+          "satellite_a_direction": "right",
+          "satellite_a_id": "stl-950072",
+          "satellite_b_direction": "left",
+          "satellite_b_id": "stl-950115"
+        },
+        "end_relative_time_seconds": 110.0,
+        "end_time_utc": "2026-06-11T09:59:10Z",
+        "epoch_id": "parameterepoch-74806e9d3f010094",
+        "link_id": "p002p003-cross-slot0",
+        "parameter_generation": 1,
+        "qdisc_parameters": {
+          "delay": {
+            "delay_ms": 5.55332,
+            "jitter_ms": null,
+            "source_field": "runtime_parameters.delay_ms"
+          },
+          "loss": {
+            "loss_percent": 0.016473,
+            "loss_scaled_u32": 707510,
+            "source_field": "runtime_parameters.loss_percent"
+          },
+          "queue": {
+            "limit_bytes": null,
+            "limit_packets": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "rate": {
+            "bandwidth_mbps": 1650.164095,
+            "rate_bps": 1650164095,
+            "source_field": "runtime_parameters.bandwidth_mbps"
+          },
+          "reorder": {
+            "enabled": false,
+            "queue_id": null,
+            "route_id": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "routing_cost": {
+            "qdisc_direct_field": false,
+            "source_field": "runtime_parameters.routing_cost",
+            "value": 555
+          }
+        },
+        "sample_id": "orbitsample-0007",
+        "slice_id": "starlink-shell-slice-0007",
+        "slot_type": "cross_plane_isl",
+        "snapshot_id": "topsnap-cac0984cd748bb41",
+        "trigger_reasons": [
+          "routing_cost_changed"
+        ]
+      },
+      "last_segment": {
+        "activation_relative_time_seconds": 7070.0,
+        "activation_time_utc": "2026-06-11T11:55:10Z",
+        "binding": {
+          "orbit_pair": [
+            "shell-plane-002",
+            "shell-plane-003"
+          ],
+          "satellite_a_direction": "right",
+          "satellite_a_id": "stl-950084",
+          "satellite_b_direction": "left",
+          "satellite_b_id": "stl-950127"
+        },
+        "end_relative_time_seconds": null,
+        "end_time_utc": null,
+        "epoch_id": "parameterepoch-6bc2b402f48686fd",
+        "link_id": "p002p003-cross-slot0",
+        "parameter_generation": 271,
+        "qdisc_parameters": {
+          "delay": {
+            "delay_ms": 5.558677,
+            "jitter_ms": null,
+            "source_field": "runtime_parameters.delay_ms"
+          },
+          "loss": {
+            "loss_percent": 0.016497,
+            "loss_scaled_u32": 708541,
+            "source_field": "runtime_parameters.loss_percent"
+          },
+          "queue": {
+            "limit_bytes": null,
+            "limit_packets": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "rate": {
+            "bandwidth_mbps": 1650.019543,
+            "rate_bps": 1650019543,
+            "source_field": "runtime_parameters.bandwidth_mbps"
+          },
+          "reorder": {
+            "enabled": false,
+            "queue_id": null,
+            "route_id": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "routing_cost": {
+            "qdisc_direct_field": false,
+            "source_field": "runtime_parameters.routing_cost",
+            "value": 556
+          }
+        },
+        "sample_id": null,
+        "slice_id": "starlink-shell-slice-0018",
+        "slot_type": "cross_plane_isl",
+        "snapshot_id": "topsnap-a19f25d2828ab6ef",
+        "trigger_reasons": [
+          "routing_cost_changed",
+          "bandwidth_threshold_exceeded"
+        ]
+      },
+      "link_id": "p002p003-cross-slot0",
+      "segment_count": 100,
+      "slot_type": "cross_plane_isl"
+    },
+    {
+      "first_segment": {
+        "activation_relative_time_seconds": 30.0,
+        "activation_time_utc": "2026-06-11T09:57:50Z",
+        "binding": {
+          "orbit_pair": [
+            "shell-plane-003",
+            "shell-plane-004"
+          ],
+          "satellite_a_direction": "right",
+          "satellite_a_id": "stl-950094",
+          "satellite_b_direction": "left",
+          "satellite_b_id": "stl-950137"
+        },
+        "end_relative_time_seconds": 60.0,
+        "end_time_utc": "2026-06-11T09:58:20Z",
+        "epoch_id": "parameterepoch-6c334aa8915ae25a",
+        "link_id": "p003p004-cross-slot0",
+        "parameter_generation": 0,
+        "qdisc_parameters": {
+          "delay": {
+            "delay_ms": 3.195351,
+            "jitter_ms": null,
+            "source_field": "runtime_parameters.delay_ms"
+          },
+          "loss": {
+            "loss_percent": 0.008,
+            "loss_scaled_u32": 343597,
+            "source_field": "runtime_parameters.loss_percent"
+          },
+          "queue": {
+            "limit_bytes": null,
+            "limit_packets": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "rate": {
+            "bandwidth_mbps": 1713.785198,
+            "rate_bps": 1713785198,
+            "source_field": "runtime_parameters.bandwidth_mbps"
+          },
+          "reorder": {
+            "enabled": false,
+            "queue_id": null,
+            "route_id": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "routing_cost": {
+            "qdisc_direct_field": false,
+            "source_field": "runtime_parameters.routing_cost",
+            "value": 320
+          }
+        },
+        "sample_id": "orbitsample-0004",
+        "slice_id": "starlink-shell-slice-0004",
+        "slot_type": "cross_plane_isl",
+        "snapshot_id": "topsnap-687df80b5480f9de",
+        "trigger_reasons": [
+          "routing_cost_changed"
+        ]
+      },
+      "last_segment": {
+        "activation_relative_time_seconds": 7140.0,
+        "activation_time_utc": "2026-06-11T11:56:20Z",
+        "binding": {
+          "orbit_pair": [
+            "shell-plane-003",
+            "shell-plane-004"
+          ],
+          "satellite_a_direction": "right",
+          "satellite_a_id": "stl-950105",
+          "satellite_b_direction": "left",
+          "satellite_b_id": "stl-950148"
+        },
+        "end_relative_time_seconds": null,
+        "end_time_utc": null,
+        "epoch_id": "parameterepoch-301275658ea640b6",
+        "link_id": "p003p004-cross-slot0",
+        "parameter_generation": 274,
+        "qdisc_parameters": {
+          "delay": {
+            "delay_ms": 3.18011,
+            "jitter_ms": null,
+            "source_field": "runtime_parameters.delay_ms"
+          },
+          "loss": {
+            "loss_percent": 0.008,
+            "loss_scaled_u32": 343597,
+            "source_field": "runtime_parameters.loss_percent"
+          },
+          "queue": {
+            "limit_bytes": null,
+            "limit_packets": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "rate": {
+            "bandwidth_mbps": 1714.196444,
+            "rate_bps": 1714196444,
+            "source_field": "runtime_parameters.bandwidth_mbps"
+          },
+          "reorder": {
+            "enabled": false,
+            "queue_id": null,
+            "route_id": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "routing_cost": {
+            "qdisc_direct_field": false,
+            "source_field": "runtime_parameters.routing_cost",
+            "value": 318
+          }
+        },
+        "sample_id": null,
+        "slice_id": "starlink-shell-slice-0025",
+        "slot_type": "cross_plane_isl",
+        "snapshot_id": "topsnap-bbaf3ddb8a5e1d9e",
+        "trigger_reasons": [
+          "routing_cost_changed",
+          "bandwidth_threshold_exceeded"
+        ]
+      },
+      "link_id": "p003p004-cross-slot0",
+      "segment_count": 166,
+      "slot_type": "cross_plane_isl"
+    },
+    {
+      "first_segment": {
+        "activation_relative_time_seconds": 30.0,
+        "activation_time_utc": "2026-06-11T09:57:50Z",
+        "binding": {
+          "satellite_id": "stl-950118",
+          "ut_id": "ut101"
+        },
+        "end_relative_time_seconds": 70.0,
+        "end_time_utc": "2026-06-11T09:58:30Z",
+        "epoch_id": "parameterepoch-6c334aa8915ae25a",
+        "link_id": "ut101-access-slot0",
+        "parameter_generation": 0,
+        "qdisc_parameters": {
+          "delay": {
+            "delay_ms": 2.784835,
+            "jitter_ms": null,
+            "source_field": "runtime_parameters.delay_ms"
+          },
+          "loss": {
+            "loss_percent": 0.101202,
+            "loss_scaled_u32": 4346593,
+            "source_field": "runtime_parameters.loss_percent"
+          },
+          "queue": {
+            "limit_bytes": null,
+            "limit_packets": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "rate": {
+            "bandwidth_mbps": 561.458,
+            "rate_bps": 561458000,
+            "source_field": "runtime_parameters.bandwidth_mbps"
+          },
+          "reorder": {
+            "enabled": false,
+            "queue_id": null,
+            "route_id": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "routing_cost": {
+            "qdisc_direct_field": false,
+            "source_field": "runtime_parameters.routing_cost",
+            "value": 278
+          }
+        },
+        "sample_id": "orbitsample-0004",
+        "slice_id": "starlink-shell-slice-0004",
+        "slot_type": "ut_access",
+        "snapshot_id": "topsnap-687df80b5480f9de",
+        "trigger_reasons": [
+          "routing_cost_changed"
+        ]
+      },
+      "last_segment": {
+        "activation_relative_time_seconds": 7140.0,
+        "activation_time_utc": "2026-06-11T11:56:20Z",
+        "binding": {
+          "satellite_id": "stl-950059",
+          "ut_id": "ut101"
+        },
+        "end_relative_time_seconds": null,
+        "end_time_utc": null,
+        "epoch_id": "parameterepoch-301275658ea640b6",
+        "link_id": "ut101-access-slot0",
+        "parameter_generation": 274,
+        "qdisc_parameters": {
+          "delay": {
+            "delay_ms": 3.325628,
+            "jitter_ms": null,
+            "source_field": "runtime_parameters.delay_ms"
+          },
+          "loss": {
+            "loss_percent": 0.118922,
+            "loss_scaled_u32": 5107661,
+            "source_field": "runtime_parameters.loss_percent"
+          },
+          "queue": {
+            "limit_bytes": null,
+            "limit_packets": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "rate": {
+            "bandwidth_mbps": 484.671333,
+            "rate_bps": 484671333,
+            "source_field": "runtime_parameters.bandwidth_mbps"
+          },
+          "reorder": {
+            "enabled": false,
+            "queue_id": null,
+            "route_id": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "routing_cost": {
+            "qdisc_direct_field": false,
+            "source_field": "runtime_parameters.routing_cost",
+            "value": 333
+          }
+        },
+        "sample_id": null,
+        "slice_id": "starlink-shell-slice-0025",
+        "slot_type": "ut_access",
+        "snapshot_id": "topsnap-bbaf3ddb8a5e1d9e",
+        "trigger_reasons": [
+          "routing_cost_changed",
+          "bandwidth_threshold_exceeded"
+        ]
+      },
+      "link_id": "ut101-access-slot0",
+      "segment_count": 178,
+      "slot_type": "ut_access"
+    },
+    {
+      "first_segment": {
+        "activation_relative_time_seconds": 30.0,
+        "activation_time_utc": "2026-06-11T09:57:50Z",
+        "binding": {
+          "satellite_id": "stl-950118",
+          "ut_id": "ut102"
+        },
+        "end_relative_time_seconds": 60.0,
+        "end_time_utc": "2026-06-11T09:58:20Z",
+        "epoch_id": "parameterepoch-6c334aa8915ae25a",
+        "link_id": "ut102-access-slot0",
+        "parameter_generation": 0,
+        "qdisc_parameters": {
+          "delay": {
+            "delay_ms": 2.805423,
+            "jitter_ms": null,
+            "source_field": "runtime_parameters.delay_ms"
+          },
+          "loss": {
+            "loss_percent": 0.102034,
+            "loss_scaled_u32": 4382327,
+            "source_field": "runtime_parameters.loss_percent"
+          },
+          "queue": {
+            "limit_bytes": null,
+            "limit_packets": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "rate": {
+            "bandwidth_mbps": 557.852667,
+            "rate_bps": 557852667,
+            "source_field": "runtime_parameters.bandwidth_mbps"
+          },
+          "reorder": {
+            "enabled": false,
+            "queue_id": null,
+            "route_id": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "routing_cost": {
+            "qdisc_direct_field": false,
+            "source_field": "runtime_parameters.routing_cost",
+            "value": 281
+          }
+        },
+        "sample_id": "orbitsample-0004",
+        "slice_id": "starlink-shell-slice-0004",
+        "slot_type": "ut_access",
+        "snapshot_id": "topsnap-687df80b5480f9de",
+        "trigger_reasons": [
+          "routing_cost_changed"
+        ]
+      },
+      "last_segment": {
+        "activation_relative_time_seconds": 7140.0,
+        "activation_time_utc": "2026-06-11T11:56:20Z",
+        "binding": {
+          "satellite_id": "stl-950059",
+          "ut_id": "ut102"
+        },
+        "end_relative_time_seconds": null,
+        "end_time_utc": null,
+        "epoch_id": "parameterepoch-301275658ea640b6",
+        "link_id": "ut102-access-slot0",
+        "parameter_generation": 274,
+        "qdisc_parameters": {
+          "delay": {
+            "delay_ms": 3.32391,
+            "jitter_ms": null,
+            "source_field": "runtime_parameters.delay_ms"
+          },
+          "loss": {
+            "loss_percent": 0.118876,
+            "loss_scaled_u32": 5105685,
+            "source_field": "runtime_parameters.loss_percent"
+          },
+          "queue": {
+            "limit_bytes": null,
+            "limit_packets": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "rate": {
+            "bandwidth_mbps": 484.870667,
+            "rate_bps": 484870667,
+            "source_field": "runtime_parameters.bandwidth_mbps"
+          },
+          "reorder": {
+            "enabled": false,
+            "queue_id": null,
+            "route_id": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "routing_cost": {
+            "qdisc_direct_field": false,
+            "source_field": "runtime_parameters.routing_cost",
+            "value": 332
+          }
+        },
+        "sample_id": null,
+        "slice_id": "starlink-shell-slice-0025",
+        "slot_type": "ut_access",
+        "snapshot_id": "topsnap-bbaf3ddb8a5e1d9e",
+        "trigger_reasons": [
+          "routing_cost_changed",
+          "bandwidth_threshold_exceeded"
+        ]
+      },
+      "link_id": "ut102-access-slot0",
+      "segment_count": 175,
+      "slot_type": "ut_access"
+    },
+    {
+      "first_segment": {
+        "activation_relative_time_seconds": 3800.0,
+        "activation_time_utc": "2026-06-11T11:00:40Z",
+        "binding": {
+          "satellite_id": "stl-950060",
+          "ut_id": "ut103"
+        },
+        "end_relative_time_seconds": 3930.0,
+        "end_time_utc": "2026-06-11T11:02:50Z",
+        "epoch_id": "parameterepoch-64334f986c48f70d",
+        "link_id": "ut103-access-slot0",
+        "parameter_generation": 155,
+        "qdisc_parameters": {
+          "delay": {
+            "delay_ms": 6.794351,
+            "jitter_ms": null,
+            "source_field": "runtime_parameters.delay_ms"
+          },
+          "loss": {
+            "loss_percent": 0.16539,
+            "loss_scaled_u32": 7103446,
+            "source_field": "runtime_parameters.loss_percent"
+          },
+          "queue": {
+            "limit_bytes": null,
+            "limit_packets": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "rate": {
+            "bandwidth_mbps": 283.31,
+            "rate_bps": 283310000,
+            "source_field": "runtime_parameters.bandwidth_mbps"
+          },
+          "reorder": {
+            "enabled": false,
+            "queue_id": null,
+            "route_id": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "routing_cost": {
+            "qdisc_direct_field": false,
+            "source_field": "runtime_parameters.routing_cost",
+            "value": 679
+          }
+        },
+        "sample_id": null,
+        "slice_id": "starlink-shell-slice-0021",
+        "slot_type": "ut_access",
+        "snapshot_id": "topsnap-a5b9b1fb512c1e8f",
+        "trigger_reasons": [
+          "routing_cost_changed",
+          "bandwidth_threshold_exceeded"
+        ]
+      },
+      "last_segment": {
+        "activation_relative_time_seconds": 7110.0,
+        "activation_time_utc": "2026-06-11T11:55:50Z",
+        "binding": {
+          "satellite_id": "stl-950078",
+          "ut_id": "ut103"
+        },
+        "end_relative_time_seconds": null,
+        "end_time_utc": null,
+        "epoch_id": "parameterepoch-b7331f1fd369b03b",
+        "link_id": "ut103-access-slot0",
+        "parameter_generation": 273,
+        "qdisc_parameters": {
+          "delay": {
+            "delay_ms": 3.330918,
+            "jitter_ms": null,
+            "source_field": "runtime_parameters.delay_ms"
+          },
+          "loss": {
+            "loss_percent": 0.119062,
+            "loss_scaled_u32": 5113674,
+            "source_field": "runtime_parameters.loss_percent"
+          },
+          "queue": {
+            "limit_bytes": null,
+            "limit_packets": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "rate": {
+            "bandwidth_mbps": 484.064667,
+            "rate_bps": 484064667,
+            "source_field": "runtime_parameters.bandwidth_mbps"
+          },
+          "reorder": {
+            "enabled": false,
+            "queue_id": null,
+            "route_id": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "routing_cost": {
+            "qdisc_direct_field": false,
+            "source_field": "runtime_parameters.routing_cost",
+            "value": 333
+          }
+        },
+        "sample_id": null,
+        "slice_id": "starlink-shell-slice-0022",
+        "slot_type": "ut_access",
+        "snapshot_id": "topsnap-524b775b4c3313cc",
+        "trigger_reasons": [
+          "routing_cost_changed",
+          "bandwidth_threshold_exceeded"
+        ]
+      },
+      "link_id": "ut103-access-slot0",
+      "segment_count": 54,
+      "slot_type": "ut_access"
+    },
+    {
+      "first_segment": {
+        "activation_relative_time_seconds": 3800.0,
+        "activation_time_utc": "2026-06-11T11:00:40Z",
+        "binding": {
+          "satellite_id": "stl-950060",
+          "ut_id": "ut104"
+        },
+        "end_relative_time_seconds": 3930.0,
+        "end_time_utc": "2026-06-11T11:02:50Z",
+        "epoch_id": "parameterepoch-64334f986c48f70d",
+        "link_id": "ut104-access-slot0",
+        "parameter_generation": 155,
+        "qdisc_parameters": {
+          "delay": {
+            "delay_ms": 6.761471,
+            "jitter_ms": null,
+            "source_field": "runtime_parameters.delay_ms"
+          },
+          "loss": {
+            "loss_percent": 0.165138,
+            "loss_scaled_u32": 7092623,
+            "source_field": "runtime_parameters.loss_percent"
+          },
+          "queue": {
+            "limit_bytes": null,
+            "limit_packets": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "rate": {
+            "bandwidth_mbps": 284.402,
+            "rate_bps": 284402000,
+            "source_field": "runtime_parameters.bandwidth_mbps"
+          },
+          "reorder": {
+            "enabled": false,
+            "queue_id": null,
+            "route_id": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "routing_cost": {
+            "qdisc_direct_field": false,
+            "source_field": "runtime_parameters.routing_cost",
+            "value": 676
+          }
+        },
+        "sample_id": null,
+        "slice_id": "starlink-shell-slice-0021",
+        "slot_type": "ut_access",
+        "snapshot_id": "topsnap-a5b9b1fb512c1e8f",
+        "trigger_reasons": [
+          "routing_cost_changed",
+          "bandwidth_threshold_exceeded"
+        ]
+      },
+      "last_segment": {
+        "activation_relative_time_seconds": 7100.0,
+        "activation_time_utc": "2026-06-11T11:55:40Z",
+        "binding": {
+          "satellite_id": "stl-950078",
+          "ut_id": "ut104"
+        },
+        "end_relative_time_seconds": null,
+        "end_time_utc": null,
+        "epoch_id": "parameterepoch-1583d2dc5d992f57",
+        "link_id": "ut104-access-slot0",
+        "parameter_generation": 272,
+        "qdisc_parameters": {
+          "delay": {
+            "delay_ms": 3.331131,
+            "jitter_ms": null,
+            "source_field": "runtime_parameters.delay_ms"
+          },
+          "loss": {
+            "loss_percent": 0.119068,
+            "loss_scaled_u32": 5113932,
+            "source_field": "runtime_parameters.loss_percent"
+          },
+          "queue": {
+            "limit_bytes": null,
+            "limit_packets": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "rate": {
+            "bandwidth_mbps": 484.038667,
+            "rate_bps": 484038667,
+            "source_field": "runtime_parameters.bandwidth_mbps"
+          },
+          "reorder": {
+            "enabled": false,
+            "queue_id": null,
+            "route_id": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "routing_cost": {
+            "qdisc_direct_field": false,
+            "source_field": "runtime_parameters.routing_cost",
+            "value": 333
+          }
+        },
+        "sample_id": null,
+        "slice_id": "starlink-shell-slice-0021",
+        "slot_type": "ut_access",
+        "snapshot_id": "topsnap-222a8feb397b3745",
+        "trigger_reasons": [
+          "routing_cost_changed",
+          "bandwidth_threshold_exceeded"
+        ]
+      },
+      "link_id": "ut104-access-slot0",
+      "segment_count": 56,
+      "slot_type": "ut_access"
+    },
+    {
+      "first_segment": {
+        "activation_relative_time_seconds": 60.0,
+        "activation_time_utc": "2026-06-11T09:58:20Z",
+        "binding": {
+          "satellite_id": "stl-950023",
+          "ut_id": "ut105"
+        },
+        "end_relative_time_seconds": 80.0,
+        "end_time_utc": "2026-06-11T09:58:40Z",
+        "epoch_id": "parameterepoch-74806e9d3f010094",
+        "link_id": "ut105-access-slot0",
+        "parameter_generation": 1,
+        "qdisc_parameters": {
+          "delay": {
+            "delay_ms": 3.947984,
+            "jitter_ms": null,
+            "source_field": "runtime_parameters.delay_ms"
+          },
+          "loss": {
+            "loss_percent": 0.132712,
+            "loss_scaled_u32": 5699937,
+            "source_field": "runtime_parameters.loss_percent"
+          },
+          "queue": {
+            "limit_bytes": null,
+            "limit_packets": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "rate": {
+            "bandwidth_mbps": 424.914667,
+            "rate_bps": 424914667,
+            "source_field": "runtime_parameters.bandwidth_mbps"
+          },
+          "reorder": {
+            "enabled": false,
+            "queue_id": null,
+            "route_id": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "routing_cost": {
+            "qdisc_direct_field": false,
+            "source_field": "runtime_parameters.routing_cost",
+            "value": 395
+          }
+        },
+        "sample_id": "orbitsample-0007",
+        "slice_id": "starlink-shell-slice-0007",
+        "slot_type": "ut_access",
+        "snapshot_id": "topsnap-cac0984cd748bb41",
+        "trigger_reasons": [
+          "routing_cost_changed"
+        ]
+      },
+      "last_segment": {
+        "activation_relative_time_seconds": 7110.0,
+        "activation_time_utc": "2026-06-11T11:55:50Z",
+        "binding": {
+          "satellite_id": "stl-950112",
+          "ut_id": "ut105"
+        },
+        "end_relative_time_seconds": null,
+        "end_time_utc": null,
+        "epoch_id": "parameterepoch-b7331f1fd369b03b",
+        "link_id": "ut105-access-slot0",
+        "parameter_generation": 273,
+        "qdisc_parameters": {
+          "delay": {
+            "delay_ms": 3.57553,
+            "jitter_ms": null,
+            "source_field": "runtime_parameters.delay_ms"
+          },
+          "loss": {
+            "loss_percent": 0.125062,
+            "loss_scaled_u32": 5371372,
+            "source_field": "runtime_parameters.loss_percent"
+          },
+          "queue": {
+            "limit_bytes": null,
+            "limit_packets": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "rate": {
+            "bandwidth_mbps": 458.064667,
+            "rate_bps": 458064667,
+            "source_field": "runtime_parameters.bandwidth_mbps"
+          },
+          "reorder": {
+            "enabled": false,
+            "queue_id": null,
+            "route_id": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "routing_cost": {
+            "qdisc_direct_field": false,
+            "source_field": "runtime_parameters.routing_cost",
+            "value": 358
+          }
+        },
+        "sample_id": null,
+        "slice_id": "starlink-shell-slice-0022",
+        "slot_type": "ut_access",
+        "snapshot_id": "topsnap-524b775b4c3313cc",
+        "trigger_reasons": [
+          "routing_cost_changed",
+          "bandwidth_threshold_exceeded"
+        ]
+      },
+      "link_id": "ut105-access-slot0",
+      "segment_count": 174,
+      "slot_type": "ut_access"
+    },
+    {
+      "first_segment": {
+        "activation_relative_time_seconds": 70.0,
+        "activation_time_utc": "2026-06-11T09:58:30Z",
+        "binding": {
+          "satellite_id": "stl-950023",
+          "ut_id": "ut106"
+        },
+        "end_relative_time_seconds": 80.0,
+        "end_time_utc": "2026-06-11T09:58:40Z",
+        "epoch_id": "parameterepoch-98df058ffb0d2a8c",
+        "link_id": "ut106-access-slot0",
+        "parameter_generation": 2,
+        "qdisc_parameters": {
+          "delay": {
+            "delay_ms": 3.988419,
+            "jitter_ms": null,
+            "source_field": "runtime_parameters.delay_ms"
+          },
+          "loss": {
+            "loss_percent": 0.133456,
+            "loss_scaled_u32": 5731892,
+            "source_field": "runtime_parameters.loss_percent"
+          },
+          "queue": {
+            "limit_bytes": null,
+            "limit_packets": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "rate": {
+            "bandwidth_mbps": 421.690667,
+            "rate_bps": 421690667,
+            "source_field": "runtime_parameters.bandwidth_mbps"
+          },
+          "reorder": {
+            "enabled": false,
+            "queue_id": null,
+            "route_id": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "routing_cost": {
+            "qdisc_direct_field": false,
+            "source_field": "runtime_parameters.routing_cost",
+            "value": 399
+          }
+        },
+        "sample_id": "orbitsample-0008",
+        "slice_id": "starlink-shell-slice-0008",
+        "slot_type": "ut_access",
+        "snapshot_id": "topsnap-061c2ecbe79960d6",
+        "trigger_reasons": [
+          "routing_cost_changed"
+        ]
+      },
+      "last_segment": {
+        "activation_relative_time_seconds": 7110.0,
+        "activation_time_utc": "2026-06-11T11:55:50Z",
+        "binding": {
+          "satellite_id": "stl-950112",
+          "ut_id": "ut106"
+        },
+        "end_relative_time_seconds": null,
+        "end_time_utc": null,
+        "epoch_id": "parameterepoch-b7331f1fd369b03b",
+        "link_id": "ut106-access-slot0",
+        "parameter_generation": 273,
+        "qdisc_parameters": {
+          "delay": {
+            "delay_ms": 3.599935,
+            "jitter_ms": null,
+            "source_field": "runtime_parameters.delay_ms"
+          },
+          "loss": {
+            "loss_percent": 0.125614,
+            "loss_scaled_u32": 5395080,
+            "source_field": "runtime_parameters.loss_percent"
+          },
+          "queue": {
+            "limit_bytes": null,
+            "limit_packets": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "rate": {
+            "bandwidth_mbps": 455.672667,
+            "rate_bps": 455672667,
+            "source_field": "runtime_parameters.bandwidth_mbps"
+          },
+          "reorder": {
+            "enabled": false,
+            "queue_id": null,
+            "route_id": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "routing_cost": {
+            "qdisc_direct_field": false,
+            "source_field": "runtime_parameters.routing_cost",
+            "value": 360
+          }
+        },
+        "sample_id": null,
+        "slice_id": "starlink-shell-slice-0022",
+        "slot_type": "ut_access",
+        "snapshot_id": "topsnap-524b775b4c3313cc",
+        "trigger_reasons": [
+          "routing_cost_changed",
+          "bandwidth_threshold_exceeded"
+        ]
+      },
+      "link_id": "ut106-access-slot0",
+      "segment_count": 174,
+      "slot_type": "ut_access"
+    },
+    {
+      "first_segment": {
+        "activation_relative_time_seconds": 70.0,
+        "activation_time_utc": "2026-06-11T09:58:30Z",
+        "binding": {
+          "satellite_id": "stl-950066",
+          "ut_id": "ut107"
+        },
+        "end_relative_time_seconds": 110.0,
+        "end_time_utc": "2026-06-11T09:59:10Z",
+        "epoch_id": "parameterepoch-98df058ffb0d2a8c",
+        "link_id": "ut107-access-slot0",
+        "parameter_generation": 2,
+        "qdisc_parameters": {
+          "delay": {
+            "delay_ms": 6.457014,
+            "jitter_ms": null,
+            "source_field": "runtime_parameters.delay_ms"
+          },
+          "loss": {
+            "loss_percent": 0.162736,
+            "loss_scaled_u32": 6989458,
+            "source_field": "runtime_parameters.loss_percent"
+          },
+          "queue": {
+            "limit_bytes": null,
+            "limit_packets": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "rate": {
+            "bandwidth_mbps": 294.810667,
+            "rate_bps": 294810667,
+            "source_field": "runtime_parameters.bandwidth_mbps"
+          },
+          "reorder": {
+            "enabled": false,
+            "queue_id": null,
+            "route_id": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "routing_cost": {
+            "qdisc_direct_field": false,
+            "source_field": "runtime_parameters.routing_cost",
+            "value": 646
+          }
+        },
+        "sample_id": "orbitsample-0008",
+        "slice_id": "starlink-shell-slice-0008",
+        "slot_type": "ut_access",
+        "snapshot_id": "topsnap-061c2ecbe79960d6",
+        "trigger_reasons": [
+          "routing_cost_changed"
+        ]
+      },
+      "last_segment": {
+        "activation_relative_time_seconds": 7140.0,
+        "activation_time_utc": "2026-06-11T11:56:20Z",
+        "binding": {
+          "satellite_id": "stl-950154",
+          "ut_id": "ut107"
+        },
+        "end_relative_time_seconds": null,
+        "end_time_utc": null,
+        "epoch_id": "parameterepoch-301275658ea640b6",
+        "link_id": "ut107-access-slot0",
+        "parameter_generation": 274,
+        "qdisc_parameters": {
+          "delay": {
+            "delay_ms": 2.235413,
+            "jitter_ms": null,
+            "source_field": "runtime_parameters.delay_ms"
+          },
+          "loss": {
+            "loss_percent": 0.06988,
+            "loss_scaled_u32": 3001323,
+            "source_field": "runtime_parameters.loss_percent"
+          },
+          "queue": {
+            "limit_bytes": null,
+            "limit_packets": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "rate": {
+            "bandwidth_mbps": 697.186667,
+            "rate_bps": 697186667,
+            "source_field": "runtime_parameters.bandwidth_mbps"
+          },
+          "reorder": {
+            "enabled": false,
+            "queue_id": null,
+            "route_id": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "routing_cost": {
+            "qdisc_direct_field": false,
+            "source_field": "runtime_parameters.routing_cost",
+            "value": 224
+          }
+        },
+        "sample_id": null,
+        "slice_id": "starlink-shell-slice-0025",
+        "slot_type": "ut_access",
+        "snapshot_id": "topsnap-bbaf3ddb8a5e1d9e",
+        "trigger_reasons": [
+          "routing_cost_changed",
+          "bandwidth_threshold_exceeded"
+        ]
+      },
+      "link_id": "ut107-access-slot0",
+      "segment_count": 161,
+      "slot_type": "ut_access"
+    },
+    {
+      "first_segment": {
+        "activation_relative_time_seconds": 30.0,
+        "activation_time_utc": "2026-06-11T09:57:50Z",
+        "binding": {
+          "satellite_id": "stl-950066",
+          "ut_id": "ut108"
+        },
+        "end_relative_time_seconds": 140.0,
+        "end_time_utc": "2026-06-11T09:59:40Z",
+        "epoch_id": "parameterepoch-6c334aa8915ae25a",
+        "link_id": "ut108-access-slot0",
+        "parameter_generation": 0,
+        "qdisc_parameters": {
+          "delay": {
+            "delay_ms": 6.531113,
+            "jitter_ms": null,
+            "source_field": "runtime_parameters.delay_ms"
+          },
+          "loss": {
+            "loss_percent": 0.163336,
+            "loss_scaled_u32": 7015228,
+            "source_field": "runtime_parameters.loss_percent"
+          },
+          "queue": {
+            "limit_bytes": null,
+            "limit_packets": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "rate": {
+            "bandwidth_mbps": 292.210667,
+            "rate_bps": 292210667,
+            "source_field": "runtime_parameters.bandwidth_mbps"
+          },
+          "reorder": {
+            "enabled": false,
+            "queue_id": null,
+            "route_id": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "routing_cost": {
+            "qdisc_direct_field": false,
+            "source_field": "runtime_parameters.routing_cost",
+            "value": 653
+          }
+        },
+        "sample_id": "orbitsample-0004",
+        "slice_id": "starlink-shell-slice-0004",
+        "slot_type": "ut_access",
+        "snapshot_id": "topsnap-687df80b5480f9de",
+        "trigger_reasons": [
+          "routing_cost_changed"
+        ]
+      },
+      "last_segment": {
+        "activation_relative_time_seconds": 7140.0,
+        "activation_time_utc": "2026-06-11T11:56:20Z",
+        "binding": {
+          "satellite_id": "stl-950154",
+          "ut_id": "ut108"
+        },
+        "end_relative_time_seconds": null,
+        "end_time_utc": null,
+        "epoch_id": "parameterepoch-301275658ea640b6",
+        "link_id": "ut108-access-slot0",
+        "parameter_generation": 274,
+        "qdisc_parameters": {
+          "delay": {
+            "delay_ms": 2.234124,
+            "jitter_ms": null,
+            "source_field": "runtime_parameters.delay_ms"
+          },
+          "loss": {
+            "loss_percent": 0.069774,
+            "loss_scaled_u32": 2996770,
+            "source_field": "runtime_parameters.loss_percent"
+          },
+          "queue": {
+            "limit_bytes": null,
+            "limit_packets": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "rate": {
+            "bandwidth_mbps": 697.646,
+            "rate_bps": 697646000,
+            "source_field": "runtime_parameters.bandwidth_mbps"
+          },
+          "reorder": {
+            "enabled": false,
+            "queue_id": null,
+            "route_id": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "routing_cost": {
+            "qdisc_direct_field": false,
+            "source_field": "runtime_parameters.routing_cost",
+            "value": 223
+          }
+        },
+        "sample_id": null,
+        "slice_id": "starlink-shell-slice-0025",
+        "slot_type": "ut_access",
+        "snapshot_id": "topsnap-bbaf3ddb8a5e1d9e",
+        "trigger_reasons": [
+          "routing_cost_changed",
+          "bandwidth_threshold_exceeded"
+        ]
+      },
+      "link_id": "ut108-access-slot0",
+      "segment_count": 153,
+      "slot_type": "ut_access"
+    },
+    {
+      "first_segment": {
+        "activation_relative_time_seconds": 30.0,
+        "activation_time_utc": "2026-06-11T09:57:50Z",
+        "binding": {
+          "satellite_id": "stl-950027",
+          "ut_id": "ut109"
+        },
+        "end_relative_time_seconds": 60.0,
+        "end_time_utc": "2026-06-11T09:58:20Z",
+        "epoch_id": "parameterepoch-6c334aa8915ae25a",
+        "link_id": "ut109-access-slot0",
+        "parameter_generation": 0,
+        "qdisc_parameters": {
+          "delay": {
+            "delay_ms": 3.292227,
+            "jitter_ms": null,
+            "source_field": "runtime_parameters.delay_ms"
+          },
+          "loss": {
+            "loss_percent": 0.118024,
+            "loss_scaled_u32": 5069092,
+            "source_field": "runtime_parameters.loss_percent"
+          },
+          "queue": {
+            "limit_bytes": null,
+            "limit_packets": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "rate": {
+            "bandwidth_mbps": 488.562667,
+            "rate_bps": 488562667,
+            "source_field": "runtime_parameters.bandwidth_mbps"
+          },
+          "reorder": {
+            "enabled": false,
+            "queue_id": null,
+            "route_id": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "routing_cost": {
+            "qdisc_direct_field": false,
+            "source_field": "runtime_parameters.routing_cost",
+            "value": 329
+          }
+        },
+        "sample_id": "orbitsample-0004",
+        "slice_id": "starlink-shell-slice-0004",
+        "slot_type": "ut_access",
+        "snapshot_id": "topsnap-687df80b5480f9de",
+        "trigger_reasons": [
+          "routing_cost_changed"
+        ]
+      },
+      "last_segment": {
+        "activation_relative_time_seconds": 7110.0,
+        "activation_time_utc": "2026-06-11T11:55:50Z",
+        "binding": {
+          "satellite_id": "stl-950108",
+          "ut_id": "ut109"
+        },
+        "end_relative_time_seconds": null,
+        "end_time_utc": null,
+        "epoch_id": "parameterepoch-b7331f1fd369b03b",
+        "link_id": "ut109-access-slot0",
+        "parameter_generation": 273,
+        "qdisc_parameters": {
+          "delay": {
+            "delay_ms": 2.744506,
+            "jitter_ms": null,
+            "source_field": "runtime_parameters.delay_ms"
+          },
+          "loss": {
+            "loss_percent": 0.099524,
+            "loss_scaled_u32": 4274523,
+            "source_field": "runtime_parameters.loss_percent"
+          },
+          "queue": {
+            "limit_bytes": null,
+            "limit_packets": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "rate": {
+            "bandwidth_mbps": 568.729333,
+            "rate_bps": 568729333,
+            "source_field": "runtime_parameters.bandwidth_mbps"
+          },
+          "reorder": {
+            "enabled": false,
+            "queue_id": null,
+            "route_id": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "routing_cost": {
+            "qdisc_direct_field": false,
+            "source_field": "runtime_parameters.routing_cost",
+            "value": 274
+          }
+        },
+        "sample_id": null,
+        "slice_id": "starlink-shell-slice-0022",
+        "slot_type": "ut_access",
+        "snapshot_id": "topsnap-524b775b4c3313cc",
+        "trigger_reasons": [
+          "routing_cost_changed",
+          "bandwidth_threshold_exceeded"
+        ]
+      },
+      "link_id": "ut109-access-slot0",
+      "segment_count": 191,
+      "slot_type": "ut_access"
+    },
+    {
+      "first_segment": {
+        "activation_relative_time_seconds": 30.0,
+        "activation_time_utc": "2026-06-11T09:57:50Z",
+        "binding": {
+          "satellite_id": "stl-950027",
+          "ut_id": "ut110"
+        },
+        "end_relative_time_seconds": 60.0,
+        "end_time_utc": "2026-06-11T09:58:20Z",
+        "epoch_id": "parameterepoch-6c334aa8915ae25a",
+        "link_id": "ut110-access-slot0",
+        "parameter_generation": 0,
+        "qdisc_parameters": {
+          "delay": {
+            "delay_ms": 3.311351,
+            "jitter_ms": null,
+            "source_field": "runtime_parameters.delay_ms"
+          },
+          "loss": {
+            "loss_percent": 0.11854,
+            "loss_scaled_u32": 5091254,
+            "source_field": "runtime_parameters.loss_percent"
+          },
+          "queue": {
+            "limit_bytes": null,
+            "limit_packets": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "rate": {
+            "bandwidth_mbps": 486.326667,
+            "rate_bps": 486326667,
+            "source_field": "runtime_parameters.bandwidth_mbps"
+          },
+          "reorder": {
+            "enabled": false,
+            "queue_id": null,
+            "route_id": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "routing_cost": {
+            "qdisc_direct_field": false,
+            "source_field": "runtime_parameters.routing_cost",
+            "value": 331
+          }
+        },
+        "sample_id": "orbitsample-0004",
+        "slice_id": "starlink-shell-slice-0004",
+        "slot_type": "ut_access",
+        "snapshot_id": "topsnap-687df80b5480f9de",
+        "trigger_reasons": [
+          "routing_cost_changed"
+        ]
+      },
+      "last_segment": {
+        "activation_relative_time_seconds": 7110.0,
+        "activation_time_utc": "2026-06-11T11:55:50Z",
+        "binding": {
+          "satellite_id": "stl-950108",
+          "ut_id": "ut110"
+        },
+        "end_relative_time_seconds": null,
+        "end_time_utc": null,
+        "epoch_id": "parameterepoch-b7331f1fd369b03b",
+        "link_id": "ut110-access-slot0",
+        "parameter_generation": 273,
+        "qdisc_parameters": {
+          "delay": {
+            "delay_ms": 2.764211,
+            "jitter_ms": null,
+            "source_field": "runtime_parameters.delay_ms"
+          },
+          "loss": {
+            "loss_percent": 0.100352,
+            "loss_scaled_u32": 4310086,
+            "source_field": "runtime_parameters.loss_percent"
+          },
+          "queue": {
+            "limit_bytes": null,
+            "limit_packets": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "rate": {
+            "bandwidth_mbps": 565.141333,
+            "rate_bps": 565141333,
+            "source_field": "runtime_parameters.bandwidth_mbps"
+          },
+          "reorder": {
+            "enabled": false,
+            "queue_id": null,
+            "route_id": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "routing_cost": {
+            "qdisc_direct_field": false,
+            "source_field": "runtime_parameters.routing_cost",
+            "value": 276
+          }
+        },
+        "sample_id": null,
+        "slice_id": "starlink-shell-slice-0022",
+        "slot_type": "ut_access",
+        "snapshot_id": "topsnap-524b775b4c3313cc",
+        "trigger_reasons": [
+          "routing_cost_changed",
+          "bandwidth_threshold_exceeded"
+        ]
+      },
+      "link_id": "ut110-access-slot0",
+      "segment_count": 189,
+      "slot_type": "ut_access"
+    },
+    {
+      "first_segment": {
+        "activation_relative_time_seconds": 30.0,
+        "activation_time_utc": "2026-06-11T09:57:50Z",
+        "binding": {
+          "satellite_id": "stl-950090",
+          "ut_id": "ut111"
+        },
+        "end_relative_time_seconds": 80.0,
+        "end_time_utc": "2026-06-11T09:58:40Z",
+        "epoch_id": "parameterepoch-6c334aa8915ae25a",
+        "link_id": "ut111-access-slot0",
+        "parameter_generation": 0,
+        "qdisc_parameters": {
+          "delay": {
+            "delay_ms": 2.61232,
+            "jitter_ms": null,
+            "source_field": "runtime_parameters.delay_ms"
+          },
+          "loss": {
+            "loss_percent": 0.093526,
+            "loss_scaled_u32": 4016911,
+            "source_field": "runtime_parameters.loss_percent"
+          },
+          "queue": {
+            "limit_bytes": null,
+            "limit_packets": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "rate": {
+            "bandwidth_mbps": 594.720667,
+            "rate_bps": 594720667,
+            "source_field": "runtime_parameters.bandwidth_mbps"
+          },
+          "reorder": {
+            "enabled": false,
+            "queue_id": null,
+            "route_id": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "routing_cost": {
+            "qdisc_direct_field": false,
+            "source_field": "runtime_parameters.routing_cost",
+            "value": 261
+          }
+        },
+        "sample_id": "orbitsample-0004",
+        "slice_id": "starlink-shell-slice-0004",
+        "slot_type": "ut_access",
+        "snapshot_id": "topsnap-687df80b5480f9de",
+        "trigger_reasons": [
+          "routing_cost_changed"
+        ]
+      },
+      "last_segment": {
+        "activation_relative_time_seconds": 7140.0,
+        "activation_time_utc": "2026-06-11T11:56:20Z",
+        "binding": {
+          "satellite_id": "stl-950002",
+          "ut_id": "ut111"
+        },
+        "end_relative_time_seconds": null,
+        "end_time_utc": null,
+        "epoch_id": "parameterepoch-301275658ea640b6",
+        "link_id": "ut111-access-slot0",
+        "parameter_generation": 274,
+        "qdisc_parameters": {
+          "delay": {
+            "delay_ms": 1.869207,
+            "jitter_ms": null,
+            "source_field": "runtime_parameters.delay_ms"
+          },
+          "loss": {
+            "loss_percent": 0.005,
+            "loss_scaled_u32": 214748,
+            "source_field": "runtime_parameters.loss_percent"
+          },
+          "queue": {
+            "limit_bytes": null,
+            "limit_packets": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "rate": {
+            "bandwidth_mbps": 981.072,
+            "rate_bps": 981072000,
+            "source_field": "runtime_parameters.bandwidth_mbps"
+          },
+          "reorder": {
+            "enabled": false,
+            "queue_id": null,
+            "route_id": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "routing_cost": {
+            "qdisc_direct_field": false,
+            "source_field": "runtime_parameters.routing_cost",
+            "value": 187
+          }
+        },
+        "sample_id": null,
+        "slice_id": "starlink-shell-slice-0025",
+        "slot_type": "ut_access",
+        "snapshot_id": "topsnap-bbaf3ddb8a5e1d9e",
+        "trigger_reasons": [
+          "routing_cost_changed",
+          "bandwidth_threshold_exceeded"
+        ]
+      },
+      "link_id": "ut111-access-slot0",
+      "segment_count": 176,
+      "slot_type": "ut_access"
+    },
+    {
+      "first_segment": {
+        "activation_relative_time_seconds": 30.0,
+        "activation_time_utc": "2026-06-11T09:57:50Z",
+        "binding": {
+          "satellite_id": "stl-950090",
+          "ut_id": "ut112"
+        },
+        "end_relative_time_seconds": 80.0,
+        "end_time_utc": "2026-06-11T09:58:40Z",
+        "epoch_id": "parameterepoch-6c334aa8915ae25a",
+        "link_id": "ut112-access-slot0",
+        "parameter_generation": 0,
+        "qdisc_parameters": {
+          "delay": {
+            "delay_ms": 2.600387,
+            "jitter_ms": null,
+            "source_field": "runtime_parameters.delay_ms"
+          },
+          "loss": {
+            "loss_percent": 0.092942,
+            "loss_scaled_u32": 3991829,
+            "source_field": "runtime_parameters.loss_percent"
+          },
+          "queue": {
+            "limit_bytes": null,
+            "limit_packets": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "rate": {
+            "bandwidth_mbps": 597.251333,
+            "rate_bps": 597251333,
+            "source_field": "runtime_parameters.bandwidth_mbps"
+          },
+          "reorder": {
+            "enabled": false,
+            "queue_id": null,
+            "route_id": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "routing_cost": {
+            "qdisc_direct_field": false,
+            "source_field": "runtime_parameters.routing_cost",
+            "value": 260
+          }
+        },
+        "sample_id": "orbitsample-0004",
+        "slice_id": "starlink-shell-slice-0004",
+        "slot_type": "ut_access",
+        "snapshot_id": "topsnap-687df80b5480f9de",
+        "trigger_reasons": [
+          "routing_cost_changed"
+        ]
+      },
+      "last_segment": {
+        "activation_relative_time_seconds": 7110.0,
+        "activation_time_utc": "2026-06-11T11:55:50Z",
+        "binding": {
+          "satellite_id": "stl-950002",
+          "ut_id": "ut112"
+        },
+        "end_relative_time_seconds": null,
+        "end_time_utc": null,
+        "epoch_id": "parameterepoch-b7331f1fd369b03b",
+        "link_id": "ut112-access-slot0",
+        "parameter_generation": 273,
+        "qdisc_parameters": {
+          "delay": {
+            "delay_ms": 1.995891,
+            "jitter_ms": null,
+            "source_field": "runtime_parameters.delay_ms"
+          },
+          "loss": {
+            "loss_percent": 0.043106,
+            "loss_scaled_u32": 1851389,
+            "source_field": "runtime_parameters.loss_percent"
+          },
+          "queue": {
+            "limit_bytes": null,
+            "limit_packets": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "rate": {
+            "bandwidth_mbps": 813.207333,
+            "rate_bps": 813207333,
+            "source_field": "runtime_parameters.bandwidth_mbps"
+          },
+          "reorder": {
+            "enabled": false,
+            "queue_id": null,
+            "route_id": null,
+            "source": "not_present_in_parameter_epoch_artifact"
+          },
+          "routing_cost": {
+            "qdisc_direct_field": false,
+            "source_field": "runtime_parameters.routing_cost",
+            "value": 200
+          }
+        },
+        "sample_id": null,
+        "slice_id": "starlink-shell-slice-0022",
+        "slot_type": "ut_access",
+        "snapshot_id": "topsnap-524b775b4c3313cc",
+        "trigger_reasons": [
+          "routing_cost_changed",
+          "bandwidth_threshold_exceeded"
+        ]
+      },
+      "link_id": "ut112-access-slot0",
+      "segment_count": 187,
+      "slot_type": "ut_access"
+    }
+  ],
+  "qdisc_timeline_model": {
+    "backend_neutral": true,
+    "full_timeline_available_from_compiler": true,
+    "parameter_fields": [
+      "delay.delay_ms",
+      "rate.bandwidth_mbps",
+      "rate.rate_bps",
+      "loss.loss_percent",
+      "loss.loss_scaled_u32",
+      "queue.limit_packets",
+      "reorder.route_id",
+      "routing_cost.value"
+    ],
+    "per_link_segments": true,
+    "segment_time_fields": [
+      "activation_relative_time_seconds",
+      "activation_time_utc",
+      "end_relative_time_seconds",
+      "end_time_utc"
+    ]
+  },
+  "schema_version": 1,
+  "scope": {
+    "canonical_runtime_changed": false,
+    "external_kernel_module_loaded": false,
+    "gz_semantics_changed": false,
+    "long_real_runtime": false,
+    "optimized_backend_landing": false,
+    "real_dataplane_touched": false,
+    "runtime_epoch_parameter_epoch_scheduler_changed": false
+  },
+  "summary": {
+    "field_coverage": {
+      "bandwidth_mbps": {
+        "coverage_ratio": 1.0,
+        "present": 3243,
+        "total_segments": 3243
+      },
+      "delay_ms": {
+        "coverage_ratio": 1.0,
+        "present": 3243,
+        "total_segments": 3243
+      },
+      "loss_percent": {
+        "coverage_ratio": 1.0,
+        "present": 3243,
+        "total_segments": 3243
+      },
+      "routing_cost": {
+        "coverage_ratio": 1.0,
+        "present": 3243,
+        "total_segments": 3243
+      }
+    },
+    "link_timeline_count": 21,
+    "parameter_epoch_detail_record_count": 275,
+    "parameter_epoch_summary_record_count": 13,
+    "skipped_parameter_records_without_qdisc_updates": 0,
+    "slot_type_counts": {
+      "cross_plane_isl": 3,
+      "gw_access": 6,
+      "ut_access": 12
+    },
+    "timeline_segment_count": 3243
+  },
+  "theaterq_feasibility": {
+    "build_requirements": [
+      "linux kernel headers",
+      "build-essential/make",
+      "iproute2",
+      "git submodule initialization for tc plugin"
+    ],
+    "conclusion": "TheaterQ is suitable to investigate in a future isolated demo, but it is an out-of-tree kernel module plus tc plugin and is not appropriate for this no-module Goal 12 run or for canonical runtime landing.",
+    "kernel_module_required": true,
+    "license": "GPL-2.0",
+    "loaded_in_this_goal": false,
+    "multi_qdisc_sync": {
+      "default_capacity_from_readme": {
+        "members_per_group": 8,
+        "syncgroups": 8
+      },
+      "mechanism": "syncgroup",
+      "skyseed_note": "large topologies may need module parameter sizing before an isolated demo",
+      "supported": true
+    },
+    "paper_url": "https://arxiv.org/abs/2510.27057",
+    "per_link_timeline": true,
+    "repository_url": "https://github.com/cs7org/TheaterQ",
+    "source_accessible": true,
+    "source_components": [
+      "theaterq_lkm",
+      "theaterq_tc"
+    ],
+    "tc_plugin_required": true,
+    "trace_format_fit": {
+      "extended_csv": [
+        "KEEP",
+        "LATENCY",
+        "JITTER",
+        "RATE",
+        "LOSS",
+        "LIMIT",
+        "DUP_PROB",
+        "DUP_DELAY",
+        "ROUTE_ID",
+        "QUEUE_ID"
+      ],
+      "routing_cost_note": "routing_cost is Skyseed path metadata, not a direct qdisc field",
+      "simple_csv": [
+        "KEEP",
+        "LATENCY",
+        "RATE",
+        "LOSS",
+        "LIMIT"
+      ],
+      "skyseed_delay_rate_loss_fit": true,
+      "skyseed_queue_fit": "possible with LIMIT/QUEUE_ID when queue policy exists",
+      "skyseed_reorder_fit": "possible with extended ROUTE_ID/QUEUE_ID if a policy maps route changes to IDs",
+      "skyseed_routing_cost_direct_fit": false
+    }
+  }
+}
