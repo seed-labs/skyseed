@@ -131,3 +131,50 @@ The backend audit checks:
 The qdisc timeline remains blocked or trace-only because TheaterQ requires an
 external kernel module and tc plugin. Goal 14 does not continue TheaterQ or
 land a qdisc timeline backend.
+
+## Dataplane Canary
+
+Goal 16 adds a separate opt-in mode:
+
+```bash
+python satellite/apps/run_starlink_shell_experiment.py \
+  --run-mode real-runtime \
+  --bpf-dataplane-canary \
+  <normal short-run arguments>
+```
+
+The default is still off. Without `--bpf-dataplane-canary`, the canonical
+Linux/direct runtime, qdisc/netem ParameterEpoch handling, rollback, and
+post-run preflight behavior are unchanged.
+
+The canary is not a full BPF replacement. It attaches one tc-BPF classifier to
+one live UT access host interface after the bounded runtime has produced a
+successful UT ping and before compose/direct-backend cleanup starts. The
+classifier matches only that selected canary target IP. Matching packets use:
+
+- `active_generation` plus `generation_status`.
+- one loaded `fec_forwarding` entry for the selected canary UT/gateway path.
+- `parameter_generation`, `param_status`, and one `parameter_values` entry for
+  active/loss/drop/mark decisions.
+
+All non-canary traffic falls through with `TC_ACT_OK` and remains on the
+canonical Linux/direct backend. Parameter delay, rate, and bandwidth continue
+to use the existing qdisc/netem path; the BPF canary handles only active,
+loss/drop, mark, and counters. The qdisc timeline remains
+`blocked_or_trace_only`; no TheaterQ or custom qdisc module is loaded.
+
+The canary writes `bpf_dataplane_canary.json` with these metrics:
+
+- `bpf_canary_enabled`
+- `bpf_attached_interface_count`
+- `bpf_loaded_generation_count`
+- `bpf_loaded_fec_count`
+- `bpf_pass_counters`
+- `bpf_drop_counters`
+- `bpf_redirect_counters`
+- `canonical_fallback_count`
+- `bpf_rollback_completed`
+
+Rollback runs in a `finally` path and removes the canary clsact attachment plus
+the pinned canary maps under `/sys/fs/bpf/tc/globals`. The normal post-run
+preflight still runs afterward and must report clean for the run to be accepted.

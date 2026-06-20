@@ -451,10 +451,30 @@ preserved across smaller steps.
   one step.
 - Do not replace direct netns/veth/qdisc behavior while the canonical route is
   the only stable multi-hour evidence.
-- Do not introduce a BPF or qdisc backend implementation in the abstraction
-  audit phase.
+- Do not introduce a broad BPF or qdisc backend implementation in the
+  abstraction audit phase. Experimental BPF work must stay opt-in, narrow, and
+  rollback-clean until it has comparable evidence.
 - Do not change regression baseline gates without a deliberate baseline
   migration.
+
+## Goal 16 BPF Dataplane Canary Boundary
+
+`--bpf-dataplane-canary` is the first live dataplane canary, not a backend
+replacement. It is default-off and only attaches after a bounded real-runtime
+run has a selected successful UT ping. The canary scope is one UT access
+host-side ingress path and one target IP:
+
+- BPF owns `active_generation`, generation status, a single canary
+  `fec_forwarding` redirect/drop decision, and packet counters for that target.
+- BPF owns ParameterEpoch active/loss/drop/mark/counter decisions for that
+  canary target only.
+- Delay, bandwidth, and rate remain on the existing qdisc/netem path.
+- Non-canary packets fall through to the canonical Linux/direct backend.
+- Rollback detaches tc-BPF, unpins/deletes maps, and lets the normal post-run
+  preflight prove the workspace is clean.
+
+The qdisc timeline is still blocked or trace-only. This canary does not load
+TheaterQ, a custom kernel module, or a qdisc timeline dataplane.
 
 ## Short Conclusion
 

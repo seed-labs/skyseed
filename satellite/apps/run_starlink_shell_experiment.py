@@ -70,6 +70,10 @@ from skyseed_preflight import (
     run_skyseed_preflight,
 )
 from bpf_backend import emit_shadow_artifacts_for_run_dir
+from bpf_dataplane_canary import (
+    DEFAULT_SOURCE as DEFAULT_BPF_CANARY_SOURCE,
+    apply_bpf_dataplane_canary,
+)
 from contracts import NetworkMutationPlan
 from return_path_audit import audit_planner_preview
 from temporal_planning import enrich_snapshot_runtime_parameters
@@ -645,6 +649,27 @@ def parse_args() -> argparse.Namespace:
             "shadow summary and consistency artifacts. This is shadow-only and does "
             "not alter canonical apply, forwarding, or rollback behavior."
         ),
+    )
+    parser.add_argument(
+        "--bpf-dataplane-canary",
+        action="store_true",
+        help=(
+            "Opt in to the experimental tc-BPF dataplane canary for one live "
+            "UT/gateway path. Default is off; canonical Linux/direct runtime "
+            "remains the fallback for all non-canary traffic."
+        ),
+    )
+    parser.add_argument(
+        "--bpf-canary-source",
+        type=Path,
+        default=DEFAULT_BPF_CANARY_SOURCE,
+        help="tc-BPF C source used by --bpf-dataplane-canary.",
+    )
+    parser.add_argument(
+        "--bpf-canary-ping-count",
+        type=int,
+        default=2,
+        help="Short live ping count for the dataplane canary sanity check.",
     )
     parser.add_argument(
         "--compose-up-timeout-seconds",
@@ -4205,6 +4230,7 @@ def _run_live_temporal_runtime(
     active_session = None
     failure_reason: str | None = None
     final_runtime_connectivity_validation: Dict[str, Any] | None = None
+    bpf_dataplane_canary: Dict[str, Any] | None = None
     final_cleanup: Dict[str, Any] = {
         "node_local": None,
         "host_rollbacks": [],
@@ -4266,6 +4292,7 @@ def _run_live_temporal_runtime(
             "final_runtime_connectivity_validation": _safe_dict(
                 final_runtime_connectivity_validation
             ),
+            "bpf_dataplane_canary": _safe_dict(bpf_dataplane_canary),
             "outcome": {
                 "real_apply_success": bool(epoch_execution_records)
                 and all(record["outcome"]["success"] for record in epoch_execution_records),
@@ -5547,6 +5574,59 @@ def _run_live_temporal_runtime(
                 runtime_epochs_completed=runtime_count,
                 parameter_epochs_completed=parameter_count,
             )
+        if bool(args.bpf_dataplane_canary) and active_session is not None:
+            _progress(
+                phase="bpf_dataplane_canary",
+                event_type="bpf_dataplane_canary_started",
+                phase_detail={
+                    "source": str(args.bpf_canary_source),
+                    "scope": "single_ut_access_path",
+                },
+                runtime_epochs_completed=runtime_count,
+                parameter_epochs_completed=parameter_count,
+            )
+            bpf_dataplane_canary = apply_bpf_dataplane_canary(
+                run_dir=run_dir,
+                topology_path=topology_path,
+                link_state_path=link_state_path,
+                runtime_report={
+                    "iterations": [
+                        {"node_local_execution": active_session.to_public_dict()}
+                    ],
+                    "initial_runtime_readiness": initial_runtime_readiness,
+                },
+                bpf_source=Path(args.bpf_canary_source),
+                ping_count=int(args.bpf_canary_ping_count),
+            )
+            _write_json(run_dir / "bpf_dataplane_canary.json", bpf_dataplane_canary)
+            events.append(
+                {
+                    "timestamp_utc": _timestamp_utc(),
+                    "event_type": "bpf_dataplane_canary_completed",
+                    "ok": bool(bpf_dataplane_canary.get("ok")),
+                    "reason": bpf_dataplane_canary.get("reason"),
+                    "metrics": dict(bpf_dataplane_canary.get("metrics") or {}),
+                }
+            )
+            _progress(
+                phase="bpf_dataplane_canary_completed",
+                event_type="bpf_dataplane_canary_completed",
+                phase_detail={
+                    "ok": bool(bpf_dataplane_canary.get("ok")),
+                    "reason": bpf_dataplane_canary.get("reason"),
+                    "rollback_completed": (
+                        bpf_dataplane_canary.get("metrics") or {}
+                    ).get("bpf_rollback_completed"),
+                },
+                runtime_epochs_completed=runtime_count,
+                parameter_epochs_completed=parameter_count,
+            )
+            if bpf_dataplane_canary.get("ok") is not True:
+                failure_reason = "bpf_dataplane_canary_failed"
+                failure_context = {
+                    "current_epoch_context": _safe_dict(current_epoch_context),
+                    "bpf_dataplane_canary": _safe_dict(bpf_dataplane_canary),
+                }
     except Exception as exc:  # noqa: BLE001
         failure_reason = str(exc)
         failure_context = {
@@ -7097,6 +7177,7 @@ def _experiment_summary_payload(
     host_prepare_report: Dict[str, Any] | None,
     post_run_preflight_report: Dict[str, Any] | None,
     bpf_shadow_emission: Dict[str, Any] | None = None,
+    bpf_dataplane_canary: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     resolved_max_host_workers = _resolved_max_host_workers(args=args)
     runtime_outcome = (
@@ -7213,6 +7294,7 @@ def _experiment_summary_payload(
         "continuous_operation_summary": continuous_operation_summary,
         "temporal_audit": None if runtime_report is None else runtime_report.get("temporal_audit"),
         "bpf_shadow_emission": bpf_shadow_emission,
+        "bpf_dataplane_canary": bpf_dataplane_canary,
         "data_provenance": data_provenance,
         "generated_artifacts": artifacts,
     }
@@ -7618,6 +7700,7 @@ def main() -> int:
     preflight_report: Dict[str, Any] | None = None
     post_run_preflight_report: Dict[str, Any] | None = None
     bpf_shadow_emission: Dict[str, Any] | None = None
+    bpf_dataplane_canary: Dict[str, Any] | None = None
     compose_environment_reuse_summary: Dict[str, Any] | None = None
     compose_up_stage_results_summary: List[Dict[str, Any]] = []
     force_compose_down_after = False
@@ -8621,6 +8704,21 @@ def main() -> int:
                                 ),
                             },
                         )
+                        bpf_dataplane_canary = (
+                            dict(runtime_report.get("bpf_dataplane_canary") or {})
+                            if bool(args.bpf_dataplane_canary)
+                            else None
+                        )
+                        if (
+                            bool(args.bpf_dataplane_canary)
+                            and bpf_dataplane_canary
+                            and bpf_dataplane_canary.get("ok") is not True
+                        ):
+                            runtime_blocker = {
+                                "stage": "bpf_dataplane_canary",
+                                "classified_blocker": "bpf_dataplane_canary_failed",
+                                "canary": bpf_dataplane_canary,
+                            }
                         phase_timing["initial_runtime_readiness_wall_seconds"] = round(
                             float(
                                 runtime_report.get("initial_runtime_readiness", {}).get(
@@ -9136,6 +9234,10 @@ def main() -> int:
             generated_artifacts["bpf_shadow_backend_consistency_json"] = str(
                 bpf_shadow_emission["consistency_path"]
             )
+    if bpf_dataplane_canary is not None:
+        generated_artifacts["bpf_dataplane_canary_json"] = str(
+            run_dir / "bpf_dataplane_canary.json"
+        )
     if startup_strategy is not None:
         startup_strategy = {
             **dict(startup_strategy),
@@ -9167,6 +9269,7 @@ def main() -> int:
         host_prepare_report=host_prepare_report,
         post_run_preflight_report=post_run_preflight_report,
         bpf_shadow_emission=bpf_shadow_emission,
+        bpf_dataplane_canary=bpf_dataplane_canary,
     )
     _write_json(run_dir / "run_manifest.json", summary)
     events.append(
@@ -9179,6 +9282,7 @@ def main() -> int:
                 runtime_report is not None
                 and runtime_report.get("outcome", {}).get("real_apply_success") is True
                 and runtime_report.get("outcome", {}).get("ping_success") is True
+                and runtime_report.get("outcome", {}).get("failure_reason") is None
             ),
             "post_run_clean": None if summary.get("post_run_clean") is None else bool(summary.get("post_run_clean")),
             "runtime_blocker": None if runtime_blocker is None else runtime_blocker.get("classified_blocker"),
@@ -9242,6 +9346,15 @@ def main() -> int:
             "BPF shadow emission: "
             f"emitted={_bool_text(bool(bpf_shadow_emission.get('emitted')))} "
             f"consistency_ok={_bool_text(bool(bpf_shadow_emission.get('ok')))}"
+        )
+    if bpf_dataplane_canary is not None:
+        metrics = dict(bpf_dataplane_canary.get("metrics") or {})
+        print(
+            "BPF dataplane canary: "
+            f"ok={_bool_text(bool(bpf_dataplane_canary.get('ok')))} "
+            f"redirect={metrics.get('bpf_redirect_counters', 0)} "
+            f"fallback={metrics.get('canonical_fallback_count', 0)} "
+            f"rollback={_bool_text(bool(metrics.get('bpf_rollback_completed')))}"
         )
     print(f"Commands: {run_dir / 'commands.md'}")
     return 0
