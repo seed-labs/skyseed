@@ -39,6 +39,10 @@ task explicitly asks for a lightweight summary artifact.
 
 - `inspect_temporal_run.py`, `compare_temporal_runs.py`, and
   `summarize_starlink_long_run.py` are the normal artifact inspection path.
+- `extract_skyseed_regression_metrics.py` and `check_skyseed_regression.py`
+  extract/check compact regression metrics from finalized run artifacts. They
+  are offline guards for timing, ParameterEpoch, FEC-diff, rollback/cleanup,
+  and artifact-growth regressions.
 - `generate_gz_6zone_2h_figures.py` builds the current 6-zone 2h analysis
   figure bundle from finalized run artifacts. It is offline and must not be run
   during real runtime.
