@@ -131,6 +131,9 @@ their functionality yet.
 - `docs/network_lower_layer_inventory.md`
   - cleanup inventory for low-level Linux/Docker/MPLS/seedemu mechanics that
     may move below Skyseed later
+- `docs/skyseed_platform_abstraction_plan.md`
+  - Goal 2 boundary audit for semantic intent, IR candidates, backend leakage,
+    and future backend attachment points
 - `docs/opensn_investigation_report.md`
   - investigation material used as architecture reference
 - `docs/archive/satellite_phase2_constellation_design.zh.md`
