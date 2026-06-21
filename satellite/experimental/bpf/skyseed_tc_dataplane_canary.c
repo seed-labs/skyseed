@@ -42,6 +42,22 @@
 #define COUNTER_DROP_MISSING_PARAMETER 13
 #define COUNTER_DROP_BAD_PACKET 14
 
+#ifndef SKYSEED_BPF_MAX_RUNTIME_GENERATIONS
+#define SKYSEED_BPF_MAX_RUNTIME_GENERATIONS 64
+#endif
+
+#ifndef SKYSEED_BPF_MAX_FEC_ENTRIES
+#define SKYSEED_BPF_MAX_FEC_ENTRIES 16
+#endif
+
+#ifndef SKYSEED_BPF_MAX_PARAMETER_GENERATIONS
+#define SKYSEED_BPF_MAX_PARAMETER_GENERATIONS 64
+#endif
+
+#ifndef SKYSEED_BPF_MAX_PARAMETER_ENTRIES
+#define SKYSEED_BPF_MAX_PARAMETER_ENTRIES 16
+#endif
+
 struct bpf_elf_map {
     __u32 type;
     __u32 size_key;
@@ -92,7 +108,7 @@ struct bpf_elf_map SEC("maps") generation_status = {
     .type = BPF_MAP_TYPE_ARRAY,
     .size_key = sizeof(__u32),
     .size_value = sizeof(__u32),
-    .max_elem = 64,
+    .max_elem = SKYSEED_BPF_MAX_RUNTIME_GENERATIONS,
     .pinning = PIN_GLOBAL_NS,
 };
 
@@ -100,7 +116,7 @@ struct bpf_elf_map SEC("maps") fec_forwarding = {
     .type = BPF_MAP_TYPE_HASH,
     .size_key = sizeof(struct route_key),
     .size_value = sizeof(struct route_value),
-    .max_elem = 16,
+    .max_elem = SKYSEED_BPF_MAX_FEC_ENTRIES,
     .pinning = PIN_GLOBAL_NS,
 };
 
@@ -124,7 +140,7 @@ struct bpf_elf_map SEC("maps") param_status = {
     .type = BPF_MAP_TYPE_ARRAY,
     .size_key = sizeof(__u32),
     .size_value = sizeof(__u32),
-    .max_elem = 64,
+    .max_elem = SKYSEED_BPF_MAX_PARAMETER_GENERATIONS,
     .pinning = PIN_GLOBAL_NS,
 };
 
@@ -132,7 +148,7 @@ struct bpf_elf_map SEC("maps") parameter_values = {
     .type = BPF_MAP_TYPE_HASH,
     .size_key = sizeof(struct parameter_key),
     .size_value = sizeof(struct parameter_value),
-    .max_elem = 16,
+    .max_elem = SKYSEED_BPF_MAX_PARAMETER_ENTRIES,
     .pinning = PIN_GLOBAL_NS,
 };
 

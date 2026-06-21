@@ -10,8 +10,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 from satellite.bpf_dataplane_canary import (
+    SELECTOR_MODE_FULL_ELIGIBLE,
+    bpf_map_capacities_for_scope,
     build_metrics,
     host_interface_name,
+    load_canary_maps,
+    normalize_selector,
     select_experimental_scope,
     select_canary_scope,
 )
@@ -251,6 +255,147 @@ class BpfDataplaneCanaryTests(unittest.TestCase):
             self.assertEqual(scope["entries"][0]["fec"]["fec_id"], "g-gw5-zone-a")
             self.assertEqual(scope["entries"][0]["satellite_ifindex"], 77)
             self.assertEqual(scope["target_ips"], ["198.51.100.10"])
+
+    def test_full_eligible_selector_uses_full_scope_safety_limit(self) -> None:
+        canary = normalize_selector({"max_scope_entries": 999})
+        self.assertEqual(canary["mode"], "semantic_intent_canary_subset")
+        self.assertEqual(canary["max_scope_entries"], 16)
+
+        full = normalize_selector(
+            {
+                "mode": SELECTOR_MODE_FULL_ELIGIBLE,
+                "max_scope_entries": 999,
+                "safety_limits": {"max_scope_entries": 128},
+            }
+        )
+        self.assertEqual(full["mode"], SELECTOR_MODE_FULL_ELIGIBLE)
+        self.assertEqual(full["max_scope_entries"], 128)
+
+    def test_full_eligible_scope_loads_compiled_map_counts(self) -> None:
+        compiled = {
+            "bpf_maps": {
+                "runtime": {
+                    "generation_status": [
+                        {"generation_id": 0, "installed": True},
+                        {"generation_id": 1, "installed": True},
+                    ],
+                    "fec_forwarding": [
+                        {
+                            "generation_id": 0,
+                            "fec_key_u32": 101,
+                            "active": True,
+                        },
+                        {
+                            "generation_id": 0,
+                            "fec_key_u32": 102,
+                            "active": False,
+                        },
+                        {
+                            "generation_id": 1,
+                            "fec_key_u32": 103,
+                            "active": True,
+                        },
+                    ],
+                },
+                "parameter": {
+                    "param_status": [
+                        {"generation_id": 0, "installed": True},
+                        {"generation_id": 1, "installed": True},
+                        {"generation_id": 2, "installed": True},
+                    ],
+                    "parameter_values": [
+                        {
+                            "generation_id": 0,
+                            "link_id": "link-a",
+                            "link_key_u32": 201,
+                            "flow_key_u32": 0,
+                            "active": True,
+                            "loss_ppm": 0,
+                            "mark": 301,
+                        },
+                        {
+                            "generation_id": 1,
+                            "link_id": "link-a",
+                            "link_key_u32": 201,
+                            "flow_key_u32": 0,
+                            "active": True,
+                            "loss_ppm": 12,
+                            "mark": 302,
+                        },
+                        {
+                            "generation_id": 1,
+                            "link_id": "link-b",
+                            "link_key_u32": 202,
+                            "flow_key_u32": 0,
+                            "active": False,
+                            "loss_ppm": 0,
+                            "mark": 303,
+                        },
+                        {
+                            "generation_id": 2,
+                            "link_id": "link-b",
+                            "link_key_u32": 202,
+                            "flow_key_u32": 0,
+                            "active": True,
+                            "loss_ppm": 5,
+                            "mark": 304,
+                        },
+                    ],
+                },
+            }
+        }
+        scope = {
+            "scope": SELECTOR_MODE_FULL_ELIGIBLE,
+            "selector": normalize_selector(
+                {
+                    "mode": SELECTOR_MODE_FULL_ELIGIBLE,
+                    "max_scope_entries": 8,
+                }
+            ),
+            "entries": [
+                {
+                    "target_ip": "198.51.100.10",
+                    "satellite_ifindex": 42,
+                    "parameter_loss_ppm": 0,
+                    "parameter_mark": 77,
+                    "slot_name": "ut3-access-slot0",
+                },
+                {
+                    "target_ip": "198.51.100.10",
+                    "satellite_ifindex": 99,
+                    "parameter_loss_ppm": 0,
+                    "parameter_mark": 88,
+                    "slot_name": "ut4-access-slot0",
+                }
+            ],
+        }
+
+        capacities = bpf_map_capacities_for_scope(compiled=compiled, scope=scope)
+        self.assertEqual(capacities["runtime_generations"], 2)
+        self.assertEqual(capacities["gz_fec_entries"], 4)
+        self.assertEqual(capacities["parameter_generations"], 3)
+        self.assertEqual(capacities["parameter_entries"], 5)
+
+        ok_update = {"returncode": 0, "stdout": "", "stderr": ""}
+        with patch("satellite.bpf_dataplane_canary.update_u32_map", return_value=ok_update), patch(
+            "satellite.bpf_dataplane_canary.update_hash_map",
+            return_value=ok_update,
+        ):
+            result = load_canary_maps(
+                compiled=compiled,
+                scope=scope,
+                active_runtime_generation=0,
+                active_parameter_generation=0,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["loaded_generation_count"], 2)
+        self.assertEqual(result["loaded_fec_count"], 3)
+        self.assertEqual(result["loaded_parameter_generation_count"], 3)
+        self.assertEqual(result["loaded_parameter_link_count"], 2)
+        self.assertEqual(result["loaded_parameter_entry_count"], 4)
+        self.assertEqual(result["loaded_dataplane_route_count"], 1)
+        self.assertEqual(result["loaded_dataplane_parameter_entry_count"], 1)
 
 
 if __name__ == "__main__":

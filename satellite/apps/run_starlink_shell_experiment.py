@@ -165,7 +165,7 @@ def _bpf_backend_opted_in(args: argparse.Namespace) -> bool:
 
 def _bpf_backend_selector_from_args(args: argparse.Namespace) -> Dict[str, Any]:
     return {
-        "mode": "semantic_intent_canary_subset",
+        "mode": str(args.bpf_scope),
         "ut_ids": list(args.bpf_selector_ut or []),
         "gw_ids": list(args.bpf_selector_gw or []),
         "fec_ids": list(args.bpf_selector_fec or []),
@@ -683,6 +683,16 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Opt in to the experimental BPF backend. Default is off and the "
             "canonical Linux/direct backend is unchanged."
+        ),
+    )
+    parser.add_argument(
+        "--bpf-scope",
+        choices=("semantic_intent_canary_subset", "full_eligible_scope"),
+        default="semantic_intent_canary_subset",
+        help=(
+            "Scope loaded by the opt-in experimental BPF backend. The default "
+            "preserves the legacy canary subset; full_eligible_scope loads all "
+            "currently compilable G/Z FEC and active/loss/drop/counter parameter maps."
         ),
     )
     parser.add_argument(

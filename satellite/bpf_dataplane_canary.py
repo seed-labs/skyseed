@@ -59,12 +59,29 @@ COUNTER_LABELS = {
 }
 IPPROTO_ICMP = 1
 ACTION_FORWARD = 1
+ACTION_PASS = 2
 BPFTOOL = ""
 
 
 BPF_BACKEND_MODE = "experimental_bpf_backend"
+SELECTOR_MODE_CANARY = "semantic_intent_canary_subset"
+SELECTOR_MODE_FULL_ELIGIBLE = "full_eligible_scope"
+CANARY_MAX_SCOPE_ENTRIES = 16
+FULL_SCOPE_SAFETY_LIMITS = {
+    "max_runtime_generations": 512,
+    "max_gz_fec_entries": 8192,
+    "max_parameter_generations": 512,
+    "max_parameter_entries": 8192,
+    "max_scope_entries": 4096,
+}
+DEFAULT_CANARY_CAPACITIES = {
+    "runtime_generations": 64,
+    "gz_fec_entries": 16,
+    "parameter_generations": 64,
+    "parameter_entries": 16,
+}
 DEFAULT_BACKEND_SELECTOR = {
-    "mode": "semantic_intent_canary_subset",
+    "mode": SELECTOR_MODE_CANARY,
     "ut_ids": [],
     "gw_ids": [],
     "fec_ids": [],
@@ -72,6 +89,7 @@ DEFAULT_BACKEND_SELECTOR = {
     "generation_ids": [],
     "parameter_generation_ids": [],
     "max_scope_entries": 1,
+    "safety_limits": dict(FULL_SCOPE_SAFETY_LIMITS),
 }
 
 
@@ -196,6 +214,9 @@ def apply_bpf_experimental_backend(
                 "parameter_generation_count": compiled["compact_summary"][
                     "parameter_generation_count"
                 ],
+                "parameter_link_count": compiled["compact_summary"][
+                    "parameter_link_count"
+                ],
                 "parameter_entry_count": compiled["compact_summary"]["parameter_entry_count"],
                 "fixed_10s_assumed": compiled["compact_summary"]["fixed_10s_assumed"],
                 "qdisc_timeline_backend_status": compiled["compact_summary"][
@@ -205,7 +226,13 @@ def apply_bpf_experimental_backend(
                     "canonical_runtime_unchanged"
                 ],
             }
-            report["steps"]["compile"] = compile_bpf(bpf_source, object_path)
+            capacities = bpf_map_capacities_for_scope(compiled=compiled, scope=scope)
+            report["bpf_map_capacities"] = capacities
+            report["steps"]["compile"] = compile_bpf(
+                bpf_source,
+                object_path,
+                capacities=capacities,
+            )
             if report["steps"]["compile"]["returncode"] != 0:
                 report["ok"] = False
                 report["reason"] = "compile_failed"
@@ -264,6 +291,9 @@ def apply_bpf_experimental_backend(
                     map_load["loaded_parameter_generation_count"]
                 ),
                 loaded_parameter_link_count=int(map_load["loaded_parameter_link_count"]),
+                loaded_parameter_entry_count=int(
+                    map_load.get("loaded_parameter_entry_count", 0)
+                ),
                 active_generation_switch_count=int(
                     map_load["active_generation_switch_count"]
                 ),
@@ -327,6 +357,7 @@ def _empty_metrics(*, enabled: bool, backend_mode: str, bpf_scope: str) -> dict[
         "loaded_gz_fec_count": 0,
         "loaded_parameter_generation_count": 0,
         "loaded_parameter_link_count": 0,
+        "loaded_parameter_entry_count": 0,
         "active_generation_switch_count": 0,
         "bpf_loaded_generation_count": 0,
         "bpf_loaded_fec_count": 0,
@@ -352,6 +383,7 @@ def build_metrics(
     loaded_fec_count: int | None = None,
     loaded_parameter_generation_count: int = 0,
     loaded_parameter_link_count: int = 0,
+    loaded_parameter_entry_count: int = 0,
     active_generation_switch_count: int = 0,
     counters: dict[str, int],
     rollback_completed: bool,
@@ -388,6 +420,7 @@ def build_metrics(
         "loaded_gz_fec_count": gz_fec_count,
         "loaded_parameter_generation_count": int(loaded_parameter_generation_count),
         "loaded_parameter_link_count": int(loaded_parameter_link_count),
+        "loaded_parameter_entry_count": int(loaded_parameter_entry_count),
         "active_generation_switch_count": int(active_generation_switch_count),
         "bpf_loaded_generation_count": runtime_generation_count,
         "bpf_loaded_fec_count": gz_fec_count,
@@ -403,9 +436,22 @@ def build_metrics(
 
 
 def normalize_selector(selector: dict[str, Any] | None) -> dict[str, Any]:
-    normalized = dict(DEFAULT_BACKEND_SELECTOR)
+    normalized = {
+        **DEFAULT_BACKEND_SELECTOR,
+        "safety_limits": dict(FULL_SCOPE_SAFETY_LIMITS),
+    }
     if selector:
-        normalized.update({key: value for key, value in selector.items() if value is not None})
+        for key, value in selector.items():
+            if value is None:
+                continue
+            if key == "safety_limits" and isinstance(value, dict):
+                normalized["safety_limits"].update(value)
+            else:
+                normalized[key] = value
+    mode = str(normalized.get("mode") or SELECTOR_MODE_CANARY)
+    if mode not in {SELECTOR_MODE_CANARY, SELECTOR_MODE_FULL_ELIGIBLE}:
+        raise ValueError(f"unsupported BPF backend selector mode {mode!r}")
+    normalized["mode"] = mode
     for key in ["ut_ids", "gw_ids", "fec_ids", "zone_ids"]:
         value = normalized.get(key) or []
         if isinstance(value, str):
@@ -416,7 +462,37 @@ def normalize_selector(selector: dict[str, Any] | None) -> dict[str, Any]:
         if isinstance(value, str):
             value = [part.strip() for part in value.split(",") if part.strip()]
         normalized[key] = sorted({int(item) for item in value if str(item) != ""})
-    normalized["max_scope_entries"] = max(1, min(16, int(normalized.get("max_scope_entries") or 1)))
+    safety_limits = dict(normalized["safety_limits"])
+    for key, default in FULL_SCOPE_SAFETY_LIMITS.items():
+        safety_limits[key] = max(1, int(safety_limits.get(key) or default))
+    safety_limits["max_runtime_generations"] = min(
+        safety_limits["max_runtime_generations"],
+        FULL_SCOPE_SAFETY_LIMITS["max_runtime_generations"],
+    )
+    safety_limits["max_gz_fec_entries"] = min(
+        safety_limits["max_gz_fec_entries"],
+        FULL_SCOPE_SAFETY_LIMITS["max_gz_fec_entries"],
+    )
+    safety_limits["max_parameter_generations"] = min(
+        safety_limits["max_parameter_generations"],
+        FULL_SCOPE_SAFETY_LIMITS["max_parameter_generations"],
+    )
+    safety_limits["max_parameter_entries"] = min(
+        safety_limits["max_parameter_entries"],
+        FULL_SCOPE_SAFETY_LIMITS["max_parameter_entries"],
+    )
+    safety_limits["max_scope_entries"] = min(
+        safety_limits["max_scope_entries"],
+        FULL_SCOPE_SAFETY_LIMITS["max_scope_entries"],
+    )
+    normalized["safety_limits"] = safety_limits
+    requested_scope = int(normalized.get("max_scope_entries") or 1)
+    max_scope_limit = (
+        CANARY_MAX_SCOPE_ENTRIES
+        if mode == SELECTOR_MODE_CANARY
+        else safety_limits["max_scope_entries"]
+    )
+    normalized["max_scope_entries"] = max(1, min(max_scope_limit, requested_scope))
     return normalized
 
 
@@ -440,6 +516,7 @@ def select_experimental_scope(
     if selector["parameter_generation_ids"]:
         active_parameter_generation = int(selector["parameter_generation_ids"][0])
     selected_entries: list[dict[str, Any]] = []
+    seen_entry_keys: set[tuple[str, str]] = set()
     for ping in successful_pings(runtime_report):
         entry = build_scope_entry(
             ping=ping,
@@ -452,14 +529,44 @@ def select_experimental_scope(
         )
         if entry is None:
             continue
+        entry_key = (str(entry["ut_id"]), str(entry["target_ip"]))
+        if entry_key in seen_entry_keys:
+            continue
+        seen_entry_keys.add(entry_key)
         selected_entries.append(entry)
         if len(selected_entries) >= int(selector["max_scope_entries"]):
             break
     if not selected_entries:
         raise RuntimeError("could not select an intent-matched BPF backend scope")
 
+    if selector["mode"] == SELECTOR_MODE_FULL_ELIGIBLE:
+        compiled_summary = compiled_full_scope_summary(compiled)
+        return {
+            "scope": SELECTOR_MODE_FULL_ELIGIBLE,
+            "selector": selector,
+            "max_scope_entries": selector["max_scope_entries"],
+            "entries": selected_entries,
+            "attached_interfaces": sorted(
+                {entry["ut_host_interface"] for entry in selected_entries}
+            ),
+            "target_ips": [entry["target_ip"] for entry in selected_entries],
+            "active_runtime_generation": active_runtime_generation,
+            "active_parameter_generation": active_parameter_generation,
+            "compiled_full_scope": compiled_summary,
+            "semantic_intent_sources": {
+                "runtime": "all compiled G/Z FEC generation map entries",
+                "parameter": "all compiled ParameterEpoch active/loss/drop/counter entries",
+                "scope": "full eligible compiled maps plus live ping entries for dataplane sanity",
+            },
+            "canonical_fallback_scope": (
+                "non-IP traffic and traffic outside the current BPF dataplane "
+                "lookup model remain TC_ACT_OK on canonical Linux/direct runtime; "
+                "delay/rate/bandwidth stay in qdisc/netem"
+            ),
+        }
+
     return {
-        "scope": "semantic_intent_canary_subset",
+        "scope": SELECTOR_MODE_CANARY,
         "selector": selector,
         "max_scope_entries": selector["max_scope_entries"],
         "entries": selected_entries,
@@ -476,6 +583,22 @@ def select_experimental_scope(
             "packets outside selected intent-derived target IPs remain TC_ACT_OK "
             "on canonical Linux/direct runtime"
         ),
+    }
+
+
+def compiled_full_scope_summary(compiled: dict[str, Any]) -> dict[str, Any]:
+    runtime_status = list(compiled["bpf_maps"]["runtime"].get("generation_status", []))
+    fec_entries = list(compiled["bpf_maps"]["runtime"].get("fec_forwarding", []))
+    parameter_status = list(compiled["bpf_maps"]["parameter"].get("param_status", []))
+    parameter_entries = list(compiled["bpf_maps"]["parameter"].get("parameter_values", []))
+    return {
+        "runtime_generation_count": len(runtime_status),
+        "gz_fec_entry_count": len(fec_entries),
+        "parameter_generation_count": len(parameter_status),
+        "parameter_link_count": len(
+            {str(entry.get("link_id")) for entry in parameter_entries if entry.get("link_id")}
+        ),
+        "parameter_entry_count": len(parameter_entries),
     }
 
 
@@ -854,11 +977,63 @@ def resolve_bpftool() -> str | None:
     return path
 
 
-def compile_bpf(source: Path, object_path: Path) -> dict[str, Any]:
+def bpf_map_capacities_for_scope(
+    *,
+    compiled: dict[str, Any],
+    scope: dict[str, Any],
+) -> dict[str, int]:
+    if scope.get("scope") != SELECTOR_MODE_FULL_ELIGIBLE:
+        return dict(DEFAULT_CANARY_CAPACITIES)
+    limits = dict((scope.get("selector") or {}).get("safety_limits") or FULL_SCOPE_SAFETY_LIMITS)
+    summary = dict(scope.get("compiled_full_scope") or compiled_full_scope_summary(compiled))
+    smoke_entries = len(
+        {
+            str(entry.get("target_ip"))
+            for entry in list(scope.get("entries") or [])
+            if entry.get("target_ip")
+        }
+    )
+    runtime_generations = min(
+        int(limits.get("max_runtime_generations") or FULL_SCOPE_SAFETY_LIMITS["max_runtime_generations"]),
+        max(1, int(summary.get("runtime_generation_count") or 0)),
+    )
+    parameter_generations = min(
+        int(limits.get("max_parameter_generations") or FULL_SCOPE_SAFETY_LIMITS["max_parameter_generations"]),
+        max(1, int(summary.get("parameter_generation_count") or 0)),
+    )
+    gz_fec_entries = min(
+        int(limits.get("max_gz_fec_entries") or FULL_SCOPE_SAFETY_LIMITS["max_gz_fec_entries"]),
+        max(1, int(summary.get("gz_fec_entry_count") or 0) + smoke_entries),
+    )
+    parameter_entries = min(
+        int(limits.get("max_parameter_entries") or FULL_SCOPE_SAFETY_LIMITS["max_parameter_entries"]),
+        max(1, int(summary.get("parameter_entry_count") or 0) + smoke_entries),
+    )
+    return {
+        "runtime_generations": runtime_generations,
+        "gz_fec_entries": gz_fec_entries,
+        "parameter_generations": parameter_generations,
+        "parameter_entries": parameter_entries,
+    }
+
+
+def compile_bpf(
+    source: Path,
+    object_path: Path,
+    *,
+    capacities: dict[str, int] | None = None,
+) -> dict[str, Any]:
     include_args: list[str] = []
     arch_include = Path("/usr/include/x86_64-linux-gnu")
     if arch_include.exists():
         include_args = ["-I", str(arch_include)]
+    capacities = dict(capacities or DEFAULT_CANARY_CAPACITIES)
+    define_args = [
+        f"-DSKYSEED_BPF_MAX_RUNTIME_GENERATIONS={int(capacities['runtime_generations'])}",
+        f"-DSKYSEED_BPF_MAX_FEC_ENTRIES={int(capacities['gz_fec_entries'])}",
+        f"-DSKYSEED_BPF_MAX_PARAMETER_GENERATIONS={int(capacities['parameter_generations'])}",
+        f"-DSKYSEED_BPF_MAX_PARAMETER_ENTRIES={int(capacities['parameter_entries'])}",
+    ]
     return run_command(
         [
             "clang",
@@ -866,6 +1041,7 @@ def compile_bpf(source: Path, object_path: Path) -> dict[str, Any]:
             "-target",
             "bpf",
             "-D__TARGET_ARCH_x86",
+            *define_args,
             *include_args,
             "-c",
             str(source),
@@ -989,16 +1165,47 @@ def load_canary_maps(
     active_parameter_generation: int,
 ) -> dict[str, Any]:
     updates: list[dict[str, Any]] = []
+    full_scope = scope.get("scope") == SELECTOR_MODE_FULL_ELIGIBLE
+    capacities = bpf_map_capacities_for_scope(compiled=compiled, scope=scope)
     runtime_status = list(compiled["bpf_maps"]["runtime"]["generation_status"])
     parameter_status = list(compiled["bpf_maps"]["parameter"]["param_status"])
-    max_runtime_generations = min(64, len(runtime_status))
-    max_parameter_generations = max(1, min(64, len(parameter_status)))
+    runtime_status_to_load = runtime_status[: int(capacities["runtime_generations"])]
+    parameter_status_to_load = parameter_status[: int(capacities["parameter_generations"])]
+    fec_entries_to_load = (
+        list(compiled["bpf_maps"]["runtime"].get("fec_forwarding", []))
+        if full_scope
+        else []
+    )
+    parameter_entries_to_load = (
+        list(compiled["bpf_maps"]["parameter"].get("parameter_values", []))
+        if full_scope
+        else []
+    )
+    dataplane_smoke_entries = len(
+        {
+            str(entry.get("target_ip"))
+            for entry in list(scope.get("entries") or [])
+            if entry.get("target_ip")
+        }
+    )
+    capacity_errors: list[str] = []
+    if len(runtime_status_to_load) < len(runtime_status):
+        capacity_errors.append("runtime_generation_capacity_exceeded")
+    if len(parameter_status_to_load) < len(parameter_status):
+        capacity_errors.append("parameter_generation_capacity_exceeded")
+    if len(fec_entries_to_load) + dataplane_smoke_entries > int(capacities["gz_fec_entries"]):
+        capacity_errors.append("gz_fec_capacity_exceeded")
+    if (
+        len(parameter_entries_to_load) + dataplane_smoke_entries
+        > int(capacities["parameter_entries"])
+    ):
+        capacity_errors.append("parameter_entry_capacity_exceeded")
     active_generations_before = {
         "runtime": int(active_runtime_generation),
         "parameter": int(active_parameter_generation),
     }
     updates.append(update_u32_map("active_generation", 0, active_runtime_generation))
-    for generation in runtime_status[:max_runtime_generations]:
+    for generation in runtime_status_to_load:
         updates.append(
             update_u32_map(
                 "generation_status",
@@ -1007,8 +1214,8 @@ def load_canary_maps(
             )
         )
     updates.append(update_u32_map("parameter_generation", 0, active_parameter_generation))
-    if parameter_status:
-        for generation in parameter_status[:max_parameter_generations]:
+    if parameter_status_to_load:
+        for generation in parameter_status_to_load:
             updates.append(
                 update_u32_map(
                     "param_status",
@@ -1019,9 +1226,40 @@ def load_canary_maps(
     else:
         updates.append(update_u32_map("param_status", active_parameter_generation, 1))
 
+    loaded_semantic_fec_keys: set[tuple[int, int]] = set()
+    for entry in fec_entries_to_load:
+        generation_id = int(entry["generation_id"])
+        fec_key = int(entry["fec_key_u32"])
+        route_key = pack_u32s(generation_id, fec_key)
+        route_action = ACTION_FORWARD if entry.get("active") else ACTION_PASS
+        route_value = pack_u32s(1 if entry.get("active") else 0, route_action, 0)
+        updates.append(update_hash_map("fec_forwarding", route_key, route_value))
+        loaded_semantic_fec_keys.add((generation_id, fec_key))
+
+    loaded_semantic_parameter_keys: set[tuple[int, int, int]] = set()
+    loaded_semantic_parameter_links: set[str] = set()
+    for entry in parameter_entries_to_load:
+        generation_id = int(entry["generation_id"])
+        link_key = int(entry["link_key_u32"])
+        flow_key = int(entry.get("flow_key_u32") or 0)
+        parameter_key = pack_u32s(generation_id, link_key, flow_key)
+        parameter_value = pack_u32s(
+            1 if entry.get("active") else 0,
+            int(entry.get("loss_ppm", 0) or 0),
+            int(entry.get("mark", 0) or 0),
+        )
+        updates.append(update_hash_map("parameter_values", parameter_key, parameter_value))
+        loaded_semantic_parameter_keys.add((generation_id, link_key, flow_key))
+        if entry.get("link_id"):
+            loaded_semantic_parameter_links.add(str(entry["link_id"]))
+
     loaded_target_ips: set[str] = set()
-    loaded_parameter_links: set[str] = set()
+    loaded_dataplane_parameter_links: set[str] = set()
+    loaded_dataplane_parameter_keys: set[tuple[int, int, int]] = set()
     for entry in scope["entries"]:
+        target_ip = str(entry["target_ip"])
+        if target_ip in loaded_target_ips:
+            continue
         dst_ipv4 = ipv4_little_endian_u32(entry["target_ip"])
         route_key = pack_u32s(active_runtime_generation, dst_ipv4)
         route_value = pack_u32s(1, ACTION_FORWARD, int(entry["satellite_ifindex"]))
@@ -1033,17 +1271,42 @@ def load_canary_maps(
             int(entry.get("parameter_mark", 0)),
         )
         updates.append(update_hash_map("parameter_values", parameter_key, parameter_value))
-        loaded_target_ips.add(str(entry["target_ip"]))
-        loaded_parameter_links.add(str(entry["slot_name"]))
+        loaded_target_ips.add(target_ip)
+        loaded_dataplane_parameter_links.add(str(entry["slot_name"]))
+        loaded_dataplane_parameter_keys.add(
+            (active_parameter_generation, dst_ipv4, IPPROTO_ICMP)
+        )
+    loaded_parameter_entry_count = (
+        len(loaded_semantic_parameter_keys)
+        if full_scope
+        else len(loaded_dataplane_parameter_keys)
+    )
+    loaded_fec_count = (
+        len(loaded_semantic_fec_keys)
+        if full_scope
+        else len(loaded_target_ips)
+    )
+    loaded_parameter_link_count = (
+        len(loaded_semantic_parameter_links)
+        if full_scope
+        else len(loaded_dataplane_parameter_links)
+    )
 
     return {
         "updates": updates,
-        "ok": all(command_ok(update) for update in updates),
-        "loaded_generation_count": max_runtime_generations,
-        "loaded_parameter_generation_count": max_parameter_generations,
-        "loaded_fec_count": len(loaded_target_ips),
-        "loaded_parameter_link_count": len(loaded_parameter_links),
+        "ok": not capacity_errors and all(command_ok(update) for update in updates),
+        "capacity_errors": capacity_errors,
+        "capacities": capacities,
+        "loaded_generation_count": len(runtime_status_to_load),
+        "loaded_parameter_generation_count": len(parameter_status_to_load)
+        if parameter_status
+        else 1,
+        "loaded_fec_count": loaded_fec_count,
+        "loaded_parameter_link_count": loaded_parameter_link_count,
+        "loaded_parameter_entry_count": loaded_parameter_entry_count,
         "active_generation_switch_count": len(active_generations_before),
+        "loaded_dataplane_route_count": len(loaded_target_ips),
+        "loaded_dataplane_parameter_entry_count": len(loaded_dataplane_parameter_keys),
         "target_ips": sorted(loaded_target_ips),
     }
 
