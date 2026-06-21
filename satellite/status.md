@@ -1,5 +1,39 @@
 # Satellite Iteration 2 Status
 
+## 2026-06-21 - Realistic Workload Preview Preparation
+
+- Goal 18 added a preview-only realistic workload preparation path:
+  `apps/plan_realistic_skyseed_workload.py`,
+  `docs/skyseed_realistic_workload_plan.md`, and compact generated catalogs
+  under `configs/starlink_shell_ground/realistic_preview_*`.
+- The preview uses existing planned-shell `S1` capability
+  (`72x22`, `1584` satellites) for high-pressure coverage/cardinality analysis.
+  It is an upper-tier pressure target, not the immediate next real-runtime
+  acceptance target. It does not change the canonical `S5` 172-satellite,
+  12UT/6GW, 6-zone metadata real-runtime route and does not run real-runtime or
+  BPF A/B.
+- Staged shell acceptance is now documented: Tier 0 `S5` for canonical baseline
+  and BPF A/B, Tier 1 `S4` 348-sat first and `S3` 720-sat only if 300+ coverage
+  is insufficient, and Tier 2 `S1`/`S2` 1000+ for final pressure testing.
+- The catalog shape is 32 UTs, 12 GWs, and 16 zones:
+  6 required, 4 optional, and 6 observation zones. Each major required region
+  has one default GW and one secondary/exception GW, plus default-near,
+  secondary-near, boundary, and remote-return UT placement.
+- The compact preview summary estimates 3190 active edges, 265 changed
+  parameter links/qdisc updates per ParameterEpoch, 20 changed G FEC and
+  20 changed GZ FEC groups per sampled RuntimeEpoch, 22 default-gateway flows,
+  and 10 override flows.
+- Coverage sampling over a 2h S1 window at 300s cadence found 0s unresolved
+  duration for required zones and 300s average anchor dwell. All active zones
+  changed anchors at every sampled transition, so skipped G/GZ FEC estimates are
+  0 in this preview window; this is a pressure-signal, not real-runtime
+  evidence.
+- Real-runtime blockers remain: synthetic 12-GW IX capacity is not validated,
+  estimates are not timing evidence, observation zones must stay out of required
+  runtime gates, finer cadence acceptance thresholds are missing, and staged
+  S4/S3 larger-shell A/B criteria still need to be defined before any S1
+  pressure run.
+
 ## 2026-06-20 - Isolated G/Z BPF Shadow Prototype
 
 - Goal 8 added an isolated tc-BPF G/Z forwarding shadow prototype:

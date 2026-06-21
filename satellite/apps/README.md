@@ -28,6 +28,12 @@ multi-zone churn are fixed.
   planned-shell sizes and catalogs.
 - `generate_starlink_zone_catalog.py` - deterministic preview catalog generator
   for 24/32-zone studies.
+- `plan_realistic_skyseed_workload.py` - Goal 18 preview-only realistic
+  workload/catalog generator for the 32UT/12GW/16-zone larger-shell preparation
+  plan. It writes compact config/summary JSON under
+  `configs/starlink_shell_ground/` and does not run real-runtime. Its default
+  `S1` analysis is a high-pressure upper-tier preview; staged acceptance should
+  try the intermediate S4/S3 tier before any 1000+ satellite runtime.
 - `fetch_starlink_tle.py` - optional data-cache helper for real-catalog preview
   studies. Cached TLE payloads under `satellite/data/tle/` are ignored.
 
