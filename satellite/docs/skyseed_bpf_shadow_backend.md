@@ -1,12 +1,26 @@
-# Skyseed Experimental BPF Shadow Backend
+# Skyseed Experimental BPF Backend
 
-Goal 14 lands an experimental BPF optimized backend behind the Skyseed backend
-abstraction as a shadow-only compiler and auditor. It does not replace the
-canonical Linux/direct runtime and it does not take over the real dataplane.
+Goal 14 landed an experimental BPF optimized backend behind the Skyseed
+backend abstraction as a shadow-only compiler and auditor. Goal 17 extends
+that work into an opt-in experimental backend apply path:
+
+```text
+Skyseed semantic intent
+  -> BPF backend compile plan
+  -> BPF map/generation load
+  -> opt-in dataplane apply
+  -> audit / fallback / rollback
+```
+
+This is not a full replacement for the canonical Linux/direct runtime. The
+default remains BPF off. The canonical runtime, qdisc/netem ParameterEpoch
+handling, rollback, and post-run preflight behavior are unchanged unless a run
+explicitly opts in to the experimental BPF backend.
 
 ## Scope
 
-The backend mode is `experimental_bpf_shadow`.
+The shadow compiler mode is `experimental_bpf_shadow`. The opt-in live backend
+mode is `experimental_bpf_backend`.
 
 The compiler reads existing Skyseed runtime artifacts and emits a
 `BackendCompilePlan` plus `BackendAuditReport` shaped report containing:
@@ -134,7 +148,24 @@ land a qdisc timeline backend.
 
 ## Dataplane Canary
 
-Goal 16 adds a separate opt-in mode:
+Goal 16 added a separate opt-in dataplane canary. Goal 17 keeps the narrow
+dataplane safety model but removes the hard-coded canary dependency: the
+scope is selected from Skyseed semantic intent plus an explicit selector, not
+from a fixed UT/GW/interface.
+
+New runs should use:
+
+```bash
+python satellite/apps/run_starlink_shell_experiment.py \
+  --run-mode real-runtime \
+  --bpf-backend experimental \
+  --bpf-selector-ut ut3 \
+  --bpf-selector-gw gw5 \
+  --bpf-max-scope-entries 1 \
+  <normal short-run arguments>
+```
+
+The legacy Goal 16 flag still maps to the same experimental backend path:
 
 ```bash
 python satellite/apps/run_starlink_shell_experiment.py \
@@ -143,38 +174,66 @@ python satellite/apps/run_starlink_shell_experiment.py \
   <normal short-run arguments>
 ```
 
-The default is still off. Without `--bpf-dataplane-canary`, the canonical
-Linux/direct runtime, qdisc/netem ParameterEpoch handling, rollback, and
-post-run preflight behavior are unchanged.
+The default is still off. Without `--bpf-backend experimental` or the legacy
+`--bpf-dataplane-canary`, the canonical Linux/direct runtime is unchanged.
 
-The canary is not a full BPF replacement. It attaches one tc-BPF classifier to
-one live UT access host interface after the bounded runtime has produced a
-successful UT ping and before compose/direct-backend cleanup starts. The
-classifier matches only that selected canary target IP. Matching packets use:
+The experimental backend is not a full BPF replacement. It attaches tc-BPF only
+to a bounded canary subset after the bounded runtime has produced a successful
+intent-matched UT ping and before compose/direct-backend cleanup starts. The
+classifier matches only the selected target IPs loaded into BPF maps. Matching
+packets use:
 
 - `active_generation` plus `generation_status`.
-- one loaded `fec_forwarding` entry for the selected canary UT/gateway path.
+- loaded `fec_forwarding` entries for the selected semantic FEC scope.
 - `parameter_generation`, `param_status`, and one `parameter_values` entry for
   active/loss/drop/mark decisions.
 
-All non-canary traffic falls through with `TC_ACT_OK` and remains on the
+Scope can be constrained by:
+
+- UT id: `--bpf-selector-ut`
+- gateway id: `--bpf-selector-gw`
+- G/Z FEC id: `--bpf-selector-fec`
+- zone id: `--bpf-selector-zone`
+- RuntimeEpoch generation id: `--bpf-selector-generation`
+- ParameterEpoch generation id: `--bpf-selector-parameter-generation`
+- scale limit: `--bpf-max-scope-entries`
+
+This keeps accidental full-network takeover fail-safe. The runner defaults to
+`max_scope_entries=1`; the BPF maps also remain bounded for the experimental
+path.
+
+All non-selected traffic falls through with `TC_ACT_OK` and remains on the
 canonical Linux/direct backend. Parameter delay, rate, and bandwidth continue
-to use the existing qdisc/netem path; the BPF canary handles only active,
-loss/drop, mark, and counters. The qdisc timeline remains
+to use the existing qdisc/netem path; BPF handles only active, loss/drop, mark,
+and counters. The qdisc timeline remains
 `blocked_or_trace_only`; no TheaterQ or custom qdisc module is loaded.
 
-The canary writes `bpf_dataplane_canary.json` with these metrics:
+The backend writes `bpf_experimental_backend.json` and a legacy
+`bpf_dataplane_canary.json` alias with these audit fields:
 
-- `bpf_canary_enabled`
-- `bpf_attached_interface_count`
-- `bpf_loaded_generation_count`
-- `bpf_loaded_fec_count`
+- `bpf_backend_mode`
+- `bpf_enabled`
+- `bpf_scope`
+- `loaded_runtime_generation_count`
+- `loaded_gz_fec_count`
+- `loaded_parameter_generation_count`
+- `loaded_parameter_link_count`
+- `active_generation_switch_count`
 - `bpf_pass_counters`
 - `bpf_drop_counters`
 - `bpf_redirect_counters`
 - `canonical_fallback_count`
+- `bpf_fail_closed_counters`
+- `canonical_runtime_unchanged`
 - `bpf_rollback_completed`
 
 Rollback runs in a `finally` path and removes the canary clsact attachment plus
 the pinned canary maps under `/sys/fs/bpf/tc/globals`. The normal post-run
 preflight still runs afterward and must report clean for the run to be accepted.
+
+## Goal 17 Status
+
+Goal 17 is still experimental backend landing, not S5 A/B validation and not
+a realistic workload replacement. The next step after this landing is short
+S5 A/B and realistic workload work using the same opt-in selector and audit
+contract.

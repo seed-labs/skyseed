@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # encoding: utf-8
 
-"""Opt-in experimental tc-BPF dataplane canary for bounded Skyseed runs."""
+"""Opt-in experimental tc-BPF backend apply path for bounded Skyseed runs."""
 
 from __future__ import annotations
 
@@ -62,7 +62,20 @@ ACTION_FORWARD = 1
 BPFTOOL = ""
 
 
-def apply_bpf_dataplane_canary(
+BPF_BACKEND_MODE = "experimental_bpf_backend"
+DEFAULT_BACKEND_SELECTOR = {
+    "mode": "semantic_intent_canary_subset",
+    "ut_ids": [],
+    "gw_ids": [],
+    "fec_ids": [],
+    "zone_ids": [],
+    "generation_ids": [],
+    "parameter_generation_ids": [],
+    "max_scope_entries": 1,
+}
+
+
+def apply_bpf_experimental_backend(
     *,
     run_dir: Path,
     topology_path: Path,
@@ -70,27 +83,48 @@ def apply_bpf_dataplane_canary(
     runtime_report: dict[str, Any],
     bpf_source: Path = DEFAULT_SOURCE,
     ping_count: int = 2,
+    selector: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Attach a single-path live canary, ping through it, read counters, rollback."""
+    """Attach an opt-in experimental BPF backend subset, ping, audit, rollback."""
 
     started_at = time.perf_counter()
-    scope = select_canary_scope(
-        topology_path=topology_path,
-        link_state_path=link_state_path,
-        runtime_report=runtime_report,
-    )
+    selector = normalize_selector(selector)
+    compiled = compile_from_run_dir(run_dir, input_mode="experimental_bpf_backend")
+    scope: dict[str, Any] = {
+        "scope": "not_selected",
+        "selector": selector,
+        "entries": [],
+        "attached_interfaces": [],
+        "semantic_intent_sources": {
+            "runtime": "G/Z FEC generation map + RuntimeEpoch metadata",
+            "parameter": "ParameterEpoch execution details parameter map",
+            "scope": "not_selected",
+        },
+    }
     report: dict[str, Any] = {
         "schema_version": 1,
-        "backend_mode": "experimental_bpf_dataplane_canary",
+        "backend_mode": BPF_BACKEND_MODE,
+        "bpf_backend_mode": BPF_BACKEND_MODE,
+        "bpf_enabled": True,
         "bpf_canary_enabled": True,
         "source": str(bpf_source),
         "run_dir": str(run_dir),
+        "selector": selector,
         "scope": scope,
+        "bpf_scope": scope["scope"],
         "qdisc_timeline_backend_status": "blocked_or_trace_only",
+        "parameter_backend_fields": ["active", "loss_ppm", "drop", "counters"],
+        "parameter_backend_excluded_fields": ["delay_ms", "rate_bps", "bandwidth_mbps"],
+        "semantic_intent_sources": scope["semantic_intent_sources"],
         "canonical_runtime_replaced": False,
         "linux_direct_backend_replaced": False,
+        "canonical_runtime_unchanged": True,
         "theaterq_or_external_qdisc_module": False,
-        "metrics": _empty_metrics(enabled=True),
+        "metrics": _empty_metrics(
+            enabled=True,
+            backend_mode=BPF_BACKEND_MODE,
+            bpf_scope=scope["scope"],
+        ),
         "steps": {},
     }
     attached_interfaces: list[str] = []
@@ -99,6 +133,54 @@ def apply_bpf_dataplane_canary(
     with tempfile.TemporaryDirectory(prefix="skyseed-bpf-canary-") as tmp:
         object_path = Path(tmp) / "skyseed_tc_dataplane_canary.o"
         try:
+            try:
+                runtime_report = enrich_runtime_report_from_run_dir(run_dir, runtime_report)
+                scope = select_experimental_scope(
+                    topology_path=topology_path,
+                    link_state_path=link_state_path,
+                    runtime_report=runtime_report,
+                    compiled=compiled,
+                    selector=selector,
+                )
+            except Exception as exc:
+                report["ok"] = False
+                report["reason"] = "scope_selection_failed_fail_closed"
+                report["scope_selection_error"] = str(exc)
+                report["metrics"] = build_metrics(
+                    enabled=True,
+                    backend_mode=BPF_BACKEND_MODE,
+                    bpf_scope=scope["scope"],
+                    attached_interfaces=[],
+                    loaded_runtime_generation_count=0,
+                    loaded_gz_fec_count=0,
+                    loaded_parameter_generation_count=0,
+                    loaded_parameter_link_count=0,
+                    active_generation_switch_count=0,
+                    counters={
+                        "drop_missing_fec": 1,
+                        "drop": 1,
+                    },
+                    rollback_completed=True,
+                )
+                report["rollback"] = {
+                    "steps": [],
+                    "residue": {
+                        "clsact_interface_hits": [],
+                        "pinned_maps": {},
+                        "clean": True,
+                    },
+                    "rollback_completed": True,
+                }
+                report["wall_seconds"] = round(time.perf_counter() - started_at, 6)
+                return report
+            report["scope"] = scope
+            report["bpf_scope"] = scope["scope"]
+            report["semantic_intent_sources"] = scope["semantic_intent_sources"]
+            report["metrics"] = _empty_metrics(
+                enabled=True,
+                backend_mode=BPF_BACKEND_MODE,
+                bpf_scope=scope["scope"],
+            )
             environment = collect_environment()
             report["environment"] = environment
             blockers = attach_blockers(environment)
@@ -108,7 +190,6 @@ def apply_bpf_dataplane_canary(
                 report["reason"] = "toolchain_or_privilege_blocked"
                 return report
 
-            compiled = compile_from_run_dir(run_dir, input_mode="dataplane_canary")
             report["compiled_summary"] = {
                 "runtime_generation_count": compiled["compact_summary"]["runtime_generation_count"],
                 "gz_fec_entry_count": compiled["compact_summary"]["gz_fec_entry_count"],
@@ -117,6 +198,12 @@ def apply_bpf_dataplane_canary(
                 ],
                 "parameter_entry_count": compiled["compact_summary"]["parameter_entry_count"],
                 "fixed_10s_assumed": compiled["compact_summary"]["fixed_10s_assumed"],
+                "qdisc_timeline_backend_status": compiled["compact_summary"][
+                    "qdisc_timeline_backend_status"
+                ],
+                "canonical_runtime_unchanged": compiled["compact_summary"][
+                    "canonical_runtime_unchanged"
+                ],
             }
             report["steps"]["compile"] = compile_bpf(bpf_source, object_path)
             if report["steps"]["compile"]["returncode"] != 0:
@@ -125,16 +212,21 @@ def apply_bpf_dataplane_canary(
                 return report
 
             report["steps"]["cleanup_before_attach"] = rollback_canary(
-                attached_interfaces=[scope["ut_host_interface"]],
+                attached_interfaces=scope["attached_interfaces"],
                 remove_maps=True,
             )
-            attach = attach_canary(scope["ut_host_interface"], object_path)
-            report["steps"]["attach"] = attach
-            if not command_ok(attach[-1]):
+            attach_results = []
+            for interface_name in scope["attached_interfaces"]:
+                attach_results.extend(attach_canary(interface_name, object_path))
+                attached_interfaces.append(interface_name)
+            report["steps"]["attach"] = attach_results
+            if not attach_results or not all(
+                command_ok(result) or is_tc_qdisc_delete(result)
+                for result in attach_results
+            ):
                 report["ok"] = False
                 report["reason"] = "tc_bpf_attach_failed"
                 return report
-            attached_interfaces.append(scope["ut_host_interface"])
 
             map_load = load_canary_maps(
                 compiled=compiled,
@@ -152,9 +244,10 @@ def apply_bpf_dataplane_canary(
                 report["reason"] = "bpf_map_load_failed"
                 return report
 
+            sanity_entry = scope["entries"][0]
             ping = docker_ping(
-                node_id=scope["ut_id"],
-                target_ip=scope["target_ip"],
+                node_id=sanity_entry["ut_id"],
+                target_ip=sanity_entry["target_ip"],
                 count=ping_count,
             )
             report["steps"]["canary_ping"] = ping
@@ -162,9 +255,18 @@ def apply_bpf_dataplane_canary(
             report["steps"]["counters"] = counters
             report["metrics"] = build_metrics(
                 enabled=True,
+                backend_mode=BPF_BACKEND_MODE,
+                bpf_scope=scope["scope"],
                 attached_interfaces=attached_interfaces,
-                loaded_generation_count=int(map_load["loaded_generation_count"]),
-                loaded_fec_count=int(map_load["loaded_fec_count"]),
+                loaded_runtime_generation_count=int(map_load["loaded_generation_count"]),
+                loaded_gz_fec_count=int(map_load["loaded_fec_count"]),
+                loaded_parameter_generation_count=int(
+                    map_load["loaded_parameter_generation_count"]
+                ),
+                loaded_parameter_link_count=int(map_load["loaded_parameter_link_count"]),
+                active_generation_switch_count=int(
+                    map_load["active_generation_switch_count"]
+                ),
                 counters=counters.get("counters", {}),
                 rollback_completed=False,
             )
@@ -177,7 +279,7 @@ def apply_bpf_dataplane_canary(
             return report
         finally:
             rollback_report = rollback_canary(
-                attached_interfaces=attached_interfaces or [scope["ut_host_interface"]],
+                attached_interfaces=attached_interfaces or scope["attached_interfaces"],
                 remove_maps=True,
             )
             report["rollback"] = rollback_report
@@ -191,16 +293,49 @@ def apply_bpf_dataplane_canary(
             report["wall_seconds"] = round(time.perf_counter() - started_at, 6)
 
 
-def _empty_metrics(*, enabled: bool) -> dict[str, Any]:
+def apply_bpf_dataplane_canary(
+    *,
+    run_dir: Path,
+    topology_path: Path,
+    link_state_path: Path,
+    runtime_report: dict[str, Any],
+    bpf_source: Path = DEFAULT_SOURCE,
+    ping_count: int = 2,
+    selector: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Backward-compatible wrapper for the Goal 16 canary flag."""
+
+    return apply_bpf_experimental_backend(
+        run_dir=run_dir,
+        topology_path=topology_path,
+        link_state_path=link_state_path,
+        runtime_report=runtime_report,
+        bpf_source=bpf_source,
+        ping_count=ping_count,
+        selector=selector,
+    )
+
+
+def _empty_metrics(*, enabled: bool, backend_mode: str, bpf_scope: str) -> dict[str, Any]:
     return {
+        "bpf_backend_mode": backend_mode,
+        "bpf_enabled": bool(enabled),
+        "bpf_scope": bpf_scope,
         "bpf_canary_enabled": bool(enabled),
         "bpf_attached_interface_count": 0,
+        "loaded_runtime_generation_count": 0,
+        "loaded_gz_fec_count": 0,
+        "loaded_parameter_generation_count": 0,
+        "loaded_parameter_link_count": 0,
+        "active_generation_switch_count": 0,
         "bpf_loaded_generation_count": 0,
         "bpf_loaded_fec_count": 0,
         "bpf_pass_counters": 0,
         "bpf_drop_counters": 0,
         "bpf_redirect_counters": 0,
         "canonical_fallback_count": 0,
+        "bpf_fail_closed_counters": 0,
+        "canonical_runtime_unchanged": True,
         "bpf_rollback_completed": False,
     }
 
@@ -208,45 +343,172 @@ def _empty_metrics(*, enabled: bool) -> dict[str, Any]:
 def build_metrics(
     *,
     enabled: bool,
+    backend_mode: str = BPF_BACKEND_MODE,
+    bpf_scope: str = "semantic_intent_canary_subset",
     attached_interfaces: Sequence[str],
-    loaded_generation_count: int,
-    loaded_fec_count: int,
+    loaded_runtime_generation_count: int | None = None,
+    loaded_gz_fec_count: int | None = None,
+    loaded_generation_count: int | None = None,
+    loaded_fec_count: int | None = None,
+    loaded_parameter_generation_count: int = 0,
+    loaded_parameter_link_count: int = 0,
+    active_generation_switch_count: int = 0,
     counters: dict[str, int],
     rollback_completed: bool,
 ) -> dict[str, Any]:
+    runtime_generation_count = (
+        int(loaded_runtime_generation_count)
+        if loaded_runtime_generation_count is not None
+        else int(loaded_generation_count or 0)
+    )
+    gz_fec_count = (
+        int(loaded_gz_fec_count)
+        if loaded_gz_fec_count is not None
+        else int(loaded_fec_count or 0)
+    )
+    fail_closed = sum(
+        int(counters.get(label, 0))
+        for label in [
+            "drop_missing_generation",
+            "drop_missing_fec",
+            "drop_inactive_fec",
+            "drop_inactive_parameter",
+            "drop_loss",
+            "drop_missing_parameter",
+            "drop_bad_packet",
+        ]
+    )
     return {
+        "bpf_backend_mode": backend_mode,
+        "bpf_enabled": bool(enabled),
+        "bpf_scope": bpf_scope,
         "bpf_canary_enabled": bool(enabled),
         "bpf_attached_interface_count": len(list(attached_interfaces)),
-        "bpf_loaded_generation_count": int(loaded_generation_count),
-        "bpf_loaded_fec_count": int(loaded_fec_count),
+        "loaded_runtime_generation_count": runtime_generation_count,
+        "loaded_gz_fec_count": gz_fec_count,
+        "loaded_parameter_generation_count": int(loaded_parameter_generation_count),
+        "loaded_parameter_link_count": int(loaded_parameter_link_count),
+        "active_generation_switch_count": int(active_generation_switch_count),
+        "bpf_loaded_generation_count": runtime_generation_count,
+        "bpf_loaded_fec_count": gz_fec_count,
         "bpf_pass_counters": int(counters.get("pass", 0)),
         "bpf_drop_counters": int(counters.get("drop", 0)),
         "bpf_redirect_counters": int(counters.get("redirect", 0)),
         "canonical_fallback_count": int(counters.get("canonical_fallback", 0)),
+        "bpf_fail_closed_counters": fail_closed,
         "bpf_packet_counters": dict(counters),
+        "canonical_runtime_unchanged": True,
         "bpf_rollback_completed": bool(rollback_completed),
     }
 
 
-def select_canary_scope(
+def normalize_selector(selector: dict[str, Any] | None) -> dict[str, Any]:
+    normalized = dict(DEFAULT_BACKEND_SELECTOR)
+    if selector:
+        normalized.update({key: value for key, value in selector.items() if value is not None})
+    for key in ["ut_ids", "gw_ids", "fec_ids", "zone_ids"]:
+        value = normalized.get(key) or []
+        if isinstance(value, str):
+            value = [part.strip() for part in value.split(",") if part.strip()]
+        normalized[key] = sorted({str(item) for item in value if str(item)})
+    for key in ["generation_ids", "parameter_generation_ids"]:
+        value = normalized.get(key) or []
+        if isinstance(value, str):
+            value = [part.strip() for part in value.split(",") if part.strip()]
+        normalized[key] = sorted({int(item) for item in value if str(item) != ""})
+    normalized["max_scope_entries"] = max(1, min(16, int(normalized.get("max_scope_entries") or 1)))
+    return normalized
+
+
+def select_experimental_scope(
     *,
     topology_path: Path,
     link_state_path: Path,
     runtime_report: dict[str, Any],
+    compiled: dict[str, Any],
+    selector: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    ping = first_successful_ping(runtime_report)
+    selector = normalize_selector(selector)
     topology = read_json(topology_path)
     link_state = read_json(link_state_path)
+    active_runtime_generation = int(compiled["bpf_maps"]["runtime"]["active_generation"]["value"])
+    if selector["generation_ids"]:
+        active_runtime_generation = int(selector["generation_ids"][0])
+    active_parameter_generation = int(
+        compiled["bpf_maps"]["parameter"]["parameter_generation"]["value"]
+    )
+    if selector["parameter_generation_ids"]:
+        active_parameter_generation = int(selector["parameter_generation_ids"][0])
+    selected_entries: list[dict[str, Any]] = []
+    for ping in successful_pings(runtime_report):
+        entry = build_scope_entry(
+            ping=ping,
+            topology=topology,
+            link_state=link_state,
+            compiled=compiled,
+            active_runtime_generation=active_runtime_generation,
+            active_parameter_generation=active_parameter_generation,
+            selector=selector,
+        )
+        if entry is None:
+            continue
+        selected_entries.append(entry)
+        if len(selected_entries) >= int(selector["max_scope_entries"]):
+            break
+    if not selected_entries:
+        raise RuntimeError("could not select an intent-matched BPF backend scope")
+
+    return {
+        "scope": "semantic_intent_canary_subset",
+        "selector": selector,
+        "max_scope_entries": selector["max_scope_entries"],
+        "entries": selected_entries,
+        "attached_interfaces": sorted({entry["ut_host_interface"] for entry in selected_entries}),
+        "target_ips": [entry["target_ip"] for entry in selected_entries],
+        "active_runtime_generation": active_runtime_generation,
+        "active_parameter_generation": active_parameter_generation,
+        "semantic_intent_sources": {
+            "runtime": "G/Z FEC generation map + RuntimeEpoch metadata",
+            "parameter": "ParameterEpoch execution details parameter map",
+            "scope": "successful runtime ping constrained by selector and FEC intent",
+        },
+        "canonical_fallback_scope": (
+            "packets outside selected intent-derived target IPs remain TC_ACT_OK "
+            "on canonical Linux/direct runtime"
+        ),
+    }
+
+
+def build_scope_entry(
+    *,
+    ping: dict[str, Any],
+    topology: dict[str, Any],
+    link_state: dict[str, Any],
+    compiled: dict[str, Any],
+    active_runtime_generation: int,
+    active_parameter_generation: int,
+    selector: dict[str, Any],
+) -> dict[str, Any] | None:
     ut_id = str(ping["ut_id"])
+    if selector["ut_ids"] and ut_id not in selector["ut_ids"]:
+        return None
+    if selector["gw_ids"] and str(ping.get("selected_gateway_id") or "") not in selector["gw_ids"]:
+        return None
     serving_satellite_id = str(ping["serving_satellite_id"])
     slot_name = f"{ut_id}-access-slot0"
     slot = slot_by_name(topology, slot_name)
     state = slot_state_by_name(link_state, slot_name)
-    if not state.get("occupied"):
-        raise RuntimeError(f"canary slot is not occupied: {slot_name}")
     binding = dict(state.get("binding") or {})
-    if str(binding.get("satellite_id")) != serving_satellite_id:
+    if state.get("occupied") and str(binding.get("satellite_id")) != serving_satellite_id:
         serving_satellite_id = str(binding.get("satellite_id") or serving_satellite_id)
+    fec_match = matching_fec_entry(
+        compiled=compiled,
+        generation_id=active_runtime_generation,
+        ping=ping,
+        selector=selector,
+    )
+    if fec_match is None:
+        return None
     ut_endpoint = dict(slot["preconnected_endpoint"])
     sat_template = dict(slot["dynamic_endpoint_template"])
     satellite_endpoint = {
@@ -264,7 +526,7 @@ def select_canary_scope(
         role=f"candidate:{serving_satellite_id}",
     )
     return {
-        "scope": "single_ut_access_path",
+        "scope": "semantic_intent_path",
         "ut_id": ut_id,
         "flow_id": str(ping.get("flow_id") or ut_id),
         "target_ip": str(ping["ping_target_ip"]),
@@ -276,20 +538,132 @@ def select_canary_scope(
         "ut_host_interface": ut_host_interface,
         "satellite_host_interface": satellite_host_interface,
         "satellite_ifindex": interface_ifindex(satellite_host_interface),
+        "runtime_generation": active_runtime_generation,
+        "parameter_generation": active_parameter_generation,
+        "fec": {
+            "fec_id": fec_match.get("fec_id"),
+            "fec_kind": fec_match.get("fec_kind"),
+            "zone_id": fec_match.get("zone_id"),
+            "selected_gateway_id": fec_match.get("selected_gateway_id"),
+            "epoch_id": fec_match.get("epoch_id"),
+            "source": fec_match.get("source"),
+        },
         "parameter_loss_ppm": parameter_loss_ppm(
             dict(state.get("runtime_parameters") or {}).get("loss_percent")
         ),
         "parameter_mark": stable_u32(f"{slot_name}:{ping['ping_target_ip']}") & 0xFFFF,
-        "canonical_fallback_scope": (
-            "all packets outside target_ip remain TC_ACT_OK on canonical backend"
-        ),
+        "qdisc_parameters_left_to_canonical": {
+            "delay_ms": dict(state.get("runtime_parameters") or {}).get("delay_ms"),
+            "bandwidth_mbps": dict(state.get("runtime_parameters") or {}).get(
+                "bandwidth_mbps"
+            ),
+        },
     }
 
 
+def select_canary_scope(
+    *,
+    topology_path: Path,
+    link_state_path: Path,
+    runtime_report: dict[str, Any],
+) -> dict[str, Any]:
+    """Legacy test helper selecting a single path from runtime ping metadata."""
+
+    fake_compiled = {
+        "bpf_maps": {
+            "runtime": {
+                "active_generation": {"value": 0},
+                "fec_forwarding": [
+                    {
+                        "generation_id": 0,
+                        "active": True,
+                        "fec_id": "__runtime_ping__",
+                        "fec_kind": "G",
+                        "selected_gateway_id": first_successful_ping(runtime_report).get(
+                            "selected_gateway_id"
+                        ),
+                    }
+                ],
+            },
+            "parameter": {"parameter_generation": {"value": 0}},
+        }
+    }
+    scope = select_experimental_scope(
+        topology_path=topology_path,
+        link_state_path=link_state_path,
+        runtime_report=runtime_report,
+        compiled=fake_compiled,
+        selector={"max_scope_entries": 1},
+    )
+    legacy = dict(scope["entries"][0])
+    legacy["scope"] = "single_ut_access_path"
+    legacy["canonical_fallback_scope"] = scope["canonical_fallback_scope"]
+    return legacy
+
+
 def first_successful_ping(runtime_report: dict[str, Any]) -> dict[str, Any]:
+    pings = successful_pings(runtime_report)
+    if pings:
+        return pings[0]
+    raise RuntimeError("could not select a successful UT ping for BPF canary")
+
+
+def enrich_runtime_report_from_run_dir(
+    run_dir: Path,
+    runtime_report: dict[str, Any],
+) -> dict[str, Any]:
+    """Add compact RuntimeEpoch detail records when live session data is sparse."""
+
+    if successful_pings(runtime_report):
+        return runtime_report
+    details_path = run_dir / "epoch_execution_details.jsonl"
+    if not details_path.exists():
+        return runtime_report
+    enriched = dict(runtime_report)
+    iterations = list(enriched.get("iterations", []) or [])
+    with details_path.open(encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(record, dict):
+                continue
+            iterations.append(
+                {
+                    "node_local_execution": record.get("node_local_execution") or {},
+                    "post_transition_connectivity": record.get(
+                        "post_transition_connectivity"
+                    )
+                    or {},
+                    "pre_transition_connectivity": record.get(
+                        "pre_transition_connectivity"
+                    )
+                    or {},
+                    "post_transition_paths": record.get("post_transition_paths") or [],
+                    "pre_transition_paths": record.get("pre_transition_paths") or [],
+                }
+            )
+    enriched["iterations"] = iterations
+    return enriched
+
+
+def successful_pings(runtime_report: dict[str, Any]) -> list[dict[str, Any]]:
+    pings: list[dict[str, Any]] = []
     for iteration in runtime_report.get("iterations", []) or []:
         execution = iteration.get("node_local_execution") or {}
-        for ping in execution.get("ping_results", []) or []:
+        candidate_groups = [
+            execution.get("ping_results", []) or [],
+            (iteration.get("post_transition_connectivity") or {}).get("results", [])
+            or [],
+            (iteration.get("post_transition_connectivity") or {}).get("flow_results", [])
+            or [],
+            (iteration.get("pre_transition_connectivity") or {}).get("flow_results", [])
+            or [],
+        ]
+        for ping in [item for group in candidate_groups for item in group]:
             if (
                 isinstance(ping, dict)
                 and ping.get("success") is True
@@ -297,7 +671,7 @@ def first_successful_ping(runtime_report: dict[str, Any]) -> dict[str, Any]:
                 and ping.get("ping_target_ip")
                 and ping.get("serving_satellite_id")
             ):
-                return dict(ping)
+                pings.append(dict(ping))
     initial = runtime_report.get("initial_runtime_readiness") or {}
     for ping in initial.get("flow_results", []) or []:
         if (
@@ -307,8 +681,40 @@ def first_successful_ping(runtime_report: dict[str, Any]) -> dict[str, Any]:
             and ping.get("ping_target_ip")
             and ping.get("serving_satellite_id")
         ):
-            return dict(ping)
-    raise RuntimeError("could not select a successful UT ping for BPF canary")
+            pings.append(dict(ping))
+    return pings
+
+
+def matching_fec_entry(
+    *,
+    compiled: dict[str, Any],
+    generation_id: int,
+    ping: dict[str, Any],
+    selector: dict[str, Any],
+) -> dict[str, Any] | None:
+    entries = [
+        entry
+        for entry in compiled["bpf_maps"]["runtime"].get("fec_forwarding", [])
+        if int(entry.get("generation_id", -1)) == int(generation_id)
+        and entry.get("active") is True
+    ]
+    fec_ids = set(selector.get("fec_ids") or [])
+    zone_ids = set(selector.get("zone_ids") or [])
+    gw_ids = set(selector.get("gw_ids") or [])
+    ping_gateway = str(ping.get("selected_gateway_id") or "")
+
+    def matches(entry: dict[str, Any]) -> bool:
+        if fec_ids and str(entry.get("fec_id") or "") not in fec_ids:
+            return False
+        if zone_ids and str(entry.get("zone_id") or "") not in zone_ids:
+            return False
+        if gw_ids and str(entry.get("selected_gateway_id") or "") not in gw_ids:
+            return False
+        if fec_ids or zone_ids or gw_ids:
+            return True
+        return not ping_gateway or str(entry.get("selected_gateway_id") or "") == ping_gateway
+
+    return next((dict(entry) for entry in entries if matches(entry)), None)
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -389,6 +795,11 @@ def run_command(
 
 def command_ok(result: dict[str, Any]) -> bool:
     return int(result.get("returncode", 1)) == 0
+
+
+def is_tc_qdisc_delete(result: dict[str, Any]) -> bool:
+    args = [str(part) for part in result.get("args", [])]
+    return "tc" in args and "qdisc" in args and "del" in args
 
 
 def collect_environment() -> dict[str, Any]:
@@ -582,6 +993,10 @@ def load_canary_maps(
     parameter_status = list(compiled["bpf_maps"]["parameter"]["param_status"])
     max_runtime_generations = min(64, len(runtime_status))
     max_parameter_generations = max(1, min(64, len(parameter_status)))
+    active_generations_before = {
+        "runtime": int(active_runtime_generation),
+        "parameter": int(active_parameter_generation),
+    }
     updates.append(update_u32_map("active_generation", 0, active_runtime_generation))
     for generation in runtime_status[:max_runtime_generations]:
         updates.append(
@@ -591,11 +1006,6 @@ def load_canary_maps(
                 1 if generation.get("installed") else 0,
             )
         )
-    dst_ipv4 = ipv4_little_endian_u32(scope["target_ip"])
-    route_key = pack_u32s(active_runtime_generation, dst_ipv4)
-    route_value = pack_u32s(1, ACTION_FORWARD, int(scope["satellite_ifindex"]))
-    updates.append(update_hash_map("fec_forwarding", route_key, route_value))
-
     updates.append(update_u32_map("parameter_generation", 0, active_parameter_generation))
     if parameter_status:
         for generation in parameter_status[:max_parameter_generations]:
@@ -608,20 +1018,33 @@ def load_canary_maps(
             )
     else:
         updates.append(update_u32_map("param_status", active_parameter_generation, 1))
-    parameter_key = pack_u32s(active_parameter_generation, dst_ipv4, IPPROTO_ICMP)
-    parameter_value = pack_u32s(
-        1,
-        int(scope.get("parameter_loss_ppm", 0)),
-        int(scope.get("parameter_mark", 0)),
-    )
-    updates.append(update_hash_map("parameter_values", parameter_key, parameter_value))
+
+    loaded_target_ips: set[str] = set()
+    loaded_parameter_links: set[str] = set()
+    for entry in scope["entries"]:
+        dst_ipv4 = ipv4_little_endian_u32(entry["target_ip"])
+        route_key = pack_u32s(active_runtime_generation, dst_ipv4)
+        route_value = pack_u32s(1, ACTION_FORWARD, int(entry["satellite_ifindex"]))
+        updates.append(update_hash_map("fec_forwarding", route_key, route_value))
+        parameter_key = pack_u32s(active_parameter_generation, dst_ipv4, IPPROTO_ICMP)
+        parameter_value = pack_u32s(
+            1,
+            int(entry.get("parameter_loss_ppm", 0)),
+            int(entry.get("parameter_mark", 0)),
+        )
+        updates.append(update_hash_map("parameter_values", parameter_key, parameter_value))
+        loaded_target_ips.add(str(entry["target_ip"]))
+        loaded_parameter_links.add(str(entry["slot_name"]))
+
     return {
         "updates": updates,
         "ok": all(command_ok(update) for update in updates),
         "loaded_generation_count": max_runtime_generations,
         "loaded_parameter_generation_count": max_parameter_generations,
-        "loaded_fec_count": 1,
-        "target_dst_ipv4_u32": dst_ipv4,
+        "loaded_fec_count": len(loaded_target_ips),
+        "loaded_parameter_link_count": len(loaded_parameter_links),
+        "active_generation_switch_count": len(active_generations_before),
+        "target_ips": sorted(loaded_target_ips),
     }
 
 

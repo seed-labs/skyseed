@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Experimental Skyseed dataplane canary classifier.
+ * Experimental Skyseed backend dataplane classifier.
  *
- * This classifier is opt-in only. It is intended for one narrow live
- * UT/gateway path while the canonical Linux/direct backend remains in place.
- * Packets outside the canary destination fall through to the canonical path.
+ * This classifier is opt-in only. Userspace loads a bounded selector-derived
+ * subset from Skyseed G/Z FEC and ParameterEpoch intent while the canonical
+ * Linux/direct backend remains in place. Packets outside the loaded BPF scope
+ * fall through to the canonical path.
  */
 
 #include <linux/bpf.h>

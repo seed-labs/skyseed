@@ -110,6 +110,33 @@ G/Z return intent, and ParameterEpoch timeline intent as backend-neutral as
 possible, then let each backend compile them into concrete commands, maps,
 qdisc changes, netns mutations, or node-agent payloads.
 
+## Goal 17 BPF Experimental Backend Landing
+
+Goal 17 lands BPF as an experimental backend under this abstraction boundary,
+not as a canonical backend replacement. The flow is:
+
+```text
+Skyseed semantic intent
+  -> G/Z FEC + RuntimeEpoch / ParameterEpoch artifacts
+  -> experimental BPF BackendCompilePlan
+  -> bounded BPF map/generation load
+  -> explicit opt-in dataplane apply
+  -> audit / canonical fallback / rollback
+```
+
+The live BPF scope is selected from semantic intent plus explicit selectors
+such as UT, gateway, FEC, zone, RuntimeEpoch generation, ParameterEpoch
+generation, and `max_scope_entries`. It is no longer tied to a fixed
+UT/GW/interface canary path. BPF remains default-off, canonical Linux/direct
+runtime remains unchanged, and non-selected packets fall back to the canonical
+path.
+
+ParameterEpoch ownership is split: BPF handles active/loss/drop/counter map
+decisions for the selected scope only, while delay, rate, and bandwidth remain
+with the existing qdisc/netem path. The qdisc timeline backend continues to be
+`blocked_or_trace_only`; this does not continue TheaterQ or introduce a custom
+qdisc module. S5 A/B and realistic workload validation are future work.
+
 ## Backend-Neutral Intent Candidates
 
 These objects are already good candidates for the semantic/IR layer.

@@ -24,7 +24,29 @@ from satellite.apps.compile_parameter_timeline_to_qdisc import (
 
 
 BACKEND_MODE = "experimental_bpf_shadow"
+EXPERIMENTAL_BACKEND_MODE = "experimental_bpf_backend"
 QDISC_TIMELINE_BACKEND_STATUS = "blocked_or_trace_only"
+DEFAULT_EXPERIMENTAL_BACKEND_CONFIG = {
+    "enabled": False,
+    "backend_mode": EXPERIMENTAL_BACKEND_MODE,
+    "selector": {
+        "mode": "semantic_intent_canary_subset",
+        "ut_ids": [],
+        "gw_ids": [],
+        "fec_ids": [],
+        "zone_ids": [],
+        "generation_ids": [],
+        "parameter_generation_ids": [],
+        "max_scope_entries": 1,
+    },
+    "scale_limits": {
+        "max_runtime_generations": 64,
+        "max_parameter_generations": 64,
+        "max_scope_entries": 1,
+        "max_fec_entries": 16,
+        "max_parameter_entries": 16,
+    },
+}
 PARAMETER_COUNTER_LABELS = {
     "parameter_generation_hit": "parameter_generation_hit",
     "parameter_entry_hit": "parameter_entry_hit",
@@ -121,6 +143,48 @@ def parameter_loss_ppm(loss_percent: float | int | None) -> int:
 
 def parameter_mark(link_id: str, generation_id: int) -> int:
     return ((stable_u32(link_id) & 0xFFFF) << 8) ^ (generation_id & 0xFF)
+
+
+def normalize_experimental_backend_config(
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return an explicit opt-in BPF backend config with bounded scale."""
+
+    normalized = copy.deepcopy(DEFAULT_EXPERIMENTAL_BACKEND_CONFIG)
+    if not config:
+        return normalized
+    for key, value in config.items():
+        if key in {"selector", "scale_limits"} and isinstance(value, dict):
+            normalized[key].update(value)
+        else:
+            normalized[key] = value
+    selector = normalized["selector"]
+    for key in ["ut_ids", "gw_ids", "fec_ids", "zone_ids"]:
+        value = selector.get(key) or []
+        if isinstance(value, str):
+            value = [part.strip() for part in value.split(",") if part.strip()]
+        selector[key] = sorted({str(item) for item in value if str(item)})
+    for key in ["generation_ids", "parameter_generation_ids"]:
+        value = selector.get(key) or []
+        if isinstance(value, str):
+            value = [part.strip() for part in value.split(",") if part.strip()]
+        selector[key] = sorted({int(item) for item in value if str(item) != ""})
+    scale_limits = normalized["scale_limits"]
+    for key in [
+        "max_runtime_generations",
+        "max_parameter_generations",
+        "max_scope_entries",
+        "max_fec_entries",
+        "max_parameter_entries",
+    ]:
+        scale_limits[key] = max(1, int(scale_limits.get(key) or 1))
+    selector["max_scope_entries"] = min(
+        int(selector.get("max_scope_entries") or 1),
+        int(scale_limits["max_scope_entries"]),
+    )
+    normalized["enabled"] = bool(normalized.get("enabled"))
+    normalized["backend_mode"] = EXPERIMENTAL_BACKEND_MODE
+    return normalized
 
 
 def expected_parameter_counter_labels(entry: dict[str, Any]) -> list[str]:
@@ -507,7 +571,9 @@ def compile_bpf_shadow_backend(
     input_mode: str = "existing_artifact",
     active_runtime_generation: int = 0,
     active_parameter_generation: int = 0,
+    experimental_backend_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    backend_config = normalize_experimental_backend_config(experimental_backend_config)
     gz_map = compile_generation_map(
         artifacts["gz_fec_plan"],
         artifacts["gz_update_diff_summary"],
@@ -539,6 +605,9 @@ def compile_bpf_shadow_backend(
         "qdisc_timeline_backend_status": QDISC_TIMELINE_BACKEND_STATUS,
         "canonical_runtime_unchanged": True,
         "linux_mpls_label_leakage_found": linux_mpls_label_leakage["found"],
+        "bpf_backend_mode": backend_config["backend_mode"],
+        "bpf_enabled": backend_config["enabled"],
+        "bpf_scope": backend_config["selector"]["mode"],
     }
     compiled = {
         "schema_version": 1,
@@ -567,7 +636,11 @@ def compile_bpf_shadow_backend(
         },
         "backend_compile_plan": {
             "name": "BackendCompilePlan",
-            "backend_mode": BACKEND_MODE,
+            "backend_mode": backend_config["backend_mode"],
+            "default_enabled": False,
+            "enabled": backend_config["enabled"],
+            "selector": copy.deepcopy(backend_config["selector"]),
+            "scale_limits": copy.deepcopy(backend_config["scale_limits"]),
             "components": [
                 "G/Z FEC generation map",
                 "ParameterEpoch parameter map",
@@ -583,6 +656,25 @@ def compile_bpf_shadow_backend(
                 ),
             },
             "not_intent_sources": ["Linux MPLS labels", "LFIB operation estimates"],
+            "dataplane_apply": {
+                "opt_in_required": True,
+                "canonical_fallback_required": True,
+                "rollback_required": True,
+                "scope_from": "Skyseed semantic intent constrained by selector",
+            },
+            "qdisc_timeline": {
+                "status": QDISC_TIMELINE_BACKEND_STATUS,
+                "bpf_responsibility": ["active", "loss", "drop", "counter"],
+                "canonical_qdisc_responsibility": [
+                    "delay",
+                    "rate",
+                    "bandwidth",
+                ],
+            },
+            "active_generation_switching": active_generation_switch_plan(
+                gz_map,
+                parameter_map,
+            ),
         },
         "bpf_maps": {
             "runtime": gz_map["bpf_maps"],
@@ -619,7 +711,7 @@ def build_backend_audit_report(
     linux_mpls_label_leakage: dict[str, Any],
 ) -> dict[str, Any]:
     gz_checks = normalized_runtime_self_checks(gz_map)
-    parameter_checks = parameter_map["self_checks"]
+    parameter_checks = normalized_parameter_self_checks(parameter_map)
     checks = {
         "gz_fec_intent_matches_bpf_generation_map": {
             "ok": (
@@ -682,6 +774,49 @@ def build_backend_audit_report(
     }
 
 
+def active_generation_switch_plan(
+    gz_map: dict[str, Any],
+    parameter_map: dict[str, Any],
+) -> dict[str, Any]:
+    runtime_switches = []
+    for generation in gz_map.get("generations", []):
+        runtime_epoch = generation.get("runtime_epoch") or {}
+        runtime_switches.append(
+            {
+                "generation_id": generation.get("generation_id"),
+                "epoch_id": generation.get("epoch_id"),
+                "activation_relative_time_seconds": runtime_epoch.get(
+                    "activation_relative_time_seconds"
+                ),
+                "activation_time_utc": runtime_epoch.get("activation_time_utc"),
+                "future_generation_preloaded_not_active": generation.get("active") is not True,
+            }
+        )
+    parameter_switches = []
+    for generation in parameter_map["bpf_maps"].get("param_status", []):
+        parameter_switches.append(
+            {
+                "generation_id": generation.get("generation_id"),
+                "epoch_id": generation.get("epoch_id"),
+                "activation_relative_time_seconds": generation.get(
+                    "activation_relative_time_seconds"
+                ),
+                "activation_time_utc": generation.get("activation_time_utc"),
+                "future_generation_preloaded_not_active": generation.get("active") is not True,
+            }
+        )
+    return {
+        "source": "RuntimeEpoch/ParameterEpoch event-time metadata",
+        "runtime_active_generation": gz_map["bpf_maps"]["active_generation"],
+        "parameter_active_generation": parameter_map["bpf_maps"]["parameter_generation"],
+        "runtime_switch_count": len(runtime_switches),
+        "parameter_switch_count": len(parameter_switches),
+        "runtime_switches": runtime_switches,
+        "parameter_switches": parameter_switches,
+        "future_generation_not_early_active": True,
+    }
+
+
 def normalized_runtime_self_checks(gz_map: dict[str, Any]) -> dict[str, Any]:
     checks = copy.deepcopy(gz_map["self_checks"])
     if int(gz_map.get("summary", {}).get("inactive_fec_tombstone_count") or 0) == 0:
@@ -691,6 +826,24 @@ def normalized_runtime_self_checks(gz_map: dict[str, Any]) -> dict[str, Any]:
             "note": (
                 "No inactive G/Z FEC tombstones observed in source artifact; "
                 "inactive rule remains part of the compiled fail-closed rule set."
+            ),
+        }
+    return checks
+
+
+def normalized_parameter_self_checks(parameter_map: dict[str, Any]) -> dict[str, Any]:
+    checks = copy.deepcopy(parameter_map["self_checks"])
+    generations = parameter_map["bpf_maps"].get("param_status", [])
+    active_generation = int(
+        parameter_map["bpf_maps"].get("parameter_generation", {}).get("value") or 0
+    )
+    if not any(int(item.get("generation_id", -1)) > active_generation for item in generations):
+        checks["future_parameter_generation_not_active"] = {
+            "ok": True,
+            "probe": None,
+            "note": (
+                "No future ParameterEpoch generation observed in source artifact; "
+                "future-generation rule remains part of the compiled fail-closed rule set."
             ),
         }
     return checks
@@ -797,6 +950,7 @@ def compile_from_run_dir(
     input_mode: str = "existing_artifact",
     active_runtime_generation: int = 0,
     active_parameter_generation: int = 0,
+    experimental_backend_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     artifacts = load_shadow_backend_artifacts(run_dir)
     return compile_bpf_shadow_backend(
@@ -804,6 +958,7 @@ def compile_from_run_dir(
         input_mode=input_mode,
         active_runtime_generation=active_runtime_generation,
         active_parameter_generation=active_parameter_generation,
+        experimental_backend_config=experimental_backend_config,
     )
 
 

@@ -72,7 +72,7 @@ from skyseed_preflight import (
 from bpf_backend import emit_shadow_artifacts_for_run_dir
 from bpf_dataplane_canary import (
     DEFAULT_SOURCE as DEFAULT_BPF_CANARY_SOURCE,
-    apply_bpf_dataplane_canary,
+    apply_bpf_experimental_backend,
 )
 from contracts import NetworkMutationPlan
 from return_path_audit import audit_planner_preview
@@ -157,6 +157,23 @@ def _safe_name(value: str) -> str:
 
 def _bool_text(value: bool) -> str:
     return "true" if value else "false"
+
+
+def _bpf_backend_opted_in(args: argparse.Namespace) -> bool:
+    return bool(args.bpf_dataplane_canary) or str(args.bpf_backend) == "experimental"
+
+
+def _bpf_backend_selector_from_args(args: argparse.Namespace) -> Dict[str, Any]:
+    return {
+        "mode": "semantic_intent_canary_subset",
+        "ut_ids": list(args.bpf_selector_ut or []),
+        "gw_ids": list(args.bpf_selector_gw or []),
+        "fec_ids": list(args.bpf_selector_fec or []),
+        "zone_ids": list(args.bpf_selector_zone or []),
+        "generation_ids": list(args.bpf_selector_generation or []),
+        "parameter_generation_ids": list(args.bpf_selector_parameter_generation or []),
+        "max_scope_entries": int(args.bpf_max_scope_entries),
+    }
 
 
 def _current_preflight_ignore_pids() -> List[int]:
@@ -654,10 +671,63 @@ def parse_args() -> argparse.Namespace:
         "--bpf-dataplane-canary",
         action="store_true",
         help=(
-            "Opt in to the experimental tc-BPF dataplane canary for one live "
-            "UT/gateway path. Default is off; canonical Linux/direct runtime "
-            "remains the fallback for all non-canary traffic."
+            "Backward-compatible opt in to the experimental tc-BPF backend "
+            "for one live intent-selected canary subset. Prefer "
+            "--bpf-backend experimental for new runs."
         ),
+    )
+    parser.add_argument(
+        "--bpf-backend",
+        choices=("off", "experimental"),
+        default="off",
+        help=(
+            "Opt in to the experimental BPF backend. Default is off and the "
+            "canonical Linux/direct backend is unchanged."
+        ),
+    )
+    parser.add_argument(
+        "--bpf-selector-ut",
+        action="append",
+        default=[],
+        help="Restrict experimental BPF scope to a UT id. May be repeated.",
+    )
+    parser.add_argument(
+        "--bpf-selector-gw",
+        action="append",
+        default=[],
+        help="Restrict experimental BPF scope to a gateway id. May be repeated.",
+    )
+    parser.add_argument(
+        "--bpf-selector-fec",
+        action="append",
+        default=[],
+        help="Restrict experimental BPF scope to a G/Z FEC id. May be repeated.",
+    )
+    parser.add_argument(
+        "--bpf-selector-zone",
+        action="append",
+        default=[],
+        help="Restrict experimental BPF scope to a zone id. May be repeated.",
+    )
+    parser.add_argument(
+        "--bpf-selector-generation",
+        type=int,
+        action="append",
+        default=[],
+        help="Restrict experimental BPF scope to a RuntimeEpoch generation id.",
+    )
+    parser.add_argument(
+        "--bpf-selector-parameter-generation",
+        type=int,
+        action="append",
+        default=[],
+        help="Restrict experimental BPF parameter map to a ParameterEpoch generation id.",
+    )
+    parser.add_argument(
+        "--bpf-max-scope-entries",
+        type=int,
+        default=1,
+        help="Safety limit for opt-in BPF dataplane scope entries.",
     )
     parser.add_argument(
         "--bpf-canary-source",
@@ -4293,6 +4363,7 @@ def _run_live_temporal_runtime(
                 final_runtime_connectivity_validation
             ),
             "bpf_dataplane_canary": _safe_dict(bpf_dataplane_canary),
+            "bpf_experimental_backend": _safe_dict(bpf_dataplane_canary),
             "outcome": {
                 "real_apply_success": bool(epoch_execution_records)
                 and all(record["outcome"]["success"] for record in epoch_execution_records),
@@ -5574,18 +5645,20 @@ def _run_live_temporal_runtime(
                 runtime_epochs_completed=runtime_count,
                 parameter_epochs_completed=parameter_count,
             )
-        if bool(args.bpf_dataplane_canary) and active_session is not None:
+        if _bpf_backend_opted_in(args) and active_session is not None:
+            bpf_selector = _bpf_backend_selector_from_args(args)
             _progress(
-                phase="bpf_dataplane_canary",
-                event_type="bpf_dataplane_canary_started",
+                phase="bpf_experimental_backend",
+                event_type="bpf_experimental_backend_started",
                 phase_detail={
                     "source": str(args.bpf_canary_source),
-                    "scope": "single_ut_access_path",
+                    "backend_mode": "experimental",
+                    "selector": bpf_selector,
                 },
                 runtime_epochs_completed=runtime_count,
                 parameter_epochs_completed=parameter_count,
             )
-            bpf_dataplane_canary = apply_bpf_dataplane_canary(
+            bpf_dataplane_canary = apply_bpf_experimental_backend(
                 run_dir=run_dir,
                 topology_path=topology_path,
                 link_state_path=link_state_path,
@@ -5597,20 +5670,22 @@ def _run_live_temporal_runtime(
                 },
                 bpf_source=Path(args.bpf_canary_source),
                 ping_count=int(args.bpf_canary_ping_count),
+                selector=bpf_selector,
             )
             _write_json(run_dir / "bpf_dataplane_canary.json", bpf_dataplane_canary)
+            _write_json(run_dir / "bpf_experimental_backend.json", bpf_dataplane_canary)
             events.append(
                 {
                     "timestamp_utc": _timestamp_utc(),
-                    "event_type": "bpf_dataplane_canary_completed",
+                    "event_type": "bpf_experimental_backend_completed",
                     "ok": bool(bpf_dataplane_canary.get("ok")),
                     "reason": bpf_dataplane_canary.get("reason"),
                     "metrics": dict(bpf_dataplane_canary.get("metrics") or {}),
                 }
             )
             _progress(
-                phase="bpf_dataplane_canary_completed",
-                event_type="bpf_dataplane_canary_completed",
+                phase="bpf_experimental_backend_completed",
+                event_type="bpf_experimental_backend_completed",
                 phase_detail={
                     "ok": bool(bpf_dataplane_canary.get("ok")),
                     "reason": bpf_dataplane_canary.get("reason"),
@@ -5622,10 +5697,10 @@ def _run_live_temporal_runtime(
                 parameter_epochs_completed=parameter_count,
             )
             if bpf_dataplane_canary.get("ok") is not True:
-                failure_reason = "bpf_dataplane_canary_failed"
+                failure_reason = "bpf_experimental_backend_failed"
                 failure_context = {
                     "current_epoch_context": _safe_dict(current_epoch_context),
-                    "bpf_dataplane_canary": _safe_dict(bpf_dataplane_canary),
+                    "bpf_experimental_backend": _safe_dict(bpf_dataplane_canary),
                 }
     except Exception as exc:  # noqa: BLE001
         failure_reason = str(exc)
@@ -7295,6 +7370,7 @@ def _experiment_summary_payload(
         "temporal_audit": None if runtime_report is None else runtime_report.get("temporal_audit"),
         "bpf_shadow_emission": bpf_shadow_emission,
         "bpf_dataplane_canary": bpf_dataplane_canary,
+        "bpf_experimental_backend": bpf_dataplane_canary,
         "data_provenance": data_provenance,
         "generated_artifacts": artifacts,
     }
@@ -8706,18 +8782,18 @@ def main() -> int:
                         )
                         bpf_dataplane_canary = (
                             dict(runtime_report.get("bpf_dataplane_canary") or {})
-                            if bool(args.bpf_dataplane_canary)
+                            if _bpf_backend_opted_in(args)
                             else None
                         )
                         if (
-                            bool(args.bpf_dataplane_canary)
+                            _bpf_backend_opted_in(args)
                             and bpf_dataplane_canary
                             and bpf_dataplane_canary.get("ok") is not True
                         ):
                             runtime_blocker = {
-                                "stage": "bpf_dataplane_canary",
-                                "classified_blocker": "bpf_dataplane_canary_failed",
-                                "canary": bpf_dataplane_canary,
+                                "stage": "bpf_experimental_backend",
+                                "classified_blocker": "bpf_experimental_backend_failed",
+                                "bpf_experimental_backend": bpf_dataplane_canary,
                             }
                         phase_timing["initial_runtime_readiness_wall_seconds"] = round(
                             float(
@@ -9238,6 +9314,9 @@ def main() -> int:
         generated_artifacts["bpf_dataplane_canary_json"] = str(
             run_dir / "bpf_dataplane_canary.json"
         )
+        generated_artifacts["bpf_experimental_backend_json"] = str(
+            run_dir / "bpf_experimental_backend.json"
+        )
     if startup_strategy is not None:
         startup_strategy = {
             **dict(startup_strategy),
@@ -9350,8 +9429,14 @@ def main() -> int:
     if bpf_dataplane_canary is not None:
         metrics = dict(bpf_dataplane_canary.get("metrics") or {})
         print(
-            "BPF dataplane canary: "
+            "BPF experimental backend: "
             f"ok={_bool_text(bool(bpf_dataplane_canary.get('ok')))} "
+            f"mode={metrics.get('bpf_backend_mode', 'unknown')} "
+            f"scope={metrics.get('bpf_scope', 'unknown')} "
+            f"runtime_generations={metrics.get('loaded_runtime_generation_count', 0)} "
+            f"gz_fecs={metrics.get('loaded_gz_fec_count', 0)} "
+            f"parameter_generations={metrics.get('loaded_parameter_generation_count', 0)} "
+            f"parameter_links={metrics.get('loaded_parameter_link_count', 0)} "
             f"redirect={metrics.get('bpf_redirect_counters', 0)} "
             f"fallback={metrics.get('canonical_fallback_count', 0)} "
             f"rollback={_bool_text(bool(metrics.get('bpf_rollback_completed')))}"

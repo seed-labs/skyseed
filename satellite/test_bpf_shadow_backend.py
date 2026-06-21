@@ -12,6 +12,7 @@ from satellite.bpf_backend import (
     BACKEND_MODE,
     compile_bpf_shadow_backend,
     emit_shadow_artifacts_for_run_dir,
+    normalize_experimental_backend_config,
     parameter_lookup_decision,
 )
 
@@ -95,6 +96,19 @@ class BpfShadowBackendTests(unittest.TestCase):
         self.assertFalse(summary["fixed_10s_assumed"])
         self.assertEqual(summary["qdisc_timeline_backend_status"], "blocked_or_trace_only")
         self.assertTrue(summary["canonical_runtime_unchanged"])
+        self.assertEqual(summary["bpf_backend_mode"], "experimental_bpf_backend")
+        self.assertFalse(summary["bpf_enabled"])
+        self.assertEqual(summary["bpf_scope"], "semantic_intent_canary_subset")
+        self.assertFalse(report["backend_compile_plan"]["enabled"])
+        self.assertEqual(
+            report["backend_compile_plan"]["qdisc_timeline"]["status"],
+            "blocked_or_trace_only",
+        )
+        self.assertTrue(
+            report["backend_compile_plan"]["active_generation_switching"][
+                "future_generation_not_early_active"
+            ]
+        )
         self.assertTrue(report["backend_audit_report"]["ok"])
 
         leakage = report["backend_audit_report"]["checks"][
@@ -165,6 +179,26 @@ class BpfShadowBackendTests(unittest.TestCase):
         inactive_check = runtime_fail_closed["checks"]["inactive_fec_fail_closed"]
         self.assertTrue(inactive_check["ok"])
         self.assertIn("No inactive G/Z FEC tombstones", inactive_check["note"])
+
+    def test_experimental_backend_config_is_opt_in_and_bounded(self) -> None:
+        config = normalize_experimental_backend_config(
+            {
+                "enabled": True,
+                "selector": {
+                    "ut_ids": "ut3,ut4",
+                    "gw_ids": ["gw5"],
+                    "max_scope_entries": 99,
+                },
+                "scale_limits": {"max_scope_entries": 2},
+            }
+        )
+
+        self.assertTrue(config["enabled"])
+        self.assertEqual(config["backend_mode"], "experimental_bpf_backend")
+        self.assertEqual(config["selector"]["ut_ids"], ["ut3", "ut4"])
+        self.assertEqual(config["selector"]["gw_ids"], ["gw5"])
+        self.assertEqual(config["selector"]["max_scope_entries"], 2)
+        self.assertEqual(config["scale_limits"]["max_scope_entries"], 2)
 
     @staticmethod
     def _artifacts() -> dict:
