@@ -1,0 +1,510 @@
+{
+  "ab_executed": false,
+  "ab_run_dirs": {
+    "A_bpf_off": null,
+    "B_bpf_on": null
+  },
+  "baseline": {
+    "baseline_role": "existing_2h_duration_decision_source",
+    "correctness": {
+      "ping_success": true,
+      "post_run_preflight_clean": true,
+      "real_apply_success": true,
+      "rollback_completed": true,
+      "temporal_audit": {
+        "no_future_active_link_violation": true,
+        "no_future_forwarding_state_violation": true,
+        "parameter_epoch_without_topology_mutation": true,
+        "rollback_completed": true,
+        "runtime_epoch_has_expected_mutation_scope": true
+      }
+    },
+    "duration_windows": [
+      {
+        "parameter_epoch_count": 70,
+        "parameter_host_apply_seconds": {
+          "avg": 0.489901,
+          "count": 70,
+          "max": 0.946394,
+          "p50": 0.479635,
+          "p95": 0.759856
+        },
+        "parameter_transition_wall_seconds": {
+          "avg": 0.762214,
+          "count": 70,
+          "max": 2.234283,
+          "p50": 0.723688,
+          "p95": 1.055478
+        },
+        "runtime_epoch_count": 80,
+        "runtime_host_apply_seconds": {
+          "avg": 1.829428,
+          "count": 80,
+          "max": 6.427592,
+          "p50": 1.579038,
+          "p95": 3.560396
+        },
+        "runtime_transition_wall_seconds": {
+          "avg": 3.754599,
+          "count": 80,
+          "max": 11.164626,
+          "p50": 3.374019,
+          "p95": 7.324847
+        },
+        "simulated_seconds": 1800
+      },
+      {
+        "parameter_epoch_count": 109,
+        "parameter_host_apply_seconds": {
+          "avg": 0.500147,
+          "count": 109,
+          "max": 0.946394,
+          "p50": 0.4882,
+          "p95": 0.751783
+        },
+        "parameter_transition_wall_seconds": {
+          "avg": 0.763162,
+          "count": 109,
+          "max": 2.234283,
+          "p50": 0.742865,
+          "p95": 1.020608
+        },
+        "runtime_epoch_count": 116,
+        "runtime_host_apply_seconds": {
+          "avg": 1.916899,
+          "count": 116,
+          "max": 6.427592,
+          "p50": 1.627623,
+          "p95": 3.621865
+        },
+        "runtime_transition_wall_seconds": {
+          "avg": 3.87923,
+          "count": 116,
+          "max": 11.164626,
+          "p50": 3.508571,
+          "p95": 7.331265
+        },
+        "simulated_seconds": 2700
+      },
+      {
+        "parameter_epoch_count": 145,
+        "parameter_host_apply_seconds": {
+          "avg": 0.498018,
+          "count": 145,
+          "max": 0.946394,
+          "p50": 0.480372,
+          "p95": 0.76607
+        },
+        "parameter_transition_wall_seconds": {
+          "avg": 0.759877,
+          "count": 145,
+          "max": 2.234283,
+          "p50": 0.740864,
+          "p95": 1.075073
+        },
+        "runtime_epoch_count": 155,
+        "runtime_host_apply_seconds": {
+          "avg": 1.995202,
+          "count": 155,
+          "max": 7.760465,
+          "p50": 1.691382,
+          "p95": 3.919476
+        },
+        "runtime_transition_wall_seconds": {
+          "avg": 3.941919,
+          "count": 155,
+          "max": 14.432659,
+          "p50": 3.633134,
+          "p95": 7.3786
+        },
+        "simulated_seconds": 3600
+      },
+      {
+        "parameter_epoch_count": 202,
+        "parameter_host_apply_seconds": {
+          "avg": 0.541699,
+          "count": 202,
+          "max": 1.088625,
+          "p50": 0.523748,
+          "p95": 0.878875
+        },
+        "parameter_transition_wall_seconds": {
+          "avg": 0.805986,
+          "count": 202,
+          "max": 2.234283,
+          "p50": 0.775333,
+          "p95": 1.164706
+        },
+        "runtime_epoch_count": 248,
+        "runtime_host_apply_seconds": {
+          "avg": 2.100173,
+          "count": 248,
+          "max": 7.760465,
+          "p50": 1.838836,
+          "p95": 4.198815
+        },
+        "runtime_transition_wall_seconds": {
+          "avg": 4.166944,
+          "count": 248,
+          "max": 15.870726,
+          "p50": 3.794137,
+          "p95": 8.07146
+        },
+        "simulated_seconds": 5400
+      },
+      {
+        "parameter_epoch_count": 275,
+        "parameter_host_apply_seconds": {
+          "avg": 0.594303,
+          "count": 275,
+          "max": 1.38801,
+          "p50": 0.556252,
+          "p95": 0.973226
+        },
+        "parameter_transition_wall_seconds": {
+          "avg": 0.867841,
+          "count": 275,
+          "max": 2.234283,
+          "p50": 0.820086,
+          "p95": 1.278064
+        },
+        "runtime_epoch_count": 324,
+        "runtime_host_apply_seconds": {
+          "avg": 2.177011,
+          "count": 324,
+          "max": 8.564896,
+          "p50": 1.925403,
+          "p95": 4.392757
+        },
+        "runtime_transition_wall_seconds": {
+          "avg": 4.244032,
+          "count": 324,
+          "max": 15.870726,
+          "p50": 3.861377,
+          "p95": 7.965185
+        },
+        "simulated_seconds": 7140
+      }
+    ],
+    "epoch_counts": {
+      "parameter": 275,
+      "runtime_including_initial": 325,
+      "runtime_steady_state": 324,
+      "total_rows": 600
+    },
+    "operation_metrics": {
+      "epoch_counts": {
+        "parameter_epoch": 275,
+        "runtime_epoch": 325
+      },
+      "host_apply_result_max_per_epoch": 190,
+      "host_apply_result_total": 8462,
+      "host_operation_counts": {
+        "activate_slot_attachment": 193,
+        "rebind_slot_attachment": 1255,
+        "update_slot_parameters": 7014
+      }
+    },
+    "parameter_epochs": {
+      "activation_lag_seconds": {
+        "avg": 1.049603,
+        "count": 275,
+        "max": 13.221247,
+        "p50": 0.152221,
+        "p95": 4.125962
+      },
+      "cleanup_verification_seconds": {
+        "avg": 0.0,
+        "count": 275,
+        "max": 0.0,
+        "p50": 0.0,
+        "p95": 0.0
+      },
+      "count": 275,
+      "host_apply_seconds": {
+        "avg": 0.594303,
+        "count": 275,
+        "max": 1.38801,
+        "p50": 0.556252,
+        "p95": 0.973226
+      },
+      "network_mutation_seconds": {
+        "avg": 0.602325,
+        "count": 275,
+        "max": 1.402429,
+        "p50": 0.564442,
+        "p95": 0.981214
+      },
+      "node_local_apply_seconds": {
+        "avg": 0.0,
+        "count": 275,
+        "max": 0.0,
+        "p50": 0.0,
+        "p95": 0.0
+      },
+      "parameter_qdisc_apply_seconds": {
+        "avg": 1.122398,
+        "count": 275,
+        "max": 2.581523,
+        "p50": 1.050617,
+        "p95": 1.878107
+      },
+      "transition_wall_seconds": {
+        "avg": 0.867841,
+        "count": 275,
+        "max": 2.234283,
+        "p50": 0.820086,
+        "p95": 1.278064
+      }
+    },
+    "run_dir": "/home/seed/skyseed/satellite/output/starlink_shell_experiments/gz-z6metadata-2h-gated-20260611-0824",
+    "runtime_including_initial": {
+      "activation_lag_seconds": {
+        "avg": 1.12664,
+        "count": 325,
+        "max": 24.550655,
+        "p50": 0.192695,
+        "p95": 4.764356
+      },
+      "cleanup_verification_seconds": {
+        "avg": 1.148755,
+        "count": 325,
+        "max": 5.087,
+        "p50": 0.921908,
+        "p95": 2.64196
+      },
+      "count": 325,
+      "host_apply_seconds": {
+        "avg": 2.261729,
+        "count": 325,
+        "max": 29.710443,
+        "p50": 1.926272,
+        "p95": 4.571965
+      },
+      "network_mutation_seconds": {
+        "avg": 2.269683,
+        "count": 325,
+        "max": 29.728546,
+        "p50": 1.933083,
+        "p95": 4.578654
+      },
+      "node_local_apply_seconds": {
+        "avg": 0.645377,
+        "count": 325,
+        "max": 2.751492,
+        "p50": 0.542865,
+        "p95": 1.472614
+      },
+      "parameter_qdisc_apply_seconds": {
+        "avg": 0.0,
+        "count": 325,
+        "max": 0.0,
+        "p50": 0.0,
+        "p95": 0.0
+      },
+      "transition_wall_seconds": {
+        "avg": 4.336122,
+        "count": 325,
+        "max": 34.173132,
+        "p50": 3.872053,
+        "p95": 8.095321
+      }
+    },
+    "runtime_steady_state": {
+      "activation_lag_seconds": {
+        "avg": 1.129755,
+        "count": 324,
+        "max": 24.550655,
+        "p50": 0.193438,
+        "p95": 4.766595
+      },
+      "cleanup_verification_seconds": {
+        "avg": 1.152301,
+        "count": 324,
+        "max": 5.087,
+        "p50": 0.92291,
+        "p95": 2.646154
+      },
+      "count": 324,
+      "host_apply_seconds": {
+        "avg": 2.177011,
+        "count": 324,
+        "max": 8.564896,
+        "p50": 1.925403,
+        "p95": 4.392757
+      },
+      "network_mutation_seconds": {
+        "avg": 2.184933,
+        "count": 324,
+        "max": 8.572091,
+        "p50": 1.932399,
+        "p95": 4.399497
+      },
+      "node_local_apply_seconds": {
+        "avg": 0.641065,
+        "count": 324,
+        "max": 2.751492,
+        "p50": 0.542561,
+        "p95": 1.432611
+      },
+      "parameter_qdisc_apply_seconds": {
+        "avg": 0.0,
+        "count": 324,
+        "max": 0.0,
+        "p50": 0.0,
+        "p95": 0.0
+      },
+      "transition_wall_seconds": {
+        "avg": 4.244032,
+        "count": 324,
+        "max": 15.870726,
+        "p50": 3.861377,
+        "p95": 7.965185
+      }
+    },
+    "timing_analysis": {
+      "first_runtime_epoch": {
+        "classification": "initial_materialization_epoch",
+        "execution_after_prepare_reconcile_wall_seconds": 34.172931,
+        "network_mutation_plan_wall_seconds": 29.728546,
+        "node_local_apply_wall_seconds": 2.042547,
+        "transition_wall_seconds": 34.173132
+      },
+      "initial_activation": {
+        "classification": "bootstrap_plus_initial_runtime_epoch",
+        "cold_start_before_first_epoch_execution_wall_seconds": 579.663337,
+        "first_runtime_epoch_execution_after_prepare_reconcile_wall_seconds": 34.172931,
+        "first_runtime_epoch_prepare_reconcile_wall_seconds": 0.000201,
+        "first_runtime_epoch_transition_wall_seconds": 34.173132,
+        "includes_first_runtime_epoch": true,
+        "initial_activation_wall_seconds": 613.836268,
+        "steady_runtime_excludes_initial_activation": true
+      },
+      "startup_preparation": {
+        "base_runtime_readiness_wall_seconds": 1.46286,
+        "cold_start_before_first_epoch_execution_wall_seconds": 579.663337,
+        "compose_up_wall_seconds": 79.929134,
+        "container_readiness_wall_seconds": 0.061933,
+        "pre_epoch_host_runtime_prepare_wall_seconds": 193.936684,
+        "pre_epoch_host_runtime_prewarm_wall_seconds": 498.209209,
+        "pre_epoch_host_runtime_reconcile_wall_seconds": 304.050816,
+        "pre_first_epoch_direct_backend_prepare_wall_seconds": 0.0,
+        "pre_first_epoch_runtime_manager_reconcile_wall_seconds": 0.000201,
+        "ready_to_execute_epochs_wall_seconds": 499.67227
+      }
+    }
+  },
+  "blocker_policy_honored": true,
+  "bpf_full_eligible_scope_readiness": {
+    "allowed_non_bpf_scope": {
+      "delay_rate_bandwidth": "qdisc_netem",
+      "qdisc_timeline_backend_status": "blocked_or_trace_only"
+    },
+    "blockers": [
+      "live_fec_forwarding_map_capacity_below_compiled_gz_fec_scope",
+      "live_parameter_generation_capacity_below_compiled_parameter_scope",
+      "live_parameter_values_map_capacity_below_compiled_parameter_scope",
+      "live_selector_capacity_below_parameter_link_scope",
+      "live_backend_scope_is_canary_subset"
+    ],
+    "compiled_compact_summary": {
+      "backend_mode": "experimental_bpf_shadow",
+      "bpf_backend_mode": "experimental_bpf_backend",
+      "bpf_enabled": false,
+      "bpf_scope": "semantic_intent_canary_subset",
+      "canonical_runtime_unchanged": true,
+      "fail_closed_rule_count": 8,
+      "fixed_10s_assumed": false,
+      "gz_fec_entry_count": 268,
+      "input_mode": "s5_bpf_ab_readiness",
+      "linux_mpls_label_leakage_found": true,
+      "parameter_entry_count": 3243,
+      "parameter_generation_count": 275,
+      "parameter_link_count": 21,
+      "planned_parameter_epoch_count": 13,
+      "qdisc_timeline_backend_status": "blocked_or_trace_only",
+      "runtime_generation_count": 25
+    },
+    "compiled_full_scope_required": {
+      "gz_fec_entry_count": 268,
+      "parameter_entry_count": 3243,
+      "parameter_generation_count": 275,
+      "parameter_link_count": 21,
+      "runtime_generation_count": 25
+    },
+    "current_live_limits": {
+      "fec_forwarding_max_elem": 16,
+      "generation_status_max_elem": 64,
+      "param_status_max_elem": 64,
+      "parameter_values_max_elem": 16,
+      "selector_max_scope_entries_after_normalize": 16
+    },
+    "ready_for_full_eligible_scope": false,
+    "source_evidence": {
+      "c_backend": "satellite/experimental/bpf/skyseed_tc_dataplane_canary.c",
+      "load_canary_maps_line": 984,
+      "normalize_selector_line": 405,
+      "python_backend": "satellite/bpf_dataplane_canary.py",
+      "select_experimental_scope_line": 423
+    }
+  },
+  "current_head_ab_status": "blocked_before_ab",
+  "duration_decision": {
+    "caveats": [
+      "A shorter window is enough for p50/p95 direction, but max tail claims remain caveated.",
+      "The current live BPF backend is blocked for full eligible scope, so this is a run plan, not an executed A/B result."
+    ],
+    "does_not_need_near_2h_for_initial_ab": true,
+    "if_full_scope_backend_available": {
+      "acceptable_shorter_smoke_floor": "2700s simulated horizon",
+      "minimum_epoch_basis": ">=100 steady RuntimeEpoch and >=90 ParameterEpoch for p50/p95",
+      "preferred_epoch_basis": "about 155 steady RuntimeEpoch and 145 ParameterEpoch at 3600s",
+      "recommended_same_window_for_a_and_b": "3600s simulated horizon",
+      "selected_window_metrics": {
+        "parameter_epoch_count": 145,
+        "parameter_host_apply_seconds": {
+          "avg": 0.498018,
+          "count": 145,
+          "max": 0.946394,
+          "p50": 0.480372,
+          "p95": 0.76607
+        },
+        "parameter_transition_wall_seconds": {
+          "avg": 0.759877,
+          "count": 145,
+          "max": 2.234283,
+          "p50": 0.740864,
+          "p95": 1.075073
+        },
+        "runtime_epoch_count": 155,
+        "runtime_host_apply_seconds": {
+          "avg": 1.995202,
+          "count": 155,
+          "max": 7.760465,
+          "p50": 1.691382,
+          "p95": 3.919476
+        },
+        "runtime_transition_wall_seconds": {
+          "avg": 3.941919,
+          "count": 155,
+          "max": 14.432659,
+          "p50": 3.633134,
+          "p95": 7.3786
+        },
+        "simulated_seconds": 3600
+      }
+    },
+    "rationale": [
+      "The first RuntimeEpoch is initial materialization and is excluded from steady-state.",
+      "The existing 2h baseline has 324 steady RuntimeEpoch and 275 ParameterEpoch samples.",
+      "At 2700-3600s the p50/p95 shape is already close enough for an initial A/B p50/p95 comparison.",
+      "Use the same shortened horizon for A and B to keep cold start and workload exposure symmetric."
+    ]
+  },
+  "evidence_backed_conclusion": {
+    "bpf_backend_benefit_proven": false,
+    "reason": "No A/B run was executed because current HEAD cannot run BPF on the full eligible S5 scope without falling back to canary subset behavior."
+  },
+  "goal": "Goal 19 S5 full-scope BPF experimental backend A/B",
+  "schema_version": 1
+}
