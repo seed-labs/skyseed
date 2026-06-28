@@ -4129,21 +4129,43 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
             ),
             patch(
                 "satellite.bpf_mpls_live.load_mpls_maps",
-                return_value={
-                    "ok": True,
-                    "active_generation": 42,
-                    "map_write_wall_seconds": 0.02,
-                    "map_write_update_count": 3,
-                    "active_generation_flip_wall_seconds": 0.01,
-                    "active_generation_update_count": 1,
-                    "active_generation_switch_count": 1,
-                    "total_update_count": 4,
-                    "loaded_classifier_count": 1,
-                    "loaded_core_lfib_count": 1,
-                    "loaded_egress_handoff_count": 1,
-                    "loaded_interface_role_count": 1,
-                },
-            ),
+                side_effect=[
+                    {
+                        "ok": True,
+                        "active_generation": 41,
+                        "map_write_wall_seconds": 0.03,
+                        "map_write_update_count": 3,
+                        "active_generation_flip_wall_seconds": 0.0,
+                        "active_generation_update_count": 0,
+                        "active_generation_switch_count": 0,
+                        "total_update_count": 3,
+                        "loaded_classifier_count": 1,
+                        "loaded_core_lfib_count": 1,
+                        "loaded_egress_handoff_count": 1,
+                        "loaded_interface_role_count": 1,
+                        "outcome_labels": ["RUNTIME_MAP_DIFF_UPDATE_USED"],
+                    },
+                    {
+                        "ok": True,
+                        "active_generation": 42,
+                        "map_write_wall_seconds": 0.02,
+                        "map_write_update_count": 0,
+                        "active_generation_flip_wall_seconds": 0.01,
+                        "active_generation_update_count": 1,
+                        "active_generation_switch_count": 1,
+                        "total_update_count": 1,
+                        "loaded_classifier_count": 1,
+                        "loaded_core_lfib_count": 1,
+                        "loaded_egress_handoff_count": 1,
+                        "loaded_interface_role_count": 1,
+                        "outcome_labels": [
+                            "RUNTIME_PRELOADED_GENERATION_USED",
+                            "RUNTIME_ACTIVE_GENERATION_FLIP_ONLY",
+                            "RUNTIME_NOOP_MAP_WRITES_SKIPPED",
+                        ],
+                    },
+                ],
+            ) as load_maps,
             patch("linux_mpls_runtime._read_bpf_owned_interface_roles") as live_roles,
         ):
             report = _bpf_owned_prepare_mpls_backend(
@@ -4154,14 +4176,26 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
             )
 
         live_roles.assert_not_called()
+        self.assertEqual(load_maps.call_count, 2)
+        self.assertEqual(
+            load_maps.call_args_list[0].args[0]["bpf_runtime_update_phase"],
+            "preactivation_preload",
+        )
+        self.assertTrue(load_maps.call_args_list[0].args[0]["defer_active_generation_flip"])
+        self.assertEqual(
+            load_maps.call_args_list[1].args[0]["bpf_runtime_update_phase"],
+            "steady_map_only",
+        )
         self.assertTrue(report["ok"])
         self.assertEqual(report["prepare_mode"], "reuse_attached_bpf_map_reload")
+        self.assertTrue(report["preactivation_preload_scheduled"])
+        self.assertIn("RUNTIME_PRELOAD_SCHEDULED", report["outcome_labels"])
         self.assertEqual(report["full_attach_count"], 0)
         self.assertEqual(report["timing_breakdown"]["bpf_attach_seconds"], 0.0)
         self.assertEqual(report["timing_breakdown"]["bpf_live_role_read_seconds"], 0.0)
         self.assertEqual(report["timing_breakdown"]["bpf_map_write_seconds"], 0.02)
-        self.assertEqual(report["timing_breakdown"]["bpf_map_write_update_count"], 3)
-        self.assertEqual(report["timing_breakdown"]["bpf_map_update_count"], 4)
+        self.assertEqual(report["timing_breakdown"]["bpf_map_write_update_count"], 0)
+        self.assertEqual(report["timing_breakdown"]["bpf_map_update_count"], 1)
         self.assertEqual(
             report["timing_breakdown"]["active_generation_flip_seconds"],
             0.01,
@@ -4313,6 +4347,35 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
         self.assertEqual(result["parameter_update_count"], 1)
         self.assertEqual(result["changed_gz_fec_count"], 2)
         self.assertEqual(result["changed_zone_anchor_path_count"], 2)
+
+    def test_parameter_batch_reclassification_blocks_hidden_bpf_runtime_work(self) -> None:
+        result = _parameter_batch_reclassification(
+            classification="parameter_epoch",
+            planned_operations=[
+                {"operation": "update_slot_parameters", "slot_name": "ut1"},
+            ],
+            runtime_update_plan=SimpleNamespace(
+                to_dict=lambda: {
+                    "node_subplans": {
+                        "stl-1": {
+                            "actions": [
+                                {"kind": "bpf_generation_content_change"},
+                                {"kind": "gz"},
+                            ]
+                        }
+                    }
+                }
+            ),
+            trigger_reasons=["bpf_generation_content_change"],
+        )
+
+        self.assertTrue(result["parameter_batch_reclassified_to_runtime"])
+        self.assertEqual(
+            result["reclassification_reason"],
+            "runtime_update_actions_in_parameter_update_batch",
+        )
+        self.assertEqual(result["runtime_update_action_count"], 2)
+        self.assertEqual(result["structural_operation_counts"], {})
 
     def test_parameter_update_batch_accounting_splits_update_costs(self) -> None:
         operations = [

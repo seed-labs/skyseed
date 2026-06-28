@@ -2720,6 +2720,17 @@ def _runtime_prep_map_load(iteration: Mapping[str, Any]) -> Dict[str, Any]:
     return dict(dict(real_prepare.get("steps") or {}).get("map_load") or {})
 
 
+def _runtime_prep_preactivation_preload(iteration: Mapping[str, Any]) -> Dict[str, Any]:
+    node = dict(iteration.get("node_local_execution") or {})
+    backend = dict(node.get("backend") or {})
+    readiness = dict(backend.get("bpf_owned_readiness") or {})
+    prepare_steps = dict(readiness.get("prepare_steps") or {})
+    real_prepare = dict(prepare_steps.get("real_backend_prepare") or {})
+    return dict(
+        dict(real_prepare.get("steps") or {}).get("preactivation_preload") or {}
+    )
+
+
 def evaluate_runtime_preload_diff_contract(
     *,
     run_dir: Path,
@@ -2730,6 +2741,39 @@ def evaluate_runtime_preload_diff_contract(
         for iteration in list(runtime_report.get("iterations") or [])
         if isinstance(iteration, Mapping)
     ]
+    failure_readiness = dict(
+        dict(
+            dict(
+                dict(runtime_report.get("failure_context") or {})
+                .get("exception")
+                or {}
+            ).get("skyseed_details")
+            or {}
+        ).get("bpf_owned_readiness")
+        or {}
+    )
+    observations: List[Dict[str, Any]] = [
+        {
+            "observation_source": "iteration",
+            "iteration_index": index,
+            "payload": iteration,
+        }
+        for index, iteration in enumerate(iterations)
+    ]
+    if failure_readiness:
+        observations.append(
+            {
+                "observation_source": "failure_context",
+                "iteration_index": len(observations),
+                "payload": {
+                    "node_local_execution": {
+                        "backend": {
+                            "bpf_owned_readiness": failure_readiness,
+                        }
+                    }
+                },
+            }
+        )
     epoch_reports: List[Dict[str, Any]] = []
     steady_epoch_count = 0
     preactivation_preload_count = 0
@@ -2738,9 +2782,16 @@ def evaluate_runtime_preload_diff_contract(
     noop_skipped_epoch_count = 0
     active_generation_flip_only_count = 0
     full_generation_reload_blocker_count = 0
-    for index, iteration in enumerate(iterations):
+    for observation in observations:
+        index = int(observation.get("iteration_index") or 0)
+        iteration = dict(observation.get("payload") or {})
+        observation_source = str(observation.get("observation_source") or "iteration")
         map_load = _runtime_prep_map_load(iteration)
+        preactivation_preload = _runtime_prep_preactivation_preload(iteration)
         attribution = dict(map_load.get("runtime_reload_attribution") or {})
+        preload_attribution = dict(
+            preactivation_preload.get("runtime_reload_attribution") or {}
+        )
         runtime_update_phase = str(
             attribution.get("runtime_update_phase")
             or map_load.get("runtime_update_phase")
@@ -2748,7 +2799,12 @@ def evaluate_runtime_preload_diff_contract(
         )
         if runtime_update_phase == "steady_map_only":
             steady_epoch_count += 1
-        if bool(attribution.get("preactivation_preload")):
+        preload_scheduled = bool(
+            preactivation_preload
+            or preload_attribution.get("preactivation_preload")
+            or attribution.get("preactivation_preload")
+        )
+        if preload_scheduled:
             preactivation_preload_count += 1
         if bool(attribution.get("preloaded_generation_used")):
             preloaded_generation_used_count += 1
@@ -2782,9 +2838,11 @@ def evaluate_runtime_preload_diff_contract(
         epoch_reports.append(
             {
                 "iteration_index": index,
+                "observation_source": observation_source,
                 "runtime_update_phase": runtime_update_phase,
-                "preactivation_preload": bool(
-                    attribution.get("preactivation_preload")
+                "preactivation_preload": preload_scheduled,
+                "preactivation_preload_update_count": int(
+                    preactivation_preload.get("map_write_update_count") or 0
                 ),
                 "preloaded_generation_used": bool(
                     attribution.get("preloaded_generation_used")
@@ -2812,6 +2870,8 @@ def evaluate_runtime_preload_diff_contract(
             }
         )
     outcome_labels: List[str] = []
+    if preactivation_preload_count:
+        outcome_labels.append("RUNTIME_PRELOAD_SCHEDULED")
     if diff_update_used_count:
         outcome_labels.append("RUNTIME_MAP_DIFF_UPDATE_USED")
     if noop_skipped_epoch_count:

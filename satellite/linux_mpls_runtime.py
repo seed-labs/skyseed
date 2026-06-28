@@ -4614,6 +4614,43 @@ def _bpf_owned_prepare_mpls_backend(
                 "reason": "existing_tc_bpf_attach_reused",
                 "attached_interfaces": list(compiled.get("attached_interfaces") or []),
             }
+        preactivation_preload = None
+        if not delta_attach_plan:
+            preload_started_at = time.perf_counter()
+            compiled_for_preload = {
+                **dict(compiled),
+                "bpf_runtime_update_phase": "preactivation_preload",
+                "defer_active_generation_flip": True,
+            }
+            preactivation_preload = load_mpls_maps(compiled_for_preload)
+            report["steps"]["preactivation_preload"] = preactivation_preload
+            timing_breakdown["bpf_preactivation_preload_wall_seconds"] = round(
+                time.perf_counter() - preload_started_at,
+                6,
+            )
+            timing_breakdown["bpf_preactivation_preload_update_count"] = int(
+                dict(preactivation_preload or {}).get("map_write_update_count") or 0
+            )
+            if preactivation_preload.get("ok") is not True:
+                report["reason"] = str(
+                    preactivation_preload.get("first_failed_update", {}).get("reason")
+                    or preactivation_preload.get("reason")
+                    or "RUNTIME_PRELOAD_VISIBILITY_PROOF_FAILED"
+                )
+                report["fail_closed"] = True
+                report["blocked_stage"] = "bpf_preactivation_preload"
+                report["outcome_labels"] = list(
+                    dict.fromkeys(
+                        [
+                            *list(report.get("outcome_labels") or []),
+                            "RUNTIME_PRELOAD_VISIBILITY_PROOF_FAILED",
+                        ]
+                    )
+                )
+                report["wall_seconds"] = round(time.perf_counter() - started_at, 6)
+                timing_breakdown["total_wall_seconds"] = float(report["wall_seconds"])
+                return report
+
         map_load_started_at = time.perf_counter()
         compiled_for_map_load = {
             **dict(compiled),
@@ -4623,6 +4660,28 @@ def _bpf_owned_prepare_mpls_backend(
         }
         map_load = load_mpls_maps(compiled_for_map_load)
         report["steps"]["map_load"] = map_load
+        if preactivation_preload is not None:
+            report["preactivation_preload_scheduled"] = True
+            report["preactivation_preload"] = {
+                "ok": bool(preactivation_preload.get("ok")),
+                "map_write_update_count": int(
+                    preactivation_preload.get("map_write_update_count") or 0
+                ),
+                "active_generation_update_count": int(
+                    preactivation_preload.get("active_generation_update_count") or 0
+                ),
+                "outcome_labels": list(
+                    preactivation_preload.get("outcome_labels") or []
+                ),
+            }
+            report["outcome_labels"] = list(
+                dict.fromkeys(
+                    [
+                        *list(report.get("outcome_labels") or []),
+                        "RUNTIME_PRELOAD_SCHEDULED",
+                    ]
+                )
+            )
         map_load_total_wall_seconds = round(
             time.perf_counter() - map_load_started_at,
             6,

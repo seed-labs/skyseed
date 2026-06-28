@@ -3557,10 +3557,6 @@ def _parameter_batch_reclassification(
         if operation != "update_slot_parameters"
     }
     parameter_update_count = int(operation_counts.get("update_slot_parameters", 0))
-    reclassified = (
-        str(classification) == "parameter_epoch"
-        and bool(structural_operation_counts)
-    )
     plan_dict = (
         runtime_update_plan.to_dict()
         if hasattr(runtime_update_plan, "to_dict")
@@ -3582,6 +3578,15 @@ def _parameter_batch_reclassification(
         "g_to_z_path_change",
         "z_to_g_path_change",
     }
+    runtime_update_triggered = bool(
+        runtime_update_action_count
+        or (trigger_set & gz_trigger_names)
+        or (trigger_set & anchor_path_trigger_names)
+    )
+    reclassified = (
+        str(classification) == "parameter_epoch"
+        and (bool(structural_operation_counts) or runtime_update_triggered)
+    )
     changed_gz_fec_count = (
         runtime_update_action_count
         if reclassified and (trigger_set & gz_trigger_names or runtime_update_action_count)
@@ -3593,8 +3598,12 @@ def _parameter_batch_reclassification(
         else 0
     )
     reason = ""
-    if reclassified:
+    if reclassified and structural_operation_counts:
         reason = "structural_operations_in_parameter_update_batch"
+    elif reclassified and runtime_update_action_count:
+        reason = "runtime_update_actions_in_parameter_update_batch"
+    elif reclassified:
+        reason = "runtime_update_trigger_in_parameter_update_batch"
     elif str(classification) == "parameter_epoch" and not planned_operations:
         reason = "noop_parameter_update_batch"
     elif str(classification) == "parameter_epoch":

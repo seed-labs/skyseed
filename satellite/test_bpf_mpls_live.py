@@ -49,7 +49,9 @@ class BpfMplsLiveTests(unittest.TestCase):
         *,
         active_generation: int,
         entries_by_map: dict[str, list[dict[str, list[str]]]],
+        max_entries_by_map: dict[str, int] | None = None,
     ):
+        max_entries_by_map = dict(max_entries_by_map or {})
         map_ids = {
             "ingress_classifier_map": 101,
             "core_lfib_map": 102,
@@ -66,6 +68,8 @@ class BpfMplsLiveTests(unittest.TestCase):
             infos = []
             for map_name, map_id in map_ids.items():
                 shape = dict(MPLS_MAP_SHAPES[map_name])
+                if map_name in max_entries_by_map:
+                    shape["max_entries"] = int(max_entries_by_map[map_name])
                 infos.append(
                     {
                         "id": map_id,
@@ -488,6 +492,43 @@ class BpfMplsLiveTests(unittest.TestCase):
             "inactive_preloaded_generation_visibility_proof"
         ]
         self.assertTrue(proof["target_entries_loaded_while_inactive"])
+
+    def test_preloaded_generation_capacity_guard_does_not_double_count_target(self) -> None:
+        compiled = self._compiled_core_generation(generation=1)
+        updates: list[str] = []
+
+        def fake_update(map_name: str, key_bytes: list[str], value_bytes: list[str]) -> dict[str, object]:
+            updates.append(map_name)
+            return {"returncode": 0, "stdout": "", "stderr": ""}
+
+        with self._mock_bpf_maps(
+            active_generation=0,
+            entries_by_map={
+                "core_lfib_map": [
+                    self._core_entry(generation=0),
+                    self._core_entry(generation=1),
+                ],
+                "interface_role_map": [self._interface_role_entry()],
+            },
+            max_entries_by_map={"core_lfib_map": 18},
+        ), patch("satellite.bpf_mpls_live.update_mpls_map", side_effect=fake_update), patch(
+            "satellite.bpf_mpls_live.delete_mpls_map_key",
+            return_value={"returncode": 0, "stdout": "", "stderr": ""},
+        ):
+            result = load_mpls_maps(compiled)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(updates, ["active_generation"])
+        self.assertEqual(result["map_write_update_count"], 0)
+        self.assertEqual(result["active_generation_update_count"], 1)
+        self.assertIn("RUNTIME_PRELOADED_GENERATION_USED", result["outcome_labels"])
+        self.assertIn("RUNTIME_ACTIVE_GENERATION_FLIP_ONLY", result["outcome_labels"])
+        contract = result["generation_capacity_contracts"]["core_lfib_map"]
+        self.assertEqual(contract["retained_entry_count_after_gc"], 2)
+        self.assertEqual(contract["target_generation_entry_count_after_gc"], 1)
+        self.assertEqual(contract["missing_target_entry_capacity"], 0)
+        self.assertEqual(contract["required_capacity"], 18)
+        self.assertTrue(contract["ok"])
 
     def test_preactivation_preload_keeps_active_generation_unchanged(self) -> None:
         compiled = {

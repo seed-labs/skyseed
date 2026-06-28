@@ -7,6 +7,7 @@ import unittest
 import sys
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -44,8 +45,13 @@ from linux_mpls_runtime import (
     _parse_node_local_command_timings,
     _strip_node_local_command_timing_markers,
 )
-from contracts import RuntimeUpdatePlan
-from network_runtime import DirectNetnsVethSlotLinkNamespaceQdiscInstaller
+from contracts import NetworkMutationPlan, RuntimeUpdatePlan
+from network_runtime import (
+    DirectNetnsVethSlotLinkNamespaceQdiscInstaller,
+    InProcessHostRuntimeManager,
+    MinimalRealNetworkMutationExecutor,
+    NetworkMutationExecutionError,
+)
 from runtime_operation_metrics import summarize_node_local_batches
 
 
@@ -106,6 +112,28 @@ def _runtime_update_plan(plan_id: str = "rtplan-proof") -> RuntimeUpdatePlan:
     )
 
 
+def _network_mutation_plan(plan_id: str = "mut-proof") -> NetworkMutationPlan:
+    return NetworkMutationPlan(
+        schema_version="skyseed-network-mutation-plan-v1",
+        mutation_id=plan_id,
+        source_snapshot={"state_id": "source"},
+        target_scope={
+            "state_model": "delta_mutation",
+            "target_snapshot_id": "target",
+            "target_slice_id": "slice-1",
+        },
+        execution_boundary={"consumer": "host_network_runtime_manager"},
+        operations=[
+            {
+                "operation": "update_slot_parameters",
+                "slot_name": "slot-a",
+                "execution_domain": "host_network_runtime",
+            }
+        ],
+        validation_expectations={},
+    )
+
+
 def _prepared_bpf_owned_readiness(
     plan: RuntimeUpdatePlan | None = None,
 ) -> dict:
@@ -162,6 +190,7 @@ class _FakeCleanupInstaller(DirectNetnsVethSlotLinkNamespaceQdiscInstaller):
         topology_path: Path,
         prepared_resource_scope_by_slot: Any | None = None,
     ) -> dict[str, Any]:
+        bounded = prepared_resource_scope_by_slot is not None
         return {
             "temp_host_interface_names": ["vt1", "vt1", "missing-temp"],
             "host_interface_names": ["vh1", "vh1", "missing-host"],
@@ -175,9 +204,17 @@ class _FakeCleanupInstaller(DirectNetnsVethSlotLinkNamespaceQdiscInstaller):
             "candidate_resource_counts_by_type": {},
             "candidate_endpoint_counts_by_type": {},
             "preconnected_endpoint_counts_by_type": {},
-            "cleanup_scope_source": "full_topology_candidate_inventory_fallback",
-            "bounded_owned_scope": False,
-            "prepared_slot_scope_count": 0,
+            "cleanup_scope_source": (
+                "prepared_owned_resource_index"
+                if bounded
+                else "full_topology_candidate_inventory_fallback"
+            ),
+            "bounded_owned_scope": bounded,
+            "prepared_slot_scope_count": (
+                len(prepared_resource_scope_by_slot or {})
+                if bounded
+                else 0
+            ),
         }
 
     def _host_interface_name_set(self) -> set[str]:
@@ -1944,6 +1981,7 @@ class RollbackCleanupOptimizationTests(unittest.TestCase):
 
     def test_host_artifact_cleanup_dedupes_and_reports_noops(self) -> None:
         installer = _FakeCleanupInstaller()
+        installer._prepared_resource_keys_by_slot = {"slot-a": {"resource-a"}}
 
         summary = installer.cleanup_runtime_artifacts(
             topology_path=Path("topology.json"),
@@ -1962,7 +2000,119 @@ class RollbackCleanupOptimizationTests(unittest.TestCase):
         self.assertEqual(summary["removed_bridge_count"], 1)
         self.assertEqual(
             metrics["cleanup_scope_source"],
-            "full_topology_candidate_inventory_fallback",
+            "prepared_owned_resource_index",
+        )
+        self.assertTrue(metrics["bounded_owned_scope"])
+        self.assertIn("CLEANUP_BOUNDED_OWNED_SCOPE_USED", metrics["outcome_labels"])
+
+    def test_host_artifact_cleanup_missing_owned_index_blocks_global_fallback(self) -> None:
+        installer = _FakeCleanupInstaller()
+
+        summary = installer.cleanup_runtime_artifacts(
+            topology_path=Path("topology.json"),
+            link_state_path=Path("link_state.json"),
+        )
+
+        metrics = summary["cleanup_metrics"]
+        self.assertFalse(summary["cleanup_completed"])
+        self.assertEqual(summary["reason"], "OWNED_RESOURCE_INDEX_MISSING_BLOCKER")
+        self.assertEqual(
+            metrics["cleanup_scope_source"],
+            "missing_prepared_owned_resource_index",
+        )
+        self.assertFalse(metrics["full_topology_candidate_inventory_fallback"])
+        self.assertIn("OWNED_RESOURCE_INDEX_MISSING_BLOCKER", metrics["outcome_labels"])
+
+    def test_normal_runtime_apply_requires_explicit_owned_scope(self) -> None:
+        manager = InProcessHostRuntimeManager()
+
+        with self.assertRaisesRegex(
+            NetworkMutationExecutionError,
+            "OWNED_RESOURCE_INDEX_MISSING_BLOCKER",
+        ):
+            manager.apply(
+                topology_path=Path("topology.json"),
+                link_state_path=Path("link_state.json"),
+                network_mutation_plan=_network_mutation_plan(),
+                reconcile_slot_names=None,
+            )
+
+    def test_normal_runtime_apply_blocks_hidden_reconcile_repair(self) -> None:
+        manager = InProcessHostRuntimeManager()
+        manager._last_mutation_id = "previous-mutation"
+        envelope = SimpleNamespace(
+            observed_state={},
+            operations=[
+                {
+                    "operation": "update_slot_parameters",
+                    "slot_name": "slot-a",
+                    "execution_domain": "host_network_runtime",
+                }
+            ],
+            parallelism={
+                "requested_workers": 1,
+                "effective_workers": 1,
+                "parallel_execution_used": False,
+            },
+            managed_slot_names=["slot-a"],
+            envelope_id="env-1",
+        )
+
+        with (
+            patch.object(
+                manager._installer,
+                "controller",
+                return_value=SimpleNamespace(
+                    topology_path="topology.json",
+                    link_state_path="link_state.json",
+                ),
+            ),
+            patch.object(manager, "_prepare_envelope", return_value=(envelope, {})),
+            patch.object(
+                manager,
+                "_verify_plan_state",
+                side_effect=[
+                    {"all_valid": True},
+                    {"all_valid": False, "reason": "target_not_updated"},
+                ],
+            ),
+            patch.object(
+                manager,
+                "_apply_operations",
+                side_effect=RuntimeError("transient stale state"),
+            ),
+            patch.object(manager, "_refresh_runtime_state", return_value={}),
+        ):
+            result = manager.apply(
+                topology_path=Path("topology.json"),
+                link_state_path=Path("link_state.json"),
+                network_mutation_plan=_network_mutation_plan(),
+                reconcile_slot_names=["slot-a"],
+            )
+
+        outcome = result.to_dict()["outcome"]
+        self.assertFalse(outcome["apply_success"])
+        self.assertIn("FULL_SCOPE_RECOVERY_BLOCKER", outcome["failure_reason"])
+        scope_contract = outcome["normal_path_scope_contract"]
+        self.assertTrue(scope_contract["hidden_repair_blocked"])
+        self.assertFalse(scope_contract["full_scope_recovery_used"])
+        self.assertIn("NORMAL_PATH_OWNED_SCOPE_ONLY", scope_contract["outcome_labels"])
+        self.assertIn("NORMAL_PATH_NO_HIDDEN_REPAIR", scope_contract["outcome_labels"])
+        self.assertIn("FULL_SCOPE_RECOVERY_BLOCKER", scope_contract["outcome_labels"])
+
+    def test_minimal_executor_derives_explicit_owned_scope_from_plan(self) -> None:
+        executor = MinimalRealNetworkMutationExecutor()
+
+        with patch.object(executor._manager, "apply") as manager_apply:
+            executor.apply(
+                topology_path=Path("topology.json"),
+                link_state_path=Path("link_state.json"),
+                network_mutation_plan=_network_mutation_plan(),
+            )
+
+        self.assertEqual(
+            manager_apply.call_args.kwargs["reconcile_slot_names"],
+            ["slot-a"],
         )
 
     def test_host_artifact_cleanup_uses_prepared_owned_resource_scope(self) -> None:

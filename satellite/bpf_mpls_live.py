@@ -2211,12 +2211,19 @@ def load_mpls_maps(compiled: dict[str, Any]) -> dict[str, Any]:
         retained_entry_count_after_gc = int(
             post_gc_map_state.get("current_entries") or 0
         )
+        target_generation_entry_count_after_gc = int(
+            post_gc_map_state.get("target_generation_entry_count") or 0
+        )
+        missing_target_entry_capacity = max(
+            0,
+            target_expected_entries - target_generation_entry_count_after_gc,
+        )
         if live_active_generation_int is not None and live_active_generation_int == int(active_generation):
             required_capacity = max(active_count, target_expected_entries) + GENERATION_CAPACITY_SLACK
         else:
             required_capacity = (
                 retained_entry_count_after_gc
-                + target_expected_entries
+                + missing_target_entry_capacity
                 + GENERATION_CAPACITY_SLACK
             )
         live_max_entries = post_gc_map_state.get("max_entries")
@@ -2230,6 +2237,10 @@ def load_mpls_maps(compiled: dict[str, Any]) -> dict[str, Any]:
             "active_generation_entry_count": active_count,
             "retained_entry_count_after_gc": retained_entry_count_after_gc,
             "target_expected_entries": target_expected_entries,
+            "target_generation_entry_count_after_gc": (
+                target_generation_entry_count_after_gc
+            ),
+            "missing_target_entry_capacity": missing_target_entry_capacity,
             "target_generation_stale_entries_cleared": len(stale_target_keys),
             "stale_inactive_generation_entries_cleared": len(stale_generation_keys),
             "post_cleanup_generation_entry_counts": post_gc_generation_counts,

@@ -1759,6 +1759,89 @@ class SkyseedValidationProfileTests(unittest.TestCase):
                 68,
             )
 
+    def test_runtime_preload_audit_includes_failure_context_preload(self) -> None:
+        failure_readiness = {
+            "prepare_steps": {
+                "real_backend_prepare": {
+                    "steps": {
+                        "preactivation_preload": {
+                            "map_write_update_count": 180,
+                            "runtime_reload_attribution": {
+                                "runtime_update_phase": "preactivation_preload",
+                                "preactivation_preload": True,
+                                "map_diff_update_used": True,
+                                "noop_skipped_count": 98,
+                                "map_diff_trace": {
+                                    "ingress_classifier_map": {
+                                        "desired_count": 120,
+                                        "existing_count": 0,
+                                        "insert_count": 120,
+                                        "update_count": 0,
+                                        "delete_count": 0,
+                                        "noop_skipped_count": 0,
+                                        "wall_seconds": 0.1,
+                                    },
+                                },
+                            },
+                        },
+                        "map_load": {
+                            "runtime_reload_attribution": {
+                                "runtime_update_phase": "steady_map_only",
+                                "preloaded_generation_used": True,
+                                "map_diff_update_used": False,
+                                "active_generation_flip_only": True,
+                                "full_generation_reload_blocker": False,
+                                "actual_data_write_count": 0,
+                                "noop_skipped_count": 278,
+                                "active_generation_before": 0,
+                                "active_generation_after": 1,
+                                "map_diff_trace": {
+                                    "ingress_classifier_map": {
+                                        "desired_count": 120,
+                                        "existing_count": 120,
+                                        "insert_count": 0,
+                                        "update_count": 0,
+                                        "delete_count": 0,
+                                        "noop_skipped_count": 120,
+                                        "wall_seconds": 0.1,
+                                    },
+                                },
+                            }
+                        },
+                    }
+                }
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "real_runtime_report.json").write_text(
+                json.dumps(
+                    {
+                        "failure_context": {
+                            "exception": {
+                                "skyseed_details": {
+                                    "bpf_owned_readiness": failure_readiness,
+                                }
+                            }
+                        }
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            audit = evaluate_runtime_preload_diff_contract(run_dir=run_dir)
+
+            self.assertIn("RUNTIME_PRELOAD_SCHEDULED", audit["outcome_labels"])
+            self.assertIn("RUNTIME_PRELOADED_GENERATION_USED", audit["outcome_labels"])
+            self.assertIn("RUNTIME_ACTIVE_GENERATION_FLIP_ONLY", audit["outcome_labels"])
+            self.assertIn("RUNTIME_NOOP_MAP_WRITES_SKIPPED", audit["outcome_labels"])
+            self.assertEqual(audit["steady_map_only_epoch_count"], 1)
+            self.assertEqual(audit["preactivation_preload_epoch_count"], 1)
+            self.assertTrue(audit["preload_contract_exercised"])
+            self.assertEqual(audit["epoch_reports"][0]["observation_source"], "failure_context")
+
     def test_stale_runtime_lock_removed_only_after_pid_not_found_check(self) -> None:
         commands: list[list[str]] = []
 

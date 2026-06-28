@@ -2011,6 +2011,51 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
                 if self._prepared_resource_keys_by_slot
                 else None
             )
+            if prepared_cleanup_scope is None:
+                cleanup_metrics = {
+                    "raw_resource_count": 0,
+                    "unique_resource_count": 0,
+                    "duplicate_cleanup_skipped_count": 0,
+                    "skipped_noop_count": 0,
+                    "cleanup_resource_attempted_count": 0,
+                    "cleanup_resource_succeeded_count": 0,
+                    "cleanup_resource_failed_count": 0,
+                    "host_cleanup_grouped_operation_count": 0,
+                    "cleanup_scope_source": "missing_prepared_owned_resource_index",
+                    "bounded_owned_scope": False,
+                    "prepared_slot_scope_count": 0,
+                    "full_topology_candidate_inventory_fallback": False,
+                    "global_scan_diagnostic_only": True,
+                    "outcome_labels": [
+                        "NORMAL_PATH_OWNED_SCOPE_ONLY",
+                        "NORMAL_PATH_NO_HIDDEN_REPAIR",
+                        "OWNED_RESOURCE_INDEX_MISSING_BLOCKER",
+                    ],
+                    "resource_groups": {
+                        "temp_host_interface": 0,
+                        "host_interface": 0,
+                        "container_interface": 0,
+                        "bridge": 0,
+                    },
+                }
+                cleanup_summary = {
+                    "scope": "direct_backend_runtime_artifacts",
+                    "removed_bridge_count": 0,
+                    "removed_host_interface_count": 0,
+                    "removed_temp_host_interface_count": 0,
+                    "removed_container_interface_count": 0,
+                    "remaining_bridge_count": 0,
+                    "remaining_host_interface_count": 0,
+                    "remaining_temp_host_interface_count": 0,
+                    "remaining_bridges": [],
+                    "remaining_host_interfaces": [],
+                    "remaining_temp_host_interfaces": [],
+                    "cleanup_metrics": cleanup_metrics,
+                    "cleanup_completed": False,
+                    "reason": "OWNED_RESOURCE_INDEX_MISSING_BLOCKER",
+                }
+                self._last_cleanup_summary = cleanup_summary
+                return cleanup_summary
             artifact_inventory = self._runtime_artifact_inventory(
                 topology=topology,
                 topology_path=topology_path,
@@ -2108,6 +2153,12 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
                     "container_interface": len(container_interface_names),
                     "bridge": len(bridge_names),
                 },
+                "global_scan_diagnostic_only": True,
+                "outcome_labels": [
+                    "NORMAL_PATH_OWNED_SCOPE_ONLY",
+                    "NORMAL_PATH_NO_HIDDEN_REPAIR",
+                    "CLEANUP_BOUNDED_OWNED_SCOPE_USED",
+                ],
             }
 
             removed_host_interfaces: List[str] = []
@@ -3443,6 +3494,11 @@ class InProcessHostRuntimeManager:
             )
         else:
             effective_reconcile_mode = str(reconcile_mode)
+        if reconcile_slot_names is None:
+            raise NetworkMutationExecutionError(
+                "OWNED_RESOURCE_INDEX_MISSING_BLOCKER:"
+                "normal runtime apply requires explicit reconcile_slot_names"
+            )
         controller_setup_started_at = time.perf_counter()
         controller = self._installer.controller(
             topology_path=topology_path,
@@ -3479,8 +3535,13 @@ class InProcessHostRuntimeManager:
         apply_results: List[Dict[str, Any]] = []
         applied_operations: List[Dict[str, Any]] = []
         failure_reason: str | None = None
+        apply_verification: Dict[str, Any] = {
+            "all_valid": False,
+            "reason": "apply_not_completed",
+        }
         bootstrap_summary: Dict[str, Any] | None = None
         parallel_execution_summary: Dict[str, Any] | None = None
+        hidden_repair_blocked = False
 
         try:
             (
@@ -3501,42 +3562,14 @@ class InProcessHostRuntimeManager:
             failure_reason = str(exc)
             if not applied_operations:
                 if effective_reconcile_mode == "trusted_skip":
-                    repair_started_at = time.perf_counter()
-                    repair_controller = self._installer.controller(
-                        topology_path=topology_path,
-                        link_state_path=link_state_path,
-                        reconcile_slot_names=reconcile_slot_names,
-                        reconcile_mode="apply",
+                    hidden_repair_blocked = True
+                    failure_reason = (
+                        "FULL_SCOPE_RECOVERY_BLOCKER:"
+                        "trusted_reconcile_repair_disabled:"
+                        + failure_reason
                     )
-                    manager_timing_breakdown.update(self._installer.consume_setup_timing())
-                    manager_timing_breakdown["controller_setup_wall_seconds"] += (
-                        time.perf_counter() - repair_started_at
-                    )
-                    manager_timing_breakdown["trusted_reconcile_repair_wall_seconds"] += (
-                        time.perf_counter() - repair_started_at
-                    )
-                    try:
-                        (
-                            apply_results,
-                            applied_operations,
-                            apply_verification,
-                            apply_timing,
-                            parallel_execution_summary,
-                        ) = self._apply_operations(
-                            controller=repair_controller,
-                            link_state_path=link_state_path,
-                            operations=envelope.operations,
-                            working_state=working_state,
-                            parallelism=envelope.parallelism,
-                        )
-                        manager_timing_breakdown.update(apply_timing)
-                        controller = repair_controller
-                        effective_reconcile_mode = "repair_apply"
-                        failure_reason = None
-                    except Exception as repair_exc:  # noqa: BLE001
-                        failure_reason = str(repair_exc)
                 bootstrap_started_at = time.perf_counter()
-                if failure_reason is not None:
+                if failure_reason is not None and not hidden_repair_blocked:
                     bootstrap_summary = self._installer.bootstrap_runtime_if_needed(
                         controller=controller,
                         link_state_path=link_state_path,
@@ -3577,6 +3610,23 @@ class InProcessHostRuntimeManager:
                         manager_timing_breakdown["post_apply_verification_wall_seconds"] = (
                             time.perf_counter() - verify_started_at
                         )
+                elif hidden_repair_blocked:
+                    state_refresh_started_at = time.perf_counter()
+                    apply_state = self._refresh_runtime_state(
+                        link_state_path=link_state_path
+                    )
+                    manager_timing_breakdown["post_apply_state_refresh_wall_seconds"] = (
+                        time.perf_counter() - state_refresh_started_at
+                    )
+                    verify_started_at = time.perf_counter()
+                    apply_verification = self._verify_plan_state(
+                        state_by_name=apply_state,
+                        operations=envelope.operations,
+                        source=False,
+                    )
+                    manager_timing_breakdown["post_apply_verification_wall_seconds"] = (
+                        time.perf_counter() - verify_started_at
+                    )
             else:
                 state_refresh_started_at = time.perf_counter()
                 apply_state = self._refresh_runtime_state(link_state_path=link_state_path)
@@ -3651,6 +3701,23 @@ class InProcessHostRuntimeManager:
                 "preparation_summary": self._installer.last_setup_summary(),
                 "host_runtime_state": self.public_state_summary(),
                 "effective_reconcile_mode": effective_reconcile_mode,
+                "normal_path_scope_contract": {
+                    "outcome_labels": [
+                        "NORMAL_PATH_OWNED_SCOPE_ONLY",
+                        "NORMAL_PATH_NO_HIDDEN_REPAIR",
+                        *(
+                            ["FULL_SCOPE_RECOVERY_BLOCKER"]
+                            if hidden_repair_blocked
+                            else []
+                        ),
+                    ],
+                    "explicit_reconcile_slot_count": len(
+                        {str(slot_name) for slot_name in reconcile_slot_names}
+                    ),
+                    "global_scan_diagnostic_only": True,
+                    "hidden_repair_blocked": hidden_repair_blocked,
+                    "full_scope_recovery_used": False,
+                },
             },
         )
 
@@ -3982,6 +4049,14 @@ class MinimalRealNetworkMutationExecutor:
         network_mutation_plan: NetworkMutationPlan,
         reconcile_slot_names: Sequence[str] | None = None,
     ) -> NetworkMutationApplyResult:
+        if reconcile_slot_names is None:
+            reconcile_slot_names = sorted(
+                {
+                    str(operation.get("slot_name"))
+                    for operation in network_mutation_plan.operations
+                    if operation.get("slot_name")
+                }
+            )
         return self._manager.apply(
             topology_path=topology_path,
             link_state_path=link_state_path,
