@@ -62,17 +62,15 @@ def validate_planner_input(
     for ut_id, zone_id in sorted(topology_snapshot.ut_zone_membership.items()):
         zone = dict(topology_snapshot.zones.get(zone_id, {}))
         attachment = dict(topology_snapshot.nodes.get(ut_id, {}).get("attachment", {}))
-        if zone and str(zone.get("resolution_state", "resolved")) != "resolved":
+        if zone and not bool(
+            zone.get("zone_service_resolved", zone.get("resolution_state") == "resolved")
+        ):
             continue
         attachment_satellite_id = attachment.get("active_serving_satellite_id")
-        zone_satellite_id = zone.get("active_serving_satellite_id")
         if attachment.get("state") != "attached":
             issues.append(f"planner_input_ut_not_attached:{ut_id}:{zone_id}")
-        if attachment_satellite_id != zone_satellite_id:
-            issues.append(
-                f"planner_input_zone_attachment_mismatch:{ut_id}:{zone_id}:"
-                f"{attachment_satellite_id}:{zone_satellite_id}"
-            )
+        if not attachment_satellite_id:
+            issues.append(f"planner_input_ut_missing_serving_satellite:{ut_id}:{zone_id}")
     return PlannerValidationResult(
         validation_scope="planner_input",
         planner_name=planner_name,

@@ -460,16 +460,21 @@ def _await_initial_real_runtime_readiness(
                     text=True,
                     check=False,
                 )
+                stdout = str(completed.stdout or "")
+                stderr = str(completed.stderr or "")
                 success = (
                     completed.returncode == 0
-                    and "unreachable" not in completed.stdout.lower()
-                    and "unreachable" not in completed.stderr.lower()
+                    and "unreachable" not in stdout.lower()
+                    and "unreachable" not in stderr.lower()
                 )
                 probe_results.append(
                     {
                         "gateway_id": gateway_id,
                         "target_ip": target_ip,
                         "success": success,
+                        "returncode": completed.returncode,
+                        "stdout": stdout.strip(),
+                        "stderr": stderr.strip(),
                     }
                 )
                 if not success:
@@ -489,9 +494,22 @@ def _await_initial_real_runtime_readiness(
                 "ready": True,
                 "wall_seconds": time.perf_counter() - started_at,
                 "attempts": attempts,
+                "readiness_profile": "legacy_gateway_linux_route",
+                "reachable_gateway_count": len(gateway_ids),
+                "reachable_pair_count": len(gateway_ids) * len(target_ips),
+                "expected_pair_count": len(gateway_ids) * len(target_ips),
             }
         elapsed = time.perf_counter() - started_at
         if elapsed >= float(timeout_seconds):
+            last_results = list(attempts[-1].get("probe_results", [])) if attempts else []
+            reachable_pairs = [
+                result for result in last_results if result.get("success") is True
+            ]
+            reachable_gateways = {
+                str(result.get("gateway_id"))
+                for result in reachable_pairs
+                if result.get("gateway_id")
+            }
             return {
                 "attempt_count": len(attempts),
                 "gateway_ids": list(gateway_ids),
@@ -499,6 +517,11 @@ def _await_initial_real_runtime_readiness(
                 "ready": False,
                 "wall_seconds": elapsed,
                 "attempts": attempts,
+                "readiness_profile": "legacy_gateway_linux_route",
+                "reachable_gateway_count": len(reachable_gateways),
+                "reachable_pair_count": len(reachable_pairs),
+                "expected_pair_count": len(gateway_ids) * len(target_ips),
+                "blocking_error": "legacy_gateway_route_probe_failed",
             }
         time.sleep(float(probe_interval_seconds))
 
@@ -817,7 +840,10 @@ def _warmup_ut_ids_for_transition(transition: Dict[str, Any]) -> Optional[List[s
         }:
             continue
         for binding_key in ("source_binding", "target_binding"):
-            binding = dict(operation.get(binding_key, {}) or {})
+            raw_binding = operation.get(binding_key, {}) or {}
+            if not isinstance(raw_binding, dict):
+                continue
+            binding = dict(raw_binding)
             if binding.get("ut_id"):
                 warmup_ut_ids.add(str(binding["ut_id"]))
     if not warmup_ut_ids:

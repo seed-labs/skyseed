@@ -27,6 +27,7 @@ CANARY_PINNED_MAPS = [
     "generation_status",
     "fec_forwarding",
     "packet_counters",
+    "interface_counters",
     "parameter_generation",
     "param_status",
     "parameter_values",
@@ -36,6 +37,7 @@ KERNEL_MAP_NAMES = {
     "generation_status": "generation_stat",
     "fec_forwarding": "fec_forwarding",
     "packet_counters": "packet_counters",
+    "interface_counters": "interface_count",
     "parameter_generation": "parameter_gener",
     "param_status": "param_status",
     "parameter_values": "parameter_value",
@@ -56,6 +58,8 @@ COUNTER_LABELS = {
     12: "drop_loss",
     13: "drop_missing_parameter",
     14: "drop_bad_packet",
+    15: "return_handoff_hit",
+    16: "seen",
 }
 IPPROTO_ICMP = 1
 ACTION_FORWARD = 1
@@ -79,6 +83,7 @@ DEFAULT_CANARY_CAPACITIES = {
     "gz_fec_entries": 16,
     "parameter_generations": 64,
     "parameter_entries": 16,
+    "interface_counter_entries": 8192,
 }
 DEFAULT_BACKEND_SELECTOR = {
     "mode": SELECTOR_MODE_CANARY,
@@ -164,6 +169,17 @@ def apply_bpf_experimental_backend(
                 report["ok"] = False
                 report["reason"] = "scope_selection_failed_fail_closed"
                 report["scope_selection_error"] = str(exc)
+                report["scope_selection_diagnostics"] = dict(
+                    getattr(
+                        exc,
+                        "skyseed_scope_selection_diagnostics",
+                        diagnose_experimental_scope_selection(
+                            runtime_report=runtime_report,
+                            selector=selector,
+                        ),
+                    )
+                    or {}
+                )
                 report["metrics"] = build_metrics(
                     enabled=True,
                     backend_mode=BPF_BACKEND_MODE,
@@ -496,6 +512,313 @@ def normalize_selector(selector: dict[str, Any] | None) -> dict[str, Any]:
     return normalized
 
 
+def _direction_sort_key(direction: str) -> int:
+    order = {
+        "g_to_z_access_ingress": 0,
+        "g_to_z": 1,
+        "z_to_g_nat_ingress": 2,
+        "z_to_g": 3,
+    }
+    return order.get(str(direction), 99)
+
+
+def _iter_bpf_owned_readiness(runtime_report: dict[str, Any]) -> list[dict[str, Any]]:
+    readiness_records: list[dict[str, Any]] = []
+    for iteration in runtime_report.get("iterations", []) or []:
+        node_local = iteration.get("node_local_execution") or {}
+        candidate_groups = [
+            (node_local.get("backend") or {}).get("bpf_owned_readiness") or {},
+            (
+                (node_local.get("timing") or {})
+                .get("backend_apply_contract", {})
+                .get("bpf_owned_readiness")
+                or {}
+            ),
+        ]
+        for readiness in candidate_groups:
+            if not isinstance(readiness, dict):
+                continue
+            if readiness.get("ready") is not True and readiness.get("ok") is not True:
+                continue
+            if readiness.get("fallback_to_linux") is True:
+                continue
+            packet_entries = readiness.get("resolved_packet_route_entries") or []
+            mpls_entries = readiness.get("resolved_mpls_flow_entries") or []
+            if packet_entries or mpls_entries:
+                readiness_records.append(dict(readiness))
+    return readiness_records
+
+
+def _bpf_owned_entry_matches_selector(
+    entry: dict[str, Any],
+    *,
+    selector: dict[str, Any],
+    ping_keys: set[tuple[str, str]],
+) -> bool:
+    ut_id = str(entry.get("ut_id") or "")
+    target_ip = str(entry.get("target_ip") or "")
+    gateway_id = str(entry.get("selected_gateway_id") or "")
+    if selector["ut_ids"] and ut_id not in selector["ut_ids"]:
+        return False
+    if selector["gw_ids"] and gateway_id not in selector["gw_ids"]:
+        return False
+    if ping_keys:
+        flow_id = str(entry.get("flow_id") or "")
+        if str(entry.get("direction") or "").startswith("z_to_g"):
+            return any(
+                ping_ut == ut_id and (not flow_id or flow_id.endswith(f":{ping_ut}"))
+                for ping_ut, _target in ping_keys
+            )
+        return (ut_id, target_ip) in ping_keys
+    return True
+
+
+def _normalize_bpf_owned_scope_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(entry)
+    ingress_interface = str(
+        normalized.get("ingress_interface")
+        or normalized.get("ut_host_interface")
+        or ""
+    )
+    egress_interface = str(
+        normalized.get("egress_interface")
+        or normalized.get("out_interface")
+        or normalized.get("satellite_host_interface")
+        or ""
+    )
+    normalized["ingress_interface"] = ingress_interface
+    normalized["egress_interface"] = egress_interface
+    normalized.setdefault("ut_host_interface", ingress_interface)
+    normalized.setdefault("satellite_host_interface", egress_interface)
+    if normalized.get("satellite_ifindex") is None:
+        normalized["satellite_ifindex"] = normalized.get("egress_ifindex")
+    normalized.setdefault("runtime_generation", 0)
+    normalized.setdefault("parameter_generation", 0)
+    normalized.setdefault("parameter_loss_ppm", 0)
+    normalized.setdefault(
+        "parameter_mark",
+        stable_u32(
+            ":".join(
+                [
+                    str(normalized.get("flow_id") or normalized.get("ut_id") or ""),
+                    str(normalized.get("direction") or ""),
+                    str(normalized.get("slot_name") or ""),
+                    str(normalized.get("target_ip") or ""),
+                ]
+            )
+        )
+        & 0xFFFF,
+    )
+    return normalized
+
+
+def _bpf_owned_readiness_scope_entries(
+    readiness: dict[str, Any],
+) -> tuple[list[dict[str, Any]], str]:
+    packet_entries = [
+        dict(entry)
+        for entry in readiness.get("resolved_packet_route_entries") or []
+        if isinstance(entry, dict)
+    ]
+    if packet_entries:
+        return packet_entries, "packet_route"
+    mpls_entries = [
+        {
+            **dict(entry),
+            "scope_evidence": "mpls_lfib",
+        }
+        for entry in readiness.get("resolved_mpls_flow_entries") or []
+        if isinstance(entry, dict)
+        and entry.get("map_type") in {"ingress_classifier_map", "egress_handoff_map"}
+    ]
+    return mpls_entries, "mpls_lfib"
+
+
+def _select_bpf_owned_full_scope_entries(
+    *,
+    runtime_report: dict[str, Any],
+    selector: dict[str, Any],
+) -> dict[str, Any] | None:
+    if selector["mode"] != SELECTOR_MODE_FULL_ELIGIBLE:
+        return None
+    ping_keys = {
+        (str(ping.get("ut_id") or ""), str(ping.get("ping_target_ip") or ""))
+        for ping in successful_pings(runtime_report)
+        if ping.get("ut_id") and ping.get("ping_target_ip")
+    }
+    readiness_records = _iter_bpf_owned_readiness(runtime_report)
+    if not readiness_records:
+        return None
+    readiness = readiness_records[-1]
+    readiness_entries, readiness_entry_source = _bpf_owned_readiness_scope_entries(
+        readiness
+    )
+    raw_entries = [
+        dict(entry)
+        for entry in readiness_entries
+        if isinstance(entry, dict)
+        and entry.get("target_ip")
+        and _bpf_owned_entry_matches_selector(
+            entry,
+            selector=selector,
+            ping_keys=ping_keys,
+        )
+    ]
+    raw_entries.sort(
+        key=lambda entry: (
+            _direction_sort_key(str(entry.get("direction") or "")),
+            str(entry.get("ut_id") or ""),
+            str(entry.get("target_ip") or ""),
+            str(entry.get("flow_id") or ""),
+        )
+    )
+    selected_entries: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for entry in raw_entries:
+        normalized = _normalize_bpf_owned_scope_entry(entry)
+        key = (
+            str(normalized.get("direction") or ""),
+            str(normalized.get("ingress_interface") or ""),
+            str(normalized.get("target_ip") or ""),
+            str(normalized.get("flow_id") or ""),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        selected_entries.append(normalized)
+        if len(selected_entries) >= int(selector["max_scope_entries"]):
+            break
+    if not selected_entries:
+        return None
+    attached_interfaces = sorted(
+        {
+            *[
+                str(interface_name)
+                for interface_name in readiness.get("attached_interfaces") or []
+                if str(interface_name)
+            ],
+            *[
+                str(entry.get("ingress_interface") or "")
+                for entry in selected_entries
+                if str(entry.get("ingress_interface") or "")
+            ],
+            *[
+                str(entry.get("egress_interface") or "")
+                for entry in selected_entries
+                if str(entry.get("egress_interface") or "")
+            ],
+        }
+    )
+    return {
+        "entries": selected_entries,
+        "attached_interfaces": attached_interfaces,
+        "target_ips": sorted(
+            {
+                str(entry.get("target_ip"))
+                for entry in selected_entries
+                if str(entry.get("direction") or "")
+                in {"g_to_z_access_ingress", "g_to_z"}
+                and str(entry.get("target_ip") or "")
+            }
+        ),
+        "readiness": readiness,
+        "readiness_entry_source": readiness_entry_source,
+    }
+
+
+def diagnose_experimental_scope_selection(
+    *,
+    runtime_report: dict[str, Any],
+    selector: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    normalized_selector = normalize_selector(selector)
+    pings = successful_pings(runtime_report)
+    ping_keys = {
+        (str(ping.get("ut_id") or ""), str(ping.get("ping_target_ip") or ""))
+        for ping in pings
+        if ping.get("ut_id") and ping.get("ping_target_ip")
+    }
+    readiness_records = _iter_bpf_owned_readiness(runtime_report)
+    rejected: list[dict[str, Any]] = []
+    candidate_entry_count = 0
+    selector_matched_entry_count = 0
+    candidate_packet_route_entry_count = 0
+    candidate_mpls_flow_entry_count = 0
+    for readiness_index, readiness in enumerate(readiness_records):
+        entries, entry_source = _bpf_owned_readiness_scope_entries(readiness)
+        candidate_packet_route_entry_count += len(
+            [
+                entry
+                for entry in readiness.get("resolved_packet_route_entries") or []
+                if isinstance(entry, dict)
+            ]
+        )
+        candidate_mpls_flow_entry_count += len(
+            [
+                entry
+                for entry in readiness.get("resolved_mpls_flow_entries") or []
+                if isinstance(entry, dict)
+            ]
+        )
+        candidate_entry_count += len(entries)
+        matched = [
+            entry
+            for entry in entries
+            if entry.get("target_ip")
+            and _bpf_owned_entry_matches_selector(
+                entry,
+                selector=normalized_selector,
+                ping_keys=ping_keys,
+            )
+        ]
+        selector_matched_entry_count += len(matched)
+        if not entries:
+            rejected.append(
+                {
+                    "readiness_index": readiness_index,
+                    "reason": "readiness_has_no_bpf_owned_scope_entries",
+                }
+            )
+        elif not matched:
+            rejected.append(
+                {
+                    "readiness_index": readiness_index,
+                    "reason": (
+                        "no_entries_matched_selector_or_successful_ping_keys"
+                    ),
+                    "entry_count": len(entries),
+                    "entry_source": entry_source,
+                    "successful_ping_key_count": len(ping_keys),
+                }
+            )
+    if not readiness_records:
+        rejected.append(
+            {
+                "reason": "no_bpf_owned_readiness_records_with_scope_entries",
+                "hint": (
+                    "runtime report must preserve node_local_execution backend or "
+                    "backend_apply_contract bpf_owned_readiness packet-route or "
+                    "MPLS LFIB evidence"
+                ),
+            }
+        )
+    if not pings:
+        rejected.append({"reason": "no_successful_runtime_ping_evidence"})
+    return {
+        "requested_scope": normalized_selector,
+        "candidate_scope": {
+            "successful_ping_count": len(pings),
+            "successful_ping_key_count": len(ping_keys),
+            "bpf_owned_readiness_record_count": len(readiness_records),
+            "candidate_entry_count": candidate_entry_count,
+            "candidate_packet_route_entry_count": candidate_packet_route_entry_count,
+            "candidate_mpls_flow_entry_count": candidate_mpls_flow_entry_count,
+            "selector_matched_entry_count": selector_matched_entry_count,
+        },
+        "rejected_scope_entries": rejected,
+    }
+
+
 def select_experimental_scope(
     *,
     topology_path: Path,
@@ -515,6 +838,57 @@ def select_experimental_scope(
     )
     if selector["parameter_generation_ids"]:
         active_parameter_generation = int(selector["parameter_generation_ids"][0])
+
+    if selector["mode"] == SELECTOR_MODE_FULL_ELIGIBLE:
+        bpf_owned_scope = _select_bpf_owned_full_scope_entries(
+            runtime_report=runtime_report,
+            selector=selector,
+        )
+        if bpf_owned_scope is not None:
+            compiled_summary = compiled_full_scope_summary(compiled)
+            readiness = dict(bpf_owned_scope.get("readiness") or {})
+            return {
+                "scope": SELECTOR_MODE_FULL_ELIGIBLE,
+                "selector": selector,
+                "max_scope_entries": selector["max_scope_entries"],
+                "entries": list(bpf_owned_scope["entries"]),
+                "attached_interfaces": list(bpf_owned_scope["attached_interfaces"]),
+                "target_ips": list(bpf_owned_scope["target_ips"]),
+                "active_runtime_generation": active_runtime_generation,
+                "active_parameter_generation": active_parameter_generation,
+                "compiled_full_scope": compiled_summary,
+                "semantic_intent_sources": {
+                    "runtime": "all compiled G/Z FEC generation map entries",
+                    "parameter": "all compiled ParameterEpoch active/loss/drop/counter entries",
+                    "scope": (
+                        "full eligible strict BPF-owned packet-route/MPLS LFIB scope from "
+                        "runtime bpf_owned_readiness evidence"
+                    ),
+                },
+                "canonical_fallback_scope": (
+                    "non-IP traffic and traffic outside the current BPF dataplane "
+                    "lookup model remain TC_ACT_OK on canonical Linux/direct runtime; "
+                    "delay/rate/bandwidth stay in qdisc/netem"
+                ),
+                "bpf_owned_readiness_source": {
+                    "provider": readiness.get("provider"),
+                    "generation_id": readiness.get("generation_id"),
+                    "packet_route_entry_count": readiness.get(
+                        "packet_route_entry_count"
+                    ),
+                    "resolved_packet_route_entry_count": len(
+                        readiness.get("resolved_packet_route_entries") or []
+                    ),
+                    "resolved_mpls_flow_entry_count": len(
+                        readiness.get("resolved_mpls_flow_entries") or []
+                    ),
+                    "scope_entry_source": bpf_owned_scope.get(
+                        "readiness_entry_source"
+                    ),
+                    "fallback_to_linux": readiness.get("fallback_to_linux"),
+                },
+            }
+
     selected_entries: list[dict[str, Any]] = []
     seen_entry_keys: set[tuple[str, str]] = set()
     for ping in successful_pings(runtime_report):
@@ -537,7 +911,13 @@ def select_experimental_scope(
         if len(selected_entries) >= int(selector["max_scope_entries"]):
             break
     if not selected_entries:
-        raise RuntimeError("could not select an intent-matched BPF backend scope")
+        diagnostics = diagnose_experimental_scope_selection(
+            runtime_report=runtime_report,
+            selector=selector,
+        )
+        exc = RuntimeError("could not select an intent-matched BPF backend scope")
+        exc.skyseed_scope_selection_diagnostics = diagnostics  # type: ignore[attr-defined]
+        raise exc
 
     if selector["mode"] == SELECTOR_MODE_FULL_ELIGIBLE:
         compiled_summary = compiled_full_scope_summary(compiled)
@@ -660,7 +1040,15 @@ def build_scope_entry(
         "slot_type": "ut_access",
         "ut_host_interface": ut_host_interface,
         "satellite_host_interface": satellite_host_interface,
+        "ingress_ifindex": interface_ifindex(ut_host_interface),
+        "egress_ifindex": interface_ifindex(satellite_host_interface),
         "satellite_ifindex": interface_ifindex(satellite_host_interface),
+        "dst_mac": stable_local_mac(
+            f"{slot_name}:{satellite_endpoint['interface_name']}:{satellite_endpoint['ip_address']}"
+        ),
+        "src_mac": stable_local_mac(
+            f"{slot_name}:{ut_endpoint['interface_name']}:{ut_endpoint['ip_address']}"
+        ),
         "runtime_generation": active_runtime_generation,
         "parameter_generation": active_parameter_generation,
         "fec": {
@@ -864,6 +1252,24 @@ def stable_u32(value: str) -> int:
     return int.from_bytes(digest[:4], byteorder="little", signed=False)
 
 
+def stable_local_mac(seed: str) -> str:
+    digest = hashlib.sha256(seed.encode("utf-8")).digest()
+    octets = [0x02, digest[0], digest[1], digest[2], digest[3], digest[4]]
+    return ":".join(f"{octet:02x}" for octet in octets)
+
+
+def mac_bytes(value: Any) -> bytes:
+    if not value:
+        return b"\x00" * 6
+    parts = str(value).strip().split(":")
+    if len(parts) != 6:
+        return b"\x00" * 6
+    try:
+        return bytes(int(part, 16) for part in parts)
+    except ValueError:
+        return b"\x00" * 6
+
+
 def fingerprint(payload: dict[str, Any]) -> str:
     rendered = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(rendered.encode("utf-8")).hexdigest()[:16]
@@ -876,6 +1282,70 @@ def short_name(prefix: str, seed: str) -> str:
 def host_interface_name(*, slot_name: str, endpoint: dict[str, Any], role: str) -> str:
     seed = f"{slot_name}:{role}:{endpoint.get('node_id')}:{endpoint.get('interface_name')}"
     return short_name("vhs", seed)
+
+
+def interface_ref(interface_name: str) -> dict[str, str]:
+    raw = str(interface_name)
+    if raw.startswith("netns:"):
+        _prefix, node_id, netns_interface = raw.split(":", 2)
+        return {
+            "raw": raw,
+            "netns": str(node_id),
+            "interface_name": str(netns_interface),
+            "interface_ref": raw,
+        }
+    return {
+        "raw": raw,
+        "netns": "host",
+        "interface_name": raw,
+        "interface_ref": raw,
+    }
+
+
+def container_pid(node_id: str) -> int:
+    result = run_command(
+        ["docker", "inspect", "-f", "{{.State.Pid}}", str(node_id)],
+        timeout=4.0,
+    )
+    if not command_ok(result):
+        raise RuntimeError(f"unable to resolve container pid for {node_id}: {result['stderr']}")
+    return int(str(result.get("stdout") or "0").strip())
+
+
+def interface_command(interface_name: str, args: Sequence[str]) -> list[str]:
+    ref = interface_ref(interface_name)
+    command = [str(part) for part in args]
+    if ref["netns"] == "host":
+        return command
+    return [
+        "nsenter",
+        "-t",
+        str(container_pid(ref["netns"])),
+        "-n",
+        "--",
+        *command,
+    ]
+
+
+def run_interface_command(
+    interface_name: str,
+    args: Sequence[str],
+    *,
+    timeout: float,
+    privileged: bool = True,
+) -> dict[str, Any]:
+    ref = interface_ref(interface_name)
+    command = [
+        str(ref["interface_name"]) if str(part) == "{iface}" else str(part)
+        for part in args
+    ]
+    result = run_command(
+        interface_command(interface_name, command),
+        timeout=timeout,
+        privileged=privileged,
+    )
+    result["interface_ref"] = ref
+    return result
 
 
 def run_command(
@@ -988,7 +1458,10 @@ def bpf_map_capacities_for_scope(
     summary = dict(scope.get("compiled_full_scope") or compiled_full_scope_summary(compiled))
     smoke_entries = len(
         {
-            str(entry.get("target_ip"))
+            (
+                str(entry.get("target_ip")),
+                str(entry.get("ingress_ifindex") or entry.get("ut_host_interface") or ""),
+            )
             for entry in list(scope.get("entries") or [])
             if entry.get("target_ip")
         }
@@ -1014,6 +1487,10 @@ def bpf_map_capacities_for_scope(
         "gz_fec_entries": gz_fec_entries,
         "parameter_generations": parameter_generations,
         "parameter_entries": parameter_entries,
+        "interface_counter_entries": max(
+            256,
+            int(DEFAULT_CANARY_CAPACITIES["interface_counter_entries"]),
+        ),
     }
 
 
@@ -1033,6 +1510,8 @@ def compile_bpf(
         f"-DSKYSEED_BPF_MAX_FEC_ENTRIES={int(capacities['gz_fec_entries'])}",
         f"-DSKYSEED_BPF_MAX_PARAMETER_GENERATIONS={int(capacities['parameter_generations'])}",
         f"-DSKYSEED_BPF_MAX_PARAMETER_ENTRIES={int(capacities['parameter_entries'])}",
+        "-DSKYSEED_BPF_MAX_INTERFACE_COUNTER_ENTRIES="
+        f"{int(capacities.get('interface_counter_entries') or DEFAULT_CANARY_CAPACITIES['interface_counter_entries'])}",
     ]
     return run_command(
         [
@@ -1054,23 +1533,24 @@ def compile_bpf(
 
 def attach_canary(interface_name: str, object_path: Path) -> list[dict[str, Any]]:
     return [
-        run_command(
-            ["tc", "qdisc", "del", "dev", interface_name, "clsact"],
+        run_interface_command(
+            interface_name,
+            ["tc", "qdisc", "del", "dev", "{iface}", "clsact"],
             timeout=4.0,
-            privileged=True,
         ),
-        run_command(
-            ["tc", "qdisc", "add", "dev", interface_name, "clsact"],
+        run_interface_command(
+            interface_name,
+            ["tc", "qdisc", "add", "dev", "{iface}", "clsact"],
             timeout=8.0,
-            privileged=True,
         ),
-        run_command(
+        run_interface_command(
+            interface_name,
             [
                 "tc",
                 "filter",
                 "add",
                 "dev",
-                interface_name,
+                "{iface}",
                 "ingress",
                 "bpf",
                 "da",
@@ -1080,7 +1560,24 @@ def attach_canary(interface_name: str, object_path: Path) -> list[dict[str, Any]
                 "classifier/canary",
             ],
             timeout=10.0,
-            privileged=True,
+        ),
+        run_interface_command(
+            interface_name,
+            [
+                "tc",
+                "filter",
+                "add",
+                "dev",
+                "{iface}",
+                "egress",
+                "bpf",
+                "da",
+                "obj",
+                str(object_path),
+                "sec",
+                "classifier/canary",
+            ],
+            timeout=10.0,
         ),
     ]
 
@@ -1093,10 +1590,10 @@ def rollback_canary(
     steps: list[dict[str, Any]] = []
     for interface_name in sorted({str(name) for name in attached_interfaces if str(name)}):
         steps.append(
-            run_command(
-                ["tc", "qdisc", "del", "dev", interface_name, "clsact"],
+            run_interface_command(
+                interface_name,
+                ["tc", "qdisc", "del", "dev", "{iface}", "clsact"],
                 timeout=4.0,
-                privileged=True,
             )
         )
     if remove_maps:
@@ -1119,10 +1616,10 @@ def rollback_canary(
 def residue_check(attached_interfaces: Sequence[str]) -> dict[str, Any]:
     qdisc_hits: list[str] = []
     for interface_name in sorted({str(name) for name in attached_interfaces if str(name)}):
-        qdisc = run_command(
-            ["tc", "qdisc", "show", "dev", interface_name],
+        qdisc = run_interface_command(
+            interface_name,
+            ["tc", "qdisc", "show", "dev", "{iface}"],
             timeout=4.0,
-            privileged=True,
         )
         if "clsact" in (qdisc.get("stdout", "") + qdisc.get("stderr", "")):
             qdisc_hits.append(interface_name)
@@ -1139,10 +1636,10 @@ def privileged_path_exists(path: Path) -> bool:
 
 
 def interface_ifindex(interface_name: str) -> int:
-    result = run_command(
-        ["ip", "-o", "link", "show", "dev", interface_name],
+    result = run_interface_command(
+        interface_name,
+        ["ip", "-o", "link", "show", "dev", "{iface}"],
         timeout=4.0,
-        privileged=True,
     )
     if not command_ok(result):
         raise RuntimeError(f"missing canary interface {interface_name}: {result['stderr']}")
@@ -1230,9 +1727,12 @@ def load_canary_maps(
     for entry in fec_entries_to_load:
         generation_id = int(entry["generation_id"])
         fec_key = int(entry["fec_key_u32"])
-        route_key = pack_u32s(generation_id, fec_key)
+        route_key = pack_u32s(generation_id, 0, fec_key)
         route_action = ACTION_FORWARD if entry.get("active") else ACTION_PASS
-        route_value = pack_u32s(1 if entry.get("active") else 0, route_action, 0)
+        route_value = (
+            pack_u32s(1 if entry.get("active") else 0, route_action, 0, 0)
+            + ["00"] * 12
+        )
         updates.append(update_hash_map("fec_forwarding", route_key, route_value))
         loaded_semantic_fec_keys.add((generation_id, fec_key))
 
@@ -1253,16 +1753,35 @@ def load_canary_maps(
         if entry.get("link_id"):
             loaded_semantic_parameter_links.add(str(entry["link_id"]))
 
+    loaded_dataplane_route_keys: set[tuple[int, int, int]] = set()
     loaded_target_ips: set[str] = set()
     loaded_dataplane_parameter_links: set[str] = set()
     loaded_dataplane_parameter_keys: set[tuple[int, int, int]] = set()
     for entry in scope["entries"]:
         target_ip = str(entry["target_ip"])
-        if target_ip in loaded_target_ips:
-            continue
         dst_ipv4 = ipv4_little_endian_u32(entry["target_ip"])
-        route_key = pack_u32s(active_runtime_generation, dst_ipv4)
-        route_value = pack_u32s(1, ACTION_FORWARD, int(entry["satellite_ifindex"]))
+        ingress_ifindex = int(entry.get("ingress_ifindex") or 0)
+        if not ingress_ifindex and entry.get("ut_host_interface"):
+            ingress_ifindex = interface_ifindex(str(entry["ut_host_interface"]))
+        route_key_tuple = (active_runtime_generation, ingress_ifindex, dst_ipv4)
+        if route_key_tuple in loaded_dataplane_route_keys:
+            continue
+        route_key = pack_u32s(*route_key_tuple)
+        route_value = pack_u32s(
+            1,
+            ACTION_FORWARD,
+            int(entry.get("egress_ifindex") or entry["satellite_ifindex"]),
+            (
+                ipv4_little_endian_u32(str(entry["new_dst_ip"]))
+                if entry.get("new_dst_ip")
+                else 0
+            ),
+        ) + [
+            f"{byte:02x}"
+            for byte in (
+                mac_bytes(entry.get("dst_mac")) + mac_bytes(entry.get("src_mac"))
+            )
+        ]
         updates.append(update_hash_map("fec_forwarding", route_key, route_value))
         parameter_key = pack_u32s(active_parameter_generation, dst_ipv4, IPPROTO_ICMP)
         parameter_value = pack_u32s(
@@ -1271,6 +1790,7 @@ def load_canary_maps(
             int(entry.get("parameter_mark", 0)),
         )
         updates.append(update_hash_map("parameter_values", parameter_key, parameter_value))
+        loaded_dataplane_route_keys.add(route_key_tuple)
         loaded_target_ips.add(target_ip)
         loaded_dataplane_parameter_links.add(str(entry["slot_name"]))
         loaded_dataplane_parameter_keys.add(
@@ -1284,7 +1804,7 @@ def load_canary_maps(
     loaded_fec_count = (
         len(loaded_semantic_fec_keys)
         if full_scope
-        else len(loaded_target_ips)
+        else len(loaded_dataplane_route_keys)
     )
     loaded_parameter_link_count = (
         len(loaded_semantic_parameter_links)
@@ -1305,9 +1825,19 @@ def load_canary_maps(
         "loaded_parameter_link_count": loaded_parameter_link_count,
         "loaded_parameter_entry_count": loaded_parameter_entry_count,
         "active_generation_switch_count": len(active_generations_before),
-        "loaded_dataplane_route_count": len(loaded_target_ips),
+        "loaded_dataplane_route_count": len(loaded_dataplane_route_keys),
         "loaded_dataplane_parameter_entry_count": len(loaded_dataplane_parameter_keys),
         "target_ips": sorted(loaded_target_ips),
+        "loaded_dataplane_route_keys": [
+            {
+                "generation_id": generation_id,
+                "ingress_ifindex": ingress_ifindex,
+                "dst_ipv4": dst_ipv4,
+            }
+            for generation_id, ingress_ifindex, dst_ipv4 in sorted(
+                loaded_dataplane_route_keys
+            )
+        ],
     }
 
 
@@ -1403,9 +1933,59 @@ def read_packet_counters() -> dict[str, Any]:
     }
 
 
+def read_interface_counters() -> dict[str, Any]:
+    ref_args, ref_meta = map_reference("interface_counters")
+    result = bpftool(["-j", "map", "dump", *ref_args], timeout=8.0)
+    parsed: Any = None
+    if result.get("stdout"):
+        try:
+            parsed = json.loads(result["stdout"])
+        except json.JSONDecodeError:
+            parsed = None
+    entries: list[dict[str, Any]] = []
+    counters_by_ifindex: dict[int, dict[str, int]] = {}
+    for entry in parsed if isinstance(parsed, list) else []:
+        key = decode_bpftool_hex_u32_pair(entry.get("key"))
+        value = decode_bpftool_hex_u64(entry.get("value"))
+        ifindex, counter_id = key
+        label = COUNTER_LABELS.get(counter_id, f"counter_{counter_id}")
+        counters = counters_by_ifindex.setdefault(
+            ifindex,
+            {known_label: 0 for known_label in COUNTER_LABELS.values()},
+        )
+        counters[label] = value
+        entries.append(
+            {
+                "ifindex": ifindex,
+                "counter_id": counter_id,
+                "counter_label": label,
+                "value": value,
+            }
+        )
+    return {
+        "command": result,
+        "map_reference": ref_meta,
+        "parsed": parsed,
+        "entries": entries,
+        "counters_by_ifindex": {
+            str(ifindex): counters
+            for ifindex, counters in sorted(counters_by_ifindex.items())
+        },
+    }
+
+
 def decode_bpftool_hex_u32(value: Any) -> int:
     raw = bytes(int(part, 16) for part in list(value or [])[:4])
     return int.from_bytes(raw.ljust(4, b"\0"), byteorder="little", signed=False)
+
+
+def decode_bpftool_hex_u32_pair(value: Any) -> tuple[int, int]:
+    raw = bytes(int(part, 16) for part in list(value or [])[:8])
+    raw = raw.ljust(8, b"\0")
+    return (
+        int.from_bytes(raw[:4], byteorder="little", signed=False),
+        int.from_bytes(raw[4:8], byteorder="little", signed=False),
+    )
 
 
 def decode_bpftool_hex_u64(value: Any) -> int:

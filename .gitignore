@@ -3,6 +3,8 @@ satellite/configs/*
 !satellite/configs/iteration2_small_scale/*.json
 !satellite/configs/starlink_shell_ground/
 !satellite/configs/starlink_shell_ground/*.json
+!satellite/configs/validation_profiles/
+!satellite/configs/validation_profiles/*.json
 satellite/configs/starlink_shell_preview/
 satellite/configs/starlink_shell_preview_matrix/
 satellite/configs/starlink_shell_runtime_attempt/

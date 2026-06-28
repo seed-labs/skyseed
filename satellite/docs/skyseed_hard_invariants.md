@@ -1,6 +1,6 @@
 # Skyseed Hard Invariants
 
-Updated: 2026-06-23.
+Updated: 2026-06-24.
 
 These invariants are non-negotiable project control rules. If a run or change
 cannot satisfy them, the result must expose the blocker instead of hiding it.
@@ -54,6 +54,22 @@ cannot satisfy them, the result must expose the blocker instead of hiding it.
   Edge NAT, Mini Internet edge routing, ordinary lifecycle, and qdisc behavior
   are outside strict BPF-owned success claims unless a later gate explicitly
   proves otherwise.
+- `operational_clean` plus strict `bpf_owned` is a no-hidden-fallback path:
+  Linux MPLS, canary/experimental BPF, packet-route correctness evidence, ping
+  success, or cleanup/rollback cannot contribute to PASS unless that module was
+  explicitly selected as the authoritative backend.
+- BPF map reload failure is a first blocker, not permission for full attach or
+  dirty recovery in strict `operational_clean` reuse. The failed map,
+  operation, generation, direct bpftool/syscall evidence, and map state must be
+  preserved before any broader rerun.
+- A BPF data-map update failure must not flip `active_generation`. The inactive
+  generation may contain partial writes, but strict runtime must report the
+  blocker and leave authoritative active generation unchanged by the loader.
+- Every authoritative module must expose both semantic correctness and
+  cost/cardinality sanity. In `operational_clean` plus strict `bpf_owned`,
+  cleanup cost, steady full attach, unexpected qdisc/cardinality work, and
+  unexplained timing buckets are blockers for broad reruns even when the process
+  is still making progress.
 
 ## Workload And Coordinates
 

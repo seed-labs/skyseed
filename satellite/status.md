@@ -1,5 +1,91 @@
 # Satellite Iteration 2 Status
 
+## 2026-06-23 - Strict BPF-Owned Boundary And Compose Cleanup Gate
+
+- Split strict `bpf_owned` from legacy Linux MPLS fallback behavior in the
+  runtime planner: eligible core commands with unproven BPF readiness now become
+  `bpf_owned_planner_error` / `blocked_before_runtime`, not
+  `fallback_to_linux`.
+- Added BPF-owned preflight/apply separation so strict mode avoids legacy
+  `ip -f mpls route show` preflight and does not generate Linux MPLS/shared
+  zone-return apply commands on the normal success path.
+- Normal BPF-owned runtime update cleanup now preserves BPF attach/maps; broad
+  BPF cleanup remains a failure/final cleanup operation.
+- Final compose cleanup now records the exact run-owned compose command using
+  `-f <seed_output/docker-compose.yml> -p <project> down --remove-orphans -v`
+  and persists post-run compose residue details.
+- Focused validation passed:
+  `python3 -m py_compile satellite/linux_mpls_runtime.py satellite/runtime_operation_metrics.py satellite/apps/run_starlink_shell_runtime_attempt.py satellite/apps/run_starlink_shell_experiment.py satellite/test_rollback_cleanup_optimization.py`;
+  `python3 -m unittest satellite.test_rollback_cleanup_optimization`;
+  `PYTHONPATH=satellite:satellite/apps python3 -m unittest satellite.test_resource_usage_sampling satellite.test_skyseed_regression_metrics satellite.test_event_timeline_runtime_queue`.
+- Replay-gated shortened full-S4 strict BPF-owned run
+  `full-s4-bpf-owned-separation-cleanup-20260623-r2` stopped before startup
+  because the equivalence gate failed (`mismatch_count=7`,
+  `runtime_conclusion_allowed=false`). Do not classify it as a runtime
+  regression pass. Its post-run preflight was clean and compose cleanup removed
+  the stale `seed_output` project residue.
+
+## 2026-06-22 - Current Control Docs
+
+- Current phase: full S4 bounded strict MPLS-like BPF/EventTimeline runtime
+  bring-up.
+- Gate control is now consolidated in:
+  `docs/skyseed_hard_invariants.md`,
+  `docs/skyseed_phase_status.md`, and
+  `docs/skyseed_evidence_ledger.md`.
+- Next gate: full S4 bounded strict MPLS-like BPF runtime execution with
+  limited RuntimeTransactions / ParameterUpdateBatches and early stop on
+  blocker.
+- Do not treat the historical blocked pre-S4 audit as current phase state; it
+  is superseded by the final consolidated pre-S4 gate and the
+  coordinate-consistent S4 preview evidence.
+
+## 2026-06-21 - Pre-300 BPF-Owned Readiness Gate
+
+- Ran bounded real-runtime checks for all forwarding backend modes before any
+  S4 / 300+ run: `linux_mpls`, `bpf_shadow`, `bpf_canary`, and `bpf_owned`.
+- All four runs used `seed310`, 24 satellites, one RuntimeEpoch, no
+  ParameterEpochs, and completed real apply, ping, rollback, and post-run
+  preflight.
+- `linux_mpls`, `bpf_shadow`, and `bpf_canary` correctly skipped zero Linux
+  MPLS/LFIB commands. `bpf_shadow` and `bpf_canary` retained Linux host apply.
+- The BPF dataplane canary passed in the Linux run: compile/load/attach/map
+  updates succeeded, one interface was attached, two runtime generations and
+  one G/Z FEC were loaded, redirect counter was `1`, and BPF rollback residue
+  was clean.
+- `bpf_owned` correctly failed closed: eligible satellite-core scope was
+  present (`satellite_core_mpls_lfib=8`, G-to-Z `4`, Z-to-G `4`), but
+  `skipped_by_bpf_backend=0` and `fallback_to_linux=16` because
+  `bpf_owned_readiness_not_proven`.
+- Gate result: not ready for S4. Blockers are documented in
+  `docs/skyseed_pre300_bpf_owned_readiness.md`, with compact evidence in
+  `baselines/skyseed_pre300_bpf_owned_readiness_summary.json`.
+
+## 2026-06-21 - Switchable Satellite-Core Forwarding Backend Foundation
+
+- Added the switchable forwarding backend foundation for node-local
+  satellite-core G/Z realization: `linux_mpls`, `bpf_shadow`, `bpf_canary`,
+  and `bpf_owned`.
+- `bpf_owned` is fail-closed. Eligible satellite-core MPLS/LFIB/core-route
+  commands are skipped only when BPF ownership readiness is explicitly proven;
+  otherwise they are retained as `fallback_to_linux` with persisted reasons.
+- Runtime command plans now carry ownership/apply-action metadata and backend
+  contract summaries: skipped Linux command counts, BPF-owned G/Z scope counts,
+  G-to-Z and Z-to-G coverage, host-required counts, fallback reasons, and
+  cleanup scopes narrowed by BPF ownership.
+- Scope remains narrow: qdisc delay/rate/loss/bandwidth, veth/netns lifecycle,
+  edge NAT/iptables, UT/GW edge IP behavior, Mini Internet edge routes, and
+  fallback/control traffic are not claimed as BPF-owned.
+- Updated `docs/skyseed_platform_abstraction_plan.md` with the logical
+  semantics vs backend implementation split, fail-closed BPF ownership rules,
+  evidence fields, and pre-300/S4 readiness checklist. No S4 or 300+ satellite
+  real-runtime run was started.
+- Focused validation run:
+  `python3 -m py_compile satellite/linux_mpls_runtime.py satellite/runtime_operation_metrics.py satellite/apps/run_starlink_shell_experiment.py`;
+  `python3 satellite/test_rollback_cleanup_optimization.py`;
+  `python3 satellite/test_bpf_shadow_backend.py`;
+  `PYTHONPATH=.:satellite:satellite/apps python3 satellite/test_runtime_validation_defaults.py`.
+
 ## 2026-06-21 - Realistic Workload Preview Preparation
 
 - Goal 18 added a preview-only realistic workload preparation path:

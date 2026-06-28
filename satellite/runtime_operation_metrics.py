@@ -159,6 +159,73 @@ def classify_node_local_command(command: Sequence[str]) -> dict[str, str]:
     return classify_runtime_command(command)
 
 
+def classify_node_local_command_scope(
+    command: Sequence[str],
+    *,
+    description: str = "",
+    phase: str = "",
+) -> dict[str, str]:
+    """Classify node-local Linux/MPLS command intent for bottleneck attribution."""
+
+    parts = _strip_wrappers(command)
+    rendered = " ".join(parts).lower()
+    description_text = str(description).lower()
+    classification = classify_node_local_command(command)
+    family = classification["family"]
+    operation = classification["operation"]
+
+    if (
+        family == "iptables"
+        or "iptables" in rendered
+        or "snat" in description_text
+        or "filter rule" in description_text
+    ):
+        scope = "edge_nat_iptables"
+    elif (
+        "serving-satellite source rule" in description_text
+        or "serving-satellite source-policy rules" in description_text
+    ):
+        scope = "satellite_core_mpls_lfib"
+    elif family == "sysctl" or "platform labels" in description_text or "mpls input" in description_text:
+        scope = "mpls_readiness_sysctl"
+    elif (
+        family == "mpls_route"
+        or " encap mpls " in f" {rendered} "
+        or "forward lfib" in description_text
+        or "reverse lfib" in description_text
+        or "forward pop" in description_text
+        or "reverse pop" in description_text
+        or "zone-return ingress route" in description_text
+        or "zone-return mpls" in description_text
+        or "policy-table default route" in description_text
+        or "serving-satellite policy table" in description_text
+        or "ut delivery route" in description_text
+    ):
+        scope = "satellite_core_mpls_lfib"
+    elif "source rule" in description_text or "ip rule" in rendered:
+        scope = "ip_route_rule"
+    elif "ut default route" in description_text:
+        scope = "ip_route_rule"
+    elif family == "route":
+        scope = "fallback_control_route"
+    else:
+        scope = "other_unclassified"
+
+    residue_scope = {
+        "satellite_core_mpls_lfib": "satellite_core_mpls_lfib_residue",
+        "ip_route_rule": "ip_route_rule_residue",
+        "mpls_readiness_sysctl": "mpls_readiness_sysctl_cleanup_or_check",
+        "edge_nat_iptables": "edge_iptables_snat_residue",
+        "fallback_control_route": "fallback_control_residue",
+    }.get(scope, "other_unclassified_cleanup")
+    return {
+        **classification,
+        "scope": scope,
+        "cleanup_scope": residue_scope if str(phase) == "rollback" else scope,
+        "bpf_owned_gz_forwarding_candidate": str(scope == "satellite_core_mpls_lfib").lower(),
+    }
+
+
 def _round_seconds_by_key(values: Mapping[str, float]) -> dict[str, float]:
     return {key: round(float(value), 6) for key, value in sorted(values.items())}
 
@@ -269,30 +336,132 @@ def summarize_node_local_batches(
 ) -> dict[str, Any]:
     try:
         metrics = RuntimeOperationMetrics()
-        for batch in batch_plans:
-            for command in batch.get("commands", []) or []:
+        plan_list = [dict(batch) for batch in batch_plans if isinstance(batch, Mapping)]
+        result_list = [dict(result) for result in batch_results if isinstance(result, Mapping)]
+        scopes_by_name: dict[str, int] = {}
+        cleanup_scopes_by_name: dict[str, int] = {}
+        planned_state_touches_by_scope: dict[str, int] = {}
+        wall_by_scope: dict[str, float] = {}
+        wall_by_cleanup_scope: dict[str, float] = {}
+        affected_nodes: set[str] = set()
+        per_command_timing_available = False
+        per_command_timing_count = 0
+        candidate_bpf_owned_command_count = 0
+        candidate_bpf_owned_wall_seconds = 0.0
+
+        for batch_index, batch in enumerate(plan_list):
+            node_id = str(batch.get("node_id") or "")
+            phase = str(batch.get("phase") or "")
+            if node_id:
+                affected_nodes.add(node_id)
+            commands = list(batch.get("commands", []) or [])
+            descriptions = list(batch.get("descriptions", []) or [])
+            result = result_list[batch_index] if batch_index < len(result_list) else {}
+            command_timings = list(result.get("command_timings", []) or [])
+            timing_by_index = {
+                int(item.get("command_index")): item
+                for item in command_timings
+                if isinstance(item, Mapping) and item.get("command_index") is not None
+            }
+            if timing_by_index:
+                per_command_timing_available = True
+            for command_index, command in enumerate(commands):
                 if not isinstance(command, list):
                     continue
-                classification = classify_node_local_command([str(part) for part in command])
+                description = str(
+                    descriptions[command_index] if command_index < len(descriptions) else ""
+                )
+                command_parts = [str(part) for part in command]
+                scope_info = classify_node_local_command_scope(
+                    command_parts,
+                    description=description,
+                    phase=phase,
+                )
+                scope = scope_info["scope"]
+                cleanup_scope = scope_info["cleanup_scope"]
+                scopes_by_name[scope] = scopes_by_name.get(scope, 0) + 1
+                cleanup_scopes_by_name[cleanup_scope] = (
+                    cleanup_scopes_by_name.get(cleanup_scope, 0) + 1
+                )
+                planned_state_touches_by_scope[scope] = (
+                    planned_state_touches_by_scope.get(scope, 0) + 1
+                )
+                if scope_info["bpf_owned_gz_forwarding_candidate"] == "true":
+                    candidate_bpf_owned_command_count += 1
+                timing = timing_by_index.get(command_index)
+                wall_seconds = 0.0
+                returncode = 0
+                if timing is not None:
+                    per_command_timing_count += 1
+                    wall_seconds = float(timing.get("wall_seconds", 0.0) or 0.0)
+                    returncode = int(timing.get("returncode", 0) or 0)
+                    wall_by_scope[scope] = wall_by_scope.get(scope, 0.0) + wall_seconds
+                    wall_by_cleanup_scope[cleanup_scope] = (
+                        wall_by_cleanup_scope.get(cleanup_scope, 0.0) + wall_seconds
+                    )
+                    if scope_info["bpf_owned_gz_forwarding_candidate"] == "true":
+                        candidate_bpf_owned_wall_seconds += wall_seconds
+                classification = classify_node_local_command(command_parts)
                 metrics.record_operation(
                     family=classification["family"],
                     operation=classification["operation"],
-                    wall_seconds=0.0,
-                    returncode=0,
+                    wall_seconds=wall_seconds,
+                    returncode=returncode,
                 )
-        result_list = [dict(result) for result in batch_results if isinstance(result, Mapping)]
         batch_wall_seconds = sum(
             float(result.get("wall_seconds", 0.0) or 0.0) for result in result_list
         )
+        max_batch_wall_seconds = max(
+            [float(result.get("wall_seconds", 0.0) or 0.0) for result in result_list],
+            default=0.0,
+        )
         payload = metrics.snapshot()
+        timing_granularity = (
+            "per_command_wall_seconds_and_batch_wall_seconds"
+            if per_command_timing_available
+            else "batch_wall_seconds_command_counts"
+        )
         payload.update(
             {
                 "batch_count": len(result_list),
                 "docker_exec_batch_count": len(result_list),
                 "node_local_command_batch_count": len(result_list),
                 "batch_wall_seconds": round(batch_wall_seconds, 6),
-                "timing_granularity": "batch_wall_seconds_command_counts",
-                "per_command_timing_available": False,
+                "cumulative_batch_wall_seconds": round(batch_wall_seconds, 6),
+                "max_batch_wall_seconds": round(max_batch_wall_seconds, 6),
+                "worker_critical_path_wall_seconds_source": "caller_phase_timing",
+                "timing_granularity": timing_granularity,
+                "per_command_timing_available": per_command_timing_available,
+                "per_command_timing_count": per_command_timing_count,
+                "affected_node_count": len(affected_nodes),
+                "counts_by_scope": dict(sorted(scopes_by_name.items())),
+                "cleanup_counts_by_scope": dict(sorted(cleanup_scopes_by_name.items())),
+                "planned_state_touch_count_by_scope": dict(
+                    sorted(planned_state_touches_by_scope.items())
+                ),
+                "changed_state_count_available": False,
+                "wall_seconds_by_scope": _round_seconds_by_key(wall_by_scope),
+                "wall_seconds_by_cleanup_scope": _round_seconds_by_key(
+                    wall_by_cleanup_scope
+                ),
+                "bpf_owned_gz_forwarding_candidate": {
+                    "command_count": candidate_bpf_owned_command_count,
+                    "wall_seconds": round(candidate_bpf_owned_wall_seconds, 6),
+                    "cleanup_scopes_that_would_shrink": [
+                        "satellite_core_mpls_lfib_residue"
+                    ],
+                    "note": (
+                        "Counts commands in satellite_core_mpls_lfib scope. "
+                        "Wall seconds require per-command timing and are otherwise 0."
+                    ),
+                },
+                "measurement_semantics": {
+                    "phase_wall_seconds": "recorded by caller timing fields",
+                    "batch_wall_seconds": "cumulative worker batch wall, not critical path",
+                    "per_command_wall_seconds": (
+                        "direct when command_timings are present; unavailable for old artifacts"
+                    ),
+                },
             }
         )
         return payload
@@ -308,4 +477,8 @@ def summarize_node_local_batches(
             "batch_wall_seconds": 0.0,
             "timing_granularity": "batch_wall_seconds_command_counts",
             "per_command_timing_available": False,
+            "per_command_timing_count": 0,
+            "counts_by_scope": {},
+            "cleanup_counts_by_scope": {},
+            "planned_state_touch_count_by_scope": {},
         }

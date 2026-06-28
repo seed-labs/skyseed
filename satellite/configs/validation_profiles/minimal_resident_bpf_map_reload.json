@@ -1,0 +1,63 @@
+{
+  "name": "minimal_resident_bpf_map_reload",
+  "description": "Smallest live bounded repro for fresh bootstrap plus steady resident BPF MPLS map reload.",
+  "runner": "minimal_resident_bpf_map_reload",
+  "planned_shell": null,
+  "max_satellites": null,
+  "catalog_contract": {
+    "required": false
+  },
+  "validation_selector": {
+    "ut": {
+      "mode": "none"
+    },
+    "gateway": {
+      "mode": "none"
+    },
+    "zone": {
+      "mode": "none"
+    }
+  },
+  "runner_args": {
+    "run_mode": "real-runtime",
+    "runtime_mode": "operational_clean",
+    "forwarding_backend": "bpf_owned",
+    "max_runtime_epochs": 1,
+    "max_parameter_epochs": 0,
+    "runtime_epoch_validation_scope": "reapplied_gateway_class_sample"
+  },
+  "allowed_capabilities": {
+    "compose": false,
+    "runtime": true,
+    "bpf": true
+  },
+  "expected_outcome_labels": [
+    "MINIMAL_RESIDENT_MAP_RELOAD_PASS",
+    "BPF_SCHEMA_MISMATCH_REPRODUCED",
+    "BPF_E2BIG_WITH_SCHEMA_MATCH",
+    "MINIMAL_REPRO_SETUP_FAILED",
+    "HOST_ENVIRONMENT_BLOCKER_BEFORE_SKYSEED_REPRO"
+  ],
+  "forbidden_behavior": {
+    "strict_bpf_owned_no_canary_experimental": true,
+    "linux_gz_mpls_lfib_fallback": true,
+    "full_attach_fallback_after_map_reload_failure": true,
+    "dirty_recovery_reset_as_reuse": true
+  },
+  "cleanup_requirements": {
+    "direct_backend_host_interfaces": 0,
+    "bpf_pins": 0,
+    "runtime_locks": 0,
+    "compose_network_residue": 0,
+    "satellite_output_changed": false
+  },
+  "cost_sanity": {
+    "startup_materialization_seconds_warn": 120,
+    "network_update_seconds_warn": 60,
+    "cleanup_seconds_warn": 60,
+    "anomaly_labels": [
+      "COST_SANITY_BLOCKER",
+      "UNKNOWN_BLOCKING_ANOMALY"
+    ]
+  }
+}

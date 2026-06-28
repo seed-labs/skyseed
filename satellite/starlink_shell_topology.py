@@ -213,6 +213,47 @@ def _shift_gateway_definitions_for_ix_offset(
     return shifted_entries
 
 
+def _gateway_transit_ixs_for_mini_internet(
+    gateway_definitions: Sequence[Dict[str, Any]],
+    *,
+    ix_id_offset: int,
+) -> Dict[int, List[int]]:
+    transit_ixs: Dict[int, set[int]] = {}
+    for definition in gateway_definitions:
+        upstream_asn = int(definition["upstream_asn"])
+        raw_ix_id = int(definition["ix_id"]) - int(ix_id_offset)
+        transit_ixs.setdefault(upstream_asn, set()).add(raw_ix_id)
+    return {
+        asn: sorted(ix_ids)
+        for asn, ix_ids in sorted(transit_ixs.items())
+    }
+
+
+def _mini_internet_exchange_records(
+    gateway_definitions: Sequence[Dict[str, Any]],
+    *,
+    ix_id_offset: int,
+) -> List[Dict[str, Any]]:
+    ix_ids = {
+        int(ix_id) + int(ix_id_offset)
+        for ix_id in MINI_INTERNET_IX_DISPLAY_NAMES
+    }
+    ix_ids.update(int(definition["ix_id"]) for definition in gateway_definitions)
+    return [
+        {
+            "ix_id": ix_id,
+            "network_name": f"ix{ix_id}",
+            "display_name": str(
+                MINI_INTERNET_IX_DISPLAY_NAMES.get(
+                    ix_id - int(ix_id_offset),
+                    f"Gateway-IX-{ix_id}",
+                )
+            ),
+        }
+        for ix_id in sorted(ix_ids)
+    ]
+
+
 def _strip_prefix(ip_address: str) -> str:
     return str(ipaddress.ip_interface(str(ip_address)).ip)
 
@@ -354,6 +395,26 @@ def _ground_subpoint_from_inertial(
     )
 
 
+def _offset_ground_location(
+    base: GroundLocation,
+    *,
+    north_km: float = 0.0,
+    east_km: float = 0.0,
+) -> GroundLocation:
+    latitude_deg = float(base.latitude_deg) + (float(north_km) / 111.0)
+    bounded_latitude = max(-85.0, min(85.0, latitude_deg))
+    cos_latitude = max(0.2, math.cos(math.radians(bounded_latitude)))
+    longitude_deg = (
+        float(base.longitude_deg) + (float(east_km) / (111.0 * cos_latitude))
+    )
+    wrapped_longitude = ((longitude_deg + 540.0) % 360.0) - 180.0
+    return GroundLocation(
+        latitude_deg=round(bounded_latitude, 6),
+        longitude_deg=round(wrapped_longitude, 6),
+        altitude_km=float(base.altitude_km),
+    )
+
+
 def derive_starlink_preview_ground_locations(
     propagated_slice: PropagatedOrbitSlice,
     *,
@@ -397,11 +458,396 @@ def derive_starlink_preview_ground_locations(
                     z_km=state.z_km,
                 ),
                 timestamp=timestamp,
-            )
+        )
         return locations
     for index, node_id in enumerate(gateway_ids):
         locations[str(node_id)] = derived_ut_locations[index % len(derived_ut_locations)]
     return locations
+
+
+def derive_starlink_coordinate_consistent_ground_model(
+    propagated_slice: PropagatedOrbitSlice,
+    *,
+    ut_definitions: Sequence[Dict[str, Any]],
+    gateway_definitions: Sequence[Dict[str, Any]],
+    zone_definitions: Sequence[Dict[str, Any]],
+    coordinate_policy: str = "shell_aware_consistent",
+) -> Dict[str, Any]:
+    """Build a parameterized preview ground model with zone/UT/GW coordinates aligned."""
+
+    policy = str(coordinate_policy or "shell_aware_consistent").strip()
+    if policy not in {
+        "real_geographic",
+        "shell_aware_consistent",
+        "synthetic_shell_aware",
+    }:
+        raise ValueError(f"unsupported coordinate policy: {coordinate_policy}")
+    if policy == "real_geographic":
+        return {
+            "ground_locations": _ground_locations_from_catalogs(
+                ut_definitions=ut_definitions,
+                gateway_definitions=gateway_definitions,
+            ),
+            "ut_definitions": [
+                {
+                    **dict(entry),
+                    "catalog_coordinates": {
+                        "latitude_deg": entry.get("latitude_deg"),
+                        "longitude_deg": entry.get("longitude_deg"),
+                        "altitude_km": entry.get("altitude_km", 0.0),
+                    },
+                    "effective_coordinates": {
+                        "latitude_deg": entry.get("latitude_deg"),
+                        "longitude_deg": entry.get("longitude_deg"),
+                        "altitude_km": entry.get("altitude_km", 0.0),
+                    },
+                    "zone_membership_semantics": (
+                        "workload_probe_affinity_not_zone_definition"
+                    ),
+                }
+                for entry in ut_definitions
+            ],
+            "gateway_definitions": [
+                {
+                    **dict(entry),
+                    "catalog_coordinates": {
+                        "latitude_deg": entry.get("latitude_deg"),
+                        "longitude_deg": entry.get("longitude_deg"),
+                        "altitude_km": entry.get("altitude_km", 0.0),
+                    },
+                    "effective_coordinates": {
+                        "latitude_deg": entry.get("latitude_deg"),
+                        "longitude_deg": entry.get("longitude_deg"),
+                        "altitude_km": entry.get("altitude_km", 0.0),
+                    },
+                    "coordinate_source": "real_catalog",
+                    "provenance": {
+                        "source": entry.get("source"),
+                        "version": entry.get("version", "unversioned_catalog"),
+                        "synthetic": bool(entry.get("synthetic", False)),
+                    },
+                }
+                for entry in gateway_definitions
+            ],
+            "zone_definitions": [
+                {
+                    **dict(entry),
+                    "catalog_coordinates": {
+                        "latitude_deg": entry.get("latitude_deg"),
+                        "longitude_deg": entry.get("longitude_deg"),
+                        "altitude_km": entry.get("altitude_km", 0.0),
+                    },
+                    "effective_coordinates": {
+                        "latitude_deg": entry.get("latitude_deg"),
+                        "longitude_deg": entry.get("longitude_deg"),
+                        "altitude_km": entry.get("altitude_km", 0.0),
+                    },
+                    "zone_generation_policy": {
+                        "policy": "real_geographic",
+                        "zone_semantics": "service_region_not_defined_by_uts",
+                    },
+                }
+                for entry in zone_definitions
+            ],
+            "coordinate_semantics": {
+                "mode": "real_geographic",
+                "original_catalog_coordinates": "latitude_deg/longitude_deg in input catalogs",
+                "effective_runtime_coordinates": "same as catalog coordinates",
+                "coverage_coordinates": "effective_runtime_coordinates",
+                "zone_anchor_coordinates": "effective_runtime_coordinates",
+                "ut_attach_coordinates": "effective_runtime_coordinates",
+                "gw_selection_coordinates": "effective_runtime_coordinates",
+                "gz_fec_coordinates": "effective_runtime_coordinates",
+                "mixing_relocated_ground_with_fixed_zone_centers": False,
+            },
+        }
+
+    ordered_states = sorted(
+        propagated_slice.satellite_states.values(),
+        key=lambda state: (state.norad_id, state.satellite_node_id),
+    )
+    if not ordered_states:
+        return {
+            "ground_locations": _ground_locations_from_catalogs(
+                ut_definitions=ut_definitions,
+                gateway_definitions=gateway_definitions,
+            ),
+            "ut_definitions": [dict(entry) for entry in ut_definitions],
+            "gateway_definitions": [dict(entry) for entry in gateway_definitions],
+            "zone_definitions": [dict(entry) for entry in zone_definitions],
+            "coordinate_semantics": {
+                "mode": "catalog_fallback_no_satellite_states",
+                "coverage_coordinates": "effective_runtime_coordinates",
+                "zone_anchor_coordinates": "effective_runtime_coordinates",
+                "ut_attach_coordinates": "effective_runtime_coordinates",
+                "gw_selection_coordinates": "effective_runtime_coordinates",
+                "gz_fec_coordinates": "effective_runtime_coordinates",
+                "mixing_relocated_ground_with_fixed_zone_centers": False,
+            },
+        }
+
+    timestamp = datetime.fromisoformat(
+        propagated_slice.timestamp_utc.replace("Z", "+00:00")
+    )
+    zones = [dict(entry) for entry in zone_definitions]
+    uts = [dict(entry) for entry in ut_definitions]
+    gateways = [dict(entry) for entry in gateway_definitions]
+    ut_by_id = {str(entry["ut_id"]): dict(entry) for entry in uts}
+    gateway_by_id = {str(entry["gateway_id"]): dict(entry) for entry in gateways}
+    locations: Dict[str, GroundLocation] = {}
+    effective_zones: List[Dict[str, Any]] = []
+    gateway_anchor_locations: Dict[str, GroundLocation] = {}
+    gateway_primary_zone: Dict[str, str] = {}
+    zone_reuse_counts: Dict[str, int] = {}
+
+    ordered_zones = sorted(
+        zones,
+        key=lambda entry: (
+            0 if bool(entry.get("required_for_runtime", False)) else 1,
+            0 if bool(entry.get("active_service", True)) else 1,
+            str(entry.get("zone_id")),
+        ),
+    )
+    anchor_count = max(1, len(ordered_zones))
+
+    def state_subpoint(anchor_index: int) -> GroundLocation:
+        state_index = round(anchor_index * (len(ordered_states) - 1) / max(1, anchor_count - 1))
+        state = ordered_states[state_index]
+        return _ground_subpoint_from_inertial(
+            ExperimentNodePosition(
+                x_km=state.x_km,
+                y_km=state.y_km,
+                z_km=state.z_km,
+            ),
+            timestamp=timestamp,
+        )
+
+    def gateway_ids_for_zone(zone: Dict[str, Any]) -> List[str]:
+        ids: List[str] = []
+        for gateway_id in list(zone.get("coordinate_gateway_ids", [])):
+            gateway_id = str(gateway_id).strip()
+            if gateway_id and gateway_id not in ids:
+                ids.append(gateway_id)
+        if ids:
+            return [gateway_id for gateway_id in ids if gateway_id in gateway_by_id]
+        for key in ("default_gateway", "secondary_gateway"):
+            gateway_id = str(zone.get(key) or "").strip()
+            if gateway_id and gateway_id not in ids:
+                ids.append(gateway_id)
+        for gateway_id in list(zone.get("preferred_gateway_ids", [])):
+            gateway_id = str(gateway_id).strip()
+            if gateway_id and gateway_id not in ids:
+                ids.append(gateway_id)
+        return [gateway_id for gateway_id in ids if gateway_id in gateway_by_id]
+
+    for anchor_index, zone in enumerate(ordered_zones):
+        zone_id = str(zone["zone_id"])
+        zone_gateway_ids = gateway_ids_for_zone(zone)
+        shared_gateway_id = next(
+            (
+                gateway_id
+                for gateway_id in zone_gateway_ids
+                if gateway_id in gateway_anchor_locations
+            ),
+            None,
+        )
+        if shared_gateway_id is None:
+            base_location = state_subpoint(anchor_index)
+        else:
+            base_location = gateway_anchor_locations[shared_gateway_id]
+            reuse_key = gateway_primary_zone.get(shared_gateway_id, shared_gateway_id)
+            reuse_count = zone_reuse_counts.get(reuse_key, 0) + 1
+            zone_reuse_counts[reuse_key] = reuse_count
+            base_location = _offset_ground_location(
+                base_location,
+                north_km=90.0 * reuse_count,
+                east_km=45.0 * reuse_count,
+            )
+
+        effective_zone = dict(zone)
+        effective_zone["catalog_coordinates"] = {
+            "latitude_deg": zone.get("latitude_deg"),
+            "longitude_deg": zone.get("longitude_deg"),
+            "altitude_km": zone.get("altitude_km", 0.0),
+        }
+        effective_zone["latitude_deg"] = base_location.latitude_deg
+        effective_zone["longitude_deg"] = base_location.longitude_deg
+        effective_zone["altitude_km"] = base_location.altitude_km
+        effective_zone["effective_coordinates"] = {
+            "latitude_deg": base_location.latitude_deg,
+            "longitude_deg": base_location.longitude_deg,
+            "altitude_km": base_location.altitude_km,
+        }
+        effective_zone["zone_generation_policy"] = {
+            "policy": "hybrid_region_coverage",
+            "coordinate_policy": policy,
+            "zone_semantics": "service_region_not_defined_by_uts",
+            "representative_point_source": (
+                "shell_subpoint_cluster_anchor"
+                if policy == "synthetic_shell_aware"
+                else "shell_subpoint_representative_for_catalog_region"
+            ),
+            "original_region": zone.get("region"),
+            "required_for_runtime": bool(zone.get("required_for_runtime", False)),
+            "service_role": zone.get("service_role"),
+        }
+        effective_zone["coordinate_semantics"] = {
+            "catalog_coordinates_preserved": True,
+            "effective_coordinates_source": (
+                "synthetic_shell_aware_zone_cluster_anchor"
+                if policy == "synthetic_shell_aware"
+                else "shell_aware_consistent_zone_cluster_anchor"
+            ),
+            "coverage_coordinates": "effective_coordinates",
+            "zone_anchor_coordinates": "effective_coordinates",
+            "ut_attach_coordinates": "effective_coordinates",
+            "gw_selection_coordinates": "effective_coordinates",
+            "gz_fec_coordinates": "effective_coordinates",
+        }
+        effective_zones.append(effective_zone)
+
+        ut_offsets = {
+            "default_gateway_near": (-12.0, -12.0),
+            "secondary_gateway_near": (12.0, 12.0),
+            "zone_boundary": (45.0, 0.0),
+            "remote_return_path": (-36.0, 36.0),
+        }
+        for ut_offset_index, ut_id in enumerate(list(zone.get("ut_ids", []))):
+            ut_id = str(ut_id)
+            if ut_id not in ut_by_id:
+                continue
+            role = str(ut_by_id[ut_id].get("placement_role", "")).strip()
+            north_km, east_km = ut_offsets.get(
+                role,
+                (18.0 * (ut_offset_index + 1), -18.0 * (ut_offset_index + 1)),
+            )
+            locations[ut_id] = _offset_ground_location(
+                base_location,
+                north_km=north_km,
+                east_km=east_km,
+            )
+
+        gateway_offsets = [(-8.0, -8.0), (8.0, 8.0), (0.0, 16.0), (16.0, 0.0)]
+        for gateway_offset_index, gateway_id in enumerate(zone_gateway_ids):
+            if gateway_id in locations:
+                continue
+            north_km, east_km = gateway_offsets[
+                gateway_offset_index % len(gateway_offsets)
+            ]
+            gateway_location = _offset_ground_location(
+                base_location,
+                north_km=north_km,
+                east_km=east_km,
+            )
+            locations[gateway_id] = gateway_location
+            gateway_anchor_locations[gateway_id] = base_location
+            gateway_primary_zone[gateway_id] = zone_id
+
+    for ut in uts:
+        ut_id = str(ut["ut_id"])
+        if ut_id not in locations:
+            locations[ut_id] = state_subpoint(len(locations) % anchor_count)
+    for gateway in gateways:
+        gateway_id = str(gateway["gateway_id"])
+        if gateway_id not in locations:
+            locations[gateway_id] = state_subpoint(len(locations) % anchor_count)
+
+    effective_uts: List[Dict[str, Any]] = []
+    for ut in uts:
+        ut_id = str(ut["ut_id"])
+        location = locations[ut_id]
+        effective = dict(ut)
+        effective["catalog_coordinates"] = {
+            "latitude_deg": ut.get("latitude_deg"),
+            "longitude_deg": ut.get("longitude_deg"),
+            "altitude_km": ut.get("altitude_km", 0.0),
+        }
+        effective["latitude_deg"] = location.latitude_deg
+        effective["longitude_deg"] = location.longitude_deg
+        effective["altitude_km"] = location.altitude_km
+        effective["effective_coordinates"] = {
+            "latitude_deg": location.latitude_deg,
+            "longitude_deg": location.longitude_deg,
+            "altitude_km": location.altitude_km,
+        }
+        effective["coordinate_semantics"] = {
+            "catalog_coordinates_preserved": True,
+            "effective_coordinates_source": (
+                "synthetic_shell_aware_probe"
+                if policy == "synthetic_shell_aware"
+                else "shell_aware_consistent_workload_probe"
+            ),
+        }
+        effective["zone_membership_semantics"] = (
+            "workload_probe_affinity_not_zone_definition"
+        )
+        effective["workload_probe"] = True
+        effective_uts.append(effective)
+
+    effective_gateways: List[Dict[str, Any]] = []
+    for gateway in gateways:
+        gateway_id = str(gateway["gateway_id"])
+        location = locations[gateway_id]
+        effective = dict(gateway)
+        effective["catalog_coordinates"] = {
+            "latitude_deg": gateway.get("latitude_deg"),
+            "longitude_deg": gateway.get("longitude_deg"),
+            "altitude_km": gateway.get("altitude_km", 0.0),
+        }
+        effective["latitude_deg"] = location.latitude_deg
+        effective["longitude_deg"] = location.longitude_deg
+        effective["altitude_km"] = location.altitude_km
+        effective["effective_coordinates"] = {
+            "latitude_deg": location.latitude_deg,
+            "longitude_deg": location.longitude_deg,
+            "altitude_km": location.altitude_km,
+        }
+        effective["coordinate_semantics"] = {
+            "catalog_coordinates_preserved": True,
+            "effective_coordinates_source": (
+                "synthetic_shell_aware_gateway"
+                if policy == "synthetic_shell_aware"
+                else "shell_aware_consistent_gateway"
+            ),
+        }
+        effective["coordinate_source"] = (
+            "synthetic_shell_aware"
+            if policy == "synthetic_shell_aware"
+            else "real_catalog_with_shell_aware_effective_runtime_coordinates"
+        )
+        effective["provenance"] = {
+            "source": gateway.get("source"),
+            "version": gateway.get("version", "unversioned_catalog"),
+            "synthetic": policy == "synthetic_shell_aware"
+            or bool(gateway.get("synthetic", False)),
+            "fallback_reason": (
+                "explicit synthetic_shell_aware coordinate policy"
+                if policy == "synthetic_shell_aware"
+                else None
+            ),
+        }
+        effective_gateways.append(effective)
+
+    return {
+        "ground_locations": locations,
+        "ut_definitions": effective_uts,
+        "gateway_definitions": effective_gateways,
+        "zone_definitions": effective_zones,
+        "coordinate_semantics": {
+            "mode": policy,
+            "zone_generation_policy": "hybrid_region_coverage",
+            "original_catalog_coordinates": "preserved in catalog_coordinates fields",
+            "effective_runtime_coordinates": "latitude_deg/longitude_deg plus effective_coordinates fields",
+            "coverage_coordinates": "effective_runtime_coordinates",
+            "zone_anchor_coordinates": "effective_runtime_coordinates",
+            "ut_attach_coordinates": "effective_runtime_coordinates",
+            "gw_selection_coordinates": "effective_runtime_coordinates",
+            "gz_fec_coordinates": "effective_runtime_coordinates",
+            "mixing_relocated_ground_with_fixed_zone_centers": False,
+            "source_slice_id": propagated_slice.slice_id,
+            "source_timestamp_utc": propagated_slice.timestamp_utc,
+        },
+    }
 
 
 def _ground_locations_from_catalogs(
@@ -648,13 +1094,106 @@ def build_starlink_preview_scenario(
                     for gateway_id in list(definition.get("preferred_gateway_ids", []))
                     if str(gateway_id).strip()
                 ),
+                coordinate_gateway_ids=tuple(
+                    str(gateway_id)
+                    for gateway_id in list(definition.get("coordinate_gateway_ids", []))
+                    if str(gateway_id).strip()
+                ),
+                fallback_to_shortest_path=bool(
+                    definition.get("fallback_to_shortest_path", True)
+                ),
+                max_additional_satellite_hops_relative_to_best_candidate=(
+                    None
+                    if definition.get(
+                        "max_additional_satellite_hops_relative_to_best_candidate"
+                    )
+                    is None
+                    else int(
+                        definition[
+                            "max_additional_satellite_hops_relative_to_best_candidate"
+                        ]
+                    )
+                ),
                 prefix_overrides=tuple(
                     dict(override)
                     for override in list(definition.get("prefix_overrides", []))
                 ),
+                source=str(definition.get("source", "explicit_zone_catalog")),
+                service_domain_source=str(
+                    definition.get("service_domain_source")
+                    or definition.get("source")
+                    or "coverage_aware_zone_catalog"
+                ),
+                representative_ground_points=tuple(
+                    dict(point)
+                    for point in list(
+                        definition.get("representative_ground_points", [])
+                    )
+                ),
+                boundary_points=tuple(
+                    dict(point)
+                    for point in list(definition.get("boundary_points", []))
+                ),
             )
             for definition in zone_definitions
         ]
+    catalog_prefix_override_policies: List[ExperimentPrefixOverridePolicy] = []
+    for zone_profile in explicit_zone_profiles:
+        for index, override in enumerate(zone_profile.prefix_overrides):
+            destination_prefix = str(
+                override.get("destination_prefix") or override.get("prefix") or ""
+            ).strip()
+            if not destination_prefix:
+                continue
+            preferred_gateway_ids = tuple(
+                str(gateway_id)
+                for gateway_id in list(override.get("preferred_gateway_ids", []))
+                if str(gateway_id).strip()
+            )
+            preferred_gateway_id = override.get("preferred_gateway_id") or override.get(
+                "gateway"
+            )
+            policy_name = str(
+                override.get("policy_name")
+                or f"{zone_profile.zone_id}_prefix_override_{index}"
+            )
+            catalog_prefix_override_policies.append(
+                ExperimentPrefixOverridePolicy(
+                    policy_name=policy_name,
+                    destination_prefix=destination_prefix,
+                    preferred_gateway_id=(
+                        None
+                        if preferred_gateway_id is None
+                        else str(preferred_gateway_id)
+                    ),
+                    target_node_id=str(override.get("target_node_id") or ""),
+                    zone_id=str(zone_profile.zone_id),
+                    preferred_gateway_ids=preferred_gateway_ids,
+                    selection_mode=str(
+                        override.get(
+                            "selection_mode",
+                            "stable_preferred_gateway_order",
+                        )
+                    ),
+                    fallback_to_shortest_path=bool(
+                        override.get("fallback_to_shortest_path", False)
+                    ),
+                )
+            )
+    default_prefix_override_policies: Tuple[ExperimentPrefixOverridePolicy, ...] = (
+        (
+            ExperimentPrefixOverridePolicy(
+                policy_name="asn160_via_selected_secondary_gateway",
+                destination_prefix="10.160.0.0/24",
+                preferred_gateway_id=None,
+                target_node_id="as160-host1",
+                selection_mode="target_affinity_shortest_path",
+                fallback_to_shortest_path=False,
+            ),
+        )
+        if len(gateway_definitions) >= 2 and not catalog_prefix_override_policies
+        else ()
+    )
     return ExperimentScenario(
         scenario_name=layout.scenario_name,
         satellite_ids=candidate_satellite_ids,
@@ -679,19 +1218,9 @@ def build_starlink_preview_scenario(
         target_host_node_id="as154-host-new",
         default_validation_target_node_ids=("as154-host-new", "as160-host1"),
         special_prefix_override_policies=tuple(
-            [
-                ExperimentPrefixOverridePolicy(
-                    policy_name="asn160_via_selected_secondary_gateway",
-                    destination_prefix="10.160.0.0/24",
-                    preferred_gateway_id=None,
-                    target_node_id="as160-host1",
-                    selection_mode="target_affinity_shortest_path",
-                    fallback_to_shortest_path=False,
-                )
-            ]
-            if len(gateway_definitions) >= 2
-            else []
-        ),
+            catalog_prefix_override_policies
+        )
+        + default_prefix_override_policies,
         time_slices=tuple(time_slices),
         orbital_reference_time_seconds=0.0,
         min_elevation_deg=5.0,
@@ -724,6 +1253,10 @@ def build_starlink_shell_emulator(
         ix_id_offset=int(mini_internet_ix_offset),
         transit_asns=STARLINK_MINI_INTERNET_TRANSIT_ASNS,
         stub_asns=STARLINK_MINI_INTERNET_STUB_ASNS,
+        extra_transit_ixs=_gateway_transit_ixs_for_mini_internet(
+            gateway_definitions,
+            ix_id_offset=int(mini_internet_ix_offset),
+        ),
     )
 
     satellite_as = base.createAutonomousSystem(SATELLITE_ASN)
@@ -836,8 +1369,14 @@ def build_starlink_shell_slot_inventory(
     *,
     ut_definitions: Sequence[Dict[str, Any]] = DEFAULT_UT_CATALOG,
     gateway_definitions: Sequence[Dict[str, Any]] = DEFAULT_GATEWAY_CATALOG,
+    ut_slots_per_terminal: int = 1,
+    gateway_slots_per_gateway: int = 1,
+    cross_plane_slot_model: str = "candidate_pair",
 ) -> Dict[str, List[Dict[str, Any]]]:
     candidate_satellite_ids = [satellite.satellite_id for satellite in layout.satellites]
+    ut_slot_count = max(1, int(ut_slots_per_terminal))
+    gateway_slot_count = max(1, int(gateway_slots_per_gateway))
+    cross_plane_model = str(cross_plane_slot_model)
     same_plane_slots: List[Dict[str, Any]] = []
     for slot_index, fixed_link in enumerate(layout.fixed_links, start=1):
         network_name = _fixed_shell_network_name(slot_index)
@@ -883,99 +1422,133 @@ def build_starlink_shell_slot_inventory(
     for definition in ut_definitions:
         ut_id = str(definition["ut_id"])
         ut_index = int(definition["ut_index"])
-        interface_name = f"ua-u{ut_index}s0"
-        ut_slots.append(
-            {
-                "slot_name": f"{ut_id}-access-slot0",
-                "slot_type": "ut_access",
-                "network_name": f"{ut_id}-access-slot0",
-                "docker_network_name": f"{ut_id}-access-slot0",
-                "subnet": _prefix(90, ut_index, 29),
-                "bridge_gateway_ip": _host_address(90, ut_index, 6),
-                "ut_id": ut_id,
-                "region": definition["region"],
-                "slot_index": 0,
-                "candidate_satellite_ids": list(candidate_satellite_ids),
-                "preconnected_endpoint": _endpoint_record(
-                    node_id=ut_id,
-                    node_type="user_terminal",
-                    interface_name=interface_name,
-                    ip_address=_host_ip(90, ut_index, 2, 29),
-                ),
-                "dynamic_endpoint_template": _endpoint_record(
-                    node_id="<runtime-satellite>",
-                    node_type="satellite",
-                    interface_name=interface_name,
-                    ip_address=_host_ip(90, ut_index, 1, 29),
-                ),
-            }
-        )
+        for slot_offset in range(ut_slot_count):
+            network_counter = (ut_index * ut_slot_count) + slot_offset
+            interface_name = f"ua-u{ut_index}s{slot_offset}"
+            slot_name = f"{ut_id}-access-slot{slot_offset}"
+            ut_slots.append(
+                {
+                    "slot_name": slot_name,
+                    "slot_type": "ut_access",
+                    "network_name": slot_name,
+                    "docker_network_name": slot_name,
+                    "subnet": _prefix(90, network_counter, 29),
+                    "bridge_gateway_ip": _host_address(90, network_counter, 6),
+                    "ut_id": ut_id,
+                    "region": definition["region"],
+                    "slot_index": slot_offset,
+                    "candidate_satellite_ids": list(candidate_satellite_ids),
+                    "preconnected_endpoint": _endpoint_record(
+                        node_id=ut_id,
+                        node_type="user_terminal",
+                        interface_name=interface_name,
+                        ip_address=_host_ip(90, network_counter, 2, 29),
+                    ),
+                    "dynamic_endpoint_template": _endpoint_record(
+                        node_id="<runtime-satellite>",
+                        node_type="satellite",
+                        interface_name=interface_name,
+                        ip_address=_host_ip(90, network_counter, 1, 29),
+                    ),
+                }
+            )
 
     gateway_slots: List[Dict[str, Any]] = []
     for definition in gateway_definitions:
         gateway_id = str(definition["gateway_id"])
         gateway_index = int(definition["gateway_index"])
-        interface_name = f"ga-g{gateway_index}s0"
-        gateway_slots.append(
-            {
-                "slot_name": f"{gateway_id}-gateway-slot0",
-                "slot_type": "gw_access",
-                "network_name": f"{gateway_id}-gateway-slot0",
-                "docker_network_name": f"{gateway_id}-gateway-slot0",
-                "subnet": _prefix(91, gateway_index, 29),
-                "bridge_gateway_ip": _host_address(91, gateway_index, 6),
-                "gateway_id": gateway_id,
-                "gateway_region": definition["region"],
-                "slot_index": 0,
-                "candidate_satellite_ids": list(candidate_satellite_ids),
-                "preconnected_endpoint": _endpoint_record(
-                    node_id=gateway_id,
-                    node_type="gateway",
-                    interface_name=interface_name,
-                    ip_address=_host_ip(91, gateway_index, 2, 29),
-                ),
-                "dynamic_endpoint_template": _endpoint_record(
-                    node_id="<runtime-satellite>",
-                    node_type="satellite",
-                    interface_name=interface_name,
-                    ip_address=_host_ip(91, gateway_index, 1, 29),
-                ),
-            }
-        )
+        for slot_offset in range(gateway_slot_count):
+            network_counter = (gateway_index * gateway_slot_count) + slot_offset
+            interface_name = f"ga-g{gateway_index}s{slot_offset}"
+            slot_name = f"{gateway_id}-gateway-slot{slot_offset}"
+            gateway_slots.append(
+                {
+                    "slot_name": slot_name,
+                    "slot_type": "gw_access",
+                    "network_name": slot_name,
+                    "docker_network_name": slot_name,
+                    "subnet": _prefix(91, network_counter, 29),
+                    "bridge_gateway_ip": _host_address(91, network_counter, 6),
+                    "gateway_id": gateway_id,
+                    "gateway_region": definition["region"],
+                    "slot_index": slot_offset,
+                    "candidate_satellite_ids": list(candidate_satellite_ids),
+                    "preconnected_endpoint": _endpoint_record(
+                        node_id=gateway_id,
+                        node_type="gateway",
+                        interface_name=interface_name,
+                        ip_address=_host_ip(91, network_counter, 2, 29),
+                    ),
+                    "dynamic_endpoint_template": _endpoint_record(
+                        node_id="<runtime-satellite>",
+                        node_type="satellite",
+                        interface_name=interface_name,
+                        ip_address=_host_ip(91, network_counter, 1, 29),
+                    ),
+                }
+            )
 
     cross_plane_slots: List[Dict[str, Any]] = []
-    for slot_index, group in enumerate(layout.cross_plane_slot_groups, start=1):
-        cross_plane_slots.append(
-            {
-                "slot_name": f"{group['pair_key']}-cross-slot0",
-                "slot_type": "cross_plane_isl",
-                "network_name": f"{group['pair_key']}-cross-slot0",
-                "docker_network_name": f"{group['pair_key']}-cross-slot0",
-                "subnet": _prefix(92, slot_index, 29),
-                "bridge_gateway_ip": _host_address(92, slot_index, 6),
-                "slot_index": 0,
-                "pair_key": group["pair_key"],
-                "display_label": group["display_label"],
-                "orbit_pair": [group["orbit_a_id"], group["orbit_b_id"]],
-                "orbit_a_id": group["orbit_a_id"],
-                "orbit_b_id": group["orbit_b_id"],
-                "orbit_a_satellite_ids": list(group["orbit_a_satellite_ids"]),
-                "orbit_b_satellite_ids": list(group["orbit_b_satellite_ids"]),
-                "endpoint_a_template": _endpoint_record(
-                    node_id=f"<runtime-{group['orbit_a_id']}-satellite>",
-                    node_type="satellite",
-                    interface_name="xp0a",
-                    ip_address=_host_ip(92, slot_index, 1, 29),
-                ),
-                "endpoint_b_template": _endpoint_record(
-                    node_id=f"<runtime-{group['orbit_b_id']}-satellite>",
-                    node_type="satellite",
-                    interface_name="xp0b",
-                    ip_address=_host_ip(92, slot_index, 2, 29),
-                ),
-                "candidate_pairs": [dict(pair) for pair in group["candidate_pairs"]],
-            }
-        )
+    slot_index = 1
+    for group in layout.cross_plane_slot_groups:
+        if cross_plane_model == "candidate_pair":
+            candidate_pairs = [dict(pair) for pair in group["candidate_pairs"]]
+        elif cross_plane_model == "plane_pair_group":
+            candidate_pairs = [list(group["candidate_pairs"])]
+        else:
+            raise ValueError(f"unsupported cross-plane slot model: {cross_plane_model}")
+        for pair_offset, pair_group in enumerate(candidate_pairs):
+            if cross_plane_model == "candidate_pair":
+                pair = dict(pair_group)
+                pair_suffix = (
+                    f"{pair['satellite_a_id']}-{pair['satellite_b_id']}"
+                ).replace("_", "-")
+                slot_name = f"{group['pair_key']}-{pair_suffix}-cross-slot0"
+                slot_candidate_pairs = [pair]
+                orbit_a_satellite_ids = [pair["satellite_a_id"]]
+                orbit_b_satellite_ids = [pair["satellite_b_id"]]
+                slot_model = "candidate_pair_resident"
+            else:
+                slot_name = f"{group['pair_key']}-cross-slot0"
+                slot_candidate_pairs = [dict(pair) for pair in pair_group]
+                orbit_a_satellite_ids = list(group["orbit_a_satellite_ids"])
+                orbit_b_satellite_ids = list(group["orbit_b_satellite_ids"])
+                slot_model = "plane_pair_group"
+            interface_a = f"xp{slot_index}a"
+            interface_b = f"xp{slot_index}b"
+            cross_plane_slots.append(
+                {
+                    "slot_name": slot_name,
+                    "slot_type": "cross_plane_isl",
+                    "network_name": slot_name,
+                    "docker_network_name": slot_name,
+                    "subnet": _prefix(92, slot_index, 29),
+                    "bridge_gateway_ip": _host_address(92, slot_index, 6),
+                    "slot_index": slot_index if cross_plane_model == "candidate_pair" else pair_offset,
+                    "cross_plane_slot_model": slot_model,
+                    "pair_key": group["pair_key"],
+                    "display_label": group["display_label"],
+                    "orbit_pair": [group["orbit_a_id"], group["orbit_b_id"]],
+                    "orbit_a_id": group["orbit_a_id"],
+                    "orbit_b_id": group["orbit_b_id"],
+                    "orbit_a_satellite_ids": orbit_a_satellite_ids,
+                    "orbit_b_satellite_ids": orbit_b_satellite_ids,
+                    "endpoint_a_template": _endpoint_record(
+                        node_id=f"<runtime-{group['orbit_a_id']}-satellite>",
+                        node_type="satellite",
+                        interface_name=interface_a,
+                        ip_address=_host_ip(92, slot_index, 1, 29),
+                    ),
+                    "endpoint_b_template": _endpoint_record(
+                        node_id=f"<runtime-{group['orbit_b_id']}-satellite>",
+                        node_type="satellite",
+                        interface_name=interface_b,
+                        ip_address=_host_ip(92, slot_index, 2, 29),
+                    ),
+                    "candidate_pairs": slot_candidate_pairs,
+                }
+            )
+            slot_index += 1
 
     return {
         "same_plane_isl": same_plane_slots,
@@ -993,6 +1566,9 @@ def build_starlink_shell_topology_inventory(
     orbit_input_kind: str = "real_tle_sgp4",
     orbit_source: str = "celestrak_starlink_gp_tle",
     mini_internet_ix_offset: int = 0,
+    ut_slots_per_terminal: int = 1,
+    gateway_slots_per_gateway: int = 1,
+    cross_plane_slot_model: str = "candidate_pair",
 ) -> Dict[str, Any]:
     gateway_by_id = {
         str(definition["gateway_id"]): dict(definition)
@@ -1006,6 +1582,9 @@ def build_starlink_shell_topology_inventory(
         layout,
         ut_definitions=ut_definitions,
         gateway_definitions=gateway_definitions,
+        ut_slots_per_terminal=ut_slots_per_terminal,
+        gateway_slots_per_gateway=gateway_slots_per_gateway,
+        cross_plane_slot_model=cross_plane_slot_model,
     )
 
     topology = {
@@ -1031,6 +1610,9 @@ def build_starlink_shell_topology_inventory(
                 "runtime_mpls_route_mutation",
             ],
             "node_startup_profiles": dict(SKYSEED_NODE_STARTUP_PROFILES),
+            "ut_slots_per_terminal": max(1, int(ut_slots_per_terminal)),
+            "gateway_slots_per_gateway": max(1, int(gateway_slots_per_gateway)),
+            "cross_plane_slot_semantic_model": str(cross_plane_slot_model),
         },
         "skyseed_node_role_framework": dict(SKYSEED_NODE_ROLE_FRAMEWORK),
         "orbit_input": {
@@ -1043,21 +1625,22 @@ def build_starlink_shell_topology_inventory(
             "gateways": len(gateway_definitions),
             "user_terminals": len(ut_definitions),
             "same_plane_isl_intent_count": len(slot_inventory.get("same_plane_isl", [])),
-            "cross_plane_slot_count": len(layout.cross_plane_slot_groups),
-            "internet_exchanges": len(MINI_INTERNET_IX_DISPLAY_NAMES),
+            "cross_plane_slot_count": len(slot_inventory.get("cross_plane_isl", [])),
+            "internet_exchanges": len(
+                _mini_internet_exchange_records(
+                    gateway_definitions,
+                    ix_id_offset=int(mini_internet_ix_offset),
+                )
+            ),
             "mini_internet_transit_ases": len(STARLINK_MINI_INTERNET_TRANSIT_ASNS),
             "mini_internet_stub_ases": len(STARLINK_MINI_INTERNET_STUB_ASNS),
             "example_profile": layout.scenario_name,
         },
         "orbital_planes": [plane.to_dict() for plane in layout.planes],
-        "internet_exchanges": [
-            {
-                "ix_id": ix_id + int(mini_internet_ix_offset),
-                "network_name": f"ix{ix_id + int(mini_internet_ix_offset)}",
-                "display_name": display_name,
-            }
-            for ix_id, display_name in sorted(MINI_INTERNET_IX_DISPLAY_NAMES.items())
-        ],
+        "internet_exchanges": _mini_internet_exchange_records(
+            gateway_definitions,
+            ix_id_offset=int(mini_internet_ix_offset),
+        ),
         "satellites": [
             {
                 "satellite_id": satellite.satellite_id,
@@ -1472,6 +2055,10 @@ class PropagatedStarlinkScenarioOrbitProducer(OrbitTopologyProducer):
                     service_role="required_service",
                     active_service=True,
                     required_for_runtime=True,
+                    source="derived_from_ut_membership",
+                    service_domain_source=(
+                        "ut_membership_fallback_not_control_plane_valid"
+                    ),
                 )
         ut_zone_membership = {
             terminal.ut_id: terminal.zone_id
@@ -1504,6 +2091,28 @@ class PropagatedStarlinkScenarioOrbitProducer(OrbitTopologyProducer):
                     "region": profile.region,
                     "partition_policy": profile.partition_policy,
                     "membership_mode": "surface_partition_zone",
+                    "source": profile.source,
+                    "service_domain_source": profile.service_domain_source,
+                    "service_domain": {
+                        "source": profile.service_domain_source,
+                        "construction_order": (
+                            "orbit_shell_geometry_to_coverage_zone_to_anchor_to_fec"
+                        ),
+                        "center": {
+                            "latitude_deg": float(profile.latitude_deg),
+                            "longitude_deg": float(profile.longitude_deg),
+                            "altitude_km": float(profile.altitude_km),
+                        },
+                        "radius_km": profile.radius_km,
+                        "representative_ground_points": [
+                            dict(point)
+                            for point in profile.representative_ground_points
+                        ],
+                        "boundary_points": [
+                            dict(point) for point in profile.boundary_points
+                        ],
+                        "coverage_margin_deg": float(profile.coverage_margin_deg),
+                    },
                     "service_role": profile.service_role,
                     "active_service": bool(profile.active_service),
                     "required_for_runtime": bool(profile.required_for_runtime),
@@ -1511,6 +2120,11 @@ class PropagatedStarlinkScenarioOrbitProducer(OrbitTopologyProducer):
                     "coverage_margin_deg": float(profile.coverage_margin_deg),
                     "default_gateway": profile.default_gateway,
                     "preferred_gateway_ids": list(profile.preferred_gateway_ids),
+                    "coordinate_gateway_ids": list(profile.coordinate_gateway_ids),
+                    "fallback_to_shortest_path": bool(profile.fallback_to_shortest_path),
+                    "max_additional_satellite_hops_relative_to_best_candidate": (
+                        profile.max_additional_satellite_hops_relative_to_best_candidate
+                    ),
                     "prefix_overrides": [
                         dict(override) for override in profile.prefix_overrides
                     ],
@@ -1548,6 +2162,19 @@ class PropagatedStarlinkScenarioOrbitProducer(OrbitTopologyProducer):
                         "region": zone_id,
                         "partition_policy": "derived_from_ut_membership",
                         "membership_mode": "surface_partition_zone",
+                        "source": "derived_from_ut_membership",
+                        "service_domain_source": (
+                            "ut_membership_fallback_not_control_plane_valid"
+                        ),
+                        "service_domain": {
+                            "source": "ut_membership_fallback_not_control_plane_valid",
+                            "construction_order": "invalid_ut_membership_fallback",
+                            "center": None,
+                            "radius_km": None,
+                            "representative_ground_points": [],
+                            "boundary_points": [],
+                            "coverage_margin_deg": None,
+                        },
                         "service_role": "required_service",
                         "active_service": True,
                         "required_for_runtime": True,

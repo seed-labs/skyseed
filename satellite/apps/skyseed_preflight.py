@@ -13,6 +13,8 @@ from _path_setup import bootstrap_app_import_path
 bootstrap_app_import_path()
 
 from skyseed_preflight import (  # noqa: E402
+    PREFLIGHT_PROFILES,
+    cleanup_skyseed_environment_residue,
     render_preflight_json,
     render_preflight_summary,
     run_skyseed_preflight,
@@ -24,6 +26,26 @@ def parse_args() -> argparse.Namespace:
         description=(
             "Probe for stale Skyseed runtime state, Docker residue, host MPLS readiness, "
             "and other recurring environment blockers before real experiments."
+        ),
+    )
+    parser.add_argument(
+        "--profile",
+        choices=PREFLIGHT_PROFILES,
+        default="default",
+        help=(
+            "Preflight policy profile. Use operational-clean-bpf-owned before "
+            "strict BPF-owned clean runs; it requires a clean Skyseed environment "
+            "and skips legacy host MPLS readiness."
+        ),
+    )
+    parser.add_argument(
+        "--cleanup",
+        choices=("off", "dry-run", "apply"),
+        default="off",
+        help=(
+            "Optionally plan or apply scoped Skyseed residue cleanup. "
+            "'dry-run' only reports docker/interface/lock cleanup commands; "
+            "'apply' executes them."
         ),
     )
     parser.add_argument(
@@ -42,7 +64,20 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    report = run_skyseed_preflight()
+    report = run_skyseed_preflight(profile=str(args.profile))
+    if str(args.cleanup) != "off":
+        cleanup_result = cleanup_skyseed_environment_residue(
+            preflight_report=report,
+            apply=str(args.cleanup) == "apply",
+        )
+        report["cleanup_result"] = cleanup_result
+        if str(args.cleanup) == "apply":
+            post_cleanup_report = run_skyseed_preflight(profile=str(args.profile))
+            report = {
+                **post_cleanup_report,
+                "pre_cleanup_preflight": report,
+                "cleanup_result": cleanup_result,
+            }
     if args.write_report:
         path = Path(args.write_report).expanduser().resolve()
         path.parent.mkdir(parents=True, exist_ok=True)

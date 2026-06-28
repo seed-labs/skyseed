@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import math
 from dataclasses import dataclass
@@ -104,7 +105,14 @@ class ExperimentZoneProfile:
     coverage_margin_deg: float = 2.0
     default_gateway: str | None = None
     preferred_gateway_ids: Sequence[str] = ()
+    coordinate_gateway_ids: Sequence[str] = ()
+    fallback_to_shortest_path: bool = True
+    max_additional_satellite_hops_relative_to_best_candidate: int | None = None
     prefix_overrides: Sequence[Dict[str, Any]] = ()
+    source: str = "explicit_zone_catalog"
+    service_domain_source: str = "coverage_aware_zone_catalog"
+    representative_ground_points: Sequence[Dict[str, Any]] = ()
+    boundary_points: Sequence[Dict[str, Any]] = ()
 
 
 @dataclass(frozen=True)
@@ -113,6 +121,7 @@ class ExperimentPrefixOverridePolicy:
     destination_prefix: str
     preferred_gateway_id: str | None
     target_node_id: str
+    zone_id: str = ""
     preferred_gateway_ids: Sequence[str] = ()
     selection_mode: str = "target_affinity_shortest_path"
     fallback_to_shortest_path: bool = True
@@ -416,6 +425,8 @@ def _derived_zone_profiles_from_terminals(
             altitude_km=float(location.altitude_km),
             candidate_satellite_ids=tuple(str(satellite_id) for satellite_id in scenario.satellite_ids),
             partition_policy="derived_from_ut_membership",
+            source="derived_from_ut_membership",
+            service_domain_source="ut_membership_fallback_not_control_plane_valid",
         )
     return derived_profiles
 
@@ -941,8 +952,18 @@ def _scenario_planner_hints(
                 zone_profile.default_gateway if zone_profile is not None else None
             ),
             "selection_mode": "stable_preferred_gateway_order",
-            "fallback_to_shortest_path": True,
-            "max_additional_satellite_hops_relative_to_best_candidate": 2,
+            "fallback_to_shortest_path": (
+                bool(zone_profile.fallback_to_shortest_path)
+                if zone_profile is not None
+                else True
+            ),
+            "max_additional_satellite_hops_relative_to_best_candidate": (
+                zone_profile.max_additional_satellite_hops_relative_to_best_candidate
+                if zone_profile is not None
+                and zone_profile.max_additional_satellite_hops_relative_to_best_candidate
+                is not None
+                else 2
+            ),
             "candidate_pool_policy": "zone_ranked_gateway_catalog",
             "preferred_gateway_ids": preferred_gateway_pool,
             "gateway_ids": ranked_gateway_ids,
@@ -953,9 +974,26 @@ def _scenario_planner_hints(
     special_prefix_overrides = []
     for policy in scenario.special_prefix_override_policies:
         target = external_targets.get(policy.target_node_id)
-        if target is None:
-            continue
-        target_asn = target.get("asn")
+        if target is None and str(policy.destination_prefix).strip():
+            try:
+                destination_network = ipaddress.ip_network(
+                    str(policy.destination_prefix),
+                    strict=False,
+                )
+            except ValueError:
+                destination_network = None
+            if destination_network is not None:
+                for candidate in external_targets.values():
+                    try:
+                        candidate_ip = ipaddress.ip_address(
+                            str(candidate.get("ip_address") or "")
+                        )
+                    except ValueError:
+                        continue
+                    if candidate_ip in destination_network:
+                        target = dict(candidate)
+                        break
+        target_asn = None if target is None else target.get("asn")
         raw_target_exchange_id = MINI_INTERNET_STUB_AS_EXCHANGES.get(int(target_asn or 0))
         target_exchange_id = (
             int(raw_target_exchange_id) + int(gateway_ix_id_offset)
@@ -964,24 +1002,26 @@ def _scenario_planner_hints(
         )
         preferred_gateway_ids = [
             str(gateway_id)
-            for gateway_id, peering in sorted(gateway_ix_peerings.items())
-            if target_exchange_id is not None and int(peering.get("ix_id", -1)) == int(target_exchange_id)
+            for gateway_id in policy.preferred_gateway_ids
+            if str(gateway_id).strip()
         ]
-        if not preferred_gateway_ids:
-            preferred_gateway_ids = [
-                str(gateway_id)
-                for gateway_id in policy.preferred_gateway_ids
-                if str(gateway_id).strip()
-            ]
         if (
             not preferred_gateway_ids
             and policy.preferred_gateway_id is not None
             and str(policy.preferred_gateway_id).strip()
         ):
             preferred_gateway_ids = [str(policy.preferred_gateway_id).strip()]
+        if not preferred_gateway_ids:
+            preferred_gateway_ids = [
+                str(gateway_id)
+                for gateway_id, peering in sorted(gateway_ix_peerings.items())
+                if target_exchange_id is not None
+                and int(peering.get("ix_id", -1)) == int(target_exchange_id)
+            ]
         special_prefix_overrides.append(
             {
                 "policy_name": policy.policy_name,
+                "zone_id": policy.zone_id,
                 "destination_prefix": policy.destination_prefix,
                 "preferred_gateway_id": policy.preferred_gateway_id,
                 "preferred_gateway_ids": preferred_gateway_ids,
@@ -993,7 +1033,7 @@ def _scenario_planner_hints(
                 "target_exchange_id": target_exchange_id,
                 "raw_target_exchange_id": raw_target_exchange_id,
                 "gateway_ix_id_offset": gateway_ix_id_offset,
-                "target": dict(target),
+                "target": dict(target or {}),
             }
         )
     return {
@@ -1153,11 +1193,14 @@ class ZoneAnchorQualityGenerator(ZoneGenerator):
         hysteresis_score_delta: float = 12.0,
         coverage_loss_margin_deg: float = 2.0,
         gateway_hop_penalty: float = 3.0,
+        min_anchor_dwell_seconds: float = 0.0,
     ) -> None:
         self.hysteresis_score_delta = float(hysteresis_score_delta)
         self.coverage_loss_margin_deg = float(coverage_loss_margin_deg)
         self.gateway_hop_penalty = float(gateway_hop_penalty)
+        self.min_anchor_dwell_seconds = max(0.0, float(min_anchor_dwell_seconds))
         self._previous_anchor_by_zone: Dict[str, str] = {}
+        self._previous_anchor_change_time_by_zone: Dict[str, float] = {}
 
     def _preferred_gateway_ids(
         self,
@@ -1227,6 +1270,9 @@ class ZoneAnchorQualityGenerator(ZoneGenerator):
         adjacency = _satellite_adjacency_from_active_links(visibility_slice.active_links)
         gateway_satellite_ids = _active_gateway_satellite_ids(visibility_slice)
         zones: Dict[str, Dict[str, Any]] = {}
+        current_relative_time = float(
+            orbit_slice.time_slice.get("relative_time_seconds", 0.0)
+        )
         for zone_id, zone in orbit_slice.zone_generation_input.zones.items():
             zone_id = str(zone_id)
             service_role = str(zone.get("service_role", "required_service"))
@@ -1293,10 +1339,24 @@ class ZoneAnchorQualityGenerator(ZoneGenerator):
                 visibility_slice=visibility_slice,
             )
             zone_ut_ids = [str(ut_id) for ut_id in zone.get("ut_ids", [])]
-            service_requires_ut_attach = (
+            service_has_ut_probes = (
                 active_service
                 and service_role in {"required_service", "optional_service"}
                 and bool(zone_ut_ids)
+            )
+            ut_attach_resolved_count = sum(
+                1
+                for ut_id in zone_ut_ids
+                if bool(visible_candidate_sets.get(ut_id, []))
+            )
+            ut_ids_without_visible_candidate = [
+                ut_id
+                for ut_id in zone_ut_ids
+                if not bool(visible_candidate_sets.get(ut_id, []))
+            ]
+            ut_attach_resolved = (
+                not service_has_ut_probes
+                or ut_attach_resolved_count == len(zone_ut_ids)
             )
             candidate_scores: List[Dict[str, Any]] = []
             rejected_candidates: List[Dict[str, Any]] = []
@@ -1332,27 +1392,6 @@ class ZoneAnchorQualityGenerator(ZoneGenerator):
                         }
                     )
                     continue
-                if service_requires_ut_attach:
-                    missing_ut_ids = [
-                        ut_id
-                        for ut_id in zone_ut_ids
-                        if not any(
-                            str(candidate.get("satellite_id")) == satellite_id
-                            for candidate in visible_candidate_sets.get(ut_id, [])
-                        )
-                    ]
-                    if missing_ut_ids:
-                        rejected_candidates.append(
-                            {
-                                "satellite_id": satellite_id,
-                                "reason": "ut_attach_mismatch",
-                                "ut_ids_without_candidate_visibility": missing_ut_ids[
-                                    :8
-                                ],
-                                "missing_ut_count": len(missing_ut_ids),
-                            }
-                        )
-                        continue
                 gateway_hops = self._gateway_path_hops(
                     satellite_id=satellite_id,
                     preferred_gateway_ids=preferred_gateways,
@@ -1376,10 +1415,20 @@ class ZoneAnchorQualityGenerator(ZoneGenerator):
                     }
                 )
             if not candidate_scores:
+                zone_anchor_resolved = False
+                zone_service_resolved = False
                 zones[zone_id] = {
                     **dict(zone),
                     "active_serving_satellite_id": None,
                     "resolution_state": "unresolved_no_zone_visible_satellite",
+                    "zone_anchor_resolved": zone_anchor_resolved,
+                    "ut_attach_resolved": ut_attach_resolved,
+                    "zone_service_resolved": zone_service_resolved,
+                    "zone_service_resolution_state": (
+                        "unresolved_zone_anchor"
+                        if not zone_anchor_resolved
+                        else "unresolved_ut_attach"
+                    ),
                     "anchor_selection": {
                         "algorithm": self.generator_name,
                         "geometry_model": "zone_center",
@@ -1387,10 +1436,12 @@ class ZoneAnchorQualityGenerator(ZoneGenerator):
                         "required_coverage_margin_deg": required_coverage_margin_deg,
                         "previous_anchor": previous_anchor,
                         "change_reason": "no_candidate_covers_zone_geometry",
-                        "ut_attach_required": service_requires_ut_attach,
+                        "ut_attach_required": False,
+                        "ut_attach_policy": "independent_workload_probe_visibility",
                         "required_ut_count": len(zone_ut_ids),
                         "rejected_candidates": rejected_candidates[:12],
                         "rejected_candidate_count": len(rejected_candidates),
+                        "zone_resolution_action": "mark_unresolved_no_ut_specific_split",
                     },
                     "service_planning": {
                         "service_role": service_role,
@@ -1399,6 +1450,15 @@ class ZoneAnchorQualityGenerator(ZoneGenerator):
                         "install_gz_fec": (
                             active_service
                             and service_role in {"required_service", "optional_service"}
+                        ),
+                    },
+                    "ut_visibility_audit": {
+                        "audit_role": "independent_workload_probe_visibility",
+                        "ut_attach_resolved": ut_attach_resolved,
+                        "ut_count": len(zone_ut_ids),
+                        "ut_with_visible_candidate_count": ut_attach_resolved_count,
+                        "ut_ids_without_visible_candidate": (
+                            ut_ids_without_visible_candidate
                         ),
                     },
                 }
@@ -1426,7 +1486,19 @@ class ZoneAnchorQualityGenerator(ZoneGenerator):
             if previous_score is not None and str(selected["satellite_id"]) != str(previous_anchor):
                 score_delta = float(selected["score"]) - float(previous_score["score"])
                 previous_margin = float(previous_score["coverage_margin_deg"])
+                previous_change_time = self._previous_anchor_change_time_by_zone.get(
+                    zone_id,
+                    current_relative_time,
+                )
+                dwell_elapsed = max(0.0, current_relative_time - previous_change_time)
                 if (
+                    previous_margin > required_coverage_margin_deg
+                    and self.min_anchor_dwell_seconds > 0.0
+                    and dwell_elapsed < self.min_anchor_dwell_seconds
+                ):
+                    selected = previous_score
+                    change_reason = "min_dwell_keep_current_anchor"
+                elif (
                     previous_margin > required_coverage_margin_deg
                     and score_delta < self.hysteresis_score_delta
                 ):
@@ -1439,15 +1511,45 @@ class ZoneAnchorQualityGenerator(ZoneGenerator):
             elif previous_score is not None:
                 change_reason = "stable_existing_anchor"
             selected_satellite_id = str(selected["satellite_id"])
+            if selected_satellite_id != str(previous_anchor):
+                self._previous_anchor_change_time_by_zone[zone_id] = current_relative_time
+            else:
+                self._previous_anchor_change_time_by_zone.setdefault(
+                    zone_id,
+                    current_relative_time,
+                )
             self._previous_anchor_by_zone[zone_id] = selected_satellite_id
             visible_candidate_sets = _zone_visible_candidate_sets(
                 zone=dict(zone),
                 visibility_slice=visibility_slice,
             )
+            selected_anchor_visible_to_ut_ids = [
+                ut_id
+                for ut_id, candidates in sorted(visible_candidate_sets.items())
+                if any(
+                    str(candidate.get("satellite_id")) == selected_satellite_id
+                    for candidate in candidates
+                )
+            ]
+            selected_anchor_visible_to_all_ut_probes = (
+                not service_has_ut_probes
+                or len(selected_anchor_visible_to_ut_ids) == len(zone_ut_ids)
+            )
+            ut_attach_resolved = selected_anchor_visible_to_all_ut_probes
+            zone_anchor_resolved = True
+            zone_service_resolved = zone_anchor_resolved and ut_attach_resolved
             zones[zone_id] = {
                 **dict(zone),
                 "active_serving_satellite_id": selected_satellite_id,
                 "resolution_state": "resolved",
+                "zone_anchor_resolved": zone_anchor_resolved,
+                "ut_attach_resolved": ut_attach_resolved,
+                "zone_service_resolved": zone_service_resolved,
+                "zone_service_resolution_state": (
+                    "resolved"
+                    if zone_service_resolved
+                    else "unresolved_ut_attach"
+                ),
                 "anchor_selection": {
                     "algorithm": self.generator_name,
                     "geometry_model": "zone_center",
@@ -1460,11 +1562,24 @@ class ZoneAnchorQualityGenerator(ZoneGenerator):
                     "change_reason": change_reason,
                     "hysteresis_score_delta": self.hysteresis_score_delta,
                     "coverage_loss_margin_deg": required_coverage_margin_deg,
-                    "ut_attach_required": service_requires_ut_attach,
+                    "min_anchor_dwell_seconds": self.min_anchor_dwell_seconds,
+                    "ut_attach_required": False,
+                    "ut_attach_policy": (
+                        "workload_probe_must_attach_to_zone_anchor_for_validation"
+                    ),
                     "required_ut_count": len(zone_ut_ids),
                     "candidate_count": len(candidate_scores),
                     "rejected_candidate_count": len(rejected_candidates),
+                    "rejected_candidates": rejected_candidates[:12],
                     "top_candidates": candidate_scores[:8],
+                    "zone_resolution_action": (
+                        "stable_single_anchor"
+                        if selected_anchor_visible_to_all_ut_probes
+                        else "mark_unresolved_no_ut_specific_split"
+                    ),
+                    "ut_sample_would_force_divergence": (
+                        not selected_anchor_visible_to_all_ut_probes
+                    ),
                 },
                 "service_planning": {
                     "service_role": service_role,
@@ -1476,12 +1591,13 @@ class ZoneAnchorQualityGenerator(ZoneGenerator):
                     ),
                 },
                 "ut_visibility_audit": {
-                    "audit_role": (
-                        "anchor_selection_constraint_for_active_service_zone"
-                        if service_requires_ut_attach
-                        else "validation_only_not_anchor_selection_input"
-                    ),
+                    "audit_role": "independent_workload_probe_visibility",
+                    "ut_attach_resolved": ut_attach_resolved,
                     "ut_count": len(list(zone.get("ut_ids", []))),
+                    "ut_with_visible_candidate_count": ut_attach_resolved_count,
+                    "ut_ids_without_visible_candidate": (
+                        ut_ids_without_visible_candidate
+                    ),
                     "selected_anchor_visible_to_ut_count": sum(
                         1
                         for candidates in visible_candidate_sets.values()
@@ -1490,6 +1606,7 @@ class ZoneAnchorQualityGenerator(ZoneGenerator):
                             for candidate in candidates
                         )
                     ),
+                    "selected_anchor_visible_to_ut_ids": selected_anchor_visible_to_ut_ids,
                     "ut_ids_without_selected_anchor_visibility": [
                         ut_id
                         for ut_id, candidates in sorted(visible_candidate_sets.items())
@@ -1892,11 +2009,38 @@ class ScenarioSemiRealOrbitPositionExperimentProducer(OrbitTopologyProducer):
                     "region": profile.region,
                     "partition_policy": profile.partition_policy,
                     "membership_mode": "surface_partition_zone",
+                    "source": profile.source,
+                    "service_domain_source": profile.service_domain_source,
+                    "service_domain": {
+                        "source": profile.service_domain_source,
+                        "construction_order": (
+                            "orbit_shell_geometry_to_coverage_zone_to_anchor_to_fec"
+                        ),
+                        "center": {
+                            "latitude_deg": float(profile.latitude_deg),
+                            "longitude_deg": float(profile.longitude_deg),
+                            "altitude_km": float(profile.altitude_km),
+                        },
+                        "radius_km": profile.radius_km,
+                        "representative_ground_points": [
+                            dict(point)
+                            for point in profile.representative_ground_points
+                        ],
+                        "boundary_points": [
+                            dict(point) for point in profile.boundary_points
+                        ],
+                        "coverage_margin_deg": profile.coverage_margin_deg,
+                    },
                     "ut_ids": [],
                     "candidate_serving_satellite_ids": [
                         str(candidate_satellite_id)
                         for candidate_satellite_id in candidate_satellite_ids
                     ],
+                    "coordinate_gateway_ids": list(profile.coordinate_gateway_ids),
+                    "fallback_to_shortest_path": bool(profile.fallback_to_shortest_path),
+                    "max_additional_satellite_hops_relative_to_best_candidate": (
+                        profile.max_additional_satellite_hops_relative_to_best_candidate
+                    ),
                     "fixed_coordinates": {
                         "coordinate_model": "earth_surface_lat_lon_alt",
                         "latitude_deg": float(profile.latitude_deg),
@@ -1921,6 +2065,19 @@ class ScenarioSemiRealOrbitPositionExperimentProducer(OrbitTopologyProducer):
                         "region": zone_id,
                         "partition_policy": "derived_from_ut_membership",
                         "membership_mode": "surface_partition_zone",
+                        "source": "derived_from_ut_membership",
+                        "service_domain_source": (
+                            "ut_membership_fallback_not_control_plane_valid"
+                        ),
+                        "service_domain": {
+                            "source": "ut_membership_fallback_not_control_plane_valid",
+                            "construction_order": "invalid_ut_membership_fallback",
+                            "center": None,
+                            "radius_km": None,
+                            "representative_ground_points": [],
+                            "boundary_points": [],
+                            "coverage_margin_deg": None,
+                        },
                         "ut_ids": [],
                         "candidate_serving_satellite_ids": [],
                         "min_elevation_deg": float(scenario.min_elevation_deg),
@@ -2457,32 +2614,57 @@ class ExperimentTopologySlicer(TopologySlicer):
             binding = dict(link.get("binding", {}))
             ut_id = str(binding.get("ut_id"))
             zone = zone_by_ut.get(ut_id, {})
-            serving_satellite_id = zone.get("active_serving_satellite_id")
+            zone_anchor_satellite_id = zone.get("active_serving_satellite_id")
             resolution_state = str(zone.get("resolution_state", "resolved"))
-            if resolution_state != "resolved" or not serving_satellite_id:
-                if ut_id in nodes:
-                    nodes[ut_id]["attachment"] = {
-                        "state": "unresolved_zone",
-                        "zone_id": zone_projection.ut_zone_membership.get(ut_id),
-                        "resolution_state": resolution_state,
-                    }
-                continue
-
             visible_candidates = visibility_slice.candidate_visibility.get(ut_id, [])
-            selected_candidate = next(
-                (
-                    candidate
-                    for candidate in visible_candidates
-                    if str(candidate.get("satellite_id")) == str(serving_satellite_id)
-                ),
-                None,
-            )
+            selected_candidate = None
+            if zone_anchor_satellite_id:
+                selected_candidate = next(
+                    (
+                        dict(candidate)
+                        for candidate in visible_candidates
+                        if str(candidate.get("satellite_id") or "")
+                        == str(zone_anchor_satellite_id)
+                    ),
+                    None,
+                )
+            if selected_candidate is None and visible_candidates:
+                selected_candidate = dict(visible_candidates[0])
             if selected_candidate is None:
                 if ut_id in nodes:
                     nodes[ut_id]["attachment"] = {
-                        "state": "unresolved_zone",
+                        "state": "unresolved_ut_visibility",
                         "zone_id": zone_projection.ut_zone_membership.get(ut_id),
-                        "resolution_state": "unresolved_zone_owner_not_visible_to_ut",
+                        "zone_resolution_state": resolution_state,
+                        "zone_anchor_resolved": bool(
+                            zone.get("zone_anchor_resolved")
+                        ),
+                        "zone_service_resolved": bool(
+                            zone.get("zone_service_resolved")
+                        ),
+                    }
+                continue
+            selected_satellite_id = str(selected_candidate.get("satellite_id") or "")
+            if (
+                zone_anchor_satellite_id
+                and selected_satellite_id != str(zone_anchor_satellite_id)
+            ):
+                if ut_id in nodes:
+                    nodes[ut_id]["attachment"] = {
+                        "state": "unresolved_zone_anchor_not_visible_to_ut",
+                        "zone_id": zone_projection.ut_zone_membership.get(ut_id),
+                        "zone_resolution_state": resolution_state,
+                        "zone_anchor_satellite_id": zone_anchor_satellite_id,
+                        "visible_candidate_satellite_ids": [
+                            str(candidate.get("satellite_id") or "")
+                            for candidate in visible_candidates
+                        ],
+                        "zone_anchor_resolved": bool(
+                            zone.get("zone_anchor_resolved")
+                        ),
+                        "zone_service_resolved": bool(
+                            zone.get("zone_service_resolved")
+                        ),
                     }
                 continue
 
@@ -2492,12 +2674,22 @@ class ExperimentTopologySlicer(TopologySlicer):
                 for endpoint in selected_candidate.get("endpoints", [])
             ]
             active_links.append(link_copy)
+            ut_serving_satellite_id = str(selected_candidate.get("satellite_id") or "")
             if ut_id in nodes:
                 nodes[ut_id]["attachment"] = {
                     "state": "attached",
                     "slot_name": link_copy.get("link_id"),
-                    "active_serving_satellite_id": serving_satellite_id,
+                    "active_serving_satellite_id": ut_serving_satellite_id,
+                    "zone_anchor_satellite_id": zone_anchor_satellite_id,
                     "zone_resolution_state": resolution_state,
+                    "zone_anchor_resolved": bool(zone.get("zone_anchor_resolved")),
+                    "ut_attach_resolved": bool(zone.get("ut_attach_resolved")),
+                    "zone_service_resolved": bool(zone.get("zone_service_resolved")),
+                    "attachment_policy": "independent_workload_probe_visibility",
+                    "matches_zone_anchor": (
+                        bool(zone_anchor_satellite_id)
+                        and ut_serving_satellite_id == str(zone_anchor_satellite_id)
+                    ),
                 }
 
         snapshot_seed = {
@@ -2520,7 +2712,7 @@ class ExperimentTopologySlicer(TopologySlicer):
                 "zone_generator": zone_projection.zone_generator,
                 "zone_membership_mode": orbit_slice.zone_generation_input.membership_mode,
                 "slice_profile": orbit_slice.provenance.get("slice_profile"),
-                "zone_visibility_alignment": "required",
+                "zone_visibility_alignment": "independent_zone_anchor_and_ut_attach",
             },
             nodes=nodes,
             active_links=[dict(link) for link in active_links],

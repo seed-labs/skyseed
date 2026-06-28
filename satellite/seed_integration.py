@@ -260,6 +260,7 @@ def build_mini_internet(
     ix_id_offset: int = 0,
     transit_asns: Sequence[int] | None = None,
     stub_asns: Sequence[int] | None = None,
+    extra_transit_ixs: Dict[int, Sequence[int]] | None = None,
 ) -> None:
     selected_transit_asns = (
         {int(asn) for asn in transit_asns}
@@ -282,7 +283,25 @@ def build_mini_internet(
         for asn, exchange in MINI_INTERNET_STUB_AS_EXCHANGES.items()
         if asn in selected_stub_asns
     )
-    for ix_id, display_name in MINI_INTERNET_IX_DISPLAY_NAMES.items():
+    extra_transit_ixs_by_asn = {
+        int(asn): {int(ix_id) for ix_id in ix_ids}
+        for asn, ix_ids in dict(extra_transit_ixs or {}).items()
+    }
+    selected_ix_ids.update(
+        ix_id
+        for asn, ix_ids in extra_transit_ixs_by_asn.items()
+        if asn in selected_transit_asns
+        for ix_id in ix_ids
+    )
+    display_names = {
+        **MINI_INTERNET_IX_DISPLAY_NAMES,
+        **{
+            ix_id: f"Gateway-IX-{ix_id}"
+            for ix_id in selected_ix_ids
+            if ix_id not in MINI_INTERNET_IX_DISPLAY_NAMES
+        },
+    }
+    for ix_id, display_name in display_names.items():
         if ix_id not in selected_ix_ids:
             continue
         shifted_ix_id = _shift_ix_id(ix_id, ix_id_offset)
@@ -292,16 +311,25 @@ def build_mini_internet(
     for asn, layout in MINI_INTERNET_TRANSIT_AS_LAYOUT.items():
         if asn not in selected_transit_asns:
             continue
+        layout_exchanges = [int(ix_id) for ix_id in layout["exchanges"]]
+        extra_ixs = sorted(extra_transit_ixs_by_asn.get(int(asn), set()))
+        exchanges = sorted(set(layout_exchanges).union(extra_ixs))
+        anchor_ix = layout_exchanges[0]
+        links = list(layout["links"]) + [
+            (anchor_ix, ix_id)
+            for ix_id in extra_ixs
+            if ix_id not in layout_exchanges
+        ]
         create_unique_transit_as(
             base,
             asn=asn,
-            exchanges=[_shift_ix_id(ix_id, ix_id_offset) for ix_id in layout["exchanges"]],
+            exchanges=[_shift_ix_id(ix_id, ix_id_offset) for ix_id in exchanges],
             intra_ix_links=[
                 (
                     _shift_ix_id(left_ix, ix_id_offset),
                     _shift_ix_id(right_ix, ix_id_offset),
                 )
-                for left_ix, right_ix in layout["links"]
+                for left_ix, right_ix in links
             ],
             node_name_prefix=node_name_prefix,
         )

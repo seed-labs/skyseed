@@ -22,7 +22,9 @@ def _prepend_import_path(path: Path) -> None:
 def bootstrap_app_import_path() -> Path:
     apps_dir = Path(__file__).resolve().parent
     satellite_dir = apps_dir.parent
+    repo_root = satellite_dir.parent
     if SEED_EMULATOR_DEPENDENCY_DIR.exists():
         _prepend_import_path(SEED_EMULATOR_DEPENDENCY_DIR)
+    _prepend_import_path(repo_root)
     _prepend_import_path(satellite_dir)
     return satellite_dir

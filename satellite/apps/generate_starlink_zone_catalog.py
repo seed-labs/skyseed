@@ -190,6 +190,22 @@ def build_catalogs(
             "ut_ids": [],
             "partition_policy": "deterministic_global_preview_zone_catalog",
             "source": f"generated_starlink_zone_catalog_{zone_count}",
+            "service_domain_source": "coverage_aware_generated_zone_catalog",
+            "service_domain": {
+                "source": "coverage_aware_generated_zone_catalog",
+                "construction_order": (
+                    "orbit_shell_geometry_to_coverage_zone_to_anchor_to_fec"
+                ),
+                "center": {
+                    "latitude_deg": spec.latitude_deg,
+                    "longitude_deg": spec.longitude_deg,
+                    "altitude_km": 0.0,
+                },
+                "radius_km": spec.radius_km,
+                "representative_ground_points": [],
+                "boundary_points": [],
+                "coverage_margin_deg": spec.coverage_margin_deg,
+            },
         }
         for ut_offset in range(spec.synthetic_ut_count):
             ut_id = f"ut{ut_index}"

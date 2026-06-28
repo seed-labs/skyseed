@@ -914,23 +914,26 @@ class UtInternetExperimentPlanner(Planner):
     ) -> Optional[Dict[str, Any]]:
         attachment = dict(topology_snapshot.nodes[ut_id].get("attachment", {}))
         zone = dict(topology_snapshot.zones.get(zone_id, {}))
-        serving_satellite_id = str(
-            zone.get("active_serving_satellite_id")
-            or attachment.get("active_serving_satellite_id")
-            or ""
-        )
-        if not serving_satellite_id:
-            raise PlannerError(f"missing responsible satellite for {zone_id}/{ut_id}")
+        if not bool(
+            zone.get("zone_service_resolved", zone.get("resolution_state") == "resolved")
+        ):
+            raise PlannerError(f"zone service is not resolved for {zone_id}/{ut_id}")
+        zone_anchor_satellite_id = str(zone.get("active_serving_satellite_id") or "")
+        if not zone_anchor_satellite_id:
+            raise PlannerError(f"missing zone anchor satellite for {zone_id}/{ut_id}")
+        ut_access_satellite_id = str(attachment.get("active_serving_satellite_id") or "")
+        if not ut_access_satellite_id:
+            raise PlannerError(f"missing UT access satellite for {zone_id}/{ut_id}")
         if str(attachment.get("state")) != "attached":
             raise PlannerError(
-                f"{ut_id} is not attached to responsible satellite for {zone_id}"
+                f"{ut_id} is not attached to a visible serving satellite for {zone_id}"
             )
-        attached_satellite_id = str(attachment.get("active_serving_satellite_id") or "")
-        if attached_satellite_id and attached_satellite_id != serving_satellite_id:
+        if ut_access_satellite_id != zone_anchor_satellite_id:
             raise PlannerError(
-                "UT access attachment does not match zone responsible satellite for "
-                f"{zone_id}/{ut_id}: {attached_satellite_id} != {serving_satellite_id}"
+                f"{ut_id} attaches to {ut_access_satellite_id}, not zone anchor "
+                f"{zone_anchor_satellite_id} for {zone_id}"
             )
+        serving_satellite_id = zone_anchor_satellite_id
         intent = self._flow_intent(
             ut_id=ut_id,
             flow_suffix=flow_suffix,
@@ -1015,7 +1018,14 @@ class UtInternetExperimentPlanner(Planner):
             "validation_targets": [dict(target) for target in validation_targets],
             "ping_target_ip": primary_target.get("ip_address"),
             "target_host_node_id": primary_target.get("node_id"),
+            "zone_anchor_satellite_id": zone_anchor_satellite_id,
             "serving_satellite_id": serving_satellite_id,
+            "ut_access_satellite_id": ut_access_satellite_id,
+            "serving_satellite_role": "zone_anchor_responsible_satellite",
+            "zone_anchor_matches_ut_attachment": (
+                bool(zone_anchor_satellite_id)
+                and zone_anchor_satellite_id == ut_access_satellite_id
+            ),
             "selected_gateway_id": selected_gateway_id,
             "selected_gateway_satellite_id": satellite_path[-1],
             "satellite_path": satellite_path,
@@ -1195,6 +1205,9 @@ class UtInternetExperimentPlanner(Planner):
             self._special_prefix_policies(topology_snapshot),
             start=1,
         ):
+            policy_zone_id = str(policy.get("zone_id") or "")
+            if policy_zone_id and policy_zone_id != str(zone_id):
+                continue
             target = dict(policy.get("target", {}))
             flow_context = self._flow_context(
                 topology_snapshot=topology_snapshot,

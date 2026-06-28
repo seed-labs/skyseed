@@ -41,6 +41,8 @@
 #define COUNTER_DROP_LOSS 12
 #define COUNTER_DROP_MISSING_PARAMETER 13
 #define COUNTER_DROP_BAD_PACKET 14
+#define COUNTER_RETURN_HANDOFF_HIT 15
+#define COUNTER_SEEN 16
 
 #ifndef SKYSEED_BPF_MAX_RUNTIME_GENERATIONS
 #define SKYSEED_BPF_MAX_RUNTIME_GENERATIONS 64
@@ -58,6 +60,10 @@
 #define SKYSEED_BPF_MAX_PARAMETER_ENTRIES 16
 #endif
 
+#ifndef SKYSEED_BPF_MAX_INTERFACE_COUNTER_ENTRIES
+#define SKYSEED_BPF_MAX_INTERFACE_COUNTER_ENTRIES 8192
+#endif
+
 struct bpf_elf_map {
     __u32 type;
     __u32 size_key;
@@ -70,6 +76,7 @@ struct bpf_elf_map {
 
 struct route_key {
     __u32 generation;
+    __u32 ingress_ifindex;
     __u32 dst_ipv4;
 };
 
@@ -77,6 +84,9 @@ struct route_value {
     __u32 active;
     __u32 action;
     __u32 ifindex;
+    __u32 new_dst_ipv4;
+    unsigned char dst_mac[6];
+    unsigned char src_mac[6];
 };
 
 struct parameter_key {
@@ -91,8 +101,21 @@ struct parameter_value {
     __u32 mark;
 };
 
+struct interface_counter_key {
+    __u32 ifindex;
+    __u32 counter;
+};
+
 static void *(*bpf_map_lookup_elem)(void *map, const void *key) =
     (void *)BPF_FUNC_map_lookup_elem;
+static int (*bpf_map_update_elem)(void *map, const void *key, const void *value,
+                                  __u64 flags) = (void *)BPF_FUNC_map_update_elem;
+static int (*bpf_skb_store_bytes)(struct __sk_buff *skb, __u32 offset, const void *from,
+                                  __u32 len, __u64 flags) =
+    (void *)BPF_FUNC_skb_store_bytes;
+static int (*bpf_l3_csum_replace)(struct __sk_buff *skb, __u32 offset, __u64 from,
+                                  __u64 to, __u64 size) =
+    (void *)BPF_FUNC_l3_csum_replace;
 static int (*bpf_redirect)(__u32 ifindex, __u64 flags) = (void *)BPF_FUNC_redirect;
 static __u32 (*bpf_get_prandom_u32)(void) = (void *)BPF_FUNC_get_prandom_u32;
 
@@ -124,7 +147,15 @@ struct bpf_elf_map SEC("maps") packet_counters = {
     .type = BPF_MAP_TYPE_ARRAY,
     .size_key = sizeof(__u32),
     .size_value = sizeof(__u64),
-    .max_elem = 16,
+    .max_elem = 17,
+    .pinning = PIN_GLOBAL_NS,
+};
+
+struct bpf_elf_map SEC("maps") interface_counters = {
+    .type = BPF_MAP_TYPE_HASH,
+    .size_key = sizeof(struct interface_counter_key),
+    .size_value = sizeof(__u64),
+    .max_elem = SKYSEED_BPF_MAX_INTERFACE_COUNTER_ENTRIES,
     .pinning = PIN_GLOBAL_NS,
 };
 
@@ -160,6 +191,22 @@ static __always_inline void count_packet(__u32 key)
         __sync_fetch_and_add(counter, 1);
 }
 
+static __always_inline void count_interface_packet(__u32 ifindex, __u32 key)
+{
+    struct interface_counter_key counter_key = {
+        .ifindex = ifindex,
+        .counter = key,
+    };
+    __u64 initial = 1;
+    __u64 *counter = bpf_map_lookup_elem(&interface_counters, &counter_key);
+
+    if (counter) {
+        __sync_fetch_and_add(counter, 1);
+        return;
+    }
+    bpf_map_update_elem(&interface_counters, &counter_key, &initial, BPF_ANY);
+}
+
 static __always_inline int parse_dst_ipv4(struct __sk_buff *skb, __u32 *dst_ipv4, __u32 *flow)
 {
     void *data = (void *)(long)skb->data;
@@ -186,6 +233,41 @@ static __always_inline int parse_dst_ipv4(struct __sk_buff *skb, __u32 *dst_ipv4
     return 1;
 }
 
+static __always_inline int rewrite_l2(struct __sk_buff *skb, struct route_value *route)
+{
+    unsigned char rewrite[12];
+
+    if (!route->dst_mac[0])
+        return 0;
+
+    rewrite[0] = route->dst_mac[0];
+    rewrite[1] = route->dst_mac[1];
+    rewrite[2] = route->dst_mac[2];
+    rewrite[3] = route->dst_mac[3];
+    rewrite[4] = route->dst_mac[4];
+    rewrite[5] = route->dst_mac[5];
+    rewrite[6] = route->src_mac[0];
+    rewrite[7] = route->src_mac[1];
+    rewrite[8] = route->src_mac[2];
+    rewrite[9] = route->src_mac[3];
+    rewrite[10] = route->src_mac[4];
+    rewrite[11] = route->src_mac[5];
+
+    return bpf_skb_store_bytes(skb, 0, rewrite, sizeof(rewrite), 0);
+}
+
+static __always_inline int rewrite_dst_ipv4(struct __sk_buff *skb, __u32 old_dst_ipv4,
+                                            struct route_value *route)
+{
+    __u32 new_dst_ipv4 = route->new_dst_ipv4;
+
+    if (!new_dst_ipv4)
+        return 0;
+    if (bpf_l3_csum_replace(skb, 24, old_dst_ipv4, new_dst_ipv4, 4) < 0)
+        return -1;
+    return bpf_skb_store_bytes(skb, 30, &new_dst_ipv4, sizeof(new_dst_ipv4), 0);
+}
+
 SEC("classifier/canary")
 int skyseed_dataplane_canary(struct __sk_buff *skb)
 {
@@ -202,9 +284,13 @@ int skyseed_dataplane_canary(struct __sk_buff *skb)
     struct parameter_value *parameter;
     int parse_status;
 
+    count_packet(COUNTER_SEEN);
+    count_interface_packet(skb->ifindex, COUNTER_SEEN);
+
     parse_status = parse_dst_ipv4(skb, &dst_ipv4, &flow);
     if (parse_status == 0) {
         count_packet(COUNTER_CANONICAL_FALLBACK);
+        count_interface_packet(skb->ifindex, COUNTER_CANONICAL_FALLBACK);
         count_packet(COUNTER_PASS);
         return TC_ACT_OK;
     }
@@ -221,10 +307,12 @@ int skyseed_dataplane_canary(struct __sk_buff *skb)
     }
 
     route_key.generation = *generation;
+    route_key.ingress_ifindex = skb->ifindex;
     route_key.dst_ipv4 = dst_ipv4;
     route = bpf_map_lookup_elem(&fec_forwarding, &route_key);
     if (!route) {
         count_packet(COUNTER_CANONICAL_FALLBACK);
+        count_interface_packet(skb->ifindex, COUNTER_CANONICAL_FALLBACK);
         count_packet(COUNTER_PASS);
         return TC_ACT_OK;
     }
@@ -236,7 +324,11 @@ int skyseed_dataplane_canary(struct __sk_buff *skb)
         return TC_ACT_SHOT;
     }
     count_packet(COUNTER_RUNTIME_GENERATION_HIT);
+    count_interface_packet(skb->ifindex, COUNTER_RUNTIME_GENERATION_HIT);
     count_packet(COUNTER_FEC_HIT);
+    count_interface_packet(skb->ifindex, COUNTER_FEC_HIT);
+    if (route->new_dst_ipv4)
+        count_packet(COUNTER_RETURN_HANDOFF_HIT);
 
     if (!route->active) {
         count_packet(COUNTER_DROP_INACTIVE_FEC);
@@ -285,7 +377,18 @@ int skyseed_dataplane_canary(struct __sk_buff *skb)
     }
 
     if (route->action == ACTION_FORWARD && route->ifindex) {
+        if (rewrite_dst_ipv4(skb, dst_ipv4, route) < 0) {
+            count_packet(COUNTER_DROP_BAD_PACKET);
+            count_packet(COUNTER_DROP);
+            return TC_ACT_SHOT;
+        }
+        if (rewrite_l2(skb, route) < 0) {
+            count_packet(COUNTER_DROP_BAD_PACKET);
+            count_packet(COUNTER_DROP);
+            return TC_ACT_SHOT;
+        }
         count_packet(COUNTER_REDIRECT);
+        count_interface_packet(skb->ifindex, COUNTER_REDIRECT);
         return bpf_redirect(route->ifindex, 0);
     }
 

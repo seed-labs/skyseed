@@ -259,13 +259,38 @@ def _build_preview(command_args: argparse.Namespace) -> Dict[str, Any]:
     return json.loads(result.stdout)
 
 
+def _compose_project_name(output_dir: Path) -> str:
+    env_path = output_dir / ".env"
+    if env_path.exists():
+        for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            if key.strip() == "COMPOSE_PROJECT_NAME":
+                project_name = value.strip().strip("\"'")
+                if project_name:
+                    return project_name
+    return output_dir.name
+
+
 def _compose_down(output_dir: Path) -> subprocess.CompletedProcess[str] | None:
     compose_file = output_dir / "docker-compose.yml"
     if not compose_file.exists():
         return None
+    project_name = _compose_project_name(output_dir)
     return subprocess.run(
-        ["docker-compose", "down", "--remove-orphans", "-v"],
-        cwd=str(output_dir),
+        [
+            "docker-compose",
+            "-f",
+            str(compose_file),
+            "-p",
+            project_name,
+            "down",
+            "--remove-orphans",
+            "-v",
+        ],
+        cwd=str(output_dir.parent),
         text=True,
         capture_output=True,
         check=False,
@@ -487,6 +512,7 @@ def main() -> int:
             "output_dir": str(output_dir),
             "compose_down_before": (
                 {
+                    "command": list(compose_down_before.args),
                     "returncode": compose_down_before.returncode,
                     "stdout": compose_down_before.stdout,
                     "stderr": compose_down_before.stderr,
@@ -504,6 +530,7 @@ def main() -> int:
             ),
             "compose_down_after": (
                 {
+                    "command": list(compose_down_after.args),
                     "returncode": compose_down_after.returncode,
                     "stdout": compose_down_after.stdout,
                     "stderr": compose_down_after.stderr,

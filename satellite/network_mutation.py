@@ -124,12 +124,12 @@ def _parameter_delta(
     }
 
 
-def _runtime_parameters_require_mutation(
+def _runtime_parameter_mutation_fields(
     *,
     previous: Mapping[str, Any],
     current: Mapping[str, Any],
     mutation_policy: Mapping[str, Any] | None,
-) -> bool:
+) -> set[str]:
     ignored_fields = tuple(
         str(field_name)
         for field_name in (
@@ -140,6 +140,7 @@ def _runtime_parameters_require_mutation(
         )
         if str(field_name)
     )
+    ignored = {str(field_name) for field_name in ignored_fields}
     previous_normalized = _normalized_runtime_parameters(
         previous,
         ignored_fields=ignored_fields,
@@ -149,22 +150,23 @@ def _runtime_parameters_require_mutation(
         ignored_fields=ignored_fields,
     )
     if previous_normalized == current_normalized:
-        return False
+        return set()
     delta = _parameter_delta(previous=previous_normalized, current=current_normalized)
+    fields: set[str] = set()
     if delta["delay_delta_ms"] >= float((mutation_policy or {}).get("delay_threshold_ms", 0.0)):
-        return True
+        fields.add("delay_ms")
     if delta["loss_delta_pct"] >= float((mutation_policy or {}).get("loss_threshold_pct", 0.0)):
-        return True
+        fields.add("loss_percent")
     if (
         delta["bandwidth_delta_pct"]
         >= float((mutation_policy or {}).get("bandwidth_threshold_pct", 0.0))
     ):
-        return True
+        fields.add("bandwidth_mbps")
     if (
         int(delta["routing_cost_delta"])
         >= int((mutation_policy or {}).get("routing_cost_threshold", 0))
     ):
-        return True
+        fields.add("routing_cost")
     threshold_keys = {
         "delay_ms",
         "loss_percent",
@@ -175,8 +177,38 @@ def _runtime_parameters_require_mutation(
         if key in threshold_keys:
             continue
         if previous_normalized.get(key) != current_normalized.get(key):
-            return True
-    return False
+            fields.add(key)
+    return {field for field in fields if field not in ignored}
+
+
+def _runtime_parameters_require_mutation(
+    *,
+    previous: Mapping[str, Any],
+    current: Mapping[str, Any],
+    mutation_policy: Mapping[str, Any] | None,
+) -> bool:
+    return bool(
+        _runtime_parameter_mutation_fields(
+            previous=previous,
+            current=current,
+            mutation_policy=mutation_policy,
+        )
+    )
+
+
+def _target_runtime_parameters_for_mutation(
+    *,
+    previous: Mapping[str, Any],
+    current: Mapping[str, Any],
+    changed_fields: set[str],
+) -> Dict[str, Any]:
+    target = dict(previous)
+    for field in sorted(changed_fields):
+        if field in current:
+            target[field] = current[field]
+        else:
+            target.pop(field, None)
+    return target
 
 
 def dynamic_slot_state_from_link_state(link_state: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
@@ -249,11 +281,12 @@ def _slot_transition_operation(
         (target_slot or source_slot or {}).get("slot_type", "unknown_dynamic_slot")
     )
 
-    parameter_requires_mutation = _runtime_parameters_require_mutation(
+    changed_runtime_parameter_fields = _runtime_parameter_mutation_fields(
         previous=source_runtime_parameters,
         current=target_runtime_parameters,
         mutation_policy=runtime_parameter_mutation_policy,
     )
+    parameter_requires_mutation = bool(changed_runtime_parameter_fields)
 
     if (
         source_occupied == target_occupied
@@ -273,6 +306,15 @@ def _slot_transition_operation(
         operation = "activate_slot_attachment"
     else:
         operation = "deactivate_slot_attachment"
+    effective_target_runtime_parameters = (
+        _target_runtime_parameters_for_mutation(
+            previous=source_runtime_parameters,
+            current=target_runtime_parameters,
+            changed_fields=changed_runtime_parameter_fields,
+        )
+        if operation == "update_slot_parameters"
+        else target_runtime_parameters
+    )
 
     return {
         "operation": operation,
@@ -286,13 +328,24 @@ def _slot_transition_operation(
         "source_endpoints": source_endpoints,
         "target_endpoints": target_endpoints,
         "source_runtime_parameters": source_runtime_parameters,
-        "target_runtime_parameters": target_runtime_parameters,
+        "target_runtime_parameters": effective_target_runtime_parameters,
+        "target_runtime_parameter_snapshot": target_runtime_parameters,
+        "changed_runtime_parameter_fields": sorted(changed_runtime_parameter_fields),
         "delta_hints": {
             "endpoint_unchanged": source_binding == target_binding,
             "parameter_change_only": (
                 source_occupied == target_occupied
                 and source_binding == target_binding
-                and source_runtime_parameters != target_runtime_parameters
+                and parameter_requires_mutation
+            ),
+            "suppressed_runtime_parameter_fields": sorted(
+                set(target_runtime_parameters)
+                - set(changed_runtime_parameter_fields)
+                - {
+                    key
+                    for key, value in source_runtime_parameters.items()
+                    if target_runtime_parameters.get(key) == value
+                }
             ),
             "reuses_slot_runtime": True,
         },

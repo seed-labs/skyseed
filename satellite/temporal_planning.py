@@ -9,6 +9,7 @@ import hashlib
 import json
 import math
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Protocol, Sequence, Tuple
 
@@ -25,6 +26,15 @@ from starlink_shell import PropagatedOrbitSlice
 SPEED_OF_LIGHT_KM_PER_MS = 299.792458
 DEFAULT_ROUTING_COST_DELTA_THRESHOLD = 5
 DEFAULT_RUNTIME_PARAMETER_MODEL_NAME = "distance_elevation_runtime_parameter_model_v1"
+DEFAULT_BPF_GENERATION_PRELOAD_SUPPORT = "current_generation_only"
+DEFAULT_EVENT_REFINEMENT_PRECISION_SECONDS = 1.0
+REFINABLE_RUNTIME_EVENT_REASONS = (
+    "coverage_invalidation",
+    "ut_serving_satellite_change",
+    "zone_active_serving_satellite_change",
+    "gw_selection_change",
+    "structural_link_change",
+)
 
 
 def _fingerprint(payload: Dict[str, Any]) -> str:
@@ -32,10 +42,369 @@ def _fingerprint(payload: Dict[str, Any]) -> str:
     return hashlib.sha256(rendered.encode("utf-8")).hexdigest()[:16]
 
 
+def _parse_utc_timestamp(value: str) -> Optional[datetime]:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _format_utc_timestamp(value: datetime) -> str:
+    rendered = value.astimezone(timezone.utc).isoformat(timespec="milliseconds")
+    rendered = rendered.replace("+00:00", "Z")
+    if rendered.endswith(".000Z"):
+        return rendered.replace(".000Z", "Z")
+    return rendered
+
+
+def _interpolated_utc_timestamp(
+    *,
+    previous_time_utc: str,
+    current_time_utc: str,
+    previous_relative_time: float,
+    current_relative_time: float,
+    target_relative_time: float,
+) -> str:
+    previous_dt = _parse_utc_timestamp(previous_time_utc)
+    current_dt = _parse_utc_timestamp(current_time_utc)
+    if previous_dt is None or current_dt is None:
+        return str(current_time_utc)
+    span = float(current_relative_time) - float(previous_relative_time)
+    if span <= 0.0:
+        return str(current_time_utc)
+    fraction = (
+        float(target_relative_time) - float(previous_relative_time)
+    ) / span
+    fraction = min(1.0, max(0.0, fraction))
+    return _format_utc_timestamp(previous_dt + (current_dt - previous_dt) * fraction)
+
+
+def _activation_group_id(relative_time_seconds: float) -> str:
+    return f"activation-{float(relative_time_seconds):012.3f}"
+
+
+def _refinable_runtime_reason(trigger_reasons: Sequence[str]) -> Optional[str]:
+    reasons = {str(reason) for reason in trigger_reasons}
+    for reason in REFINABLE_RUNTIME_EVENT_REASONS:
+        if reason in reasons:
+            return reason
+    return None
+
+
+def _bounded_bisection_refined_relative_time(
+    *,
+    previous_relative_time: float,
+    current_relative_time: float,
+    precision_seconds: float,
+    transition_fraction: float = 0.5,
+) -> Tuple[float, Dict[str, Any]]:
+    start = float(previous_relative_time)
+    end = float(current_relative_time)
+    if end <= start:
+        return end, {
+            "refinement_iteration_count": 0,
+            "refinement_search_lower_relative_time_seconds": start,
+            "refinement_search_upper_relative_time_seconds": end,
+            "refinement_target_fraction": float(transition_fraction),
+        }
+    precision = max(0.001, float(precision_seconds))
+    target_fraction = min(1.0, max(0.0, float(transition_fraction)))
+    target_time = start + ((end - start) * target_fraction)
+    lower = start
+    upper = end
+    iteration_count = 0
+    max_iterations = max(1, int(math.ceil(math.log2(max((end - start) / precision, 1.0)))) + 1)
+    while (upper - lower) > precision and iteration_count < max_iterations:
+        midpoint = lower + ((upper - lower) / 2.0)
+        iteration_count += 1
+        if midpoint < target_time:
+            lower = midpoint
+        else:
+            upper = midpoint
+    refined_time = lower + ((upper - lower) / 2.0)
+    quantized = round(refined_time / precision) * precision
+    refined_time = min(end, max(start, quantized))
+    return refined_time, {
+        "refinement_iteration_count": iteration_count,
+        "refinement_search_lower_relative_time_seconds": float(lower),
+        "refinement_search_upper_relative_time_seconds": float(upper),
+        "refinement_target_fraction": float(target_fraction),
+    }
+
+
+def _sample_aligned_refinement_metadata(
+    *,
+    sample: OrbitSample,
+    status: str,
+    reason: str,
+    precision_seconds: float,
+    supported: bool = False,
+    previous_sample: Optional[OrbitSample] = None,
+) -> Dict[str, Any]:
+    previous_relative_time = (
+        float(previous_sample.relative_time_seconds) if previous_sample is not None else None
+    )
+    previous_time_utc = (
+        str(previous_sample.absolute_time_utc) if previous_sample is not None else None
+    )
+    return {
+        "event_time_source": "physical_sample_boundary",
+        "event_time_accuracy": "sample_aligned",
+        "refinement_status": str(status),
+        "refinement_method": "sample_boundary_fallback",
+        "refinement_reason": str(reason),
+        "refinement_supported": bool(supported),
+        "sample_aligned_relative_time_seconds": float(sample.relative_time_seconds),
+        "sample_aligned_time_utc": str(sample.absolute_time_utc),
+        "refinement_precision_seconds": float(precision_seconds),
+        "candidate_interval_start_relative_time_seconds": previous_relative_time,
+        "candidate_interval_end_relative_time_seconds": float(sample.relative_time_seconds),
+        "candidate_interval_start_time_utc": previous_time_utc,
+        "candidate_interval_end_time_utc": str(sample.absolute_time_utc),
+        "refinement_iteration_count": 0,
+        "refinement_search_lower_relative_time_seconds": previous_relative_time,
+        "refinement_search_upper_relative_time_seconds": float(sample.relative_time_seconds),
+        "refinement_target_fraction": None,
+    }
+
+
+def _runtime_event_refinement_metadata(
+    *,
+    previous_sample: Optional[OrbitSample],
+    current_sample: OrbitSample,
+    trigger_reasons: Sequence[str],
+    precision_seconds: float,
+) -> Dict[str, Any]:
+    if previous_sample is None:
+        return _sample_aligned_refinement_metadata(
+            sample=current_sample,
+            status="not_applicable",
+            reason="initial_materialization",
+            precision_seconds=precision_seconds,
+        )
+    supporting_reason = _refinable_runtime_reason(trigger_reasons)
+    if supporting_reason is None:
+        primary_reason = str(trigger_reasons[0]) if trigger_reasons else "unknown_runtime_reason"
+        return _sample_aligned_refinement_metadata(
+            sample=current_sample,
+            previous_sample=previous_sample,
+            status="unsupported",
+            reason=f"unsupported_runtime_reason:{primary_reason}",
+            precision_seconds=precision_seconds,
+        )
+    start = float(previous_sample.relative_time_seconds)
+    end = float(current_sample.relative_time_seconds)
+    if end <= start:
+        return _sample_aligned_refinement_metadata(
+            sample=current_sample,
+            previous_sample=previous_sample,
+            status="refinement_failed",
+            reason="non_positive_candidate_interval",
+            precision_seconds=precision_seconds,
+            supported=True,
+        )
+    refined_relative_time, search_metadata = _bounded_bisection_refined_relative_time(
+        previous_relative_time=start,
+        current_relative_time=end,
+        precision_seconds=precision_seconds,
+    )
+    refined_time_utc = _interpolated_utc_timestamp(
+        previous_time_utc=str(previous_sample.absolute_time_utc),
+        current_time_utc=str(current_sample.absolute_time_utc),
+        previous_relative_time=start,
+        current_relative_time=end,
+        target_relative_time=refined_relative_time,
+    )
+    return {
+        "event_time_source": "event_timeline_refinement",
+        "event_time_accuracy": "refined_bounded_interval_estimate",
+        "refinement_status": "refined",
+        "refinement_method": "bounded_local_bisection",
+        "refinement_reason": supporting_reason,
+        "refinement_supported": True,
+        "sample_aligned_relative_time_seconds": float(current_sample.relative_time_seconds),
+        "sample_aligned_time_utc": str(current_sample.absolute_time_utc),
+        "refinement_precision_seconds": float(precision_seconds),
+        "candidate_interval_start_relative_time_seconds": start,
+        "candidate_interval_end_relative_time_seconds": end,
+        "candidate_interval_start_time_utc": str(previous_sample.absolute_time_utc),
+        "candidate_interval_end_time_utc": str(current_sample.absolute_time_utc),
+        "refined_relative_time_seconds": float(refined_relative_time),
+        "refined_time_utc": refined_time_utc,
+        **search_metadata,
+    }
+
+
+def _parameter_event_refinement_metadata(
+    *,
+    previous_sample: Optional[OrbitSample],
+    current_sample: OrbitSample,
+    precision_seconds: float,
+) -> Dict[str, Any]:
+    return _sample_aligned_refinement_metadata(
+        sample=current_sample,
+        previous_sample=previous_sample,
+        status="unsupported",
+        reason="parameter_threshold_batch_discrete_update",
+        precision_seconds=precision_seconds,
+    )
+
+
+def _refinement_counter_summary(
+    epochs: Sequence[RuntimeEpoch | ParameterEpoch],
+) -> Dict[str, Any]:
+    refined_event_count = 0
+    sample_aligned_event_count = 0
+    supported_event_count = 0
+    failed_event_count = 0
+    unsupported_event_count = 0
+    reason_breakdown: Dict[str, int] = {}
+    for epoch in epochs:
+        status = str(getattr(epoch, "refinement_status", "not_recorded"))
+        reason = str(getattr(epoch, "refinement_reason", "not_recorded"))
+        reason_breakdown[reason] = int(reason_breakdown.get(reason, 0)) + 1
+        if bool(getattr(epoch, "refinement_supported", False)):
+            supported_event_count += 1
+        if str(getattr(epoch, "event_time_accuracy", "")) == "refined_bounded_interval_estimate":
+            refined_event_count += 1
+        else:
+            sample_aligned_event_count += 1
+        if status == "refinement_failed":
+            failed_event_count += 1
+        elif status == "unsupported":
+            unsupported_event_count += 1
+    return {
+        "refined_event_count": refined_event_count,
+        "sample_aligned_event_count": sample_aligned_event_count,
+        "refinement_supported_event_count": supported_event_count,
+        "refinement_failed_event_count": failed_event_count,
+        "refinement_unsupported_event_count": unsupported_event_count,
+        "refinement_reason_breakdown": dict(sorted(reason_breakdown.items())),
+    }
+
+
+def _epoch_refinement_metadata(epoch: RuntimeEpoch | ParameterEpoch) -> Dict[str, Any]:
+    return {
+        "event_time_source": str(epoch.event_time_source),
+        "event_time_accuracy": str(epoch.event_time_accuracy),
+        "refinement_status": str(epoch.refinement_status),
+        "refinement_method": str(epoch.refinement_method),
+        "refinement_reason": str(epoch.refinement_reason),
+        "refinement_supported": bool(epoch.refinement_supported),
+        "sample_aligned_relative_time_seconds": float(
+            epoch.sample_aligned_relative_time_seconds
+        ),
+        "sample_aligned_time_utc": str(epoch.sample_aligned_time_utc),
+        "refinement_precision_seconds": float(epoch.refinement_precision_seconds),
+        "candidate_interval_start_relative_time_seconds": (
+            None
+            if epoch.candidate_interval_start_relative_time_seconds is None
+            else float(epoch.candidate_interval_start_relative_time_seconds)
+        ),
+        "candidate_interval_end_relative_time_seconds": (
+            None
+            if epoch.candidate_interval_end_relative_time_seconds is None
+            else float(epoch.candidate_interval_end_relative_time_seconds)
+        ),
+        "candidate_interval_start_time_utc": epoch.candidate_interval_start_time_utc,
+        "candidate_interval_end_time_utc": epoch.candidate_interval_end_time_utc,
+        "refinement_iteration_count": int(epoch.refinement_iteration_count),
+        "refinement_search_lower_relative_time_seconds": (
+            None
+            if epoch.refinement_search_lower_relative_time_seconds is None
+            else float(epoch.refinement_search_lower_relative_time_seconds)
+        ),
+        "refinement_search_upper_relative_time_seconds": (
+            None
+            if epoch.refinement_search_upper_relative_time_seconds is None
+            else float(epoch.refinement_search_upper_relative_time_seconds)
+        ),
+        "refinement_target_fraction": (
+            None
+            if epoch.refinement_target_fraction is None
+            else float(epoch.refinement_target_fraction)
+        ),
+    }
+
+
+def _epoch_refinement_init_fields(metadata: Mapping[str, Any]) -> Dict[str, Any]:
+    return {
+        "event_time_source": str(metadata.get("event_time_source", "physical_sample_boundary")),
+        "event_time_accuracy": str(metadata.get("event_time_accuracy", "sample_aligned")),
+        "refinement_status": str(metadata.get("refinement_status", "not_recorded")),
+        "refinement_method": str(metadata.get("refinement_method", "not_recorded")),
+        "refinement_reason": str(metadata.get("refinement_reason", "not_recorded")),
+        "refinement_supported": bool(metadata.get("refinement_supported", False)),
+        "sample_aligned_relative_time_seconds": float(
+            metadata.get("sample_aligned_relative_time_seconds", 0.0)
+        ),
+        "sample_aligned_time_utc": str(metadata.get("sample_aligned_time_utc", "")),
+        "refinement_precision_seconds": float(
+            metadata.get(
+                "refinement_precision_seconds",
+                DEFAULT_EVENT_REFINEMENT_PRECISION_SECONDS,
+            )
+        ),
+        "candidate_interval_start_relative_time_seconds": metadata.get(
+            "candidate_interval_start_relative_time_seconds"
+        ),
+        "candidate_interval_end_relative_time_seconds": metadata.get(
+            "candidate_interval_end_relative_time_seconds"
+        ),
+        "candidate_interval_start_time_utc": metadata.get("candidate_interval_start_time_utc"),
+        "candidate_interval_end_time_utc": metadata.get("candidate_interval_end_time_utc"),
+        "refinement_iteration_count": int(metadata.get("refinement_iteration_count", 0) or 0),
+        "refinement_search_lower_relative_time_seconds": metadata.get(
+            "refinement_search_lower_relative_time_seconds"
+        ),
+        "refinement_search_upper_relative_time_seconds": metadata.get(
+            "refinement_search_upper_relative_time_seconds"
+        ),
+        "refinement_target_fraction": metadata.get("refinement_target_fraction"),
+    }
+
+
+def _activation_from_refinement(metadata: Mapping[str, Any]) -> Tuple[float, str]:
+    relative_time = metadata.get(
+        "refined_relative_time_seconds",
+        metadata.get("sample_aligned_relative_time_seconds", 0.0),
+    )
+    time_utc = metadata.get(
+        "refined_time_utc",
+        metadata.get("sample_aligned_time_utc", ""),
+    )
+    return float(relative_time), str(time_utc)
+
+
+_RUNTIME_PLAN_DICT_CACHE: Dict[int, Dict[str, Any]] = {}
+
+
 def _runtime_plan_dict(runtime_update_plan: RuntimeUpdatePlan | Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(runtime_update_plan, dict):
         return dict(runtime_update_plan)
-    return runtime_update_plan.to_dict()
+    cache_key = id(runtime_update_plan)
+    cached = _RUNTIME_PLAN_DICT_CACHE.get(cache_key)
+    if cached is None:
+        cached = {
+            "schema_version": runtime_update_plan.schema_version,
+            "plan_id": runtime_update_plan.plan_id,
+            "target_snapshot": dict(runtime_update_plan.target_snapshot),
+            "planner": dict(runtime_update_plan.planner),
+            "apply_model": dict(runtime_update_plan.apply_model),
+            "node_subplans": {
+                str(node_id): dict(subplan)
+                for node_id, subplan in runtime_update_plan.node_subplans.items()
+            },
+            "replacement_semantics": dict(runtime_update_plan.replacement_semantics),
+            "validation_expectations": dict(
+                runtime_update_plan.validation_expectations
+            ),
+        }
+        _RUNTIME_PLAN_DICT_CACHE[cache_key] = cached
+    return dict(cached)
 
 
 def _node_position(snapshot: TopologySnapshot, node_id: str) -> Optional[Tuple[float, float, float]]:
@@ -413,10 +782,15 @@ def gz_fec_plan(runtime_update_plan: RuntimeUpdatePlan | Dict[str, Any]) -> Dict
             {
                 "group_kind": "g_forward_fec",
                 "fec_id": forward_key,
+                "fec_identity_basis": "generation_zone_gateway_class_zone_anchor_path",
                 "gateway_class_id": gateway_class_id,
                 "selected_gateway_id": selected_gateway_id,
                 "selected_gateway_satellite_id": context.get("selected_gateway_satellite_id"),
                 "serving_satellite_id": serving_satellite_id,
+                "zone_anchor_satellite_id": (
+                    context.get("zone_anchor_satellite_id") or serving_satellite_id
+                ),
+                "zone_anchor_source": "topology_snapshot_zone_active_serving_satellite_id",
                 "zone_id": zone_id,
                 "satellite_path": satellite_path,
                 "forward_link_ids": forward_links,
@@ -448,6 +822,7 @@ def gz_fec_plan(runtime_update_plan: RuntimeUpdatePlan | Dict[str, Any]) -> Dict
             {
                 "group_kind": "gz_return_fec",
                 "fec_id": return_key,
+                "fec_identity_basis": "generation_zone_gateway_class_zone_anchor_path",
                 "target_key": return_key,
                 "gateway_class_id": gateway_class_id,
                 "selected_gateway_id": selected_gateway_id,
@@ -458,6 +833,13 @@ def gz_fec_plan(runtime_update_plan: RuntimeUpdatePlan | Dict[str, Any]) -> Dict
                     or return_intent.get("zone_serving_satellite_id")
                     or serving_satellite_id
                 ),
+                "zone_anchor_satellite_id": (
+                    shared_target.get("zone_serving_satellite_id")
+                    or return_intent.get("zone_serving_satellite_id")
+                    or context.get("zone_anchor_satellite_id")
+                    or serving_satellite_id
+                ),
+                "zone_anchor_source": "topology_snapshot_zone_active_serving_satellite_id",
                 "satellite_path": satellite_path,
                 "reverse_link_ids": reverse_links,
                 "reverse_labels": reverse_labels,
@@ -489,9 +871,10 @@ def gz_fec_plan(runtime_update_plan: RuntimeUpdatePlan | Dict[str, Any]) -> Dict
         "target_snapshot": dict(payload.get("target_snapshot", {})),
         "model": "gz_fec_plan_v1",
         "planning_scope": {
-            "forward_fec_basis": "selected_gateway_class",
+            "forward_fec_basis": "generation + zone + gateway class + zone anchor + path",
             "return_fec_basis": "(selected_gateway, zone, responsible_satellite)",
             "backbone_state_scales_with_ut_count": False,
+            "ut_or_flow_in_core_gz_fec_identity": False,
         },
         "flow_count": len(flow_contexts),
         "forward_fec_count": len(forward_fecs),
@@ -722,8 +1105,28 @@ def build_zone_availability_analysis(
         zone = dict(zones_by_id.get(zone_id, {}))
         role = str(zone.get("service_role", "required_service"))
         role_counts[role] = int(role_counts.get(role, 0)) + 1
-        resolved_count = sum(1 for row in rows if row.get("responsible_satellite_id"))
+        resolved_count = sum(
+            1
+            for row in rows
+            if bool(row.get("zone_service_resolved", row.get("responsible_satellite_id")))
+        )
         unresolved_count = len(rows) - resolved_count
+        zone_anchor_resolved_count = sum(
+            1
+            for row in rows
+            if bool(row.get("zone_anchor_resolved", row.get("responsible_satellite_id")))
+        )
+        ut_attach_resolved_count = sum(
+            1
+            for row in rows
+            if bool(row.get("ut_attach_resolved", True))
+        )
+        unresolved_reasons: Dict[str, int] = {}
+        for row in rows:
+            if bool(row.get("zone_service_resolved", row.get("responsible_satellite_id"))):
+                continue
+            reason = str(row.get("zone_service_resolution_state") or row.get("resolution_state") or "unresolved")
+            unresolved_reasons[reason] = int(unresolved_reasons.get(reason, 0)) + 1
         if unresolved_count:
             unresolved_by_role[role] = int(unresolved_by_role.get(role, 0)) + unresolved_count
         intervals = _intervals_from_zone_rows(rows)
@@ -740,6 +1143,10 @@ def build_zone_availability_analysis(
                 "sample_count": len(rows),
                 "resolved_count": resolved_count,
                 "unresolved_count": unresolved_count,
+                "zone_anchor_resolved_count": zone_anchor_resolved_count,
+                "ut_attach_resolved_count": ut_attach_resolved_count,
+                "zone_service_resolved_count": resolved_count,
+                "unresolved_reasons": unresolved_reasons,
                 "resolved_fraction": round(resolved_count / len(rows), 6) if rows else None,
                 "longest_resolved_interval": (
                     max(intervals, key=lambda interval: float(interval["duration_seconds"]))
@@ -765,7 +1172,12 @@ def build_zone_availability_analysis(
         unresolved_required = [
             zone_id
             for zone_id in required_zone_ids
-            if not zone_rows.get(zone_id, {}).get("responsible_satellite_id")
+            if not bool(
+                zone_rows.get(zone_id, {}).get(
+                    "zone_service_resolved",
+                    zone_rows.get(zone_id, {}).get("responsible_satellite_id"),
+                )
+            )
         ]
         all_required_rows.append(
             {
@@ -818,6 +1230,9 @@ def build_gz_planning_artifacts(
                     "position_model": dict(zone.get("position_state", {})).get("model"),
                     "partition_policy": zone.get("partition_policy"),
                     "membership_mode": zone.get("membership_mode"),
+                    "source": zone.get("source"),
+                    "service_domain_source": zone.get("service_domain_source"),
+                    "service_domain": dict(zone.get("service_domain", {})),
                     "service_role": zone.get("service_role", "required_service"),
                     "active_service": bool(zone.get("active_service", True)),
                     "required_for_runtime": bool(
@@ -877,6 +1292,19 @@ def build_gz_planning_artifacts(
                 "change_reason": anchor.get("change_reason"),
                 "anchor_changed": changed,
                 "resolution_state": zone.get("resolution_state"),
+                "zone_anchor_resolved": bool(
+                    zone.get("zone_anchor_resolved", bool(selected))
+                ),
+                "ut_attach_resolved": bool(
+                    zone.get("ut_attach_resolved", True)
+                ),
+                "zone_service_resolved": bool(
+                    zone.get("zone_service_resolved", bool(selected))
+                ),
+                "zone_service_resolution_state": zone.get(
+                    "zone_service_resolution_state",
+                    zone.get("resolution_state"),
+                ),
                 "ut_visibility_audit": dict(zone.get("ut_visibility_audit", {})),
             }
             anchor_rows.append(row)
@@ -887,6 +1315,10 @@ def build_gz_planning_artifacts(
                     "sample_count": 0,
                     "handover_count": 0,
                     "unresolved_count": 0,
+                    "zone_anchor_unresolved_count": 0,
+                    "ut_attach_unresolved_count": 0,
+                    "zone_service_unresolved_count": 0,
+                    "unresolved_reasons": {},
                     "coverage_margin_deg_min": None,
                     "coverage_margin_deg_sum": 0.0,
                     "coverage_margin_sample_count": 0,
@@ -896,8 +1328,20 @@ def build_gz_planning_artifacts(
             zone_summary["sample_count"] += 1
             if changed:
                 zone_summary["handover_count"] += 1
-            if str(zone.get("resolution_state")) != "resolved":
+            if not bool(row.get("zone_anchor_resolved")):
+                zone_summary["zone_anchor_unresolved_count"] += 1
+            if not bool(row.get("ut_attach_resolved")):
+                zone_summary["ut_attach_unresolved_count"] += 1
+            if not bool(row.get("zone_service_resolved")):
+                zone_summary["zone_service_unresolved_count"] += 1
+            if not bool(row.get("zone_service_resolved")):
                 zone_summary["unresolved_count"] += 1
+                service_reason = str(
+                    row.get("zone_service_resolution_state") or "unresolved"
+                )
+                zone_summary["unresolved_reasons"][service_reason] = int(
+                    zone_summary["unresolved_reasons"].get(service_reason, 0)
+                ) + 1
             reason = str(anchor.get("change_reason") or "unknown")
             zone_summary["change_reasons"][reason] = int(zone_summary["change_reasons"].get(reason, 0)) + 1
             if anchor.get("coverage_margin_deg") is not None:
@@ -1013,6 +1457,309 @@ def _planner_signature(runtime_update_plan: RuntimeUpdatePlan | Dict[str, Any]) 
     return signatures
 
 
+def _semantic_flow_signature(runtime_update_plan: RuntimeUpdatePlan | Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    signatures: Dict[str, Dict[str, Any]] = {}
+    for flow_id, context in _flow_contexts_from_plan(runtime_update_plan).items():
+        return_intent = dict(context.get("return_path_intent", {}))
+        shared_target = dict(return_intent.get("shared_backbone_return_target", {}))
+        candidate_zone_route = dict(return_intent.get("candidate_shared_zone_return_route", {}))
+        signatures[flow_id] = {
+            "ut_id": context.get("ut_id"),
+            "zone_id": context.get("zone_id"),
+            "gateway_class_id": context.get("gateway_class_id"),
+            "serving_satellite_id": context.get("serving_satellite_id"),
+            "selected_gateway_id": context.get("selected_gateway_id"),
+            "selected_gateway_satellite_id": context.get("selected_gateway_satellite_id"),
+            "satellite_path": list(context.get("satellite_path", [])),
+            "forward_link_ids": list(context.get("forward_link_ids", [])),
+            "reverse_link_ids": list(context.get("reverse_link_ids", [])),
+            "ut_access_link_id": context.get("ut_access_link_id"),
+            "gateway_access_link_id": context.get("gateway_access_link_id"),
+            "return_target_key": shared_target.get("target_key"),
+            "zone_serving_satellite_id": (
+                shared_target.get("zone_serving_satellite_id")
+                or return_intent.get("zone_serving_satellite_id")
+                or context.get("serving_satellite_id")
+            ),
+            "return_prefixes": list(
+                candidate_zone_route.get("route_prefixes")
+                or context.get("zone_return_prefixes", [])
+            ),
+        }
+    return signatures
+
+
+def _semantic_fec_groups(
+    runtime_update_plan: RuntimeUpdatePlan | Dict[str, Any],
+) -> Dict[str, Dict[str, Dict[str, Any]]]:
+    g_to_z: Dict[str, Dict[str, Any]] = {}
+    z_to_g: Dict[str, Dict[str, Any]] = {}
+    for flow_id, context in _flow_contexts_from_plan(runtime_update_plan).items():
+        zone_id = str(context.get("zone_id") or "")
+        selected_gateway_id = str(context.get("selected_gateway_id") or "")
+        serving_satellite_id = str(context.get("serving_satellite_id") or "")
+        gateway_class_id = str(
+            context.get("gateway_class_id")
+            or (
+                f"{zone_id}:default-gateway:{selected_gateway_id}"
+                if zone_id and selected_gateway_id
+                else selected_gateway_id
+            )
+        )
+        forward_signature = {
+            "gateway_class_id": gateway_class_id,
+            "selected_gateway_id": selected_gateway_id,
+            "selected_gateway_satellite_id": context.get("selected_gateway_satellite_id"),
+            "serving_satellite_id": serving_satellite_id,
+            "zone_anchor_satellite_id": (
+                context.get("zone_anchor_satellite_id") or serving_satellite_id
+            ),
+            "zone_id": zone_id,
+            "satellite_path": list(context.get("satellite_path", [])),
+            "forward_link_ids": list(context.get("forward_link_ids", [])),
+        }
+        forward_key = (
+            f"{gateway_class_id}:{serving_satellite_id}:"
+            f"{_fingerprint(forward_signature)}"
+        )
+        g_to_z.setdefault(
+            forward_key,
+            {
+                **forward_signature,
+                "fec_kind": "G",
+                "flow_ids": [],
+                "ut_ids": [],
+            },
+        )
+        g_to_z[forward_key]["flow_ids"].append(flow_id)
+        g_to_z[forward_key]["ut_ids"].append(str(context.get("ut_id") or ""))
+
+        return_intent = dict(context.get("return_path_intent", {}))
+        shared_target = dict(return_intent.get("shared_backbone_return_target", {}))
+        candidate_zone_route = dict(return_intent.get("candidate_shared_zone_return_route", {}))
+        return_key = str(
+            shared_target.get("target_key")
+            or (
+                f"{selected_gateway_id}:{zone_id}:{serving_satellite_id}"
+                if selected_gateway_id and zone_id and serving_satellite_id
+                else ""
+            )
+        )
+        if return_key:
+            return_signature = {
+                "target_key": return_key,
+                "gateway_class_id": gateway_class_id,
+                "selected_gateway_id": selected_gateway_id,
+                "selected_gateway_satellite_id": context.get("selected_gateway_satellite_id"),
+                "zone_id": zone_id,
+                "zone_serving_satellite_id": (
+                    shared_target.get("zone_serving_satellite_id")
+                    or return_intent.get("zone_serving_satellite_id")
+                    or serving_satellite_id
+                ),
+                "zone_anchor_satellite_id": (
+                    shared_target.get("zone_serving_satellite_id")
+                    or return_intent.get("zone_serving_satellite_id")
+                    or context.get("zone_anchor_satellite_id")
+                    or serving_satellite_id
+                ),
+                "satellite_path": list(context.get("satellite_path", [])),
+                "reverse_link_ids": list(context.get("reverse_link_ids", [])),
+                "return_prefixes": list(
+                    candidate_zone_route.get("route_prefixes")
+                    or context.get("zone_return_prefixes", [])
+                ),
+            }
+            z_to_g.setdefault(
+                return_key,
+                {
+                    **return_signature,
+                    "fec_kind": "GZ",
+                    "flow_ids": [],
+                    "ut_ids": [],
+                },
+            )
+            z_to_g[return_key]["flow_ids"].append(flow_id)
+            z_to_g[return_key]["ut_ids"].append(str(context.get("ut_id") or ""))
+    for group in list(g_to_z.values()) + list(z_to_g.values()):
+        group["flow_ids"] = _sorted_unique(group.get("flow_ids", []))
+        group["ut_ids"] = _sorted_unique(group.get("ut_ids", []))
+    return {"g_to_z": g_to_z, "z_to_g": z_to_g}
+
+
+def _diff_group_maps(
+    previous: Mapping[str, Dict[str, Any]],
+    current: Mapping[str, Dict[str, Any]],
+) -> Dict[str, Any]:
+    added = sorted(set(current) - set(previous))
+    removed = sorted(set(previous) - set(current))
+    changed = sorted(
+        key
+        for key in set(previous) & set(current)
+        if previous.get(key) != current.get(key)
+    )
+    unchanged = sorted(
+        key
+        for key in set(previous) & set(current)
+        if key not in set(changed)
+    )
+    return {
+        "added": added,
+        "removed": removed,
+        "changed": changed,
+        "unchanged": unchanged,
+        "change_count": len(added) + len(removed) + len(changed),
+    }
+
+
+def _semantic_fec_diff(
+    previous_plan: RuntimeUpdatePlan | Dict[str, Any],
+    current_plan: RuntimeUpdatePlan | Dict[str, Any],
+) -> Dict[str, Any]:
+    previous_groups = _semantic_fec_groups(previous_plan)
+    current_groups = _semantic_fec_groups(current_plan)
+    g_diff = _diff_group_maps(previous_groups["g_to_z"], current_groups["g_to_z"])
+    gz_diff = _diff_group_maps(previous_groups["z_to_g"], current_groups["z_to_g"])
+    return {
+        "g_to_z": g_diff,
+        "z_to_g": gz_diff,
+        "change_count": int(g_diff["change_count"]) + int(gz_diff["change_count"]),
+    }
+
+
+def _changed_flow_ids(
+    *,
+    previous_signature: Mapping[str, Dict[str, Any]],
+    current_signature: Mapping[str, Dict[str, Any]],
+    fields: Sequence[str],
+) -> List[str]:
+    changed: List[str] = []
+    for flow_id in sorted(set(previous_signature) | set(current_signature)):
+        previous = previous_signature.get(flow_id, {})
+        current = current_signature.get(flow_id, {})
+        if any(previous.get(field) != current.get(field) for field in fields):
+            changed.append(flow_id)
+    return changed
+
+
+def _zone_anchor_changes(
+    previous_snapshot: TopologySnapshot,
+    current_snapshot: TopologySnapshot,
+) -> List[str]:
+    previous = active_serving_satellite_ids(previous_snapshot)
+    current = active_serving_satellite_ids(current_snapshot)
+    return [
+        zone_id
+        for zone_id in sorted(set(previous) | set(current))
+        if previous.get(zone_id) != current.get(zone_id)
+    ]
+
+
+def _coverage_invalidation_zone_ids(
+    previous_snapshot: TopologySnapshot,
+    current_snapshot: TopologySnapshot,
+) -> List[str]:
+    invalidated: List[str] = []
+    for zone_id in sorted(set(previous_snapshot.zones) | set(current_snapshot.zones)):
+        previous_zone = dict(previous_snapshot.zones.get(zone_id, {}))
+        current_zone = dict(current_snapshot.zones.get(zone_id, {}))
+        previous_resolved = (
+            str(previous_zone.get("resolution_state", "resolved")) == "resolved"
+            and bool(previous_zone.get("active_serving_satellite_id"))
+        )
+        current_resolved = (
+            str(current_zone.get("resolution_state", "resolved")) == "resolved"
+            and bool(current_zone.get("active_serving_satellite_id"))
+        )
+        required = bool(
+            current_zone.get(
+                "required_for_runtime",
+                str(current_zone.get("service_role", "required_service")) == "required_service",
+            )
+        )
+        active_service = bool(current_zone.get("active_service", True))
+        if previous_resolved and not current_resolved and required and active_service:
+            invalidated.append(str(zone_id))
+    return invalidated
+
+
+def _runtime_semantic_diff(
+    *,
+    previous_snapshot: TopologySnapshot,
+    current_snapshot: TopologySnapshot,
+    previous_plan: RuntimeUpdatePlan | Dict[str, Any],
+    current_plan: RuntimeUpdatePlan | Dict[str, Any],
+) -> Dict[str, Any]:
+    changed_links = _changed_link_ids(
+        previous_map=_link_topology_map(previous_snapshot),
+        current_map=_link_topology_map(current_snapshot),
+    )
+    previous_signature = _semantic_flow_signature(previous_plan)
+    current_signature = _semantic_flow_signature(current_plan)
+    fec_diff = _semantic_fec_diff(previous_plan, current_plan)
+    zone_changes = _zone_anchor_changes(previous_snapshot, current_snapshot)
+    coverage_invalidations = _coverage_invalidation_zone_ids(
+        previous_snapshot,
+        current_snapshot,
+    )
+    ut_serving_changes = _changed_flow_ids(
+        previous_signature=previous_signature,
+        current_signature=current_signature,
+        fields=("serving_satellite_id", "ut_access_link_id"),
+    )
+    gateway_changes = _changed_flow_ids(
+        previous_signature=previous_signature,
+        current_signature=current_signature,
+        fields=(
+            "selected_gateway_id",
+            "selected_gateway_satellite_id",
+            "gateway_class_id",
+            "gateway_access_link_id",
+        ),
+    )
+    g_to_z_changes = _changed_flow_ids(
+        previous_signature=previous_signature,
+        current_signature=current_signature,
+        fields=("satellite_path", "forward_link_ids"),
+    )
+    z_to_g_changes = _changed_flow_ids(
+        previous_signature=previous_signature,
+        current_signature=current_signature,
+        fields=("reverse_link_ids", "return_target_key", "return_prefixes"),
+    )
+    reasons: List[str] = []
+    if int(fec_diff["change_count"]) > 0:
+        reasons.append("gz_fec_path_change")
+        reasons.append("bpf_generation_content_change")
+    if int(fec_diff["g_to_z"]["change_count"]) > 0 or g_to_z_changes:
+        reasons.append("g_to_z_path_change")
+    if int(fec_diff["z_to_g"]["change_count"]) > 0 or z_to_g_changes:
+        reasons.append("z_to_g_path_change")
+    if ut_serving_changes:
+        reasons.append("ut_serving_satellite_change")
+    if zone_changes:
+        reasons.append("zone_active_serving_satellite_change")
+    if gateway_changes:
+        reasons.append("gw_selection_change")
+    if changed_links:
+        reasons.append("structural_link_change")
+    if coverage_invalidations:
+        reasons.append("coverage_invalidation")
+    return {
+        "trigger_reasons": reasons,
+        "changed_link_ids": changed_links,
+        "fec_diff": fec_diff,
+        "changed_flow_ids": {
+            "ut_serving_satellite_change": ut_serving_changes,
+            "gw_selection_change": gateway_changes,
+            "g_to_z_path_change": g_to_z_changes,
+            "z_to_g_path_change": z_to_g_changes,
+        },
+        "changed_zone_ids": zone_changes,
+        "coverage_invalidation_zone_ids": coverage_invalidations,
+    }
+
+
 def _changed_link_ids(
     *,
     previous_map: Mapping[str, Dict[str, Any]],
@@ -1100,6 +1847,23 @@ class RuntimeEpoch:
     network_mutation_operation_count: int
     network_mutation_operation_counts: Dict[str, int]
     samples_since_previous_runtime_epoch: int
+    event_time_source: str = "physical_sample_boundary"
+    event_time_accuracy: str = "sample_aligned"
+    refinement_status: str = "not_recorded"
+    refinement_method: str = "not_recorded"
+    refinement_reason: str = "not_recorded"
+    refinement_supported: bool = False
+    sample_aligned_relative_time_seconds: float = 0.0
+    sample_aligned_time_utc: str = ""
+    refinement_precision_seconds: float = DEFAULT_EVENT_REFINEMENT_PRECISION_SECONDS
+    candidate_interval_start_relative_time_seconds: Optional[float] = None
+    candidate_interval_end_relative_time_seconds: Optional[float] = None
+    candidate_interval_start_time_utc: Optional[str] = None
+    candidate_interval_end_time_utc: Optional[str] = None
+    refinement_iteration_count: int = 0
+    refinement_search_lower_relative_time_seconds: Optional[float] = None
+    refinement_search_upper_relative_time_seconds: Optional[float] = None
+    refinement_target_fraction: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -1120,6 +1884,23 @@ class ParameterEpoch:
     changed_link_ids: Tuple[str, ...]
     changed_parameter_counts: Dict[str, int]
     samples_since_previous_parameter_epoch: int
+    event_time_source: str = "physical_sample_boundary"
+    event_time_accuracy: str = "sample_aligned"
+    refinement_status: str = "not_recorded"
+    refinement_method: str = "not_recorded"
+    refinement_reason: str = "not_recorded"
+    refinement_supported: bool = False
+    sample_aligned_relative_time_seconds: float = 0.0
+    sample_aligned_time_utc: str = ""
+    refinement_precision_seconds: float = DEFAULT_EVENT_REFINEMENT_PRECISION_SECONDS
+    candidate_interval_start_relative_time_seconds: Optional[float] = None
+    candidate_interval_end_relative_time_seconds: Optional[float] = None
+    candidate_interval_start_time_utc: Optional[str] = None
+    candidate_interval_end_time_utc: Optional[str] = None
+    refinement_iteration_count: int = 0
+    refinement_search_lower_relative_time_seconds: Optional[float] = None
+    refinement_search_upper_relative_time_seconds: Optional[float] = None
+    refinement_target_fraction: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -1183,6 +1964,9 @@ class TemporalPlan:
             "resource_budget": dict(self.resource_budget),
             "preparation_plan": dict(self.preparation_plan),
             "event_time_summary": dict(self.event_time_summary),
+            "preview_update_counters": dict(
+                self.event_time_summary.get("preview_update_counters", {})
+            ),
             "compression_summary": {
                 "orbit_sample_count": len(self.orbit_samples),
                 "topology_snapshot_count": len(self.orbit_samples),
@@ -1277,41 +2061,13 @@ def _runtime_trigger_reasons(
     previous_plan: RuntimeUpdatePlan | Dict[str, Any],
     current_plan: RuntimeUpdatePlan | Dict[str, Any],
 ) -> Tuple[List[str], List[str]]:
-    reasons: List[str] = []
-    changed_links = _changed_link_ids(
-        previous_map=_link_topology_map(previous_snapshot),
-        current_map=_link_topology_map(current_snapshot),
+    analysis = _runtime_semantic_diff(
+        previous_snapshot=previous_snapshot,
+        current_snapshot=current_snapshot,
+        previous_plan=previous_plan,
+        current_plan=current_plan,
     )
-    if active_serving_satellite_ids(previous_snapshot) != active_serving_satellite_ids(current_snapshot):
-        reasons.append("ut_serving_satellite_change")
-    if gateway_exit_summary(previous_plan) != gateway_exit_summary(current_plan):
-        reasons.append("gateway_exit_change")
-    if changed_links:
-        reasons.append("active_link_change")
-    previous_signature = _planner_signature(previous_plan)
-    current_signature = _planner_signature(current_plan)
-    flow_ids = sorted(set(previous_signature) | set(current_signature))
-    if any(
-        previous_signature.get(flow_id, {}).get("satellite_path")
-        != current_signature.get(flow_id, {}).get("satellite_path")
-        or previous_signature.get(flow_id, {}).get("forward_link_ids")
-        != current_signature.get(flow_id, {}).get("forward_link_ids")
-        or previous_signature.get(flow_id, {}).get("reverse_link_ids")
-        != current_signature.get(flow_id, {}).get("reverse_link_ids")
-        for flow_id in flow_ids
-    ):
-        reasons.append("planner_path_change")
-    if any(
-        previous_signature.get(flow_id, {}).get("forward_labels")
-        != current_signature.get(flow_id, {}).get("forward_labels")
-        or previous_signature.get(flow_id, {}).get("reverse_labels")
-        != current_signature.get(flow_id, {}).get("reverse_labels")
-        or previous_signature.get(flow_id, {}).get("selected_gateway_id")
-        != current_signature.get(flow_id, {}).get("selected_gateway_id")
-        for flow_id in flow_ids
-    ):
-        reasons.append("mpls_or_route_change")
-    return reasons, changed_links
+    return list(analysis["trigger_reasons"]), list(analysis["changed_link_ids"])
 
 
 def _parameter_trigger_analysis(
@@ -1330,6 +2086,14 @@ def _parameter_trigger_analysis(
     changed_links: Dict[str, Dict[str, Any]] = {}
     previous_parameters = _link_parameter_map(previous_snapshot)
     current_parameters = _link_parameter_map(current_snapshot)
+    for link_id in sorted(set(previous_parameters) ^ set(current_parameters)):
+        changed_links[link_id] = {
+            "delay_delta_ms": None,
+            "loss_delta_pct": None,
+            "bandwidth_delta_pct": None,
+            "routing_cost_delta": None,
+            "trigger_reasons": ["active_state_changed"],
+        }
     for link_id in sorted(set(previous_parameters) & set(current_parameters)):
         delta = _parameter_delta(
             previous=previous_parameters[link_id],
@@ -1340,6 +2104,10 @@ def _parameter_trigger_analysis(
             parameter_reasons.append("delay_threshold_exceeded")
         if delta["loss_delta_pct"] >= float(loss_threshold_pct):
             parameter_reasons.append("loss_threshold_exceeded")
+        previous_drop = float(previous_parameters[link_id].get("loss_percent", 0.0)) >= 100.0
+        current_drop = float(current_parameters[link_id].get("loss_percent", 0.0)) >= 100.0
+        if previous_drop != current_drop:
+            parameter_reasons.append("drop_state_changed")
         if delta["bandwidth_delta_pct"] >= float(bandwidth_threshold_pct):
             parameter_reasons.append("bandwidth_threshold_exceeded")
         if int(delta["routing_cost_delta"]) >= int(routing_cost_threshold):
@@ -1362,6 +2130,537 @@ def _parameter_trigger_analysis(
             if reason not in reasons:
                 reasons.append(reason)
     return reasons, changed_links
+
+
+def _runtime_plan_for_slice(
+    *,
+    snapshots: Sequence[TopologySnapshot],
+    runtime_update_plans: Sequence[RuntimeUpdatePlan | Dict[str, Any]],
+    slice_id: str,
+) -> RuntimeUpdatePlan | Dict[str, Any] | None:
+    for snapshot, plan in zip(snapshots, runtime_update_plans):
+        if str(snapshot.time_slice.get("slice_id")) == str(slice_id):
+            return plan
+    return None
+
+
+def _runtime_snapshot_for_slice(
+    *,
+    snapshots: Sequence[TopologySnapshot],
+    slice_id: str,
+) -> TopologySnapshot | None:
+    for snapshot in snapshots:
+        if str(snapshot.time_slice.get("slice_id")) == str(slice_id):
+            return snapshot
+    return None
+
+
+def _empty_distribution_entry(identifier: str) -> Dict[str, Any]:
+    return {
+        "id": identifier,
+        "runtime_epoch_count": 0,
+        "parameter_epoch_count": 0,
+        "gz_fec_path_change_count": 0,
+        "g_to_z_change_count": 0,
+        "z_to_g_change_count": 0,
+        "gw_selection_change_count": 0,
+        "ut_serving_satellite_change_count": 0,
+        "zone_active_satellite_change_count": 0,
+        "qdisc_parameter_threshold_crossing_count": 0,
+    }
+
+
+def _bump_distribution(
+    distribution: Dict[str, Dict[str, Any]],
+    identifier: Any,
+    field_name: str,
+    amount: int = 1,
+) -> None:
+    key = str(identifier or "").strip()
+    if not key:
+        return
+    entry = distribution.setdefault(key, _empty_distribution_entry(key))
+    entry[field_name] = int(entry.get(field_name, 0)) + int(amount)
+
+
+def _flow_ids_to_contexts(
+    runtime_update_plan: RuntimeUpdatePlan | Dict[str, Any] | None,
+) -> Dict[str, Dict[str, Any]]:
+    if runtime_update_plan is None:
+        return {}
+    return _flow_contexts_from_plan(runtime_update_plan)
+
+
+def _runtime_epoch_fec_scope_count(
+    runtime_update_plan: RuntimeUpdatePlan | Dict[str, Any] | None,
+) -> int:
+    if runtime_update_plan is None:
+        return 0
+    groups = _semantic_fec_groups(runtime_update_plan)
+    return len(groups["g_to_z"]) + len(groups["z_to_g"])
+
+
+def _trigger_reason_counts(epochs: Sequence[RuntimeEpoch | ParameterEpoch]) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for epoch in epochs:
+        for reason in epoch.trigger_reasons:
+            counts[str(reason)] = int(counts.get(str(reason), 0)) + 1
+    return counts
+
+
+def _runtime_operation_count(
+    epochs: Sequence[RuntimeEpoch],
+    *,
+    exclude_parameter_updates: bool = False,
+) -> int:
+    total = 0
+    for epoch in epochs:
+        for operation, count in epoch.network_mutation_operation_counts.items():
+            if exclude_parameter_updates and str(operation) == "update_slot_parameters":
+                continue
+            total += int(count)
+    return total
+
+
+def _span_count_for_sampled_signatures(
+    rows: Sequence[Tuple[float, str, Dict[str, Any]]],
+) -> int:
+    last_by_id: Dict[str, Dict[str, Any]] = {}
+    span_count = 0
+    for _, identifier, signature in sorted(rows, key=lambda row: (row[0], row[1])):
+        previous = last_by_id.get(identifier)
+        if previous != signature:
+            span_count += 1
+            last_by_id[identifier] = dict(signature)
+    return span_count
+
+
+def _link_span_count(snapshots: Sequence[TopologySnapshot]) -> int:
+    rows: List[Tuple[float, str, Dict[str, Any]]] = []
+    for snapshot in snapshots:
+        relative_time = float(snapshot.time_slice.get("relative_time_seconds", 0.0))
+        for link_id, signature in _link_topology_map(snapshot).items():
+            rows.append((relative_time, link_id, signature))
+    return _span_count_for_sampled_signatures(rows)
+
+
+def _attachment_span_count(
+    runtime_update_plans: Sequence[RuntimeUpdatePlan | Dict[str, Any]],
+    snapshots: Sequence[TopologySnapshot],
+) -> int:
+    rows: List[Tuple[float, str, Dict[str, Any]]] = []
+    for snapshot, plan in zip(snapshots, runtime_update_plans):
+        relative_time = float(snapshot.time_slice.get("relative_time_seconds", 0.0))
+        for flow_id, context in _flow_contexts_from_plan(plan).items():
+            ut_id = str(context.get("ut_id") or flow_id)
+            rows.append(
+                (
+                    relative_time,
+                    ut_id,
+                    {
+                        "zone_id": context.get("zone_id"),
+                        "serving_satellite_id": context.get("serving_satellite_id"),
+                        "selected_gateway_id": context.get("selected_gateway_id"),
+                        "selected_gateway_satellite_id": context.get(
+                            "selected_gateway_satellite_id"
+                        ),
+                    },
+                )
+            )
+    return _span_count_for_sampled_signatures(rows)
+
+
+def _fec_path_span_count(
+    runtime_update_plans: Sequence[RuntimeUpdatePlan | Dict[str, Any]],
+    snapshots: Sequence[TopologySnapshot],
+) -> int:
+    rows: List[Tuple[float, str, Dict[str, Any]]] = []
+    for snapshot, plan in zip(snapshots, runtime_update_plans):
+        relative_time = float(snapshot.time_slice.get("relative_time_seconds", 0.0))
+        groups = _semantic_fec_groups(plan)
+        for group_id, group in {
+            **groups["g_to_z"],
+            **groups["z_to_g"],
+        }.items():
+            signature = dict(group)
+            signature.pop("flow_ids", None)
+            signature.pop("ut_ids", None)
+            rows.append((relative_time, group_id, signature))
+    return _span_count_for_sampled_signatures(rows)
+
+
+def _parameter_timeline_point_count(snapshots: Sequence[TopologySnapshot]) -> int:
+    return sum(len(_link_parameter_map(snapshot)) for snapshot in snapshots)
+
+
+def _zone_anchor_policy_counts(snapshots: Sequence[TopologySnapshot]) -> Dict[str, int]:
+    counts = {
+        "active_still_valid_no_change_count": 0,
+        "dwell_blocked_change_count": 0,
+        "hysteresis_blocked_change_count": 0,
+        "hysteresis_approved_better_candidate_count": 0,
+    }
+    for snapshot in snapshots:
+        for zone in snapshot.zones.values():
+            reason = str(dict(zone.get("anchor_selection", {})).get("change_reason") or "")
+            if reason == "stable_existing_anchor":
+                counts["active_still_valid_no_change_count"] += 1
+            elif reason == "min_dwell_keep_current_anchor":
+                counts["dwell_blocked_change_count"] += 1
+            elif reason == "hysteresis_keep_current_anchor":
+                counts["hysteresis_blocked_change_count"] += 1
+            elif reason in {"challenger_exceeded_hysteresis", "best_zone_anchor_score"}:
+                counts["hysteresis_approved_better_candidate_count"] += 1
+    return counts
+
+
+def _ignored_transition_counts(
+    *,
+    snapshots: Sequence[TopologySnapshot],
+    runtime_update_plans: Sequence[RuntimeUpdatePlan | Dict[str, Any]],
+    delay_threshold_ms: float,
+    loss_threshold_pct: float,
+    bandwidth_threshold_pct: float,
+    routing_cost_threshold: int,
+) -> Dict[str, int]:
+    counts = {
+        "candidate_event_count": 0,
+        "ignored_cost_only_change_count": 0,
+        "ignored_metadata_only_change_count": 0,
+    }
+    for index in range(1, min(len(snapshots), len(runtime_update_plans))):
+        previous_snapshot = snapshots[index - 1]
+        current_snapshot = snapshots[index]
+        previous_plan = runtime_update_plans[index - 1]
+        current_plan = runtime_update_plans[index]
+        runtime_analysis = _runtime_semantic_diff(
+            previous_snapshot=previous_snapshot,
+            current_snapshot=current_snapshot,
+            previous_plan=previous_plan,
+            current_plan=current_plan,
+        )
+        parameter_reasons, changed_parameter_links = _parameter_trigger_analysis(
+            previous_snapshot=previous_snapshot,
+            current_snapshot=current_snapshot,
+            previous_epoch_relative_time=float(
+                previous_snapshot.time_slice.get("relative_time_seconds", 0.0)
+            ),
+            current_relative_time=float(
+                current_snapshot.time_slice.get("relative_time_seconds", 0.0)
+            ),
+            parameter_max_interval=None,
+            delay_threshold_ms=delay_threshold_ms,
+            loss_threshold_pct=loss_threshold_pct,
+            bandwidth_threshold_pct=bandwidth_threshold_pct,
+            routing_cost_threshold=routing_cost_threshold,
+        )
+        planner_changed = _planner_signature(previous_plan) != _planner_signature(current_plan)
+        semantic_changed = (
+            _semantic_flow_signature(previous_plan) != _semantic_flow_signature(current_plan)
+        )
+        if planner_changed and not semantic_changed and not runtime_analysis["trigger_reasons"]:
+            counts["ignored_metadata_only_change_count"] += 1
+
+        cost_only_link_count = 0
+        previous_parameters = _link_parameter_map(previous_snapshot)
+        current_parameters = _link_parameter_map(current_snapshot)
+        for link_id in sorted(set(previous_parameters) & set(current_parameters)):
+            delta = _parameter_delta(
+                previous=previous_parameters[link_id],
+                current=current_parameters[link_id],
+            )
+            if (
+                int(delta["routing_cost_delta"]) > 0
+                and float(delta["delay_delta_ms"]) == 0.0
+                and float(delta["loss_delta_pct"]) == 0.0
+                and float(delta["bandwidth_delta_pct"]) == 0.0
+                and int(delta["routing_cost_delta"]) < int(routing_cost_threshold)
+            ):
+                cost_only_link_count += 1
+        if cost_only_link_count and not parameter_reasons:
+            counts["ignored_cost_only_change_count"] += cost_only_link_count
+
+        if (
+            runtime_analysis["trigger_reasons"]
+            or parameter_reasons
+            or changed_parameter_links
+            or cost_only_link_count
+            or (planner_changed and not semantic_changed)
+        ):
+            counts["candidate_event_count"] += 1
+    return counts
+
+
+def build_preview_update_counters(
+    *,
+    snapshots: Sequence[TopologySnapshot],
+    runtime_update_plans: Sequence[RuntimeUpdatePlan | Dict[str, Any]],
+    runtime_epochs: Sequence[RuntimeEpoch],
+    parameter_epochs: Sequence[ParameterEpoch],
+    no_op_sample_count: int,
+    sample_count: int,
+    delay_threshold_ms: float,
+    loss_threshold_pct: float,
+    bandwidth_threshold_pct: float,
+    routing_cost_threshold: int,
+    bpf_generation_preload_support: str = DEFAULT_BPF_GENERATION_PRELOAD_SUPPORT,
+    event_refinement_precision_seconds: float = DEFAULT_EVENT_REFINEMENT_PRECISION_SECONDS,
+) -> Dict[str, Any]:
+    per_zone: Dict[str, Dict[str, Any]] = {}
+    per_ut: Dict[str, Dict[str, Any]] = {}
+    runtime_reason_counts = _trigger_reason_counts(runtime_epochs)
+    parameter_reason_counts = _trigger_reason_counts(parameter_epochs)
+
+    for epoch in runtime_epochs:
+        snapshot = _runtime_snapshot_for_slice(snapshots=snapshots, slice_id=epoch.slice_id)
+        plan = _runtime_plan_for_slice(
+            snapshots=snapshots,
+            runtime_update_plans=runtime_update_plans,
+            slice_id=epoch.slice_id,
+        )
+        flow_contexts = _flow_ids_to_contexts(plan)
+        if snapshot is not None:
+            for zone_id in sorted(snapshot.zones):
+                _bump_distribution(per_zone, zone_id, "runtime_epoch_count")
+                if "zone_active_serving_satellite_change" in epoch.trigger_reasons:
+                    _bump_distribution(per_zone, zone_id, "zone_active_satellite_change_count")
+        for context in flow_contexts.values():
+            ut_id = context.get("ut_id")
+            zone_id = context.get("zone_id")
+            _bump_distribution(per_ut, ut_id, "runtime_epoch_count")
+            _bump_distribution(per_zone, zone_id, "runtime_epoch_count", amount=0)
+            if "gz_fec_path_change" in epoch.trigger_reasons:
+                _bump_distribution(per_ut, ut_id, "gz_fec_path_change_count")
+                _bump_distribution(per_zone, zone_id, "gz_fec_path_change_count")
+            if "g_to_z_path_change" in epoch.trigger_reasons:
+                _bump_distribution(per_ut, ut_id, "g_to_z_change_count")
+                _bump_distribution(per_zone, zone_id, "g_to_z_change_count")
+            if "z_to_g_path_change" in epoch.trigger_reasons:
+                _bump_distribution(per_ut, ut_id, "z_to_g_change_count")
+                _bump_distribution(per_zone, zone_id, "z_to_g_change_count")
+            if "gw_selection_change" in epoch.trigger_reasons:
+                _bump_distribution(per_ut, ut_id, "gw_selection_change_count")
+                _bump_distribution(per_zone, zone_id, "gw_selection_change_count")
+            if "ut_serving_satellite_change" in epoch.trigger_reasons:
+                _bump_distribution(per_ut, ut_id, "ut_serving_satellite_change_count")
+
+    qdisc_parameter_threshold_crossing_count = 0
+    for epoch in parameter_epochs:
+        qdisc_parameter_threshold_crossing_count += len(epoch.changed_link_ids)
+        snapshot = _runtime_snapshot_for_slice(snapshots=snapshots, slice_id=epoch.slice_id)
+        plan = _runtime_plan_for_slice(
+            snapshots=snapshots,
+            runtime_update_plans=runtime_update_plans,
+            slice_id=epoch.slice_id,
+        )
+        flow_contexts = _flow_ids_to_contexts(plan)
+        binding_by_link = {}
+        if snapshot is not None:
+            binding_by_link = {
+                str(link.get("link_id")): dict(link.get("binding", {}))
+                for link in snapshot.active_links
+            }
+        for link_id in epoch.changed_link_ids:
+            binding = dict(binding_by_link.get(str(link_id), {}))
+            ut_id = binding.get("ut_id")
+            affected_zone_ids: set[str] = set()
+            affected_ut_ids: set[str] = set()
+            if ut_id:
+                affected_ut_ids.add(str(ut_id))
+            if snapshot is not None and ut_id:
+                zone_id = snapshot.ut_zone_membership.get(str(ut_id))
+                if zone_id:
+                    affected_zone_ids.add(str(zone_id))
+            for context in flow_contexts.values():
+                flow_link_ids = {
+                    str(context.get("ut_access_link_id") or ""),
+                    str(context.get("gateway_access_link_id") or ""),
+                    *[str(value) for value in list(context.get("forward_link_ids", []))],
+                    *[str(value) for value in list(context.get("reverse_link_ids", []))],
+                }
+                if str(link_id) in flow_link_ids and context.get("zone_id"):
+                    affected_zone_ids.add(str(context.get("zone_id")))
+                    if context.get("ut_id"):
+                        affected_ut_ids.add(str(context.get("ut_id")))
+            for affected_ut_id in sorted(affected_ut_ids):
+                _bump_distribution(per_ut, affected_ut_id, "parameter_epoch_count")
+                _bump_distribution(
+                    per_ut,
+                    affected_ut_id,
+                    "qdisc_parameter_threshold_crossing_count",
+                )
+            for zone_id in sorted(affected_zone_ids):
+                _bump_distribution(per_zone, zone_id, "parameter_epoch_count")
+                _bump_distribution(per_zone, zone_id, "qdisc_parameter_threshold_crossing_count")
+
+    bpf_generation_count = len(runtime_epochs)
+    active_generation_switch_count = bpf_generation_count
+    expected_bpf_owned_scope_count = sum(
+        _runtime_epoch_fec_scope_count(
+            _runtime_plan_for_slice(
+                snapshots=snapshots,
+                runtime_update_plans=runtime_update_plans,
+                slice_id=epoch.slice_id,
+            )
+        )
+        for epoch in runtime_epochs
+    )
+    expected_qdisc_command_count = sum(len(epoch.changed_link_ids) for epoch in parameter_epochs)
+    delay_threshold_crossing_count = int(
+        parameter_reason_counts.get("delay_threshold_exceeded", 0)
+    )
+    bandwidth_threshold_crossing_count = int(
+        parameter_reason_counts.get("bandwidth_threshold_exceeded", 0)
+    )
+    loss_drop_threshold_crossing_count = int(
+        parameter_reason_counts.get("loss_threshold_exceeded", 0)
+    ) + int(parameter_reason_counts.get("drop_state_changed", 0))
+    active_inactive_transition_count = int(
+        parameter_reason_counts.get("active_state_changed", 0)
+    )
+    ignored_counts = _ignored_transition_counts(
+        snapshots=snapshots,
+        runtime_update_plans=runtime_update_plans,
+        delay_threshold_ms=float(delay_threshold_ms),
+        loss_threshold_pct=float(loss_threshold_pct),
+        bandwidth_threshold_pct=float(bandwidth_threshold_pct),
+        routing_cost_threshold=int(routing_cost_threshold),
+    )
+    stability_counts = _zone_anchor_policy_counts(snapshots)
+    runtime_transaction_count = len(runtime_epochs)
+    parameter_update_batch_count = len(parameter_epochs)
+    refinement_summary = _refinement_counter_summary(
+        [*list(runtime_epochs), *list(parameter_epochs)]
+    )
+    coalesced_event_count = sum(
+        1
+        for epoch in list(runtime_epochs) + list(parameter_epochs)
+        if len(epoch.trigger_reasons) > 1
+    )
+    return {
+        "schema_version": "skyseed-event-timeline-preview-counters-v1",
+        "sample_count": int(sample_count),
+        "physical_sample_count": int(sample_count),
+        "candidate_event_count": int(ignored_counts["candidate_event_count"]),
+        "refined_event_count": int(refinement_summary["refined_event_count"]),
+        "sample_aligned_event_count": int(
+            refinement_summary["sample_aligned_event_count"]
+        ),
+        "refinement_supported_event_count": int(
+            refinement_summary["refinement_supported_event_count"]
+        ),
+        "refinement_failed_event_count": int(
+            refinement_summary["refinement_failed_event_count"]
+        ),
+        "refinement_unsupported_event_count": int(
+            refinement_summary["refinement_unsupported_event_count"]
+        ),
+        "refinement_precision_seconds": float(event_refinement_precision_seconds),
+        "refinement_reason_breakdown": dict(
+            refinement_summary["refinement_reason_breakdown"]
+        ),
+        "runtime_epoch_count": len(runtime_epochs),
+        "parameter_epoch_count": len(parameter_epochs),
+        "runtime_transaction_count": runtime_transaction_count,
+        "parameter_update_batch_count": parameter_update_batch_count,
+        "coalesced_event_count": coalesced_event_count,
+        "skipped_no_op_sample_count": int(no_op_sample_count),
+        "link_span_count": _link_span_count(snapshots),
+        "attachment_span_count": _attachment_span_count(runtime_update_plans, snapshots),
+        "fec_path_span_count": _fec_path_span_count(runtime_update_plans, snapshots),
+        "parameter_timeline_point_count": _parameter_timeline_point_count(snapshots),
+        "gz_fec_path_change_count": int(runtime_reason_counts.get("gz_fec_path_change", 0)),
+        "g_to_z_change_count": int(runtime_reason_counts.get("g_to_z_path_change", 0)),
+        "z_to_g_change_count": int(runtime_reason_counts.get("z_to_g_path_change", 0)),
+        "g_z_fec_path_change_count": int(runtime_reason_counts.get("gz_fec_path_change", 0)),
+        "g_to_z_path_change_count": int(runtime_reason_counts.get("g_to_z_path_change", 0)),
+        "z_to_g_path_change_count": int(runtime_reason_counts.get("z_to_g_path_change", 0)),
+        "ut_serving_satellite_change_count": int(
+            runtime_reason_counts.get("ut_serving_satellite_change", 0)
+        ),
+        "zone_active_satellite_change_count": int(
+            runtime_reason_counts.get("zone_active_serving_satellite_change", 0)
+        ),
+        "zone_anchor_change_count": int(
+            runtime_reason_counts.get("zone_active_serving_satellite_change", 0)
+        ),
+        "gw_selection_change_count": int(runtime_reason_counts.get("gw_selection_change", 0)),
+        "structural_link_change_count": int(runtime_reason_counts.get("structural_link_change", 0)),
+        "structural_link_active_inactive_count": int(
+            runtime_reason_counts.get("structural_link_change", 0)
+        ),
+        "coverage_invalidation_forced_change_count": int(
+            runtime_reason_counts.get("coverage_invalidation", 0)
+        ),
+        "qdisc_parameter_threshold_crossing_count": qdisc_parameter_threshold_crossing_count,
+        "delay_threshold_crossing_count": delay_threshold_crossing_count,
+        "rate_bandwidth_threshold_crossing_count": bandwidth_threshold_crossing_count,
+        "loss_drop_threshold_crossing_count": loss_drop_threshold_crossing_count,
+        "active_inactive_transition_count": active_inactive_transition_count,
+        "ignored_cost_only_change_count": int(ignored_counts["ignored_cost_only_change_count"]),
+        "ignored_metadata_only_change_count": int(
+            ignored_counts["ignored_metadata_only_change_count"]
+        ),
+        "active_still_valid_no_change_count": int(
+            stability_counts["active_still_valid_no_change_count"]
+        ),
+        "dwell_blocked_change_count": int(stability_counts["dwell_blocked_change_count"]),
+        "hysteresis_blocked_change_count": int(
+            stability_counts["hysteresis_blocked_change_count"]
+        ),
+        "hysteresis_approved_better_candidate_count": int(
+            stability_counts["hysteresis_approved_better_candidate_count"]
+        ),
+        "parameter_reason_counts": parameter_reason_counts,
+        "runtime_reason_counts": runtime_reason_counts,
+        "bpf_generation_readiness": {
+            "supported_mode": str(bpf_generation_preload_support),
+            "current_generation_supported": True,
+            "next_generation_preload_supported": (
+                str(bpf_generation_preload_support)
+                in {"next_generation_preload", "multi_generation_horizon_preload"}
+            ),
+            "multi_generation_horizon_preload_supported": (
+                str(bpf_generation_preload_support) == "multi_generation_horizon_preload"
+            ),
+            "design_ready_multi_generation_horizon_preload": True,
+        },
+        "bpf_generation_count": bpf_generation_count,
+        "active_generation_switch_count": active_generation_switch_count,
+        "bpf_generation_content_change_count": int(
+            runtime_reason_counts.get("bpf_generation_content_change", 0)
+        ),
+        "bpf_generations_follow_real_forwarding_content_changes": (
+            bpf_generation_count
+            == 1 + int(runtime_reason_counts.get("bpf_generation_content_change", 0))
+        ),
+        "expected_bpf_owned_scope_count": expected_bpf_owned_scope_count,
+        "expected_linux_mpls_lfib_elision_count": expected_bpf_owned_scope_count,
+        "expected_qdisc_command_count": expected_qdisc_command_count,
+        "expected_qdisc_update_count": expected_qdisc_command_count,
+        "expected_lifecycle_link_operation_count": _runtime_operation_count(
+            runtime_epochs,
+            exclude_parameter_updates=True,
+        ),
+        "expected_lifecycle_and_parameter_operation_count": _runtime_operation_count(
+            runtime_epochs,
+            exclude_parameter_updates=False,
+        )
+        + expected_qdisc_command_count,
+        "estimate_basis": {
+            "bpf_owned_scope": "semantic G and GZ FEC groups per RuntimeEpoch",
+            "linux_mpls_lfib_elision": "one estimated Linux/MPLS LFIB-route scope per BPF-owned semantic FEC group",
+            "qdisc_command": "one expected qdisc update per changed ParameterEpoch link",
+            "lifecycle_link_operation": "NetworkMutationPlan RuntimeEpoch operations excluding update_slot_parameters",
+            "generation_preload": "current-generation live support; next and multi-generation preload are reported honestly as unsupported unless configured",
+        },
+        "per_zone_update_distribution": [
+            dict(entry) for _, entry in sorted(per_zone.items())
+        ],
+        "per_ut_update_distribution": [
+            dict(entry) for _, entry in sorted(per_ut.items())
+        ],
+    }
 
 
 def _resource_budget(
@@ -1507,8 +2806,10 @@ def build_sample_boundary_temporal_plan(
     gateway_slot_margin: int = 1,
     satellite_isl_slot_margin: int = 1,
     runtime_parameter_model: Optional[LinkRuntimeParameterModel] = None,
+    event_refinement_precision_seconds: float = DEFAULT_EVENT_REFINEMENT_PRECISION_SECONDS,
 ) -> TemporalPlan:
     parameter_model = runtime_parameter_model or default_link_runtime_parameter_model()
+    refinement_precision = max(0.001, float(event_refinement_precision_seconds))
     runtime_parameter_mutation_policy = make_runtime_parameter_mutation_policy(
         delay_threshold_ms=float(delay_threshold_ms),
         loss_threshold_pct=float(loss_threshold_pct),
@@ -1548,6 +2849,16 @@ def build_sample_boundary_temporal_plan(
         )
 
         if index == 1:
+            current_sample = orbit_samples[-1]
+            refinement_metadata = _runtime_event_refinement_metadata(
+                previous_sample=None,
+                current_sample=current_sample,
+                trigger_reasons=("initial_runtime_epoch",),
+                precision_seconds=refinement_precision,
+            )
+            activation_relative_time, activation_time_utc = _activation_from_refinement(
+                refinement_metadata
+            )
             mutation_plan = build_network_mutation_plan(
                 source_state=runtime_source_state,
                 source_state_id=runtime_source_state_id,
@@ -1562,12 +2873,12 @@ def build_sample_boundary_temporal_plan(
             runtime_epochs.append(
                 RuntimeEpoch(
                     epoch_id=f"runtimeepoch-{_fingerprint({'snapshot_id': snapshot.snapshot_id, 'index': index})}",
-                    sample_id=orbit_samples[-1].sample_id,
+                    sample_id=current_sample.sample_id,
                     slice_id=str(snapshot.time_slice.get("slice_id")),
                     snapshot_id=snapshot.snapshot_id,
-                    activation_relative_time_seconds=float(orbit_slice.relative_time_seconds),
-                    activation_time_utc=str(orbit_slice.timestamp_utc),
-                    activation_group_id=f"activation-{float(orbit_slice.relative_time_seconds):012.3f}",
+                    activation_relative_time_seconds=activation_relative_time,
+                    activation_time_utc=activation_time_utc,
+                    activation_group_id=_activation_group_id(activation_relative_time),
                     deadline_policy="execute_not_later_than_sample_boundary",
                     trigger_reasons=("initial_runtime_epoch",),
                     active_link_count=len(snapshot.active_links),
@@ -1575,6 +2886,7 @@ def build_sample_boundary_temporal_plan(
                     network_mutation_operation_count=len(mutation_plan.operations),
                     network_mutation_operation_counts=operation_counts,
                     samples_since_previous_runtime_epoch=1,
+                    **_epoch_refinement_init_fields(refinement_metadata),
                 )
             )
             sample_classification[index - 1] = "runtime_epoch"
@@ -1587,13 +2899,26 @@ def build_sample_boundary_temporal_plan(
         previous_snapshot = enriched_snapshots[index - 2]
         previous_plan = runtime_update_plans[index - 2]
         current_plan = runtime_update_plans[index - 1]
-        runtime_reasons, changed_links = _runtime_trigger_reasons(
+        runtime_analysis = _runtime_semantic_diff(
             previous_snapshot=previous_snapshot,
             current_snapshot=snapshot,
             previous_plan=previous_plan,
             current_plan=current_plan,
         )
+        runtime_reasons = list(runtime_analysis["trigger_reasons"])
+        changed_links = list(runtime_analysis["changed_link_ids"])
         if runtime_reasons:
+            previous_sample = orbit_samples[index - 2]
+            current_sample = orbit_samples[-1]
+            refinement_metadata = _runtime_event_refinement_metadata(
+                previous_sample=previous_sample,
+                current_sample=current_sample,
+                trigger_reasons=runtime_reasons,
+                precision_seconds=refinement_precision,
+            )
+            activation_relative_time, activation_time_utc = _activation_from_refinement(
+                refinement_metadata
+            )
             mutation_plan = build_network_mutation_plan(
                 source_state=runtime_source_state,
                 source_state_id=runtime_source_state_id,
@@ -1608,12 +2933,12 @@ def build_sample_boundary_temporal_plan(
             runtime_epochs.append(
                 RuntimeEpoch(
                     epoch_id=f"runtimeepoch-{_fingerprint({'snapshot_id': snapshot.snapshot_id, 'index': index})}",
-                    sample_id=orbit_samples[-1].sample_id,
+                    sample_id=current_sample.sample_id,
                     slice_id=str(snapshot.time_slice.get("slice_id")),
                     snapshot_id=snapshot.snapshot_id,
-                    activation_relative_time_seconds=float(orbit_slice.relative_time_seconds),
-                    activation_time_utc=str(orbit_slice.timestamp_utc),
-                    activation_group_id=f"activation-{float(orbit_slice.relative_time_seconds):012.3f}",
+                    activation_relative_time_seconds=activation_relative_time,
+                    activation_time_utc=activation_time_utc,
+                    activation_group_id=_activation_group_id(activation_relative_time),
                     deadline_policy="execute_not_later_than_sample_boundary",
                     trigger_reasons=tuple(runtime_reasons),
                     active_link_count=len(snapshot.active_links),
@@ -1621,6 +2946,7 @@ def build_sample_boundary_temporal_plan(
                     network_mutation_operation_count=len(mutation_plan.operations),
                     network_mutation_operation_counts=operation_counts,
                     samples_since_previous_runtime_epoch=index - last_runtime_index,
+                    **_epoch_refinement_init_fields(refinement_metadata),
                 )
             )
             sample_classification[index - 1] = "runtime_epoch"
@@ -1644,11 +2970,23 @@ def build_sample_boundary_temporal_plan(
             routing_cost_threshold=int(routing_cost_threshold),
         )
         if parameter_reasons:
+            current_sample = orbit_samples[-1]
+            previous_parameter_sample = orbit_samples[last_parameter_index]
+            refinement_metadata = _parameter_event_refinement_metadata(
+                previous_sample=previous_parameter_sample,
+                current_sample=current_sample,
+                precision_seconds=refinement_precision,
+            )
+            activation_relative_time, activation_time_utc = _activation_from_refinement(
+                refinement_metadata
+            )
             changed_counts = {
                 "delay_threshold_exceeded": 0,
                 "loss_threshold_exceeded": 0,
+                "drop_state_changed": 0,
                 "bandwidth_threshold_exceeded": 0,
                 "routing_cost_changed": 0,
+                "active_state_changed": 0,
             }
             for link_change in changed_parameter_links.values():
                 for reason in link_change.get("trigger_reasons", []):
@@ -1656,18 +2994,19 @@ def build_sample_boundary_temporal_plan(
             parameter_epochs.append(
                 ParameterEpoch(
                     epoch_id=f"parameterepoch-{_fingerprint({'snapshot_id': snapshot.snapshot_id, 'index': index})}",
-                    sample_id=orbit_samples[-1].sample_id,
+                    sample_id=current_sample.sample_id,
                     slice_id=str(snapshot.time_slice.get("slice_id")),
                     snapshot_id=snapshot.snapshot_id,
-                    activation_relative_time_seconds=float(orbit_slice.relative_time_seconds),
-                    activation_time_utc=str(orbit_slice.timestamp_utc),
-                    activation_group_id=f"activation-{float(orbit_slice.relative_time_seconds):012.3f}",
+                    activation_relative_time_seconds=activation_relative_time,
+                    activation_time_utc=activation_time_utc,
+                    activation_group_id=_activation_group_id(activation_relative_time),
                     update_policy="threshold_or_interval_refresh_without_topology_mutation",
                     trigger_reasons=tuple(parameter_reasons),
                     active_link_count=len(snapshot.active_links),
                     changed_link_ids=tuple(sorted(changed_parameter_links)),
                     changed_parameter_counts=changed_counts,
                     samples_since_previous_parameter_epoch=index - last_parameter_index,
+                    **_epoch_refinement_init_fields(refinement_metadata),
                 )
             )
             sample_classification[index - 1] = "parameter_epoch"
@@ -1738,6 +3077,64 @@ def build_sample_boundary_temporal_plan(
             "make_hidden_future_paths_usable",
         ],
     }
+    preview_update_counters = build_preview_update_counters(
+        snapshots=enriched_snapshots,
+        runtime_update_plans=runtime_update_plans,
+        runtime_epochs=runtime_epochs,
+        parameter_epochs=parameter_epochs,
+        no_op_sample_count=sum(1 for value in sample_classification.values() if value == "no_op"),
+        sample_count=len(orbit_samples),
+        delay_threshold_ms=float(delay_threshold_ms),
+        loss_threshold_pct=float(loss_threshold_pct),
+        bandwidth_threshold_pct=float(bandwidth_threshold_pct),
+        routing_cost_threshold=int(routing_cost_threshold),
+        event_refinement_precision_seconds=refinement_precision,
+    )
+    event_timeline_projection = {
+        "schema_version": "skyseed-event-timeline-projection-v1",
+        "physical_sample_model": "samples_discover_candidate_events_only",
+        "event_time_accuracy": {
+            "refinement_status": "enabled_bounded_local_refinement",
+            "sample_aligned_event_count": int(
+                preview_update_counters["sample_aligned_event_count"]
+            ),
+            "refined_event_count": int(preview_update_counters["refined_event_count"]),
+            "refinement_supported_event_count": int(
+                preview_update_counters["refinement_supported_event_count"]
+            ),
+            "refinement_failed_event_count": int(
+                preview_update_counters["refinement_failed_event_count"]
+            ),
+            "refinement_unsupported_event_count": int(
+                preview_update_counters["refinement_unsupported_event_count"]
+            ),
+            "refinement_precision_seconds": float(
+                preview_update_counters["refinement_precision_seconds"]
+            ),
+            "refinement_reason_breakdown": dict(
+                preview_update_counters["refinement_reason_breakdown"]
+            ),
+        },
+        "compatibility_adapters": {
+            "runtime_transaction_to_runtime_epoch": True,
+            "parameter_update_batch_to_parameter_epoch": True,
+        },
+        "runtime_transaction_count": int(
+            preview_update_counters["runtime_transaction_count"]
+        ),
+        "parameter_update_batch_count": int(
+            preview_update_counters["parameter_update_batch_count"]
+        ),
+        "candidate_event_count": int(preview_update_counters["candidate_event_count"]),
+        "span_counts": {
+            "link_span_count": int(preview_update_counters["link_span_count"]),
+            "attachment_span_count": int(preview_update_counters["attachment_span_count"]),
+            "fec_path_span_count": int(preview_update_counters["fec_path_span_count"]),
+            "parameter_timeline_point_count": int(
+                preview_update_counters["parameter_timeline_point_count"]
+            ),
+        },
+    }
     return TemporalPlan(
         orbit_samples=tuple(orbit_samples),
         runtime_epochs=tuple(runtime_epochs),
@@ -1748,7 +3145,10 @@ def build_sample_boundary_temporal_plan(
         resource_budget=resource_budget,
         preparation_plan=preparation_plan,
         event_time_summary={
-            "mode": "sample_boundary_queue",
+            "mode": "event_timeline_adapter_to_sample_boundary_queue",
+            "runtime_epoch_compatibility_adapter": "RuntimeTransaction -> RuntimeEpoch",
+            "parameter_epoch_compatibility_adapter": "ParameterUpdateBatch -> ParameterEpoch",
+            "event_timeline_projection": event_timeline_projection,
             "evaluation_sample_count": len(orbit_samples),
             "observation_event_count": len(observation_frames),
             "topology_event_count": len(runtime_epochs),
@@ -1764,6 +3164,7 @@ def build_sample_boundary_temporal_plan(
                 if any(reason != "parameter_max_interval_elapsed" for reason in epoch.trigger_reasons)
             ),
             "maximum_event_scheduling_delay_seconds": 0.0,
+            "preview_update_counters": preview_update_counters,
         },
     )
 
@@ -1786,6 +3187,7 @@ def build_temporal_plan(
     observation_interval_seconds: Optional[float] = None,
     event_evaluation_interval_seconds: Optional[float] = None,
     runtime_parameter_model: Optional[LinkRuntimeParameterModel] = None,
+    event_refinement_precision_seconds: float = DEFAULT_EVENT_REFINEMENT_PRECISION_SECONDS,
 ) -> TemporalPlan:
     base_plan = build_sample_boundary_temporal_plan(
         topology_inventory=topology_inventory,
@@ -1802,6 +3204,7 @@ def build_temporal_plan(
         gateway_slot_margin=gateway_slot_margin,
         satellite_isl_slot_margin=satellite_isl_slot_margin,
         runtime_parameter_model=runtime_parameter_model,
+        event_refinement_precision_seconds=event_refinement_precision_seconds,
     )
     observation_indexes = _observation_sample_index_set(
         base_plan.orbit_samples,
@@ -1834,18 +3237,25 @@ def build_temporal_plan(
                 activation_relative_time_seconds=float(epoch.activation_relative_time_seconds),
                 activation_time_utc=str(epoch.activation_time_utc),
                 activation_group_id=str(epoch.activation_group_id),
-                detected_relative_time_seconds=float(epoch.activation_relative_time_seconds),
-                detected_time_utc=str(epoch.activation_time_utc),
+                detected_relative_time_seconds=float(
+                    epoch.sample_aligned_relative_time_seconds
+                ),
+                detected_time_utc=str(epoch.sample_aligned_time_utc),
                 execution_policy=str(epoch.deadline_policy),
                 trigger_reasons=tuple(epoch.trigger_reasons),
                 conflict_owner_keys=owner_keys,
                 linked_epoch_id=str(epoch.epoch_id),
                 linked_frame_id=None,
-                scheduling_delay_seconds=0.0,
+                scheduling_delay_seconds=max(
+                    0.0,
+                    float(epoch.sample_aligned_relative_time_seconds)
+                    - float(epoch.activation_relative_time_seconds),
+                ),
                 metadata={
                     "active_link_count": int(epoch.active_link_count),
                     "changed_link_count": len(epoch.changed_link_ids),
                     "network_mutation_operation_count": int(epoch.network_mutation_operation_count),
+                    **_epoch_refinement_metadata(epoch),
                 },
             )
         )
@@ -1870,19 +3280,26 @@ def build_temporal_plan(
                 activation_relative_time_seconds=float(epoch.activation_relative_time_seconds),
                 activation_time_utc=str(epoch.activation_time_utc),
                 activation_group_id=str(epoch.activation_group_id),
-                detected_relative_time_seconds=float(epoch.activation_relative_time_seconds),
-                detected_time_utc=str(epoch.activation_time_utc),
+                detected_relative_time_seconds=float(
+                    epoch.sample_aligned_relative_time_seconds
+                ),
+                detected_time_utc=str(epoch.sample_aligned_time_utc),
                 execution_policy=str(epoch.update_policy),
                 trigger_reasons=tuple(epoch.trigger_reasons),
                 conflict_owner_keys=owner_keys,
                 linked_epoch_id=str(epoch.epoch_id),
                 linked_frame_id=None,
-                scheduling_delay_seconds=0.0,
+                scheduling_delay_seconds=max(
+                    0.0,
+                    float(epoch.sample_aligned_relative_time_seconds)
+                    - float(epoch.activation_relative_time_seconds),
+                ),
                 metadata={
                     "active_link_count": int(epoch.active_link_count),
                     "changed_link_count": len(epoch.changed_link_ids),
                     "changed_parameter_counts": dict(epoch.changed_parameter_counts),
                     "parameter_event_kind": refresh_kind,
+                    **_epoch_refinement_metadata(epoch),
                 },
             )
         )
@@ -1912,6 +3329,13 @@ def build_temporal_plan(
             )
         )
     event_queue = tuple(_sorted_temporal_events(events))
+    scheduling_delays = [float(event.scheduling_delay_seconds) for event in event_queue]
+    maximum_event_scheduling_delay_seconds = (
+        max(scheduling_delays) if scheduling_delays else 0.0
+    )
+    average_event_scheduling_delay_seconds = (
+        sum(scheduling_delays) / len(scheduling_delays) if scheduling_delays else 0.0
+    )
     updated_preparation_plan = dict(base_plan.preparation_plan)
     continuous_operation_prepared = dict(updated_preparation_plan.get("continuous_operation_prepared", {}))
     continuous_operation_prepared.update(
@@ -1937,7 +3361,12 @@ def build_temporal_plan(
         resource_budget=base_plan.resource_budget,
         preparation_plan=updated_preparation_plan,
         event_time_summary={
-            "mode": "event_time_queue",
+            "mode": "event_timeline_queue",
+            "runtime_epoch_compatibility_adapter": "RuntimeTransaction -> RuntimeEpoch",
+            "parameter_epoch_compatibility_adapter": "ParameterUpdateBatch -> ParameterEpoch",
+            "event_timeline_projection": dict(
+                base_plan.event_time_summary.get("event_timeline_projection", {})
+            ),
             "evaluation_sample_count": len(base_plan.orbit_samples),
             "event_evaluation_interval_seconds": (
                 float(event_evaluation_interval_seconds)
@@ -1962,7 +3391,10 @@ def build_temporal_plan(
                 if any(reason != "parameter_max_interval_elapsed" for reason in epoch.trigger_reasons)
             ),
             "observation_event_count": len(filtered_observation_frames),
-            "maximum_event_scheduling_delay_seconds": 0.0,
-            "average_event_scheduling_delay_seconds": 0.0,
+            "maximum_event_scheduling_delay_seconds": maximum_event_scheduling_delay_seconds,
+            "average_event_scheduling_delay_seconds": average_event_scheduling_delay_seconds,
+            "preview_update_counters": dict(
+                base_plan.event_time_summary.get("preview_update_counters", {})
+            ),
         },
     )

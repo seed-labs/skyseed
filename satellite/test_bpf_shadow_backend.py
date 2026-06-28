@@ -180,6 +180,23 @@ class BpfShadowBackendTests(unittest.TestCase):
         self.assertTrue(inactive_check["ok"])
         self.assertIn("No inactive G/Z FEC tombstones", inactive_check["note"])
 
+    def test_zero_parameter_epochs_are_not_applicable_not_false(self) -> None:
+        artifacts = self._artifacts()
+        artifacts["temporal_plan"]["parameter_epochs"] = []
+        artifacts["epoch_execution_details"] = []
+
+        report = compile_bpf_shadow_backend(artifacts)
+        audit = report["backend_audit_report"]
+        parameter_match = audit["checks"]["parameter_intent_matches_bpf_parameter_map"]
+        parameter_fail_closed = audit["checks"]["parameter_fail_closed"]
+
+        self.assertTrue(audit["ok"])
+        self.assertTrue(parameter_match["ok"])
+        self.assertEqual(parameter_match["status"], "not_applicable")
+        self.assertTrue(parameter_fail_closed["ok"])
+        for check in parameter_fail_closed["checks"].values():
+            self.assertEqual(check["status"], "not_applicable")
+
     def test_experimental_backend_config_is_opt_in_and_bounded(self) -> None:
         config = normalize_experimental_backend_config(
             {

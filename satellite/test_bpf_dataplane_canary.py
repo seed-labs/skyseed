@@ -13,6 +13,7 @@ from satellite.bpf_dataplane_canary import (
     SELECTOR_MODE_FULL_ELIGIBLE,
     bpf_map_capacities_for_scope,
     build_metrics,
+    diagnose_experimental_scope_selection,
     host_interface_name,
     load_canary_maps,
     normalize_selector,
@@ -270,6 +271,271 @@ class BpfDataplaneCanaryTests(unittest.TestCase):
         )
         self.assertEqual(full["mode"], SELECTOR_MODE_FULL_ELIGIBLE)
         self.assertEqual(full["max_scope_entries"], 128)
+
+    def test_full_eligible_scope_prefers_bpf_owned_runtime_packet_routes(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="skyseed-bpf-backend-test-") as tmp:
+            root = Path(tmp)
+            topology_path = root / "topology.json"
+            link_state_path = root / "link_state.json"
+            topology_path.write_text(json.dumps({"slot_inventory": {}}), encoding="utf-8")
+            link_state_path.write_text(json.dumps({"slots": []}), encoding="utf-8")
+
+            runtime_report = {
+                "iterations": [
+                    {
+                        "node_local_execution": {
+                            "ping_results": [
+                                {
+                                    "success": True,
+                                    "flow_id": "ut-internet-egress:ut2027",
+                                    "ut_id": "ut2027",
+                                    "ping_target_ip": "10.154.0.129",
+                                    "target_host_node_id": "as154-host-new",
+                                    "serving_satellite_id": "stl-940047",
+                                    "selected_gateway_id": "gw207",
+                                }
+                            ],
+                            "backend": {
+                                "bpf_owned_readiness": {
+                                    "ready": True,
+                                    "ok": True,
+                                    "provider": "bpf_owned",
+                                    "generation_id": 0,
+                                    "fallback_to_linux": False,
+                                    "packet_route_entry_count": 2,
+                                    "attached_interfaces": [
+                                        "netns:stl-940047:ua-u2027s0",
+                                        "netns:stl-940047:ga-g207s0",
+                                        "netns:gw207:ix106",
+                                        "netns:gw207:ga-g207s0",
+                                    ],
+                                    "resolved_packet_route_entries": [
+                                        {
+                                            "direction": "g_to_z_access_ingress",
+                                            "flow_id": "ut-internet-egress:ut2027",
+                                            "ut_id": "ut2027",
+                                            "target_ip": "10.154.0.129",
+                                            "selected_gateway_id": "gw207",
+                                            "serving_satellite_id": "stl-940047",
+                                            "slot_name": "ut2027-access-slot0",
+                                            "ingress_interface": "netns:stl-940047:ua-u2027s0",
+                                            "egress_interface": "netns:stl-940047:ga-g207s0",
+                                            "ingress_ifindex": 11,
+                                            "egress_ifindex": 12,
+                                            "satellite_ifindex": 12,
+                                            "dst_mac": "02:aa:aa:aa:aa:aa",
+                                            "src_mac": "02:bb:bb:bb:bb:bb",
+                                        },
+                                        {
+                                            "direction": "z_to_g_nat_ingress",
+                                            "flow_id": "ut-internet-egress:ut2027",
+                                            "ut_id": "ut2027",
+                                            "target_ip": "10.242.207.159",
+                                            "selected_gateway_id": "gw207",
+                                            "serving_satellite_id": "stl-940047",
+                                            "slot_name": "gw207-gateway-slot0",
+                                            "ingress_interface": "netns:gw207:ix106",
+                                            "egress_interface": "netns:gw207:ga-g207s0",
+                                            "ingress_ifindex": 21,
+                                            "egress_ifindex": 22,
+                                            "satellite_ifindex": 22,
+                                            "new_dst_ip": "10.97.235.2",
+                                            "dst_mac": "02:cc:cc:cc:cc:cc",
+                                            "src_mac": "02:dd:dd:dd:dd:dd",
+                                        },
+                                    ],
+                                }
+                            },
+                        }
+                    }
+                ]
+            }
+            compiled = {
+                "bpf_maps": {
+                    "runtime": {
+                        "active_generation": {"value": 0},
+                        "generation_status": [{"generation_id": 0, "installed": True}],
+                        "fec_forwarding": [
+                            {
+                                "generation_id": 0,
+                                "fec_key_u32": 101,
+                                "active": True,
+                            }
+                        ],
+                    },
+                    "parameter": {
+                        "parameter_generation": {"value": 0},
+                        "param_status": [{"generation_id": 0, "installed": True}],
+                        "parameter_values": [],
+                    },
+                }
+            }
+
+            scope = select_experimental_scope(
+                topology_path=topology_path,
+                link_state_path=link_state_path,
+                runtime_report=runtime_report,
+                compiled=compiled,
+                selector={
+                    "mode": SELECTOR_MODE_FULL_ELIGIBLE,
+                    "max_scope_entries": 8,
+                },
+            )
+
+            self.assertEqual(scope["scope"], SELECTOR_MODE_FULL_ELIGIBLE)
+            self.assertEqual(
+                scope["semantic_intent_sources"]["scope"],
+                "full eligible strict BPF-owned packet-route/MPLS LFIB scope from runtime bpf_owned_readiness evidence",
+            )
+            self.assertEqual(len(scope["entries"]), 2)
+            self.assertEqual(scope["entries"][0]["direction"], "g_to_z_access_ingress")
+            self.assertEqual(
+                scope["entries"][0]["egress_interface"],
+                "netns:stl-940047:ga-g207s0",
+            )
+            self.assertEqual(scope["entries"][1]["direction"], "z_to_g_nat_ingress")
+            self.assertEqual(scope["entries"][1]["new_dst_ip"], "10.97.235.2")
+            self.assertEqual(
+                scope["attached_interfaces"],
+                [
+                    "netns:gw207:ga-g207s0",
+                    "netns:gw207:ix106",
+                    "netns:stl-940047:ga-g207s0",
+                    "netns:stl-940047:ua-u2027s0",
+                ],
+            )
+            self.assertEqual(scope["target_ips"], ["10.154.0.129"])
+            self.assertEqual(
+                scope["bpf_owned_readiness_source"]["packet_route_entry_count"],
+                2,
+            )
+
+    def test_full_eligible_scope_failure_reports_candidate_rejections(self) -> None:
+        runtime_report = {"iterations": [{"node_local_execution": {}}]}
+        diagnostics = diagnose_experimental_scope_selection(
+            runtime_report=runtime_report,
+            selector={
+                "mode": SELECTOR_MODE_FULL_ELIGIBLE,
+                "max_scope_entries": 8,
+            },
+        )
+
+        self.assertEqual(
+            diagnostics["requested_scope"]["mode"],
+            SELECTOR_MODE_FULL_ELIGIBLE,
+        )
+        self.assertEqual(
+            diagnostics["candidate_scope"]["bpf_owned_readiness_record_count"],
+            0,
+        )
+        self.assertIn(
+            "no_bpf_owned_readiness_records_with_scope_entries",
+            {
+                str(item.get("reason"))
+                for item in diagnostics["rejected_scope_entries"]
+            },
+        )
+
+    def test_full_eligible_scope_selects_mpls_lfib_readiness_entries(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="skyseed-bpf-mpls-scope-test-") as tmp:
+            root = Path(tmp)
+            topology_path = root / "topology.json"
+            link_state_path = root / "link_state.json"
+            topology_path.write_text("{}", encoding="utf-8")
+            link_state_path.write_text("{}", encoding="utf-8")
+            runtime_report = {
+                "iterations": [
+                    {
+                        "node_local_execution": {
+                            "backend": {
+                                "bpf_owned_readiness": {
+                                    "ready": True,
+                                    "ok": True,
+                                    "provider": "bpf_owned",
+                                    "generation_id": 2,
+                                    "fallback_to_linux": False,
+                                    "packet_route_entry_count": 0,
+                                    "resolved_packet_route_entries": [],
+                                    "attached_interfaces": [
+                                        "netns:stl-940047:ua-u2001s0",
+                                        "netns:stl-940047:ga-g201s0",
+                                    ],
+                                    "resolved_mpls_flow_entries": [
+                                        {
+                                            "direction": "g_to_z",
+                                            "flow_id": "ut-internet-egress:ut2001",
+                                            "ut_id": "ut2001",
+                                            "target_ip": "10.154.0.129",
+                                            "map_type": "ingress_classifier_map",
+                                            "ingress_interface": (
+                                                "netns:stl-940047:ua-u2001s0"
+                                            ),
+                                            "out_interface": (
+                                                "netns:stl-940047:ga-g201s0"
+                                            ),
+                                            "ingress_ifindex": 6014,
+                                            "out_ifindex": 5628,
+                                        }
+                                    ],
+                                }
+                            }
+                        }
+                    }
+                ]
+            }
+            compiled = {
+                "bpf_maps": {
+                    "runtime": {
+                        "active_generation": {"value": 2},
+                        "generation_status": [{"generation_id": 2, "installed": True}],
+                        "fec_forwarding": [],
+                    },
+                    "parameter": {
+                        "parameter_generation": {"value": 0},
+                        "param_status": [{"generation_id": 0, "installed": True}],
+                        "parameter_values": [],
+                    },
+                }
+            }
+
+            scope = select_experimental_scope(
+                topology_path=topology_path,
+                link_state_path=link_state_path,
+                runtime_report=runtime_report,
+                compiled=compiled,
+                selector={
+                    "mode": SELECTOR_MODE_FULL_ELIGIBLE,
+                    "max_scope_entries": 4,
+                },
+            )
+            diagnostics = diagnose_experimental_scope_selection(
+                runtime_report=runtime_report,
+                selector={
+                    "mode": SELECTOR_MODE_FULL_ELIGIBLE,
+                    "max_scope_entries": 4,
+                },
+            )
+
+        self.assertEqual(scope["scope"], SELECTOR_MODE_FULL_ELIGIBLE)
+        self.assertEqual(len(scope["entries"]), 1)
+        self.assertEqual(scope["entries"][0]["scope_evidence"], "mpls_lfib")
+        self.assertEqual(
+            scope["entries"][0]["egress_interface"],
+            "netns:stl-940047:ga-g201s0",
+        )
+        self.assertEqual(scope["target_ips"], ["10.154.0.129"])
+        self.assertEqual(
+            scope["bpf_owned_readiness_source"]["scope_entry_source"],
+            "mpls_lfib",
+        )
+        self.assertEqual(
+            diagnostics["candidate_scope"]["candidate_mpls_flow_entry_count"],
+            1,
+        )
+        self.assertEqual(
+            diagnostics["candidate_scope"]["selector_matched_entry_count"],
+            1,
+        )
 
     def test_full_eligible_scope_loads_compiled_map_counts(self) -> None:
         compiled = {

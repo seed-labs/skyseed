@@ -503,6 +503,79 @@ host-side ingress path and one target IP:
 The qdisc timeline is still blocked or trace-only. This canary does not load
 TheaterQ, a custom kernel module, or a qdisc timeline dataplane.
 
+## Switchable Satellite-Core Forwarding Backends
+
+The real runtime now names the satellite-core forwarding backend explicitly at
+the node-local Linux/MPLS boundary. The current modes are:
+
+- `linux_mpls`: canonical Linux MPLS/IP/iptables/sysctl realization.
+- `bpf_shadow`: BPF generation/maps/counters are metadata or artifacts only;
+  Linux host apply remains authoritative.
+- `bpf_canary`: BPF packet-path sanity remains a probe path; Linux host apply
+  remains authoritative.
+- `bpf_owned`: BPF may own eligible satellite-core G/Z forwarding state. Only
+  when readiness is proven does the executor skip eligible Linux MPLS/LFIB/core
+  route operations for that scope.
+
+The logical Skyseed semantics stay above this switch: G/Z FEC grouping,
+MPLS-like label-switching intent, RuntimeEpoch/ParameterEpoch event-time
+ordering, UT/GW/zone behavior, and the existing G/Z audits remain semantic
+inputs. Linux labels and LFIB commands are no longer treated as the only
+semantic representation; they are one backend realization of the same intent.
+
+The backend apply contract classifies node-local commands as:
+
+- `linux_owned`
+- `bpf_owned`
+- `shadow_only`
+- `host_required`
+- `skipped_by_bpf_backend`
+- `fallback_to_linux`
+
+`bpf_owned` is fail-closed. If BPF generation, map loading, attach, counter, or
+readiness evidence is absent or failed, the executor keeps the Linux MPLS path
+and records `fallback_to_linux` with reasons. It never silently drops Linux
+state without proven BPF readiness.
+
+The first BPF-owned replacement scope is intentionally narrow:
+
+- Included: satellite-core G/Z bidirectional forwarding, G-to-Z and Z-to-G
+  MPLS-like label-switching paths, and the Linux MPLS/LFIB/core route commands
+  that exist only to realize that state.
+- Excluded: qdisc delay/rate/loss/bandwidth, TheaterQ or custom qdisc work,
+  veth/netns/address lifecycle, UT/GW edge IP behavior, iptables/SNAT, Mini
+  Internet edge routes, and fallback/control traffic.
+
+Runtime artifacts expose skipped Linux command counts, BPF-owned G/Z scope
+counts, G-to-Z and Z-to-G coverage evidence, `fallback_to_linux` counts and
+reasons, cleanup scopes narrowed by BPF ownership, and measurement semantics
+that keep phase wall, cumulative worker batch wall, and per-command timing
+distinct.
+
+## Pre-300 Readiness Foundation
+
+This goal does not run the later S4 / roughly 348 satellite experiment. Before
+that run, the readiness audit should confirm:
+
+- backend mode is explicitly selected and recorded;
+- `bpf_owned` actually skips eligible satellite-core Linux MPLS/LFIB/core route
+  installs only when readiness is proven;
+- qdisc behavior is not claimed as optimized by BPF ownership;
+- edge NAT/iptables and UT/GW IP routes are not mixed into BPF satellite-core
+  ownership;
+- veth/netns lifecycle remains host/direct-backend owned;
+- G/Z semantic grouping and RuntimeEpoch/ParameterEpoch event-time behavior are
+  unchanged;
+- the workload catalog is broader than the old 12UT/6GW/6-zone shape, covering
+  distributed UTs, more gateways and zones, default and secondary gateway
+  behavior, boundary UTs, remote-return cases, active serving-satellite
+  distribution, and expected G/Z FEC plus BPF-owned scope summaries.
+
+Remaining before the S4 run: wire a real pre-apply BPF readiness provider into
+`bpf_owned`, run bounded sanity with BPF readiness evidence, and generate the
+expanded workload catalog/artifacts. Long S5 A/B and the 300+ satellite run
+remain outside this landing step.
+
 ## Short Conclusion
 
 Skyseed already has the right architectural direction in its contract modules:

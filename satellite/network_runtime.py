@@ -36,6 +36,18 @@ DOCKER_INSPECT_TIMEOUT_SECONDS = 30.0
 RECONCILE_PROGRESS_MIN_SLOT_DELTA = 8
 RECONCILE_PROGRESS_MIN_INTERVAL_SECONDS = 15.0
 
+QDISC_RUNTIME_PARAMETER_FIELDS = {
+    "bandwidth_bps",
+    "bandwidth_mbps",
+    "delay_ms",
+    "latency_ms",
+    "loss_percent",
+    "one_way_delay_ms",
+    "packet_loss_percent",
+    "rate_bps",
+    "rate_mbps",
+}
+
 
 def _fingerprint(payload: Dict[str, Any]) -> str:
     rendered = json.dumps(payload, sort_keys=True, separators=(",", ":"))
@@ -50,6 +62,60 @@ def _stable_local_mac(seed: str) -> str:
     digest = hashlib.sha256(seed.encode("utf-8")).digest()
     octets = [0x02, digest[0], digest[1], digest[2], digest[3], digest[4]]
     return ":".join(f"{octet:02x}" for octet in octets)
+
+
+def runtime_parameters_require_qdisc(runtime_parameters: Mapping[str, Any]) -> bool:
+    return any(
+        key in runtime_parameters and runtime_parameters.get(key) is not None
+        for key in QDISC_RUNTIME_PARAMETER_FIELDS
+    )
+
+
+def _normalized_changed_runtime_parameter_fields(value: Any) -> set[str]:
+    if value is None:
+        return set()
+    if isinstance(value, Mapping):
+        return {
+            str(key).removesuffix("_changed")
+            for key, changed in value.items()
+            if changed
+        }
+    if isinstance(value, (list, tuple, set)):
+        return {str(field).removesuffix("_changed") for field in value}
+    return {str(value).removesuffix("_changed")}
+
+
+def runtime_parameter_update_requires_qdisc(operation: Mapping[str, Any]) -> bool:
+    target_runtime_parameters = dict(
+        operation.get("target_runtime_parameters")
+        or operation.get("runtime_parameters")
+        or {}
+    )
+    if str(operation.get("operation") or "") != "update_slot_parameters":
+        return runtime_parameters_require_qdisc(target_runtime_parameters)
+
+    changed_fields: set[str] = set()
+    for key in (
+        "changed_runtime_parameter_fields",
+        "parameter_changed_fields",
+        "changed_parameter_fields",
+    ):
+        changed_fields.update(
+            _normalized_changed_runtime_parameter_fields(operation.get(key))
+        )
+    if changed_fields:
+        return any(field in QDISC_RUNTIME_PARAMETER_FIELDS for field in changed_fields)
+
+    source_runtime_parameters = operation.get("source_runtime_parameters")
+    if isinstance(source_runtime_parameters, Mapping):
+        source = dict(source_runtime_parameters)
+        return any(
+            field in QDISC_RUNTIME_PARAMETER_FIELDS
+            and source.get(field) != target_runtime_parameters.get(field)
+            for field in set(source) | set(target_runtime_parameters)
+        )
+
+    return runtime_parameters_require_qdisc(target_runtime_parameters)
 
 
 def dynamic_slot_binding_resource_key(
@@ -367,6 +433,8 @@ class ControllerBackedSlotLinkNamespaceQdiscInstaller:
         }
         self._last_setup_summary: Dict[str, Any] | None = None
         self._last_cleanup_summary: Dict[str, Any] | None = None
+        self._pending_prewarm_reconcile_signature: Dict[str, Any] | None = None
+        self._qdisc_lifecycle_metrics: Dict[str, int] = {}
         self._operation_metrics = RuntimeOperationMetrics()
         self._pending_prewarm_reconcile_signature: Dict[str, Any] | None = None
         self._last_cleanup_summary: Dict[str, Any] | None = None
@@ -395,9 +463,54 @@ class ControllerBackedSlotLinkNamespaceQdiscInstaller:
 
     def reset_operation_metrics(self) -> None:
         self._operation_metrics.reset()
+        self._qdisc_lifecycle_metrics = {}
 
     def consume_operation_metrics(self, *, reset: bool = True) -> Dict[str, Any]:
-        return self._operation_metrics.snapshot(reset=reset)
+        snapshot = self._operation_metrics.snapshot(reset=reset)
+        snapshot["qdisc_lifecycle_metrics"] = dict(self._qdisc_lifecycle_metrics)
+        if reset:
+            self._qdisc_lifecycle_metrics = {}
+        return snapshot
+
+    def _record_qdisc_lifecycle(self, key: str, count: int = 1) -> None:
+        self._qdisc_lifecycle_metrics[key] = (
+            int(self._qdisc_lifecycle_metrics.get(key, 0)) + int(count)
+        )
+
+    def _record_deactivate_lifecycle(
+        self,
+        lifecycle_mode: str,
+        *,
+        skipped_no_residue: bool = False,
+        endpoint_count: int = 0,
+        host_interface_count: int = 0,
+    ) -> None:
+        if skipped_no_residue:
+            self._record_qdisc_lifecycle(
+                "link_deactivate_skipped_no_residue",
+                endpoint_count + host_interface_count,
+            )
+            self._record_qdisc_lifecycle(
+                "addr_flush_skipped_no_residue",
+                endpoint_count,
+            )
+            self._record_qdisc_lifecycle(
+                "nomaster_skipped_no_residue",
+                host_interface_count,
+            )
+            return
+        self._record_qdisc_lifecycle(
+            "link_deactivate_attempted",
+            endpoint_count + host_interface_count,
+        )
+        self._record_qdisc_lifecycle("addr_flush_attempted", endpoint_count)
+        self._record_qdisc_lifecycle("nomaster_attempted", host_interface_count)
+        if lifecycle_mode == "dirty_recovery_reset":
+            self._record_qdisc_lifecycle("dirty_recovery_deactivate_count")
+        elif lifecycle_mode == "failure_rollback_cleanup":
+            self._record_qdisc_lifecycle("failure_cleanup_deactivate_count")
+        elif lifecycle_mode == "final_cleanup":
+            self._record_qdisc_lifecycle("final_cleanup_deactivate_count")
 
     def last_setup_summary(self) -> Dict[str, Any] | None:
         return (
@@ -486,6 +599,7 @@ class ControllerBackedSlotLinkNamespaceQdiscInstaller:
         captured_stdout = io.StringIO()
         started_at = time.perf_counter()
         qdisc_apply_wall_seconds = 0.0
+        qdisc_required = runtime_parameter_update_requires_qdisc(operation)
 
         with contextlib.redirect_stdout(captured_stdout):
             if operation_name == "update_slot_parameters":
@@ -526,7 +640,8 @@ class ControllerBackedSlotLinkNamespaceQdiscInstaller:
                     f"unsupported real network mutation slot_type: {slot_type}"
                 )
 
-        qdisc_apply_wall_seconds = time.perf_counter() - started_at
+        if operation_name != "update_slot_parameters" or qdisc_required:
+            qdisc_apply_wall_seconds = time.perf_counter() - started_at
         metadata_started_at = time.perf_counter()
         if persist_link_state:
             self._persist_slot_runtime_parameters(
@@ -548,6 +663,7 @@ class ControllerBackedSlotLinkNamespaceQdiscInstaller:
             "reused_slot_runtime": slot_outcome["reused"],
             "resulting_state": _slot_summary(_state_entry_from_operation(operation, source=False)),
             "wall_seconds": round(time.perf_counter() - started_at, 3),
+            "qdisc_required": bool(qdisc_required),
             "qdisc_apply_wall_seconds": round(qdisc_apply_wall_seconds, 6),
             "metadata_update_wall_seconds": round(metadata_update_wall_seconds, 6),
             "controller_stdout": captured_stdout.getvalue().strip(),
@@ -592,6 +708,8 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
         }
         self._last_setup_summary: Dict[str, Any] | None = None
         self._last_cleanup_summary: Dict[str, Any] | None = None
+        self._pending_prewarm_reconcile_signature: Dict[str, Any] | None = None
+        self._qdisc_lifecycle_metrics: Dict[str, int] = {}
         self._operation_metrics = RuntimeOperationMetrics()
 
     def _host_interface_name_set(self) -> set[str]:
@@ -638,9 +756,54 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
 
     def reset_operation_metrics(self) -> None:
         self._operation_metrics.reset()
+        self._qdisc_lifecycle_metrics = {}
 
     def consume_operation_metrics(self, *, reset: bool = True) -> Dict[str, Any]:
-        return self._operation_metrics.snapshot(reset=reset)
+        snapshot = self._operation_metrics.snapshot(reset=reset)
+        snapshot["qdisc_lifecycle_metrics"] = dict(self._qdisc_lifecycle_metrics)
+        if reset:
+            self._qdisc_lifecycle_metrics = {}
+        return snapshot
+
+    def _record_qdisc_lifecycle(self, key: str, count: int = 1) -> None:
+        self._qdisc_lifecycle_metrics[key] = (
+            int(self._qdisc_lifecycle_metrics.get(key, 0)) + int(count)
+        )
+
+    def _record_deactivate_lifecycle(
+        self,
+        lifecycle_mode: str,
+        *,
+        skipped_no_residue: bool = False,
+        endpoint_count: int = 0,
+        host_interface_count: int = 0,
+    ) -> None:
+        if skipped_no_residue:
+            self._record_qdisc_lifecycle(
+                "link_deactivate_skipped_no_residue",
+                endpoint_count + host_interface_count,
+            )
+            self._record_qdisc_lifecycle(
+                "addr_flush_skipped_no_residue",
+                endpoint_count,
+            )
+            self._record_qdisc_lifecycle(
+                "nomaster_skipped_no_residue",
+                host_interface_count,
+            )
+            return
+        self._record_qdisc_lifecycle(
+            "link_deactivate_attempted",
+            endpoint_count + host_interface_count,
+        )
+        self._record_qdisc_lifecycle("addr_flush_attempted", endpoint_count)
+        self._record_qdisc_lifecycle("nomaster_attempted", host_interface_count)
+        if lifecycle_mode == "dirty_recovery_reset":
+            self._record_qdisc_lifecycle("dirty_recovery_deactivate_count")
+        elif lifecycle_mode == "failure_rollback_cleanup":
+            self._record_qdisc_lifecycle("failure_cleanup_deactivate_count")
+        elif lifecycle_mode == "final_cleanup":
+            self._record_qdisc_lifecycle("final_cleanup_deactivate_count")
 
     def last_setup_summary(self) -> Dict[str, Any] | None:
         return (
@@ -746,6 +909,7 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
         *,
         topology: Dict[str, Any],
         topology_path: Path,
+        prepared_resource_scope_by_slot: Mapping[str, Sequence[str] | set[str]] | None = None,
     ) -> Dict[str, Any]:
         inventory = self._inventory(topology, topology_path)
         bridge_names: List[str] = []
@@ -760,7 +924,10 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
             slot_type = self._slot_type(slot)
             slot_counts_by_type[slot_type] = slot_counts_by_type.get(slot_type, 0) + 1
             bridge_names.append(self._bridge_name(slot_name))
-            candidate_resources = self._candidate_resources(slot)
+            candidate_resources = self._prepared_resources_for_slot(
+                slot=slot,
+                prepared_resource_scope_by_slot=prepared_resource_scope_by_slot,
+            )
             candidate_resource_counts_by_type[slot_type] = (
                 candidate_resource_counts_by_type.get(slot_type, 0)
                 + len(candidate_resources)
@@ -795,6 +962,17 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
             "host_interface_names": host_interface_names,
             "temp_host_interface_names": temp_host_interface_names,
             "container_interface_names": container_interface_names,
+            "cleanup_scope_source": (
+                "prepared_owned_resource_index"
+                if prepared_resource_scope_by_slot
+                else "full_topology_candidate_inventory_fallback"
+            ),
+            "bounded_owned_scope": bool(prepared_resource_scope_by_slot),
+            "prepared_slot_scope_count": (
+                len(prepared_resource_scope_by_slot)
+                if prepared_resource_scope_by_slot
+                else 0
+            ),
             "slot_counts_by_type": slot_counts_by_type,
             "candidate_resource_counts_by_type": candidate_resource_counts_by_type,
             "candidate_endpoint_counts_by_type": candidate_endpoint_counts_by_type,
@@ -898,10 +1076,16 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
                     }
                 )
             else:
+                lifecycle_mode = (
+                    "fresh_startup_install"
+                    if prepared_now and record_prewarm_reconcile
+                    else "normal_runtime_update"
+                )
                 reconcile_summary = self._reconcile_to_link_state(
                     topology=topology,
                     link_state_path=link_state_path,
                     slot_names=reconcile_slot_names,
+                    lifecycle_mode=lifecycle_mode,
                     progress_callback=setup_progress_callback,
                 )
             reconcile_wall_seconds = time.perf_counter() - reconcile_started_at
@@ -928,6 +1112,7 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
                 "prepared_resource_counts": dict(self._prepared_resource_counts),
                 "prepare_summary": preparation_summary,
                 "reconcile_summary": reconcile_summary,
+                "qdisc_lifecycle_metrics": dict(self._qdisc_lifecycle_metrics),
             }
             return DirectHostRuntimeContext(
                 topology_path=str(topology_path),
@@ -1149,11 +1334,13 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
             return resources
         slot_name = str(slot.get("slot_name"))
         scoped_keys = prepared_resource_scope_by_slot.get(slot_name)
+        if scoped_keys is None:
+            return {}
         if not scoped_keys:
-            return resources
+            return {}
         allowed = {str(resource_key) for resource_key in scoped_keys if str(resource_key)}
         if not allowed:
-            return resources
+            return {}
         return {
             resource_key: resource
             for resource_key, resource in resources.items()
@@ -1708,6 +1895,7 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
         topology: Dict[str, Any],
         link_state_path: Path,
         slot_names: Sequence[str] | None = None,
+        lifecycle_mode: str = "normal_runtime_update",
         progress_callback: Callable[[Dict[str, Any]], None] | None = None,
     ) -> Dict[str, Any]:
         inventory = self._slot_inventory_by_name(topology)
@@ -1780,11 +1968,17 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
                     slot=slot,
                     resource=resource,
                     runtime_parameters=runtime_parameters,
+                    lifecycle_mode=lifecycle_mode,
                     probe=False,
                 )
                 activated_slot_count += 1
             else:
-                self._deactivate_all_resources(slot=slot)
+                self._deactivate_all_resources(
+                    slot=slot,
+                    lifecycle_mode=lifecycle_mode,
+                    skip_qdisc_no_residue=lifecycle_mode == "fresh_startup_install",
+                    skip_link_no_residue=lifecycle_mode == "fresh_startup_install",
+                )
                 deactivated_slot_count += 1
             _emit_progress(current_slot_name=slot_name)
         _emit_progress(force=True)
@@ -1796,6 +1990,8 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
             "activated_slot_count": activated_slot_count,
             "deactivated_slot_count": deactivated_slot_count,
             "slot_counts_by_type": slot_counts_by_type,
+            "qdisc_lifecycle_mode": lifecycle_mode,
+            "qdisc_lifecycle_metrics": dict(self._qdisc_lifecycle_metrics),
         }
 
     def cleanup_runtime_artifacts(
@@ -1806,9 +2002,19 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
     ) -> Dict[str, Any]:
         with self._lock:
             topology = self._load_topology(topology_path)
+            prepared_cleanup_scope = (
+                {
+                    str(slot_name): {str(key) for key in keys if str(key)}
+                    for slot_name, keys in self._prepared_resource_keys_by_slot.items()
+                    if keys
+                }
+                if self._prepared_resource_keys_by_slot
+                else None
+            )
             artifact_inventory = self._runtime_artifact_inventory(
                 topology=topology,
                 topology_path=topology_path,
+                prepared_resource_scope_by_slot=prepared_cleanup_scope,
             )
             known_host_interfaces = self._host_interface_name_set()
             known_container_interfaces_by_node: Dict[str, set[str]] = {}
@@ -1888,6 +2094,14 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
                 "cleanup_resource_succeeded_count": 0,
                 "cleanup_resource_failed_count": 0,
                 "host_cleanup_grouped_operation_count": 4,
+                "cleanup_scope_source": artifact_inventory.get("cleanup_scope_source"),
+                "bounded_owned_scope": bool(artifact_inventory.get("bounded_owned_scope")),
+                "prepared_slot_scope_count": int(
+                    artifact_inventory.get("prepared_slot_scope_count") or 0
+                ),
+                "full_topology_candidate_inventory_fallback": not bool(
+                    artifact_inventory.get("bounded_owned_scope")
+                ),
                 "resource_groups": {
                     "temp_host_interface": len(temp_host_interface_names),
                     "host_interface": len(host_interface_names),
@@ -2061,17 +2275,39 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
             args.extend(["rate", f"{float(rate_mbps):.6f}mbit"])
         return args
 
-    def _clear_qdisc(self, interface_name: str) -> None:
-        self._run_command(
+    def _clear_qdisc(
+        self,
+        interface_name: str,
+        *,
+        lifecycle_mode: str = "normal_runtime_update",
+        skip_no_residue: bool = False,
+    ) -> None:
+        if skip_no_residue:
+            self._record_qdisc_lifecycle("qdisc_delete_skipped_no_residue")
+            return
+        self._record_qdisc_lifecycle("qdisc_delete_attempted")
+        result = self._run_command(
             ["sudo", "-n", "tc", "qdisc", "del", "dev", interface_name, "root"],
             allow_failure=True,
         )
+        if result.returncode == 0:
+            self._record_qdisc_lifecycle("qdisc_delete_required_existing_mismatch")
+        else:
+            self._record_qdisc_lifecycle("qdisc_delete_failure_count")
+        self._record_qdisc_lifecycle(f"qdisc_delete_mode:{lifecycle_mode}")
 
-    def _apply_qdisc(self, *, interface_name: str, runtime_parameters: Dict[str, Any]) -> None:
+    def _apply_qdisc(
+        self,
+        *,
+        interface_name: str,
+        runtime_parameters: Dict[str, Any],
+        lifecycle_mode: str = "normal_runtime_update",
+    ) -> None:
         netem_args = self._runtime_parameter_netem_args(runtime_parameters)
         if not netem_args:
-            self._clear_qdisc(interface_name)
+            self._clear_qdisc(interface_name, lifecycle_mode=lifecycle_mode)
             return
+        self._record_qdisc_lifecycle("qdisc_replace_count")
         self._run_command(
             [
                 "sudo",
@@ -2129,6 +2365,7 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
         slot: Dict[str, Any],
         resource: Dict[str, Any],
         runtime_parameters: Dict[str, Any],
+        lifecycle_mode: str = "normal_runtime_update",
         probe: bool = True,
     ) -> None:
         self._ensure_resource_prepared(slot=slot, resource=resource)
@@ -2161,7 +2398,11 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
                 ],
             )
         for interface_name in self._participant_host_interfaces(slot=slot, resource=resource):
-            self._apply_qdisc(interface_name=interface_name, runtime_parameters=runtime_parameters)
+            self._apply_qdisc(
+                interface_name=interface_name,
+                runtime_parameters=runtime_parameters,
+                lifecycle_mode=lifecycle_mode,
+            )
         if probe:
             self._probe_activated_resource(slot=slot, resource=resource)
 
@@ -2221,10 +2462,32 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
         *,
         slot: Dict[str, Any],
         resource: Dict[str, Any],
+        lifecycle_mode: str = "normal_runtime_update",
+        skip_qdisc_no_residue: bool = False,
+        skip_link_no_residue: bool = False,
     ) -> None:
-        for interface_name in self._participant_host_interfaces(slot=slot, resource=resource):
-            self._clear_qdisc(interface_name)
-        for endpoint in resource.get("endpoints", []):
+        host_interfaces = self._participant_host_interfaces(slot=slot, resource=resource)
+        endpoints = list(resource.get("endpoints", []))
+        for interface_name in host_interfaces:
+            self._clear_qdisc(
+                interface_name,
+                lifecycle_mode=lifecycle_mode,
+                skip_no_residue=skip_qdisc_no_residue,
+            )
+        if skip_link_no_residue:
+            self._record_deactivate_lifecycle(
+                lifecycle_mode,
+                skipped_no_residue=True,
+                endpoint_count=len(endpoints),
+                host_interface_count=len(host_interfaces),
+            )
+            return
+        self._record_deactivate_lifecycle(
+            lifecycle_mode,
+            endpoint_count=len(endpoints),
+            host_interface_count=len(host_interfaces),
+        )
+        for endpoint in endpoints:
             self._nsenter(
                 node_id=str(endpoint.get("node_id")),
                 command=[
@@ -2251,9 +2514,22 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
                 allow_failure=True,
             )
 
-    def _deactivate_all_resources(self, *, slot: Dict[str, Any]) -> None:
+    def _deactivate_all_resources(
+        self,
+        *,
+        slot: Dict[str, Any],
+        lifecycle_mode: str = "normal_runtime_update",
+        skip_qdisc_no_residue: bool = False,
+        skip_link_no_residue: bool = False,
+    ) -> None:
         for resource in self._candidate_resources(slot).values():
-            self._deactivate_resource(slot=slot, resource=resource)
+            self._deactivate_resource(
+                slot=slot,
+                resource=resource,
+                lifecycle_mode=lifecycle_mode,
+                skip_qdisc_no_residue=skip_qdisc_no_residue,
+                skip_link_no_residue=skip_link_no_residue,
+            )
 
     def _dynamic_endpoints_for_binding(
         self,
@@ -2361,8 +2637,9 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
         started_at = time.perf_counter()
         qdisc_apply_wall_seconds = 0.0
         metadata_update_wall_seconds = 0.0
+        qdisc_required = runtime_parameter_update_requires_qdisc(operation)
         if operation_name == "update_slot_parameters":
-            if target_binding:
+            if target_binding and qdisc_required:
                 target_resource = self._resource_for_binding(slot=slot, binding=target_binding)
                 qdisc_started_at = time.perf_counter()
                 for interface_name in self._participant_host_interfaces(
@@ -2372,6 +2649,7 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
                     self._apply_qdisc(
                         interface_name=interface_name,
                         runtime_parameters=target_runtime_parameters,
+                        lifecycle_mode="parameter_only_update",
                     )
                 qdisc_apply_wall_seconds = time.perf_counter() - qdisc_started_at
         else:
@@ -2414,6 +2692,7 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
             "reused_slot_runtime": slot_outcome["reused"],
             "resulting_state": _slot_summary(_state_entry_from_operation(operation, source=False)),
             "wall_seconds": round(time.perf_counter() - started_at, 3),
+            "qdisc_required": bool(qdisc_required),
             "qdisc_apply_wall_seconds": round(qdisc_apply_wall_seconds, 6),
             "metadata_update_wall_seconds": round(metadata_update_wall_seconds, 6),
             "controller_stdout": "",
@@ -2604,6 +2883,7 @@ class InProcessHostRuntimeManager:
         progress_callback: Callable[[Dict[str, Any]], None] | None = None,
     ) -> Dict[str, Any]:
         started_at = time.perf_counter()
+        self._reset_installer_operation_metrics()
         controller = self._installer.controller(
             topology_path=topology_path,
             link_state_path=link_state_path,
@@ -2614,13 +2894,78 @@ class InProcessHostRuntimeManager:
         )
         timing = dict(self._installer.consume_setup_timing())
         state = self._refresh_runtime_state(link_state_path=link_state_path)
+        typed_operation_metrics = self._consume_installer_operation_metrics()
+        preparation_summary = self._installer.last_setup_summary()
+        prepared_counts = dict(preparation_summary.get("prepared_resource_counts") or {})
+        expected_cardinality = sum(
+            int(prepared_counts.get(key) or 0)
+            for key in (
+                "bridge_count",
+                "preconnected_endpoint_count",
+                "candidate_resource_count",
+                "candidate_endpoint_count",
+            )
+        )
+        prewarm_wall_seconds = round(time.perf_counter() - started_at, 6)
+        scope_items = sorted(
+            (
+                str(slot_name),
+                tuple(sorted(str(resource_key) for resource_key in resource_keys)),
+            )
+            for slot_name, resource_keys in dict(
+                prepared_resource_scope_by_slot or {}
+            ).items()
+        )
+        startup_operation_trace = [
+            {
+                "operation_id": "direct-backend-prewarm-static-inventory",
+                "operation_type": "prewarm_materialize_full_scope",
+                "owner_module": "satellite/network_runtime.py",
+                "stage": "static_inventory_prewarm",
+                "batch": "direct_backend_materialization",
+                "target_resource": str(topology_path),
+                "target_resource_type": "topology_slot_inventory",
+                "intent": "materialize bounded static slot inventory into inactive runtime resources",
+                "reason": "profile requested static inventory materialization before runtime horizon",
+                "idempotency_key": json.dumps(
+                    {
+                        "topology_path": str(topology_path),
+                        "link_state_path": str(link_state_path),
+                        "reconcile_slot_names": list(reconcile_slot_names or []),
+                        "prepared_resource_scope_by_slot": scope_items,
+                    },
+                    sort_keys=True,
+                ),
+                "expected_cardinality": expected_cardinality,
+                "actual_attempt_count": int(
+                    dict(typed_operation_metrics or {}).get("command_count") or 1
+                ),
+                "duplicate_count": int(
+                    dict(typed_operation_metrics or {}).get(
+                        "duplicate_operation_skipped_count"
+                    )
+                    or 0
+                ),
+                "retry_count": 0,
+                "duration_seconds": prewarm_wall_seconds,
+                "state_changed": int(
+                    dict(typed_operation_metrics or {}).get("command_count") or 0
+                )
+                > 0,
+                "result": "completed",
+                "error": "",
+                "full_scope": prepared_resource_scope_by_slot is None,
+            }
+        ]
         return {
             "prewarm_completed": True,
-            "prewarm_wall_seconds": round(time.perf_counter() - started_at, 6),
+            "prewarm_wall_seconds": prewarm_wall_seconds,
             "manager_timing_breakdown": {
                 key: round(float(value), 6) for key, value in sorted(timing.items())
             },
-            "preparation_summary": self._installer.last_setup_summary(),
+            "typed_operation_metrics": typed_operation_metrics,
+            "startup_operation_trace": startup_operation_trace,
+            "preparation_summary": preparation_summary,
             "host_runtime_state": self.public_state_summary(),
             "managed_slot_count": len(state),
             "topology_path": str(topology_path),

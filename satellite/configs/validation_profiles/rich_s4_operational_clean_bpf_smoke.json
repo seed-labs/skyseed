@@ -1,0 +1,177 @@
+{
+  "name": "rich_s4_operational_clean_bpf_smoke",
+  "description": "Short bounded rich S4 operational_clean strict bpf_owned smoke for resident attach reuse plus steady BPF map reload.",
+  "runner": "starlink_shell_experiment",
+  "planned_shell": "S4",
+  "max_satellites": 348,
+  "catalog_contract": {
+    "required": true,
+    "forbid_hidden_legacy_defaults": true
+  },
+  "validation_selector": {
+    "ut": {
+      "mode": "catalog-derived-first-n",
+      "count": 32
+    },
+    "gateway": {
+      "mode": "catalog-derived-first-n",
+      "count": 12
+    },
+    "zone": {
+      "mode": "catalog-all"
+    }
+  },
+  "runner_args": {
+    "run_mode": "real-runtime",
+    "orbit_input_mode": "planned-shell",
+    "planned_shell_id": "S4",
+    "max_satellites": 348,
+    "ut_catalog": "satellite/configs/starlink_shell_ground/s4_gz_rich_validation_ut_catalog_32.json",
+    "gateway_catalog": "satellite/configs/starlink_shell_ground/realistic_preview_gateway_catalog_12.json",
+    "zone_catalog": "satellite/configs/starlink_shell_ground/s4_gz_rich_validation_zone_catalog_16.json",
+    "max_uts": 32,
+    "max_gateways": 12,
+    "ground_placement": "shell-aware",
+    "sample_interval": 10,
+    "event_evaluation_interval": 10,
+    "horizon_seconds": 120,
+    "max_runtime_epochs": 4,
+    "max_parameter_epochs": 1,
+    "runtime_mode": "operational_clean",
+    "loop_count": 1,
+    "interval": 0,
+    "pre_transition_probe_interval": 0,
+    "runtime_epoch_validation_interval": 0,
+    "parameter_epoch_validation_interval": 0,
+    "runtime_epoch_validation_scope": "reapplied_gateway_class_sample",
+    "preflight_policy": "require-clean",
+    "host_prepare_policy": "off",
+    "forwarding_backend": "bpf_owned",
+    "bpf_backend": "off",
+    "compose_build_policy": "if-needed",
+    "compose_up_timeout_seconds": 900,
+    "startup_high_progress_grace_ratio": 0.95,
+    "startup_high_progress_grace_seconds": 420,
+    "startup_slow_progress_grace_seconds": 180,
+    "startup_absolute_max_seconds": 1500,
+    "compose_build_timeout_seconds": 900,
+    "container_readiness_timeout_seconds": 600,
+    "initial_runtime_readiness_timeout_seconds": 300,
+    "progress_heartbeat_seconds": 15,
+    "startup_stall_warning_seconds": 900,
+    "epoch_stall_warning_seconds": 300,
+    "docker_dummy_network_pool": "10.128.0.0/9",
+    "docker_dummy_network_mask": 19,
+    "format": "json"
+  },
+  "docker_dummy_network_capacity": {
+    "required_dummy_networks": 772,
+    "minimum_addresses_per_subnet": 512,
+    "formula": "available_subnets = 2^(docker_dummy_network_mask - pool_prefix_length) when docker_dummy_network_mask >= pool_prefix_length",
+    "components": {
+      "mini_internet_ix_networks": 12,
+      "mini_internet_base_transit_link_networks": 11,
+      "mini_internet_gateway_extra_transit_link_networks": 8,
+      "mini_internet_stub_lan_networks": 2,
+      "satellite_runtime_management_networks": 1,
+      "gateway_bootstrap_networks": 12,
+      "same_plane_isl_slot_networks": 348,
+      "cross_plane_isl_slot_networks": 290,
+      "ut_access_slot_networks": 64,
+      "gateway_access_slot_networks": 24
+    }
+  },
+  "startup_materialization": {
+    "contract_metadata": {
+      "owner_module": "satellite/apps/run_starlink_shell_experiment.py",
+      "scope": "profile-specific",
+      "lifetime": "temporary commissioning guard",
+      "failure_action": "hard fail for no-progress or absolute budget exceeded; warning/cost label for bounded progress grace",
+      "not_ad_hoc_reason": "The rich S4 profile declares base, grace, and absolute budgets from expected compose cardinality rather than changing global startup behavior or keying off one run.",
+      "focused_test": "satellite/test_event_timeline_runtime_queue.py::EventTimelineRuntimeQueueTests.test_progress_contract_allows_high_progress_grace"
+    },
+    "required": true,
+    "expected_containers": 468,
+    "expected_docker_networks": 46,
+    "expected_direct_backend_host_interfaces_before_runtime": 0,
+    "expected_dummy_networks": 772,
+    "expected_compose_stage_batches": 84,
+    "expected_qdisc_root_objects": null,
+    "expected_qdisc_filter_objects": null,
+    "compose_up_timeout_seconds": 900,
+    "startup_high_progress_grace_ratio": 0.95,
+    "startup_high_progress_grace_seconds": 420,
+    "startup_slow_progress_grace_seconds": 180,
+    "startup_absolute_max_seconds": 1500,
+    "timeout_budget_justification": "The current short rich S4 profile materializes 468 compose containers, 46 static compose networks, and 772 dummy-network-backed runtime link slots before runtime/BPF can start. The 900s budget is a contract threshold, not acceptance evidence; exceeding it is classified as STARTUP_MATERIALIZATION_COST_BLOCKER unless a separate stall is proven.",
+    "stall_no_progress_seconds": 120,
+    "slow_progress_min_completed_ratio": 0.5,
+    "outcome_labels": [
+      "STARTUP_MATERIALIZATION_COST_BLOCKER",
+      "COMPOSE_UP_TIMEOUT_BEFORE_RUNTIME"
+    ]
+  },
+  "normal_failure_cleanup": {
+    "enabled": true,
+    "must_use_external_residue_detector": true,
+    "success_label": "CLEANUP_BOUNDARY_PASS",
+    "failure_label": "CLEANUP_BOUNDARY_STILL_INCOMPLETE"
+  },
+  "allowed_capabilities": {
+    "compose": true,
+    "runtime": true,
+    "bpf": true
+  },
+  "expected_outcome_labels": [
+    "PERSISTENT_ARTIFACT_CONTRACT_ADDED",
+    "FIRST_FAILURE_EVIDENCE_PRESERVED",
+    "STARTUP_MATERIALIZATION_COST_CONTRACT_ADDED",
+    "STARTUP_MATERIALIZATION_CONTRACT_ADDED",
+    "SLOW_BUT_PROGRESSING_GRACE_APPLIED",
+    "NO_PROGRESS_STARTUP_STALL",
+    "STARTUP_MATERIALIZATION_BUDGET_EXCEEDED",
+    "STARTUP_MATERIALIZATION_COST_BLOCKER",
+    "COMPOSE_UP_TIMEOUT_BEFORE_RUNTIME",
+    "NORMAL_FAILURE_CLEANUP_CONTRACT_ADDED",
+    "CLEANUP_BOUNDARY_PASS",
+    "RICH_S4_OPERATIONAL_CLEAN_SMOKE_PASS",
+    "BPF_SCHEMA_MISMATCH_REPRODUCED",
+    "BPF_E2BIG_WITH_SCHEMA_MATCH",
+    "BPF_MAP_RELOAD_FAILED",
+    "HIDDEN_FALLBACK_STILL_PRESENT",
+    "DIRTY_RECOVERY_RESET_STILL_PRESENT",
+    "FULL_ATTACH_FALLBACK_STILL_PRESENT",
+    "COST_SANITY_BLOCKER",
+    "CLEANUP_BOUNDARY_STILL_VIOLATED",
+    "CLEANUP_BOUNDARY_STILL_INCOMPLETE",
+    "UNKNOWN_BLOCKING_ANOMALY",
+    "RICH_S4_SMOKE_FAILED_FIRST_FAILURE_RECORDED"
+  ],
+  "forbidden_behavior": {
+    "strict_bpf_owned_no_canary_experimental": true,
+    "linux_gz_mpls_lfib_fallback": true,
+    "canary_experimental_pass_evidence": true,
+    "full_attach_fallback_after_map_reload_failure": true,
+    "dirty_recovery_reset_as_reuse": true
+  },
+  "cleanup_requirements": {
+    "direct_backend_host_interfaces": 0,
+    "bpf_pins": 0,
+    "runtime_locks": 0,
+    "compose_containers": 0,
+    "compose_network_residue": 0,
+    "satellite_output_changed": false
+  },
+  "cost_sanity": {
+    "startup_materialization_seconds_warn": 900,
+    "network_update_seconds_warn": 300,
+    "post_apply_overhead_seconds_warn": 120,
+    "cleanup_seconds_warn": 180,
+    "unknown_blocking_seconds_warn": 60,
+    "command_cardinality_warn": 200000,
+    "anomaly_labels": [
+      "COST_SANITY_BLOCKER",
+      "UNKNOWN_BLOCKING_ANOMALY"
+    ]
+  }
+}

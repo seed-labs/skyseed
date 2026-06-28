@@ -69,6 +69,7 @@ from starlink_shell_topology import (
     build_starlink_shell_layout,
     build_starlink_shell_topology_inventory,
     build_starlink_topology_snapshot_pipeline,
+    derive_starlink_coordinate_consistent_ground_model,
     derive_starlink_preview_ground_locations,
     write_starlink_shell_artifacts,
 )
@@ -470,6 +471,16 @@ def parse_args() -> argparse.Namespace:
         help="Use catalog coordinates directly or derive shell-aware preview positions from the first propagated slice.",
     )
     parser.add_argument(
+        "--coordinate-policy",
+        choices=("real_geographic", "shell_aware_consistent", "synthetic_shell_aware"),
+        default=None,
+        help=(
+            "Coordinate semantics for UT/GW/zone catalogs. Defaults to "
+            "real_geographic for --ground-placement catalog and "
+            "shell_aware_consistent for --ground-placement shell-aware."
+        ),
+    )
+    parser.add_argument(
         "--start-time",
         default=None,
         help="Propagation start time in ISO-8601 UTC. Default is current UTC time.",
@@ -641,6 +652,7 @@ def main() -> int:
     gz_update_diff_summary_json_path = config_dir / "gz_update_diff_summary.json"
     zone_anchor_quality_summary_json_path = config_dir / "zone_anchor_quality_summary.json"
     zone_availability_analysis_json_path = config_dir / "zone_availability_analysis.json"
+    effective_workload_catalog_json_path = config_dir / "effective_workload_catalog.json"
 
     ut_catalog = load_ut_catalog(args.ut_catalog)
     selected_uts = select_ut_entries(
@@ -655,6 +667,9 @@ def main() -> int:
         selected_ids=args.gateway_ids,
         max_gateways=int(args.max_gateways) if args.max_gateways is not None else None,
     )
+    original_selected_uts = [dict(entry) for entry in selected_uts]
+    original_selected_gateways = [dict(entry) for entry in selected_gateways]
+    original_zone_catalog = [dict(entry) for entry in zone_catalog]
     effective_gateway_definitions = _shift_gateway_definitions_for_ix_offset(
         selected_gateways,
         ix_id_offset=int(args.mini_internet_ix_offset),
@@ -819,27 +834,107 @@ def main() -> int:
             slice_count=evaluation_slice_count,
         )
     layout = build_starlink_shell_layout(selection)
-    if args.ground_placement == "shell-aware":
-        preview_ground_locations = derive_starlink_preview_ground_locations(
-            propagated_slices[0],
-            ut_ids=[str(entry["ut_id"]) for entry in selected_uts],
-            gateway_ids=[str(entry["gateway_id"]) for entry in effective_gateway_definitions],
+    coordinate_policy = (
+        str(args.coordinate_policy)
+        if args.coordinate_policy is not None
+        else (
+            "real_geographic"
+            if str(args.ground_placement) == "catalog"
+            else "shell_aware_consistent"
         )
-    else:
+    )
+    effective_ut_definitions = [dict(entry) for entry in selected_uts]
+    effective_zone_catalog = [dict(entry) for entry in zone_catalog]
+    coordinate_semantics = {
+        "mode": "real_geographic",
+        "original_catalog_coordinates": "latitude_deg/longitude_deg in input catalogs",
+        "effective_runtime_coordinates": "same as catalog coordinates",
+        "coverage_coordinates": "effective_runtime_coordinates",
+        "zone_anchor_coordinates": "effective_runtime_coordinates",
+        "ut_attach_coordinates": "effective_runtime_coordinates",
+        "gw_selection_coordinates": "effective_runtime_coordinates",
+        "gz_fec_coordinates": "effective_runtime_coordinates",
+        "mixing_relocated_ground_with_fixed_zone_centers": False,
+    }
+    if coordinate_policy == "real_geographic":
+        effective_ground_model = derive_starlink_coordinate_consistent_ground_model(
+            propagated_slices[0],
+            ut_definitions=selected_uts,
+            gateway_definitions=effective_gateway_definitions,
+            zone_definitions=zone_catalog,
+            coordinate_policy=coordinate_policy,
+        )
         preview_ground_locations = None
+        effective_ut_definitions = [
+            dict(entry)
+            for entry in list(effective_ground_model["ut_definitions"])
+        ]
+        effective_gateway_definitions = [
+            dict(entry)
+            for entry in list(effective_ground_model["gateway_definitions"])
+        ]
+        effective_zone_catalog = [
+            dict(entry)
+            for entry in list(effective_ground_model["zone_definitions"])
+        ]
+        coordinate_semantics = dict(effective_ground_model["coordinate_semantics"])
+    elif coordinate_policy in {"shell_aware_consistent", "synthetic_shell_aware"}:
+        if zone_catalog:
+            effective_ground_model = derive_starlink_coordinate_consistent_ground_model(
+                propagated_slices[0],
+                ut_definitions=selected_uts,
+                gateway_definitions=effective_gateway_definitions,
+                zone_definitions=zone_catalog,
+                coordinate_policy=coordinate_policy,
+            )
+            preview_ground_locations = dict(effective_ground_model["ground_locations"])
+            effective_ut_definitions = [
+                dict(entry)
+                for entry in list(effective_ground_model["ut_definitions"])
+            ]
+            effective_gateway_definitions = [
+                dict(entry)
+                for entry in list(effective_ground_model["gateway_definitions"])
+            ]
+            effective_zone_catalog = [
+                dict(entry)
+                for entry in list(effective_ground_model["zone_definitions"])
+            ]
+            coordinate_semantics = dict(effective_ground_model["coordinate_semantics"])
+        else:
+            preview_ground_locations = derive_starlink_preview_ground_locations(
+                propagated_slices[0],
+                ut_ids=[str(entry["ut_id"]) for entry in selected_uts],
+                gateway_ids=[
+                    str(entry["gateway_id"]) for entry in effective_gateway_definitions
+                ],
+            )
+            coordinate_semantics = {
+                "mode": coordinate_policy,
+                "original_catalog_coordinates": "preserved in selected UT/GW catalogs",
+                "effective_runtime_coordinates": "derived from first propagated shell slice",
+                "coverage_coordinates": "effective_runtime_coordinates",
+                "zone_anchor_coordinates": "derived_from_ut_membership",
+                "ut_attach_coordinates": "effective_runtime_coordinates",
+                "gw_selection_coordinates": "effective_runtime_coordinates",
+                "gz_fec_coordinates": "effective_runtime_coordinates",
+                "mixing_relocated_ground_with_fixed_zone_centers": False,
+            }
+    else:
+        raise ValueError(f"unsupported coordinate policy: {coordinate_policy}")
     scenario = build_starlink_preview_scenario(
         layout=layout,
         time_slices=time_slices,
-        ut_definitions=selected_uts,
+        ut_definitions=effective_ut_definitions,
         gateway_definitions=effective_gateway_definitions,
-        zone_definitions=zone_catalog,
+        zone_definitions=effective_zone_catalog,
         ground_locations=preview_ground_locations,
         mini_internet_ix_offset=int(args.mini_internet_ix_offset),
     )
     effective_ground_locations = scenario.ground_locations
     emu = build_starlink_shell_emulator(
         layout,
-        ut_definitions=selected_uts,
+        ut_definitions=effective_ut_definitions,
         gateway_definitions=effective_gateway_definitions,
         mini_internet_node_prefix=str(args.mini_internet_node_prefix),
         mini_internet_ix_offset=int(args.mini_internet_ix_offset),
@@ -877,11 +972,14 @@ def main() -> int:
 
     topology_inventory = build_starlink_shell_topology_inventory(
         layout,
-        ut_definitions=selected_uts,
+        ut_definitions=effective_ut_definitions,
         gateway_definitions=effective_gateway_definitions,
         orbit_input_kind=orbit_input_kind,
         orbit_source=orbit_source,
         mini_internet_ix_offset=int(args.mini_internet_ix_offset),
+        ut_slots_per_terminal=1 + max(0, int(args.ut_slot_margin)),
+        gateway_slots_per_gateway=1 + max(0, int(args.gateway_slot_margin)),
+        cross_plane_slot_model="candidate_pair",
     )
     if seed_compiled:
         startup_profile_patch_summary = _apply_skyseed_lightweight_startup_profiles(
@@ -968,10 +1066,14 @@ def main() -> int:
         ),
         "ground_model": {
             "ut_catalog": [dict(entry) for entry in ut_catalog],
-            "selected_uts": [dict(entry) for entry in selected_uts],
+            "selected_uts": [dict(entry) for entry in original_selected_uts],
+            "effective_uts": [dict(entry) for entry in effective_ut_definitions],
             "gateway_catalog": [dict(entry) for entry in gateway_catalog],
-            "selected_gateways": [dict(entry) for entry in selected_gateways],
+            "selected_gateways": [dict(entry) for entry in original_selected_gateways],
             "effective_gateways": [dict(entry) for entry in effective_gateway_definitions],
+            "zone_catalog": [dict(entry) for entry in original_zone_catalog],
+            "effective_zone_catalog": [dict(entry) for entry in effective_zone_catalog],
+            "coordinate_semantics": dict(coordinate_semantics),
         },
         "shell_selection": selection.manifest,
         "layout": layout.to_dict(),
@@ -1023,6 +1125,7 @@ def main() -> int:
                 },
             },
             "ground": {
+                "coordinate_semantics": dict(coordinate_semantics),
                 "ut_coordinates": [
                     {
                         "ut_id": str(entry["ut_id"]),
@@ -1040,7 +1143,7 @@ def main() -> int:
                         },
                         "user_provided": bool(args.ut_ids),
                     }
-                    for entry in selected_uts
+                    for entry in original_selected_uts
                 ],
                 "gateway_coordinates": [
                     {
@@ -1059,7 +1162,43 @@ def main() -> int:
                             "altitude_km": effective_ground_locations[str(entry["gateway_id"])].altitude_km,
                         },
                     }
-                    for entry in selected_gateways
+                    for entry in original_selected_gateways
+                ],
+                "zone_coordinates": [
+                    {
+                        "zone_id": str(original["zone_id"]),
+                        "source": original.get("source"),
+                        "service_role": original.get("service_role"),
+                        "active_service": original.get("active_service"),
+                        "required_for_runtime": original.get("required_for_runtime"),
+                        "catalog_coordinates": {
+                            "latitude_deg": original.get("latitude_deg"),
+                            "longitude_deg": original.get("longitude_deg"),
+                            "altitude_km": original.get("altitude_km", 0.0),
+                        },
+                        "effective_coordinates": {
+                            "latitude_deg": effective.get("latitude_deg"),
+                            "longitude_deg": effective.get("longitude_deg"),
+                            "altitude_km": effective.get("altitude_km", 0.0),
+                        },
+                        "ut_ids": list(original.get("ut_ids", [])),
+                        "default_gateway": original.get("default_gateway"),
+                        "secondary_gateway": original.get("secondary_gateway"),
+                        "preferred_gateway_ids": list(
+                            original.get("preferred_gateway_ids", [])
+                        ),
+                    }
+                    for original in original_zone_catalog
+                    for effective in [
+                        next(
+                            (
+                                dict(entry)
+                                for entry in effective_zone_catalog
+                                if str(entry.get("zone_id")) == str(original.get("zone_id"))
+                            ),
+                            dict(original),
+                        )
+                    ]
                 ],
             },
             "mini_internet": {
@@ -1089,6 +1228,33 @@ def main() -> int:
         },
     }
     _write_json(shell_manifest_json_path, shell_manifest_payload)
+    _write_json(
+        effective_workload_catalog_json_path,
+        {
+            "schema": "skyseed_effective_workload_catalog_v1",
+            "ground_placement": str(args.ground_placement),
+            "coordinate_policy": str(coordinate_policy),
+            "coordinate_semantics": dict(coordinate_semantics),
+            "original_catalogs": {
+                "uts": [dict(entry) for entry in original_selected_uts],
+                "gateways": [dict(entry) for entry in original_selected_gateways],
+                "zones": [dict(entry) for entry in original_zone_catalog],
+            },
+            "effective_catalogs": {
+                "uts": [dict(entry) for entry in effective_ut_definitions],
+                "gateways": [dict(entry) for entry in effective_gateway_definitions],
+                "zones": [dict(entry) for entry in effective_zone_catalog],
+            },
+            "effective_ground_locations": {
+                node_id: {
+                    "latitude_deg": location.latitude_deg,
+                    "longitude_deg": location.longitude_deg,
+                    "altitude_km": location.altitude_km,
+                }
+                for node_id, location in sorted(effective_ground_locations.items())
+            },
+        },
+    )
     _write_json(
         propagated_positions_json_path,
         {
@@ -1342,6 +1508,94 @@ def main() -> int:
         },
     }
     _write_json(temporal_plan_json_path, temporal_plan_payload)
+    preview_update_counters = dict(temporal_plan_payload.get("preview_update_counters", {}))
+
+    risky_coverage_margin_zones: List[Dict[str, Any]] = []
+    zone_quality_summary = dict(gz_planning_artifacts.get("zone_anchor_quality_summary", {}))
+    for zone in list(zone_quality_summary.get("zones", [])):
+        min_margin = zone.get("coverage_margin_deg_min")
+        if min_margin is None:
+            continue
+        if float(min_margin) <= 3.0:
+            risky_coverage_margin_zones.append(
+                {
+                    "zone_id": zone.get("zone_id"),
+                    "coverage_margin_deg_min": min_margin,
+                    "handover_count": zone.get("handover_count"),
+                    "unresolved_count": zone.get("unresolved_count"),
+                }
+            )
+    selected_ut_roles: Dict[str, int] = {}
+    for ut in effective_ut_definitions:
+        role = str(
+            ut.get("role")
+            or ut.get("workload_role")
+            or ut.get("placement_role")
+            or "unspecified"
+        )
+        selected_ut_roles[role] = selected_ut_roles.get(role, 0) + 1
+    boundary_ut_count = sum(
+        count
+        for role, count in selected_ut_roles.items()
+        if "boundary" in role or "zone-boundary" in role
+    )
+    remote_return_ut_count = sum(
+        count
+        for role, count in selected_ut_roles.items()
+        if "remote" in role or "return" in role
+    )
+    s4_preview_readiness = {
+        "schema_version": "skyseed-s4-preview-readiness-v1",
+        "dry_run_preview_only": True,
+        "real_runtime_executed": False,
+        "planned_shell_id": args.planned_shell_id if args.orbit_input_mode == "planned-shell" else None,
+        "is_s4_preview": (
+            args.orbit_input_mode == "planned-shell"
+            and str(args.planned_shell_id).upper() == "S4"
+        ),
+        "expected_runtime_epoch_density": (
+            len(temporal_plan.runtime_epochs) / len(temporal_plan.orbit_samples)
+            if temporal_plan.orbit_samples
+            else 0.0
+        ),
+        "expected_parameter_epoch_density": (
+            len(temporal_plan.parameter_epochs) / len(temporal_plan.orbit_samples)
+            if temporal_plan.orbit_samples
+            else 0.0
+        ),
+        "expected_gz_fec_count": {
+            "forward_fec_count": sum(
+                len(list(plan.get("forward_fecs", [])))
+                for plan in list(gz_planning_artifacts.get("gz_fec_plan", {}).get("plans", []))
+            ),
+            "return_fec_count": sum(
+                len(list(plan.get("return_fecs", [])))
+                for plan in list(gz_planning_artifacts.get("gz_fec_plan", {}).get("plans", []))
+            ),
+        },
+        "expected_bpf_owned_scope_count": preview_update_counters.get(
+            "expected_bpf_owned_scope_count"
+        ),
+        "ut_gw_zone_coverage_summary": {
+            "selected_ut_count": len(effective_ut_definitions),
+            "selected_gateway_count": len(effective_gateway_definitions),
+            "selected_zone_count": len(effective_zone_catalog),
+            "ut_role_counts": selected_ut_roles,
+        },
+        "coordinate_semantics": dict(coordinate_semantics),
+        "boundary_ut_count": boundary_ut_count,
+        "remote_return_ut_count": remote_return_ut_count,
+        "risky_coverage_margin_zones": risky_coverage_margin_zones,
+        "recommendation": (
+            "s4_preview_suitable_for_bounded_real_runtime"
+            if (
+                args.orbit_input_mode == "planned-shell"
+                and str(args.planned_shell_id).upper() == "S4"
+                and not risky_coverage_margin_zones
+            )
+            else "review_preview_or_consider_s3_720_fallback_before_real_runtime"
+        ),
+    }
 
     serving_change_events = _change_events(
         field_name="active_serving_satellite_ids",
@@ -1410,11 +1664,12 @@ def main() -> int:
         "selected_satellite_count": len(selection.selected_records),
         "ground_model": summarize_ground_model(
             ut_catalog=ut_catalog,
-            selected_uts=selected_uts,
+            selected_uts=effective_ut_definitions,
             gateway_catalog=gateway_catalog,
-            selected_gateways=selected_gateways,
-            zone_catalog=zone_catalog,
+            selected_gateways=effective_gateway_definitions,
+            zone_catalog=effective_zone_catalog,
         ),
+        "coordinate_semantics": dict(coordinate_semantics),
         "time_slices": {
             "start_time_utc": start_time.isoformat().replace("+00:00", "Z"),
             "step_seconds": effective_event_evaluation_interval,
@@ -1465,6 +1720,8 @@ def main() -> int:
             "parameter_epoch_count": len(temporal_plan.parameter_epochs),
             "no_op_sample_count": temporal_plan.no_op_sample_count,
             "event_time_summary": temporal_plan.event_time_summary,
+            "preview_update_counters": preview_update_counters,
+            "s4_preview_readiness": s4_preview_readiness,
             "queue_model_comparison": temporal_plan_payload.get("queue_model_comparison", {}),
             "runtime_epoch_summaries": [
                 {
@@ -1505,6 +1762,7 @@ def main() -> int:
                 zone_anchor_quality_summary_json_path
             ),
             "zone_availability_analysis_json": str(zone_availability_analysis_json_path),
+            "effective_workload_catalog_json": str(effective_workload_catalog_json_path),
         },
         "seed_topology": {
             "emulator_constructed": True,

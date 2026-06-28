@@ -728,6 +728,13 @@ def build_backend_audit_report(
                 parameter_map["summary"]["parameter_entry_count"]
                 == len(parameter_map["bpf_maps"]["parameter_values"])
             ),
+            "status": (
+                "not_applicable"
+                if int(parameter_map["summary"].get("planned_parameter_epoch_count") or 0) == 0
+                and int(parameter_map["summary"].get("parameter_entry_count") or 0) == 0
+                and len(parameter_map["bpf_maps"].get("parameter_values", [])) == 0
+                else "checked"
+            ),
             "parameter_link_count": parameter_map["summary"]["parameter_link_count"],
             "drop_loss_entry_count": parameter_map["summary"]["drop_loss_entry_count"],
         },
@@ -837,6 +844,29 @@ def normalized_parameter_self_checks(parameter_map: dict[str, Any]) -> dict[str,
     active_generation = int(
         parameter_map["bpf_maps"].get("parameter_generation", {}).get("value") or 0
     )
+    if (
+        int(parameter_map.get("summary", {}).get("planned_parameter_epoch_count") or 0) == 0
+        and int(parameter_map.get("summary", {}).get("parameter_entry_count") or 0) == 0
+        and not generations
+    ):
+        return {
+            name: {
+                "ok": True,
+                "status": "not_applicable",
+                "probe": None,
+                "note": (
+                    "No ParameterEpoch exists in the source artifact; parameter "
+                    "shadow consistency is not applicable unless a real parameter "
+                    "map mismatch is observed."
+                ),
+            }
+            for name in [
+                "missing_parameter_generation_fail_closed",
+                "missing_parameter_fail_closed",
+                "inactive_parameter_tombstone_fail_closed",
+                "future_parameter_generation_not_active",
+            ]
+        }
     if not any(int(item.get("generation_id", -1)) > active_generation for item in generations):
         checks["future_parameter_generation_not_active"] = {
             "ok": True,

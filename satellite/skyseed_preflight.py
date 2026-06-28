@@ -13,7 +13,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Sequence
 
 from mpls_host import probe_host_mpls_readiness
 
@@ -21,6 +21,14 @@ WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
 SATELLITE_DIR = Path(__file__).resolve().parent
 DEFAULT_RUN_ROOT = SATELLITE_DIR / "output" / "starlink_shell_experiments"
 DEFAULT_STATUS_DIR = SATELLITE_DIR / "output"
+PREFLIGHT_PROFILE_DEFAULT = "default"
+PREFLIGHT_PROFILE_OPERATIONAL_CLEAN_BPF_OWNED = "operational-clean-bpf-owned"
+PREFLIGHT_PROFILE_LEGACY_MPLS = "legacy-mpls"
+PREFLIGHT_PROFILES = (
+    PREFLIGHT_PROFILE_DEFAULT,
+    PREFLIGHT_PROFILE_OPERATIONAL_CLEAN_BPF_OWNED,
+    PREFLIGHT_PROFILE_LEGACY_MPLS,
+)
 SKYSEED_COMPOSE_PROJECT = "seed_output"
 SKYSEED_COMPOSE_FILE_NAME = "docker-compose.yml"
 BRIDGE_NETFILTER_SYSCTLS = (
@@ -39,6 +47,7 @@ SKYSEED_CONTAINER_PATTERNS = (
     re.compile(r"^[0-9a-f]{12}_ut\d+-placeholder-rtr$"),
 )
 SKYSEED_NETWORK_PATTERNS = (
+    re.compile(r"^seed_output_"),
     re.compile(r"^skyseed-sat-runtime-mgmt$"),
     re.compile(r"^ut\d+-access-slot\d+$"),
     re.compile(r"^gw\d+-gateway-slot\d+$"),
@@ -105,6 +114,25 @@ def _sysctl_probe(name: str) -> Dict[str, Any]:
 
 def _matches_any(value: str, patterns: Sequence[re.Pattern[str]]) -> bool:
     return any(pattern.search(value) for pattern in patterns)
+
+
+def _normalize_preflight_profile(profile: str | None) -> str:
+    value = str(profile or PREFLIGHT_PROFILE_DEFAULT).strip().lower().replace("_", "-")
+    aliases = {
+        "clean": PREFLIGHT_PROFILE_OPERATIONAL_CLEAN_BPF_OWNED,
+        "operational-clean": PREFLIGHT_PROFILE_OPERATIONAL_CLEAN_BPF_OWNED,
+        "bpf-owned": PREFLIGHT_PROFILE_OPERATIONAL_CLEAN_BPF_OWNED,
+        "strict-bpf-owned": PREFLIGHT_PROFILE_OPERATIONAL_CLEAN_BPF_OWNED,
+        "mpls": PREFLIGHT_PROFILE_LEGACY_MPLS,
+        "linux-mpls": PREFLIGHT_PROFILE_LEGACY_MPLS,
+    }
+    value = aliases.get(value, value)
+    if value not in PREFLIGHT_PROFILES:
+        raise ValueError(
+            "unknown Skyseed preflight profile "
+            f"{profile!r}; expected one of {', '.join(PREFLIGHT_PROFILES)}"
+        )
+    return value
 
 
 def _docker_container_state() -> Dict[str, Any]:
@@ -284,6 +312,7 @@ def direct_backend_host_artifacts_report() -> Dict[str, Any]:
 
 def cleanup_direct_backend_host_artifacts(
     interface_names: Sequence[str] | None = None,
+    progress_callback: Callable[[Dict[str, Any]], None] | None = None,
 ) -> Dict[str, Any]:
     """Delete only Skyseed direct-backend host artifacts matched by stable name patterns."""
 
@@ -302,22 +331,46 @@ def cleanup_direct_backend_host_artifacts(
     removed: List[str] = []
     skipped_absent: List[str] = []
     failed: List[Dict[str, Any]] = []
-    for name in target_names:
+    total = len(target_names)
+    if progress_callback is not None:
+        progress_callback(
+            {
+                "phase": "direct_backend_host_interface_cleanup",
+                "completed_interface_count": 0,
+                "total_interface_count": total,
+                "removed_interface_count": 0,
+                "skipped_absent_interface_count": 0,
+                "failed_interface_removal_count": 0,
+            }
+        )
+    for index, name in enumerate(target_names, start=1):
         completed = _run(["sudo", "-n", "ip", "link", "del", name])
         if completed.returncode == 0:
             removed.append(name)
-            continue
-        stderr = completed.stderr.strip()
-        if "Cannot find device" in stderr:
-            skipped_absent.append(name)
-            continue
-        failed.append(
-            {
-                "interface_name": name,
-                "returncode": completed.returncode,
-                "stderr": stderr,
-            }
-        )
+        else:
+            stderr = completed.stderr.strip()
+            if "Cannot find device" in stderr:
+                skipped_absent.append(name)
+            else:
+                failed.append(
+                    {
+                        "interface_name": name,
+                        "returncode": completed.returncode,
+                        "stderr": stderr,
+                    }
+                )
+        if progress_callback is not None:
+            progress_callback(
+                {
+                    "phase": "direct_backend_host_interface_cleanup",
+                    "interface_name": name,
+                    "completed_interface_count": index,
+                    "total_interface_count": total,
+                    "removed_interface_count": len(removed),
+                    "skipped_absent_interface_count": len(skipped_absent),
+                    "failed_interface_removal_count": len(failed),
+                }
+            )
     after = _direct_backend_host_artifacts()
     remaining = list(after.get("interfaces", []))
     return {
@@ -332,6 +385,193 @@ def cleanup_direct_backend_host_artifacts(
         "removed_interface_count": len(removed),
         "remaining_interface_count": len(remaining),
         "all_removed": not remaining and not failed,
+    }
+
+
+def _runtime_lock_path_allowed(path: Path) -> bool:
+    try:
+        resolved = path.expanduser().resolve(strict=False)
+    except OSError:
+        return False
+    roots = (
+        DEFAULT_RUN_ROOT.resolve(strict=False),
+        DEFAULT_STATUS_DIR.resolve(strict=False),
+    )
+    return any(resolved == root or root in resolved.parents for root in roots)
+
+
+def _cleanup_command_result(
+    *,
+    command: Sequence[str],
+    apply: bool,
+) -> Dict[str, Any]:
+    if not apply:
+        return {
+            "command": list(command),
+            "planned": True,
+            "executed": False,
+            "returncode": None,
+            "stdout": "",
+            "stderr": "",
+            "ok": None,
+        }
+    completed = _run(command)
+    return {
+        "command": list(command),
+        "planned": True,
+        "executed": True,
+        "returncode": completed.returncode,
+        "stdout": completed.stdout.strip(),
+        "stderr": completed.stderr.strip(),
+        "ok": completed.returncode == 0,
+    }
+
+
+def _cleanup_resource_names(
+    entries: Sequence[Dict[str, Any]],
+    *,
+    patterns: Sequence[re.Pattern[str]] | None = None,
+) -> List[str]:
+    names = sorted({str(entry.get("name") or "") for entry in entries if entry.get("name")})
+    if patterns is None:
+        return names
+    return [name for name in names if _matches_any(name, patterns)]
+
+
+def cleanup_skyseed_environment_residue(
+    *,
+    preflight_report: Dict[str, Any] | None = None,
+    apply: bool = False,
+    include_runtime_locks: bool = True,
+) -> Dict[str, Any]:
+    """Plan or remove only scoped Skyseed runtime residue discovered by preflight."""
+
+    report = preflight_report if preflight_report is not None else run_skyseed_preflight()
+    checks = dict(report.get("checks") or {})
+    docker_state = dict(checks.get("docker_state") or {})
+    containers = dict(docker_state.get("containers") or {})
+    networks = dict(docker_state.get("networks") or {})
+    direct_state = dict(checks.get("direct_backend_host_artifacts") or {})
+    lock_state = dict(checks.get("runtime_lock_files") or {})
+
+    compose_project_containers = _cleanup_resource_names(
+        list(containers.get("compose_project_containers") or [])
+    )
+    named_containers = _cleanup_resource_names(
+        list(containers.get("named_skyseed_containers") or []),
+        patterns=SKYSEED_CONTAINER_PATTERNS,
+    )
+    container_names = sorted(set(compose_project_containers + named_containers))
+    compose_project_networks = _cleanup_resource_names(
+        list(networks.get("compose_project_networks") or [])
+    )
+    named_networks = _cleanup_resource_names(
+        list(networks.get("named_skyseed_networks") or []),
+        patterns=SKYSEED_NETWORK_PATTERNS,
+    )
+    network_names = sorted(set(compose_project_networks + named_networks))
+    interface_names = sorted(
+        {
+            str(name)
+            for name in list(direct_state.get("interfaces") or [])
+            if _matches_any(str(name), DIRECT_BACKEND_HOST_INTERFACE_PATTERNS)
+        }
+    )
+    lock_paths = [
+        str(Path(path).expanduser().resolve(strict=False))
+        for path in list(lock_state.get("files") or [])
+        if include_runtime_locks and _runtime_lock_path_allowed(Path(path))
+    ]
+
+    command_results: List[Dict[str, Any]] = []
+    if container_names:
+        command_results.append(
+            _cleanup_command_result(
+                command=["docker", "rm", "-f", *container_names],
+                apply=apply,
+            )
+        )
+    if network_names:
+        command_results.append(
+            _cleanup_command_result(
+                command=["docker", "network", "rm", *network_names],
+                apply=apply,
+            )
+        )
+    if interface_names:
+        if apply:
+            interface_cleanup = cleanup_direct_backend_host_artifacts(interface_names)
+            command_results.extend(
+                {
+                    "command": ["sudo", "-n", "ip", "link", "del", name],
+                    "planned": True,
+                    "executed": True,
+                    "returncode": 0 if name in interface_cleanup.get("removed_interface_names", []) else None,
+                    "stdout": "",
+                    "stderr": "",
+                    "ok": name in interface_cleanup.get("removed_interface_names", [])
+                    or name in interface_cleanup.get("skipped_absent_interface_names", []),
+                }
+                for name in interface_names
+            )
+        else:
+            command_results.extend(
+                _cleanup_command_result(
+                    command=["sudo", "-n", "ip", "link", "del", name],
+                    apply=False,
+                )
+                for name in interface_names
+            )
+    removed_lock_paths: List[str] = []
+    failed_lock_paths: List[Dict[str, Any]] = []
+    for lock_path in lock_paths:
+        command_results.append(
+            _cleanup_command_result(
+                command=["rm", "-f", lock_path],
+                apply=False,
+            )
+        )
+        if apply:
+            try:
+                Path(lock_path).unlink(missing_ok=True)
+                removed_lock_paths.append(lock_path)
+            except OSError as exc:
+                failed_lock_paths.append({"path": lock_path, "error": str(exc)})
+            command_results[-1].update(
+                {
+                    "executed": True,
+                    "returncode": 0 if lock_path in removed_lock_paths else 1,
+                    "ok": lock_path in removed_lock_paths,
+                    "stderr": ""
+                    if lock_path in removed_lock_paths
+                    else (failed_lock_paths[-1]["error"] if failed_lock_paths else ""),
+                }
+            )
+
+    executed_results = [result for result in command_results if result.get("executed")]
+    failed_results = [
+        result for result in executed_results if result.get("ok") is not True
+    ]
+    return {
+        "scope": "skyseed_only",
+        "dry_run": not apply,
+        "applied": bool(apply),
+        "resource_counts": {
+            "containers": len(container_names),
+            "networks": len(network_names),
+            "direct_backend_host_interfaces": len(interface_names),
+            "runtime_lock_files": len(lock_paths),
+        },
+        "resource_names": {
+            "containers": container_names,
+            "networks": network_names,
+            "direct_backend_host_interfaces": interface_names,
+            "runtime_lock_files": lock_paths,
+        },
+        "command_results": command_results,
+        "removed_runtime_lock_files": removed_lock_paths,
+        "failed_runtime_lock_files": failed_lock_paths,
+        "success": not failed_results,
     }
 
 
@@ -374,6 +614,30 @@ def _bridge_netfilter() -> Dict[str, Any]:
         "sysctls": probes,
         "passthrough_ready": not not_passthrough,
         "blocking_sysctls": not_passthrough,
+    }
+
+
+def _skipped_host_mpls_readiness(*, profile: str) -> Dict[str, Any]:
+    return {
+        "requirements": {
+            "host_kernel_modules": [],
+            "host_sysctls": [],
+            "iproute2_features": [],
+        },
+        "host": {
+            "modules": {},
+            "sysctls": {},
+            "iproute2": {},
+        },
+        "assessment": {
+            "ready": None,
+            "skipped": True,
+            "skip_reason": f"{profile}_does_not_require_host_mpls_preflight",
+            "blocking_reasons": [],
+            "recommended_next_steps": [
+                "Host MPLS readiness was skipped for the BPF-owned operational-clean profile.",
+            ],
+        },
     }
 
 
@@ -517,67 +781,106 @@ def _cleanup_suggestions(report: Dict[str, Any]) -> List[Dict[str, Any]]:
     return suggestions
 
 
-def run_skyseed_preflight(*, ignore_pids: Sequence[int] | None = None) -> Dict[str, Any]:
-    docker_version = _run_jsonable(["docker", "--version"])
-    docker_compose_version = _run_jsonable(["docker-compose", "version"])
-    docker_state = {
-        "containers": _docker_container_state(),
-        "networks": _docker_network_state(),
+def _skyseed_cleanliness_counts(checks: Dict[str, Any]) -> Dict[str, int]:
+    docker_state = dict(checks.get("docker_state") or {})
+    containers = dict(docker_state.get("containers") or {})
+    networks = dict(docker_state.get("networks") or {})
+    return {
+        "compose_project_containers": len(
+            list(containers.get("compose_project_containers") or [])
+        ),
+        "named_skyseed_containers": len(
+            list(containers.get("named_skyseed_containers") or [])
+        ),
+        "compose_project_networks": len(
+            list(networks.get("compose_project_networks") or [])
+        ),
+        "named_skyseed_networks": len(
+            list(networks.get("named_skyseed_networks") or [])
+        ),
+        "direct_backend_host_interfaces": len(
+            list(
+                dict(checks.get("direct_backend_host_artifacts") or {}).get(
+                    "interfaces",
+                    [],
+                )
+            )
+        ),
+        "runtime_lock_files": len(
+            list(dict(checks.get("runtime_lock_files") or {}).get("files", []))
+        ),
+        "compose_or_runtime_processes": len(
+            list(dict(checks.get("compose_processes") or {}).get("processes", []))
+        ),
     }
-    compose_processes = _compose_processes(ignore_pids=ignore_pids)
-    direct_backend = _direct_backend_host_artifacts()
-    runtime_locks = _runtime_lock_files()
-    disk_space = _disk_space()
-    mpls = probe_host_mpls_readiness()
-    bridge_netfilter = _bridge_netfilter()
-    python_runtime = _python_runtime()
+
+
+def _assess_skyseed_preflight(
+    checks: Dict[str, Any],
+    *,
+    profile: str,
+) -> Dict[str, Any]:
+    profile = _normalize_preflight_profile(profile)
+    docker_toolchain = dict(checks.get("docker_toolchain") or {})
+    docker_state = dict(checks.get("docker_state") or {})
+    containers = dict(docker_state.get("containers") or {})
+    disk_space = dict(checks.get("disk_space") or {})
+    mpls = dict(checks.get("host_mpls") or {})
+    bridge_netfilter = dict(checks.get("bridge_netfilter") or {})
+    python_runtime = dict(checks.get("python_runtime") or {})
+    compose_processes = dict(checks.get("compose_processes") or {})
+    cleanliness_counts = _skyseed_cleanliness_counts(checks)
+    clean_residue_reasons = [
+        name for name, count in cleanliness_counts.items() if int(count) > 0
+    ]
 
     warnings: List[str] = []
     blocking: List[str] = []
 
-    if not docker_version.get("ok"):
+    if not dict(docker_toolchain.get("docker") or {}).get("ok"):
         blocking.append("docker_unavailable")
-    if not docker_compose_version.get("ok"):
+    if not dict(docker_toolchain.get("docker_compose") or {}).get("ok"):
         blocking.append("docker_compose_unavailable")
     if compose_processes.get("processes"):
         blocking.append("skyseed_compose_or_runtime_processes_present")
-    compose_project_container_count = len(
-        docker_state["containers"].get("compose_project_containers", [])
-    )
-    named_container_count = len(
-        docker_state["containers"].get("named_skyseed_containers", [])
-    )
+
     compose_project_state_counts = dict(
-        docker_state["containers"].get("compose_project_state_counts", {})
+        containers.get("compose_project_state_counts", {})
     )
-    compose_project_network_count = len(
-        docker_state["networks"].get("compose_project_networks", [])
-    )
-    named_network_count = len(
-        docker_state["networks"].get("named_skyseed_networks", [])
-    )
-    if compose_project_container_count or compose_project_network_count:
+    if cleanliness_counts["compose_project_containers"] or cleanliness_counts[
+        "compose_project_networks"
+    ]:
         warnings.append("seed_output_compose_resources_present")
-    if named_container_count:
+    if cleanliness_counts["named_skyseed_containers"]:
         warnings.append("named_skyseed_containers_present")
     if (
         int(compose_project_state_counts.get("exited", 0)) > 0
         or int(compose_project_state_counts.get("other", 0)) > 0
     ):
         warnings.append("seed_output_partial_container_state_present")
-    if named_network_count:
+    if cleanliness_counts["named_skyseed_networks"]:
         warnings.append("named_skyseed_networks_present")
-    if direct_backend.get("interfaces"):
+    if cleanliness_counts["direct_backend_host_interfaces"]:
         warnings.append("direct_backend_host_interfaces_present")
-    if runtime_locks.get("files"):
+    if cleanliness_counts["runtime_lock_files"]:
         warnings.append("runtime_lock_files_present")
-    if disk_space["free_bytes"] < LOW_DISK_ERROR_BYTES:
+
+    free_bytes = int(disk_space.get("free_bytes") or 0)
+    if free_bytes < LOW_DISK_ERROR_BYTES:
         blocking.append("disk_space_critically_low")
-    elif disk_space["free_bytes"] < LOW_DISK_WARN_BYTES:
+    elif free_bytes < LOW_DISK_WARN_BYTES:
         warnings.append("disk_space_low")
-    if mpls["assessment"]["ready"] is not True:
-        warnings.append("host_mpls_not_ready")
-    if bridge_netfilter["passthrough_ready"] is not True:
+
+    host_mpls_assessment = dict(mpls.get("assessment") or {})
+    if host_mpls_assessment.get("skipped") is True:
+        warnings.append("host_mpls_preflight_skipped")
+    elif host_mpls_assessment.get("ready") is not True:
+        if profile == PREFLIGHT_PROFILE_LEGACY_MPLS:
+            blocking.append("host_mpls_not_ready")
+        else:
+            warnings.append("host_mpls_not_ready")
+
+    if bridge_netfilter.get("passthrough_ready") is not True:
         warnings.append("bridge_netfilter_passthrough_not_ready")
     if python_runtime.get("supported_version") is not True:
         warnings.append("python_version_too_old_for_seedemu_runtime")
@@ -589,9 +892,49 @@ def run_skyseed_preflight(*, ignore_pids: Sequence[int] | None = None) -> Dict[s
     if python_runtime.get("legacy_seed_emulator_pythonpath_override_present") is True:
         warnings.append("legacy_seed_emulator_pythonpath_override_present")
 
+    clean_environment_required = profile == PREFLIGHT_PROFILE_OPERATIONAL_CLEAN_BPF_OWNED
+    if clean_environment_required and clean_residue_reasons:
+        blocking.append("skyseed_environment_not_clean")
+
+    return {
+        "profile": profile,
+        "ready": not blocking,
+        "clean_environment_required": clean_environment_required,
+        "environment_clean": not clean_residue_reasons,
+        "cleanliness_counts": cleanliness_counts,
+        "clean_residue_reasons": clean_residue_reasons,
+        "blocking_reasons": blocking,
+        "warning_reasons": warnings,
+    }
+
+
+def run_skyseed_preflight(
+    *,
+    ignore_pids: Sequence[int] | None = None,
+    profile: str = PREFLIGHT_PROFILE_DEFAULT,
+) -> Dict[str, Any]:
+    profile = _normalize_preflight_profile(profile)
+    docker_version = _run_jsonable(["docker", "--version"])
+    docker_compose_version = _run_jsonable(["docker-compose", "version"])
+    docker_state = {
+        "containers": _docker_container_state(),
+        "networks": _docker_network_state(),
+    }
+    compose_processes = _compose_processes(ignore_pids=ignore_pids)
+    direct_backend = _direct_backend_host_artifacts()
+    runtime_locks = _runtime_lock_files()
+    disk_space = _disk_space()
+    if profile == PREFLIGHT_PROFILE_OPERATIONAL_CLEAN_BPF_OWNED:
+        mpls = _skipped_host_mpls_readiness(profile=profile)
+    else:
+        mpls = probe_host_mpls_readiness()
+    bridge_netfilter = _bridge_netfilter()
+    python_runtime = _python_runtime()
+
     report = {
         "generated_at_utc": _timestamp_utc(),
         "workspace_root": str(WORKSPACE_ROOT),
+        "profile": profile,
         "checks": {
             "docker_toolchain": {
                 "docker": docker_version,
@@ -607,12 +950,11 @@ def run_skyseed_preflight(*, ignore_pids: Sequence[int] | None = None) -> Dict[s
             "bridge_netfilter": bridge_netfilter,
             "known_compose_outputs": _find_compose_outputs(),
         },
-        "assessment": {
-            "ready": not blocking,
-            "blocking_reasons": blocking,
-            "warning_reasons": warnings,
-        },
     }
+    report["assessment"] = _assess_skyseed_preflight(
+        report["checks"],
+        profile=profile,
+    )
     report["cleanup_suggestions"] = _cleanup_suggestions(report)
     return report
 
@@ -627,7 +969,10 @@ def render_preflight_summary(report: Dict[str, Any]) -> str:
     disk = report["checks"]["disk_space"]
     lines = [
         "Skyseed preflight",
+        f"  profile={assessment.get('profile', report.get('profile', PREFLIGHT_PROFILE_DEFAULT))}",
         f"  ready={assessment.get('ready')}",
+        f"  clean_environment_required={assessment.get('clean_environment_required')}",
+        f"  environment_clean={assessment.get('environment_clean')}",
         "  blocking_reasons="
         + (", ".join(assessment.get("blocking_reasons", [])) or "none"),
         "  warning_reasons="
@@ -654,10 +999,25 @@ def render_preflight_summary(report: Dict[str, Any]) -> str:
         f"  runtime_lock_files={len(report['checks']['runtime_lock_files'].get('files', []))}",
         f"  free_disk_gib={round(float(disk['free_bytes']) / (1024 ** 3), 2)}",
         f"  host_mpls_ready={report['checks']['host_mpls']['assessment'].get('ready')}",
+        f"  host_mpls_skipped={report['checks']['host_mpls']['assessment'].get('skipped', False)}",
         f"  bridge_netfilter_passthrough_ready={report['checks']['bridge_netfilter'].get('passthrough_ready')}",
     ]
     if report.get("cleanup_suggestions"):
         lines.append("  cleanup_suggestions:")
         for suggestion in report["cleanup_suggestions"]:
             lines.append(f"    - {suggestion['id']}: {suggestion['reason']}")
+    if report.get("cleanup_result"):
+        cleanup = dict(report.get("cleanup_result") or {})
+        counts = dict(cleanup.get("resource_counts") or {})
+        lines.append("  cleanup_result:")
+        lines.append(f"    dry_run={cleanup.get('dry_run')}")
+        lines.append(f"    applied={cleanup.get('applied')}")
+        lines.append(f"    success={cleanup.get('success')}")
+        lines.append(
+            "    resources="
+            + json.dumps(counts, sort_keys=True)
+        )
+        lines.append(
+            f"    command_count={len(list(cleanup.get('command_results') or []))}"
+        )
     return "\n".join(lines)
