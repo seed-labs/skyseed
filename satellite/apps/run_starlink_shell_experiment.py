@@ -3621,6 +3621,62 @@ def _parameter_batch_reclassification(
     }
 
 
+def _parameter_epoch_recovery_contract(
+    *,
+    effective_epoch_type: str,
+    operational_clean_mode: bool,
+    forwarding_backend: str,
+    planned_operations: Sequence[Dict[str, Any]],
+    runtime_update_plan: Any,
+    recovery_reason: str,
+) -> Dict[str, Any]:
+    plan_dict = (
+        runtime_update_plan.to_dict()
+        if hasattr(runtime_update_plan, "to_dict")
+        else dict(runtime_update_plan or {})
+    )
+    runtime_update_action_count = _count_runtime_update_actions(plan_dict)
+    operation_counts = Counter(
+        str(operation.get("operation") or "unknown")
+        for operation in planned_operations
+    )
+    structural_operation_counts = {
+        operation: count
+        for operation, count in sorted(operation_counts.items())
+        if operation != "update_slot_parameters"
+    }
+    strict_bpf_owned_parameter_epoch = (
+        str(effective_epoch_type) == "parameter_epoch"
+        and bool(operational_clean_mode)
+        and str(forwarding_backend) == "bpf_owned"
+    )
+    blocked = strict_bpf_owned_parameter_epoch
+    outcome_labels = [
+        "PARAMETER_UPDATE_HIDDEN_BPF_RECOVERY_BLOCKER",
+    ] if blocked else []
+    return {
+        "schema_version": "skyseed-parameter-epoch-recovery-contract-v1",
+        "effective_epoch_type": str(effective_epoch_type),
+        "operational_clean_mode": bool(operational_clean_mode),
+        "forwarding_backend": str(forwarding_backend),
+        "recovery_reason": str(recovery_reason),
+        "allowed": not blocked,
+        "blocked": blocked,
+        "blocker_label": (
+            "PARAMETER_UPDATE_HIDDEN_BPF_RECOVERY_BLOCKER" if blocked else None
+        ),
+        "reason": (
+            "strict_bpf_owned_parameter_epoch_must_not_hide_node_local_recovery"
+            if blocked
+            else "recovery_allowed_by_profile_contract"
+        ),
+        "runtime_update_action_count": int(runtime_update_action_count),
+        "operation_counts": dict(sorted(operation_counts.items())),
+        "structural_operation_counts": structural_operation_counts,
+        "outcome_labels": outcome_labels,
+    }
+
+
 def _parameter_update_category(operation: Dict[str, Any]) -> str:
     operation_name = str(operation.get("operation") or "")
     if operation_name in {
@@ -11488,6 +11544,35 @@ def _run_live_temporal_runtime(
                         and active_session is not None
                         and post_transition_connectivity.get("ping_success") is not True
                     ):
+                        recovery_contract = _parameter_epoch_recovery_contract(
+                            effective_epoch_type=effective_epoch_type,
+                            operational_clean_mode=operational_clean_mode,
+                            forwarding_backend=str(args.forwarding_backend),
+                            planned_operations=planned_operations,
+                            runtime_update_plan=context["runtime_update_plan"],
+                            recovery_reason="targeted_parameter_validation_failed",
+                        )
+                        if recovery_contract["allowed"] is not True:
+                            _progress(
+                                phase="epoch:parameter_epoch:recovery_blocked",
+                                event_type="parameter_epoch_recovery_blocked",
+                                phase_detail={
+                                    "epoch_id": next_entry.get("epoch_id"),
+                                    "segment_epoch_key": segment_key,
+                                    **dict(recovery_contract),
+                                },
+                                epoch_context={
+                                    **dict(current_epoch_context or {}),
+                                    "effective_epoch_type": effective_epoch_type,
+                                },
+                                runtime_epochs_completed=runtime_count,
+                                parameter_epochs_completed=parameter_count,
+                            )
+                            raise RuntimeError(
+                                "PARAMETER_UPDATE_HIDDEN_BPF_RECOVERY_BLOCKER:"
+                                "reason=targeted_parameter_validation_failed;"
+                                f"runtime_update_action_count={int(recovery_contract.get('runtime_update_action_count') or 0)}"
+                            )
                         _progress(
                             phase="epoch:parameter_epoch:recovery",
                             event_type="parameter_epoch_recovery_started",

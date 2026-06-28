@@ -24,6 +24,7 @@ from apps.run_skyseed_validation_profile import (
     build_underlying_command,
     detect_cleanup_residue,
     docker_dummy_network_capacity_gate,
+    evaluate_normal_path_artifact_contract,
     evaluate_static_inventory_precreated_connection_audit,
     evaluate_runtime_preload_diff_contract,
     evaluate_startup_operation_audit,
@@ -31,7 +32,9 @@ from apps.run_skyseed_validation_profile import (
     evaluate_startup_state_supervision_contract,
     external_cleanup_success,
     load_profile,
+    normalize_cleanup_report_contract,
     reconcile_lifecycle_horizon_completion_with_execution,
+    refresh_profile_run_summary_derived_artifacts,
     resolve_catalog_contract,
     run_cleanup_only,
     write_runtime_update_timing_evidence,
@@ -740,6 +743,420 @@ class SkyseedValidationProfileTests(unittest.TestCase):
         self.assertTrue(summary["runtime_or_bpf_reached"])
         self.assertEqual(summary["runtime_epochs_completed"], 3)
 
+    def test_first_failure_summary_reports_bpf_generation_capacity_blocker(
+        self,
+    ) -> None:
+        profile = load_profile("rich_s4_operational_clean_bpf_smoke")
+        with tempfile.TemporaryDirectory(dir="/home/seed/skyseed_runs") as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "real_runtime_report.json").write_text(
+                json.dumps(
+                    {
+                        "failure_context": {
+                            "current_epoch_context": {
+                                "runtime_epochs_completed": 1,
+                                "epoch_id": "runtimeepoch-capacity",
+                            },
+                            "exception": {
+                                "message": (
+                                    "bpf_owned_runtime_readiness_failed:"
+                                    "reason=operational_clean_bpf_map_reload_failed"
+                                ),
+                                "skyseed_details": {
+                                    "bpf_owned_readiness": {
+                                        "reason": "operational_clean_bpf_map_reload_failed",
+                                        "blocked_stage": "bpf_hotpath_map_reload",
+                                        "prepare_steps": {
+                                            "real_backend_prepare": {
+                                                "reason": (
+                                                    "operational_clean_bpf_map_reload_failed"
+                                                ),
+                                                "blocked_stage": "bpf_hotpath_map_reload",
+                                                "delta_attach_count": 0,
+                                                "full_attach_count": 0,
+                                                "reused_attach_count": 98,
+                                                "outcome_labels": [
+                                                    "RUNTIME_PRELOAD_SCHEDULED",
+                                                ],
+                                                "steps": {
+                                                    "preactivation_preload": {
+                                                        "ok": True,
+                                                        "map_write_update_count": 180,
+                                                        "outcome_labels": [
+                                                            "RUNTIME_MAP_DIFF_UPDATE_USED",
+                                                            "RUNTIME_NOOP_MAP_WRITES_SKIPPED",
+                                                        ],
+                                                    },
+                                                    "map_load": {
+                                                        "ok": False,
+                                                        "failed_map": (
+                                                            "ingress_classifier_map"
+                                                        ),
+                                                        "failed_operation": "update",
+                                                        "failed_generation": 1,
+                                                        "map_write_update_count": 0,
+                                                        "active_generation_update_count": 0,
+                                                        "generation_capacity_contracts": {
+                                                            "ingress_classifier_map": {
+                                                                "label": (
+                                                                    "BPF_MAP_GENERATION_CAPACITY_BLOCKER"
+                                                                ),
+                                                                "ok": False,
+                                                                "active_generation": 0,
+                                                                "target_generation": 1,
+                                                                "live_max_entries": 348,
+                                                                "required_capacity": 376,
+                                                                "retained_entry_count_after_gc": 240,
+                                                                "target_expected_entries": 120,
+                                                            }
+                                                        },
+                                                    },
+                                                },
+                                            }
+                                        },
+                                    }
+                                },
+                            },
+                        },
+                        "timing_summary": {"runtime_epoch_count": 1},
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            summary = _first_failure_summary(
+                profile=profile,
+                run_dir=run_dir,
+                runner_report={},
+                startup_contract={},
+                returncode=1,
+            )
+
+        self.assertEqual(
+            summary["first_failure_label"],
+            "BPF_MAP_GENERATION_CAPACITY_BLOCKER",
+        )
+        self.assertEqual(summary["blocked_stage"], "bpf_hotpath_map_reload")
+        self.assertEqual(summary["failed_map"], "ingress_classifier_map")
+        artifact_failure = summary["runtime_artifact_failure"]
+        self.assertTrue(artifact_failure["preactivation_preload_scheduled"])
+        self.assertEqual(artifact_failure["preactivation_preload_update_count"], 180)
+        self.assertIn(
+            "RUNTIME_MAP_DIFF_UPDATE_USED",
+            artifact_failure["outcome_labels"],
+        )
+        self.assertEqual(
+            artifact_failure["capacity_blockers"][0]["required_capacity"],
+            376,
+        )
+
+    def test_first_failure_summary_reports_parameter_delta_attach_blocker(
+        self,
+    ) -> None:
+        profile = load_profile("rich_s4_operational_clean_bpf_smoke")
+        with tempfile.TemporaryDirectory(dir="/home/seed/skyseed_runs") as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "real_runtime_report.json").write_text(
+                json.dumps(
+                    {
+                        "failure_context": {
+                            "current_epoch_context": {
+                                "classification": "parameter_epoch",
+                                "runtime_epochs_completed": 4,
+                                "parameter_epochs_completed": 0,
+                                "slice_id": "starlink-shell-slice-0011",
+                                "epoch_id": "parameterepoch-1",
+                            },
+                            "exception": {
+                                "message": (
+                                    "bpf_owned_runtime_readiness_failed:"
+                                    "reason=tc_bpf_mpls_delta_attach_failed"
+                                ),
+                                "skyseed_details": {
+                                    "bpf_owned_readiness": {
+                                        "reason": "tc_bpf_mpls_delta_attach_failed",
+                                        "blocked_stage": (
+                                            "bpf_owned_runtime_readiness"
+                                        ),
+                                        "packet_path_diagnostics": {
+                                            "packet_miss_delta": 0,
+                                            "packet_drop_delta": 0,
+                                        },
+                                        "prepare_steps": {
+                                            "real_backend_prepare": {
+                                                "reason": (
+                                                    "tc_bpf_mpls_delta_attach_failed"
+                                                ),
+                                                "delta_attach_count": 42,
+                                                "full_attach_count": 0,
+                                                "reused_attach_count": 98,
+                                            }
+                                        },
+                                    }
+                                },
+                            },
+                        },
+                        "timing_summary": {"runtime_epoch_count": 4},
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            summary = _first_failure_summary(
+                profile=profile,
+                run_dir=run_dir,
+                runner_report={},
+                startup_contract={},
+                returncode=1,
+            )
+
+        self.assertEqual(
+            summary["first_failure_label"],
+            "PARAMETER_UPDATE_TRIGGERED_DELTA_ATTACH_BLOCKER",
+        )
+        self.assertEqual(summary["runtime_epochs_completed"], 4)
+        artifact_failure = summary["runtime_artifact_failure"]
+        self.assertTrue(artifact_failure["parameter_delta_attach_blocker"])
+        self.assertEqual(artifact_failure["delta_attach_count"], 42)
+        self.assertIn(
+            "PARAMETER_UPDATE_TRIGGERED_DELTA_ATTACH_BLOCKER",
+            artifact_failure["outcome_labels"],
+        )
+
+    def test_first_failure_summary_reports_parameter_hidden_recovery_blocker(
+        self,
+    ) -> None:
+        profile = load_profile("rich_s4_operational_clean_bpf_smoke")
+        with tempfile.TemporaryDirectory(dir="/home/seed/skyseed_runs") as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "real_runtime_report.json").write_text(
+                json.dumps(
+                    {
+                        "failure_context": {
+                            "current_epoch_context": {
+                                "classification": "parameter_epoch",
+                                "runtime_epochs_completed": 4,
+                                "parameter_epochs_completed": 0,
+                            },
+                            "exception": {
+                                "message": (
+                                    "PARAMETER_UPDATE_HIDDEN_BPF_RECOVERY_BLOCKER:"
+                                    "reason=targeted_parameter_validation_failed"
+                                ),
+                                "skyseed_details": {},
+                            },
+                        },
+                        "timing_summary": {"runtime_epoch_count": 4},
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            summary = _first_failure_summary(
+                profile=profile,
+                run_dir=run_dir,
+                runner_report={},
+                startup_contract={},
+                returncode=1,
+            )
+
+        self.assertEqual(
+            summary["first_failure_label"],
+            "PARAMETER_UPDATE_HIDDEN_BPF_RECOVERY_BLOCKER",
+        )
+        artifact_failure = summary["runtime_artifact_failure"]
+        self.assertTrue(artifact_failure["parameter_hidden_bpf_recovery_blocker"])
+        self.assertIn(
+            "PARAMETER_UPDATE_HIDDEN_BPF_RECOVERY_BLOCKER",
+            artifact_failure["outcome_labels"],
+        )
+
+    def test_profile_run_summary_refreshes_derived_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/home/seed/skyseed_runs") as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "profile_run_summary.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "skyseed-validation-profile-summary-v1",
+                        "outcome_labels": ["OLD_LABEL"],
+                        "runtime_preload_diff_contract_audit": {
+                            "outcome_labels": [],
+                            "preactivation_preload_epoch_count": 0,
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (run_dir / "runtime_preload_diff_contract_audit.json").write_text(
+                json.dumps(
+                    {
+                        "outcome_labels": [
+                            "RUNTIME_PRELOAD_SCHEDULED",
+                            "RUNTIME_MAP_DIFF_UPDATE_USED",
+                        ],
+                        "preactivation_preload_epoch_count": 1,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (run_dir / "static_inventory_precreated_connection_audit.json").write_text(
+                json.dumps(
+                    {
+                        "outcome_labels": [
+                            "STATIC_INVENTORY_PRECREATED_CONNECTION_AUDIT_ADDED",
+                            "GW_SLOT_DERIVATION_CONFIRMED",
+                        ],
+                        "slot_derivation_audit": {
+                            "gw_max_simultaneous_slots": {
+                                "derivation_label": "GW_SLOT_DERIVATION_CONFIRMED",
+                            }
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (run_dir / "normal_failure_cleanup_report.json").write_text(
+                json.dumps(
+                    {
+                        "outcome_label": "CLEANUP_BOUNDARY_PASS",
+                        "cleanup_mode": "normal_failure_cleanup",
+                        "detector_source": "detect_cleanup_residue",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            summary = refresh_profile_run_summary_derived_artifacts(run_dir=run_dir)
+            written = json.loads(
+                (run_dir / "profile_run_summary.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(
+            summary["runtime_preload_diff_contract_audit"][
+                "preactivation_preload_epoch_count"
+            ],
+            1,
+        )
+        self.assertIn("RUNTIME_PRELOAD_SCHEDULED", summary["outcome_labels"])
+        self.assertIn("GW_SLOT_DERIVATION_CONFIRMED", summary["outcome_labels"])
+        self.assertIn("GLOBAL_SCAN_DIAGNOSTIC_ONLY", summary["outcome_labels"])
+        self.assertIn("NORMAL_FAILURE_CLEANUP_MODE", summary["outcome_labels"])
+        self.assertTrue(
+            summary["normal_failure_cleanup"]["global_scan_diagnostic_only"]
+        )
+        self.assertEqual(
+            written["derived_artifact_refresh"]["artifact_count"],
+            3,
+        )
+
+    def test_normal_path_artifact_contract_aggregates_explicit_plan_evidence(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/home/seed/skyseed_runs") as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "run_manifest.json").write_text(
+                json.dumps({"run_id": "run-a", "generated_artifacts": {}}) + "\n",
+                encoding="utf-8",
+            )
+            (run_dir / "prepared_update_bundle.json").write_text(
+                json.dumps(
+                    {
+                        "selected_epoch_queue": [{"epoch_id": "runtimeepoch-1"}],
+                        "continuous_runtime_execution": {
+                            "epoch_execution_queue": [{"epoch_id": "runtimeepoch-1"}],
+                            "resident_attach_coverage": {
+                                "compile_capacity_interfaces": ["netns:a:if0"],
+                            },
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (run_dir / "runtime_update_plan_summary.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "slice_id": "slice-1",
+                            "runtime_update_action_count": 1,
+                        }
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (run_dir / "horizon_execution_reconciled_summary.json").write_text(
+                json.dumps(
+                    {
+                        "horizon_selected_by": "EventTimeline",
+                        "selected_event_count": 1,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (run_dir / "runtime_preload_diff_contract_audit.json").write_text(
+                json.dumps(
+                    {
+                        "preactivation_preload_epoch_count": 1,
+                        "map_diff_update_epoch_count": 1,
+                        "outcome_labels": ["RUNTIME_PRELOAD_SCHEDULED"],
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (run_dir / "normal_failure_cleanup_report.json").write_text(
+                json.dumps(
+                    {
+                        "outcome_label": "CLEANUP_BOUNDARY_PASS",
+                        "cleanup_mode": "normal_failure_cleanup",
+                        "detector_source": "detect_cleanup_residue",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            contract = evaluate_normal_path_artifact_contract(run_dir=run_dir)
+            written = json.loads(
+                (run_dir / "normal_path_artifact_contract.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+
+        self.assertTrue(contract["run_manifest_present"])
+        self.assertTrue(contract["prepared_owned_resource_index_present"])
+        self.assertTrue(contract["explicit_runtime_update_plan_present"])
+        self.assertTrue(contract["explicit_event_timeline_plan_present"])
+        self.assertTrue(contract["explicit_bpf_preload_diff_plan_present"])
+        self.assertTrue(contract["normal_path_owned_scope_only"])
+        self.assertIn("NORMAL_PATH_OWNED_SCOPE_ONLY", contract["outcome_labels"])
+        self.assertIn("NORMAL_PATH_NO_HIDDEN_REPAIR", contract["outcome_labels"])
+        self.assertIn("GLOBAL_SCAN_DIAGNOSTIC_ONLY", contract["outcome_labels"])
+        self.assertEqual(written["runtime_update_plan_entry_count"], 1)
+
+    def test_cleanup_report_normalization_labels_legacy_cleanup_artifact(self) -> None:
+        normalized = normalize_cleanup_report_contract(
+            {
+                "schema_version": "skyseed-automated-cleanup-contract-v1",
+                "outcome_label": "CLEANUP_BOUNDARY_PASS",
+                "cleanup_mode": "normal_failure_cleanup",
+                "detector_source": "detect_cleanup_residue",
+                "external_cleanup_success": True,
+            }
+        )
+
+        self.assertTrue(normalized["global_scan_diagnostic_only"])
+        self.assertIn("CLEANUP_BOUNDARY_PASS", normalized["outcome_labels"])
+        self.assertIn("GLOBAL_SCAN_DIAGNOSTIC_ONLY", normalized["outcome_labels"])
+        self.assertIn("NORMAL_FAILURE_CLEANUP_MODE", normalized["outcome_labels"])
+
     def test_cleanup_evidence_labels_pre_cleanup_and_final_cleanup_separately(
         self,
     ) -> None:
@@ -1201,6 +1618,7 @@ class SkyseedValidationProfileTests(unittest.TestCase):
         )
         self.assertTrue(audit["summary"]["ut_current_next_semantics_confirmed"])
         self.assertTrue(audit["summary"]["gw_slot_derivation_complete"])
+        self.assertIn("GW_SLOT_DERIVATION_CONFIRMED", audit["outcome_labels"])
 
     def test_static_inventory_audit_reports_incomplete_gateway_slot_derivation(
         self,
@@ -1261,6 +1679,17 @@ class SkyseedValidationProfileTests(unittest.TestCase):
             audit = evaluate_static_inventory_precreated_connection_audit(
                 run_dir=run_dir,
             )
+            written = json.loads(
+                (run_dir / "static_inventory_precreated_connection_audit.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                written["slot_derivation_audit"]["gw_max_simultaneous_slots"][
+                    "missing_selected_gateway_ids_in_required_by_id"
+                ],
+                ["gw-b"],
+            )
 
         gw = audit["slot_derivation_audit"]["gw_max_simultaneous_slots"]
         self.assertFalse(audit["summary"]["gw_slot_derivation_complete"])
@@ -1268,6 +1697,90 @@ class SkyseedValidationProfileTests(unittest.TestCase):
         self.assertEqual(gw["missing_selected_gateway_ids_in_required_by_id"], ["gw-b"])
         self.assertEqual(gw["prepared_slot_count"], 4)
         self.assertEqual(gw["required_slot_count"], 2)
+
+    def test_static_inventory_audit_confirms_gw204_gw212_required_coverage(
+        self,
+    ) -> None:
+        selected_gateways = [f"gw2{i:02d}" for i in range(1, 13)]
+        with tempfile.TemporaryDirectory(dir="/home/seed/skyseed_runs") as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "topology.json").write_text(
+                json.dumps(
+                    {
+                        "slot_inventory": {
+                            "gateway_access": [
+                                {"slot_name": f"{gateway_id}-gateway-slot{slot}"}
+                                for gateway_id in selected_gateways
+                                for slot in range(2)
+                            ]
+                        }
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (run_dir / "link_state.json").write_text(
+                json.dumps({"slots": []}) + "\n",
+                encoding="utf-8",
+            )
+            (run_dir / "profile_catalog_gate.json").write_text(
+                json.dumps(
+                    {
+                        "selectors": {
+                            "gateway": {"selected_ids": selected_gateways},
+                        }
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (run_dir / "slot_capacity_audit.json").write_text(
+                json.dumps(
+                    {
+                        "calculation_basis": {
+                            "gateway_required_by_id": {
+                                gateway_id: 2 for gateway_id in selected_gateways
+                            },
+                            "active_link_max_concurrent_by_type": {
+                                "gw_access": 12,
+                            },
+                        },
+                        "prepared_slots_by_type": {"gw_access": 24},
+                        "required_max_concurrent_slots_by_type": {"gw_access": 24},
+                        "notes": {
+                            "gw_access": "derived from max simultaneous satellite connections plus margin",
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            audit = evaluate_static_inventory_precreated_connection_audit(
+                run_dir=run_dir,
+            )
+            written = json.loads(
+                (run_dir / "static_inventory_precreated_connection_audit.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+
+        gw = audit["slot_derivation_audit"]["gw_max_simultaneous_slots"]
+        self.assertTrue(audit["summary"]["gw_slot_derivation_complete"])
+        self.assertIn("GW_SLOT_DERIVATION_CONFIRMED", audit["outcome_labels"])
+        self.assertEqual(gw["derivation_label"], "GW_SLOT_DERIVATION_CONFIRMED")
+        self.assertEqual(gw["missing_selected_gateway_ids_in_required_by_id"], [])
+        self.assertIn("gw204", selected_gateways)
+        self.assertIn("gw212", selected_gateways)
+        self.assertEqual(gw["required_by_id_count"], 12)
+        self.assertEqual(gw["prepared_slot_count"], 24)
+        self.assertEqual(gw["required_slot_count"], 24)
+        self.assertEqual(
+            written["slot_derivation_audit"]["gw_max_simultaneous_slots"][
+                "derivation_label"
+            ],
+            "GW_SLOT_DERIVATION_CONFIRMED",
+        )
 
     def test_startup_cost_and_runtime_semantic_result_remain_separate(self) -> None:
         with tempfile.TemporaryDirectory(dir="/home/seed/skyseed_runs") as tmp:
@@ -1468,6 +1981,9 @@ class SkyseedValidationProfileTests(unittest.TestCase):
             report = run_cleanup_only(run_dir=Path(tmp), runner=fake_runner)
 
         self.assertTrue(report["external_cleanup_success"])
+        self.assertTrue(report["global_scan_diagnostic_only"])
+        self.assertIn("GLOBAL_SCAN_DIAGNOSTIC_ONLY", report["outcome_labels"])
+        self.assertIn("CLEANUP_ONLY_REPAIR_MODE", report["outcome_labels"])
         self.assertEqual(report["before"]["counts"]["direct_backend_host_interfaces"], 1)
         self.assertEqual(report["after"]["counts"]["direct_backend_host_interfaces"], 0)
         self.assertIn(
@@ -1586,6 +2102,10 @@ class SkyseedValidationProfileTests(unittest.TestCase):
         self.assertEqual(cleanup_only["detector_source"], "detect_cleanup_residue")
         self.assertEqual(normal_failure["detector_source"], "detect_cleanup_residue")
         self.assertEqual(cleanup_only["before"]["owner_patterns"], normal_failure["before"]["owner_patterns"])
+        self.assertIn("GLOBAL_SCAN_DIAGNOSTIC_ONLY", cleanup_only["outcome_labels"])
+        self.assertIn("CLEANUP_ONLY_REPAIR_MODE", cleanup_only["outcome_labels"])
+        self.assertIn("GLOBAL_SCAN_DIAGNOSTIC_ONLY", normal_failure["outcome_labels"])
+        self.assertIn("NORMAL_FAILURE_CLEANUP_MODE", normal_failure["outcome_labels"])
         self.assertEqual(normal_failure["cleanup_mode"], "normal_failure_cleanup")
         self.assertEqual(normal_failure["outcome_label"], "CLEANUP_BOUNDARY_PASS")
 
@@ -1841,6 +2361,103 @@ class SkyseedValidationProfileTests(unittest.TestCase):
             self.assertEqual(audit["preactivation_preload_epoch_count"], 1)
             self.assertTrue(audit["preload_contract_exercised"])
             self.assertEqual(audit["epoch_reports"][0]["observation_source"], "failure_context")
+            self.assertTrue(
+                audit["epoch_reports"][0]["preactivation_preload_map_diff_update_used"]
+            )
+            self.assertEqual(
+                audit["epoch_reports"][0]["preactivation_preload_map_diff_trace"][
+                    "ingress_classifier_map"
+                ]["insert_count"],
+                120,
+            )
+
+    def test_runtime_preload_audit_reports_preload_diff_when_activation_fails(self) -> None:
+        failure_readiness = {
+            "prepare_steps": {
+                "real_backend_prepare": {
+                    "steps": {
+                        "preactivation_preload": {
+                            "map_write_update_count": 180,
+                            "runtime_reload_attribution": {
+                                "runtime_update_phase": "preactivation_preload",
+                                "preactivation_preload": True,
+                                "map_diff_update_used": True,
+                                "noop_skipped_count": 98,
+                                "map_diff_trace": {
+                                    "ingress_classifier_map": {
+                                        "desired_count": 120,
+                                        "existing_count": 0,
+                                        "insert_count": 120,
+                                        "update_count": 0,
+                                        "delete_count": 0,
+                                        "noop_skipped_count": 0,
+                                        "wall_seconds": 0.1,
+                                    },
+                                    "interface_role_map": {
+                                        "desired_count": 98,
+                                        "existing_count": 98,
+                                        "insert_count": 0,
+                                        "update_count": 0,
+                                        "delete_count": 0,
+                                        "noop_skipped_count": 98,
+                                        "wall_seconds": 0.1,
+                                    },
+                                },
+                            },
+                        },
+                        "map_load": {
+                            "runtime_reload_attribution": {
+                                "runtime_update_phase": "steady_map_only",
+                                "preloaded_generation_used": False,
+                                "map_diff_update_used": False,
+                                "active_generation_flip_only": False,
+                                "full_generation_reload_blocker": False,
+                                "actual_data_write_count": 0,
+                                "noop_skipped_count": 0,
+                                "active_generation_before": 0,
+                                "active_generation_after": 0,
+                                "map_diff_trace": {},
+                            }
+                        },
+                    }
+                }
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "real_runtime_report.json").write_text(
+                json.dumps(
+                    {
+                        "failure_context": {
+                            "exception": {
+                                "skyseed_details": {
+                                    "bpf_owned_readiness": failure_readiness,
+                                }
+                            }
+                        }
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            audit = evaluate_runtime_preload_diff_contract(run_dir=run_dir)
+
+            self.assertIn("RUNTIME_PRELOAD_SCHEDULED", audit["outcome_labels"])
+            self.assertIn("RUNTIME_MAP_DIFF_UPDATE_USED", audit["outcome_labels"])
+            self.assertIn("RUNTIME_NOOP_MAP_WRITES_SKIPPED", audit["outcome_labels"])
+            self.assertIn("RUNTIME_PRELOAD_NOT_EXERCISED", audit["outcome_labels"])
+            self.assertFalse(audit["preload_contract_exercised"])
+            report = audit["epoch_reports"][0]
+            self.assertTrue(report["preactivation_preload_map_diff_update_used"])
+            self.assertEqual(report["preactivation_preload_noop_skipped_count"], 98)
+            self.assertEqual(
+                report["preactivation_preload_map_diff_trace"]["interface_role_map"][
+                    "noop_skipped_count"
+                ],
+                98,
+            )
 
     def test_stale_runtime_lock_removed_only_after_pid_not_found_check(self) -> None:
         commands: list[list[str]] = []

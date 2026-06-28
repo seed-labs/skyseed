@@ -2030,6 +2030,7 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
                         "NORMAL_PATH_OWNED_SCOPE_ONLY",
                         "NORMAL_PATH_NO_HIDDEN_REPAIR",
                         "OWNED_RESOURCE_INDEX_MISSING_BLOCKER",
+                        "GLOBAL_SCAN_DIAGNOSTIC_ONLY",
                     ],
                     "resource_groups": {
                         "temp_host_interface": 0,
@@ -2158,6 +2159,7 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
                     "NORMAL_PATH_OWNED_SCOPE_ONLY",
                     "NORMAL_PATH_NO_HIDDEN_REPAIR",
                     "CLEANUP_BOUNDED_OWNED_SCOPE_USED",
+                    "GLOBAL_SCAN_DIAGNOSTIC_ONLY",
                 ],
             }
 
@@ -3706,10 +3708,14 @@ class InProcessHostRuntimeManager:
                         "NORMAL_PATH_OWNED_SCOPE_ONLY",
                         "NORMAL_PATH_NO_HIDDEN_REPAIR",
                         *(
-                            ["FULL_SCOPE_RECOVERY_BLOCKER"]
+                            [
+                                "FULL_SCOPE_RECOVERY_BLOCKER",
+                                "NOOP_FULL_SCOPE_RECONCILE_BLOCKER",
+                            ]
                             if hidden_repair_blocked
                             else []
                         ),
+                        "GLOBAL_SCAN_DIAGNOSTIC_ONLY",
                     ],
                     "explicit_reconcile_slot_count": len(
                         {str(slot_name) for slot_name in reconcile_slot_names}

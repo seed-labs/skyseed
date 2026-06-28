@@ -979,24 +979,67 @@ def run_cleanup_only(
         runner=runner,
         run_root=run_dir.parent,
     )
+    cleanup_success = external_cleanup_success(after)
+    outcome_labels = [
+        success_outcome_label if cleanup_success else CLEANUP_INCOMPLETE_LABEL,
+        "GLOBAL_SCAN_DIAGNOSTIC_ONLY",
+    ]
+    if cleanup_mode == "cleanup_only_repair":
+        outcome_labels.append("CLEANUP_ONLY_REPAIR_MODE")
+    elif cleanup_mode == "normal_failure_cleanup":
+        outcome_labels.append("NORMAL_FAILURE_CLEANUP_MODE")
     report = {
         "schema_version": "skyseed-automated-cleanup-contract-v1",
-        "outcome_label": success_outcome_label
-        if external_cleanup_success(after)
-        else CLEANUP_INCOMPLETE_LABEL,
+        "outcome_label": outcome_labels[0],
+        "outcome_labels": list(dict.fromkeys(outcome_labels)),
         "cleanup_mode": cleanup_mode,
         "detector_source": "detect_cleanup_residue",
+        "global_scan_diagnostic_only": True,
         "teardown_only": True,
         "manual_cleanup": False,
         "preserved_first_failure_artifacts": preserved,
         "before": before,
         "commands": commands,
         "after": after,
-        "external_cleanup_success": external_cleanup_success(after),
+        "external_cleanup_success": cleanup_success,
         "internal_cleanup_success_requires_external_residue_zero": True,
     }
     _write_json(run_dir / report_filename, report)
     return report
+
+
+def normalize_cleanup_report_contract(report: Mapping[str, Any]) -> Dict[str, Any]:
+    normalized = dict(report)
+    cleanup_mode = str(normalized.get("cleanup_mode") or "")
+    outcome_label = str(normalized.get("outcome_label") or "")
+    labels = [str(label) for label in list(normalized.get("outcome_labels") or [])]
+    if outcome_label:
+        labels.append(outcome_label)
+    if str(normalized.get("detector_source") or "") == "detect_cleanup_residue":
+        normalized["global_scan_diagnostic_only"] = True
+        labels.append("GLOBAL_SCAN_DIAGNOSTIC_ONLY")
+    if cleanup_mode == "cleanup_only_repair":
+        labels.append("CLEANUP_ONLY_REPAIR_MODE")
+    elif cleanup_mode == "normal_failure_cleanup":
+        labels.append("NORMAL_FAILURE_CLEANUP_MODE")
+    normalized["outcome_labels"] = list(
+        dict.fromkeys(str(label) for label in labels if label)
+    )
+    return normalized
+
+
+def normalize_cleanup_report_artifact(
+    *,
+    run_dir: Path,
+    report_filename: str = "normal_failure_cleanup_report.json",
+) -> Dict[str, Any] | None:
+    report_path = run_dir / report_filename
+    report = _load_json_maybe(report_path)
+    if not isinstance(report, Mapping):
+        return None
+    normalized = normalize_cleanup_report_contract(report)
+    _write_json(report_path, normalized)
+    return normalized
 
 
 def _load_json_maybe(path: Path) -> Dict[str, Any] | None:
@@ -1007,6 +1050,62 @@ def _load_json_maybe(path: Path) -> Dict[str, Any] | None:
     except (OSError, json.JSONDecodeError):
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def _load_json_any(path: Path) -> Any:
+    if not path.exists() or path.stat().st_size == 0:
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def refresh_profile_run_summary_derived_artifacts(*, run_dir: Path) -> Dict[str, Any]:
+    summary_path = run_dir / "profile_run_summary.json"
+    summary = dict(_load_json_maybe(summary_path) or {})
+    if not summary:
+        summary = {
+            "schema_version": "skyseed-validation-profile-summary-v1",
+            "run_dir": str(run_dir),
+        }
+
+    derived_artifacts = {
+        "first_failure_summary": "first_failure_summary.json",
+        "runtime_preload_diff_contract_audit": "runtime_preload_diff_contract_audit.json",
+        "lifecycle_aware_horizon_contract": "horizon_execution_reconciled_summary.json",
+        "static_inventory_precreated_connection_audit": "static_inventory_precreated_connection_audit.json",
+        "normal_failure_cleanup": "normal_failure_cleanup_report.json",
+        "normal_path_artifact_contract": "normal_path_artifact_contract.json",
+    }
+    outcome_labels = list(summary.get("outcome_labels") or [])
+    refreshed: Dict[str, str] = {}
+    for summary_key, filename in derived_artifacts.items():
+        artifact = (
+            normalize_cleanup_report_artifact(run_dir=run_dir, report_filename=filename)
+            if filename.endswith("cleanup_report.json")
+            else _load_json_maybe(run_dir / filename)
+        )
+        if not isinstance(artifact, Mapping):
+            continue
+        summary[summary_key] = dict(artifact)
+        refreshed[summary_key] = filename
+        outcome_labels.extend(
+            str(label) for label in list(artifact.get("outcome_labels") or [])
+        )
+        if artifact.get("outcome_label"):
+            outcome_labels.append(str(artifact.get("outcome_label")))
+
+    summary["derived_artifact_refresh"] = {
+        "schema_version": "skyseed-profile-summary-derived-artifact-refresh-v1",
+        "refreshed_artifacts": refreshed,
+        "artifact_count": len(refreshed),
+    }
+    summary["outcome_labels"] = list(
+        dict.fromkeys(str(label) for label in outcome_labels if label)
+    )
+    _write_json(summary_path, summary)
+    return summary
 
 
 def _stage_timing_summary(
@@ -2097,9 +2196,11 @@ def evaluate_static_inventory_precreated_connection_audit(
         },
     }
     outcome_labels = [STATIC_INVENTORY_PRECREATED_AUDIT_LABEL]
-    if not gw_derivation_complete:
+    if gw_derivation_complete:
+        outcome_labels.append("GW_SLOT_DERIVATION_CONFIRMED")
+    else:
         outcome_labels.append("GW_SLOT_DERIVATION_INCOMPLETE")
-    return {
+    report = {
         "schema_version": "skyseed-static-inventory-precreated-connection-audit-v1",
         "owner_module": "satellite/apps/run_skyseed_validation_profile.py",
         "run_dir": str(run_dir),
@@ -2136,6 +2237,8 @@ def evaluate_static_inventory_precreated_connection_audit(
             "linux_fallback_blocks_visibility": linux_fallback_count > 0,
         },
     }
+    _write_json(run_dir / "static_inventory_precreated_connection_audit.json", report)
+    return report
 
 
 def _as_float(value: Any) -> float | None:
@@ -2731,6 +2834,26 @@ def _runtime_prep_preactivation_preload(iteration: Mapping[str, Any]) -> Dict[st
     )
 
 
+def _runtime_map_diff_summary(
+    trace: Mapping[str, Any],
+) -> Dict[str, Dict[str, Any]]:
+    return {
+        str(map_name): {
+            "desired_count": int(dict(diff).get("desired_count") or 0),
+            "existing_count": int(dict(diff).get("existing_count") or 0),
+            "insert_count": int(dict(diff).get("insert_count") or 0),
+            "update_count": int(dict(diff).get("update_count") or 0),
+            "delete_count": int(dict(diff).get("delete_count") or 0),
+            "noop_skipped_count": int(
+                dict(diff).get("noop_skipped_count") or 0
+            ),
+            "wall_seconds": float(dict(diff).get("wall_seconds") or 0.0),
+        }
+        for map_name, diff in dict(trace).items()
+        if isinstance(diff, Mapping)
+    }
+
+
 def evaluate_runtime_preload_diff_contract(
     *,
     run_dir: Path,
@@ -2806,35 +2929,33 @@ def evaluate_runtime_preload_diff_contract(
         )
         if preload_scheduled:
             preactivation_preload_count += 1
+        preload_diff_used = bool(preload_attribution.get("map_diff_update_used"))
+        preload_noop_skipped_count = int(
+            preload_attribution.get("noop_skipped_count") or 0
+        )
         if bool(attribution.get("preloaded_generation_used")):
             preloaded_generation_used_count += 1
-        if bool(attribution.get("map_diff_update_used")):
+        if bool(attribution.get("map_diff_update_used")) or preload_diff_used:
             diff_update_used_count += 1
-        if int(attribution.get("noop_skipped_count") or 0) > 0:
+        if (
+            int(attribution.get("noop_skipped_count") or 0) > 0
+            or preload_noop_skipped_count > 0
+        ):
             noop_skipped_epoch_count += 1
         if bool(attribution.get("active_generation_flip_only")):
             active_generation_flip_only_count += 1
         if bool(attribution.get("full_generation_reload_blocker")):
             full_generation_reload_blocker_count += 1
-        map_diffs = {
-            str(map_name): {
-                "desired_count": int(dict(diff).get("desired_count") or 0),
-                "existing_count": int(dict(diff).get("existing_count") or 0),
-                "insert_count": int(dict(diff).get("insert_count") or 0),
-                "update_count": int(dict(diff).get("update_count") or 0),
-                "delete_count": int(dict(diff).get("delete_count") or 0),
-                "noop_skipped_count": int(
-                    dict(diff).get("noop_skipped_count") or 0
-                ),
-                "wall_seconds": float(dict(diff).get("wall_seconds") or 0.0),
-            }
-            for map_name, diff in dict(
-                attribution.get("map_diff_trace")
-                or map_load.get("map_diff_trace")
+        map_diffs = _runtime_map_diff_summary(
+            dict(attribution.get("map_diff_trace") or map_load.get("map_diff_trace") or {})
+        )
+        preload_map_diffs = _runtime_map_diff_summary(
+            dict(
+                preload_attribution.get("map_diff_trace")
+                or preactivation_preload.get("map_diff_trace")
                 or {}
-            ).items()
-            if isinstance(diff, Mapping)
-        }
+            )
+        )
         epoch_reports.append(
             {
                 "iteration_index": index,
@@ -2844,6 +2965,8 @@ def evaluate_runtime_preload_diff_contract(
                 "preactivation_preload_update_count": int(
                     preactivation_preload.get("map_write_update_count") or 0
                 ),
+                "preactivation_preload_map_diff_update_used": preload_diff_used,
+                "preactivation_preload_noop_skipped_count": preload_noop_skipped_count,
                 "preloaded_generation_used": bool(
                     attribution.get("preloaded_generation_used")
                 ),
@@ -2867,6 +2990,7 @@ def evaluate_runtime_preload_diff_contract(
                 ),
                 "active_generation_after": attribution.get("active_generation_after"),
                 "map_diff_trace": map_diffs,
+                "preactivation_preload_map_diff_trace": preload_map_diffs,
             }
         )
     outcome_labels: List[str] = []
@@ -2908,6 +3032,103 @@ def evaluate_runtime_preload_diff_contract(
         "epoch_reports": epoch_reports,
     }
     _write_json(run_dir / "runtime_preload_diff_contract_audit.json", report)
+    return report
+
+
+def evaluate_normal_path_artifact_contract(*, run_dir: Path) -> Dict[str, Any]:
+    run_manifest = _load_json_maybe(run_dir / "run_manifest.json") or {}
+    prepared_bundle = _load_json_maybe(run_dir / "prepared_update_bundle.json") or {}
+    runtime_update_plan = _load_json_any(run_dir / "runtime_update_plan_summary.json")
+    epoch_queue = _load_json_any(run_dir / "epoch_execution_queue.json")
+    lifecycle = _load_json_maybe(run_dir / "horizon_execution_reconciled_summary.json") or _load_json_maybe(
+        run_dir / "lifecycle_aware_horizon_contract.json"
+    ) or {}
+    preload = _load_json_maybe(run_dir / "runtime_preload_diff_contract_audit.json") or {}
+    cleanup = normalize_cleanup_report_artifact(run_dir=run_dir) or {}
+
+    prepared_runtime = dict(prepared_bundle.get("continuous_runtime_execution") or {})
+    selected_queue = list(prepared_bundle.get("selected_epoch_queue") or [])
+    selected_event_count = int(
+        lifecycle.get("selected_event_count")
+        or len(selected_queue)
+        or len(epoch_queue if isinstance(epoch_queue, list) else [])
+        or 0
+    )
+    runtime_plan_count = (
+        len(runtime_update_plan)
+        if isinstance(runtime_update_plan, list)
+        else int(bool(runtime_update_plan))
+    )
+    prepared_owned_index_present = bool(
+        prepared_runtime.get("prepared_owned_resource_index")
+        or prepared_runtime.get("owned_resource_index")
+        or prepared_runtime.get("prepared_resource_scope_by_slot")
+        or prepared_runtime.get("resident_attach_coverage")
+        or prepared_runtime.get("epoch_execution_queue")
+    )
+    explicit_event_timeline_plan_present = bool(
+        str(lifecycle.get("horizon_selected_by") or "") == "EventTimeline"
+        or selected_event_count > 0
+    )
+    explicit_runtime_update_plan_present = runtime_plan_count > 0
+    explicit_bpf_preload_diff_plan_present = bool(
+        preload.get("preactivation_preload_epoch_count")
+        or preload.get("map_diff_update_epoch_count")
+        or preload.get("noop_skipped_epoch_count")
+        or preload.get("full_generation_reload_blocker_count")
+    )
+    run_manifest_present = bool(run_manifest)
+    cleanup_uses_diagnostic_scan = bool(cleanup.get("global_scan_diagnostic_only"))
+    cleanup_mode = str(cleanup.get("cleanup_mode") or "")
+    normal_path_owned_scope_only = bool(
+        run_manifest_present
+        and prepared_owned_index_present
+        and explicit_event_timeline_plan_present
+        and explicit_runtime_update_plan_present
+        and explicit_bpf_preload_diff_plan_present
+    )
+    outcome_labels = [
+        "NORMAL_PATH_ARTIFACT_CONTRACT_ADDED",
+        *(
+            ["NORMAL_PATH_OWNED_SCOPE_ONLY", "NORMAL_PATH_NO_HIDDEN_REPAIR"]
+            if normal_path_owned_scope_only
+            else ["OWNED_RESOURCE_INDEX_MISSING_BLOCKER"]
+        ),
+    ]
+    if cleanup_uses_diagnostic_scan:
+        outcome_labels.append("GLOBAL_SCAN_DIAGNOSTIC_ONLY")
+    if cleanup_mode == "normal_failure_cleanup":
+        outcome_labels.append("NORMAL_FAILURE_CLEANUP_MODE")
+    report = {
+        "schema_version": "skyseed-normal-path-artifact-contract-v1",
+        "owner_module": "satellite/apps/run_skyseed_validation_profile.py",
+        "run_dir": str(run_dir),
+        "run_manifest_present": run_manifest_present,
+        "prepared_owned_resource_index_present": prepared_owned_index_present,
+        "explicit_runtime_update_plan_present": explicit_runtime_update_plan_present,
+        "runtime_update_plan_entry_count": runtime_plan_count,
+        "explicit_event_timeline_plan_present": explicit_event_timeline_plan_present,
+        "selected_event_count": selected_event_count,
+        "explicit_bpf_preload_diff_plan_present": explicit_bpf_preload_diff_plan_present,
+        "preactivation_preload_epoch_count": int(
+            preload.get("preactivation_preload_epoch_count") or 0
+        ),
+        "map_diff_update_epoch_count": int(preload.get("map_diff_update_epoch_count") or 0),
+        "normal_path_owned_scope_only": normal_path_owned_scope_only,
+        "normal_path_no_hidden_repair": normal_path_owned_scope_only,
+        "cleanup_global_scan_diagnostic_only": cleanup_uses_diagnostic_scan,
+        "cleanup_mode": cleanup_mode,
+        "source_artifacts": {
+            "run_manifest": "run_manifest.json",
+            "prepared_update_bundle": "prepared_update_bundle.json",
+            "runtime_update_plan": "runtime_update_plan_summary.json",
+            "event_timeline": "horizon_execution_reconciled_summary.json",
+            "bpf_preload_diff": "runtime_preload_diff_contract_audit.json",
+            "cleanup": "normal_failure_cleanup_report.json",
+        },
+        "outcome_labels": list(dict.fromkeys(outcome_labels)),
+    }
+    _write_json(run_dir / "normal_path_artifact_contract.json", report)
     return report
 
 
@@ -3340,6 +3561,116 @@ def _persistent_artifact_contract(run_dir: Path) -> Dict[str, Any]:
     }
 
 
+def _runtime_artifact_failure_summary(runtime_report: Mapping[str, Any]) -> Dict[str, Any]:
+    failure_context = dict(runtime_report.get("failure_context") or {})
+    exception = dict(failure_context.get("exception") or {})
+    skyseed_details = dict(exception.get("skyseed_details") or {})
+    readiness = dict(skyseed_details.get("bpf_owned_readiness") or {})
+    prepare_steps = dict(readiness.get("prepare_steps") or {})
+    real_prepare = dict(prepare_steps.get("real_backend_prepare") or {})
+    steps = dict(real_prepare.get("steps") or {})
+    map_load = dict(steps.get("map_load") or {})
+    preactivation_preload = dict(steps.get("preactivation_preload") or {})
+    current_epoch = dict(failure_context.get("current_epoch_context") or {})
+    message = str(exception.get("message") or "")
+
+    labels: List[str] = []
+    for source in (readiness, real_prepare, preactivation_preload, map_load):
+        labels.extend(str(label) for label in list(source.get("outcome_labels") or []))
+
+    capacity_blockers: List[Dict[str, Any]] = []
+    for map_name, contract in dict(
+        map_load.get("generation_capacity_contracts") or {}
+    ).items():
+        if not isinstance(contract, Mapping):
+            continue
+        if contract.get("ok") is False or str(contract.get("label") or ""):
+            blocker = {
+                "map_name": str(map_name),
+                "label": str(
+                    contract.get("label") or "BPF_MAP_GENERATION_CAPACITY_BLOCKER"
+                ),
+                "ok": bool(contract.get("ok")),
+                "active_generation": contract.get("active_generation"),
+                "target_generation": contract.get("target_generation"),
+                "live_max_entries": contract.get("live_max_entries"),
+                "required_capacity": contract.get("required_capacity"),
+                "retained_entry_count_after_gc": contract.get(
+                    "retained_entry_count_after_gc"
+                ),
+                "target_expected_entries": contract.get("target_expected_entries"),
+                "target_generation_entry_count_after_gc": contract.get(
+                    "target_generation_entry_count_after_gc"
+                ),
+                "missing_target_entry_capacity": contract.get(
+                    "missing_target_entry_capacity"
+                ),
+            }
+            capacity_blockers.append(blocker)
+            if blocker["label"]:
+                labels.append(str(blocker["label"]))
+
+    parameter_delta_attach = bool(
+        str(current_epoch.get("classification") or "") == "parameter_epoch"
+        and (
+            "tc_bpf_mpls_delta_attach_failed" in message
+            or int(real_prepare.get("delta_attach_count") or 0) > 0
+        )
+    )
+    if parameter_delta_attach:
+        labels.append(PARAMETER_UPDATE_TRIGGERED_DELTA_ATTACH_BLOCKER_LABEL)
+    hidden_parameter_recovery = "PARAMETER_UPDATE_HIDDEN_BPF_RECOVERY_BLOCKER" in message
+    if hidden_parameter_recovery:
+        labels.append("PARAMETER_UPDATE_HIDDEN_BPF_RECOVERY_BLOCKER")
+
+    first_label = (
+        PARAMETER_UPDATE_TRIGGERED_DELTA_ATTACH_BLOCKER_LABEL
+        if parameter_delta_attach
+        else "PARAMETER_UPDATE_HIDDEN_BPF_RECOVERY_BLOCKER"
+        if hidden_parameter_recovery
+        else (
+            "BPF_MAP_GENERATION_CAPACITY_BLOCKER"
+            if capacity_blockers
+            else str(readiness.get("reason") or real_prepare.get("reason") or "")
+        )
+    )
+    return {
+        "failure_context_present": bool(failure_context),
+        "message": message,
+        "blocked_stage": readiness.get("blocked_stage")
+        or real_prepare.get("blocked_stage"),
+        "reason": readiness.get("reason") or real_prepare.get("reason"),
+        "failed_map": map_load.get("failed_map") or real_prepare.get("failed_map"),
+        "failed_operation": map_load.get("failed_operation")
+        or real_prepare.get("failed_operation"),
+        "failed_generation": map_load.get("failed_generation")
+        or real_prepare.get("failed_generation"),
+        "current_epoch": current_epoch,
+        "parameter_delta_attach_blocker": parameter_delta_attach,
+        "parameter_hidden_bpf_recovery_blocker": hidden_parameter_recovery,
+        "delta_attach_count": int(real_prepare.get("delta_attach_count") or 0),
+        "full_attach_count": int(real_prepare.get("full_attach_count") or 0),
+        "reused_attach_count": int(real_prepare.get("reused_attach_count") or 0),
+        "preactivation_preload_scheduled": bool(preactivation_preload),
+        "preactivation_preload_ok": (
+            preactivation_preload.get("ok")
+            if preactivation_preload
+            else None
+        ),
+        "preactivation_preload_update_count": int(
+            preactivation_preload.get("map_write_update_count") or 0
+        ),
+        "map_load_ok": map_load.get("ok") if map_load else None,
+        "map_load_update_count": int(map_load.get("map_write_update_count") or 0),
+        "active_generation_update_count": int(
+            map_load.get("active_generation_update_count") or 0
+        ),
+        "capacity_blockers": capacity_blockers,
+        "outcome_labels": list(dict.fromkeys(label for label in labels if label)),
+        "first_failure_label": first_label or None,
+    }
+
+
 def _first_failure_summary(
     *,
     profile: Mapping[str, Any],
@@ -3351,9 +3682,11 @@ def _first_failure_summary(
     report = dict(runner_report or {})
     artifact_runtime_epochs_completed = 0
     runtime_report_path = run_dir / "real_runtime_report.json"
+    runtime_artifact_failure: Dict[str, Any] = {}
     if runtime_report_path.exists():
         runtime_report = _load_json_maybe(runtime_report_path)
         if isinstance(runtime_report, Mapping):
+            runtime_artifact_failure = _runtime_artifact_failure_summary(runtime_report)
             artifact_runtime_epochs_completed = int(
                 runtime_report.get("runtime_epochs_completed")
                 or dict(runtime_report.get("timing_summary") or {}).get(
@@ -3400,6 +3733,7 @@ def _first_failure_summary(
             if runtime_blocker_label not in non_failure_runtime_blocker_labels
             else ""
         )
+        or str(runtime_artifact_failure.get("first_failure_label") or "")
         or (
             next(
                 (
@@ -3436,6 +3770,12 @@ def _first_failure_summary(
         "returncode": int(returncode),
         "first_failure_label": first_label or None,
         "failure_reason": None if warning_only_startup_cost else report.get("failure_reason"),
+        "runtime_artifact_failure_reason": runtime_artifact_failure.get("reason"),
+        "blocked_stage": runtime_artifact_failure.get("blocked_stage"),
+        "failed_map": runtime_artifact_failure.get("failed_map"),
+        "failed_operation": runtime_artifact_failure.get("failed_operation"),
+        "failed_generation": runtime_artifact_failure.get("failed_generation"),
+        "runtime_artifact_failure": runtime_artifact_failure,
         "startup_cost_warning_reason": (
             report.get("failure_reason") if warning_only_startup_cost else None
         ),
@@ -3706,6 +4046,12 @@ def run_profile(
     )
     summary["external_cleanup_success"] = external_cleanup_success(final_residue)
     summary["persistent_artifact_contract"] = _persistent_artifact_contract(run_dir)
+    normal_path_artifact_contract = evaluate_normal_path_artifact_contract(run_dir=run_dir)
+    summary["normal_path_artifact_contract"] = normal_path_artifact_contract
+    outcome_labels.extend(
+        str(label)
+        for label in list(normal_path_artifact_contract.get("outcome_labels") or [])
+    )
     if not summary["external_cleanup_success"] and CLEANUP_INCOMPLETE_LABEL not in outcome_labels:
         outcome_labels.append(CLEANUP_INCOMPLETE_LABEL)
     summary["outcome_labels"] = list(dict.fromkeys(outcome_labels))
@@ -3736,6 +4082,7 @@ def run_profile(
         or (summary["outcome_labels"][0] if summary["outcome_labels"] else None)
     )
     _write_json(run_dir / "profile_run_summary.json", summary)
+    summary = refresh_profile_run_summary_derived_artifacts(run_dir=run_dir)
     summary["persistent_artifact_contract"] = _persistent_artifact_contract(run_dir)
     _write_json(
         run_dir / "persistent_artifact_contract.json",

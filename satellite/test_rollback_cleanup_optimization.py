@@ -2004,6 +2004,7 @@ class RollbackCleanupOptimizationTests(unittest.TestCase):
         )
         self.assertTrue(metrics["bounded_owned_scope"])
         self.assertIn("CLEANUP_BOUNDED_OWNED_SCOPE_USED", metrics["outcome_labels"])
+        self.assertIn("GLOBAL_SCAN_DIAGNOSTIC_ONLY", metrics["outcome_labels"])
 
     def test_host_artifact_cleanup_missing_owned_index_blocks_global_fallback(self) -> None:
         installer = _FakeCleanupInstaller()
@@ -2022,6 +2023,7 @@ class RollbackCleanupOptimizationTests(unittest.TestCase):
         )
         self.assertFalse(metrics["full_topology_candidate_inventory_fallback"])
         self.assertIn("OWNED_RESOURCE_INDEX_MISSING_BLOCKER", metrics["outcome_labels"])
+        self.assertIn("GLOBAL_SCAN_DIAGNOSTIC_ONLY", metrics["outcome_labels"])
 
     def test_normal_runtime_apply_requires_explicit_owned_scope(self) -> None:
         manager = InProcessHostRuntimeManager()
@@ -2099,6 +2101,11 @@ class RollbackCleanupOptimizationTests(unittest.TestCase):
         self.assertIn("NORMAL_PATH_OWNED_SCOPE_ONLY", scope_contract["outcome_labels"])
         self.assertIn("NORMAL_PATH_NO_HIDDEN_REPAIR", scope_contract["outcome_labels"])
         self.assertIn("FULL_SCOPE_RECOVERY_BLOCKER", scope_contract["outcome_labels"])
+        self.assertIn(
+            "NOOP_FULL_SCOPE_RECONCILE_BLOCKER",
+            scope_contract["outcome_labels"],
+        )
+        self.assertIn("GLOBAL_SCAN_DIAGNOSTIC_ONLY", scope_contract["outcome_labels"])
 
     def test_minimal_executor_derives_explicit_owned_scope_from_plan(self) -> None:
         executor = MinimalRealNetworkMutationExecutor()

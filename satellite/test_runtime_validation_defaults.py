@@ -50,6 +50,7 @@ from run_starlink_shell_experiment import (
     _operational_clean_bounded_cleanup_session,
     _operational_clean_pre_start_audit,
     _parameter_batch_reclassification,
+    _parameter_epoch_recovery_contract,
     _parameter_update_batch_accounting,
     _parameter_update_category,
     _preflight_profile_for_args,
@@ -4376,6 +4377,46 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
         )
         self.assertEqual(result["runtime_update_action_count"], 2)
         self.assertEqual(result["structural_operation_counts"], {})
+
+    def test_parameter_epoch_recovery_blocks_hidden_bpf_owned_refresh(self) -> None:
+        contract = _parameter_epoch_recovery_contract(
+            effective_epoch_type="parameter_epoch",
+            operational_clean_mode=True,
+            forwarding_backend="bpf_owned",
+            planned_operations=[
+                {"operation": "update_slot_parameters", "slot_name": "ut1"},
+            ],
+            runtime_update_plan=SimpleNamespace(to_dict=lambda: {"node_subplans": {}}),
+            recovery_reason="targeted_parameter_validation_failed",
+        )
+
+        self.assertFalse(contract["allowed"])
+        self.assertTrue(contract["blocked"])
+        self.assertEqual(
+            contract["blocker_label"],
+            "PARAMETER_UPDATE_HIDDEN_BPF_RECOVERY_BLOCKER",
+        )
+        self.assertIn(
+            "PARAMETER_UPDATE_HIDDEN_BPF_RECOVERY_BLOCKER",
+            contract["outcome_labels"],
+        )
+        self.assertEqual(contract["runtime_update_action_count"], 0)
+
+    def test_parameter_epoch_recovery_allows_non_bpf_owned_refresh_contract(self) -> None:
+        contract = _parameter_epoch_recovery_contract(
+            effective_epoch_type="parameter_epoch",
+            operational_clean_mode=True,
+            forwarding_backend="linux",
+            planned_operations=[
+                {"operation": "update_slot_parameters", "slot_name": "ut1"},
+            ],
+            runtime_update_plan=SimpleNamespace(to_dict=lambda: {"node_subplans": {}}),
+            recovery_reason="targeted_parameter_validation_failed",
+        )
+
+        self.assertTrue(contract["allowed"])
+        self.assertFalse(contract["blocked"])
+        self.assertEqual(contract["outcome_labels"], [])
 
     def test_parameter_update_batch_accounting_splits_update_costs(self) -> None:
         operations = [
