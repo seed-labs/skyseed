@@ -1260,7 +1260,7 @@ def build_ground_links_payload(**kwargs: Any) -> Dict[str, Any]:
 
 
 def post_payload(url: str, payload: Dict[str, Any], *, timeout_seconds: float = 15.0) -> int:
-    body = json.dumps(payload, sort_keys=True).encode("utf-8")
+    body = json.dumps(payload).encode("utf-8")
     req = request.Request(
         url,
         data=body,
@@ -1286,7 +1286,7 @@ def post_payload(url: str, payload: Dict[str, Any], *, timeout_seconds: float = 
 
 def _write_json(path: Path, payload: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
 def parse_args() -> argparse.Namespace:
@@ -1365,7 +1365,7 @@ def main() -> int:
             timeout_seconds=float(args.post_timeout_seconds),
         )
     if args.dry_run_json == "-":
-        print(json.dumps(result.payload, indent=2, sort_keys=True))
+        print(json.dumps(result.payload, indent=2))
     else:
         _write_json(Path(args.dry_run_json), result.payload)
     return 0
