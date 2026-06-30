@@ -1735,6 +1735,14 @@ def load_mpls_maps(compiled: dict[str, Any]) -> dict[str, Any]:
         "delete_update_count": 0,
         "ok": True,
     }
+    retain_inactive_generations: set[int] = set()
+    for generation in list(compiled.get("retain_inactive_generations") or []):
+        if generation in (None, "") or str(generation) == "None":
+            continue
+        retain_inactive_generations.add(int(generation))
+    require_preloaded_generation_flip_only = bool(
+        compiled.get("require_preloaded_generation_flip_only")
+    )
     generation_gc_cleanup: dict[str, Any] = {
         "attempted": True,
         "schema_version": "skyseed-bpf-generation-keyed-map-gc-v1",
@@ -1745,6 +1753,12 @@ def load_mpls_maps(compiled: dict[str, Any]) -> dict[str, Any]:
             "delete_generations_neither_active_nor_target": True,
             "delete_target_generation_stale_entries": True,
             "never_delete_active_generation_before_flip": True,
+            "retain_prepared_inactive_generations": sorted(
+                retain_inactive_generations
+            ),
+            "require_preloaded_generation_flip_only": (
+                require_preloaded_generation_flip_only
+            ),
             "verify_generation_breakdown_after_cleanup": True,
         },
     }
@@ -2064,7 +2078,7 @@ def load_mpls_maps(compiled: dict[str, Any]) -> dict[str, Any]:
             generation
             for generation in (live_active_generation_int, int(active_generation))
             if generation is not None
-        }
+        } | set(retain_inactive_generations)
         generation_keys = dict(
             pre_gc_map_state.get("generation_key_hex_by_generation") or {}
         )
@@ -2373,6 +2387,17 @@ def load_mpls_maps(compiled: dict[str, Any]) -> dict[str, Any]:
         block_with_skipped_update(
             filtered_pending_map_updates[0],
             reason="RUNTIME_FULL_GENERATION_RELOAD_BLOCKER",
+        )
+
+    if (
+        not map_write_blocked
+        and require_preloaded_generation_flip_only
+        and actual_data_write_count > 0
+        and filtered_pending_map_updates
+    ):
+        block_with_skipped_update(
+            filtered_pending_map_updates[0],
+            reason="RUNTIME_PRELOADED_GENERATION_MISSING_OR_INCOMPLETE",
         )
 
     if not map_write_blocked:
@@ -2684,6 +2709,10 @@ def load_mpls_maps(compiled: dict[str, Any]) -> dict[str, Any]:
         "full_generation_reload": False,
         "full_generation_reload_blocker": full_generation_reload_blocker,
         "diff_update_enabled": True,
+        "retain_inactive_generations": sorted(retain_inactive_generations),
+        "require_preloaded_generation_flip_only": (
+            require_preloaded_generation_flip_only
+        ),
         "preactivation_preload": preactivation_preload_phase,
         "defer_active_generation_flip": defer_active_generation_flip,
         "preloaded_generation_used": preloaded_generation_used,

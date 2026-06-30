@@ -2027,7 +2027,6 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
                     "full_topology_candidate_inventory_fallback": False,
                     "global_scan_diagnostic_only": True,
                     "outcome_labels": [
-                        "NORMAL_PATH_OWNED_SCOPE_ONLY",
                         "NORMAL_PATH_NO_HIDDEN_REPAIR",
                         "OWNED_RESOURCE_INDEX_MISSING_BLOCKER",
                         "GLOBAL_SCAN_DIAGNOSTIC_ONLY",

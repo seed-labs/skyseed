@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "goal": "BPF-aware event-driven sampling/update optimization with preview counters",
+  "date": "2026-06-21",
+  "scope": {
+    "implemented_runtime_semantic_diffing": true,
+    "implemented_parameter_thresholding_updates": true,
+    "implemented_preview_counters": true,
+    "implemented_minimum_anchor_dwell_policy": true,
+    "implemented_qdisc_or_theaterq": false,
+    "ran_s4_or_300_plus_real_runtime": false,
+    "changed_gz_semantics": false,
+    "commits_satellite_output": false,
+    "pushed": false
+  },
+  "runtime_epoch_model": {
+    "fixed_sample_tick_emits_runtime_epoch": false,
+    "label_only_churn_emits_runtime_epoch": false,
+    "semantic_trigger_reasons": [
+      "gz_fec_path_change",
+      "g_to_z_path_change",
+      "z_to_g_path_change",
+      "ut_serving_satellite_change",
+      "zone_active_serving_satellite_change",
+      "gw_selection_change",
+      "structural_link_change",
+      "bpf_generation_content_change"
+    ]
+  },
+  "parameter_epoch_model": {
+    "threshold_based": true,
+    "trigger_reasons": [
+      "delay_threshold_exceeded",
+      "bandwidth_threshold_exceeded",
+      "loss_threshold_exceeded",
+      "drop_state_changed",
+      "active_state_changed",
+      "routing_cost_changed"
+    ],
+    "qdisc_owned_fields": [
+      "delay",
+      "rate",
+      "bandwidth",
+      "qdisc_loss"
+    ],
+    "bpf_parameter_possibilities": [
+      "active",
+      "drop",
+      "loss_bucket",
+      "counter"
+    ]
+  },
+  "stability_policy_defaults": {
+    "coverage_loss_margin_deg": 2.0,
+    "hysteresis_score_delta": 12.0,
+    "gateway_hop_penalty": 3.0,
+    "min_anchor_dwell_seconds": 0.0
+  },
+  "preview_counter_schema": "skyseed-update-preview-counters-v1",
+  "bpf_generation_readiness": {
+    "supported_mode": "current_generation_only",
+    "current_generation_supported": true,
+    "next_generation_preload_supported": false,
+    "multi_generation_horizon_preload_supported": false,
+    "design_ready_multi_generation_horizon_preload": true
+  },
+  "s4_preview_readiness_support": {
+    "dry_run_preview_only": true,
+    "real_runtime_required": false,
+    "reports_epoch_density": true,
+    "reports_gz_fec_count": true,
+    "reports_bpf_owned_scope": true,
+    "reports_boundary_and_remote_return_counts": true,
+    "reports_risky_coverage_margin_zones": true,
+    "reports_s4_or_s3_720_recommendation": true
+  },
+  "deterministic_validation": {
+    "test_module": "satellite.test_sampling_update_optimization",
+    "test_count": 4,
+    "covers": [
+      "diff_driven_runtime_epoch_emission",
+      "label_only_noop_runtime_suppression",
+      "parameter_thresholding",
+      "preview_counters",
+      "minimum_dwell_policy"
+    ]
+  }
+}

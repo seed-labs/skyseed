@@ -15,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from contracts import RuntimeUpdatePlan, TopologySnapshot
 from distribution_store import DistributedEnvelopeBatch
@@ -1447,6 +1447,180 @@ def _bpf_owned_host_interfaces_for_contexts(
     return sorted(attached)
 
 
+def _bpf_owned_parse_missing_interface_ref(error: str) -> str:
+    marker = "missing canary interface "
+    if marker in error:
+        tail = error.split(marker, 1)[1]
+        return tail.split(":", 3)[0] + ":" + tail.split(":", 3)[1] + ":" + tail.split(":", 3)[2] if tail.startswith("netns:") and len(tail.split(":", 3)) >= 3 else ""
+    return ""
+
+
+def _bpf_owned_binding_context_for_interface(
+    *,
+    interface_ref: str,
+    contexts: Sequence[DirectGatewayExperimentContext],
+    generation_id: int,
+) -> Dict[str, Any]:
+    parts = str(interface_ref).split(":", 2)
+    node_id = parts[1] if len(parts) == 3 and parts[0] == "netns" else ""
+    interface_name = parts[2] if len(parts) == 3 and parts[0] == "netns" else ""
+
+    def ref(node: str, interface: str) -> str:
+        return _bpf_owned_netns_interface_ref(
+            node_id=str(node),
+            interface_name=str(interface),
+        )
+
+    matches: List[Dict[str, Any]] = []
+    for context in contexts:
+        serving_satellite_id = str(getattr(context, "serving_satellite_id", "") or "")
+        selected_gateway_id = str(getattr(context, "selected_gateway_id", "") or "")
+        ut_access_interface = str(getattr(context, "ut_access_interface", "") or "")
+        gateway_nat_interface = str(getattr(context, "gateway_nat_interface", "") or "")
+        common = {
+            "flow_id": str(getattr(context, "flow_id", "") or ""),
+            "ut_id": str(getattr(context, "ut_id", "") or ""),
+            "zone_id": getattr(context, "zone_id", None),
+            "selected_gateway_id": selected_gateway_id,
+            "serving_satellite_id": serving_satellite_id,
+            "generation_id": int(generation_id),
+        }
+        if serving_satellite_id and ut_access_interface and ref(serving_satellite_id, ut_access_interface) == interface_ref:
+            matches.append(
+                {
+                    **common,
+                    "node": serving_satellite_id,
+                    "logical_interface_id": ut_access_interface,
+                    "link_id": "ut_access_link",
+                    "src": str(getattr(context, "ut_id", "") or ""),
+                    "dst": serving_satellite_id,
+                    "role": "g_to_z_classifier/z_to_g_zone_handoff",
+                    "interface_kind": "UT-access",
+                    "bpf_map_entry_source": "ingress_classifier_map/egress_handoff_map",
+                    "expected_ifindex": "live_or_prepared_owned_inactive_ifindex",
+                    "expected_slot": f"{getattr(context, 'ut_id', '')}-access-slot0",
+                }
+            )
+        if selected_gateway_id and gateway_nat_interface and ref(selected_gateway_id, gateway_nat_interface) == interface_ref:
+            matches.append(
+                {
+                    **common,
+                    "node": selected_gateway_id,
+                    "logical_interface_id": gateway_nat_interface,
+                    "link_id": "gateway_nat_interface",
+                    "src": selected_gateway_id,
+                    "dst": str(getattr(context, "target_host_node_id", "") or ""),
+                    "role": "z_to_g_classifier",
+                    "interface_kind": "handoff",
+                    "bpf_map_entry_source": "ingress_classifier_map",
+                    "expected_ifindex": "live_or_prepared_owned_inactive_ifindex",
+                    "expected_slot": gateway_nat_interface,
+                }
+            )
+        for direction, segments in (
+            ("forward", getattr(context, "forward_segments", ()) or ()),
+            ("reverse", getattr(context, "reverse_segments", ()) or ()),
+        ):
+            for hop_index, segment in enumerate(segments):
+                endpoint_roles = (
+                    ("source", segment.source_node_id, segment.source_interface),
+                    (
+                        "destination",
+                        segment.destination_node_id,
+                        segment.destination_interface,
+                    ),
+                )
+                for endpoint_role, endpoint_node, endpoint_interface in endpoint_roles:
+                    if ref(endpoint_node, endpoint_interface) != interface_ref:
+                        continue
+                    interface_kind = (
+                        "sat-GW"
+                        if "gateway" in {
+                            str(segment.source_node_type),
+                            str(segment.destination_node_type),
+                        }
+                        else "satellite-ISL"
+                    )
+                    matches.append(
+                        {
+                            **common,
+                            "node": endpoint_node,
+                            "logical_interface_id": endpoint_interface,
+                            "link_id": segment.link_id,
+                            "src": segment.source_node_id,
+                            "dst": segment.destination_node_id,
+                            "role": f"{direction}_{endpoint_role}_hop_{hop_index}",
+                            "interface_kind": interface_kind,
+                            "bpf_map_entry_source": (
+                                "ingress_classifier_map/core_lfib_map/egress_handoff_map"
+                            ),
+                            "expected_ifindex": "live_or_prepared_owned_inactive_ifindex",
+                            "expected_slot": segment.link_id,
+                        }
+                    )
+    return {
+        "interface_ref": interface_ref,
+        "node": node_id,
+        "logical_interface_id": interface_name,
+        "match_count": len(matches),
+        "matches": matches[:8],
+    }
+
+
+def _bpf_owned_prepared_inventory_binding_status(
+    *,
+    topology_path: Optional[Path],
+    binding_context: Dict[str, Any],
+) -> Dict[str, Any]:
+    if topology_path is None:
+        return {"checked": False, "reason": "topology_path_unavailable"}
+    try:
+        topology = _load_json(topology_path)
+    except Exception as exc:
+        return {"checked": False, "reason": "topology_load_failed", "error": str(exc)}
+    node_id = str(binding_context.get("node") or "")
+    interface_name = str(binding_context.get("logical_interface_id") or "")
+    expected_slots = {
+        str(match.get("expected_slot"))
+        for match in list(binding_context.get("matches") or [])
+        if str(match.get("expected_slot") or "")
+    }
+    slot_matches: List[Dict[str, Any]] = []
+    for slot_list in dict(topology.get("slot_inventory") or {}).values():
+        for slot in list(slot_list or []):
+            slot_name = str(dict(slot).get("slot_name") or "")
+            endpoints = list(dict(slot).get("dynamic_endpoints") or []) + list(
+                dict(slot).get("preconnected_endpoints") or []
+            )
+            for endpoint in endpoints:
+                endpoint_dict = dict(endpoint or {})
+                endpoint_node = str(endpoint_dict.get("node_id") or "")
+                endpoint_interface = str(endpoint_dict.get("interface_name") or "")
+                if (
+                    endpoint_node == node_id
+                    and endpoint_interface == interface_name
+                ) or (slot_name in expected_slots and endpoint_node == node_id):
+                    slot_matches.append(
+                        {
+                            "slot_name": slot_name,
+                            "slot_type": str(dict(slot).get("slot_type") or ""),
+                            "binding": dict(dict(slot).get("binding") or {}),
+                            "endpoint": endpoint_dict,
+                        }
+                    )
+    return {
+        "checked": True,
+        "prepared_inventory_match": bool(slot_matches),
+        "matched_slots": slot_matches[:8],
+        "expected_slots": sorted(expected_slots),
+        "classification": (
+            "PREPARED_INACTIVE_BINDING_AVAILABLE_ACTIVE_LOOKUP_USED"
+            if slot_matches
+            else "PREPARED_OWNED_INVENTORY_BINDING_MISSING"
+        ),
+    }
+
+
 def _bpf_owned_ut_access_host_interface(
     *,
     inventory: Dict[str, Dict[str, Any]],
@@ -1972,9 +2146,11 @@ def _bpf_mpls_generation_map_capacities(
     current_counts: Dict[str, Any],
     active_counts: Optional[Dict[str, Any]] = None,
     slack_entries: int = 16,
+    prepared_generation_window_count: int = 1,
 ) -> Dict[str, int]:
     target_counts = dict(current_counts or {})
     active_counts = dict(active_counts or target_counts)
+    window_count = max(1, int(prepared_generation_window_count or 1))
 
     def count(name: str, source: Dict[str, Any]) -> int:
         return int(source.get(name) or 0)
@@ -1983,19 +2159,19 @@ def _bpf_mpls_generation_map_capacities(
         "classifiers": max(
             128,
             count("ingress_classifier_map", active_counts)
-            + count("ingress_classifier_map", target_counts)
+            + count("ingress_classifier_map", target_counts) * window_count
             + int(slack_entries),
         ),
         "lfib": max(
             256,
             count("core_lfib_map", active_counts)
-            + count("core_lfib_map", target_counts)
+            + count("core_lfib_map", target_counts) * window_count
             + int(slack_entries),
         ),
         "handoffs": max(
             128,
             count("egress_handoff_map", active_counts)
-            + count("egress_handoff_map", target_counts)
+            + count("egress_handoff_map", target_counts) * window_count
             + int(slack_entries),
         ),
         "interface_counter_entries": 8192,
@@ -2012,6 +2188,46 @@ def _bpf_owned_attach_reuse_plan(
         for interface_ref, directions in dict(compiled.get("attach_plan") or {}).items()
         if str(interface_ref)
     }
+    compiled_details = {
+        str(detail.get("interface_ref") or detail.get("interface_name") or ""): dict(detail)
+        for detail in list(compiled.get("attached_interface_details") or [])
+    }
+
+    def _early_required_roles() -> Dict[str, List[str]]:
+        return {
+            interface_ref: sorted(
+                {
+                    str(role)
+                    for role in list(
+                        dict(compiled_details.get(interface_ref) or {}).get(
+                            "expected_roles"
+                        )
+                        or []
+                    )
+                    if str(role)
+                }
+            )
+            for interface_ref in sorted(required_plan)
+        }
+
+    early_required_role_union = _early_required_roles()
+    early_required_role_union_count = sum(
+        len(roles) for roles in early_required_role_union.values()
+    )
+    empty_capability_fields = {
+        "required_interface_role_union_count": early_required_role_union_count,
+        "prepared_bpf_attach_capability_count": 0,
+        "interface_role_mismatch_count": 0,
+        "attach_reuse_eligible_count": 0,
+        "attach_reuse_ineligible_count": 1,
+        "ineligible_reason_counts": {},
+        "interface_role_capability_source": "missing_prepared_bpf_attach_capability",
+        "runtime_attach_allowed": True,
+        "required_interface_role_union": early_required_role_union,
+        "prepared_bpf_attach_capability": {},
+        "compatible_role_superset_matches": [],
+        "interface_role_set_mismatches": [],
+    }
     if not previous_readiness:
         return {
             "reuse_eligible": False,
@@ -2027,6 +2243,12 @@ def _bpf_owned_attach_reuse_plan(
             "attach_strategy": "full_attach_required",
             "delta_attach_plan": {},
             "delta_attach_interfaces": [],
+            **{
+                **empty_capability_fields,
+                "ineligible_reason_counts": {
+                    "no_previous_bpf_owned_readiness": 1,
+                },
+            },
         }
     previous_plan = _bpf_owned_previous_attach_plan(dict(previous_readiness))
     if not previous_plan:
@@ -2044,6 +2266,12 @@ def _bpf_owned_attach_reuse_plan(
             "attach_strategy": "full_attach_required",
             "delta_attach_plan": {},
             "delta_attach_interfaces": [],
+            **{
+                **empty_capability_fields,
+                "ineligible_reason_counts": {
+                    "previous_attach_plan_missing": 1,
+                },
+            },
         }
     previous_prepare = dict(
         dict(previous_readiness.get("prepare_steps") or {}).get("real_backend_prepare")
@@ -2095,12 +2323,34 @@ def _bpf_owned_attach_reuse_plan(
             or []
         )
     }
-    current_details = {
-        str(detail.get("interface_ref") or detail.get("interface_name") or ""): dict(detail)
-        for detail in list(compiled.get("attached_interface_details") or [])
+    current_details = dict(compiled_details)
+
+    def _role_set(details: Dict[str, Dict[str, Any]], interface_ref: str) -> set[str]:
+        return {
+            str(role)
+            for role in list(
+                dict(details.get(interface_ref) or {}).get("expected_roles") or []
+            )
+            if str(role)
+        }
+
+    required_role_union = {
+        interface_ref: sorted(_role_set(current_details, interface_ref))
+        for interface_ref in sorted(required_plan)
     }
+    prepared_role_capability = {
+        interface_ref: sorted(_role_set(previous_details, interface_ref))
+        for interface_ref in sorted(previous_plan)
+    }
+    required_interface_role_union_count = sum(
+        len(roles) for roles in required_role_union.values()
+    )
+    prepared_bpf_attach_capability_count = sum(
+        len(roles) for roles in prepared_role_capability.values()
+    )
     ifindex_mismatches: List[Dict[str, Any]] = []
     role_mismatches: List[Dict[str, Any]] = []
+    role_superset_matches: List[Dict[str, Any]] = []
     for interface_ref in sorted(set(previous_plan) & set(required_plan)):
         previous_detail = dict(previous_details.get(interface_ref) or {})
         current_detail = dict(current_details.get(interface_ref) or {})
@@ -2118,23 +2368,68 @@ def _bpf_owned_attach_reuse_plan(
                     "current_ifindex": int(current_ifindex),
                 }
             )
-        previous_roles = sorted(
-            {str(role) for role in list(previous_detail.get("expected_roles") or [])}
-        )
-        current_roles = sorted(
-            {str(role) for role in list(current_detail.get("expected_roles") or [])}
-        )
+        previous_roles = sorted(_role_set(previous_details, interface_ref))
+        current_roles = sorted(_role_set(current_details, interface_ref))
         missing_current_roles = sorted(set(current_roles) - set(previous_roles))
         extra_previous_roles = sorted(set(previous_roles) - set(current_roles))
-        if previous_roles and current_roles and missing_current_roles:
+        if previous_roles and current_roles and not missing_current_roles:
+            role_superset_matches.append(
+                {
+                    "interface_ref": interface_ref,
+                    "current_required_roles": current_roles,
+                    "prepared_capability_roles": previous_roles,
+                    "extra_prepared_roles": extra_previous_roles,
+                    "role_sets_match": not extra_previous_roles,
+                    "compatible_role_superset": True,
+                    "mismatch_type": "compatible_role_superset",
+                }
+            )
+        elif previous_roles and current_roles and missing_current_roles:
             role_mismatches.append(
                 {
                     "interface_ref": interface_ref,
+                    "logical_interface_id": interface_ref,
                     "previous_roles": previous_roles,
                     "current_roles": current_roles,
+                    "current_attached_role_set": previous_roles,
+                    "current_active_role_set": previous_roles,
+                    "lookahead_required_role_set": current_roles,
+                    "prepared_capability_roles": previous_roles,
+                    "current_required_roles": current_roles,
                     "missing_current_roles": missing_current_roles,
+                    "missing_required_roles": missing_current_roles,
                     "extra_previous_roles": extra_previous_roles,
+                    "extra_prepared_roles": extra_previous_roles,
+                    "previous_ifindex": previous_detail.get("ifindex"),
+                    "current_ifindex": current_detail.get("ifindex"),
+                    "physical_interface": (
+                        current_detail.get("interface_name")
+                        or previous_detail.get("interface_name")
+                        or interface_ref
+                    ),
+                    "node": (
+                        current_detail.get("netns")
+                        or previous_detail.get("netns")
+                        or ""
+                    ),
+                    "container_interface_name": (
+                        current_detail.get("container_interface_name")
+                        or previous_detail.get("container_interface_name")
+                        or ""
+                    ),
+                    "ingress_hook_required": "ingress"
+                    in set(required_plan.get(interface_ref) or []),
+                    "egress_hook_required": "egress"
+                    in set(required_plan.get(interface_ref) or []),
+                    "required_bpf_maps": [
+                        "interface_role_map",
+                        "ingress_classifier_map",
+                        "core_lfib_map",
+                        "egress_handoff_map",
+                    ],
                     "role_sets_match": False,
+                    "compatible_role_superset": False,
+                    "mismatch_type": "missing_required_role",
                 }
             )
     missing_interfaces = sorted(
@@ -2184,6 +2479,9 @@ def _bpf_owned_attach_reuse_plan(
     elif role_mismatches:
         reuse_rejected_reason = "interface_role_set_mismatch"
     reuse_eligible = not reuse_rejected_reason
+    ineligible_reason_counts: Dict[str, int] = {}
+    if reuse_rejected_reason:
+        ineligible_reason_counts[reuse_rejected_reason] = 1
     attach_strategy = (
         "full_attach_required"
         if not reuse_eligible
@@ -2220,6 +2518,21 @@ def _bpf_owned_attach_reuse_plan(
         "attach_strategy": attach_strategy,
         "ifindex_mismatches": ifindex_mismatches,
         "interface_role_set_mismatches": role_mismatches,
+        "compatible_role_superset_matches": role_superset_matches,
+        "required_interface_role_union_count": required_interface_role_union_count,
+        "prepared_bpf_attach_capability_count": prepared_bpf_attach_capability_count,
+        "interface_role_mismatch_count": len(role_mismatches),
+        "attach_reuse_eligible_count": 1 if reuse_eligible else 0,
+        "attach_reuse_ineligible_count": 0 if reuse_eligible else 1,
+        "ineligible_reason_counts": ineligible_reason_counts,
+        "interface_role_capability_source": (
+            "prepared_bpf_attach_capability_superset"
+            if prepared_role_capability
+            else "missing_prepared_bpf_attach_capability"
+        ),
+        "runtime_attach_allowed": True,
+        "required_interface_role_union": required_role_union,
+        "prepared_bpf_attach_capability": prepared_role_capability,
         "map_capacity_mismatches": capacity_mismatches,
         "map_capacities": previous_capacities,
         "outcome_labels": outcome_labels,
@@ -2350,6 +2663,348 @@ def _bpf_owned_existing_readiness_prepare_evidence(
         "wall_seconds": 0.0,
         "evidence_source": "proved_existing_bpf_owned_readiness",
     }
+
+
+def _bpf_owned_compiled_runtime_inputs(compiled: Mapping[str, Any]) -> Dict[str, Any]:
+    return {
+        "schema_version": "skyseed-bpf-owned-compiled-runtime-inputs-v1",
+        "active_generation": dict(compiled.get("active_generation") or {}),
+        "ingress_classifier_map": [
+            dict(entry) for entry in list(compiled.get("ingress_classifier_map") or [])
+        ],
+        "core_lfib_map": [
+            dict(entry) for entry in list(compiled.get("core_lfib_map") or [])
+        ],
+        "egress_handoff_map": [
+            dict(entry) for entry in list(compiled.get("egress_handoff_map") or [])
+        ],
+        "attach_plan": dict(compiled.get("attach_plan") or {}),
+        "attached_interfaces": list(compiled.get("attached_interfaces") or []),
+        "attached_interface_details": [
+            dict(detail)
+            for detail in list(compiled.get("attached_interface_details") or [])
+        ],
+        "resolved_mpls_flow_entries": [
+            dict(entry)
+            for entry in list(compiled.get("resolved_mpls_flow_entries") or [])
+        ],
+        "compiled_mpls_map_counts": dict(
+            compiled.get("compiled_mpls_map_counts") or {}
+        ),
+        "compile_capacity_mpls_map_counts": dict(
+            compiled.get("compile_capacity_mpls_map_counts")
+            or compiled.get("compiled_mpls_map_counts")
+            or {}
+        ),
+        "resident_attach_coverage": dict(
+            compiled.get("resident_attach_coverage") or {}
+        ),
+        "interface_set_contract": dict(compiled.get("interface_set_contract") or {}),
+        "map_conflict_summary": dict(compiled.get("map_conflict_summary") or {}),
+        "map_conflicts": list(compiled.get("map_conflicts") or []),
+        "label_allocation": dict(compiled.get("label_allocation") or {}),
+    }
+
+
+def _bpf_owned_preloaded_generation_records(
+    readiness: Mapping[str, Any],
+) -> List[Dict[str, Any]]:
+    records: List[Dict[str, Any]] = []
+    for item in list(readiness.get("preloaded_generation_records") or []):
+        if isinstance(item, Mapping):
+            records.append(dict(item))
+    for item in list(readiness.get("lookahead_preloaded_generation_records") or []):
+        if isinstance(item, Mapping):
+            records.append(dict(item))
+    return records
+
+
+def _bpf_owned_find_preloaded_generation_record(
+    *,
+    readiness: Mapping[str, Any],
+    target_generation_id: int,
+    target_intent_hash: str,
+    target_horizon_id: str = "",
+    current_source_state_id: str = "",
+) -> Dict[str, Any] | None:
+    for record in _bpf_owned_preloaded_generation_records(readiness):
+        if int(record.get("generation_id") or -1) != int(target_generation_id):
+            continue
+        if str(record.get("intent_hash") or "") != str(target_intent_hash or ""):
+            continue
+        record_horizon_id = str(record.get("horizon_id") or "")
+        if (target_horizon_id or record_horizon_id) and record_horizon_id != str(
+            target_horizon_id or ""
+        ):
+            continue
+        record_source_state_id = str(record.get("source_state_id") or "")
+        if (
+            current_source_state_id or record_source_state_id
+        ) and record_source_state_id != str(current_source_state_id or ""):
+            continue
+        if record.get("ok") is not True:
+            continue
+        if record.get("inactive_generation_written") is not True:
+            continue
+        compiled_inputs = dict(record.get("compiled_runtime_inputs") or {})
+        if not compiled_inputs:
+            continue
+        return record
+    return None
+
+
+def _bpf_owned_activate_preloaded_generation(
+    *,
+    runtime_update_plan: RuntimeUpdatePlan,
+    readiness: Mapping[str, Any],
+    record: Mapping[str, Any],
+) -> Dict[str, Any]:
+    from satellite.bpf_mpls_live import load_mpls_maps
+
+    started_at = time.perf_counter()
+    proof = _derive_bpf_owned_readiness_proof(
+        runtime_update_plan=runtime_update_plan,
+    )
+    horizon_id = str(record.get("horizon_id") or readiness.get("current_horizon_id") or "")
+    horizon_generation_key = str(
+        record.get("horizon_generation_key")
+        or (
+            f"{horizon_id}:generation-{int(proof.get('generation_id') or 0)}"
+            if horizon_id
+            else ""
+        )
+    )
+    compiled_inputs = dict(record.get("compiled_runtime_inputs") or {})
+    retain_generation_ids: set[int] = set()
+    for generation in list(readiness.get("prepared_generation_ids") or []) + list(
+        record.get("retain_inactive_generations") or []
+    ):
+        if generation in (None, "") or str(generation) == "None":
+            continue
+        retain_generation_ids.add(int(generation))
+    retain_generations = sorted(retain_generation_ids)
+    compiled_for_flip = {
+        **compiled_inputs,
+        "bpf_runtime_update_phase": "steady_map_only",
+        "retain_inactive_generations": retain_generations,
+        "require_preloaded_generation_flip_only": True,
+    }
+    map_load_started_at = time.perf_counter()
+    map_load = load_mpls_maps(compiled_for_flip)
+    map_load_wall = round(time.perf_counter() - map_load_started_at, 6)
+    runtime_reload = dict(map_load.get("runtime_reload_attribution") or {})
+    flip_only = bool(map_load.get("active_generation_flip_only"))
+    ok = bool(map_load.get("ok")) and flip_only
+    reason = "" if ok else "bpf_preloaded_generation_flip_only_failed"
+    if not map_load.get("ok"):
+        first_failed = dict(map_load.get("first_failed_update") or {})
+        reason = str(
+            first_failed.get("reason")
+            or runtime_reload.get("reload_strategy")
+            or "bpf_preloaded_generation_flip_only_failed"
+        )
+    elif not flip_only:
+        reason = "bpf_preloaded_generation_not_flip_only"
+    timing_breakdown = {
+        "bpf_reuse_audit_seconds": 0.0,
+        "bpf_map_compile_seconds": 0.0,
+        "bpf_map_write_seconds": round(
+            float(map_load.get("map_write_wall_seconds") or 0.0),
+            6,
+        ),
+        "bpf_map_load_total_wall_seconds": map_load_wall,
+        "bpf_map_population_wall_seconds": round(
+            float(map_load.get("map_write_wall_seconds") or 0.0),
+            6,
+        ),
+        "bpf_map_write_update_count": int(map_load.get("map_write_update_count") or 0),
+        "bpf_map_update_count": int(
+            map_load.get("total_update_count")
+            or (
+                int(map_load.get("map_write_update_count") or 0)
+                + int(map_load.get("active_generation_update_count") or 0)
+            )
+        ),
+        "active_generation_flip_seconds": float(
+            map_load.get("active_generation_flip_wall_seconds") or 0.0
+        ),
+        "active_generation_update_count": int(
+            map_load.get("active_generation_update_count")
+            or map_load.get("active_generation_switch_count")
+            or 0
+        ),
+        "bpf_attach_seconds": 0.0,
+        "bpf_live_role_read_seconds": 0.0,
+        "bpf_preloaded_generation_activation_wall_seconds": round(
+            time.perf_counter() - started_at,
+            6,
+        ),
+    }
+    previous_records = _bpf_owned_preloaded_generation_records(readiness)
+    consumed_horizon_generation_key = str(
+        record.get("horizon_generation_key") or horizon_generation_key
+    )
+    remaining_records: List[Dict[str, Any]] = []
+    for item_any in previous_records:
+        item = dict(item_any)
+        item_horizon_generation_key = str(item.get("horizon_generation_key") or "")
+        if consumed_horizon_generation_key and (
+            item_horizon_generation_key == consumed_horizon_generation_key
+        ):
+            continue
+        if not consumed_horizon_generation_key and int(
+            item.get("generation_id") or -1
+        ) == int(proof.get("generation_id") or -2):
+            continue
+        remaining_records.append(item)
+    prepare = {
+        "ok": ok,
+        "ready": ok,
+        "reason": reason,
+        "prepare_mode": "preloaded_generation_flip_only",
+        "attach_lifecycle_mode": "preloaded_generation_reuse",
+        "attached_interfaces": list(
+            compiled_inputs.get("attached_interfaces")
+            or readiness.get("attached_interfaces")
+            or []
+        ),
+        "attached_interface_details": list(
+            compiled_inputs.get("attached_interface_details")
+            or readiness.get("attached_interface_details")
+            or []
+        ),
+        "compiled_mpls_map_counts": dict(
+            compiled_inputs.get("compiled_mpls_map_counts")
+            or record.get("mpls_map_entry_counts")
+            or {}
+        ),
+        "map_capacities": dict(
+            readiness.get("map_capacities")
+            or dict(
+                dict(readiness.get("prepare_steps") or {}).get("real_backend_prepare")
+                or {}
+            ).get("map_capacities")
+            or {}
+        ),
+        "attach_reuse": {
+            "reuse_eligible": True,
+            "reason": "preloaded_generation_reuses_resident_attach",
+            "reuse_rejected_reason": "",
+            "attach_strategy": "preloaded_generation_flip_only",
+            "reused_attach_count": len(
+                list(
+                    compiled_inputs.get("attached_interfaces")
+                    or readiness.get("attached_interfaces")
+                    or []
+                )
+            ),
+            "delta_attach_count": 0,
+            "full_attach_count": 0,
+            "steady_epoch_map_only": True,
+        },
+        "steps": {
+            "compile": {
+                "skipped": True,
+                "reason": "compiled_runtime_inputs_from_pre_runtime_preload",
+            },
+            "attach": {
+                "skipped": True,
+                "reason": "resident_attach_reused",
+            },
+            "map_load": map_load,
+            "preloaded_generation_record": dict(record),
+        },
+        "timing_breakdown": timing_breakdown,
+        "wall_seconds": timing_breakdown[
+            "bpf_preloaded_generation_activation_wall_seconds"
+        ],
+        "reused_attach_count": len(
+            list(
+                compiled_inputs.get("attached_interfaces")
+                or readiness.get("attached_interfaces")
+                or []
+            )
+        ),
+        "delta_attach_count": 0,
+        "full_attach_count": 0,
+        "runtime_full_generation_reload_count": 0,
+        "active_generation": int(proof.get("generation_id") or 0),
+        "loaded_runtime_generation_count": 0 if ok else 0,
+        "active_generation_switch_count": int(
+            map_load.get("active_generation_switch_count")
+            or map_load.get("active_generation_update_count")
+            or 0
+        ),
+        "runtime_reload_attribution": runtime_reload,
+        "preloaded_generation_record_id": str(record.get("record_id") or ""),
+        "preloaded_generation_consumed": ok,
+        "horizon_id": horizon_id,
+        "horizon_generation_key": horizon_generation_key,
+        "source_state_id": str(record.get("source_state_id") or ""),
+        "target_state_id": str(record.get("target_state_id") or ""),
+    }
+    prepared = {
+        **proof,
+        "ready": ok,
+        "ok": ok,
+        "reason": reason,
+        "fallback_reason": "" if ok else reason,
+        "fallback_to_linux": False,
+        "active_generation": int(proof.get("generation_id") or 0),
+        "runtime_generation_loaded": ok,
+        "active_generation_set": ok,
+        "map_ready": ok,
+        "real_backend_prepared": ok,
+        "attached_interfaces": list(prepare["attached_interfaces"]),
+        "attached_interface_details": list(prepare["attached_interface_details"]),
+        "mpls_map_entry_counts": dict(prepare["compiled_mpls_map_counts"]),
+        "map_capacities": dict(prepare["map_capacities"]),
+        "prepare_steps": {
+            **dict(proof.get("prepare_steps") or {}),
+            "real_backend_prepare": prepare,
+            "load": dict(map_load),
+            "attach": {
+                "ok": ok,
+                "attached_interfaces": list(prepare["attached_interfaces"]),
+                "results": [],
+                "skipped": True,
+                "reason": "resident_attach_reused",
+            },
+        },
+        "preloaded_generation_records": remaining_records,
+        "prepared_generation_ids": [
+            int(item.get("generation_id"))
+            for item in remaining_records
+            if item.get("generation_id") not in (None, "")
+        ],
+        "preloaded_generation_consumed": ok,
+        "preloaded_generation_record_id": str(record.get("record_id") or ""),
+        "current_horizon_id": horizon_id,
+        "active_horizon_generation_key": horizon_generation_key,
+        "current_source_state_id": str(record.get("target_state_id") or ""),
+        "consumed_source_state_id": str(record.get("source_state_id") or ""),
+        "target_state_id": str(record.get("target_state_id") or ""),
+        "linux_gz_fallback_enabled": False,
+        "eligible_core_fallback_to_linux": 0,
+    }
+    if not ok:
+        return prepared
+    mismatch = _bpf_owned_readiness_mismatch_reason(
+        runtime_update_plan=runtime_update_plan,
+        readiness=prepared,
+    )
+    if mismatch:
+        return {
+            **prepared,
+            "ready": False,
+            "ok": False,
+            "reason": mismatch,
+            "fallback_reason": mismatch,
+            "fallback_to_linux": False,
+            "fail_closed": True,
+            "readiness_mismatch_reason": mismatch,
+        }
+    return prepared
 
 
 def _bpf_owned_resident_attach_budget(proof: Dict[str, Any]) -> Dict[str, Any]:
@@ -4029,9 +4684,13 @@ def _bpf_owned_prepare_mpls_backend(
     *,
     proof: Dict[str, Any],
     contexts: Sequence[DirectGatewayExperimentContext],
+    topology_path: Optional[Path] = None,
     resident_attach_contexts: Optional[Sequence[DirectGatewayExperimentContext]] = None,
     reuse_attached_readiness: Optional[Dict[str, Any]] = None,
     fail_closed_on_reuse_miss: bool = False,
+    preactivation_preload_only: bool = False,
+    retain_inactive_generations: Optional[Sequence[int]] = None,
+    prepared_generation_window_count: int = 1,
 ) -> Dict[str, Any]:
     try:
         from satellite.bpf_dataplane_canary import (
@@ -4060,6 +4719,12 @@ def _bpf_owned_prepare_mpls_backend(
 
     started_at = time.perf_counter()
     generation_id = int(proof.get("generation_id") or 0)
+    retained_generation_id_set: set[int] = set()
+    for generation in list(retain_inactive_generations or []):
+        if generation in (None, "") or str(generation) == "None":
+            continue
+        retained_generation_id_set.add(int(generation))
+    retained_generation_ids = sorted(retained_generation_id_set)
     timing_breakdown: Dict[str, float] = {
         "bpf_reuse_audit_seconds": 0.0,
         "bpf_map_compile_seconds": 0.0,
@@ -4080,6 +4745,28 @@ def _bpf_owned_prepare_mpls_backend(
             "missing canary interface" in error
             or ("Device " in error and " does not exist" in error)
         )
+        missing_interface_ref = (
+            _bpf_owned_parse_missing_interface_ref(error)
+            if active_binding_missing
+            else ""
+        )
+        missing_binding_context = (
+            _bpf_owned_binding_context_for_interface(
+                interface_ref=missing_interface_ref,
+                contexts=contexts,
+                generation_id=generation_id,
+            )
+            if missing_interface_ref
+            else {}
+        )
+        prepared_inventory_status = (
+            _bpf_owned_prepared_inventory_binding_status(
+                topology_path=topology_path,
+                binding_context=missing_binding_context,
+            )
+            if missing_binding_context
+            else {}
+        )
         return {
             "ok": False,
             "reason": (
@@ -4093,6 +4780,20 @@ def _bpf_owned_prepare_mpls_backend(
                 else "bpf_mpls_compile_plan_failed"
             ),
             "error": error,
+            "missing_interface_ref": missing_interface_ref,
+            "missing_binding_context": missing_binding_context,
+            "prepared_inventory_binding_status": prepared_inventory_status,
+            "root_cause_classification": (
+                "LOOKAHEAD_PRELOAD_PREPARED_OWNED_BINDING_MISSING"
+                if active_binding_missing
+                and dict(prepared_inventory_status).get("prepared_inventory_match")
+                is not True
+                else (
+                    "LOOKAHEAD_PRELOAD_ACTIVE_LOOKUP_USED_FOR_PREPARED_INACTIVE_BINDING"
+                    if active_binding_missing
+                    else ""
+                )
+            ),
             "attached_interfaces": [],
             "wall_seconds": round(time.perf_counter() - started_at, 6),
             "timing_breakdown": timing_breakdown,
@@ -4289,9 +4990,22 @@ def _bpf_owned_prepare_mpls_backend(
             compiled.get("resident_attach_coverage") or {}
         ),
         "attach_reuse": attach_reuse,
+        "preactivation_preload_only": bool(preactivation_preload_only),
+        "runtime_apply_allowed": not bool(preactivation_preload_only),
+        "retain_inactive_generations": list(retained_generation_ids),
         "steps": {},
         "timing_breakdown": timing_breakdown,
     }
+    if preactivation_preload_only:
+        attach_reuse = {
+            **dict(attach_reuse),
+            "runtime_attach_allowed": False,
+            "interface_role_capability_source": (
+                str(attach_reuse.get("interface_role_capability_source") or "")
+                or "prepared_bpf_attach_capability_superset"
+            ),
+        }
+        report["attach_reuse"] = dict(attach_reuse)
     if blockers:
         report["reason"] = "toolchain_or_privilege_blocked"
         report["wall_seconds"] = round(time.perf_counter() - started_at, 6)
@@ -4322,12 +5036,15 @@ def _bpf_owned_prepare_mpls_backend(
     capacities = _bpf_mpls_generation_map_capacities(
         current_counts=compile_capacity_counts,
         active_counts=previous_counts_for_capacity,
+        prepared_generation_window_count=prepared_generation_window_count,
     )
     report["map_capacities"] = dict(capacities)
     report["map_capacity_contract"] = {
         "schema_version": "skyseed-bpf-map-generation-capacity-source-v1",
         "generation_keyed_maps_require_active_plus_target_plus_slack": True,
         "bootstrap_reserves_target_sized_inactive_generation": True,
+        "prepared_generation_window_count": int(prepared_generation_window_count or 1),
+        "retain_inactive_generations": list(retained_generation_ids),
         "active_generation_counts": previous_counts_for_capacity,
         "effective_active_generation_counts_for_capacity": effective_active_counts_for_capacity,
         "target_generation_counts": counts,
@@ -4478,12 +5195,56 @@ def _bpf_owned_prepare_mpls_backend(
         )
         attach_reuse = dict(reused_clsact_guard.get("attach_reuse") or attach_reuse)
         report["attach_reuse"] = dict(attach_reuse)
+    if (
+        preactivation_preload_only
+        and attach_reuse.get("reuse_eligible") is not True
+    ):
+        report["reason"] = (
+            "bpf_lookahead_preload_requires_existing_attach_reuse:"
+            + str(
+                attach_reuse.get("reuse_rejected_reason")
+                or attach_reuse.get("reason")
+                or "unknown"
+            )
+        )
+        report["fail_closed"] = True
+        report["blocked_stage"] = "bpf_lookahead_preactivation_preload_attach_reuse"
+        report["delta_attach_count"] = 0
+        report["full_attach_count"] = 0
+        report["runtime_apply_skipped"] = True
+        report["wall_seconds"] = round(time.perf_counter() - started_at, 6)
+        timing_breakdown["total_wall_seconds"] = float(report["wall_seconds"])
+        return report
     if attach_reuse.get("reuse_eligible") is True:
         delta_attach_plan = dict(attach_reuse.get("delta_attach_plan") or {})
         delta_new_interfaces = {
             str(interface_ref)
             for interface_ref in list(attach_reuse.get("missing_interfaces") or [])
         }
+        if preactivation_preload_only and delta_attach_plan:
+            report["steps"]["cleanup_before_attach"] = {
+                "skipped": True,
+                "reason": "lookahead_preactivation_preload_forbids_runtime_attach",
+            }
+            report["attach_lifecycle_mode"] = "lookahead_preactivation_preload_only"
+            report["attach_strategy"] = "blocked_delta_attach_required"
+            report["reason"] = "bpf_lookahead_preload_delta_attach_required"
+            report["fail_closed"] = True
+            report["blocked_stage"] = "bpf_lookahead_preactivation_preload_delta_attach"
+            report["reused_attach_count"] = int(
+                attach_reuse.get("reused_attach_count") or 0
+            )
+            report["delta_attach_count"] = 0
+            report["full_attach_count"] = 0
+            report["delta_attach_interfaces"] = []
+            report["runtime_apply_skipped"] = True
+            report["steps"]["attach"] = {
+                "skipped": True,
+                "reason": "lookahead_preactivation_preload_forbids_delta_attach",
+            }
+            report["wall_seconds"] = round(time.perf_counter() - started_at, 6)
+            timing_breakdown["total_wall_seconds"] = float(report["wall_seconds"])
+            return report
         report["steps"]["cleanup_before_attach"] = {
             "skipped": True,
             "reason": "normal_epoch_update_preserves_existing_tc_bpf_attach",
@@ -4621,6 +5382,7 @@ def _bpf_owned_prepare_mpls_backend(
                 **dict(compiled),
                 "bpf_runtime_update_phase": "preactivation_preload",
                 "defer_active_generation_flip": True,
+                "retain_inactive_generations": list(retained_generation_ids),
             }
             preactivation_preload = load_mpls_maps(compiled_for_preload)
             report["steps"]["preactivation_preload"] = preactivation_preload
@@ -4651,12 +5413,67 @@ def _bpf_owned_prepare_mpls_backend(
                 timing_breakdown["total_wall_seconds"] = float(report["wall_seconds"])
                 return report
 
+        if preactivation_preload_only:
+            preload_counts = dict(preactivation_preload or {})
+            report["steps"]["map_load"] = {
+                "skipped": True,
+                "reason": "lookahead_preactivation_preload_only_deferred_activation",
+            }
+            report["ok"] = True
+            report["reason"] = ""
+            report["prepare_mode"] = "lookahead_preactivation_preload_only"
+            report["preactivation_preload_scheduled"] = True
+            report["preactivation_preload"] = {
+                "ok": bool(preactivation_preload.get("ok")),
+                "map_write_update_count": int(
+                    preactivation_preload.get("map_write_update_count") or 0
+                ),
+                "active_generation_update_count": int(
+                    preactivation_preload.get("active_generation_update_count") or 0
+                ),
+                "outcome_labels": list(
+                    preactivation_preload.get("outcome_labels") or []
+                ),
+            }
+            report["inactive_generation_written"] = (
+                int(preload_counts.get("map_write_update_count") or 0) > 0
+            )
+            report["active_generation_flip_skipped"] = (
+                int(preload_counts.get("active_generation_update_count") or 0) == 0
+                and int(preload_counts.get("active_generation_switch_count") or 0) == 0
+            )
+            report["runtime_apply_skipped"] = True
+            report["runtime_generation_loaded"] = False
+            report["active_generation_set"] = False
+            report["map_ready"] = False
+            report["loaded_runtime_generation_count"] = 0
+            report["active_generation_switch_count"] = 0
+            report["full_attach_count"] = 0
+            report["delta_attach_count"] = 0
+            report["runtime_full_generation_reload_count"] = 0
+            report["compiled_runtime_inputs"] = _bpf_owned_compiled_runtime_inputs(
+                compiled
+            )
+            report["outcome_labels"] = list(
+                dict.fromkeys(
+                    [
+                        *list(report.get("outcome_labels") or []),
+                        "RUNTIME_PRELOAD_SCHEDULED",
+                        "LOOKAHEAD_PRELOAD_ONLY",
+                    ]
+                )
+            )
+            report["wall_seconds"] = round(time.perf_counter() - started_at, 6)
+            timing_breakdown["total_wall_seconds"] = float(report["wall_seconds"])
+            return report
+
         map_load_started_at = time.perf_counter()
         compiled_for_map_load = {
             **dict(compiled),
             "bpf_runtime_update_phase": (
                 "steady_delta_attach" if delta_attach_plan else "steady_map_only"
             ),
+            "retain_inactive_generations": list(retained_generation_ids),
         }
         map_load = load_mpls_maps(compiled_for_map_load)
         report["steps"]["map_load"] = map_load
@@ -4863,12 +5680,43 @@ def _bpf_owned_prepare_mpls_backend(
             if not command_ok(report["steps"]["compile"]):
                 report["reason"] = "compile_failed"
                 return report
+            attach_reuse_reason = str(
+                attach_reuse.get("reason")
+                or attach_reuse.get("reuse_rejected_reason")
+                or ""
+            )
+            initial_bpf_owned_prepare = bool(
+                not reuse_attached_readiness
+                and attach_reuse_reason == "no_previous_bpf_owned_readiness"
+            )
+            dirty_recovery_evidence_present = not initial_bpf_owned_prepare
+            attach_lifecycle_mode = (
+                "initial_bpf_owned_prepare"
+                if initial_bpf_owned_prepare
+                else "dirty_recovery_reset"
+            )
+            report["initial_bpf_owned_prepare_count"] = (
+                1 if initial_bpf_owned_prepare else 0
+            )
+            report["dirty_recovery_reset_count"] = (
+                0 if initial_bpf_owned_prepare else 1
+            )
+            report["dirty_recovery_evidence_present"] = (
+                dirty_recovery_evidence_present
+            )
+            report["dirty_recovery_trigger_source"] = (
+                "" if initial_bpf_owned_prepare else attach_reuse_reason
+            )
+            report["dirty_recovery_stage"] = (
+                "none" if initial_bpf_owned_prepare else "bpf_attach_prepare"
+            )
+            report["runtime_dirty_recovery_reset_count"] = 0
             cleanup_started_at = time.perf_counter()
             report["steps"]["cleanup_before_attach"] = rollback_mpls(
                 attached_interfaces=effective_attached_interfaces,
                 remove_maps=True,
             )
-            report["attach_lifecycle_mode"] = "dirty_recovery_reset"
+            report["attach_lifecycle_mode"] = attach_lifecycle_mode
             timing_breakdown["tc_qdisc_cleanup_before_attach_wall_seconds"] = round(
                 time.perf_counter() - cleanup_started_at,
                 6,
@@ -5082,9 +5930,40 @@ def _prepare_bpf_owned_readiness(
     resident_attach_contexts: Optional[Sequence[DirectGatewayExperimentContext]] = None,
     bpf_owned_readiness: Optional[Dict[str, Any]],
     fail_closed_on_reuse_miss: bool = False,
+    retain_inactive_generations: Optional[Sequence[int]] = None,
+    prepared_generation_window_count: int = 1,
 ) -> Dict[str, Any]:
     previous_readiness_mismatch_reason = ""
     if bpf_owned_readiness:
+        preloaded_records = _bpf_owned_preloaded_generation_records(
+            bpf_owned_readiness
+        )
+        target_horizon_id = str(
+            bpf_owned_readiness.get("current_horizon_id")
+            or bpf_owned_readiness.get("horizon_id")
+            or ""
+        )
+        current_source_state_id = str(
+            bpf_owned_readiness.get("current_source_state_id") or ""
+        )
+        target_proof: Dict[str, Any] | None = None
+        if preloaded_records:
+            target_proof = _derive_bpf_owned_readiness_proof(
+                runtime_update_plan=runtime_update_plan,
+            )
+            preloaded_record = _bpf_owned_find_preloaded_generation_record(
+                readiness=bpf_owned_readiness,
+                target_generation_id=int(target_proof.get("generation_id") or 0),
+                target_intent_hash=str(target_proof.get("intent_hash") or ""),
+                target_horizon_id=target_horizon_id,
+                current_source_state_id=current_source_state_id,
+            )
+            if preloaded_record is not None:
+                return _bpf_owned_activate_preloaded_generation(
+                    runtime_update_plan=runtime_update_plan,
+                    readiness=bpf_owned_readiness,
+                    record=preloaded_record,
+                )
         checked = _prove_bpf_owned_readiness(
             runtime_update_plan=runtime_update_plan,
             bpf_owned_readiness=bpf_owned_readiness,
@@ -5101,6 +5980,60 @@ def _prepare_bpf_owned_readiness(
         previous_readiness_mismatch_reason = str(
             checked.get("readiness_mismatch_reason") or checked.get("reason") or ""
         )
+        if (
+            previous_readiness_mismatch_reason
+            and preloaded_records
+            and fail_closed_on_reuse_miss
+        ):
+            if target_proof is None:
+                target_proof = _derive_bpf_owned_readiness_proof(
+                    runtime_update_plan=runtime_update_plan,
+                )
+            return {
+                **target_proof,
+                "ready": False,
+                "ok": False,
+                "reason": "bpf_preloaded_generation_missing",
+                "fallback_reason": "bpf_preloaded_generation_missing",
+                "fallback_to_linux": False,
+                "fail_closed": True,
+                "blocked_stage": "bpf_preloaded_generation_handoff",
+                "previous_readiness_mismatch_reason": (
+                    previous_readiness_mismatch_reason
+                ),
+                "preloaded_generation_records": (
+                    _bpf_owned_preloaded_generation_records(bpf_owned_readiness)
+                ),
+                "current_horizon_id": target_horizon_id,
+                "current_source_state_id": current_source_state_id,
+                "runtime_attach_allowed": False,
+                "runtime_full_generation_reload_allowed": False,
+            }
+        if previous_readiness_mismatch_reason == "bpf_owned_readiness_active_generation_mismatch":
+            target_proof = _derive_bpf_owned_readiness_proof(
+                runtime_update_plan=runtime_update_plan,
+            )
+            if fail_closed_on_reuse_miss:
+                return {
+                    **target_proof,
+                    "ready": False,
+                    "ok": False,
+                    "reason": "bpf_preloaded_generation_missing",
+                    "fallback_reason": "bpf_preloaded_generation_missing",
+                    "fallback_to_linux": False,
+                    "fail_closed": True,
+                    "blocked_stage": "bpf_preloaded_generation_handoff",
+                    "previous_readiness_mismatch_reason": (
+                        previous_readiness_mismatch_reason
+                    ),
+                    "preloaded_generation_records": (
+                        _bpf_owned_preloaded_generation_records(
+                            bpf_owned_readiness
+                        )
+                    ),
+                    "runtime_attach_allowed": False,
+                    "runtime_full_generation_reload_allowed": False,
+                }
     proof = _derive_bpf_owned_readiness_proof(
         runtime_update_plan=runtime_update_plan,
     )
@@ -5124,9 +6057,12 @@ def _prepare_bpf_owned_readiness(
     prepare = _bpf_owned_prepare_mpls_backend(
         proof=proof,
         contexts=contexts,
+        topology_path=topology_path,
         resident_attach_contexts=resident_attach_contexts,
         reuse_attached_readiness=bpf_owned_readiness,
         fail_closed_on_reuse_miss=fail_closed_on_reuse_miss,
+        retain_inactive_generations=retain_inactive_generations,
+        prepared_generation_window_count=prepared_generation_window_count,
     )
     mpls_counts = dict(prepare.get("compiled_mpls_map_counts") or {})
     prepared = {
@@ -5138,6 +6074,14 @@ def _prepare_bpf_owned_readiness(
         "fallback_to_linux": prepare.get("ok") is not True,
         "attached_interfaces": list(prepare.get("attached_interfaces") or host_interfaces),
         "logical_attached_interfaces": list(proof.get("attached_interfaces") or []),
+        "missing_interface_ref": str(prepare.get("missing_interface_ref") or ""),
+        "missing_binding_context": dict(prepare.get("missing_binding_context") or {}),
+        "prepared_inventory_binding_status": dict(
+            prepare.get("prepared_inventory_binding_status") or {}
+        ),
+        "root_cause_classification": str(
+            prepare.get("root_cause_classification") or ""
+        ),
         "packet_route_entry_count": 0,
         "packet_route_entries": [],
         "resolved_packet_route_entries": [],
@@ -5223,6 +6167,151 @@ def _prepare_bpf_owned_readiness(
             "readiness_mismatch_reason": mismatch,
         }
     return prepared
+
+
+def _prepare_bpf_owned_preactivation_preload(
+    *,
+    runtime_update_plan: RuntimeUpdatePlan,
+    topology_path: Path,
+    contexts: Sequence[DirectGatewayExperimentContext],
+    bpf_owned_readiness: Optional[Dict[str, Any]],
+    retain_inactive_generations: Optional[Sequence[int]] = None,
+    prepared_generation_window_count: int = 1,
+) -> Dict[str, Any]:
+    proof = _derive_bpf_owned_readiness_proof(
+        runtime_update_plan=runtime_update_plan,
+    )
+    if proof.get("logical_intent_ready") is not True:
+        return {
+            **proof,
+            "ready": False,
+            "ok": False,
+            "preactivation_preload_only": True,
+            "inactive_generation_written": False,
+            "active_generation_flip_skipped": True,
+            "runtime_apply_skipped": True,
+            "fallback_to_linux": False,
+            "fail_closed": True,
+            "blocked_stage": "bpf_lookahead_preactivation_preload_intent",
+        }
+    host_interfaces = _bpf_owned_host_interfaces_for_contexts(
+        topology_path=topology_path,
+        contexts=tuple(contexts),
+    )
+    if not host_interfaces:
+        return {
+            **proof,
+            "ready": False,
+            "ok": False,
+            "reason": "bpf_lookahead_preload_no_host_attach_interfaces",
+            "fallback_reason": "bpf_lookahead_preload_no_host_attach_interfaces",
+            "fallback_to_linux": False,
+            "fail_closed": True,
+            "blocked_stage": "bpf_lookahead_preactivation_preload_host_interfaces",
+            "preactivation_preload_only": True,
+            "inactive_generation_written": False,
+            "active_generation_flip_skipped": True,
+            "runtime_apply_skipped": True,
+            "attached_interfaces": [],
+            "logical_attached_interfaces": list(proof.get("attached_interfaces") or []),
+            "prepare_steps": {
+                **dict(proof.get("prepare_steps") or {}),
+                "real_backend_prepare": {
+                    "ok": False,
+                    "reason": "bpf_lookahead_preload_no_host_attach_interfaces",
+                    "preactivation_preload_only": True,
+                },
+            },
+        }
+    prepare = _bpf_owned_prepare_mpls_backend(
+        proof=proof,
+        contexts=contexts,
+        topology_path=topology_path,
+        reuse_attached_readiness=bpf_owned_readiness,
+        fail_closed_on_reuse_miss=True,
+        preactivation_preload_only=True,
+        retain_inactive_generations=retain_inactive_generations,
+        prepared_generation_window_count=prepared_generation_window_count,
+    )
+    preactivation_preload = dict(prepare.get("preactivation_preload") or {})
+    attach_reuse = dict(prepare.get("attach_reuse") or {})
+    return {
+        **proof,
+        "ready": False,
+        "ok": bool(prepare.get("ok")),
+        "reason": str(prepare.get("reason") or ""),
+        "fallback_reason": "" if prepare.get("ok") else str(prepare.get("reason") or "bpf_lookahead_preload_failed"),
+        "fallback_to_linux": False,
+        "fail_closed": prepare.get("ok") is not True or bool(prepare.get("fail_closed")),
+        "blocked_stage": str(prepare.get("blocked_stage") or ""),
+        "preactivation_preload_only": True,
+        "preactivation_preload_scheduled": bool(
+            prepare.get("preactivation_preload_scheduled")
+        ),
+        "inactive_generation_written": bool(prepare.get("inactive_generation_written")),
+        "active_generation_flip_skipped": bool(
+            prepare.get("active_generation_flip_skipped")
+        ),
+        "runtime_apply_skipped": bool(prepare.get("runtime_apply_skipped")),
+        "delta_attach_count": int(prepare.get("delta_attach_count") or 0),
+        "full_attach_count": int(prepare.get("full_attach_count") or 0),
+        "runtime_full_generation_reload_count": int(
+            prepare.get("runtime_full_generation_reload_count") or 0
+        ),
+        "attach_reuse": attach_reuse,
+        "required_interface_role_union_count": int(
+            attach_reuse.get("required_interface_role_union_count") or 0
+        ),
+        "prepared_bpf_attach_capability_count": int(
+            attach_reuse.get("prepared_bpf_attach_capability_count") or 0
+        ),
+        "interface_role_mismatch_count": int(
+            attach_reuse.get("interface_role_mismatch_count") or 0
+        ),
+        "attach_reuse_eligible_count": int(
+            attach_reuse.get("attach_reuse_eligible_count") or 0
+        ),
+        "attach_reuse_ineligible_count": int(
+            attach_reuse.get("attach_reuse_ineligible_count") or 0
+        ),
+        "ineligible_reason_counts": dict(
+            attach_reuse.get("ineligible_reason_counts") or {}
+        ),
+        "interface_role_capability_source": str(
+            attach_reuse.get("interface_role_capability_source") or ""
+        ),
+        "runtime_attach_allowed": False,
+        "attached_interfaces": list(prepare.get("attached_interfaces") or host_interfaces),
+        "logical_attached_interfaces": list(proof.get("attached_interfaces") or []),
+        "missing_interface_ref": str(prepare.get("missing_interface_ref") or ""),
+        "missing_binding_context": dict(prepare.get("missing_binding_context") or {}),
+        "prepared_inventory_binding_status": dict(
+            prepare.get("prepared_inventory_binding_status") or {}
+        ),
+        "root_cause_classification": str(
+            prepare.get("root_cause_classification") or ""
+        ),
+        "mpls_map_entry_counts": dict(prepare.get("compiled_mpls_map_counts") or {}),
+        "preactivation_preload": preactivation_preload,
+        "compiled_runtime_inputs": dict(
+            prepare.get("compiled_runtime_inputs") or {}
+        ),
+        "retain_inactive_generations": list(retain_inactive_generations or []),
+        "prepare_steps": {
+            **dict(proof.get("prepare_steps") or {}),
+            "real_backend_prepare": prepare,
+            "preactivation_preload": dict(
+                prepare.get("steps", {}).get("preactivation_preload") or {}
+            ),
+        },
+        "runtime_generation_loaded": False,
+        "active_generation_set": False,
+        "map_ready": False,
+        "real_backend_prepared": bool(prepare.get("ok")),
+        "linux_gz_fallback_enabled": False,
+        "eligible_core_fallback_to_linux": 0,
+        "outcome_labels": list(prepare.get("outcome_labels") or []),
+    }
 
 
 def _bpf_owned_runtime_readiness_failure_message(
@@ -9963,6 +11052,7 @@ class MinimalRealLinuxMplsInstaller:
         resident_bpf_attach_contexts: Optional[
             Sequence[DirectGatewayExperimentContext]
         ] = None,
+        lookahead_bpf_preload_contexts: Optional[Sequence[Dict[str, Any]]] = None,
     ) -> ActiveRuntimeSession:
         session_started_at = time.perf_counter()
         session_started_epoch_seconds = time.time()
@@ -10051,6 +11141,7 @@ class MinimalRealLinuxMplsInstaller:
         verify_batch_results: List[NodeLocalBatchResult] = []
         apply_backend_contract: Dict[str, Any] = {}
         verify_backend_contract: Dict[str, Any] = {}
+        lookahead_bpf_preload_reports: List[Dict[str, Any]] = []
         bpf_owned_packet_counters_after_apply: Dict[str, Any] = {
             "enabled": False,
             "reason": "forwarding_backend_not_bpf_owned",
@@ -10170,12 +11261,48 @@ class MinimalRealLinuxMplsInstaller:
                 and bool(backend_config["bpf_owned_readiness"].get("ready"))
             )
             if bpf_owned_ready:
+                if (
+                    str(runtime_mode) == "operational_clean"
+                    and list(lookahead_bpf_preload_contexts or [])
+                ):
+                    raise RuntimeError(
+                        "bpf_runtime_lookahead_preload_forbidden:"
+                        "prepare_next_horizon_before_epoch_transition"
+                    )
                 host_mpls_summary = {
                     "skipped": True,
                     "reason": "bpf_owned_backend_ready_for_satellite_core_gz_forwarding",
                     "wall_seconds": 0.0,
                     "bpf_prepare_order": "after_incremental_cleanup_before_preflight",
                 }
+                for preload_item in list(lookahead_bpf_preload_contexts or []):
+                    preload_entry = dict(preload_item.get("entry") or {})
+                    preload_report = _prepare_bpf_owned_preactivation_preload(
+                        runtime_update_plan=preload_item["runtime_update_plan"],
+                        topology_path=topology_path,
+                        contexts=tuple(preload_item.get("contexts") or ()),
+                        bpf_owned_readiness=dict(
+                            backend_config.get("bpf_owned_readiness") or {}
+                        ),
+                    )
+                    preload_record = {
+                        "entry": preload_entry,
+                        "epoch_id": preload_entry.get("epoch_id"),
+                        "slice_id": preload_entry.get("slice_id"),
+                        "segment_epoch_key": preload_entry.get("segment_epoch_key"),
+                        "report": preload_report,
+                    }
+                    lookahead_bpf_preload_reports.append(preload_record)
+                    if preload_report.get("ok") is not True:
+                        raise RuntimeError(
+                            "bpf_lookahead_preactivation_preload_failed:"
+                            + str(
+                                preload_report.get("reason")
+                                or preload_report.get("blocked_stage")
+                                or preload_entry.get("epoch_id")
+                                or "unknown"
+                            )
+                        )
             elif backend_config["backend_mode"] == "bpf_owned":
                 raise RuntimeError(
                     _bpf_owned_runtime_readiness_failure_message(
@@ -10205,6 +11332,22 @@ class MinimalRealLinuxMplsInstaller:
                 _copy_bpf_prepare_timing_to_phase_timing(
                     phase_timing,
                     prepare_timing,
+                )
+                phase_timing["bpf_lookahead_preactivation_preload_event_count"] = len(
+                    lookahead_bpf_preload_reports
+                )
+                phase_timing["bpf_lookahead_preactivation_preload_success_count"] = sum(
+                    1
+                    for item in lookahead_bpf_preload_reports
+                    if dict(item.get("report") or {}).get("ok") is True
+                )
+                phase_timing["bpf_lookahead_preactivation_preload_delta_attach_count"] = sum(
+                    int(dict(item.get("report") or {}).get("delta_attach_count") or 0)
+                    for item in lookahead_bpf_preload_reports
+                )
+                phase_timing["bpf_lookahead_preactivation_preload_full_attach_count"] = sum(
+                    int(dict(item.get("report") or {}).get("full_attach_count") or 0)
+                    for item in lookahead_bpf_preload_reports
                 )
             preflight_started_at = time.perf_counter()
             for context in contexts:
@@ -10509,6 +11652,10 @@ class MinimalRealLinuxMplsInstaller:
                     "backend_version": self.backend_version,
                     "forwarding_backend": backend_config["backend_mode"],
                     "bpf_owned_readiness": dict(backend_config["bpf_owned_readiness"]),
+                    "bpf_lookahead_preactivation_preload": {
+                        "reports": list(lookahead_bpf_preload_reports),
+                        "event_count": len(lookahead_bpf_preload_reports),
+                    },
                 },
                 target_slice=dict(target_slice_payload),
                 host_runtime_boundary={},
@@ -10676,6 +11823,15 @@ class MinimalRealLinuxMplsInstaller:
             runtime_error.skyseed_details = {  # type: ignore[attr-defined]
                 "forwarding_backend": backend_config["backend_mode"],
                 "bpf_owned_readiness": dict(backend_config["bpf_owned_readiness"]),
+                "bpf_lookahead_preactivation_preload": {
+                    "reports": list(lookahead_bpf_preload_reports),
+                    "event_count": len(lookahead_bpf_preload_reports),
+                    "failed_count": sum(
+                        1
+                        for item in lookahead_bpf_preload_reports
+                        if dict(item.get("report") or {}).get("ok") is not True
+                    ),
+                },
                 "backend_apply_contract": dict(apply_backend_contract),
                 "backend_verify_contract": dict(verify_backend_contract),
                 "bpf_owned_packet_path_diagnostics": dict(
@@ -10713,6 +11869,57 @@ class MinimalRealLinuxMplsInstaller:
                     "bpf_owned": backend_config["backend_mode"] == "bpf_owned",
                 },
                 "bpf_owned_readiness": dict(backend_config["bpf_owned_readiness"]),
+                "bpf_lookahead_preactivation_preload": {
+                    "reports": list(lookahead_bpf_preload_reports),
+                    "event_count": len(lookahead_bpf_preload_reports),
+                    "preactivation_preload_attempt_count": len(
+                        lookahead_bpf_preload_reports
+                    ),
+                    "success_count": sum(
+                        1
+                        for item in lookahead_bpf_preload_reports
+                        if dict(item.get("report") or {}).get("ok") is True
+                    ),
+                    "preactivation_preload_success_count": sum(
+                        1
+                        for item in lookahead_bpf_preload_reports
+                        if dict(item.get("report") or {}).get("ok") is True
+                    ),
+                    "preactivation_preload_failed_count": sum(
+                        1
+                        for item in lookahead_bpf_preload_reports
+                        if dict(item.get("report") or {}).get("ok") is not True
+                    ),
+                    "inactive_generation_write_count": sum(
+                        1
+                        for item in lookahead_bpf_preload_reports
+                        if dict(item.get("report") or {}).get(
+                            "inactive_generation_written"
+                        )
+                    ),
+                    "active_generation_flip_count": sum(
+                        0
+                        if dict(item.get("report") or {}).get(
+                            "active_generation_flip_skipped"
+                        )
+                        else 1
+                        for item in lookahead_bpf_preload_reports
+                    ),
+                    "delta_attach_count": sum(
+                        int(
+                            dict(item.get("report") or {}).get("delta_attach_count")
+                            or 0
+                        )
+                        for item in lookahead_bpf_preload_reports
+                    ),
+                    "full_attach_count": sum(
+                        int(
+                            dict(item.get("report") or {}).get("full_attach_count")
+                            or 0
+                        )
+                        for item in lookahead_bpf_preload_reports
+                    ),
+                },
                 "bpf_owned_packet_counters_after_apply": dict(
                     bpf_owned_packet_counters_after_apply
                 ),

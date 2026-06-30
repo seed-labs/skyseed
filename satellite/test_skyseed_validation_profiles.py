@@ -981,10 +981,18 @@ class SkyseedValidationProfileTests(unittest.TestCase):
                 json.dumps(
                     {
                         "schema_version": "skyseed-validation-profile-summary-v1",
-                        "outcome_labels": ["OLD_LABEL"],
+                        "outcome_labels": [
+                            "OLD_LABEL",
+                            "NORMAL_PATH_OWNED_SCOPE_ONLY",
+                            "NORMAL_PATH_NO_HIDDEN_REPAIR",
+                        ],
                         "runtime_preload_diff_contract_audit": {
                             "outcome_labels": [],
                             "preactivation_preload_epoch_count": 0,
+                        },
+                        "normal_path_artifact_contract": {
+                            "outcome_labels": [],
+                            "normal_path_owned_scope_only": False,
                         },
                     }
                 )
@@ -1032,6 +1040,19 @@ class SkyseedValidationProfileTests(unittest.TestCase):
                 + "\n",
                 encoding="utf-8",
             )
+            (run_dir / "normal_path_artifact_contract.json").write_text(
+                json.dumps(
+                    {
+                        "outcome_labels": [
+                            "NORMAL_PATH_ARTIFACT_CONTRACT_ADDED",
+                            "OWNED_RESOURCE_INDEX_MISSING_BLOCKER",
+                        ],
+                        "normal_path_owned_scope_only": False,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
 
             summary = refresh_profile_run_summary_derived_artifacts(run_dir=run_dir)
             written = json.loads(
@@ -1046,6 +1067,9 @@ class SkyseedValidationProfileTests(unittest.TestCase):
         )
         self.assertIn("RUNTIME_PRELOAD_SCHEDULED", summary["outcome_labels"])
         self.assertIn("GW_SLOT_DERIVATION_CONFIRMED", summary["outcome_labels"])
+        self.assertIn("OWNED_RESOURCE_INDEX_MISSING_BLOCKER", summary["outcome_labels"])
+        self.assertNotIn("NORMAL_PATH_OWNED_SCOPE_ONLY", summary["outcome_labels"])
+        self.assertNotIn("NORMAL_PATH_NO_HIDDEN_REPAIR", summary["outcome_labels"])
         self.assertIn("GLOBAL_SCAN_DIAGNOSTIC_ONLY", summary["outcome_labels"])
         self.assertIn("NORMAL_FAILURE_CLEANUP_MODE", summary["outcome_labels"])
         self.assertTrue(
@@ -1053,7 +1077,7 @@ class SkyseedValidationProfileTests(unittest.TestCase):
         )
         self.assertEqual(
             written["derived_artifact_refresh"]["artifact_count"],
-            3,
+            4,
         )
 
     def test_normal_path_artifact_contract_aggregates_explicit_plan_evidence(self) -> None:
@@ -1067,10 +1091,23 @@ class SkyseedValidationProfileTests(unittest.TestCase):
                 json.dumps(
                     {
                         "selected_epoch_queue": [{"epoch_id": "runtimeepoch-1"}],
+                        "current_execution_queue": [{"epoch_id": "runtimeepoch-1"}],
+                        "lookahead_preload_queue": [{"epoch_id": "parameterepoch-1"}],
                         "continuous_runtime_execution": {
                             "epoch_execution_queue": [{"epoch_id": "runtimeepoch-1"}],
-                            "resident_attach_coverage": {
-                                "compile_capacity_interfaces": ["netns:a:if0"],
+                            "run_window_resource_coverage_plan": {
+                                "schema_version": "skyseed-run-window-resource-coverage-plan-v1",
+                                "planned_run_horizon_count": 1,
+                                "lookahead_horizon_count": 1,
+                                "required_resource_union_count": 1,
+                                "materialized_resource_count": 1,
+                                "unresolved_count": 0,
+                                "newly_required_but_not_prematerialized_count": 0,
+                            },
+                            "prepared_resource_scope_by_slot": {
+                                "slot-a": {
+                                    "owned_resources": ["netns:a:if0"],
+                                },
                             },
                         },
                     }
@@ -1100,12 +1137,233 @@ class SkyseedValidationProfileTests(unittest.TestCase):
                 + "\n",
                 encoding="utf-8",
             )
+            (run_dir / "horizon_lifecycle_queue_contract.json").write_text(
+                json.dumps(
+                    {
+                        "current_execution_event_count": 1,
+                        "lookahead_preload_event_count": 1,
+                        "preload_required_event_count": 1,
+                        "s4_precondition_low_cost_proof_complete": False,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
             (run_dir / "runtime_preload_diff_contract_audit.json").write_text(
                 json.dumps(
                     {
                         "preactivation_preload_epoch_count": 1,
                         "map_diff_update_epoch_count": 1,
                         "outcome_labels": ["RUNTIME_PRELOAD_SCHEDULED"],
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (run_dir / "normal_failure_cleanup_report.json").write_text(
+                json.dumps(
+                    {
+                        "outcome_label": "CLEANUP_BOUNDARY_PASS",
+                        "cleanup_mode": "normal_failure_cleanup",
+                        "detector_source": "detect_cleanup_residue",
+                        "cleanup_scope_source": "prepared_owned_resource_index",
+                        "bounded_owned_scope": True,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            contract = evaluate_normal_path_artifact_contract(run_dir=run_dir)
+            written = json.loads(
+                (run_dir / "normal_path_artifact_contract.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+
+        self.assertTrue(contract["run_manifest_present"])
+        self.assertTrue(contract["prepared_owned_resource_index_present"])
+        self.assertEqual(
+            contract["prepared_owned_resource_index_sources"],
+            ["continuous_runtime_execution.prepared_resource_scope_by_slot"],
+        )
+        self.assertTrue(contract["prepared_execution_queue_present"])
+        self.assertEqual(contract["prepared_current_execution_queue_count"], 1)
+        self.assertEqual(contract["prepared_lookahead_preload_queue_count"], 1)
+        self.assertTrue(contract["executed_epoch_queue_present"])
+        self.assertTrue(contract["run_window_resource_coverage_present"])
+        self.assertTrue(contract["run_window_resource_coverage_passed"])
+        self.assertTrue(contract["explicit_runtime_update_plan_present"])
+        self.assertTrue(contract["explicit_event_timeline_plan_present"])
+        self.assertTrue(contract["explicit_horizon_lifecycle_queue_present"])
+        self.assertEqual(
+            contract["horizon_lifecycle_queue_contract"][
+                "lookahead_preload_event_count"
+            ],
+            1,
+        )
+        self.assertTrue(contract["explicit_bpf_preload_diff_plan_present"])
+        self.assertTrue(contract["cleanup_owned_scope_evidence_present"])
+        self.assertEqual(contract["cleanup_scope_source"], "prepared_owned_resource_index")
+        self.assertFalse(contract["cleanup_full_scope_repair_used"])
+        self.assertFalse(contract["cleanup_full_scope_delete_used"])
+        self.assertFalse(contract["cleanup_full_scope_reconcile_used"])
+        self.assertTrue(contract["normal_path_owned_scope_only"])
+        self.assertTrue(
+            contract[
+                "normal_path_fail_fast_required_when_manifest_or_owned_index_missing"
+            ]
+        )
+        self.assertTrue(contract["normal_path_hidden_full_scope_repair_forbidden"])
+        self.assertIn(
+            "HORIZON_LIFECYCLE_QUEUE_CONTRACT_PRESENT",
+            contract["outcome_labels"],
+        )
+        self.assertIn("NORMAL_PATH_OWNED_SCOPE_ONLY", contract["outcome_labels"])
+        self.assertIn("NORMAL_PATH_NO_HIDDEN_REPAIR", contract["outcome_labels"])
+        self.assertIn("GLOBAL_SCAN_DIAGNOSTIC_ONLY", contract["outcome_labels"])
+        self.assertEqual(written["runtime_update_plan_entry_count"], 1)
+
+    def test_normal_path_artifact_contract_does_not_treat_queue_as_owned_index(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(dir="/home/seed/skyseed_runs") as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "run_manifest.json").write_text(
+                json.dumps({"run_id": "run-a", "generated_artifacts": {}}) + "\n",
+                encoding="utf-8",
+            )
+            (run_dir / "prepared_update_bundle.json").write_text(
+                json.dumps(
+                    {
+                        "selected_epoch_queue": [{"epoch_id": "runtimeepoch-1"}],
+                        "current_execution_queue": [{"epoch_id": "runtimeepoch-1"}],
+                        "continuous_runtime_execution": {
+                            "epoch_execution_queue": [{"epoch_id": "runtimeepoch-1"}],
+                            "prepared_owned_resource_index": {
+                                "schema_version": "skyseed-prepared-owned-resource-index-v1",
+                                "source": "pre_epoch_host_prewarm_scope",
+                                "slot_count": 0,
+                                "resource_count": 0,
+                                "resource_scope_by_slot": {},
+                            },
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (run_dir / "runtime_update_plan_summary.json").write_text(
+                json.dumps([{"slice_id": "slice-1"}]) + "\n",
+                encoding="utf-8",
+            )
+            (run_dir / "horizon_execution_reconciled_summary.json").write_text(
+                json.dumps(
+                    {
+                        "horizon_selected_by": "EventTimeline",
+                        "selected_event_count": 1,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (run_dir / "runtime_preload_diff_contract_audit.json").write_text(
+                json.dumps(
+                    {
+                        "preactivation_preload_epoch_count": 1,
+                        "map_diff_update_epoch_count": 1,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            contract = evaluate_normal_path_artifact_contract(run_dir=run_dir)
+
+        self.assertTrue(contract["prepared_execution_queue_present"])
+        self.assertFalse(contract["prepared_owned_resource_index_present"])
+        self.assertFalse(contract["normal_path_owned_scope_only"])
+        self.assertFalse(contract["normal_path_no_hidden_repair"])
+        self.assertEqual(contract["prepared_owned_resource_index_sources"], [])
+        self.assertIn("OWNED_RESOURCE_INDEX_MISSING_BLOCKER", contract["outcome_labels"])
+        self.assertNotIn("NORMAL_PATH_OWNED_SCOPE_ONLY", contract["outcome_labels"])
+
+    def test_normal_path_artifact_contract_accepts_prepared_queue_when_execution_empty(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(dir="/home/seed/skyseed_runs") as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "run_manifest.json").write_text(
+                json.dumps({"run_id": "run-a", "generated_artifacts": {}}) + "\n",
+                encoding="utf-8",
+            )
+            (run_dir / "prepared_update_bundle.json").write_text(
+                json.dumps(
+                    {
+                        "selected_epoch_queue": [
+                            {"epoch_id": "runtimeepoch-1"},
+                            {"epoch_id": "parameterepoch-1"},
+                        ],
+                        "current_execution_queue": [{"epoch_id": "runtimeepoch-1"}],
+                        "lookahead_preload_queue": [{"epoch_id": "parameterepoch-1"}],
+                        "continuous_runtime_execution": {
+                            "epoch_execution_queue": [],
+                            "run_window_resource_coverage_plan": {
+                                "schema_version": "skyseed-run-window-resource-coverage-plan-v1",
+                                "planned_run_horizon_count": 1,
+                                "lookahead_horizon_count": 1,
+                                "required_resource_union_count": 1,
+                                "materialized_resource_count": 1,
+                                "unresolved_count": 0,
+                                "newly_required_but_not_prematerialized_count": 0,
+                            },
+                            "prepared_owned_resource_index": {
+                                "schema_version": "skyseed-prepared-owned-resource-index-v1",
+                                "source": "pre_epoch_host_prewarm_scope",
+                                "slot_count": 1,
+                                "resource_count": 1,
+                                "resource_scope_by_slot": {"slot-a": ["resource-a"]},
+                            },
+                            "prepared_resource_scope_by_slot": {
+                                "slot-a": ["resource-a"],
+                            },
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (run_dir / "runtime_update_plan_summary.json").write_text(
+                json.dumps([{"slice_id": "slice-1"}]) + "\n",
+                encoding="utf-8",
+            )
+            (run_dir / "horizon_execution_reconciled_summary.json").write_text(
+                json.dumps(
+                    {
+                        "horizon_selected_by": "EventTimeline",
+                        "selected_event_count": 2,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (run_dir / "horizon_lifecycle_queue_contract.json").write_text(
+                json.dumps(
+                    {
+                        "current_execution_event_count": 1,
+                        "lookahead_preload_event_count": 1,
+                        "preload_required_event_count": 1,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (run_dir / "runtime_preload_diff_contract_audit.json").write_text(
+                json.dumps(
+                    {
+                        "preactivation_preload_epoch_count": 0,
+                        "preactivation_preload_attempt_count": 1,
+                        "preactivation_preload_failed_count": 1,
                     }
                 )
                 + "\n",
@@ -1124,22 +1382,19 @@ class SkyseedValidationProfileTests(unittest.TestCase):
             )
 
             contract = evaluate_normal_path_artifact_contract(run_dir=run_dir)
-            written = json.loads(
-                (run_dir / "normal_path_artifact_contract.json").read_text(
-                    encoding="utf-8"
-                )
-            )
 
-        self.assertTrue(contract["run_manifest_present"])
-        self.assertTrue(contract["prepared_owned_resource_index_present"])
-        self.assertTrue(contract["explicit_runtime_update_plan_present"])
-        self.assertTrue(contract["explicit_event_timeline_plan_present"])
-        self.assertTrue(contract["explicit_bpf_preload_diff_plan_present"])
-        self.assertTrue(contract["normal_path_owned_scope_only"])
-        self.assertIn("NORMAL_PATH_OWNED_SCOPE_ONLY", contract["outcome_labels"])
-        self.assertIn("NORMAL_PATH_NO_HIDDEN_REPAIR", contract["outcome_labels"])
-        self.assertIn("GLOBAL_SCAN_DIAGNOSTIC_ONLY", contract["outcome_labels"])
-        self.assertEqual(written["runtime_update_plan_entry_count"], 1)
+        self.assertTrue(contract["prepared_execution_queue_present"])
+        self.assertEqual(contract["prepared_current_execution_queue_count"], 1)
+        self.assertEqual(contract["prepared_lookahead_preload_queue_count"], 1)
+        self.assertFalse(contract["executed_epoch_queue_present"])
+        self.assertTrue(contract["run_window_resource_coverage_passed"])
+        self.assertFalse(contract["cleanup_owned_scope_evidence_present"])
+        self.assertFalse(contract["normal_path_owned_scope_only"])
+        self.assertNotIn("OWNED_RESOURCE_INDEX_MISSING_BLOCKER", contract["outcome_labels"])
+        self.assertIn(
+            "CLEANUP_OWNED_SCOPE_EVIDENCE_MISSING_BLOCKER",
+            contract["outcome_labels"],
+        )
 
     def test_cleanup_report_normalization_labels_legacy_cleanup_artifact(self) -> None:
         normalized = normalize_cleanup_report_contract(
@@ -1991,6 +2246,65 @@ class SkyseedValidationProfileTests(unittest.TestCase):
             commands,
         )
 
+    def test_normal_failure_cleanup_records_bounded_owned_scope_evidence(self) -> None:
+        state = {"interfaces": {"veth5e2dc45"}}
+
+        def fake_runner(command, **_kwargs):
+            if command[:3] == ["docker", "ps", "-a"]:
+                return _completed("")
+            if command[:3] == ["docker", "network", "ls"]:
+                return _completed("")
+            if command[:3] == ["ip", "-o", "link"]:
+                return _completed(
+                    "".join(
+                        f"9: {name}@if8: <BROADCAST> mtu 1500 qdisc noop state DOWN mode DEFAULT group default\n"
+                        for name in sorted(state["interfaces"])
+                    )
+                )
+            if command[:4] == ["sudo", "-n", "ip", "link"] and command[4] == "delete":
+                state["interfaces"].discard(str(command[5]))
+                return _completed("")
+            if command[:3] == ["sudo", "-n", "test"]:
+                return _completed("", returncode=1)
+            if command and command[0] == "find":
+                return _completed("")
+            return _completed("")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            report = run_cleanup_only(
+                run_dir=Path(tmp),
+                runner=fake_runner,
+                report_filename="normal_failure_cleanup_report.json",
+                cleanup_mode="normal_failure_cleanup",
+                success_outcome_label="CLEANUP_BOUNDARY_PASS",
+                cleanup_scope_evidence={
+                    "present": True,
+                    "cleanup_scope_source": "prepared_owned_resource_index",
+                    "run_manifest_id": "run-window-1",
+                    "prepared_owned_resource_index_id": "ownedidx-abc",
+                    "bounded_owned_resource_count": 12,
+                    "prepared_slot_scope_count": 3,
+                },
+            )
+
+        self.assertEqual(report["cleanup_mode"], "normal_failure_cleanup")
+        self.assertEqual(report["cleanup_scope_source"], "prepared_owned_resource_index")
+        self.assertEqual(report["run_manifest_id"], "run-window-1")
+        self.assertEqual(report["prepared_owned_resource_index_id"], "ownedidx-abc")
+        self.assertTrue(report["bounded_owned_scope"])
+        self.assertEqual(report["bounded_owned_resource_count"], 12)
+        self.assertEqual(report["cleanup_target_count"], 1)
+        self.assertEqual(report["direct_backend_host_interface_target_count"], 1)
+        self.assertTrue(report["orphan_veth_detector_enabled"])
+        self.assertTrue(report["global_scan_used"])
+        self.assertTrue(report["global_scan_diagnostic_only"])
+        self.assertFalse(report["full_scope_repair_used"])
+        self.assertFalse(report["full_scope_delete_used"])
+        self.assertFalse(report["full_scope_reconcile_used"])
+        self.assertFalse(report["normal_success_uses_global_scan"])
+        self.assertEqual(report["final_residue_summary"]["counts"]["direct_backend_host_interfaces"], 0)
+        self.assertIn("orphan_veth", report["detector_coverage"])
+
     def test_automated_cleanup_removes_owned_bpf_pins(self) -> None:
         state = {"pin_exists": True}
         commands: list[list[str]] = []
@@ -2192,6 +2506,57 @@ class SkyseedValidationProfileTests(unittest.TestCase):
             )
             self.assertFalse(parameter_event["packet_miss_authoritative"])
 
+    def test_parameter_update_without_delta_attach_does_not_report_blocker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "lifecycle_aware_horizon_contract.json").write_text(
+                json.dumps(
+                    {
+                        "horizon_selected_by": "EventTimeline",
+                        "whole_horizon_completed": True,
+                        "ready_for_next_horizon": True,
+                        "event_reports": [
+                            {
+                                "slice_id": "starlink-shell-slice-0011",
+                                "epoch_id": "parameterepoch-1",
+                                "primary_class": "parameter_update",
+                                "execution_status": "completed",
+                            },
+                        ],
+                        "outcome_labels": [],
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (run_dir / "real_runtime_report.json").write_text(
+                json.dumps(
+                    {
+                        "aggregate_runtime_succeeded": True,
+                        "iterations": [],
+                        "failure_context": {},
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            reconciled = reconcile_lifecycle_horizon_completion_with_execution(
+                run_dir=run_dir
+            )
+
+            self.assertTrue(reconciled["whole_horizon_completed"])
+            self.assertTrue(reconciled["ready_for_next_horizon"])
+            self.assertFalse(reconciled["selected_event_failed"])
+            self.assertNotIn(
+                "PARAMETER_UPDATE_TRIGGERED_DELTA_ATTACH_BLOCKER",
+                reconciled["outcome_labels"],
+            )
+            self.assertNotIn(
+                "PARAMETER_UPDATE_TRIGGERED_DELTA_ATTACH_BLOCKER",
+                reconciled["next_horizon_blockers"],
+            )
+
     def test_runtime_preload_audit_reports_diff_without_preload(self) -> None:
         def iteration(phase: str, *, preloaded: bool, noop: int) -> dict[str, object]:
             return {
@@ -2278,6 +2643,447 @@ class SkyseedValidationProfileTests(unittest.TestCase):
                 ],
                 68,
             )
+
+    def test_runtime_preload_audit_does_not_treat_reuse_as_scheduled_preload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "real_runtime_report.json").write_text(
+                json.dumps(
+                    {
+                        "iterations": [
+                            {
+                                "node_local_execution": {
+                                    "backend": {
+                                        "bpf_owned_readiness": {
+                                            "prepare_steps": {
+                                                "real_backend_prepare": {
+                                                    "steps": {
+                                                        "map_load": {
+                                                            "runtime_reload_attribution": {
+                                                                "runtime_update_phase": "steady_map_only",
+                                                                "preloaded_generation_used": True,
+                                                                "active_generation_flip_only": True,
+                                                                "map_diff_update_used": False,
+                                                                "full_generation_reload_blocker": False,
+                                                                "actual_data_write_count": 0,
+                                                                "noop_skipped_count": 120,
+                                                                "map_diff_trace": {
+                                                                    "ingress_classifier_map": {
+                                                                        "desired_count": 120,
+                                                                        "existing_count": 120,
+                                                                        "insert_count": 0,
+                                                                        "update_count": 0,
+                                                                        "delete_count": 0,
+                                                                        "noop_skipped_count": 120,
+                                                                        "wall_seconds": 0.1,
+                                                                    }
+                                                                },
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            audit = evaluate_runtime_preload_diff_contract(run_dir=run_dir)
+
+            self.assertIn("RUNTIME_PRELOADED_GENERATION_USED", audit["outcome_labels"])
+            self.assertIn("RUNTIME_ACTIVE_GENERATION_FLIP_ONLY", audit["outcome_labels"])
+            self.assertIn("RUNTIME_PRELOAD_NOT_EXERCISED", audit["outcome_labels"])
+            self.assertNotIn("RUNTIME_PRELOAD_SCHEDULED", audit["outcome_labels"])
+            self.assertEqual(audit["preactivation_preload_epoch_count"], 0)
+            self.assertFalse(audit["preload_contract_exercised"])
+
+    def test_runtime_preload_audit_counts_scheduler_timing_dispatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "horizon_lifecycle_queue_contract.json").write_text(
+                json.dumps(
+                    {
+                        "lookahead_preload_event_count": 1,
+                        "preload_required_event_count": 1,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (run_dir / "prepared_update_bundle.json").write_text(
+                json.dumps(
+                    {
+                        "lookahead_preload_queue": [
+                            {
+                                "event_id": "runtimeepoch-lookahead",
+                                "preload_required": True,
+                            }
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (run_dir / "real_runtime_report.json").write_text(
+                json.dumps(
+                    {
+                        "iterations": [
+                            {
+                                "node_local_execution": {
+                                    "timing": {
+                                        "bpf_lookahead_preactivation_preload_event_count": 1,
+                                        "bpf_lookahead_preactivation_preload_success_count": 1,
+                                        "bpf_lookahead_preactivation_preload_failed_count": 0,
+                                        "bpf_lookahead_preactivation_preload_delta_attach_count": 0,
+                                        "bpf_lookahead_preactivation_preload_full_attach_count": 0,
+                                    },
+                                    "backend": {
+                                        "bpf_owned_readiness": {
+                                            "prepare_steps": {
+                                                "real_backend_prepare": {
+                                                    "delta_attach_count": 0,
+                                                    "full_attach_count": 0,
+                                                    "steps": {
+                                                        "map_load": {
+                                                            "runtime_reload_attribution": {
+                                                                "runtime_update_phase": "bootstrap",
+                                                                "preloaded_generation_used": False,
+                                                                "active_generation_flip_only": False,
+                                                                "map_diff_update_used": False,
+                                                                "actual_data_write_count": 0,
+                                                                "noop_skipped_count": 0,
+                                                            }
+                                                        }
+                                                    },
+                                                }
+                                            }
+                                        }
+                                    },
+                                }
+                            },
+                            {
+                                "node_local_execution": {
+                                    "backend": {
+                                        "bpf_owned_readiness": {
+                                            "prepare_steps": {
+                                                "real_backend_prepare": {
+                                                    "delta_attach_count": 0,
+                                                    "full_attach_count": 0,
+                                                    "steps": {
+                                                        "map_load": {
+                                                            "runtime_reload_attribution": {
+                                                                "runtime_update_phase": "steady_map_only",
+                                                                "preloaded_generation_used": True,
+                                                                "active_generation_flip_only": True,
+                                                                "map_diff_update_used": False,
+                                                                "actual_data_write_count": 0,
+                                                                "noop_skipped_count": 120,
+                                                            }
+                                                        }
+                                                    },
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            audit = evaluate_runtime_preload_diff_contract(run_dir=run_dir)
+
+            self.assertIn("RUNTIME_PRELOAD_SCHEDULED", audit["outcome_labels"])
+            self.assertIn("RUNTIME_PRELOAD_DISPATCHED", audit["outcome_labels"])
+            self.assertNotIn("RUNTIME_PRELOAD_NOT_EXERCISED", audit["outcome_labels"])
+            self.assertEqual(audit["lookahead_preload_scheduled_count"], 1)
+            self.assertEqual(audit["lookahead_preload_dispatched_count"], 1)
+            self.assertEqual(audit["preactivation_preload_epoch_count"], 1)
+            self.assertEqual(audit["preactivation_preload_attempt_count"], 1)
+            self.assertEqual(audit["preactivation_preload_success_count"], 1)
+            self.assertEqual(audit["preactivation_preload_fail_count"], 0)
+            self.assertEqual(audit["preactivation_preload_failed_count"], 0)
+            self.assertEqual(audit["preactivation_preload_noop_reuse_count"], 1)
+            self.assertEqual(audit["preactivation_preload_skipped_count"], 0)
+            self.assertEqual(audit["inactive_generation_write_count"], 0)
+            self.assertEqual(
+                audit["preactivation_preload_result_detail_incomplete_count"],
+                1,
+            )
+            self.assertFalse(
+                audit["preload_noop_reuse_equivalence_proof_available"]
+            )
+            self.assertEqual(
+                audit["preload_noop_reuse_equivalence_status"],
+                "missing_detail",
+            )
+            self.assertEqual(
+                audit["preload_noop_reuse_equivalence_proofs"][0][
+                    "missing_reason"
+                ],
+                "lookahead_preload_report_missing",
+            )
+            self.assertTrue(audit["preload_contract_exercised"])
+
+    def test_runtime_preload_audit_proves_noop_reuse_from_zero_diff_trace(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "horizon_lifecycle_queue_contract.json").write_text(
+                json.dumps(
+                    {
+                        "lookahead_preload_event_count": 1,
+                        "preload_required_event_count": 1,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (run_dir / "prepared_update_bundle.json").write_text(
+                json.dumps(
+                    {
+                        "lookahead_preload_queue": [
+                            {
+                                "event_id": "runtimeepoch-lookahead",
+                                "slice_id": "slice-a",
+                                "preload_required": True,
+                            }
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (run_dir / "real_runtime_report.json").write_text(
+                json.dumps(
+                    {
+                        "iterations": [
+                            {
+                                "node_local_execution": {
+                                    "timing": {
+                                        "bpf_lookahead_preactivation_preload_event_count": 1,
+                                        "bpf_lookahead_preactivation_preload_success_count": 1,
+                                        "bpf_lookahead_preactivation_preload_failed_count": 0,
+                                    },
+                                    "backend": {
+                                        "bpf_owned_readiness": {
+                                            "prepare_steps": {
+                                                "real_backend_prepare": {
+                                                    "delta_attach_count": 0,
+                                                    "full_attach_count": 0,
+                                                    "steps": {
+                                                        "map_load": {
+                                                            "runtime_reload_attribution": {
+                                                                "runtime_update_phase": "bootstrap",
+                                                                "preloaded_generation_used": False,
+                                                                "active_generation_flip_only": False,
+                                                                "map_diff_update_used": False,
+                                                                "actual_data_write_count": 0,
+                                                                "noop_skipped_count": 0,
+                                                            }
+                                                        }
+                                                    },
+                                                }
+                                            }
+                                        }
+                                    },
+                                }
+                            },
+                            {
+                                "node_local_execution": {
+                                    "backend": {
+                                        "bpf_owned_readiness": {
+                                            "prepare_steps": {
+                                                "real_backend_prepare": {
+                                                    "delta_attach_count": 0,
+                                                    "full_attach_count": 0,
+                                                    "steps": {
+                                                        "map_load": {
+                                                            "runtime_reload_attribution": {
+                                                                "runtime_update_phase": "steady_map_only",
+                                                                "preloaded_generation_used": True,
+                                                                "active_generation_flip_only": True,
+                                                                "map_diff_update_used": False,
+                                                                "runtime_full_generation_reload": False,
+                                                                "full_generation_write_used": False,
+                                                                "actual_data_write_count": 0,
+                                                                "noop_skipped_count": 256,
+                                                                "active_generation_before": 0,
+                                                                "active_generation_after": 1,
+                                                                "map_diff_trace": {
+                                                                    "ingress_classifier_map": {
+                                                                        "desired_count": 120,
+                                                                        "existing_count": 120,
+                                                                        "insert_count": 0,
+                                                                        "update_count": 0,
+                                                                        "delete_count": 0,
+                                                                        "noop_skipped_count": 120,
+                                                                        "wall_seconds": 0.1,
+                                                                    },
+                                                                    "interface_role_map": {
+                                                                        "desired_count": 136,
+                                                                        "existing_count": 138,
+                                                                        "insert_count": 0,
+                                                                        "update_count": 0,
+                                                                        "delete_count": 0,
+                                                                        "noop_skipped_count": 136,
+                                                                        "wall_seconds": 0.2,
+                                                                    },
+                                                                },
+                                                            }
+                                                        }
+                                                    },
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            audit = evaluate_runtime_preload_diff_contract(run_dir=run_dir)
+
+            self.assertTrue(
+                audit["preload_noop_reuse_equivalence_proof_available"]
+            )
+            self.assertEqual(
+                audit["preload_noop_reuse_equivalence_status"],
+                "proved",
+            )
+            proof = audit["preload_noop_reuse_equivalence_proofs"][0]
+            self.assertFalse(proof["report_present"])
+            self.assertEqual(
+                proof["proof_source"],
+                "runtime_map_load_preloaded_generation_zero_diff_noop_trace",
+            )
+            self.assertEqual(
+                proof["equivalence_proof_kind"],
+                "zero_diff_noop_coverage",
+            )
+            self.assertEqual(proof["generation_equivalence_status"], "proved")
+            self.assertEqual(
+                proof["inactive_generation_write_explanation"],
+                "scheduled_preload_noop_reuse_zero_diff_noop_coverage",
+            )
+            self.assertEqual(proof["active_generation_id"], 0)
+            self.assertEqual(proof["reused_generation_id"], 1)
+            self.assertTrue(
+                proof["per_map_equivalence"]["interface_role_map"][
+                    "noop_covers_expected"
+                ]
+            )
+            self.assertTrue(audit["preload_contract_exercised"])
+
+    def test_runtime_preload_audit_distinguishes_preload_reuse_full_write_and_attach(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "real_runtime_report.json").write_text(
+                json.dumps(
+                    {
+                        "iterations": [
+                            {
+                                "node_local_execution": {
+                                    "backend": {
+                                        "bpf_owned_readiness": {
+                                            "prepare_steps": {
+                                                "real_backend_prepare": {
+                                                    "delta_attach_count": 0,
+                                                    "full_attach_count": 0,
+                                                    "steps": {
+                                                        "preactivation_preload": {
+                                                            "map_write_update_count": 12,
+                                                            "runtime_reload_attribution": {
+                                                                "runtime_update_phase": "preactivation_preload",
+                                                                "preactivation_preload": True,
+                                                                "map_diff_update_used": True,
+                                                                "noop_skipped_count": 3,
+                                                            },
+                                                        },
+                                                        "map_load": {
+                                                            "runtime_reload_attribution": {
+                                                                "runtime_update_phase": "steady_map_only",
+                                                                "preloaded_generation_used": True,
+                                                                "active_generation_flip_only": True,
+                                                                "map_diff_update_used": False,
+                                                                "actual_data_write_count": 0,
+                                                                "noop_skipped_count": 15,
+                                                            }
+                                                        },
+                                                    },
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                            {
+                                "node_local_execution": {
+                                    "backend": {
+                                        "bpf_owned_readiness": {
+                                            "prepare_steps": {
+                                                "real_backend_prepare": {
+                                                    "delta_attach_count": 2,
+                                                    "full_attach_count": 1,
+                                                    "map_reload_fallback_to_full_attach": True,
+                                                    "steps": {
+                                                        "map_load": {
+                                                            "full_generation_write": True,
+                                                            "runtime_reload_attribution": {
+                                                                "runtime_update_phase": "steady_map_only",
+                                                                "runtime_full_generation_write": True,
+                                                                "runtime_full_generation_reload": True,
+                                                                "map_diff_update_used": False,
+                                                                "preloaded_generation_used": False,
+                                                                "active_generation_flip_only": False,
+                                                                "actual_data_write_count": 44,
+                                                                "noop_skipped_count": 0,
+                                                            }
+                                                        }
+                                                    },
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                        ]
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            audit = evaluate_runtime_preload_diff_contract(run_dir=run_dir)
+
+        self.assertEqual(audit["preactivation_preload_epoch_count"], 1)
+        self.assertEqual(audit["preloaded_generation_used_epoch_count"], 1)
+        self.assertEqual(audit["active_generation_flip_only_epoch_count"], 1)
+        self.assertEqual(audit["runtime_full_generation_write_epoch_count"], 1)
+        self.assertEqual(audit["runtime_full_generation_reload_epoch_count"], 1)
+        self.assertEqual(audit["bpf_delta_attach_count"], 2)
+        self.assertEqual(audit["bpf_full_attach_count"], 1)
+        self.assertIn("RUNTIME_PRELOAD_SCHEDULED", audit["outcome_labels"])
+        self.assertIn("RUNTIME_FULL_GENERATION_WRITE_OBSERVED", audit["outcome_labels"])
+        self.assertIn("RUNTIME_FULL_GENERATION_RELOAD_OBSERVED", audit["outcome_labels"])
+        self.assertIn("RUNTIME_BPF_DELTA_ATTACH_OBSERVED", audit["outcome_labels"])
+        self.assertIn("RUNTIME_BPF_FULL_ATTACH_OBSERVED", audit["outcome_labels"])
 
     def test_runtime_preload_audit_includes_failure_context_preload(self) -> None:
         failure_readiness = {
@@ -2370,6 +3176,36 @@ class SkyseedValidationProfileTests(unittest.TestCase):
                 ]["insert_count"],
                 120,
             )
+            self.assertEqual(audit["preactivation_preload_attempt_count"], 1)
+            self.assertEqual(audit["preactivation_preload_success_count"], 1)
+            self.assertEqual(audit["preactivation_preload_failed_count"], 0)
+            self.assertEqual(audit["inactive_generation_write_count"], 1)
+            self.assertEqual(audit["active_generation_flip_count"], 1)
+
+    def test_runtime_preload_audit_counts_failed_lookahead_attempt_separately(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "real_runtime_report.json").write_text(
+                json.dumps(
+                    {
+                        "failure_reason": (
+                            "bpf_lookahead_preactivation_preload_failed:"
+                            "ACTIVE_INTERFACE_BINDING_MISSING"
+                        )
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            audit = evaluate_runtime_preload_diff_contract(run_dir=run_dir)
+
+        self.assertEqual(audit["preactivation_preload_epoch_count"], 0)
+        self.assertEqual(audit["preactivation_preload_attempt_count"], 1)
+        self.assertEqual(audit["preactivation_preload_success_count"], 0)
+        self.assertEqual(audit["preactivation_preload_failed_count"], 1)
+        self.assertEqual(audit["inactive_generation_write_count"], 0)
+        self.assertEqual(audit["active_generation_flip_count"], 0)
 
     def test_runtime_preload_audit_reports_preload_diff_when_activation_fails(self) -> None:
         failure_readiness = {

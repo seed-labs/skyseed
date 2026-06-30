@@ -24,6 +24,8 @@ multi-zone churn are fixed.
 ## Preview-Only Planning
 
 - `build_starlink_shell_preview.py` - non-real preview artifact builder.
+- `visualization/` - 给外部可视化模块使用的四文件原型包，主工具输出
+  `groundLinks` payload，另带可选的 `satelliteLinks` companion tool。
 - `build_starlink_shell_preview_matrix.py` - exploratory matrix runner for
   planned-shell sizes and catalogs.
 - `generate_starlink_zone_catalog.py` - deterministic preview catalog generator

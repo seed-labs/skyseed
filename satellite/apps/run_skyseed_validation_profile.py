@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import ipaddress
 import json
 import math
@@ -13,6 +14,7 @@ import re
 import shutil
 import subprocess
 import sys
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Sequence
@@ -96,6 +98,11 @@ RUNNER_ARG_ORDER = (
 
 BOOLEAN_RUNNER_FLAGS = {
     "preview_only_no_compile": "--preview-only-no-compile",
+    "prepare_only_no_compose": "--prepare-only-no-compose",
+    "stop_after_pre_start_gates": "--stop-after-pre-start-gates",
+    "bundle_backed_compose_pre_runtime_proof": "--bundle-backed-compose-pre-runtime-proof",
+    "bundle_backed_one_horizon_runtime_proof": "--bundle-backed-one-horizon-runtime-proof",
+    "bundle_backed_1p1_horizon_runtime_proof": "--bundle-backed-1p1-horizon-runtime-proof",
     "keep_environment": "--keep-environment",
     "reuse_running_compose_environment": "--reuse-running-compose-environment",
     "emit_bpf_shadow": "--emit-bpf-shadow",
@@ -823,6 +830,49 @@ def external_cleanup_success(residue: Mapping[str, Any]) -> bool:
     return all(int(value or 0) == 0 for value in counts.values())
 
 
+def _stable_artifact_id(payload: Mapping[str, Any], *, prefix: str) -> str:
+    rendered = json.dumps(dict(payload), sort_keys=True, separators=(",", ":"))
+    return f"{prefix}-{hashlib.sha256(rendered.encode('utf-8')).hexdigest()[:16]}"
+
+
+def cleanup_owned_scope_evidence_from_run_artifacts(*, run_dir: Path) -> Dict[str, Any]:
+    manifest = _load_json_maybe(run_dir / "run_manifest.json") or {}
+    prepared_bundle = _load_json_maybe(run_dir / "prepared_update_bundle.json") or {}
+    prepared_runtime = dict(prepared_bundle.get("continuous_runtime_execution") or {})
+    prepared_index = dict(prepared_runtime.get("prepared_owned_resource_index") or {})
+    prepared_scope = dict(
+        prepared_index.get("resource_scope_by_slot")
+        or prepared_runtime.get("prepared_resource_scope_by_slot")
+        or {}
+    )
+    bounded_resource_count = sum(
+        len(list(resource_keys or []))
+        for resource_keys in prepared_scope.values()
+    )
+    present = bool(manifest and prepared_scope and bounded_resource_count > 0)
+    return {
+        "schema_version": "skyseed-cleanup-owned-scope-evidence-v1",
+        "present": present,
+        "cleanup_scope_source": (
+            "prepared_owned_resource_index"
+            if present
+            else "missing_manifest_or_prepared_owned_resource_index"
+        ),
+        "run_manifest_id": str(manifest.get("run_id") or "") if manifest else "",
+        "prepared_owned_resource_index_id": (
+            _stable_artifact_id(prepared_index, prefix="ownedidx")
+            if prepared_index
+            else ""
+        ),
+        "prepared_owned_resource_index_present": bool(prepared_index),
+        "bounded_owned_resource_count": int(bounded_resource_count),
+        "prepared_slot_scope_count": len(prepared_scope),
+        "fail_fast_if_missing": True,
+        "full_scope_repair_allowed": False,
+        "global_scan_allowed_for_normal_success": False,
+    }
+
+
 def _command_record(
     command: Sequence[str],
     result: subprocess.CompletedProcess[str],
@@ -881,6 +931,7 @@ def run_cleanup_only(
     report_filename: str = "cleanup_only_report.json",
     cleanup_mode: str = "cleanup_only_repair",
     success_outcome_label: str = "CLEANUP_ONLY_REPAIR_PASS",
+    cleanup_scope_evidence: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     run_dir.mkdir(parents=True, exist_ok=True)
     preserved = _preserve_failure_artifacts(
@@ -940,6 +991,11 @@ def run_cleanup_only(
         runner=runner,
         run_root=run_dir.parent,
     )
+    direct_backend_host_interface_targets = [
+        str(interface.get("name") or "")
+        for interface in list(mid.get("direct_backend_host_interfaces") or [])
+        if str(interface.get("name") or "") and not str(interface.get("name") or "").startswith("br-")
+    ]
     for interface in list(mid.get("direct_backend_host_interfaces") or []):
         name = str(interface.get("name") or "")
         if not name or name.startswith("br-"):
@@ -980,6 +1036,19 @@ def run_cleanup_only(
         run_root=run_dir.parent,
     )
     cleanup_success = external_cleanup_success(after)
+    scope_evidence = dict(cleanup_scope_evidence or {})
+    bounded_owned_scope = bool(scope_evidence.get("present"))
+    cleanup_target_count = (
+        len(list(before.get("bpf_pins") or []))
+        + len(container_names)
+        + len(network_names)
+        + len(direct_backend_host_interface_targets)
+        + len(list(mid.get("runtime_locks") or []))
+    )
+    final_residue_summary = {
+        "counts": dict(after.get("counts") or {}),
+        "clean": bool(after.get("clean")),
+    }
     outcome_labels = [
         success_outcome_label if cleanup_success else CLEANUP_INCOMPLETE_LABEL,
         "GLOBAL_SCAN_DIAGNOSTIC_ONLY",
@@ -993,14 +1062,54 @@ def run_cleanup_only(
         "outcome_label": outcome_labels[0],
         "outcome_labels": list(dict.fromkeys(outcome_labels)),
         "cleanup_mode": cleanup_mode,
+        "cleanup_scope_source": str(
+            scope_evidence.get("cleanup_scope_source")
+            or (
+                "prepared_owned_resource_index"
+                if bounded_owned_scope
+                else "operator_requested_diagnostic_cleanup"
+            )
+        ),
+        "run_manifest_id": str(scope_evidence.get("run_manifest_id") or ""),
+        "prepared_owned_resource_index_id": str(
+            scope_evidence.get("prepared_owned_resource_index_id") or ""
+        ),
+        "bounded_owned_scope": bounded_owned_scope,
+        "bounded_owned_resource_count": int(
+            scope_evidence.get("bounded_owned_resource_count") or 0
+        ),
+        "prepared_slot_scope_count": int(
+            scope_evidence.get("prepared_slot_scope_count") or 0
+        ),
+        "cleanup_target_count": cleanup_target_count,
+        "direct_backend_host_interface_target_count": len(
+            direct_backend_host_interface_targets
+        ),
+        "direct_backend_host_interface_targets": direct_backend_host_interface_targets,
+        "orphan_veth_detector_enabled": True,
+        "global_scan_used": True,
         "detector_source": "detect_cleanup_residue",
+        "detector_coverage": [
+            "bpf_pins",
+            "compose_containers",
+            "compose_networks",
+            "direct_backend_host_interfaces",
+            "orphan_veth",
+            "docker_network_pool_overlaps",
+            "runtime_locks",
+        ],
         "global_scan_diagnostic_only": True,
+        "full_scope_repair_used": False,
+        "full_scope_delete_used": False,
+        "full_scope_reconcile_used": False,
+        "normal_success_uses_global_scan": False,
         "teardown_only": True,
         "manual_cleanup": False,
         "preserved_first_failure_artifacts": preserved,
         "before": before,
         "commands": commands,
         "after": after,
+        "final_residue_summary": final_residue_summary,
         "external_cleanup_success": cleanup_success,
         "internal_cleanup_success_requires_external_residue_zero": True,
     }
@@ -1078,6 +1187,16 @@ def refresh_profile_run_summary_derived_artifacts(*, run_dir: Path) -> Dict[str,
         "normal_failure_cleanup": "normal_failure_cleanup_report.json",
         "normal_path_artifact_contract": "normal_path_artifact_contract.json",
     }
+    derived_artifact_owned_labels = {
+        "normal_path_artifact_contract": {
+            "NORMAL_PATH_ARTIFACT_CONTRACT_ADDED",
+            "NORMAL_PATH_OWNED_SCOPE_ONLY",
+            "NORMAL_PATH_NO_HIDDEN_REPAIR",
+            "FULL_SCOPE_RECOVERY_BLOCKER",
+            "OWNED_RESOURCE_INDEX_MISSING_BLOCKER",
+            "NOOP_FULL_SCOPE_RECONCILE_BLOCKER",
+        },
+    }
     outcome_labels = list(summary.get("outcome_labels") or [])
     refreshed: Dict[str, str] = {}
     for summary_key, filename in derived_artifacts.items():
@@ -1088,6 +1207,19 @@ def refresh_profile_run_summary_derived_artifacts(*, run_dir: Path) -> Dict[str,
         )
         if not isinstance(artifact, Mapping):
             continue
+        previous_artifact = summary.get(summary_key)
+        if isinstance(previous_artifact, Mapping):
+            previous_labels = [
+                str(label)
+                for label in list(previous_artifact.get("outcome_labels") or [])
+                if label
+            ]
+            if previous_artifact.get("outcome_label"):
+                previous_labels.append(str(previous_artifact.get("outcome_label")))
+            stale = set(previous_labels)
+            stale.update(derived_artifact_owned_labels.get(summary_key, set()))
+            if stale:
+                outcome_labels = [label for label in outcome_labels if label not in stale]
         summary[summary_key] = dict(artifact)
         refreshed[summary_key] = filename
         outcome_labels.extend(
@@ -2147,6 +2279,18 @@ def evaluate_static_inventory_precreated_connection_audit(
             "prepared_slot_count": gw_prepared,
             "prepared_minus_required": gw_prepared - gw_required,
             "per_gateway_required_slot_counts": sorted(set(gw_required_by_id.values())),
+            "derivation_kind": (
+                "event_timeline_bounded_capacity"
+                if gw_derivation_complete
+                else "incomplete_or_configured_capacity"
+            ),
+            "physical_max_simultaneous_service_claimed": False,
+            "policy_margin": int(
+                dict(slot_basis.get("policy_margins") or {}).get(
+                    "gateway_slot_margin"
+                )
+                or 0
+            ),
             "derivation_complete": gw_derivation_complete,
             "derivation_label": (
                 "GW_SLOT_DERIVATION_CONFIRMED"
@@ -2156,7 +2300,9 @@ def evaluate_static_inventory_precreated_connection_audit(
             "note": dict(slot_capacity.get("notes") or {}).get("gw_access"),
             "conclusion": (
                 "GW slot count is derived from per-gateway maximum simultaneous "
-                "selected satellite connections plus policy margin."
+                "selected satellite connections observed in the EventTimeline "
+                "horizon plus policy margin; this is bounded configured capacity, "
+                "not a proof of physical maximum service capacity."
                 if gw_derivation_complete
                 else (
                     f"{gw_prepared} prepared GW slots look like bounded inventory "
@@ -2834,6 +2980,19 @@ def _runtime_prep_preactivation_preload(iteration: Mapping[str, Any]) -> Dict[st
     )
 
 
+def _runtime_prep_real_backend_prepare(iteration: Mapping[str, Any]) -> Dict[str, Any]:
+    node = dict(iteration.get("node_local_execution") or {})
+    backend = dict(node.get("backend") or {})
+    readiness = dict(backend.get("bpf_owned_readiness") or {})
+    prepare_steps = dict(readiness.get("prepare_steps") or {})
+    return dict(prepare_steps.get("real_backend_prepare") or {})
+
+
+def _runtime_node_timing(iteration: Mapping[str, Any]) -> Dict[str, Any]:
+    node = dict(iteration.get("node_local_execution") or {})
+    return dict(node.get("timing") or {})
+
+
 def _runtime_map_diff_summary(
     trace: Mapping[str, Any],
 ) -> Dict[str, Dict[str, Any]]:
@@ -2854,11 +3013,71 @@ def _runtime_map_diff_summary(
     }
 
 
+def _runtime_map_zero_diff_noop_equivalence(
+    map_diff_trace: Mapping[str, Mapping[str, Any]],
+) -> tuple[Dict[str, Dict[str, Any]], bool]:
+    per_map_equivalence: Dict[str, Dict[str, Any]] = {}
+    for map_name, details_raw in dict(map_diff_trace).items():
+        details = dict(details_raw)
+        expected_entries = int(details.get("desired_count") or 0)
+        existing_entries = int(details.get("existing_count") or 0)
+        insert_count = int(details.get("insert_count") or 0)
+        update_count = int(details.get("update_count") or 0)
+        delete_count = int(details.get("delete_count") or 0)
+        noop_skipped_count = int(details.get("noop_skipped_count") or 0)
+        zero_diff = (
+            insert_count == 0
+            and update_count == 0
+            and delete_count == 0
+        )
+        noop_covers_expected = noop_skipped_count >= expected_entries
+        per_map_equivalence[str(map_name)] = {
+            "expected_entries": expected_entries,
+            "existing_entries": existing_entries,
+            "insert_count": insert_count,
+            "update_count": update_count,
+            "delete_count": delete_count,
+            "noop_skipped_count": noop_skipped_count,
+            "zero_diff": zero_diff,
+            "noop_covers_expected": noop_covers_expected,
+            "equivalent": bool(zero_diff and noop_covers_expected),
+            "equivalence_proof_kind": "zero_diff_noop_coverage",
+            "digest_or_hash": details.get("digest")
+            or details.get("hash")
+            or "",
+        }
+    proof_available = bool(per_map_equivalence) and all(
+        bool(details.get("equivalent"))
+        for details in per_map_equivalence.values()
+    )
+    return per_map_equivalence, proof_available
+
+
 def evaluate_runtime_preload_diff_contract(
     *,
     run_dir: Path,
 ) -> Dict[str, Any]:
     runtime_report = _load_json_maybe(run_dir / "real_runtime_report.json") or {}
+    prepared_bundle = _load_json_maybe(run_dir / "prepared_update_bundle.json") or {}
+    horizon_contract = (
+        _load_json_maybe(run_dir / "horizon_lifecycle_queue_contract.json") or {}
+    )
+    lookahead_preload_queue = [
+        dict(event)
+        for event in list(prepared_bundle.get("lookahead_preload_queue") or [])
+        if isinstance(event, Mapping)
+    ]
+    prepared_lookahead_scheduled_count = sum(
+        1
+        for event in lookahead_preload_queue
+        if dict(event).get("preload_required", True) is not False
+    )
+    horizon_preload_required_count = int(
+        horizon_contract.get("preload_required_event_count") or 0
+    )
+    horizon_lookahead_count = int(
+        horizon_contract.get("lookahead_preload_event_count") or 0
+    )
     iterations = [
         dict(iteration)
         for iteration in list(runtime_report.get("iterations") or [])
@@ -2897,20 +3116,45 @@ def evaluate_runtime_preload_diff_contract(
                 },
             }
         )
+    lookahead_preload_reports: List[Dict[str, Any]] = []
+    for iteration in iterations:
+        backend = dict(
+            dict(iteration.get("node_local_execution") or {}).get("backend") or {}
+        )
+        preload_summary = dict(
+            backend.get("bpf_lookahead_preactivation_preload") or {}
+        )
+        for item in list(preload_summary.get("reports") or []):
+            if isinstance(item, Mapping):
+                lookahead_preload_reports.append(dict(item))
     epoch_reports: List[Dict[str, Any]] = []
     steady_epoch_count = 0
-    preactivation_preload_count = 0
+    preactivation_preload_epoch_count = 0
     preloaded_generation_used_count = 0
     diff_update_used_count = 0
     noop_skipped_epoch_count = 0
     active_generation_flip_only_count = 0
+    inactive_generation_write_count = 0
+    lookahead_preload_dispatched_count = 0
+    preactivation_preload_success_count = 0
+    preactivation_preload_failed_from_timing_count = 0
+    preactivation_preload_noop_reuse_count = 0
+    preactivation_preload_skipped_count = 0
+    preactivation_preload_result_detail_incomplete_count = 0
+    preactivation_preload_skip_reasons: Counter[str] = Counter()
     full_generation_reload_blocker_count = 0
+    runtime_full_generation_write_count = 0
+    runtime_full_generation_reload_count = 0
+    bpf_delta_attach_count = 0
+    bpf_full_attach_count = 0
     for observation in observations:
         index = int(observation.get("iteration_index") or 0)
         iteration = dict(observation.get("payload") or {})
         observation_source = str(observation.get("observation_source") or "iteration")
+        real_prepare = _runtime_prep_real_backend_prepare(iteration)
         map_load = _runtime_prep_map_load(iteration)
         preactivation_preload = _runtime_prep_preactivation_preload(iteration)
+        node_timing = _runtime_node_timing(iteration)
         attribution = dict(map_load.get("runtime_reload_attribution") or {})
         preload_attribution = dict(
             preactivation_preload.get("runtime_reload_attribution") or {}
@@ -2922,17 +3166,65 @@ def evaluate_runtime_preload_diff_contract(
         )
         if runtime_update_phase == "steady_map_only":
             steady_epoch_count += 1
-        preload_scheduled = bool(
+        detail_preload_report_present = bool(
             preactivation_preload
             or preload_attribution.get("preactivation_preload")
             or attribution.get("preactivation_preload")
         )
-        if preload_scheduled:
-            preactivation_preload_count += 1
+        timing_dispatched_count = int(
+            node_timing.get("bpf_lookahead_preactivation_preload_event_count") or 0
+        )
+        timing_success_count = int(
+            node_timing.get("bpf_lookahead_preactivation_preload_success_count") or 0
+        )
+        timing_failed_count = int(
+            node_timing.get("bpf_lookahead_preactivation_preload_failed_count")
+            or node_timing.get("bpf_lookahead_preactivation_preload_fail_count")
+            or 0
+        )
+        timing_skipped_count = int(
+            node_timing.get("bpf_lookahead_preactivation_preload_skipped_count")
+            or node_timing.get("bpf_lookahead_preactivation_preload_skip_count")
+            or 0
+        )
+        timing_skip_reason = str(
+            node_timing.get("bpf_lookahead_preactivation_preload_skip_reason") or ""
+        ).strip()
+        preload_dispatched = bool(timing_dispatched_count or detail_preload_report_present)
+        if preload_dispatched:
+            preactivation_preload_epoch_count += 1
+        lookahead_preload_dispatched_count += (
+            timing_dispatched_count if timing_dispatched_count else int(preload_dispatched)
+        )
+        if timing_success_count:
+            preactivation_preload_success_count += timing_success_count
+        elif detail_preload_report_present:
+            preactivation_preload_success_count += 1
+        preactivation_preload_failed_from_timing_count += timing_failed_count
+        if timing_skipped_count:
+            preactivation_preload_skipped_count += timing_skipped_count
+            preactivation_preload_skip_reasons[
+                timing_skip_reason or "lookahead_preload_skipped"
+            ] += timing_skipped_count
+        preload_update_count = int(preactivation_preload.get("map_write_update_count") or 0)
+        if preload_update_count > 0:
+            inactive_generation_write_count += 1
         preload_diff_used = bool(preload_attribution.get("map_diff_update_used"))
         preload_noop_skipped_count = int(
             preload_attribution.get("noop_skipped_count") or 0
         )
+        preload_success_without_writes = bool(
+            preload_dispatched
+            and (timing_success_count or detail_preload_report_present)
+            and preload_update_count == 0
+            and not preload_diff_used
+        )
+        if preload_success_without_writes:
+            preactivation_preload_noop_reuse_count += (
+                timing_success_count if timing_success_count else 1
+            )
+        if timing_dispatched_count and not detail_preload_report_present:
+            preactivation_preload_result_detail_incomplete_count += timing_dispatched_count
         if bool(attribution.get("preloaded_generation_used")):
             preloaded_generation_used_count += 1
         if bool(attribution.get("map_diff_update_used")) or preload_diff_used:
@@ -2946,6 +3238,26 @@ def evaluate_runtime_preload_diff_contract(
             active_generation_flip_only_count += 1
         if bool(attribution.get("full_generation_reload_blocker")):
             full_generation_reload_blocker_count += 1
+        runtime_full_generation_write = bool(
+            attribution.get("full_generation_write_used")
+            or attribution.get("runtime_full_generation_write")
+            or map_load.get("full_generation_write")
+        )
+        runtime_full_generation_reload = bool(
+            attribution.get("runtime_full_generation_reload")
+            or attribution.get("full_generation_reload")
+            or real_prepare.get("map_reload_fallback_to_full_attach")
+        )
+        if runtime_full_generation_write:
+            runtime_full_generation_write_count += 1
+        if runtime_full_generation_reload:
+            runtime_full_generation_reload_count += 1
+        delta_attach = int(real_prepare.get("delta_attach_count") or 0)
+        full_attach = int(real_prepare.get("full_attach_count") or 0)
+        if delta_attach:
+            bpf_delta_attach_count += delta_attach
+        if full_attach:
+            bpf_full_attach_count += full_attach
         map_diffs = _runtime_map_diff_summary(
             dict(attribution.get("map_diff_trace") or map_load.get("map_diff_trace") or {})
         )
@@ -2961,12 +3273,25 @@ def evaluate_runtime_preload_diff_contract(
                 "iteration_index": index,
                 "observation_source": observation_source,
                 "runtime_update_phase": runtime_update_phase,
-                "preactivation_preload": preload_scheduled,
-                "preactivation_preload_update_count": int(
-                    preactivation_preload.get("map_write_update_count") or 0
+                "preactivation_preload": preload_dispatched,
+                "lookahead_preload_dispatched_count": (
+                    timing_dispatched_count if timing_dispatched_count else int(preload_dispatched)
                 ),
+                "preactivation_preload_success_count": (
+                    timing_success_count
+                    if timing_success_count
+                    else int(detail_preload_report_present)
+                ),
+                "preactivation_preload_failed_count": timing_failed_count,
+                "preactivation_preload_skipped_count": timing_skipped_count,
+                "preactivation_preload_skip_reason": timing_skip_reason,
+                "preactivation_preload_result_detail_incomplete": bool(
+                    timing_dispatched_count and not detail_preload_report_present
+                ),
+                "preactivation_preload_update_count": preload_update_count,
                 "preactivation_preload_map_diff_update_used": preload_diff_used,
                 "preactivation_preload_noop_skipped_count": preload_noop_skipped_count,
+                "preactivation_preload_noop_reuse": preload_success_without_writes,
                 "preloaded_generation_used": bool(
                     attribution.get("preloaded_generation_used")
                 ),
@@ -2979,6 +3304,10 @@ def evaluate_runtime_preload_diff_contract(
                 "full_generation_reload_blocker": bool(
                     attribution.get("full_generation_reload_blocker")
                 ),
+                "runtime_full_generation_write": runtime_full_generation_write,
+                "runtime_full_generation_reload": runtime_full_generation_reload,
+                "delta_attach_count": delta_attach,
+                "full_attach_count": full_attach,
                 "actual_data_write_count": int(
                     attribution.get("actual_data_write_count")
                     or map_load.get("actual_data_write_count")
@@ -2993,9 +3322,17 @@ def evaluate_runtime_preload_diff_contract(
                 "preactivation_preload_map_diff_trace": preload_map_diffs,
             }
         )
+    lookahead_preload_scheduled_count = max(
+        prepared_lookahead_scheduled_count,
+        horizon_preload_required_count,
+        horizon_lookahead_count,
+        preactivation_preload_epoch_count,
+    )
     outcome_labels: List[str] = []
-    if preactivation_preload_count:
+    if lookahead_preload_scheduled_count:
         outcome_labels.append("RUNTIME_PRELOAD_SCHEDULED")
+    if lookahead_preload_dispatched_count:
+        outcome_labels.append("RUNTIME_PRELOAD_DISPATCHED")
     if diff_update_used_count:
         outcome_labels.append("RUNTIME_MAP_DIFF_UPDATE_USED")
     if noop_skipped_epoch_count:
@@ -3006,27 +3343,257 @@ def evaluate_runtime_preload_diff_contract(
         outcome_labels.append("RUNTIME_ACTIVE_GENERATION_FLIP_ONLY")
     if full_generation_reload_blocker_count:
         outcome_labels.append("RUNTIME_FULL_GENERATION_RELOAD_BLOCKER")
-    if steady_epoch_count and preloaded_generation_used_count == 0:
+    if runtime_full_generation_write_count:
+        outcome_labels.append("RUNTIME_FULL_GENERATION_WRITE_OBSERVED")
+    if runtime_full_generation_reload_count:
+        outcome_labels.append("RUNTIME_FULL_GENERATION_RELOAD_OBSERVED")
+    if bpf_delta_attach_count:
+        outcome_labels.append("RUNTIME_BPF_DELTA_ATTACH_OBSERVED")
+    if bpf_full_attach_count:
+        outcome_labels.append("RUNTIME_BPF_FULL_ATTACH_OBSERVED")
+    failure_reason = str(
+        runtime_report.get("failure_reason")
+        or dict(dict(runtime_report.get("failure_context") or {}).get("exception") or {}).get("message")
+        or ""
+    )
+    failed_preactivation_preload_count = (
+        1 if "bpf_lookahead_preactivation_preload_failed" in failure_reason else 0
+    )
+    preactivation_preload_failed_count = (
+        preactivation_preload_failed_from_timing_count
+        + failed_preactivation_preload_count
+    )
+    preactivation_preload_attempt_count = (
+        lookahead_preload_dispatched_count + failed_preactivation_preload_count
+    )
+    if (
+        lookahead_preload_scheduled_count > lookahead_preload_dispatched_count
+        and not preactivation_preload_failed_count
+    ):
+        missing_dispatch_count = (
+            lookahead_preload_scheduled_count - lookahead_preload_dispatched_count
+        )
+        preactivation_preload_skipped_count += missing_dispatch_count
+        preactivation_preload_skip_reasons[
+            "scheduled_not_dispatched"
+        ] += missing_dispatch_count
+    preload_contract_exercised = bool(
+        preactivation_preload_attempt_count
+        and preactivation_preload_success_count
+        and preloaded_generation_used_count
+    )
+    if steady_epoch_count and not preload_contract_exercised:
         outcome_labels.append(RUNTIME_PRELOAD_NOT_EXERCISED_LABEL)
     if steady_epoch_count and not epoch_reports:
         outcome_labels.append("RUNTIME_DIFF_TRACE_INCOMPLETE")
+    preload_reports_by_epoch_id = {
+        str(item.get("epoch_id") or ""): dict(item)
+        for item in lookahead_preload_reports
+        if str(item.get("epoch_id") or "")
+    }
+    runtime_zero_diff_noop_proof_epoch = next(
+        (
+            report
+            for report in epoch_reports
+            if bool(report.get("preloaded_generation_used"))
+            and bool(report.get("active_generation_flip_only"))
+            and not bool(report.get("runtime_full_generation_write"))
+            and not bool(report.get("runtime_full_generation_reload"))
+            and int(report.get("actual_data_write_count") or 0) == 0
+            and int(report.get("delta_attach_count") or 0) == 0
+            and int(report.get("full_attach_count") or 0) == 0
+            and dict(report.get("map_diff_trace") or {})
+        ),
+        {},
+    )
+    runtime_zero_diff_per_map: Dict[str, Dict[str, Any]] = {}
+    runtime_zero_diff_proof_available = False
+    if runtime_zero_diff_noop_proof_epoch:
+        (
+            runtime_zero_diff_per_map,
+            runtime_zero_diff_proof_available,
+        ) = _runtime_map_zero_diff_noop_equivalence(
+            dict(runtime_zero_diff_noop_proof_epoch.get("map_diff_trace") or {})
+        )
+    preload_noop_reuse_equivalence_proofs: List[Dict[str, Any]] = []
+    for event in lookahead_preload_queue:
+        epoch_id = str(event.get("epoch_id") or event.get("event_id") or "")
+        report_item = dict(preload_reports_by_epoch_id.get(epoch_id) or {})
+        report_payload = dict(report_item.get("report") or {})
+        preactivation_payload = dict(
+            report_payload.get("preactivation_preload")
+            or dict(
+                dict(report_payload.get("prepare_steps") or {}).get(
+                    "preactivation_preload"
+                )
+                or {}
+            )
+        )
+        attribution_payload = dict(
+            preactivation_payload.get("runtime_reload_attribution") or {}
+        )
+        map_diff_trace = _runtime_map_diff_summary(
+            dict(
+                attribution_payload.get("map_diff_trace")
+                or preactivation_payload.get("map_diff_trace")
+                or {}
+            )
+        )
+        (
+            report_per_map_equivalence,
+            report_proof_available,
+        ) = _runtime_map_zero_diff_noop_equivalence(map_diff_trace)
+        fallback_proof_allowed = bool(
+            not report_proof_available
+            and runtime_zero_diff_proof_available
+            and lookahead_preload_scheduled_count
+            and lookahead_preload_dispatched_count
+            and preactivation_preload_attempt_count
+            and preactivation_preload_success_count
+            and preactivation_preload_noop_reuse_count
+            and not preactivation_preload_skipped_count
+            and not preactivation_preload_failed_count
+            and inactive_generation_write_count == 0
+        )
+        per_map_equivalence = (
+            report_per_map_equivalence
+            if report_proof_available
+            else (
+                runtime_zero_diff_per_map
+                if fallback_proof_allowed
+                else report_per_map_equivalence
+            )
+        )
+        proof_available = bool(report_proof_available or fallback_proof_allowed)
+        fallback_source_epoch = (
+            runtime_zero_diff_noop_proof_epoch if fallback_proof_allowed else {}
+        )
+        proof_source = (
+            "lookahead_preload_report"
+            if report_proof_available
+            else (
+                "runtime_map_load_preloaded_generation_zero_diff_noop_trace"
+                if fallback_proof_allowed
+                else "missing"
+            )
+        )
+        preload_noop_reuse_equivalence_proofs.append(
+            {
+                "lookahead_event_id": epoch_id,
+                "lookahead_slice_id": event.get("slice_id"),
+                "lookahead_generation_id": (
+                    event.get("generation_id")
+                    or report_payload.get("generation_id")
+                    or report_payload.get("target_generation")
+                    or fallback_source_epoch.get("active_generation_after")
+                ),
+                "reused_generation_id": report_payload.get("reused_generation_id")
+                or report_payload.get("active_generation")
+                or fallback_source_epoch.get("active_generation_after"),
+                "active_generation_id": report_payload.get("active_generation")
+                or fallback_source_epoch.get("active_generation_before"),
+                "report_present": bool(report_item),
+                "per_map_equivalence_available": bool(per_map_equivalence),
+                "per_map_equivalence": per_map_equivalence,
+                "proof_available": proof_available,
+                "proof_source": proof_source,
+                "equivalence_proof_kind": (
+                    "zero_diff_noop_coverage" if proof_available else ""
+                ),
+                "generation_equivalence_status": (
+                    "proved" if proof_available else "missing_detail"
+                ),
+                "inactive_generation_write_explanation": (
+                    "scheduled_preload_noop_reuse_zero_diff_noop_coverage"
+                    if proof_available and inactive_generation_write_count == 0
+                    else ""
+                ),
+                "missing_reason": (
+                    ""
+                    if proof_available
+                    else (
+                        "lookahead_preload_report_missing"
+                        if not report_item
+                        else "per_map_diff_or_digest_missing"
+                    )
+                ),
+            }
+        )
+    preload_noop_reuse_equivalence_proof_available = bool(
+        preload_noop_reuse_equivalence_proofs
+    ) and all(
+        bool(proof.get("proof_available"))
+        for proof in preload_noop_reuse_equivalence_proofs
+    )
+    preload_noop_reuse_equivalence_status = (
+        "proved"
+        if preload_noop_reuse_equivalence_proof_available
+        else (
+            "missing_detail"
+            if preload_noop_reuse_equivalence_proofs
+            else "not_applicable"
+        )
+    )
     report = {
         "schema_version": "skyseed-runtime-preload-diff-contract-audit-v1",
         "owner_module": "satellite/apps/run_skyseed_validation_profile.py",
         "run_dir": str(run_dir),
         "steady_map_only_epoch_count": steady_epoch_count,
-        "preactivation_preload_epoch_count": preactivation_preload_count,
+        "lookahead_preload_scheduled_count": lookahead_preload_scheduled_count,
+        "lookahead_preload_dispatched_count": lookahead_preload_dispatched_count,
+        "preactivation_preload_epoch_count": preactivation_preload_epoch_count,
+        "preactivation_preload_attempt_count": preactivation_preload_attempt_count,
+        "preactivation_preload_success_count": preactivation_preload_success_count,
+        "preactivation_preload_fail_count": preactivation_preload_failed_count,
+        "preactivation_preload_failed_count": preactivation_preload_failed_count,
+        "preactivation_preload_noop_reuse_count": (
+            preactivation_preload_noop_reuse_count
+        ),
+        "preactivation_preload_skipped_count": preactivation_preload_skipped_count,
+        "preactivation_preload_skip_reasons": {
+            str(reason): int(count)
+            for reason, count in sorted(preactivation_preload_skip_reasons.items())
+        },
+        "preactivation_preload_result_detail_incomplete_count": (
+            preactivation_preload_result_detail_incomplete_count
+        ),
+        "preload_noop_reuse_equivalence_proof_available": (
+            preload_noop_reuse_equivalence_proof_available
+        ),
+        "preload_noop_reuse_equivalence_status": (
+            preload_noop_reuse_equivalence_status
+        ),
+        "preload_noop_reuse_equivalence_proofs": (
+            preload_noop_reuse_equivalence_proofs
+        ),
+        "inactive_generation_write_count": inactive_generation_write_count,
+        "active_generation_flip_count": active_generation_flip_only_count,
         "preloaded_generation_used_epoch_count": preloaded_generation_used_count,
         "map_diff_update_epoch_count": diff_update_used_count,
         "noop_skipped_epoch_count": noop_skipped_epoch_count,
         "active_generation_flip_only_epoch_count": active_generation_flip_only_count,
         "full_generation_reload_blocker_count": full_generation_reload_blocker_count,
-        "preload_contract_exercised": bool(preloaded_generation_used_count),
+        "runtime_full_generation_write_epoch_count": runtime_full_generation_write_count,
+        "runtime_full_generation_reload_epoch_count": runtime_full_generation_reload_count,
+        "bpf_delta_attach_count": bpf_delta_attach_count,
+        "bpf_full_attach_count": bpf_full_attach_count,
+        "preload_contract_exercised": preload_contract_exercised,
+        "generation_update_reporting_contract": {
+            "full_generation_write": "runtime_full_generation_write_epoch_count",
+            "diff_write": "map_diff_update_epoch_count",
+            "noop_reuse": "noop_skipped_epoch_count/preloaded_generation_used_epoch_count",
+            "preactivation_preload_write": "preactivation_preload_epoch_count",
+            "activation_flip_only": "active_generation_flip_only_epoch_count",
+            "runtime_full_generation_reload": "runtime_full_generation_reload_epoch_count",
+            "bpf_attach": "bpf_delta_attach_count/bpf_full_attach_count",
+        },
         "scheduler_preactivation_preload_call_path_required": (
             "Selected future BPF generations must be compiled and passed to "
             "load_mpls_maps with bpf_runtime_update_phase=preactivation_preload "
-            "before the runtime activation event. Current runtime evidence only "
-            "shows bootstrap and steady_map_only calls inside the live prepare path."
+            "before the runtime activation event. The audit keeps scheduled, "
+            "dispatched, attempted, skipped, no-op/reuse, failed, and inactive "
+            "generation write counts separate so queue presence cannot be "
+            "mistaken for scheduler execution."
         ),
         "outcome_labels": outcome_labels,
         "epoch_reports": epoch_reports,
@@ -3043,11 +3610,28 @@ def evaluate_normal_path_artifact_contract(*, run_dir: Path) -> Dict[str, Any]:
     lifecycle = _load_json_maybe(run_dir / "horizon_execution_reconciled_summary.json") or _load_json_maybe(
         run_dir / "lifecycle_aware_horizon_contract.json"
     ) or {}
+    horizon_queue = _load_json_maybe(run_dir / "horizon_lifecycle_queue_contract.json") or {}
     preload = _load_json_maybe(run_dir / "runtime_preload_diff_contract_audit.json") or {}
     cleanup = normalize_cleanup_report_artifact(run_dir=run_dir) or {}
 
     prepared_runtime = dict(prepared_bundle.get("continuous_runtime_execution") or {})
     selected_queue = list(prepared_bundle.get("selected_epoch_queue") or [])
+    prepared_current_execution_queue = list(
+        prepared_bundle.get("current_execution_queue")
+        or prepared_runtime.get("current_execution_queue")
+        or []
+    )
+    prepared_lookahead_preload_queue = list(
+        prepared_bundle.get("lookahead_preload_queue")
+        or prepared_runtime.get("lookahead_preload_queue")
+        or []
+    )
+    run_window_resource_coverage_plan = dict(
+        prepared_runtime.get("run_window_resource_coverage_plan")
+        or prepared_bundle.get("run_window_resource_coverage_plan")
+        or {}
+    )
+    executed_epoch_queue = list(prepared_runtime.get("epoch_execution_queue") or [])
     selected_event_count = int(
         lifecycle.get("selected_event_count")
         or len(selected_queue)
@@ -3059,23 +3643,93 @@ def evaluate_normal_path_artifact_contract(*, run_dir: Path) -> Dict[str, Any]:
         if isinstance(runtime_update_plan, list)
         else int(bool(runtime_update_plan))
     )
+    def _prepared_owned_index_value_present(source_value: Any) -> bool:
+        if not source_value:
+            return False
+        if isinstance(source_value, Mapping):
+            if source_value.get("resource_scope_by_slot"):
+                return True
+            if int(source_value.get("resource_count") or 0) > 0:
+                return True
+            if int(source_value.get("slot_count") or 0) > 0:
+                return True
+            if {
+                "schema_version",
+                "source",
+                "scope_semantics",
+            } & set(source_value.keys()):
+                return False
+            return any(bool(value) for value in source_value.values())
+        return bool(source_value)
+
+    prepared_owned_index_sources = [
+        source_name
+        for source_name, source_value in (
+            (
+                "continuous_runtime_execution.prepared_owned_resource_index",
+                prepared_runtime.get("prepared_owned_resource_index"),
+            ),
+            (
+                "continuous_runtime_execution.owned_resource_index",
+                prepared_runtime.get("owned_resource_index"),
+            ),
+            (
+                "continuous_runtime_execution.prepared_resource_scope_by_slot",
+                prepared_runtime.get("prepared_resource_scope_by_slot"),
+            ),
+        )
+        if _prepared_owned_index_value_present(source_value)
+    ]
     prepared_owned_index_present = bool(
-        prepared_runtime.get("prepared_owned_resource_index")
-        or prepared_runtime.get("owned_resource_index")
-        or prepared_runtime.get("prepared_resource_scope_by_slot")
-        or prepared_runtime.get("resident_attach_coverage")
-        or prepared_runtime.get("epoch_execution_queue")
+        prepared_owned_index_sources
+    )
+    prepared_execution_queue_present = bool(
+        prepared_current_execution_queue or prepared_lookahead_preload_queue
+    )
+    executed_epoch_queue_present = bool(executed_epoch_queue)
+    cleanup_owned_scope_evidence_present = bool(
+        cleanup.get("bounded_owned_scope")
+        and str(cleanup.get("cleanup_scope_source") or "") == "prepared_owned_resource_index"
+        and cleanup.get("full_scope_repair_used") is not True
+        and cleanup.get("full_scope_delete_used") is not True
+        and cleanup.get("full_scope_reconcile_used") is not True
+        and cleanup.get("normal_success_uses_global_scan") is not True
     )
     explicit_event_timeline_plan_present = bool(
         str(lifecycle.get("horizon_selected_by") or "") == "EventTimeline"
         or selected_event_count > 0
     )
+    explicit_horizon_lifecycle_queue_present = bool(horizon_queue)
     explicit_runtime_update_plan_present = runtime_plan_count > 0
-    explicit_bpf_preload_diff_plan_present = bool(
+    explicit_bpf_preload_diff_execution_evidence_present = bool(
         preload.get("preactivation_preload_epoch_count")
+        or preload.get("preactivation_preload_attempt_count")
         or preload.get("map_diff_update_epoch_count")
         or preload.get("noop_skipped_epoch_count")
         or preload.get("full_generation_reload_blocker_count")
+    )
+    horizon_preload_plan_present = bool(
+        int(horizon_queue.get("preload_required_event_count") or 0) > 0
+        and (
+            horizon_queue.get("lookahead_preload_scheduler_connected") is True
+            or int(horizon_queue.get("lookahead_preload_event_count") or 0) > 0
+        )
+    )
+    explicit_bpf_preload_diff_plan_present = bool(
+        explicit_bpf_preload_diff_execution_evidence_present
+        or horizon_preload_plan_present
+    )
+    run_window_resource_coverage_present = bool(run_window_resource_coverage_plan)
+    run_window_resource_coverage_passed = bool(
+        run_window_resource_coverage_present
+        and int(run_window_resource_coverage_plan.get("unresolved_count") or 0) == 0
+        and int(
+            run_window_resource_coverage_plan.get(
+                "newly_required_but_not_prematerialized_count"
+            )
+            or 0
+        )
+        == 0
     )
     run_manifest_present = bool(run_manifest)
     cleanup_uses_diagnostic_scan = bool(cleanup.get("global_scan_diagnostic_only"))
@@ -3086,15 +3740,29 @@ def evaluate_normal_path_artifact_contract(*, run_dir: Path) -> Dict[str, Any]:
         and explicit_event_timeline_plan_present
         and explicit_runtime_update_plan_present
         and explicit_bpf_preload_diff_plan_present
+        and run_window_resource_coverage_passed
+        and (
+            cleanup_mode != "normal_failure_cleanup"
+            or cleanup_owned_scope_evidence_present
+        )
     )
-    outcome_labels = [
-        "NORMAL_PATH_ARTIFACT_CONTRACT_ADDED",
-        *(
-            ["NORMAL_PATH_OWNED_SCOPE_ONLY", "NORMAL_PATH_NO_HIDDEN_REPAIR"]
-            if normal_path_owned_scope_only
-            else ["OWNED_RESOURCE_INDEX_MISSING_BLOCKER"]
-        ),
-    ]
+    outcome_labels = ["NORMAL_PATH_ARTIFACT_CONTRACT_ADDED"]
+    if normal_path_owned_scope_only:
+        outcome_labels.extend(["NORMAL_PATH_OWNED_SCOPE_ONLY", "NORMAL_PATH_NO_HIDDEN_REPAIR"])
+    if not run_manifest_present:
+        outcome_labels.append("RUN_MANIFEST_MISSING_BLOCKER")
+    if not prepared_owned_index_present:
+        outcome_labels.append("OWNED_RESOURCE_INDEX_MISSING_BLOCKER")
+    if not prepared_execution_queue_present:
+        outcome_labels.append("PREPARED_EXECUTION_QUEUE_MISSING_BLOCKER")
+    if not explicit_bpf_preload_diff_plan_present:
+        outcome_labels.append("BPF_PRELOAD_DIFF_PLAN_MISSING_BLOCKER")
+    if not run_window_resource_coverage_passed:
+        outcome_labels.append("RUN_WINDOW_RESOURCE_COVERAGE_BLOCKER")
+    if cleanup_mode == "normal_failure_cleanup" and not cleanup_owned_scope_evidence_present:
+        outcome_labels.append("CLEANUP_OWNED_SCOPE_EVIDENCE_MISSING_BLOCKER")
+    if explicit_horizon_lifecycle_queue_present:
+        outcome_labels.append("HORIZON_LIFECYCLE_QUEUE_CONTRACT_PRESENT")
     if cleanup_uses_diagnostic_scan:
         outcome_labels.append("GLOBAL_SCAN_DIAGNOSTIC_ONLY")
     if cleanup_mode == "normal_failure_cleanup":
@@ -3105,17 +3773,74 @@ def evaluate_normal_path_artifact_contract(*, run_dir: Path) -> Dict[str, Any]:
         "run_dir": str(run_dir),
         "run_manifest_present": run_manifest_present,
         "prepared_owned_resource_index_present": prepared_owned_index_present,
+        "prepared_owned_resource_index_sources": prepared_owned_index_sources,
+        "prepared_execution_queue_present": prepared_execution_queue_present,
+        "prepared_current_execution_queue_count": len(prepared_current_execution_queue),
+        "prepared_lookahead_preload_queue_count": len(prepared_lookahead_preload_queue),
+        "executed_epoch_queue_present": executed_epoch_queue_present,
+        "executed_epoch_queue_count": len(executed_epoch_queue),
+        "cleanup_owned_scope_evidence_present": cleanup_owned_scope_evidence_present,
+        "cleanup_scope_source": str(cleanup.get("cleanup_scope_source") or ""),
+        "cleanup_run_manifest_id": str(cleanup.get("run_manifest_id") or ""),
+        "cleanup_prepared_owned_resource_index_id": str(
+            cleanup.get("prepared_owned_resource_index_id") or ""
+        ),
+        "cleanup_bounded_owned_resource_count": int(
+            cleanup.get("bounded_owned_resource_count") or 0
+        ),
+        "cleanup_target_count": int(cleanup.get("cleanup_target_count") or 0),
+        "cleanup_direct_backend_host_interface_target_count": int(
+            cleanup.get("direct_backend_host_interface_target_count") or 0
+        ),
+        "cleanup_orphan_veth_detector_enabled": bool(
+            cleanup.get("orphan_veth_detector_enabled")
+        ),
+        "cleanup_global_scan_used": bool(cleanup.get("global_scan_used")),
+        "cleanup_full_scope_repair_used": bool(cleanup.get("full_scope_repair_used")),
+        "cleanup_full_scope_delete_used": bool(cleanup.get("full_scope_delete_used")),
+        "cleanup_full_scope_reconcile_used": bool(
+            cleanup.get("full_scope_reconcile_used")
+        ),
+        "cleanup_final_residue_summary": dict(
+            cleanup.get("final_residue_summary") or {}
+        ),
+        "run_window_resource_coverage_present": run_window_resource_coverage_present,
+        "run_window_resource_coverage_passed": run_window_resource_coverage_passed,
+        "run_window_resource_coverage_plan": run_window_resource_coverage_plan,
         "explicit_runtime_update_plan_present": explicit_runtime_update_plan_present,
         "runtime_update_plan_entry_count": runtime_plan_count,
         "explicit_event_timeline_plan_present": explicit_event_timeline_plan_present,
+        "explicit_horizon_lifecycle_queue_present": (
+            explicit_horizon_lifecycle_queue_present
+        ),
+        "horizon_lifecycle_queue_contract": {
+            "current_execution_event_count": int(
+                horizon_queue.get("current_execution_event_count") or 0
+            ),
+            "lookahead_preload_event_count": int(
+                horizon_queue.get("lookahead_preload_event_count") or 0
+            ),
+            "preload_required_event_count": int(
+                horizon_queue.get("preload_required_event_count") or 0
+            ),
+            "s4_precondition_low_cost_proof_complete": bool(
+                horizon_queue.get("s4_precondition_low_cost_proof_complete")
+            ),
+        },
         "selected_event_count": selected_event_count,
         "explicit_bpf_preload_diff_plan_present": explicit_bpf_preload_diff_plan_present,
+        "explicit_bpf_preload_diff_execution_evidence_present": (
+            explicit_bpf_preload_diff_execution_evidence_present
+        ),
+        "horizon_preload_plan_present": horizon_preload_plan_present,
         "preactivation_preload_epoch_count": int(
             preload.get("preactivation_preload_epoch_count") or 0
         ),
         "map_diff_update_epoch_count": int(preload.get("map_diff_update_epoch_count") or 0),
         "normal_path_owned_scope_only": normal_path_owned_scope_only,
         "normal_path_no_hidden_repair": normal_path_owned_scope_only,
+        "normal_path_fail_fast_required_when_manifest_or_owned_index_missing": True,
+        "normal_path_hidden_full_scope_repair_forbidden": True,
         "cleanup_global_scan_diagnostic_only": cleanup_uses_diagnostic_scan,
         "cleanup_mode": cleanup_mode,
         "source_artifacts": {
@@ -3123,6 +3848,7 @@ def evaluate_normal_path_artifact_contract(*, run_dir: Path) -> Dict[str, Any]:
             "prepared_update_bundle": "prepared_update_bundle.json",
             "runtime_update_plan": "runtime_update_plan_summary.json",
             "event_timeline": "horizon_execution_reconciled_summary.json",
+            "horizon_lifecycle_queue": "horizon_lifecycle_queue_contract.json",
             "bpf_preload_diff": "runtime_preload_diff_contract_audit.json",
             "cleanup": "normal_failure_cleanup_report.json",
         },
@@ -3436,6 +4162,7 @@ def build_underlying_command(
     catalog_gate: Mapping[str, Any],
     run_root: Path,
     run_id: str,
+    extra_runner_boolean_flags: Sequence[str] | None = None,
 ) -> List[str]:
     _enforce_profile_policy(profile)
     runner = str(profile.get("runner") or "starlink_shell_experiment")
@@ -3476,7 +4203,9 @@ def build_underlying_command(
             value = _resolve_repo_path(str(value))
         command.extend([_arg_name(key), _stringify(value)])
     for key, flag in BOOLEAN_RUNNER_FLAGS.items():
-        if bool(dict(profile.get("runner_boolean_flags") or {}).get(key)):
+        if bool(dict(profile.get("runner_boolean_flags") or {}).get(key)) or (
+            key in set(str(item) for item in list(extra_runner_boolean_flags or []))
+        ):
             command.append(flag)
     return command
 
@@ -3859,6 +4588,13 @@ def run_profile(
     run_root: Path,
     run_id: str | None = None,
     dry_run: bool = False,
+    prepare_only_no_compose: bool = False,
+    stop_after_pre_start_gates: bool = False,
+    bundle_backed_compose_pre_runtime_proof: bool = False,
+    bundle_backed_one_horizon_runtime_proof: bool = False,
+    bundle_backed_1p1_horizon_runtime_proof: bool = False,
+    load_frozen_prepared_bundle: Path | None = None,
+    prepared_bundle_diagnostic_recompute_attempted: bool = False,
 ) -> Dict[str, Any]:
     profile = load_profile(profile_name)
     run_id = run_id or f"{profile_name}-{_timestamp()}"
@@ -3873,7 +4609,38 @@ def run_profile(
         catalog_gate=catalog_gate,
         run_root=run_root,
         run_id=run_id,
+        extra_runner_boolean_flags=(
+            [
+                flag
+                for flag, enabled in (
+                    ("prepare_only_no_compose", prepare_only_no_compose),
+                    ("stop_after_pre_start_gates", stop_after_pre_start_gates),
+                    (
+                        "bundle_backed_compose_pre_runtime_proof",
+                        bundle_backed_compose_pre_runtime_proof,
+                    ),
+                    (
+                        "bundle_backed_one_horizon_runtime_proof",
+                        bundle_backed_one_horizon_runtime_proof,
+                    ),
+                    (
+                        "bundle_backed_1p1_horizon_runtime_proof",
+                        bundle_backed_1p1_horizon_runtime_proof,
+                    ),
+                )
+                if enabled
+            ]
+        ),
     )
+    if load_frozen_prepared_bundle is not None:
+        command.extend(
+            [
+                "--load-frozen-prepared-bundle",
+                str(load_frozen_prepared_bundle.resolve()),
+            ]
+        )
+    if prepared_bundle_diagnostic_recompute_attempted:
+        command.append("--prepared-bundle-diagnostic-recompute-attempted")
     stdout_path = run_dir / "profile_runner_stdout.json"
     stderr_path = run_dir / "profile_runner_stderr.log"
     summary = _profile_summary(
@@ -3912,6 +4679,54 @@ def run_profile(
     summary["returncode"] = int(completed.returncode)
     summary["dry_run"] = False
     runner_report = _load_json_maybe(stdout_path)
+    prepared_bundle_load_gate = dict(
+        (runner_report or {}).get("prepared_bundle_load_gate") or {}
+    )
+    bundle_backed_execution_source_gate = dict(
+        (runner_report or {}).get("bundle_backed_live_execution_source_gate") or {}
+    )
+    bundle_backed_runtime_source_binding_gate = dict(
+        (runner_report or {}).get("bundle_backed_runtime_source_binding_gate") or {}
+    )
+    minimal_helper_consumption_proof = dict(
+        (runner_report or {}).get("minimal_helper_consumption_proof") or {}
+    )
+    normal_runtime_inputs_gate = dict(
+        (runner_report or {}).get("normal_runtime_inputs_gate")
+        or (runner_report or {}).get("frozen_bundle_normal_runtime_inputs_gate")
+        or {}
+    )
+    compose_pre_runtime_prepare_proof = dict(
+        (runner_report or {}).get("compose_pre_runtime_prepare_proof") or {}
+    )
+    one_horizon_runtime_proof = dict(
+        (runner_report or {}).get("one_horizon_runtime_proof") or {}
+    )
+    one_plus_one_horizon_runtime_proof = dict(
+        (runner_report or {}).get("one_plus_one_horizon_runtime_proof") or {}
+    )
+    if prepared_bundle_load_gate:
+        summary["prepared_bundle_load_gate"] = prepared_bundle_load_gate
+    if bundle_backed_execution_source_gate:
+        summary["bundle_backed_live_execution_source_gate"] = (
+            bundle_backed_execution_source_gate
+        )
+    if bundle_backed_runtime_source_binding_gate:
+        summary["bundle_backed_runtime_source_binding_gate"] = (
+            bundle_backed_runtime_source_binding_gate
+        )
+    if minimal_helper_consumption_proof:
+        summary["minimal_helper_consumption_proof"] = minimal_helper_consumption_proof
+    if normal_runtime_inputs_gate:
+        summary["normal_runtime_inputs_gate"] = normal_runtime_inputs_gate
+    if compose_pre_runtime_prepare_proof:
+        summary["compose_pre_runtime_prepare_proof"] = compose_pre_runtime_prepare_proof
+    if one_horizon_runtime_proof:
+        summary["one_horizon_runtime_proof"] = one_horizon_runtime_proof
+    if one_plus_one_horizon_runtime_proof:
+        summary["one_plus_one_horizon_runtime_proof"] = (
+            one_plus_one_horizon_runtime_proof
+        )
     startup_contract = evaluate_startup_materialization_contract(
         profile=profile,
         runner_report=runner_report,
@@ -4016,6 +4831,9 @@ def run_profile(
             report_filename="normal_failure_cleanup_report.json",
             cleanup_mode="normal_failure_cleanup",
             success_outcome_label=CLEANUP_PASS_LABEL,
+            cleanup_scope_evidence=cleanup_owned_scope_evidence_from_run_artifacts(
+                run_dir=run_dir
+            ),
         )
         outcome_labels.append("NORMAL_FAILURE_CLEANUP_CONTRACT_ADDED")
         outcome_labels.append(
@@ -4075,12 +4893,93 @@ def run_profile(
         )
     )
     first_failure_label = (first_failure.get("first_failure_label") or None)
-    summary["outcome_label"] = (
-        "RICH_S4_OPERATIONAL_CLEAN_SMOKE_PASS"
-        if passed
-        else first_failure_label
-        or (summary["outcome_labels"][0] if summary["outcome_labels"] else None)
-    )
+    if one_plus_one_horizon_runtime_proof:
+        summary["outcome_label"] = (
+            "BUNDLE_BACKED_1P1_HORIZON_RUNTIME_PASS"
+            if bool(one_plus_one_horizon_runtime_proof.get("passed"))
+            else "BUNDLE_BACKED_1P1_HORIZON_RUNTIME_BLOCKER"
+        )
+        summary["source_of_truth_contract"] = (
+            "PASS"
+            if bool(one_plus_one_horizon_runtime_proof.get("passed"))
+            else "BLOCKER"
+        )
+    elif one_horizon_runtime_proof:
+        summary["outcome_label"] = (
+            "BUNDLE_BACKED_ONE_HORIZON_RUNTIME_PASS"
+            if bool(one_horizon_runtime_proof.get("passed"))
+            else "BUNDLE_BACKED_ONE_HORIZON_RUNTIME_BLOCKER"
+        )
+        summary["source_of_truth_contract"] = (
+            "PASS" if bool(one_horizon_runtime_proof.get("passed")) else "BLOCKER"
+        )
+    elif normal_runtime_inputs_gate:
+        summary["outcome_label"] = (
+            "FROZEN_BUNDLE_NORMAL_RUNTIME_INPUTS_PASS"
+            if bool(normal_runtime_inputs_gate.get("passed"))
+            else "FROZEN_BUNDLE_NORMAL_RUNTIME_INPUTS_BLOCKER"
+        )
+        summary["source_of_truth_contract"] = (
+            "PASS" if bool(normal_runtime_inputs_gate.get("passed")) else "BLOCKER"
+        )
+    elif compose_pre_runtime_prepare_proof:
+        summary["outcome_label"] = (
+            "BUNDLE_BACKED_COMPOSE_PRE_RUNTIME_PREPARE_PASS"
+            if bool(compose_pre_runtime_prepare_proof.get("passed"))
+            else "BUNDLE_BACKED_COMPOSE_PRE_RUNTIME_PREPARE_BLOCKER"
+        )
+        summary["source_of_truth_contract"] = (
+            "PASS" if bool(compose_pre_runtime_prepare_proof.get("passed")) else "BLOCKER"
+        )
+    elif minimal_helper_consumption_proof:
+        summary["outcome_label"] = (
+            "BUNDLE_BACKED_MINIMAL_HELPER_CONSUMPTION_PASS"
+            if bool(minimal_helper_consumption_proof.get("passed"))
+            else "BUNDLE_BACKED_MINIMAL_HELPER_CONSUMPTION_BLOCKER"
+        )
+        summary["source_of_truth_contract"] = (
+            "PASS"
+            if bool(minimal_helper_consumption_proof.get("passed"))
+            else "BLOCKER"
+        )
+    elif bundle_backed_runtime_source_binding_gate:
+        summary["outcome_label"] = (
+            "BUNDLE_BACKED_RUNTIME_SOURCE_BINDING_PASS"
+            if bool(bundle_backed_runtime_source_binding_gate.get("passed"))
+            else "BUNDLE_BACKED_RUNTIME_SOURCE_BINDING_BLOCKER"
+        )
+        summary["source_of_truth_contract"] = (
+            "PASS"
+            if bool(bundle_backed_runtime_source_binding_gate.get("passed"))
+            else "BLOCKER"
+        )
+    elif bundle_backed_execution_source_gate:
+        summary["outcome_label"] = (
+            "BUNDLE_BACKED_LIVE_EXECUTION_SOURCE_PASS"
+            if bool(bundle_backed_execution_source_gate.get("passed"))
+            else "BUNDLE_BACKED_LIVE_EXECUTION_SOURCE_BLOCKER"
+        )
+        summary["source_of_truth_contract"] = (
+            "PASS"
+            if bool(bundle_backed_execution_source_gate.get("passed"))
+            else "BLOCKER"
+        )
+    elif prepared_bundle_load_gate:
+        summary["outcome_label"] = (
+            "FROZEN_PREPARED_BUNDLE_LOAD_PASS"
+            if bool(prepared_bundle_load_gate.get("passed"))
+            else "FROZEN_PREPARED_BUNDLE_LOAD_BLOCKER"
+        )
+        summary["source_of_truth_contract"] = (
+            "PASS" if bool(prepared_bundle_load_gate.get("passed")) else "BLOCKER"
+        )
+    else:
+        summary["outcome_label"] = (
+            "RICH_S4_OPERATIONAL_CLEAN_SMOKE_PASS"
+            if passed
+            else first_failure_label
+            or (summary["outcome_labels"][0] if summary["outcome_labels"] else None)
+        )
     _write_json(run_dir / "profile_run_summary.json", summary)
     summary = refresh_profile_run_summary_derived_artifacts(run_dir=run_dir)
     summary["persistent_artifact_contract"] = _persistent_artifact_contract(run_dir)
@@ -4107,6 +5006,61 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--dry-run",
         action="store_true",
         help="Resolve catalogs and print the underlying command without executing it.",
+    )
+    parser.add_argument(
+        "--prepare-only-no-compose",
+        action="store_true",
+        help=(
+            "Run the underlying profile command only through official prepared "
+            "bundle and pre-compose gate generation, then exit before compose up."
+        ),
+    )
+    parser.add_argument(
+        "--stop-after-pre-start-gates",
+        action="store_true",
+        help=(
+            "Forward the underlying runner's pre-start gate stop mode without "
+            "starting compose."
+        ),
+    )
+    parser.add_argument(
+        "--bundle-backed-compose-pre-runtime-proof",
+        action="store_true",
+        help=(
+            "With a frozen prepared bundle, run the underlying minimal compose-backed "
+            "pre-runtime prepare proof and stop before runtime transactions."
+        ),
+    )
+    parser.add_argument(
+        "--bundle-backed-one-horizon-runtime-proof",
+        action="store_true",
+        help=(
+            "With a frozen prepared bundle, require the underlying official live path "
+            "to prove one bounded current horizon would consume the bundle as the "
+            "authoritative execution source."
+        ),
+    )
+    parser.add_argument(
+        "--bundle-backed-1p1-horizon-runtime-proof",
+        action="store_true",
+        help=(
+            "With a frozen prepared bundle, run the bounded H0 current plus H1 "
+            "preloaded-current source-of-truth validation and stop before full S4."
+        ),
+    )
+    parser.add_argument(
+        "--load-frozen-prepared-bundle",
+        type=Path,
+        default=None,
+        help=(
+            "Pass a frozen prepared_update_bundle to the underlying profile "
+            "command for no-compose load/handoff verification."
+        ),
+    )
+    parser.add_argument(
+        "--prepared-bundle-diagnostic-recompute-attempted",
+        action="store_true",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--cleanup-only",
@@ -4172,6 +5126,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                 run_root=Path(args.run_root).resolve(),
                 run_id=args.run_id,
                 dry_run=bool(args.dry_run),
+                prepare_only_no_compose=bool(args.prepare_only_no_compose),
+                stop_after_pre_start_gates=bool(args.stop_after_pre_start_gates),
+                bundle_backed_compose_pre_runtime_proof=bool(
+                    args.bundle_backed_compose_pre_runtime_proof
+                ),
+                bundle_backed_one_horizon_runtime_proof=bool(
+                    args.bundle_backed_one_horizon_runtime_proof
+                ),
+                bundle_backed_1p1_horizon_runtime_proof=bool(
+                    args.bundle_backed_1p1_horizon_runtime_proof
+                ),
+                load_frozen_prepared_bundle=args.load_frozen_prepared_bundle,
+                prepared_bundle_diagnostic_recompute_attempted=bool(
+                    args.prepared_bundle_diagnostic_recompute_attempted
+                ),
             )
     except ProfileContractError as exc:
         payload = {

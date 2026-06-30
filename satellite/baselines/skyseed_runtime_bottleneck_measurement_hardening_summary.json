@@ -1,0 +1,167 @@
+{
+  "schema_version": 1,
+  "goal": "Skyseed runtime bottleneck measurement hardening",
+  "runtime_behavior_changed": false,
+  "gz_semantics_changed": false,
+  "long_runtime_run_executed": false,
+  "staged_acceptance_executed": false,
+  "instrumentation_added": {
+    "node_local_per_command_timing": {
+      "implemented": true,
+      "field": "NodeLocalBatchResult.command_timings",
+      "result_json_path": "node_local_execution.apply_results[].command_timings",
+      "timing_source": "node_local_batch_shell_marker",
+      "applies_to_new_runs": true,
+      "available_in_existing_goal20_artifacts": false
+    },
+    "node_local_scope_classification": {
+      "implemented": true,
+      "summary_function": "runtime_operation_metrics.summarize_node_local_batches",
+      "scopes": [
+        "satellite_core_mpls_lfib",
+        "ip_route_rule",
+        "edge_nat_iptables",
+        "mpls_readiness_sysctl",
+        "fallback_control_route",
+        "other_unclassified"
+      ],
+      "cleanup_scopes": [
+        "satellite_core_mpls_lfib_residue",
+        "ip_route_rule_residue",
+        "edge_iptables_snat_residue",
+        "mpls_readiness_sysctl_cleanup_or_check",
+        "fallback_control_residue",
+        "other_unclassified_cleanup"
+      ]
+    },
+    "cumulative_vs_critical_path_marking": {
+      "implemented": true,
+      "new_summary_fields": [
+        "cumulative_batch_wall_seconds",
+        "max_batch_wall_seconds",
+        "worker_critical_path_wall_seconds_source",
+        "measurement_semantics"
+      ],
+      "critical_path_source": "caller phase timing, e.g. node_local_apply_wall_seconds or rollback_wall_seconds"
+    },
+    "cleanup_attribution": {
+      "implemented": true,
+      "cleanup_metric_fields": [
+        "cleanup_counts_by_scope",
+        "planned_state_touch_count_by_scope",
+        "bpf_owned_gz_forwarding_cleanup_candidate_command_count",
+        "cleanup_scopes_that_would_shrink_if_bpf_owned_gz_forwarding"
+      ]
+    }
+  },
+  "existing_goal20_reclassification": {
+    "source_run": "satellite/output/starlink_shell_experiments/goal20-s5-bpf-ab-a-off-3600-20260621-r2",
+    "source_files": [
+      "epoch_execution_details.jsonl",
+      "timing.json",
+      "real_runtime_report.json"
+    ],
+    "steady_runtime_epoch_count": 154,
+    "node_local_apply_counts_by_scope": {
+      "satellite_core_mpls_lfib": 1118,
+      "ip_route_rule": 1260,
+      "edge_nat_iptables": 1260,
+      "mpls_readiness_sysctl": 942
+    },
+    "node_local_incremental_cleanup_counts_by_scope": {
+      "satellite_core_mpls_lfib_residue": 974,
+      "ip_route_rule_residue": 1260,
+      "edge_iptables_snat_residue": 1260,
+      "mpls_readiness_sysctl_cleanup_or_check": 942
+    },
+    "host_apply_phase_wall_seconds": {
+      "sum": 483.444435,
+      "avg": 3.13925,
+      "p50": 2.694735,
+      "p95": 5.923886,
+      "max": 13.544707,
+      "share_of_runtime_wall_sum_percent": 42.675
+    },
+    "node_local_apply_phase_wall_seconds": {
+      "sum": 193.583509,
+      "avg": 1.257036,
+      "p50": 1.181226,
+      "p95": 2.489691,
+      "max": 3.911874,
+      "share_of_runtime_wall_sum_percent": 17.088
+    },
+    "node_local_incremental_cleanup_phase_wall_seconds": {
+      "sum": 363.855566,
+      "avg": 2.362698,
+      "p50": 2.137423,
+      "p95": 5.094096,
+      "max": 8.145058,
+      "share_of_runtime_wall_sum_percent": 32.118
+    },
+    "host_cumulative_command_wall_seconds_by_family": {
+      "qdisc": 370.764605,
+      "shell_batch": 286.024299,
+      "veth": 136.122603,
+      "ip": 98.842247,
+      "link": 21.563625,
+      "addr": 20.78532
+    },
+    "node_local_per_command_wall_available": false
+  },
+  "bpf_owned_gz_forwarding_implication": {
+    "directly_shrinkable_apply_scope_count_from_existing_artifacts": 1118,
+    "directly_shrinkable_incremental_cleanup_scope_count_from_existing_artifacts": 974,
+    "would_not_shrink_without_broader_ownership": [
+      "edge_nat_iptables",
+      "ip_route_rule",
+      "mpls_readiness_sysctl",
+      "qdisc",
+      "veth/link/address lifecycle"
+    ],
+    "wall_seconds_direct_evidence_available_after_hardening": "new bounded runs only"
+  },
+  "conclusion_labels": {
+    "direct_evidence": [
+      "RuntimeEpoch phase wall for host apply, node-local apply, and node-local cleanup",
+      "host/direct cumulative per-command wall by family",
+      "node-local command counts by family and scope",
+      "new-run node-local per-command wall when command_timings are present"
+    ],
+    "cumulative_not_critical_path": [
+      "host qdisc/shell_batch/veth cumulative command wall",
+      "node-local batch_wall_seconds and cumulative_batch_wall_seconds"
+    ],
+    "batch_level_inference": [
+      "existing Goal 20 node-local apply/cleanup scope wall before command_timings existed"
+    ],
+    "unknown_until_targeted_run": [
+      "node-local per-scope wall for existing Goal 20 artifacts",
+      "host shell_batch subcommand wall",
+      "planner/FEC diff subphase wall"
+    ]
+  },
+  "optimization_candidates": {
+    "bpf_owned_satellite_core_mpls_replacement": {
+      "status": "evidence_supported_for_command_and_cleanup_scope_reduction",
+      "caveat": "wall-time benefit needs a new bounded run with command_timings"
+    },
+    "mpls_readiness_sysctl_cache_or_one_time_setup": {
+      "status": "evidence_supported_candidate",
+      "scope_count_existing_goal20_apply": 942,
+      "scope_count_existing_goal20_incremental_cleanup": 942,
+      "caveat": "must preserve rollback/readiness semantics"
+    },
+    "cleanup_scope_narrowing": {
+      "status": "evidence_supported_candidate",
+      "core_mpls_cleanup_scope_count_existing_goal20": 974
+    },
+    "qdisc_unchanged_parameter_elision": {
+      "status": "evidence_supported_candidate",
+      "caveat": "not addressed by BPF-owned MPLS replacement"
+    },
+    "shell_batch_lifecycle_optimization": {
+      "status": "evidence_supported_candidate",
+      "caveat": "subcommand wall split remains unknown"
+    }
+  }
+}

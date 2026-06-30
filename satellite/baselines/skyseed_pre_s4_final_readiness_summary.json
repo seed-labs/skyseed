@@ -1,0 +1,296 @@
+{
+  "schema_version": "skyseed-pre-s4-final-readiness-summary-v1",
+  "generated_date": "2026-06-21",
+  "scope": {
+    "s4_real_runtime_executed": false,
+    "long_s5_ab_executed": false,
+    "gz_semantic_change": false,
+    "strict_bpf_owned_linux_fallback_added": false,
+    "qdisc_theaterq_implemented": false,
+    "pushed": false
+  },
+  "decisions": {
+    "bpf_owned_strict_ready": "BLOCKED",
+    "event_timeline_runtime_ready": "PASS",
+    "refined_event_time_ready": "PASS",
+    "sampling_update_model_ready": "PASS",
+    "qdisc_lifecycle_honesty_ready": "PASS",
+    "s4_preview_ready": "BLOCKED",
+    "artifact_hygiene_ready": "PASS",
+    "overall_s4_bounded_run_ready": "BLOCKED"
+  },
+  "blockers": [
+    {
+      "id": "bpf_success_artifact_missing_per_interface_seen_redirect_counters",
+      "area": "bpf_attach_path_correctness",
+      "detail": "Latest successful strict bounded artifact exposes netns attach details, resolved packet-route ifindices, no self-redirects, and global BPF hit counters, but not per-interface BPF seen/redirect counter maps on the successful path."
+    },
+    {
+      "id": "s4_full_catalog_required_zone_coverage_unresolved",
+      "area": "s4_preview",
+      "detail": "Full-catalog S4 preview selected 348 satellites, 32 UTs, 12 gateways, and 16 zones, but all six required service zones were unresolved for all 13 samples; G/Z FEC count and expected BPF-owned scope count were zero."
+    }
+  ],
+  "latest_bounded_artifact": {
+    "run_dir": "/tmp/skyseed_event_refinement_bounded_real/event-timeline-refined-bpf-owned-strict-netns-attach-v4",
+    "run_id": "event-timeline-refined-bpf-owned-strict-netns-attach-v4",
+    "source": "event_timeline",
+    "aggregate_runtime_succeeded": true,
+    "rollback_success": true,
+    "rollback_completed": true,
+    "post_run_preflight_clean": true,
+    "linux_gz_fallback_enabled": false,
+    "linux_gz_fallback_command_count": 0,
+    "eligible_core_fallback_to_linux": 0,
+    "skipped_by_bpf_backend_count": 18,
+    "bpf_classifier_miss_count": 0,
+    "bpf_ping_path_hit_count": 72,
+    "bpf_return_handoff_hit_count": 24,
+    "physical_sample_count": 13,
+    "runtime_transaction_count": 4,
+    "parameter_update_batch_count": 1,
+    "executed_runtime_transaction_count": 4,
+    "executed_parameter_update_batch_count": 1,
+    "sample_aligned_event_count": 9,
+    "refined_event_count": 4
+  },
+  "bpf_attach_path_evidence": {
+    "attach_target_model": "netns:<container>:<iface>",
+    "attached_interface_count": 8,
+    "resolved_packet_route_entry_count": 32,
+    "resolved_packet_routes_have_ifindices": true,
+    "self_redirect_count": 0,
+    "global_ping_path_hit_count": 72,
+    "global_return_handoff_hit_count": 24,
+    "global_classifier_miss_count": 0,
+    "successful_path_per_interface_seen_redirect_counters_present": false,
+    "failed_path_diagnostic_per_interface_counters_implemented": true,
+    "failed_path_diagnostic_per_interface_counters_unit_tested": true
+  },
+  "event_timeline_runtime": {
+    "queue_source": "event_timeline",
+    "queue_epoch_types": [
+      "runtime_epoch",
+      "parameter_epoch"
+    ],
+    "queue_event_timeline_types": [
+      "runtime_transaction",
+      "parameter_update_batch"
+    ],
+    "bpf_owned_backend_consumes_event_timeline_transactions": true,
+    "qdisc_updates_execute_only_from_parameter_update_batches": true,
+    "runtime_transaction_count": 4,
+    "parameter_update_batch_count": 1,
+    "executed_runtime_transaction_count": 4,
+    "executed_parameter_update_batch_count": 1
+  },
+  "refined_event_time": {
+    "level_3_refined_event_time": "PASS",
+    "level_4_continuous_parameter_timeline": "NOT_IMPLEMENTED_BY_DESIGN",
+    "method": "bounded_local_bisection",
+    "latest_refined_runtime_transaction_times_seconds": [
+      25.0,
+      45.0,
+      65.0,
+      75.0
+    ],
+    "latest_sample_aligned_times_seconds": [
+      30.0,
+      50.0,
+      70.0,
+      80.0
+    ],
+    "safe_event_type_evidence": {
+      "coverage_invalidation": "unit_tested",
+      "ut_handover": "unit_tested_and_latest_artifact",
+      "zone_anchor_change": "latest_artifact",
+      "gw_selection_change": "unit_tested_and_latest_artifact",
+      "structural_link_active_inactive": "unit_tested_and_latest_artifact"
+    }
+  },
+  "sampling_update_model": {
+    "canonical_preview_reference_seconds": 10,
+    "coarse_300s_preview_is_optimization_evidence": false,
+    "physical_samples_auto_runtime_transactions": false,
+    "metadata_only_runtime_transaction": false,
+    "timestamp_only_runtime_transaction": false,
+    "cost_only_runtime_transaction_without_policy": false,
+    "runtime_transaction_triggers": [
+      "fec_path_content_change",
+      "g_to_z_path_change",
+      "z_to_g_path_change",
+      "ut_serving_satellite_change",
+      "zone_anchor_change",
+      "gw_selection_change",
+      "structural_active_inactive",
+      "bpf_generation_content_change"
+    ],
+    "parameter_update_batch_triggers": [
+      "delay_threshold",
+      "bandwidth_or_rate_threshold",
+      "loss_or_drop_threshold",
+      "active_inactive",
+      "drop_state"
+    ]
+  },
+  "qdisc_lifecycle_honesty": {
+    "qdisc_linux_owned": true,
+    "parameter_update_batch_discrete_threshold_based": true,
+    "theaterq_custom_qdisc_implemented": false,
+    "continuous_parameter_function_implemented": false,
+    "large_node_local_agent_redesign_implemented": false,
+    "veth_netns_address_lifecycle_optimized_claimed": false,
+    "ordinary_lifecycle_shell_batch_optimized_claimed": false
+  },
+  "serving_satellite_policy_scope": {
+    "included_in_bpf_owned_skip": [
+      "serving-satellite source rule when classified as G/Z/MPLS-like core compatibility",
+      "serving-satellite policy-table verify when classified as G/Z/MPLS-like core compatibility"
+    ],
+    "excluded_from_bpf_owned_skip": [
+      "unrelated UT/GW edge policy",
+      "Mini Internet edge route",
+      "iptables/SNAT",
+      "non-G/Z control traffic",
+      "broad policy routing verification"
+    ]
+  },
+  "s4_preview": {
+    "run_dir": "/tmp/skyseed_pre_s4_preview_final_full",
+    "preview_only": true,
+    "real_runtime_executed": false,
+    "seed_render_executed": false,
+    "planned_shell_id": "S4",
+    "satellite_count": 348,
+    "ut_count": 32,
+    "gateway_count": 12,
+    "zone_count": 16,
+    "active_zone_count": 10,
+    "sample_interval_seconds": 10,
+    "event_evaluation_interval_seconds": 10,
+    "horizon_seconds": 120,
+    "physical_sample_count": 13,
+    "runtime_transaction_count": 10,
+    "parameter_update_batch_count": 3,
+    "refined_event_count": 9,
+    "sample_aligned_event_count": 4,
+    "expected_bpf_generation_count": 10,
+    "expected_bpf_owned_scope_count": 0,
+    "expected_linux_mpls_lfib_elision_count": 0,
+    "expected_qdisc_update_count": 37,
+    "expected_qdisc_command_count": 37,
+    "expected_lifecycle_link_operation_count": 386,
+    "expected_lifecycle_and_parameter_operation_count": 531,
+    "gz_fec_count": 0,
+    "g_to_z_path_count": 0,
+    "z_to_g_path_count": 0,
+    "ut_serving_satellite_change_count": 0,
+    "zone_anchor_change_count": 6,
+    "gw_selection_change_count": 0,
+    "structural_link_active_inactive_count": 6,
+    "coverage_invalidation_forced_change_count": 0,
+    "required_service_unresolved_zones": [
+      "zone-east-asia-pacific-wide",
+      "zone-europe-west-wide",
+      "zone-middle-east-south-asia-wide",
+      "zone-north-america-east-wide",
+      "zone-north-america-west-wide",
+      "zone-south-america-wide"
+    ],
+    "optional_active_unresolved_zones": [
+      "zone-africa-east-optional",
+      "zone-africa-west-optional",
+      "zone-australia-east-optional",
+      "zone-central-asia-optional"
+    ],
+    "coverage_sufficient": false,
+    "fallback_to_consider": "S3/720 or catalog/placement correction"
+  },
+  "artifact_hygiene": {
+    "tracked_or_staged_satellite_output": false,
+    "active_runtime_lock_absent": true,
+    "active_runtime_lock_path": "satellite/output/skyseed_real_runtime_active.lock",
+    "tmp_runtime_artifacts_staged": false,
+    "git_diff_check": "PASS",
+    "dirty_worktree": true,
+    "git_status_short": [
+      " M satellite/apps/analyze_skyseed_bpf_ab.py",
+      " M satellite/apps/build_starlink_shell_preview.py",
+      " M satellite/apps/run_starlink_shell_experiment.py",
+      " M satellite/baselines/skyseed_s5_bpf_ab_summary.json",
+      " M satellite/bpf_backend.py",
+      " M satellite/bpf_dataplane_canary.py",
+      " M satellite/docs/skyseed_platform_abstraction_plan.md",
+      " M satellite/docs/skyseed_s5_bpf_ab.md",
+      " M satellite/experiment_topology.py",
+      " M satellite/experimental/bpf/skyseed_tc_dataplane_canary.c",
+      " M satellite/linux_mpls_runtime.py",
+      " M satellite/runtime_operation_metrics.py",
+      " M satellite/status.md",
+      " M satellite/temporal_planning.py",
+      " M satellite/test_bpf_shadow_backend.py",
+      " M satellite/test_rollback_cleanup_optimization.py",
+      "?? satellite/baselines/skyseed_event_timeline_update_planner_summary.json",
+      "?? satellite/baselines/skyseed_pre300_bpf_owned_readiness_summary.json",
+      "?? satellite/baselines/skyseed_runtime_bottleneck_instrumentation_sanity_summary.json",
+      "?? satellite/baselines/skyseed_runtime_bottleneck_measurement_hardening_summary.json",
+      "?? satellite/baselines/skyseed_runtime_bottleneck_recheck_summary.json",
+      "?? satellite/baselines/skyseed_sampling_update_model_audit_summary.json",
+      "?? satellite/baselines/skyseed_sampling_update_model_optimization_summary.json",
+      "?? satellite/docs/skyseed_bpf_replacement_gap_audit.md",
+      "?? satellite/docs/skyseed_event_timeline_update_planner.md",
+      "?? satellite/docs/skyseed_pre300_bpf_owned_readiness.md",
+      "?? satellite/docs/skyseed_runtime_bottleneck_instrumentation_sanity.md",
+      "?? satellite/docs/skyseed_runtime_bottleneck_measurement_hardening.md",
+      "?? satellite/docs/skyseed_runtime_bottleneck_recheck.md",
+      "?? satellite/docs/skyseed_runtime_bottleneck_recheck_clarification.md",
+      "?? satellite/docs/skyseed_sampling_update_model_audit.md",
+      "?? satellite/docs/skyseed_sampling_update_model_optimization.md",
+      "?? satellite/test_event_timeline_runtime_queue.py",
+      "?? satellite/test_sampling_update_optimization.py"
+    ],
+    "modified_files_by_category": {
+      "bpf_dataplane": [
+        "satellite/bpf_backend.py",
+        "satellite/bpf_dataplane_canary.py",
+        "satellite/experimental/bpf/skyseed_tc_dataplane_canary.c",
+        "satellite/test_bpf_shadow_backend.py"
+      ],
+      "runtime_backend": [
+        "satellite/linux_mpls_runtime.py",
+        "satellite/runtime_operation_metrics.py",
+        "satellite/test_rollback_cleanup_optimization.py"
+      ],
+      "event_timeline_planner": [
+        "satellite/temporal_planning.py",
+        "satellite/test_event_timeline_runtime_queue.py"
+      ],
+      "preview_workload": [
+        "satellite/apps/build_starlink_shell_preview.py",
+        "satellite/apps/run_starlink_shell_experiment.py",
+        "satellite/experiment_topology.py",
+        "satellite/test_sampling_update_optimization.py"
+      ],
+      "tests": [
+        "satellite/test_bpf_shadow_backend.py",
+        "satellite/test_rollback_cleanup_optimization.py",
+        "satellite/test_event_timeline_runtime_queue.py",
+        "satellite/test_sampling_update_optimization.py"
+      ],
+      "docs_baselines": [
+        "satellite/docs/skyseed_pre_s4_final_readiness.md",
+        "satellite/baselines/skyseed_pre_s4_final_readiness_summary.json"
+      ]
+    }
+  },
+  "validation": {
+    "py_compile": "PASS",
+    "focused_unit_tests": {
+      "status": "PASS",
+      "command": "python -m unittest satellite.test_rollback_cleanup_optimization satellite.test_bpf_shadow_backend satellite.test_event_timeline_runtime_queue satellite.test_sampling_update_optimization satellite.test_gz_fec_bpf_generation_compiler",
+      "result": "Ran 52 tests in 0.035s OK"
+    },
+    "json_summary_validation": "PASS",
+    "git_diff_check": "PASS"
+  }
+}

@@ -1,510 +1,1152 @@
 {
-  "ab_executed": false,
-  "ab_run_dirs": {
-    "A_bpf_off": null,
-    "B_bpf_on": null
+  "ab_executed": true,
+  "bpf_full_scope": {
+    "bpf_scope": "full_eligible_scope",
+    "canonical_runtime_unchanged": true,
+    "compiled_summary": {
+      "canonical_runtime_unchanged": true,
+      "fixed_10s_assumed": false,
+      "gz_fec_entry_count": 268,
+      "parameter_entry_count": 1561,
+      "parameter_generation_count": 145,
+      "parameter_link_count": 19,
+      "qdisc_timeline_backend_status": "blocked_or_trace_only",
+      "runtime_generation_count": 25
+    },
+    "fallback_classification": {
+      "canonical_fallback_count": 650,
+      "classification_note": "canonical fallback is acceptable for non-eligible/control traffic; eligible traffic should show redirect/FEC/parameter hits and should not be dominated by fallback.",
+      "eligible_bpf_signal_count": 10,
+      "eligible_traffic_mainly_fallback": true,
+      "noneligible_or_control_fallback_acceptable": true
+    },
+    "linux_direct_backend_replaced": false,
+    "metrics": {
+      "active_generation_switch_count": 2,
+      "bpf_attached_interface_count": 10,
+      "bpf_attached_interface_count_after_rollback": 0,
+      "bpf_drop_counters": 1,
+      "bpf_fail_closed_counters": 1,
+      "bpf_packet_counters": {
+        "canonical_fallback": 650,
+        "drop": 1,
+        "drop_bad_packet": 0,
+        "drop_inactive_fec": 0,
+        "drop_inactive_parameter": 0,
+        "drop_loss": 0,
+        "drop_missing_fec": 0,
+        "drop_missing_generation": 0,
+        "drop_missing_parameter": 1,
+        "fec_hit": 4,
+        "parameter_entry_hit": 3,
+        "parameter_generation_hit": 4,
+        "pass": 650,
+        "redirect": 3,
+        "runtime_generation_hit": 4
+      },
+      "bpf_pass_counters": 650,
+      "bpf_redirect_counters": 3,
+      "bpf_rollback_completed": true,
+      "canonical_fallback_count": 650,
+      "loaded_gz_fec_count": 268,
+      "loaded_parameter_entry_count": 1561,
+      "loaded_parameter_generation_count": 145,
+      "loaded_parameter_link_count": 19,
+      "loaded_runtime_generation_count": 25
+    },
+    "ok": true,
+    "parameter_backend_excluded_fields": [
+      "delay_ms",
+      "rate_bps",
+      "bandwidth_mbps"
+    ],
+    "parameter_backend_fields": [
+      "active",
+      "loss_ppm",
+      "drop",
+      "counters"
+    ],
+    "present": true,
+    "qdisc_timeline_backend_status": "blocked_or_trace_only",
+    "rollback": {
+      "residue_clean": true,
+      "rollback_completed": true
+    }
   },
-  "baseline": {
-    "baseline_role": "existing_2h_duration_decision_source",
-    "correctness": {
-      "ping_success": true,
-      "post_run_preflight_clean": true,
-      "real_apply_success": true,
-      "rollback_completed": true,
-      "temporal_audit": {
-        "no_future_active_link_violation": true,
-        "no_future_forwarding_state_violation": true,
-        "parameter_epoch_without_topology_mutation": true,
-        "rollback_completed": true,
-        "runtime_epoch_has_expected_mutation_scope": true
+  "comparison": {
+    "correctness_all_required_clean": {
+      "a": true,
+      "b": true
+    },
+    "epoch_counts": {
+      "parameter": {
+        "a": 145,
+        "b": 145
+      },
+      "runtime_steady_state": {
+        "a": 154,
+        "b": 154
       }
     },
-    "duration_windows": [
-      {
-        "parameter_epoch_count": 70,
-        "parameter_host_apply_seconds": {
-          "avg": 0.489901,
-          "count": 70,
-          "max": 0.946394,
-          "p50": 0.479635,
-          "p95": 0.759856
+    "regression_checker_passed": {
+      "a": true,
+      "b": true
+    },
+    "timing": {
+      "parameter_host_apply_seconds": {
+        "avg": {
+          "a": 1.427843,
+          "b": 1.413624,
+          "delta_b_minus_a": -0.014219,
+          "pct": -0.996
         },
-        "parameter_transition_wall_seconds": {
-          "avg": 0.762214,
-          "count": 70,
-          "max": 2.234283,
-          "p50": 0.723688,
-          "p95": 1.055478
+        "max": {
+          "a": 2.35598,
+          "b": 2.453683,
+          "delta_b_minus_a": 0.097703,
+          "pct": 4.147
         },
-        "runtime_epoch_count": 80,
-        "runtime_host_apply_seconds": {
-          "avg": 1.829428,
-          "count": 80,
-          "max": 6.427592,
-          "p50": 1.579038,
-          "p95": 3.560396
+        "p50": {
+          "a": 1.325367,
+          "b": 1.305274,
+          "delta_b_minus_a": -0.020093,
+          "pct": -1.516
         },
-        "runtime_transition_wall_seconds": {
-          "avg": 3.754599,
-          "count": 80,
-          "max": 11.164626,
-          "p50": 3.374019,
-          "p95": 7.324847
-        },
-        "simulated_seconds": 1800
+        "p95": {
+          "a": 2.203557,
+          "b": 2.150991,
+          "delta_b_minus_a": -0.052566,
+          "pct": -2.386
+        }
       },
-      {
-        "parameter_epoch_count": 109,
-        "parameter_host_apply_seconds": {
-          "avg": 0.500147,
-          "count": 109,
-          "max": 0.946394,
-          "p50": 0.4882,
-          "p95": 0.751783
+      "parameter_node_local_apply_seconds": {
+        "avg": {
+          "a": 0.0,
+          "b": 0.0,
+          "delta_b_minus_a": 0.0,
+          "pct": null
         },
-        "parameter_transition_wall_seconds": {
-          "avg": 0.763162,
-          "count": 109,
-          "max": 2.234283,
-          "p50": 0.742865,
-          "p95": 1.020608
+        "max": {
+          "a": 0.0,
+          "b": 0.0,
+          "delta_b_minus_a": 0.0,
+          "pct": null
         },
-        "runtime_epoch_count": 116,
-        "runtime_host_apply_seconds": {
-          "avg": 1.916899,
-          "count": 116,
-          "max": 6.427592,
-          "p50": 1.627623,
-          "p95": 3.621865
+        "p50": {
+          "a": 0.0,
+          "b": 0.0,
+          "delta_b_minus_a": 0.0,
+          "pct": null
         },
-        "runtime_transition_wall_seconds": {
-          "avg": 3.87923,
-          "count": 116,
-          "max": 11.164626,
-          "p50": 3.508571,
-          "p95": 7.331265
-        },
-        "simulated_seconds": 2700
+        "p95": {
+          "a": 0.0,
+          "b": 0.0,
+          "delta_b_minus_a": 0.0,
+          "pct": null
+        }
       },
-      {
-        "parameter_epoch_count": 145,
-        "parameter_host_apply_seconds": {
-          "avg": 0.498018,
-          "count": 145,
-          "max": 0.946394,
-          "p50": 0.480372,
-          "p95": 0.76607
+      "parameter_qdisc_apply_cumulative_operation_seconds": {
+        "avg": {
+          "a": 1.414891,
+          "b": 1.40095,
+          "delta_b_minus_a": -0.013941,
+          "pct": -0.985
         },
-        "parameter_transition_wall_seconds": {
-          "avg": 0.759877,
-          "count": 145,
-          "max": 2.234283,
-          "p50": 0.740864,
-          "p95": 1.075073
+        "max": {
+          "a": 2.344267,
+          "b": 2.442002,
+          "delta_b_minus_a": 0.097735,
+          "pct": 4.169
         },
-        "runtime_epoch_count": 155,
-        "runtime_host_apply_seconds": {
-          "avg": 1.995202,
-          "count": 155,
-          "max": 7.760465,
-          "p50": 1.691382,
-          "p95": 3.919476
+        "p50": {
+          "a": 1.314676,
+          "b": 1.293469,
+          "delta_b_minus_a": -0.021207,
+          "pct": -1.613
         },
-        "runtime_transition_wall_seconds": {
-          "avg": 3.941919,
-          "count": 155,
-          "max": 14.432659,
-          "p50": 3.633134,
-          "p95": 7.3786
-        },
-        "simulated_seconds": 3600
+        "p95": {
+          "a": 2.182181,
+          "b": 2.139137,
+          "delta_b_minus_a": -0.043044,
+          "pct": -1.973
+        }
       },
-      {
-        "parameter_epoch_count": 202,
-        "parameter_host_apply_seconds": {
-          "avg": 0.541699,
-          "count": 202,
-          "max": 1.088625,
-          "p50": 0.523748,
-          "p95": 0.878875
+      "parameter_transition_wall_seconds": {
+        "avg": {
+          "a": 1.347367,
+          "b": 1.348554,
+          "delta_b_minus_a": 0.001187,
+          "pct": 0.088
         },
-        "parameter_transition_wall_seconds": {
-          "avg": 0.805986,
-          "count": 202,
-          "max": 2.234283,
-          "p50": 0.775333,
-          "p95": 1.164706
+        "max": {
+          "a": 4.71075,
+          "b": 4.404379,
+          "delta_b_minus_a": -0.306371,
+          "pct": -6.504
         },
-        "runtime_epoch_count": 248,
-        "runtime_host_apply_seconds": {
-          "avg": 2.100173,
-          "count": 248,
-          "max": 7.760465,
-          "p50": 1.838836,
-          "p95": 4.198815
+        "p50": {
+          "a": 1.269957,
+          "b": 1.282958,
+          "delta_b_minus_a": 0.013001,
+          "pct": 1.024
         },
-        "runtime_transition_wall_seconds": {
-          "avg": 4.166944,
-          "count": 248,
-          "max": 15.870726,
-          "p50": 3.794137,
-          "p95": 8.07146
-        },
-        "simulated_seconds": 5400
+        "p95": {
+          "a": 1.808806,
+          "b": 1.727904,
+          "delta_b_minus_a": -0.080902,
+          "pct": -4.473
+        }
       },
-      {
-        "parameter_epoch_count": 275,
-        "parameter_host_apply_seconds": {
-          "avg": 0.594303,
-          "count": 275,
-          "max": 1.38801,
-          "p50": 0.556252,
-          "p95": 0.973226
+      "runtime_forwarding_apply_seconds": {
+        "avg": {
+          "a": 4.396285,
+          "b": 4.395653,
+          "delta_b_minus_a": -0.000632,
+          "pct": -0.014
         },
-        "parameter_transition_wall_seconds": {
-          "avg": 0.867841,
-          "count": 275,
-          "max": 2.234283,
-          "p50": 0.820086,
-          "p95": 1.278064
+        "max": {
+          "a": 17.456581,
+          "b": 17.160989,
+          "delta_b_minus_a": -0.295592,
+          "pct": -1.693
         },
-        "runtime_epoch_count": 324,
-        "runtime_host_apply_seconds": {
-          "avg": 2.177011,
-          "count": 324,
-          "max": 8.564896,
-          "p50": 1.925403,
-          "p95": 4.392757
+        "p50": {
+          "a": 4.026027,
+          "b": 3.958742,
+          "delta_b_minus_a": -0.067285,
+          "pct": -1.671
         },
-        "runtime_transition_wall_seconds": {
-          "avg": 4.244032,
-          "count": 324,
-          "max": 15.870726,
-          "p50": 3.861377,
-          "p95": 7.965185
+        "p95": {
+          "a": 8.123764,
+          "b": 8.059609,
+          "delta_b_minus_a": -0.064155,
+          "pct": -0.79
+        }
+      },
+      "runtime_host_apply_seconds": {
+        "avg": {
+          "a": 3.13925,
+          "b": 3.096244,
+          "delta_b_minus_a": -0.043006,
+          "pct": -1.37
         },
-        "simulated_seconds": 7140
+        "max": {
+          "a": 13.544707,
+          "b": 12.87479,
+          "delta_b_minus_a": -0.669917,
+          "pct": -4.946
+        },
+        "p50": {
+          "a": 2.694735,
+          "b": 2.630142,
+          "delta_b_minus_a": -0.064593,
+          "pct": -2.397
+        },
+        "p95": {
+          "a": 5.923886,
+          "b": 5.853614,
+          "delta_b_minus_a": -0.070272,
+          "pct": -1.186
+        }
+      },
+      "runtime_node_local_apply_seconds": {
+        "avg": {
+          "a": 1.257036,
+          "b": 1.299409,
+          "delta_b_minus_a": 0.042373,
+          "pct": 3.371
+        },
+        "max": {
+          "a": 3.911874,
+          "b": 4.286199,
+          "delta_b_minus_a": 0.374325,
+          "pct": 9.569
+        },
+        "p50": {
+          "a": 1.181226,
+          "b": 1.192452,
+          "delta_b_minus_a": 0.011226,
+          "pct": 0.95
+        },
+        "p95": {
+          "a": 2.489691,
+          "b": 2.472835,
+          "delta_b_minus_a": -0.016856,
+          "pct": -0.677
+        }
+      },
+      "runtime_node_local_cleanup_seconds": {
+        "avg": {
+          "a": 0.0,
+          "b": 0.0,
+          "delta_b_minus_a": 0.0,
+          "pct": null
+        },
+        "max": {
+          "a": 0.0,
+          "b": 0.0,
+          "delta_b_minus_a": 0.0,
+          "pct": null
+        },
+        "p50": {
+          "a": 0.0,
+          "b": 0.0,
+          "delta_b_minus_a": 0.0,
+          "pct": null
+        },
+        "p95": {
+          "a": 0.0,
+          "b": 0.0,
+          "delta_b_minus_a": 0.0,
+          "pct": null
+        }
+      },
+      "runtime_transition_wall_seconds": {
+        "avg": {
+          "a": 7.356255,
+          "b": 7.404383,
+          "delta_b_minus_a": 0.048128,
+          "pct": 0.654
+        },
+        "max": {
+          "a": 26.1989,
+          "b": 25.354385,
+          "delta_b_minus_a": -0.844515,
+          "pct": -3.223
+        },
+        "p50": {
+          "a": 6.61221,
+          "b": 6.356001,
+          "delta_b_minus_a": -0.256209,
+          "pct": -3.875
+        },
+        "p95": {
+          "a": 14.188878,
+          "b": 13.969142,
+          "delta_b_minus_a": -0.219736,
+          "pct": -1.549
+        }
       }
-    ],
-    "epoch_counts": {
+    },
+    "typed_operations": {
+      "parameter_epochs": {
+        "host_apply_result_total": {
+          "a": 1561,
+          "b": 1561
+        },
+        "host_command_count": {
+          "a": 3122.0,
+          "b": 3122.0
+        },
+        "host_total_wall_seconds": {
+          "a": 204.963577,
+          "b": 202.943356,
+          "delta_b_minus_a": -2.020221
+        },
+        "operation_counts": {
+          "a": {
+            "update_slot_parameters": 1561
+          },
+          "b": {
+            "update_slot_parameters": 1561
+          }
+        },
+        "slot_type_counts": {
+          "a": {
+            "cross_plane_isl": 199,
+            "gw_access": 459,
+            "ut_access": 903
+          },
+          "b": {
+            "cross_plane_isl": 199,
+            "gw_access": 459,
+            "ut_access": 903
+          }
+        },
+        "trigger_reason_counts": {
+          "a": {
+            "bandwidth_threshold_exceeded": 73,
+            "routing_cost_changed": 145
+          },
+          "b": {
+            "bandwidth_threshold_exceeded": 73,
+            "routing_cost_changed": 145
+          }
+        },
+        "wall_seconds_by_family": {
+          "a": {
+            "qdisc": 204.963577
+          },
+          "b": {
+            "qdisc": 202.943356
+          }
+        },
+        "wall_seconds_by_operation": {
+          "a": {
+            "qdisc_replace": 204.963577
+          },
+          "b": {
+            "qdisc_replace": 202.943356
+          }
+        }
+      },
+      "runtime_steady_state": {
+        "host_apply_result_total": {
+          "a": 2238,
+          "b": 2238
+        },
+        "host_command_count": {
+          "a": 14331.0,
+          "b": 14331.0
+        },
+        "host_total_wall_seconds": {
+          "a": 934.102685,
+          "b": 921.676236,
+          "delta_b_minus_a": -12.426449
+        },
+        "operation_counts": {
+          "a": {
+            "activate_slot_attachment": 1,
+            "rebind_slot_attachment": 573,
+            "update_slot_parameters": 1664
+          },
+          "b": {
+            "activate_slot_attachment": 1,
+            "rebind_slot_attachment": 573,
+            "update_slot_parameters": 1664
+          }
+        },
+        "slot_type_counts": {
+          "a": {
+            "cross_plane_isl": 336,
+            "gw_access": 638,
+            "ut_access": 1264
+          },
+          "b": {
+            "cross_plane_isl": 336,
+            "gw_access": 638,
+            "ut_access": 1264
+          }
+        },
+        "wall_seconds_by_family": {
+          "a": {
+            "addr": 20.78532,
+            "ip": 98.842247,
+            "link": 21.563625,
+            "qdisc": 370.764605,
+            "shell_batch": 286.024299,
+            "veth": 136.122603
+          },
+          "b": {
+            "addr": 21.163415,
+            "ip": 98.676215,
+            "link": 21.000623,
+            "qdisc": 369.803272,
+            "shell_batch": 279.412544,
+            "veth": 131.620163
+          }
+        },
+        "wall_seconds_by_operation": {
+          "a": {
+            "addr_flush": 20.78532,
+            "ip_other": 98.842247,
+            "link_set": 21.563625,
+            "qdisc_delete": 76.582243,
+            "qdisc_replace": 294.182347,
+            "shell_batch": 286.024299,
+            "veth_create": 22.291071,
+            "veth_down": 39.951463,
+            "veth_move_netns": 40.933142,
+            "veth_rename": 32.946939
+          },
+          "b": {
+            "addr_flush": 21.163415,
+            "ip_other": 98.676215,
+            "link_set": 21.000623,
+            "qdisc_delete": 75.520478,
+            "qdisc_replace": 294.282781,
+            "shell_batch": 279.412544,
+            "veth_create": 21.852375,
+            "veth_down": 39.450478,
+            "veth_move_netns": 38.412045,
+            "veth_rename": 31.905261
+          }
+        }
+      }
+    }
+  },
+  "duration_decision": {
+    "basis": "Existing 2h baseline has about 324 steady RuntimeEpoch and 275 ParameterEpoch; the 3600s simulated window has enough p50/p95 samples for initial A/B.",
+    "existing_2h_counts": {
       "parameter": 275,
       "runtime_including_initial": 325,
       "runtime_steady_state": 324,
       "total_rows": 600
     },
-    "operation_metrics": {
-      "epoch_counts": {
-        "parameter_epoch": 275,
-        "runtime_epoch": 325
-      },
-      "host_apply_result_max_per_epoch": 190,
-      "host_apply_result_total": 8462,
-      "host_operation_counts": {
-        "activate_slot_attachment": 193,
-        "rebind_slot_attachment": 1255,
-        "update_slot_parameters": 7014
-      }
+    "same_duration_horizon_profile_required": true,
+    "selected_3600s_window_counts": {
+      "parameter": 145,
+      "runtime_steady_state": 155
     },
-    "parameter_epochs": {
-      "activation_lag_seconds": {
-        "avg": 1.049603,
-        "count": 275,
-        "max": 13.221247,
-        "p50": 0.152221,
-        "p95": 4.125962
-      },
-      "cleanup_verification_seconds": {
-        "avg": 0.0,
-        "count": 275,
-        "max": 0.0,
-        "p50": 0.0,
-        "p95": 0.0
-      },
-      "count": 275,
-      "host_apply_seconds": {
-        "avg": 0.594303,
-        "count": 275,
-        "max": 1.38801,
-        "p50": 0.556252,
-        "p95": 0.973226
-      },
-      "network_mutation_seconds": {
-        "avg": 0.602325,
-        "count": 275,
-        "max": 1.402429,
-        "p50": 0.564442,
-        "p95": 0.981214
-      },
-      "node_local_apply_seconds": {
-        "avg": 0.0,
-        "count": 275,
-        "max": 0.0,
-        "p50": 0.0,
-        "p95": 0.0
-      },
-      "parameter_qdisc_apply_seconds": {
-        "avg": 1.122398,
-        "count": 275,
-        "max": 2.581523,
-        "p50": 1.050617,
-        "p95": 1.878107
-      },
-      "transition_wall_seconds": {
-        "avg": 0.867841,
-        "count": 275,
-        "max": 2.234283,
-        "p50": 0.820086,
-        "p95": 1.278064
-      }
-    },
-    "run_dir": "/home/seed/skyseed/satellite/output/starlink_shell_experiments/gz-z6metadata-2h-gated-20260611-0824",
-    "runtime_including_initial": {
-      "activation_lag_seconds": {
-        "avg": 1.12664,
-        "count": 325,
-        "max": 24.550655,
-        "p50": 0.192695,
-        "p95": 4.764356
-      },
-      "cleanup_verification_seconds": {
-        "avg": 1.148755,
-        "count": 325,
-        "max": 5.087,
-        "p50": 0.921908,
-        "p95": 2.64196
-      },
-      "count": 325,
-      "host_apply_seconds": {
-        "avg": 2.261729,
-        "count": 325,
-        "max": 29.710443,
-        "p50": 1.926272,
-        "p95": 4.571965
-      },
-      "network_mutation_seconds": {
-        "avg": 2.269683,
-        "count": 325,
-        "max": 29.728546,
-        "p50": 1.933083,
-        "p95": 4.578654
-      },
-      "node_local_apply_seconds": {
-        "avg": 0.645377,
-        "count": 325,
-        "max": 2.751492,
-        "p50": 0.542865,
-        "p95": 1.472614
-      },
-      "parameter_qdisc_apply_seconds": {
-        "avg": 0.0,
-        "count": 325,
-        "max": 0.0,
-        "p50": 0.0,
-        "p95": 0.0
-      },
-      "transition_wall_seconds": {
-        "avg": 4.336122,
-        "count": 325,
-        "max": 34.173132,
-        "p50": 3.872053,
-        "p95": 8.095321
-      }
-    },
-    "runtime_steady_state": {
-      "activation_lag_seconds": {
-        "avg": 1.129755,
-        "count": 324,
-        "max": 24.550655,
-        "p50": 0.193438,
-        "p95": 4.766595
-      },
-      "cleanup_verification_seconds": {
-        "avg": 1.152301,
-        "count": 324,
-        "max": 5.087,
-        "p50": 0.92291,
-        "p95": 2.646154
-      },
-      "count": 324,
-      "host_apply_seconds": {
-        "avg": 2.177011,
-        "count": 324,
-        "max": 8.564896,
-        "p50": 1.925403,
-        "p95": 4.392757
-      },
-      "network_mutation_seconds": {
-        "avg": 2.184933,
-        "count": 324,
-        "max": 8.572091,
-        "p50": 1.932399,
-        "p95": 4.399497
-      },
-      "node_local_apply_seconds": {
-        "avg": 0.641065,
-        "count": 324,
-        "max": 2.751492,
-        "p50": 0.542561,
-        "p95": 1.432611
-      },
-      "parameter_qdisc_apply_seconds": {
-        "avg": 0.0,
-        "count": 324,
-        "max": 0.0,
-        "p50": 0.0,
-        "p95": 0.0
-      },
-      "transition_wall_seconds": {
-        "avg": 4.244032,
-        "count": 324,
-        "max": 15.870726,
-        "p50": 3.861377,
-        "p95": 7.965185
-      }
-    },
-    "timing_analysis": {
-      "first_runtime_epoch": {
-        "classification": "initial_materialization_epoch",
-        "execution_after_prepare_reconcile_wall_seconds": 34.172931,
-        "network_mutation_plan_wall_seconds": 29.728546,
-        "node_local_apply_wall_seconds": 2.042547,
-        "transition_wall_seconds": 34.173132
-      },
-      "initial_activation": {
-        "classification": "bootstrap_plus_initial_runtime_epoch",
-        "cold_start_before_first_epoch_execution_wall_seconds": 579.663337,
-        "first_runtime_epoch_execution_after_prepare_reconcile_wall_seconds": 34.172931,
-        "first_runtime_epoch_prepare_reconcile_wall_seconds": 0.000201,
-        "first_runtime_epoch_transition_wall_seconds": 34.173132,
-        "includes_first_runtime_epoch": true,
-        "initial_activation_wall_seconds": 613.836268,
-        "steady_runtime_excludes_initial_activation": true
-      },
-      "startup_preparation": {
-        "base_runtime_readiness_wall_seconds": 1.46286,
-        "cold_start_before_first_epoch_execution_wall_seconds": 579.663337,
-        "compose_up_wall_seconds": 79.929134,
-        "container_readiness_wall_seconds": 0.061933,
-        "pre_epoch_host_runtime_prepare_wall_seconds": 193.936684,
-        "pre_epoch_host_runtime_prewarm_wall_seconds": 498.209209,
-        "pre_epoch_host_runtime_reconcile_wall_seconds": 304.050816,
-        "pre_first_epoch_direct_backend_prepare_wall_seconds": 0.0,
-        "pre_first_epoch_runtime_manager_reconcile_wall_seconds": 0.000201,
-        "ready_to_execute_epochs_wall_seconds": 499.67227
-      }
-    }
-  },
-  "blocker_policy_honored": true,
-  "bpf_full_eligible_scope_readiness": {
-    "allowed_non_bpf_scope": {
-      "delay_rate_bandwidth": "qdisc_netem",
-      "qdisc_timeline_backend_status": "blocked_or_trace_only"
-    },
-    "blockers": [
-      "live_fec_forwarding_map_capacity_below_compiled_gz_fec_scope",
-      "live_parameter_generation_capacity_below_compiled_parameter_scope",
-      "live_parameter_values_map_capacity_below_compiled_parameter_scope",
-      "live_selector_capacity_below_parameter_link_scope",
-      "live_backend_scope_is_canary_subset"
-    ],
-    "compiled_compact_summary": {
-      "backend_mode": "experimental_bpf_shadow",
-      "bpf_backend_mode": "experimental_bpf_backend",
-      "bpf_enabled": false,
-      "bpf_scope": "semantic_intent_canary_subset",
-      "canonical_runtime_unchanged": true,
-      "fail_closed_rule_count": 8,
-      "fixed_10s_assumed": false,
-      "gz_fec_entry_count": 268,
-      "input_mode": "s5_bpf_ab_readiness",
-      "linux_mpls_label_leakage_found": true,
-      "parameter_entry_count": 3243,
-      "parameter_generation_count": 275,
-      "parameter_link_count": 21,
-      "planned_parameter_epoch_count": 13,
-      "qdisc_timeline_backend_status": "blocked_or_trace_only",
-      "runtime_generation_count": 25
-    },
-    "compiled_full_scope_required": {
-      "gz_fec_entry_count": 268,
-      "parameter_entry_count": 3243,
-      "parameter_generation_count": 275,
-      "parameter_link_count": 21,
-      "runtime_generation_count": 25
-    },
-    "current_live_limits": {
-      "fec_forwarding_max_elem": 16,
-      "generation_status_max_elem": 64,
-      "param_status_max_elem": 64,
-      "parameter_values_max_elem": 16,
-      "selector_max_scope_entries_after_normalize": 16
-    },
-    "ready_for_full_eligible_scope": false,
-    "source_evidence": {
-      "c_backend": "satellite/experimental/bpf/skyseed_tc_dataplane_canary.c",
-      "load_canary_maps_line": 984,
-      "normalize_selector_line": 405,
-      "python_backend": "satellite/bpf_dataplane_canary.py",
-      "select_experimental_scope_line": 423
-    }
-  },
-  "current_head_ab_status": "blocked_before_ab",
-  "duration_decision": {
-    "caveats": [
-      "A shorter window is enough for p50/p95 direction, but max tail claims remain caveated.",
-      "The current live BPF backend is blocked for full eligible scope, so this is a run plan, not an executed A/B result."
-    ],
-    "does_not_need_near_2h_for_initial_ab": true,
-    "if_full_scope_backend_available": {
-      "acceptable_shorter_smoke_floor": "2700s simulated horizon",
-      "minimum_epoch_basis": ">=100 steady RuntimeEpoch and >=90 ParameterEpoch for p50/p95",
-      "preferred_epoch_basis": "about 155 steady RuntimeEpoch and 145 ParameterEpoch at 3600s",
-      "recommended_same_window_for_a_and_b": "3600s simulated horizon",
-      "selected_window_metrics": {
-        "parameter_epoch_count": 145,
-        "parameter_host_apply_seconds": {
-          "avg": 0.498018,
-          "count": 145,
-          "max": 0.946394,
-          "p50": 0.480372,
-          "p95": 0.76607
-        },
-        "parameter_transition_wall_seconds": {
-          "avg": 0.759877,
-          "count": 145,
-          "max": 2.234283,
-          "p50": 0.740864,
-          "p95": 1.075073
-        },
-        "runtime_epoch_count": 155,
-        "runtime_host_apply_seconds": {
-          "avg": 1.995202,
-          "count": 155,
-          "max": 7.760465,
-          "p50": 1.691382,
-          "p95": 3.919476
-        },
-        "runtime_transition_wall_seconds": {
-          "avg": 3.941919,
-          "count": 155,
-          "max": 14.432659,
-          "p50": 3.633134,
-          "p95": 7.3786
-        },
-        "simulated_seconds": 3600
-      }
-    },
-    "rationale": [
-      "The first RuntimeEpoch is initial materialization and is excluded from steady-state.",
-      "The existing 2h baseline has 324 steady RuntimeEpoch and 275 ParameterEpoch samples.",
-      "At 2700-3600s the p50/p95 shape is already close enough for an initial A/B p50/p95 comparison.",
-      "Use the same shortened horizon for A and B to keep cold start and workload exposure symmetric."
-    ]
+    "selected_horizon_seconds": 3600
   },
   "evidence_backed_conclusion": {
-    "bpf_backend_benefit_proven": false,
-    "reason": "No A/B run was executed because current HEAD cannot run BPF on the full eligible S5 scope without falling back to canary subset behavior."
+    "bpf_backend_benefit_evidence_backed": "limited",
+    "performance_benefit": "limited_runtime_host_apply_gain_not_broad_wall_gain",
+    "primary_caveats": [
+      "runtime host apply improves only slightly while runtime wall average is essentially flat",
+      "ParameterEpoch remains qdisc/netem dominated and is outside the BPF delay/rate/bandwidth scope",
+      "BPF counters show canonical fallback dominates observed packet counters, so eligible-traffic coverage is not proven by counters",
+      "node-local apply and non-BPF host operations remain material costs"
+    ],
+    "stability_and_correctness": "pass"
   },
-  "goal": "Goal 19 S5 full-scope BPF experimental backend A/B",
-  "schema_version": 1
+  "goal": "Goal 20 S5 BPF full-scope A/B evidence run",
+  "run_dirs": {
+    "A_bpf_off": "/home/seed/skyseed/satellite/output/starlink_shell_experiments/goal20-s5-bpf-ab-a-off-3600-20260621-r2",
+    "B_bpf_on_full_eligible_scope": "/home/seed/skyseed/satellite/output/starlink_shell_experiments/goal20-s5-bpf-ab-b-fullscope-3600-20260621"
+  },
+  "runs": {
+    "A_bpf_off": {
+      "cleanup": {
+        "all_cleanup_success": true,
+        "host_artifact_cleanup_seconds": 113.330443,
+        "host_rollback_count": 1,
+        "host_rollback_seconds": 45.550085,
+        "host_rollback_wall_seconds": {
+          "avg": 45.550085,
+          "count": 1,
+          "max": 45.550085,
+          "p50": 45.550085,
+          "p95": 45.550085
+        },
+        "known_wall_seconds": 1427.419508,
+        "node_local_rollback_seconds": 1260.401274,
+        "post_run_preflight_seconds": 8.137705,
+        "remaining": {
+          "bridge_count": 0,
+          "host_interface_count": 0,
+          "temp_host_interface_count": 0
+        },
+        "removed": {
+          "bridge_count": 193,
+          "container_interface_count": 0,
+          "host_interface_count": 1562,
+          "temp_host_interface_count": 0
+        }
+      },
+      "correctness": {
+        "all_required_clean": true,
+        "ping_success": true,
+        "post_run_preflight_clean": true,
+        "post_run_preflight_ready": true,
+        "real_apply_success": true,
+        "rollback_completed": true,
+        "temporal_audit": {
+          "finalized": true,
+          "no_future_active_link_violation": true,
+          "no_future_forwarding_state_violation": true,
+          "parameter_epoch_without_topology_mutation": true,
+          "rollback_completed": true,
+          "runtime_epoch_has_expected_mutation_scope": true
+        },
+        "temporal_audit_pass": true
+      },
+      "gz_audit": {
+        "backbone_return_state_item_count": null,
+        "current_realization": "shared_gz_backbone",
+        "current_return_state_scales_with_flow_count": false,
+        "gateway_zone_return_group_count": null,
+        "shared_backbone_ready": null,
+        "ut_mpls_egress_count": null
+      },
+      "metadata": {
+        "bpf_backend": null,
+        "bpf_scope": null,
+        "continuous": null,
+        "horizon_seconds": null,
+        "planned_shell_id": null,
+        "requested_satellite_count": 172,
+        "role": "A_bpf_off_linux_direct",
+        "run_dir": "/home/seed/skyseed/satellite/output/starlink_shell_experiments/goal20-s5-bpf-ab-a-off-3600-20260621-r2",
+        "run_dir_name": "goal20-s5-bpf-ab-a-off-3600-20260621-r2",
+        "run_id": "goal20-s5-bpf-ab-a-off-3600-20260621-r2",
+        "run_mode": "real-runtime",
+        "source_commit": null
+      },
+      "regression_checker": {
+        "available": true,
+        "hard_failure_count": 0,
+        "hard_failures": [],
+        "passed": true,
+        "warning_count": 2,
+        "warnings": [
+          {
+            "baseline": 7.968063,
+            "current": 14.448342,
+            "limit_ratio": 1.25,
+            "metric": "steady_runtime_epoch_seconds.p95"
+          },
+          {
+            "baseline": 4.397095,
+            "current": 6.428678,
+            "limit_ratio": 1.25,
+            "metric": "host_apply_seconds.p95"
+          }
+        ]
+      },
+      "timing": {
+        "bootstrap_seconds": {
+          "initial_activation_wall_seconds": 1218.66218,
+          "pre_epoch_host_runtime_prepare_wall_seconds": 348.033106,
+          "pre_epoch_host_runtime_prewarm_wall_seconds": 979.11862,
+          "pre_epoch_host_runtime_reconcile_wall_seconds": 630.623095
+        },
+        "epoch_counts": {
+          "parameter": 145,
+          "runtime_including_initial": 155,
+          "runtime_steady_state": 154,
+          "total_rows": 300
+        },
+        "finalized": true,
+        "parameter_epochs": {
+          "activation_lag_seconds": {
+            "avg": 4.613307,
+            "count": 145,
+            "max": 44.612159,
+            "p50": 1.139294,
+            "p95": 19.370049
+          },
+          "count": 145,
+          "dirty_reconcile_seconds": {
+            "avg": 0.00035,
+            "count": 145,
+            "max": 0.00091,
+            "p50": 0.000346,
+            "p95": 0.000571
+          },
+          "host_apply_seconds": {
+            "avg": 1.427843,
+            "count": 145,
+            "max": 2.35598,
+            "p50": 1.325367,
+            "p95": 2.203557
+          },
+          "metadata_update_seconds": {
+            "avg": 0.012952,
+            "count": 145,
+            "max": 0.114826,
+            "p50": 0.011495,
+            "p95": 0.015999
+          },
+          "node_local_apply_seconds": {
+            "avg": 0.0,
+            "count": 145,
+            "max": 0.0,
+            "p50": 0.0,
+            "p95": 0.0
+          },
+          "qdisc_apply_cumulative_operation_seconds": {
+            "avg": 1.414891,
+            "count": 145,
+            "max": 2.344267,
+            "p50": 1.314676,
+            "p95": 2.182181
+          },
+          "transition_wall_seconds": {
+            "avg": 1.347367,
+            "count": 145,
+            "max": 4.71075,
+            "p50": 1.269957,
+            "p95": 1.808806
+          }
+        },
+        "runtime_steady_state": {
+          "activation_lag_seconds": {
+            "avg": 4.47728,
+            "count": 154,
+            "max": 53.724926,
+            "p50": 1.114568,
+            "p95": 19.119814
+          },
+          "count": 154,
+          "forwarding_apply_seconds": {
+            "avg": 4.396285,
+            "count": 154,
+            "max": 17.456581,
+            "p50": 4.026027,
+            "p95": 8.123764
+          },
+          "host_apply_seconds": {
+            "avg": 3.13925,
+            "count": 154,
+            "max": 13.544707,
+            "p50": 2.694735,
+            "p95": 5.923886
+          },
+          "node_local_apply_seconds": {
+            "avg": 1.257036,
+            "count": 154,
+            "max": 3.911874,
+            "p50": 1.181226,
+            "p95": 2.489691
+          },
+          "node_local_cleanup_seconds": {
+            "avg": 0.0,
+            "count": 154,
+            "max": 0.0,
+            "p50": 0.0,
+            "p95": 0.0
+          },
+          "transition_wall_seconds": {
+            "avg": 7.356255,
+            "count": 154,
+            "max": 26.1989,
+            "p50": 6.61221,
+            "p95": 14.188878
+          }
+        }
+      },
+      "typed_operations": {
+        "parameter_epochs": {
+          "delta_category_counts": {
+            "changed": 1561
+          },
+          "host_apply_result_per_epoch": {
+            "avg": 10.765517,
+            "count": 145,
+            "max": 18.0,
+            "p50": 10.0,
+            "p95": 16.0
+          },
+          "host_apply_result_total": 1561,
+          "host_typed_operation_metrics": {
+            "available_record_count": 145,
+            "command_count": 3122.0,
+            "counts_by_family": {
+              "qdisc": 3122.0
+            },
+            "counts_by_operation": {
+              "qdisc_replace": 3122.0
+            },
+            "failure_count": 0.0,
+            "missing_record_count": 0,
+            "success_count": 3122.0,
+            "total_wall_seconds": 204.963577,
+            "wall_seconds_by_family": {
+              "qdisc": 204.963577
+            },
+            "wall_seconds_by_operation": {
+              "qdisc_replace": 204.963577
+            }
+          },
+          "operation_counts": {
+            "update_slot_parameters": 1561
+          },
+          "slot_type_counts": {
+            "cross_plane_isl": 199,
+            "gw_access": 459,
+            "ut_access": 903
+          },
+          "trigger_reason_counts": {
+            "bandwidth_threshold_exceeded": 73,
+            "routing_cost_changed": 145
+          }
+        },
+        "runtime_steady_state": {
+          "delta_category_counts": {
+            "changed": 2237,
+            "created": 1
+          },
+          "host_apply_result_per_epoch": {
+            "avg": 14.532468,
+            "count": 154,
+            "max": 19.0,
+            "p50": 15.0,
+            "p95": 18.0
+          },
+          "host_apply_result_total": 2238,
+          "host_typed_operation_metrics": {
+            "available_record_count": 154,
+            "command_count": 14331.0,
+            "counts_by_family": {
+              "addr": 387.0,
+              "ip": 1922.0,
+              "link": 387.0,
+              "qdisc": 5622.0,
+              "shell_batch": 4078.0,
+              "veth": 1935.0
+            },
+            "counts_by_operation": {
+              "addr_flush": 387.0,
+              "ip_other": 1922.0,
+              "link_set": 387.0,
+              "qdisc_delete": 1146.0,
+              "qdisc_replace": 4476.0,
+              "shell_batch": 4078.0,
+              "veth_create": 387.0,
+              "veth_down": 774.0,
+              "veth_move_netns": 387.0,
+              "veth_rename": 387.0
+            },
+            "failure_count": 774.0,
+            "missing_record_count": 0,
+            "success_count": 13557.0,
+            "total_wall_seconds": 934.102685,
+            "wall_seconds_by_family": {
+              "addr": 20.78532,
+              "ip": 98.842247,
+              "link": 21.563625,
+              "qdisc": 370.764605,
+              "shell_batch": 286.024299,
+              "veth": 136.122603
+            },
+            "wall_seconds_by_operation": {
+              "addr_flush": 20.78532,
+              "ip_other": 98.842247,
+              "link_set": 21.563625,
+              "qdisc_delete": 76.582243,
+              "qdisc_replace": 294.182347,
+              "shell_batch": 286.024299,
+              "veth_create": 22.291071,
+              "veth_down": 39.951463,
+              "veth_move_netns": 40.933142,
+              "veth_rename": 32.946939
+            }
+          },
+          "operation_counts": {
+            "activate_slot_attachment": 1,
+            "rebind_slot_attachment": 573,
+            "update_slot_parameters": 1664
+          },
+          "slot_type_counts": {
+            "cross_plane_isl": 336,
+            "gw_access": 638,
+            "ut_access": 1264
+          }
+        }
+      }
+    },
+    "B_bpf_on_full_eligible_scope": {
+      "cleanup": {
+        "all_cleanup_success": true,
+        "host_artifact_cleanup_seconds": 113.334249,
+        "host_rollback_count": 1,
+        "host_rollback_seconds": 45.861988,
+        "host_rollback_wall_seconds": {
+          "avg": 45.861988,
+          "count": 1,
+          "max": 45.861988,
+          "p50": 45.861988,
+          "p95": 45.861988
+        },
+        "known_wall_seconds": 1435.246845,
+        "node_local_rollback_seconds": 1267.38442,
+        "post_run_preflight_seconds": 8.666189,
+        "remaining": {
+          "bridge_count": 0,
+          "host_interface_count": 0,
+          "temp_host_interface_count": 0
+        },
+        "removed": {
+          "bridge_count": 193,
+          "container_interface_count": 0,
+          "host_interface_count": 1562,
+          "temp_host_interface_count": 0
+        }
+      },
+      "correctness": {
+        "all_required_clean": true,
+        "ping_success": true,
+        "post_run_preflight_clean": true,
+        "post_run_preflight_ready": true,
+        "real_apply_success": true,
+        "rollback_completed": true,
+        "temporal_audit": {
+          "finalized": true,
+          "no_future_active_link_violation": true,
+          "no_future_forwarding_state_violation": true,
+          "parameter_epoch_without_topology_mutation": true,
+          "rollback_completed": true,
+          "runtime_epoch_has_expected_mutation_scope": true
+        },
+        "temporal_audit_pass": true
+      },
+      "gz_audit": {
+        "backbone_return_state_item_count": null,
+        "current_realization": "shared_gz_backbone",
+        "current_return_state_scales_with_flow_count": false,
+        "gateway_zone_return_group_count": null,
+        "shared_backbone_ready": null,
+        "ut_mpls_egress_count": null
+      },
+      "metadata": {
+        "bpf_backend": null,
+        "bpf_scope": null,
+        "continuous": null,
+        "horizon_seconds": null,
+        "planned_shell_id": null,
+        "requested_satellite_count": 172,
+        "role": "B_bpf_on_full_eligible_scope",
+        "run_dir": "/home/seed/skyseed/satellite/output/starlink_shell_experiments/goal20-s5-bpf-ab-b-fullscope-3600-20260621",
+        "run_dir_name": "goal20-s5-bpf-ab-b-fullscope-3600-20260621",
+        "run_id": "goal20-s5-bpf-ab-b-fullscope-3600-20260621",
+        "run_mode": "real-runtime",
+        "source_commit": null
+      },
+      "regression_checker": {
+        "available": true,
+        "hard_failure_count": 0,
+        "hard_failures": [],
+        "passed": true,
+        "warning_count": 2,
+        "warnings": [
+          {
+            "baseline": 7.968063,
+            "current": 14.165034,
+            "limit_ratio": 1.25,
+            "metric": "steady_runtime_epoch_seconds.p95"
+          },
+          {
+            "baseline": 4.397095,
+            "current": 5.990982,
+            "limit_ratio": 1.25,
+            "metric": "host_apply_seconds.p95"
+          }
+        ]
+      },
+      "timing": {
+        "bootstrap_seconds": {
+          "initial_activation_wall_seconds": 1214.09852,
+          "pre_epoch_host_runtime_prepare_wall_seconds": 342.294945,
+          "pre_epoch_host_runtime_prewarm_wall_seconds": 971.764768,
+          "pre_epoch_host_runtime_reconcile_wall_seconds": 628.996766
+        },
+        "epoch_counts": {
+          "parameter": 145,
+          "runtime_including_initial": 155,
+          "runtime_steady_state": 154,
+          "total_rows": 300
+        },
+        "finalized": true,
+        "parameter_epochs": {
+          "activation_lag_seconds": {
+            "avg": 4.840271,
+            "count": 145,
+            "max": 47.676016,
+            "p50": 1.146911,
+            "p95": 19.983601
+          },
+          "count": 145,
+          "dirty_reconcile_seconds": {
+            "avg": 0.000334,
+            "count": 145,
+            "max": 0.000853,
+            "p50": 0.00034,
+            "p95": 0.000533
+          },
+          "host_apply_seconds": {
+            "avg": 1.413624,
+            "count": 145,
+            "max": 2.453683,
+            "p50": 1.305274,
+            "p95": 2.150991
+          },
+          "metadata_update_seconds": {
+            "avg": 0.012674,
+            "count": 145,
+            "max": 0.120443,
+            "p50": 0.01158,
+            "p95": 0.015688
+          },
+          "node_local_apply_seconds": {
+            "avg": 0.0,
+            "count": 145,
+            "max": 0.0,
+            "p50": 0.0,
+            "p95": 0.0
+          },
+          "qdisc_apply_cumulative_operation_seconds": {
+            "avg": 1.40095,
+            "count": 145,
+            "max": 2.442002,
+            "p50": 1.293469,
+            "p95": 2.139137
+          },
+          "transition_wall_seconds": {
+            "avg": 1.348554,
+            "count": 145,
+            "max": 4.404379,
+            "p50": 1.282958,
+            "p95": 1.727904
+          }
+        },
+        "runtime_steady_state": {
+          "activation_lag_seconds": {
+            "avg": 4.682032,
+            "count": 154,
+            "max": 57.139519,
+            "p50": 1.025834,
+            "p95": 21.158982
+          },
+          "count": 154,
+          "forwarding_apply_seconds": {
+            "avg": 4.395653,
+            "count": 154,
+            "max": 17.160989,
+            "p50": 3.958742,
+            "p95": 8.059609
+          },
+          "host_apply_seconds": {
+            "avg": 3.096244,
+            "count": 154,
+            "max": 12.87479,
+            "p50": 2.630142,
+            "p95": 5.853614
+          },
+          "node_local_apply_seconds": {
+            "avg": 1.299409,
+            "count": 154,
+            "max": 4.286199,
+            "p50": 1.192452,
+            "p95": 2.472835
+          },
+          "node_local_cleanup_seconds": {
+            "avg": 0.0,
+            "count": 154,
+            "max": 0.0,
+            "p50": 0.0,
+            "p95": 0.0
+          },
+          "transition_wall_seconds": {
+            "avg": 7.404383,
+            "count": 154,
+            "max": 25.354385,
+            "p50": 6.356001,
+            "p95": 13.969142
+          }
+        }
+      },
+      "typed_operations": {
+        "parameter_epochs": {
+          "delta_category_counts": {
+            "changed": 1561
+          },
+          "host_apply_result_per_epoch": {
+            "avg": 10.765517,
+            "count": 145,
+            "max": 18.0,
+            "p50": 10.0,
+            "p95": 16.0
+          },
+          "host_apply_result_total": 1561,
+          "host_typed_operation_metrics": {
+            "available_record_count": 145,
+            "command_count": 3122.0,
+            "counts_by_family": {
+              "qdisc": 3122.0
+            },
+            "counts_by_operation": {
+              "qdisc_replace": 3122.0
+            },
+            "failure_count": 0.0,
+            "missing_record_count": 0,
+            "success_count": 3122.0,
+            "total_wall_seconds": 202.943356,
+            "wall_seconds_by_family": {
+              "qdisc": 202.943356
+            },
+            "wall_seconds_by_operation": {
+              "qdisc_replace": 202.943356
+            }
+          },
+          "operation_counts": {
+            "update_slot_parameters": 1561
+          },
+          "slot_type_counts": {
+            "cross_plane_isl": 199,
+            "gw_access": 459,
+            "ut_access": 903
+          },
+          "trigger_reason_counts": {
+            "bandwidth_threshold_exceeded": 73,
+            "routing_cost_changed": 145
+          }
+        },
+        "runtime_steady_state": {
+          "delta_category_counts": {
+            "changed": 2237,
+            "created": 1
+          },
+          "host_apply_result_per_epoch": {
+            "avg": 14.532468,
+            "count": 154,
+            "max": 19.0,
+            "p50": 15.0,
+            "p95": 18.0
+          },
+          "host_apply_result_total": 2238,
+          "host_typed_operation_metrics": {
+            "available_record_count": 154,
+            "command_count": 14331.0,
+            "counts_by_family": {
+              "addr": 387.0,
+              "ip": 1922.0,
+              "link": 387.0,
+              "qdisc": 5622.0,
+              "shell_batch": 4078.0,
+              "veth": 1935.0
+            },
+            "counts_by_operation": {
+              "addr_flush": 387.0,
+              "ip_other": 1922.0,
+              "link_set": 387.0,
+              "qdisc_delete": 1146.0,
+              "qdisc_replace": 4476.0,
+              "shell_batch": 4078.0,
+              "veth_create": 387.0,
+              "veth_down": 774.0,
+              "veth_move_netns": 387.0,
+              "veth_rename": 387.0
+            },
+            "failure_count": 774.0,
+            "missing_record_count": 0,
+            "success_count": 13557.0,
+            "total_wall_seconds": 921.676236,
+            "wall_seconds_by_family": {
+              "addr": 21.163415,
+              "ip": 98.676215,
+              "link": 21.000623,
+              "qdisc": 369.803272,
+              "shell_batch": 279.412544,
+              "veth": 131.620163
+            },
+            "wall_seconds_by_operation": {
+              "addr_flush": 21.163415,
+              "ip_other": 98.676215,
+              "link_set": 21.000623,
+              "qdisc_delete": 75.520478,
+              "qdisc_replace": 294.282781,
+              "shell_batch": 279.412544,
+              "veth_create": 21.852375,
+              "veth_down": 39.450478,
+              "veth_move_netns": 38.412045,
+              "veth_rename": 31.905261
+            }
+          },
+          "operation_counts": {
+            "activate_slot_attachment": 1,
+            "rebind_slot_attachment": 573,
+            "update_slot_parameters": 1664
+          },
+          "slot_type_counts": {
+            "cross_plane_isl": 336,
+            "gw_access": 638,
+            "ut_access": 1264
+          }
+        }
+      }
+    }
+  },
+  "schema_version": 2
 }

@@ -1,0 +1,3538 @@
+{
+  "bpf_evidence_note": {
+    "detail": "Latest strict BPF artifact has global counters but lacks successful-path per-interface seen/redirect counters required by the gate.",
+    "status": "remaining evidence blocker, not changed in this goal"
+  },
+  "constraints_observed": {
+    "added_strict_bpf_owned_linux_fallback": false,
+    "changed_gz_fec_mpls_semantics": false,
+    "committed_satellite_output": false,
+    "implemented_qdisc_theaterq": false,
+    "pushed_changes": false,
+    "ran_long_s5_ab": false,
+    "ran_s4_real_runtime": false
+  },
+  "created_date": "2026-06-21",
+  "decision": "workload catalog must be redesigned before any 300+ run",
+  "fix_options": [
+    {
+      "option": "adjust preview time window",
+      "tradeoff": "Longer S4 horizon improves center coverage for North America East, but 600s still has zero common zone/UT candidates and zero G/Z FEC, so this is insufficient alone."
+    },
+    {
+      "option": "adjust required/optional zone selection",
+      "tradeoff": "Can create a bounded gate sooner by requiring only spatially coherent zones, but weakens broad workload representativeness."
+    },
+    {
+      "option": "adjust zone anchors",
+      "tradeoff": "Splitting wide regions or selecting anchors from coherent UT clusters preserves semantics better than allowing one anchor to cover globally scattered UTs."
+    },
+    {
+      "option": "adjust GW placement/default-secondary mapping",
+      "tradeoff": "Useful after anchors resolve, but current failure occurs before gateway-path scoring for all required samples except short-window North America East margin cases."
+    },
+    {
+      "option": "use S3/720 fallback",
+      "tradeoff": "S3/720 120s adds density and center coverage, but still has zero common zone/UT candidates and zero G/Z FEC with this catalog."
+    },
+    {
+      "option": "reduce unrealistic required zone constraints",
+      "tradeoff": "Reclassify remote-return/boundary cases or use smaller per-zone UT sets, but do so explicitly because it changes the gate workload."
+    },
+    {
+      "option": "keep S4 with a different workload catalog",
+      "tradeoff": "Best route if S4 remains the target: use catalog/effective coordinates consistently or disable shell-aware relocation for realistic catalog previews."
+    }
+  ],
+  "primary_blocker": "Required service-zone anchor policy requires one satellite that clears the zone-center threshold and is visible to every UT in the zone. With shell-aware effective ground placement, required-zone UTs are thousands of kilometers from their fixed zone centers, producing zero common zone/UT candidates.",
+  "required_zone_sample_diagnostics": [
+    {
+      "best_candidate_satellite_id": "stl-940310",
+      "best_coverage_margin_deg": 45.575,
+      "best_elevation_deg": 50.575,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw209",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw209",
+        "gw210"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 0,
+      "secondary_gateway_id": "gw210",
+      "service_role": "required_service",
+      "time_s": 0.0,
+      "timestamp_utc": "2026-06-21T17:26:11Z",
+      "ut_ids": [
+        "ut2017",
+        "ut2018",
+        "ut2019",
+        "ut2020"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 20.0,
+        "longitude_deg": 122.0
+      },
+      "zone_center_candidates_above_threshold": 10,
+      "zone_id": "zone-east-asia-pacific-wide",
+      "zone_name": "East Asia Pacific Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940198",
+      "best_coverage_margin_deg": 64.369,
+      "best_elevation_deg": 69.369,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw205",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw205",
+        "gw206"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 0,
+      "secondary_gateway_id": "gw206",
+      "service_role": "required_service",
+      "time_s": 0.0,
+      "timestamp_utc": "2026-06-21T17:26:11Z",
+      "ut_ids": [
+        "ut2009",
+        "ut2010",
+        "ut2011",
+        "ut2012"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 47.7,
+        "longitude_deg": 2.0
+      },
+      "zone_center_candidates_above_threshold": 9,
+      "zone_id": "zone-europe-west-wide",
+      "zone_name": "Europe West Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940253",
+      "best_coverage_margin_deg": 60.226,
+      "best_elevation_deg": 65.226,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw207",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw207",
+        "gw208"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 0,
+      "secondary_gateway_id": "gw208",
+      "service_role": "required_service",
+      "time_s": 0.0,
+      "timestamp_utc": "2026-06-21T17:26:11Z",
+      "ut_ids": [
+        "ut2013",
+        "ut2014",
+        "ut2015",
+        "ut2016"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 22.8,
+        "longitude_deg": 64.5
+      },
+      "zone_center_candidates_above_threshold": 11,
+      "zone_id": "zone-middle-east-south-asia-wide",
+      "zone_name": "Middle East South Asia Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940271",
+      "best_coverage_margin_deg": 1.949,
+      "best_elevation_deg": 6.949,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw203",
+      "diagnosed_unresolved_reason": "coverage margin below threshold",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw203",
+        "gw204"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 0,
+      "secondary_gateway_id": "gw204",
+      "service_role": "required_service",
+      "time_s": 0.0,
+      "timestamp_utc": "2026-06-21T17:26:11Z",
+      "ut_ids": [
+        "ut2005",
+        "ut2006",
+        "ut2007",
+        "ut2008"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 38.2,
+        "longitude_deg": -82.5
+      },
+      "zone_center_candidates_above_threshold": 0,
+      "zone_id": "zone-north-america-east-wide",
+      "zone_name": "North America East Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940082",
+      "best_coverage_margin_deg": 37.088,
+      "best_elevation_deg": 42.088,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw201",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw201",
+        "gw202"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 0,
+      "secondary_gateway_id": "gw202",
+      "service_role": "required_service",
+      "time_s": 0.0,
+      "timestamp_utc": "2026-06-21T17:26:11Z",
+      "ut_ids": [
+        "ut2001",
+        "ut2002",
+        "ut2003",
+        "ut2004"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 44.5,
+        "longitude_deg": -113.0
+      },
+      "zone_center_candidates_above_threshold": 11,
+      "zone_id": "zone-north-america-west-wide",
+      "zone_name": "North America West Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940340",
+      "best_coverage_margin_deg": 43.724,
+      "best_elevation_deg": 48.724,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw211",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw211",
+        "gw212"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 0,
+      "secondary_gateway_id": "gw212",
+      "service_role": "required_service",
+      "time_s": 0.0,
+      "timestamp_utc": "2026-06-21T17:26:11Z",
+      "ut_ids": [
+        "ut2021",
+        "ut2022",
+        "ut2023",
+        "ut2024"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": -25.5,
+        "longitude_deg": -59.0
+      },
+      "zone_center_candidates_above_threshold": 11,
+      "zone_id": "zone-south-america-wide",
+      "zone_name": "South America Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940310",
+      "best_coverage_margin_deg": 43.783,
+      "best_elevation_deg": 48.783,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw209",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw209",
+        "gw210"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 1,
+      "secondary_gateway_id": "gw210",
+      "service_role": "required_service",
+      "time_s": 10.0,
+      "timestamp_utc": "2026-06-21T17:26:21Z",
+      "ut_ids": [
+        "ut2017",
+        "ut2018",
+        "ut2019",
+        "ut2020"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 20.0,
+        "longitude_deg": 122.0
+      },
+      "zone_center_candidates_above_threshold": 11,
+      "zone_id": "zone-east-asia-pacific-wide",
+      "zone_name": "East Asia Pacific Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940198",
+      "best_coverage_margin_deg": 68.091,
+      "best_elevation_deg": 73.091,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw205",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw205",
+        "gw206"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 1,
+      "secondary_gateway_id": "gw206",
+      "service_role": "required_service",
+      "time_s": 10.0,
+      "timestamp_utc": "2026-06-21T17:26:21Z",
+      "ut_ids": [
+        "ut2009",
+        "ut2010",
+        "ut2011",
+        "ut2012"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 47.7,
+        "longitude_deg": 2.0
+      },
+      "zone_center_candidates_above_threshold": 10,
+      "zone_id": "zone-europe-west-wide",
+      "zone_name": "Europe West Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940253",
+      "best_coverage_margin_deg": 54.314,
+      "best_elevation_deg": 59.314,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw207",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw207",
+        "gw208"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 1,
+      "secondary_gateway_id": "gw208",
+      "service_role": "required_service",
+      "time_s": 10.0,
+      "timestamp_utc": "2026-06-21T17:26:21Z",
+      "ut_ids": [
+        "ut2013",
+        "ut2014",
+        "ut2015",
+        "ut2016"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 22.8,
+        "longitude_deg": 64.5
+      },
+      "zone_center_candidates_above_threshold": 11,
+      "zone_id": "zone-middle-east-south-asia-wide",
+      "zone_name": "Middle East South Asia Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940271",
+      "best_coverage_margin_deg": 1.853,
+      "best_elevation_deg": 6.853,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw203",
+      "diagnosed_unresolved_reason": "coverage margin below threshold",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw203",
+        "gw204"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 1,
+      "secondary_gateway_id": "gw204",
+      "service_role": "required_service",
+      "time_s": 10.0,
+      "timestamp_utc": "2026-06-21T17:26:21Z",
+      "ut_ids": [
+        "ut2005",
+        "ut2006",
+        "ut2007",
+        "ut2008"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 38.2,
+        "longitude_deg": -82.5
+      },
+      "zone_center_candidates_above_threshold": 0,
+      "zone_id": "zone-north-america-east-wide",
+      "zone_name": "North America East Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940082",
+      "best_coverage_margin_deg": 34.822,
+      "best_elevation_deg": 39.822,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw201",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw201",
+        "gw202"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 1,
+      "secondary_gateway_id": "gw202",
+      "service_role": "required_service",
+      "time_s": 10.0,
+      "timestamp_utc": "2026-06-21T17:26:21Z",
+      "ut_ids": [
+        "ut2001",
+        "ut2002",
+        "ut2003",
+        "ut2004"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 44.5,
+        "longitude_deg": -113.0
+      },
+      "zone_center_candidates_above_threshold": 11,
+      "zone_id": "zone-north-america-west-wide",
+      "zone_name": "North America West Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940340",
+      "best_coverage_margin_deg": 41.42,
+      "best_elevation_deg": 46.42,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw211",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw211",
+        "gw212"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 1,
+      "secondary_gateway_id": "gw212",
+      "service_role": "required_service",
+      "time_s": 10.0,
+      "timestamp_utc": "2026-06-21T17:26:21Z",
+      "ut_ids": [
+        "ut2021",
+        "ut2022",
+        "ut2023",
+        "ut2024"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": -25.5,
+        "longitude_deg": -59.0
+      },
+      "zone_center_candidates_above_threshold": 11,
+      "zone_id": "zone-south-america-wide",
+      "zone_name": "South America Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940310",
+      "best_coverage_margin_deg": 41.467,
+      "best_elevation_deg": 46.467,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw209",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw209",
+        "gw210"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 2,
+      "secondary_gateway_id": "gw210",
+      "service_role": "required_service",
+      "time_s": 20.0,
+      "timestamp_utc": "2026-06-21T17:26:31Z",
+      "ut_ids": [
+        "ut2017",
+        "ut2018",
+        "ut2019",
+        "ut2020"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 20.0,
+        "longitude_deg": 122.0
+      },
+      "zone_center_candidates_above_threshold": 11,
+      "zone_id": "zone-east-asia-pacific-wide",
+      "zone_name": "East Asia Pacific Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940198",
+      "best_coverage_margin_deg": 69.102,
+      "best_elevation_deg": 74.102,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw205",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw205",
+        "gw206"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 2,
+      "secondary_gateway_id": "gw206",
+      "service_role": "required_service",
+      "time_s": 20.0,
+      "timestamp_utc": "2026-06-21T17:26:31Z",
+      "ut_ids": [
+        "ut2009",
+        "ut2010",
+        "ut2011",
+        "ut2012"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 47.7,
+        "longitude_deg": 2.0
+      },
+      "zone_center_candidates_above_threshold": 10,
+      "zone_id": "zone-europe-west-wide",
+      "zone_name": "Europe West Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940252",
+      "best_coverage_margin_deg": 51.327,
+      "best_elevation_deg": 56.327,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw207",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw207",
+        "gw208"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 2,
+      "secondary_gateway_id": "gw208",
+      "service_role": "required_service",
+      "time_s": 20.0,
+      "timestamp_utc": "2026-06-21T17:26:31Z",
+      "ut_ids": [
+        "ut2013",
+        "ut2014",
+        "ut2015",
+        "ut2016"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 22.8,
+        "longitude_deg": 64.5
+      },
+      "zone_center_candidates_above_threshold": 11,
+      "zone_id": "zone-middle-east-south-asia-wide",
+      "zone_name": "Middle East South Asia Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940271",
+      "best_coverage_margin_deg": 1.726,
+      "best_elevation_deg": 6.726,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw203",
+      "diagnosed_unresolved_reason": "coverage margin below threshold",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw203",
+        "gw204"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 2,
+      "secondary_gateway_id": "gw204",
+      "service_role": "required_service",
+      "time_s": 20.0,
+      "timestamp_utc": "2026-06-21T17:26:31Z",
+      "ut_ids": [
+        "ut2005",
+        "ut2006",
+        "ut2007",
+        "ut2008"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 38.2,
+        "longitude_deg": -82.5
+      },
+      "zone_center_candidates_above_threshold": 0,
+      "zone_id": "zone-north-america-east-wide",
+      "zone_name": "North America East Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940081",
+      "best_coverage_margin_deg": 36.747,
+      "best_elevation_deg": 41.747,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw201",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw201",
+        "gw202"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 2,
+      "secondary_gateway_id": "gw202",
+      "service_role": "required_service",
+      "time_s": 20.0,
+      "timestamp_utc": "2026-06-21T17:26:31Z",
+      "ut_ids": [
+        "ut2001",
+        "ut2002",
+        "ut2003",
+        "ut2004"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 44.5,
+        "longitude_deg": -113.0
+      },
+      "zone_center_candidates_above_threshold": 11,
+      "zone_id": "zone-north-america-west-wide",
+      "zone_name": "North America West Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940339",
+      "best_coverage_margin_deg": 39.417,
+      "best_elevation_deg": 44.417,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw211",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw211",
+        "gw212"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 2,
+      "secondary_gateway_id": "gw212",
+      "service_role": "required_service",
+      "time_s": 20.0,
+      "timestamp_utc": "2026-06-21T17:26:31Z",
+      "ut_ids": [
+        "ut2021",
+        "ut2022",
+        "ut2023",
+        "ut2024"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": -25.5,
+        "longitude_deg": -59.0
+      },
+      "zone_center_candidates_above_threshold": 11,
+      "zone_id": "zone-south-america-wide",
+      "zone_name": "South America Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940309",
+      "best_coverage_margin_deg": 39.575,
+      "best_elevation_deg": 44.575,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw209",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw209",
+        "gw210"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 3,
+      "secondary_gateway_id": "gw210",
+      "service_role": "required_service",
+      "time_s": 30.0,
+      "timestamp_utc": "2026-06-21T17:26:41Z",
+      "ut_ids": [
+        "ut2017",
+        "ut2018",
+        "ut2019",
+        "ut2020"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 20.0,
+        "longitude_deg": 122.0
+      },
+      "zone_center_candidates_above_threshold": 10,
+      "zone_id": "zone-east-asia-pacific-wide",
+      "zone_name": "East Asia Pacific Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940198",
+      "best_coverage_margin_deg": 66.832,
+      "best_elevation_deg": 71.832,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw205",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw205",
+        "gw206"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 3,
+      "secondary_gateway_id": "gw206",
+      "service_role": "required_service",
+      "time_s": 30.0,
+      "timestamp_utc": "2026-06-21T17:26:41Z",
+      "ut_ids": [
+        "ut2009",
+        "ut2010",
+        "ut2011",
+        "ut2012"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 47.7,
+        "longitude_deg": 2.0
+      },
+      "zone_center_candidates_above_threshold": 10,
+      "zone_id": "zone-europe-west-wide",
+      "zone_name": "Europe West Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940252",
+      "best_coverage_margin_deg": 57.257,
+      "best_elevation_deg": 62.257,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw207",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw207",
+        "gw208"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 3,
+      "secondary_gateway_id": "gw208",
+      "service_role": "required_service",
+      "time_s": 30.0,
+      "timestamp_utc": "2026-06-21T17:26:41Z",
+      "ut_ids": [
+        "ut2013",
+        "ut2014",
+        "ut2015",
+        "ut2016"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 22.8,
+        "longitude_deg": 64.5
+      },
+      "zone_center_candidates_above_threshold": 11,
+      "zone_id": "zone-middle-east-south-asia-wide",
+      "zone_name": "Middle East South Asia Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940271",
+      "best_coverage_margin_deg": 1.57,
+      "best_elevation_deg": 6.57,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw203",
+      "diagnosed_unresolved_reason": "coverage margin below threshold",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw203",
+        "gw204"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 3,
+      "secondary_gateway_id": "gw204",
+      "service_role": "required_service",
+      "time_s": 30.0,
+      "timestamp_utc": "2026-06-21T17:26:41Z",
+      "ut_ids": [
+        "ut2005",
+        "ut2006",
+        "ut2007",
+        "ut2008"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 38.2,
+        "longitude_deg": -82.5
+      },
+      "zone_center_candidates_above_threshold": 0,
+      "zone_id": "zone-north-america-east-wide",
+      "zone_name": "North America East Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940081",
+      "best_coverage_margin_deg": 38.392,
+      "best_elevation_deg": 43.392,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw201",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw201",
+        "gw202"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 3,
+      "secondary_gateway_id": "gw202",
+      "service_role": "required_service",
+      "time_s": 30.0,
+      "timestamp_utc": "2026-06-21T17:26:41Z",
+      "ut_ids": [
+        "ut2001",
+        "ut2002",
+        "ut2003",
+        "ut2004"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 44.5,
+        "longitude_deg": -113.0
+      },
+      "zone_center_candidates_above_threshold": 11,
+      "zone_id": "zone-north-america-west-wide",
+      "zone_name": "North America West Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940339",
+      "best_coverage_margin_deg": 42.434,
+      "best_elevation_deg": 47.434,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw211",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw211",
+        "gw212"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 3,
+      "secondary_gateway_id": "gw212",
+      "service_role": "required_service",
+      "time_s": 30.0,
+      "timestamp_utc": "2026-06-21T17:26:41Z",
+      "ut_ids": [
+        "ut2021",
+        "ut2022",
+        "ut2023",
+        "ut2024"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": -25.5,
+        "longitude_deg": -59.0
+      },
+      "zone_center_candidates_above_threshold": 10,
+      "zone_id": "zone-south-america-wide",
+      "zone_name": "South America Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940309",
+      "best_coverage_margin_deg": 42.616,
+      "best_elevation_deg": 47.616,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw209",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw209",
+        "gw210"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 4,
+      "secondary_gateway_id": "gw210",
+      "service_role": "required_service",
+      "time_s": 40.0,
+      "timestamp_utc": "2026-06-21T17:26:51Z",
+      "ut_ids": [
+        "ut2017",
+        "ut2018",
+        "ut2019",
+        "ut2020"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 20.0,
+        "longitude_deg": 122.0
+      },
+      "zone_center_candidates_above_threshold": 10,
+      "zone_id": "zone-east-asia-pacific-wide",
+      "zone_name": "East Asia Pacific Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940198",
+      "best_coverage_margin_deg": 62.441,
+      "best_elevation_deg": 67.441,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw205",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw205",
+        "gw206"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 4,
+      "secondary_gateway_id": "gw206",
+      "service_role": "required_service",
+      "time_s": 40.0,
+      "timestamp_utc": "2026-06-21T17:26:51Z",
+      "ut_ids": [
+        "ut2009",
+        "ut2010",
+        "ut2011",
+        "ut2012"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 47.7,
+        "longitude_deg": 2.0
+      },
+      "zone_center_candidates_above_threshold": 10,
+      "zone_id": "zone-europe-west-wide",
+      "zone_name": "Europe West Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940252",
+      "best_coverage_margin_deg": 63.713,
+      "best_elevation_deg": 68.713,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw207",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw207",
+        "gw208"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 4,
+      "secondary_gateway_id": "gw208",
+      "service_role": "required_service",
+      "time_s": 40.0,
+      "timestamp_utc": "2026-06-21T17:26:51Z",
+      "ut_ids": [
+        "ut2013",
+        "ut2014",
+        "ut2015",
+        "ut2016"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 22.8,
+        "longitude_deg": 64.5
+      },
+      "zone_center_candidates_above_threshold": 12,
+      "zone_id": "zone-middle-east-south-asia-wide",
+      "zone_name": "Middle East South Asia Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940270",
+      "best_coverage_margin_deg": 1.508,
+      "best_elevation_deg": 6.508,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw203",
+      "diagnosed_unresolved_reason": "coverage margin below threshold",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw203",
+        "gw204"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 4,
+      "secondary_gateway_id": "gw204",
+      "service_role": "required_service",
+      "time_s": 40.0,
+      "timestamp_utc": "2026-06-21T17:26:51Z",
+      "ut_ids": [
+        "ut2005",
+        "ut2006",
+        "ut2007",
+        "ut2008"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 38.2,
+        "longitude_deg": -82.5
+      },
+      "zone_center_candidates_above_threshold": 0,
+      "zone_id": "zone-north-america-east-wide",
+      "zone_name": "North America East Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940081",
+      "best_coverage_margin_deg": 39.609,
+      "best_elevation_deg": 44.609,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw201",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw201",
+        "gw202"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 4,
+      "secondary_gateway_id": "gw202",
+      "service_role": "required_service",
+      "time_s": 40.0,
+      "timestamp_utc": "2026-06-21T17:26:51Z",
+      "ut_ids": [
+        "ut2001",
+        "ut2002",
+        "ut2003",
+        "ut2004"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 44.5,
+        "longitude_deg": -113.0
+      },
+      "zone_center_candidates_above_threshold": 11,
+      "zone_id": "zone-north-america-west-wide",
+      "zone_name": "North America West Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940339",
+      "best_coverage_margin_deg": 45.235,
+      "best_elevation_deg": 50.235,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw211",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw211",
+        "gw212"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 4,
+      "secondary_gateway_id": "gw212",
+      "service_role": "required_service",
+      "time_s": 40.0,
+      "timestamp_utc": "2026-06-21T17:26:51Z",
+      "ut_ids": [
+        "ut2021",
+        "ut2022",
+        "ut2023",
+        "ut2024"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": -25.5,
+        "longitude_deg": -59.0
+      },
+      "zone_center_candidates_above_threshold": 10,
+      "zone_id": "zone-south-america-wide",
+      "zone_name": "South America Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940309",
+      "best_coverage_margin_deg": 45.441,
+      "best_elevation_deg": 50.441,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw209",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw209",
+        "gw210"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 5,
+      "secondary_gateway_id": "gw210",
+      "service_role": "required_service",
+      "time_s": 50.0,
+      "timestamp_utc": "2026-06-21T17:27:01Z",
+      "ut_ids": [
+        "ut2017",
+        "ut2018",
+        "ut2019",
+        "ut2020"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 20.0,
+        "longitude_deg": 122.0
+      },
+      "zone_center_candidates_above_threshold": 10,
+      "zone_id": "zone-east-asia-pacific-wide",
+      "zone_name": "East Asia Pacific Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940198",
+      "best_coverage_margin_deg": 57.245,
+      "best_elevation_deg": 62.245,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw205",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw205",
+        "gw206"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 5,
+      "secondary_gateway_id": "gw206",
+      "service_role": "required_service",
+      "time_s": 50.0,
+      "timestamp_utc": "2026-06-21T17:27:01Z",
+      "ut_ids": [
+        "ut2009",
+        "ut2010",
+        "ut2011",
+        "ut2012"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 47.7,
+        "longitude_deg": 2.0
+      },
+      "zone_center_candidates_above_threshold": 11,
+      "zone_id": "zone-europe-west-wide",
+      "zone_name": "Europe West Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940252",
+      "best_coverage_margin_deg": 70.478,
+      "best_elevation_deg": 75.478,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw207",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw207",
+        "gw208"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 5,
+      "secondary_gateway_id": "gw208",
+      "service_role": "required_service",
+      "time_s": 50.0,
+      "timestamp_utc": "2026-06-21T17:27:01Z",
+      "ut_ids": [
+        "ut2013",
+        "ut2014",
+        "ut2015",
+        "ut2016"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 22.8,
+        "longitude_deg": 64.5
+      },
+      "zone_center_candidates_above_threshold": 10,
+      "zone_id": "zone-middle-east-south-asia-wide",
+      "zone_name": "Middle East South Asia Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940270",
+      "best_coverage_margin_deg": 1.588,
+      "best_elevation_deg": 6.588,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw203",
+      "diagnosed_unresolved_reason": "coverage margin below threshold",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw203",
+        "gw204"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 5,
+      "secondary_gateway_id": "gw204",
+      "service_role": "required_service",
+      "time_s": 50.0,
+      "timestamp_utc": "2026-06-21T17:27:01Z",
+      "ut_ids": [
+        "ut2005",
+        "ut2006",
+        "ut2007",
+        "ut2008"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 38.2,
+        "longitude_deg": -82.5
+      },
+      "zone_center_candidates_above_threshold": 0,
+      "zone_id": "zone-north-america-east-wide",
+      "zone_name": "North America East Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940081",
+      "best_coverage_margin_deg": 40.283,
+      "best_elevation_deg": 45.283,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw201",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw201",
+        "gw202"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 5,
+      "secondary_gateway_id": "gw202",
+      "service_role": "required_service",
+      "time_s": 50.0,
+      "timestamp_utc": "2026-06-21T17:27:01Z",
+      "ut_ids": [
+        "ut2001",
+        "ut2002",
+        "ut2003",
+        "ut2004"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 44.5,
+        "longitude_deg": -113.0
+      },
+      "zone_center_candidates_above_threshold": 10,
+      "zone_id": "zone-north-america-west-wide",
+      "zone_name": "North America West Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940339",
+      "best_coverage_margin_deg": 47.579,
+      "best_elevation_deg": 52.579,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw211",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw211",
+        "gw212"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 5,
+      "secondary_gateway_id": "gw212",
+      "service_role": "required_service",
+      "time_s": 50.0,
+      "timestamp_utc": "2026-06-21T17:27:01Z",
+      "ut_ids": [
+        "ut2021",
+        "ut2022",
+        "ut2023",
+        "ut2024"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": -25.5,
+        "longitude_deg": -59.0
+      },
+      "zone_center_candidates_above_threshold": 9,
+      "zone_id": "zone-south-america-wide",
+      "zone_name": "South America Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940309",
+      "best_coverage_margin_deg": 47.805,
+      "best_elevation_deg": 52.805,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw209",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw209",
+        "gw210"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 6,
+      "secondary_gateway_id": "gw210",
+      "service_role": "required_service",
+      "time_s": 60.0,
+      "timestamp_utc": "2026-06-21T17:27:11Z",
+      "ut_ids": [
+        "ut2017",
+        "ut2018",
+        "ut2019",
+        "ut2020"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 20.0,
+        "longitude_deg": 122.0
+      },
+      "zone_center_candidates_above_threshold": 10,
+      "zone_id": "zone-east-asia-pacific-wide",
+      "zone_name": "East Asia Pacific Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940198",
+      "best_coverage_margin_deg": 51.972,
+      "best_elevation_deg": 56.972,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw205",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw205",
+        "gw206"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 6,
+      "secondary_gateway_id": "gw206",
+      "service_role": "required_service",
+      "time_s": 60.0,
+      "timestamp_utc": "2026-06-21T17:27:11Z",
+      "ut_ids": [
+        "ut2009",
+        "ut2010",
+        "ut2011",
+        "ut2012"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 47.7,
+        "longitude_deg": 2.0
+      },
+      "zone_center_candidates_above_threshold": 11,
+      "zone_id": "zone-europe-west-wide",
+      "zone_name": "Europe West Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940252",
+      "best_coverage_margin_deg": 76.76,
+      "best_elevation_deg": 81.76,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw207",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw207",
+        "gw208"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 6,
+      "secondary_gateway_id": "gw208",
+      "service_role": "required_service",
+      "time_s": 60.0,
+      "timestamp_utc": "2026-06-21T17:27:11Z",
+      "ut_ids": [
+        "ut2013",
+        "ut2014",
+        "ut2015",
+        "ut2016"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 22.8,
+        "longitude_deg": 64.5
+      },
+      "zone_center_candidates_above_threshold": 10,
+      "zone_id": "zone-middle-east-south-asia-wide",
+      "zone_name": "Middle East South Asia Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940270",
+      "best_coverage_margin_deg": 1.639,
+      "best_elevation_deg": 6.639,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw203",
+      "diagnosed_unresolved_reason": "coverage margin below threshold",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw203",
+        "gw204"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 6,
+      "secondary_gateway_id": "gw204",
+      "service_role": "required_service",
+      "time_s": 60.0,
+      "timestamp_utc": "2026-06-21T17:27:11Z",
+      "ut_ids": [
+        "ut2005",
+        "ut2006",
+        "ut2007",
+        "ut2008"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 38.2,
+        "longitude_deg": -82.5
+      },
+      "zone_center_candidates_above_threshold": 0,
+      "zone_id": "zone-north-america-east-wide",
+      "zone_name": "North America East Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940081",
+      "best_coverage_margin_deg": 40.346,
+      "best_elevation_deg": 45.346,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw201",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw201",
+        "gw202"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 6,
+      "secondary_gateway_id": "gw202",
+      "service_role": "required_service",
+      "time_s": 60.0,
+      "timestamp_utc": "2026-06-21T17:27:11Z",
+      "ut_ids": [
+        "ut2001",
+        "ut2002",
+        "ut2003",
+        "ut2004"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 44.5,
+        "longitude_deg": -113.0
+      },
+      "zone_center_candidates_above_threshold": 10,
+      "zone_id": "zone-north-america-west-wide",
+      "zone_name": "North America West Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940339",
+      "best_coverage_margin_deg": 49.189,
+      "best_elevation_deg": 54.189,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw211",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw211",
+        "gw212"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 6,
+      "secondary_gateway_id": "gw212",
+      "service_role": "required_service",
+      "time_s": 60.0,
+      "timestamp_utc": "2026-06-21T17:27:11Z",
+      "ut_ids": [
+        "ut2021",
+        "ut2022",
+        "ut2023",
+        "ut2024"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": -25.5,
+        "longitude_deg": -59.0
+      },
+      "zone_center_candidates_above_threshold": 9,
+      "zone_id": "zone-south-america-wide",
+      "zone_name": "South America Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940309",
+      "best_coverage_margin_deg": 49.427,
+      "best_elevation_deg": 54.427,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw209",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw209",
+        "gw210"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 7,
+      "secondary_gateway_id": "gw210",
+      "service_role": "required_service",
+      "time_s": 70.0,
+      "timestamp_utc": "2026-06-21T17:27:21Z",
+      "ut_ids": [
+        "ut2017",
+        "ut2018",
+        "ut2019",
+        "ut2020"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 20.0,
+        "longitude_deg": 122.0
+      },
+      "zone_center_candidates_above_threshold": 10,
+      "zone_id": "zone-east-asia-pacific-wide",
+      "zone_name": "East Asia Pacific Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940197",
+      "best_coverage_margin_deg": 48.859,
+      "best_elevation_deg": 53.859,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw205",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw205",
+        "gw206"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 7,
+      "secondary_gateway_id": "gw206",
+      "service_role": "required_service",
+      "time_s": 70.0,
+      "timestamp_utc": "2026-06-21T17:27:21Z",
+      "ut_ids": [
+        "ut2009",
+        "ut2010",
+        "ut2011",
+        "ut2012"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 47.7,
+        "longitude_deg": 2.0
+      },
+      "zone_center_candidates_above_threshold": 10,
+      "zone_id": "zone-europe-west-wide",
+      "zone_name": "Europe West Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940252",
+      "best_coverage_margin_deg": 78.589,
+      "best_elevation_deg": 83.589,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw207",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw207",
+        "gw208"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 7,
+      "secondary_gateway_id": "gw208",
+      "service_role": "required_service",
+      "time_s": 70.0,
+      "timestamp_utc": "2026-06-21T17:27:21Z",
+      "ut_ids": [
+        "ut2013",
+        "ut2014",
+        "ut2015",
+        "ut2016"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 22.8,
+        "longitude_deg": 64.5
+      },
+      "zone_center_candidates_above_threshold": 10,
+      "zone_id": "zone-middle-east-south-asia-wide",
+      "zone_name": "Middle East South Asia Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940270",
+      "best_coverage_margin_deg": 1.658,
+      "best_elevation_deg": 6.658,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw203",
+      "diagnosed_unresolved_reason": "coverage margin below threshold",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw203",
+        "gw204"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 7,
+      "secondary_gateway_id": "gw204",
+      "service_role": "required_service",
+      "time_s": 70.0,
+      "timestamp_utc": "2026-06-21T17:27:21Z",
+      "ut_ids": [
+        "ut2005",
+        "ut2006",
+        "ut2007",
+        "ut2008"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 38.2,
+        "longitude_deg": -82.5
+      },
+      "zone_center_candidates_above_threshold": 0,
+      "zone_id": "zone-north-america-east-wide",
+      "zone_name": "North America East Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940081",
+      "best_coverage_margin_deg": 39.79,
+      "best_elevation_deg": 44.79,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw201",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw201",
+        "gw202"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 7,
+      "secondary_gateway_id": "gw202",
+      "service_role": "required_service",
+      "time_s": 70.0,
+      "timestamp_utc": "2026-06-21T17:27:21Z",
+      "ut_ids": [
+        "ut2001",
+        "ut2002",
+        "ut2003",
+        "ut2004"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 44.5,
+        "longitude_deg": -113.0
+      },
+      "zone_center_candidates_above_threshold": 10,
+      "zone_id": "zone-north-america-west-wide",
+      "zone_name": "North America West Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940339",
+      "best_coverage_margin_deg": 49.824,
+      "best_elevation_deg": 54.824,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw211",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw211",
+        "gw212"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 7,
+      "secondary_gateway_id": "gw212",
+      "service_role": "required_service",
+      "time_s": 70.0,
+      "timestamp_utc": "2026-06-21T17:27:21Z",
+      "ut_ids": [
+        "ut2021",
+        "ut2022",
+        "ut2023",
+        "ut2024"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": -25.5,
+        "longitude_deg": -59.0
+      },
+      "zone_center_candidates_above_threshold": 10,
+      "zone_id": "zone-south-america-wide",
+      "zone_name": "South America Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940309",
+      "best_coverage_margin_deg": 50.062,
+      "best_elevation_deg": 55.062,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw209",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw209",
+        "gw210"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 8,
+      "secondary_gateway_id": "gw210",
+      "service_role": "required_service",
+      "time_s": 80.0,
+      "timestamp_utc": "2026-06-21T17:27:31Z",
+      "ut_ids": [
+        "ut2017",
+        "ut2018",
+        "ut2019",
+        "ut2020"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 20.0,
+        "longitude_deg": 122.0
+      },
+      "zone_center_candidates_above_threshold": 10,
+      "zone_id": "zone-east-asia-pacific-wide",
+      "zone_name": "East Asia Pacific Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940197",
+      "best_coverage_margin_deg": 53.712,
+      "best_elevation_deg": 58.712,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw205",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw205",
+        "gw206"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 8,
+      "secondary_gateway_id": "gw206",
+      "service_role": "required_service",
+      "time_s": 80.0,
+      "timestamp_utc": "2026-06-21T17:27:31Z",
+      "ut_ids": [
+        "ut2009",
+        "ut2010",
+        "ut2011",
+        "ut2012"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 47.7,
+        "longitude_deg": 2.0
+      },
+      "zone_center_candidates_above_threshold": 10,
+      "zone_id": "zone-europe-west-wide",
+      "zone_name": "Europe West Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940252",
+      "best_coverage_margin_deg": 73.431,
+      "best_elevation_deg": 78.431,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw207",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw207",
+        "gw208"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 8,
+      "secondary_gateway_id": "gw208",
+      "service_role": "required_service",
+      "time_s": 80.0,
+      "timestamp_utc": "2026-06-21T17:27:31Z",
+      "ut_ids": [
+        "ut2013",
+        "ut2014",
+        "ut2015",
+        "ut2016"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 22.8,
+        "longitude_deg": 64.5
+      },
+      "zone_center_candidates_above_threshold": 10,
+      "zone_id": "zone-middle-east-south-asia-wide",
+      "zone_name": "Middle East South Asia Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940270",
+      "best_coverage_margin_deg": 1.646,
+      "best_elevation_deg": 6.646,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw203",
+      "diagnosed_unresolved_reason": "coverage margin below threshold",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw203",
+        "gw204"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 8,
+      "secondary_gateway_id": "gw204",
+      "service_role": "required_service",
+      "time_s": 80.0,
+      "timestamp_utc": "2026-06-21T17:27:31Z",
+      "ut_ids": [
+        "ut2005",
+        "ut2006",
+        "ut2007",
+        "ut2008"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 38.2,
+        "longitude_deg": -82.5
+      },
+      "zone_center_candidates_above_threshold": 0,
+      "zone_id": "zone-north-america-east-wide",
+      "zone_name": "North America East Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940081",
+      "best_coverage_margin_deg": 38.674,
+      "best_elevation_deg": 43.674,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw201",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw201",
+        "gw202"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 8,
+      "secondary_gateway_id": "gw202",
+      "service_role": "required_service",
+      "time_s": 80.0,
+      "timestamp_utc": "2026-06-21T17:27:31Z",
+      "ut_ids": [
+        "ut2001",
+        "ut2002",
+        "ut2003",
+        "ut2004"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 44.5,
+        "longitude_deg": -113.0
+      },
+      "zone_center_candidates_above_threshold": 10,
+      "zone_id": "zone-north-america-west-wide",
+      "zone_name": "North America West Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940339",
+      "best_coverage_margin_deg": 49.378,
+      "best_elevation_deg": 54.378,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw211",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw211",
+        "gw212"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 8,
+      "secondary_gateway_id": "gw212",
+      "service_role": "required_service",
+      "time_s": 80.0,
+      "timestamp_utc": "2026-06-21T17:27:31Z",
+      "ut_ids": [
+        "ut2021",
+        "ut2022",
+        "ut2023",
+        "ut2024"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": -25.5,
+        "longitude_deg": -59.0
+      },
+      "zone_center_candidates_above_threshold": 10,
+      "zone_id": "zone-south-america-wide",
+      "zone_name": "South America Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940309",
+      "best_coverage_margin_deg": 49.601,
+      "best_elevation_deg": 54.601,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw209",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw209",
+        "gw210"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 9,
+      "secondary_gateway_id": "gw210",
+      "service_role": "required_service",
+      "time_s": 90.0,
+      "timestamp_utc": "2026-06-21T17:27:41Z",
+      "ut_ids": [
+        "ut2017",
+        "ut2018",
+        "ut2019",
+        "ut2020"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 20.0,
+        "longitude_deg": 122.0
+      },
+      "zone_center_candidates_above_threshold": 10,
+      "zone_id": "zone-east-asia-pacific-wide",
+      "zone_name": "East Asia Pacific Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940197",
+      "best_coverage_margin_deg": 58.534,
+      "best_elevation_deg": 63.534,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw205",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw205",
+        "gw206"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 9,
+      "secondary_gateway_id": "gw206",
+      "service_role": "required_service",
+      "time_s": 90.0,
+      "timestamp_utc": "2026-06-21T17:27:41Z",
+      "ut_ids": [
+        "ut2009",
+        "ut2010",
+        "ut2011",
+        "ut2012"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 47.7,
+        "longitude_deg": 2.0
+      },
+      "zone_center_candidates_above_threshold": 10,
+      "zone_id": "zone-europe-west-wide",
+      "zone_name": "Europe West Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940252",
+      "best_coverage_margin_deg": 66.704,
+      "best_elevation_deg": 71.704,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw207",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw207",
+        "gw208"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 9,
+      "secondary_gateway_id": "gw208",
+      "service_role": "required_service",
+      "time_s": 90.0,
+      "timestamp_utc": "2026-06-21T17:27:41Z",
+      "ut_ids": [
+        "ut2013",
+        "ut2014",
+        "ut2015",
+        "ut2016"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 22.8,
+        "longitude_deg": 64.5
+      },
+      "zone_center_candidates_above_threshold": 11,
+      "zone_id": "zone-middle-east-south-asia-wide",
+      "zone_name": "Middle East South Asia Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940270",
+      "best_coverage_margin_deg": 1.604,
+      "best_elevation_deg": 6.604,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw203",
+      "diagnosed_unresolved_reason": "coverage margin below threshold",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw203",
+        "gw204"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 9,
+      "secondary_gateway_id": "gw204",
+      "service_role": "required_service",
+      "time_s": 90.0,
+      "timestamp_utc": "2026-06-21T17:27:41Z",
+      "ut_ids": [
+        "ut2005",
+        "ut2006",
+        "ut2007",
+        "ut2008"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 38.2,
+        "longitude_deg": -82.5
+      },
+      "zone_center_candidates_above_threshold": 0,
+      "zone_id": "zone-north-america-east-wide",
+      "zone_name": "North America East Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940081",
+      "best_coverage_margin_deg": 37.105,
+      "best_elevation_deg": 42.105,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw201",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw201",
+        "gw202"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 9,
+      "secondary_gateway_id": "gw202",
+      "service_role": "required_service",
+      "time_s": 90.0,
+      "timestamp_utc": "2026-06-21T17:27:41Z",
+      "ut_ids": [
+        "ut2001",
+        "ut2002",
+        "ut2003",
+        "ut2004"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 44.5,
+        "longitude_deg": -113.0
+      },
+      "zone_center_candidates_above_threshold": 10,
+      "zone_id": "zone-north-america-west-wide",
+      "zone_name": "North America West Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940339",
+      "best_coverage_margin_deg": 47.926,
+      "best_elevation_deg": 52.926,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw211",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw211",
+        "gw212"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 9,
+      "secondary_gateway_id": "gw212",
+      "service_role": "required_service",
+      "time_s": 90.0,
+      "timestamp_utc": "2026-06-21T17:27:41Z",
+      "ut_ids": [
+        "ut2021",
+        "ut2022",
+        "ut2023",
+        "ut2024"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": -25.5,
+        "longitude_deg": -59.0
+      },
+      "zone_center_candidates_above_threshold": 10,
+      "zone_id": "zone-south-america-wide",
+      "zone_name": "South America Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940309",
+      "best_coverage_margin_deg": 48.123,
+      "best_elevation_deg": 53.123,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw209",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw209",
+        "gw210"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 10,
+      "secondary_gateway_id": "gw210",
+      "service_role": "required_service",
+      "time_s": 100.0,
+      "timestamp_utc": "2026-06-21T17:27:51Z",
+      "ut_ids": [
+        "ut2017",
+        "ut2018",
+        "ut2019",
+        "ut2020"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 20.0,
+        "longitude_deg": 122.0
+      },
+      "zone_center_candidates_above_threshold": 10,
+      "zone_id": "zone-east-asia-pacific-wide",
+      "zone_name": "East Asia Pacific Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940197",
+      "best_coverage_margin_deg": 62.787,
+      "best_elevation_deg": 67.787,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw205",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw205",
+        "gw206"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 10,
+      "secondary_gateway_id": "gw206",
+      "service_role": "required_service",
+      "time_s": 100.0,
+      "timestamp_utc": "2026-06-21T17:27:51Z",
+      "ut_ids": [
+        "ut2009",
+        "ut2010",
+        "ut2011",
+        "ut2012"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 47.7,
+        "longitude_deg": 2.0
+      },
+      "zone_center_candidates_above_threshold": 9,
+      "zone_id": "zone-europe-west-wide",
+      "zone_name": "Europe West Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940252",
+      "best_coverage_margin_deg": 60.068,
+      "best_elevation_deg": 65.068,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw207",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw207",
+        "gw208"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 10,
+      "secondary_gateway_id": "gw208",
+      "service_role": "required_service",
+      "time_s": 100.0,
+      "timestamp_utc": "2026-06-21T17:27:51Z",
+      "ut_ids": [
+        "ut2013",
+        "ut2014",
+        "ut2015",
+        "ut2016"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 22.8,
+        "longitude_deg": 64.5
+      },
+      "zone_center_candidates_above_threshold": 11,
+      "zone_id": "zone-middle-east-south-asia-wide",
+      "zone_name": "Middle East South Asia Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940270",
+      "best_coverage_margin_deg": 1.531,
+      "best_elevation_deg": 6.531,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw203",
+      "diagnosed_unresolved_reason": "coverage margin below threshold",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw203",
+        "gw204"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 10,
+      "secondary_gateway_id": "gw204",
+      "service_role": "required_service",
+      "time_s": 100.0,
+      "timestamp_utc": "2026-06-21T17:27:51Z",
+      "ut_ids": [
+        "ut2005",
+        "ut2006",
+        "ut2007",
+        "ut2008"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 38.2,
+        "longitude_deg": -82.5
+      },
+      "zone_center_candidates_above_threshold": 0,
+      "zone_id": "zone-north-america-east-wide",
+      "zone_name": "North America East Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940081",
+      "best_coverage_margin_deg": 35.212,
+      "best_elevation_deg": 40.212,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw201",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw201",
+        "gw202"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 10,
+      "secondary_gateway_id": "gw202",
+      "service_role": "required_service",
+      "time_s": 100.0,
+      "timestamp_utc": "2026-06-21T17:27:51Z",
+      "ut_ids": [
+        "ut2001",
+        "ut2002",
+        "ut2003",
+        "ut2004"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 44.5,
+        "longitude_deg": -113.0
+      },
+      "zone_center_candidates_above_threshold": 11,
+      "zone_id": "zone-north-america-west-wide",
+      "zone_name": "North America West Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940339",
+      "best_coverage_margin_deg": 45.692,
+      "best_elevation_deg": 50.692,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw211",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw211",
+        "gw212"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 10,
+      "secondary_gateway_id": "gw212",
+      "service_role": "required_service",
+      "time_s": 100.0,
+      "timestamp_utc": "2026-06-21T17:27:51Z",
+      "ut_ids": [
+        "ut2021",
+        "ut2022",
+        "ut2023",
+        "ut2024"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": -25.5,
+        "longitude_deg": -59.0
+      },
+      "zone_center_candidates_above_threshold": 11,
+      "zone_id": "zone-south-america-wide",
+      "zone_name": "South America Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940309",
+      "best_coverage_margin_deg": 45.859,
+      "best_elevation_deg": 50.859,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw209",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw209",
+        "gw210"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 11,
+      "secondary_gateway_id": "gw210",
+      "service_role": "required_service",
+      "time_s": 110.0,
+      "timestamp_utc": "2026-06-21T17:28:01Z",
+      "ut_ids": [
+        "ut2017",
+        "ut2018",
+        "ut2019",
+        "ut2020"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 20.0,
+        "longitude_deg": 122.0
+      },
+      "zone_center_candidates_above_threshold": 11,
+      "zone_id": "zone-east-asia-pacific-wide",
+      "zone_name": "East Asia Pacific Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940197",
+      "best_coverage_margin_deg": 65.56,
+      "best_elevation_deg": 70.56,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw205",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw205",
+        "gw206"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 11,
+      "secondary_gateway_id": "gw206",
+      "service_role": "required_service",
+      "time_s": 110.0,
+      "timestamp_utc": "2026-06-21T17:28:01Z",
+      "ut_ids": [
+        "ut2009",
+        "ut2010",
+        "ut2011",
+        "ut2012"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 47.7,
+        "longitude_deg": 2.0
+      },
+      "zone_center_candidates_above_threshold": 10,
+      "zone_id": "zone-europe-west-wide",
+      "zone_name": "Europe West Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940252",
+      "best_coverage_margin_deg": 53.892,
+      "best_elevation_deg": 58.892,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw207",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw207",
+        "gw208"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 11,
+      "secondary_gateway_id": "gw208",
+      "service_role": "required_service",
+      "time_s": 110.0,
+      "timestamp_utc": "2026-06-21T17:28:01Z",
+      "ut_ids": [
+        "ut2013",
+        "ut2014",
+        "ut2015",
+        "ut2016"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 22.8,
+        "longitude_deg": 64.5
+      },
+      "zone_center_candidates_above_threshold": 11,
+      "zone_id": "zone-middle-east-south-asia-wide",
+      "zone_name": "Middle East South Asia Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940270",
+      "best_coverage_margin_deg": 1.428,
+      "best_elevation_deg": 6.428,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw203",
+      "diagnosed_unresolved_reason": "coverage margin below threshold",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw203",
+        "gw204"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 11,
+      "secondary_gateway_id": "gw204",
+      "service_role": "required_service",
+      "time_s": 110.0,
+      "timestamp_utc": "2026-06-21T17:28:01Z",
+      "ut_ids": [
+        "ut2005",
+        "ut2006",
+        "ut2007",
+        "ut2008"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 38.2,
+        "longitude_deg": -82.5
+      },
+      "zone_center_candidates_above_threshold": 0,
+      "zone_id": "zone-north-america-east-wide",
+      "zone_name": "North America East Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940080",
+      "best_coverage_margin_deg": 33.703,
+      "best_elevation_deg": 38.703,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw201",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw201",
+        "gw202"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 11,
+      "secondary_gateway_id": "gw202",
+      "service_role": "required_service",
+      "time_s": 110.0,
+      "timestamp_utc": "2026-06-21T17:28:01Z",
+      "ut_ids": [
+        "ut2001",
+        "ut2002",
+        "ut2003",
+        "ut2004"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 44.5,
+        "longitude_deg": -113.0
+      },
+      "zone_center_candidates_above_threshold": 11,
+      "zone_id": "zone-north-america-west-wide",
+      "zone_name": "North America West Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940339",
+      "best_coverage_margin_deg": 42.953,
+      "best_elevation_deg": 47.953,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw211",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw211",
+        "gw212"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 11,
+      "secondary_gateway_id": "gw212",
+      "service_role": "required_service",
+      "time_s": 110.0,
+      "timestamp_utc": "2026-06-21T17:28:01Z",
+      "ut_ids": [
+        "ut2021",
+        "ut2022",
+        "ut2023",
+        "ut2024"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": -25.5,
+        "longitude_deg": -59.0
+      },
+      "zone_center_candidates_above_threshold": 11,
+      "zone_id": "zone-south-america-wide",
+      "zone_name": "South America Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940309",
+      "best_coverage_margin_deg": 43.09,
+      "best_elevation_deg": 48.09,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw209",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw209",
+        "gw210"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 12,
+      "secondary_gateway_id": "gw210",
+      "service_role": "required_service",
+      "time_s": 120.0,
+      "timestamp_utc": "2026-06-21T17:28:11Z",
+      "ut_ids": [
+        "ut2017",
+        "ut2018",
+        "ut2019",
+        "ut2020"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 20.0,
+        "longitude_deg": 122.0
+      },
+      "zone_center_candidates_above_threshold": 11,
+      "zone_id": "zone-east-asia-pacific-wide",
+      "zone_name": "East Asia Pacific Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940197",
+      "best_coverage_margin_deg": 65.853,
+      "best_elevation_deg": 70.853,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw205",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw205",
+        "gw206"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 12,
+      "secondary_gateway_id": "gw206",
+      "service_role": "required_service",
+      "time_s": 120.0,
+      "timestamp_utc": "2026-06-21T17:28:11Z",
+      "ut_ids": [
+        "ut2009",
+        "ut2010",
+        "ut2011",
+        "ut2012"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 47.7,
+        "longitude_deg": 2.0
+      },
+      "zone_center_candidates_above_threshold": 10,
+      "zone_id": "zone-europe-west-wide",
+      "zone_name": "Europe West Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940251",
+      "best_coverage_margin_deg": 52.964,
+      "best_elevation_deg": 57.964,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw207",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw207",
+        "gw208"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 12,
+      "secondary_gateway_id": "gw208",
+      "service_role": "required_service",
+      "time_s": 120.0,
+      "timestamp_utc": "2026-06-21T17:28:11Z",
+      "ut_ids": [
+        "ut2013",
+        "ut2014",
+        "ut2015",
+        "ut2016"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 22.8,
+        "longitude_deg": 64.5
+      },
+      "zone_center_candidates_above_threshold": 11,
+      "zone_id": "zone-middle-east-south-asia-wide",
+      "zone_name": "Middle East South Asia Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940270",
+      "best_coverage_margin_deg": 1.296,
+      "best_elevation_deg": 6.296,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw203",
+      "diagnosed_unresolved_reason": "coverage margin below threshold",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw203",
+        "gw204"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 12,
+      "secondary_gateway_id": "gw204",
+      "service_role": "required_service",
+      "time_s": 120.0,
+      "timestamp_utc": "2026-06-21T17:28:11Z",
+      "ut_ids": [
+        "ut2005",
+        "ut2006",
+        "ut2007",
+        "ut2008"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 38.2,
+        "longitude_deg": -82.5
+      },
+      "zone_center_candidates_above_threshold": 0,
+      "zone_id": "zone-north-america-east-wide",
+      "zone_name": "North America East Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940080",
+      "best_coverage_margin_deg": 35.427,
+      "best_elevation_deg": 40.427,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw201",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw201",
+        "gw202"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 12,
+      "secondary_gateway_id": "gw202",
+      "service_role": "required_service",
+      "time_s": 120.0,
+      "timestamp_utc": "2026-06-21T17:28:11Z",
+      "ut_ids": [
+        "ut2001",
+        "ut2002",
+        "ut2003",
+        "ut2004"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": 44.5,
+        "longitude_deg": -113.0
+      },
+      "zone_center_candidates_above_threshold": 11,
+      "zone_id": "zone-north-america-west-wide",
+      "zone_name": "North America West Wide"
+    },
+    {
+      "best_candidate_satellite_id": "stl-940338",
+      "best_coverage_margin_deg": 41.941,
+      "best_elevation_deg": 46.941,
+      "candidate_serving_satellites_count": 348,
+      "common_zone_and_all_ut_candidates": 0,
+      "coverage_threshold_elevation_deg": 7.0,
+      "default_gateway_id": "gw211",
+      "diagnosed_unresolved_reason": "zone anchor selection failed: UT attach mismatch",
+      "planner_change_reason": "no_candidate_covers_zone_geometry",
+      "planner_resolution_state": "unresolved_no_zone_visible_satellite",
+      "preferred_gateway_ids": [
+        "gw211",
+        "gw212"
+      ],
+      "required_for_runtime": true,
+      "sample_index": 12,
+      "secondary_gateway_id": "gw212",
+      "service_role": "required_service",
+      "time_s": 120.0,
+      "timestamp_utc": "2026-06-21T17:28:11Z",
+      "ut_ids": [
+        "ut2021",
+        "ut2022",
+        "ut2023",
+        "ut2024"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "coordinate_model": "earth_surface_lat_lon_alt",
+        "latitude_deg": -25.5,
+        "longitude_deg": -59.0
+      },
+      "zone_center_candidates_above_threshold": 11,
+      "zone_id": "zone-south-america-wide",
+      "zone_name": "South America Wide"
+    }
+  ],
+  "required_zone_summary": [
+    {
+      "max_best_coverage_margin_deg": 50.062,
+      "max_best_elevation_deg": 55.062,
+      "max_common_zone_ut_candidates": 0,
+      "max_zone_center_candidates_above_threshold": 11,
+      "reason_counts": {
+        "zone anchor selection failed: UT attach mismatch": 13
+      },
+      "resolved_count": 0,
+      "sample_count": 13,
+      "samples_with_common_zone_ut_candidate": 0,
+      "samples_with_zone_center_coverage": 13,
+      "zone_id": "zone-east-asia-pacific-wide",
+      "zone_name": "East Asia Pacific Wide"
+    },
+    {
+      "max_best_coverage_margin_deg": 69.102,
+      "max_best_elevation_deg": 74.102,
+      "max_common_zone_ut_candidates": 0,
+      "max_zone_center_candidates_above_threshold": 11,
+      "reason_counts": {
+        "zone anchor selection failed: UT attach mismatch": 13
+      },
+      "resolved_count": 0,
+      "sample_count": 13,
+      "samples_with_common_zone_ut_candidate": 0,
+      "samples_with_zone_center_coverage": 13,
+      "zone_id": "zone-europe-west-wide",
+      "zone_name": "Europe West Wide"
+    },
+    {
+      "max_best_coverage_margin_deg": 78.589,
+      "max_best_elevation_deg": 83.589,
+      "max_common_zone_ut_candidates": 0,
+      "max_zone_center_candidates_above_threshold": 12,
+      "reason_counts": {
+        "zone anchor selection failed: UT attach mismatch": 13
+      },
+      "resolved_count": 0,
+      "sample_count": 13,
+      "samples_with_common_zone_ut_candidate": 0,
+      "samples_with_zone_center_coverage": 13,
+      "zone_id": "zone-middle-east-south-asia-wide",
+      "zone_name": "Middle East South Asia Wide"
+    },
+    {
+      "max_best_coverage_margin_deg": 1.949,
+      "max_best_elevation_deg": 6.949,
+      "max_common_zone_ut_candidates": 0,
+      "max_zone_center_candidates_above_threshold": 0,
+      "reason_counts": {
+        "coverage margin below threshold": 13
+      },
+      "resolved_count": 0,
+      "sample_count": 13,
+      "samples_with_common_zone_ut_candidate": 0,
+      "samples_with_zone_center_coverage": 0,
+      "zone_id": "zone-north-america-east-wide",
+      "zone_name": "North America East Wide"
+    },
+    {
+      "max_best_coverage_margin_deg": 40.346,
+      "max_best_elevation_deg": 45.346,
+      "max_common_zone_ut_candidates": 0,
+      "max_zone_center_candidates_above_threshold": 11,
+      "reason_counts": {
+        "zone anchor selection failed: UT attach mismatch": 13
+      },
+      "resolved_count": 0,
+      "sample_count": 13,
+      "samples_with_common_zone_ut_candidate": 0,
+      "samples_with_zone_center_coverage": 13,
+      "zone_id": "zone-north-america-west-wide",
+      "zone_name": "North America West Wide"
+    },
+    {
+      "max_best_coverage_margin_deg": 49.824,
+      "max_best_elevation_deg": 54.824,
+      "max_common_zone_ut_candidates": 0,
+      "max_zone_center_candidates_above_threshold": 11,
+      "reason_counts": {
+        "zone anchor selection failed: UT attach mismatch": 13
+      },
+      "resolved_count": 0,
+      "sample_count": 13,
+      "samples_with_common_zone_ut_candidate": 0,
+      "samples_with_zone_center_coverage": 13,
+      "zone_id": "zone-south-america-wide",
+      "zone_name": "South America Wide"
+    }
+  ],
+  "s3_720_120s_probe": {
+    "altitude_bucket_km": 575.0,
+    "expected_bpf_owned_scope_count": 0,
+    "expected_lifecycle_link_operation_count": 819,
+    "expected_linux_mpls_lfib_elision_count": 0,
+    "expected_qdisc_update_count": 42,
+    "gz_last_forward_fec_count": 0,
+    "gz_last_return_fec_count": 0,
+    "horizon_seconds": 120.0,
+    "inclination_bucket_deg": 70.0,
+    "longest_all_required_resolved_interval": null,
+    "parameter_update_batch_count": 4,
+    "path": "/tmp/skyseed_s3_720_coverage_probe_120s_10s",
+    "planes": 36,
+    "runtime_transaction_count": 9,
+    "sample_count": 13,
+    "satellites_per_plane": [
+      20
+    ],
+    "selected_satellite_count": 720,
+    "start_time_utc": "2026-06-21T17:37:33Z",
+    "step_seconds": 10.0,
+    "zone_summaries": [
+      {
+        "max_best_elevation_deg": 80.786,
+        "max_common_zone_ut_candidates": 0,
+        "max_zone_center_candidates_above_threshold": 12,
+        "reason_counts": {
+          "zone anchor selection failed: UT attach mismatch": 13
+        },
+        "resolved_count": 0,
+        "sample_count": 13,
+        "samples_with_common_zone_ut_candidate": 0,
+        "samples_with_zone_center_coverage": 13,
+        "zone_id": "zone-east-asia-pacific-wide"
+      },
+      {
+        "max_best_elevation_deg": 69.891,
+        "max_common_zone_ut_candidates": 0,
+        "max_zone_center_candidates_above_threshold": 21,
+        "reason_counts": {
+          "zone anchor selection failed: UT attach mismatch": 13
+        },
+        "resolved_count": 0,
+        "sample_count": 13,
+        "samples_with_common_zone_ut_candidate": 0,
+        "samples_with_zone_center_coverage": 13,
+        "zone_id": "zone-europe-west-wide"
+      },
+      {
+        "max_best_elevation_deg": 55.499,
+        "max_common_zone_ut_candidates": 0,
+        "max_zone_center_candidates_above_threshold": 13,
+        "reason_counts": {
+          "zone anchor selection failed: UT attach mismatch": 13
+        },
+        "resolved_count": 0,
+        "sample_count": 13,
+        "samples_with_common_zone_ut_candidate": 0,
+        "samples_with_zone_center_coverage": 13,
+        "zone_id": "zone-middle-east-south-asia-wide"
+      },
+      {
+        "max_best_elevation_deg": 72.948,
+        "max_common_zone_ut_candidates": 0,
+        "max_zone_center_candidates_above_threshold": 17,
+        "reason_counts": {
+          "zone anchor selection failed: UT attach mismatch": 13
+        },
+        "resolved_count": 0,
+        "sample_count": 13,
+        "samples_with_common_zone_ut_candidate": 0,
+        "samples_with_zone_center_coverage": 13,
+        "zone_id": "zone-north-america-east-wide"
+      },
+      {
+        "max_best_elevation_deg": 78.669,
+        "max_common_zone_ut_candidates": 0,
+        "max_zone_center_candidates_above_threshold": 19,
+        "reason_counts": {
+          "zone anchor selection failed: UT attach mismatch": 13
+        },
+        "resolved_count": 0,
+        "sample_count": 13,
+        "samples_with_common_zone_ut_candidate": 0,
+        "samples_with_zone_center_coverage": 13,
+        "zone_id": "zone-north-america-west-wide"
+      },
+      {
+        "max_best_elevation_deg": 43.295,
+        "max_common_zone_ut_candidates": 0,
+        "max_zone_center_candidates_above_threshold": 13,
+        "reason_counts": {
+          "zone anchor selection failed: UT attach mismatch": 13
+        },
+        "resolved_count": 0,
+        "sample_count": 13,
+        "samples_with_common_zone_ut_candidate": 0,
+        "samples_with_zone_center_coverage": 13,
+        "zone_id": "zone-south-america-wide"
+      }
+    ]
+  },
+  "s4_600s_probe": {
+    "altitude_bucket_km": 550.0,
+    "expected_bpf_owned_scope_count": 0,
+    "expected_lifecycle_link_operation_count": 486,
+    "expected_linux_mpls_lfib_elision_count": 0,
+    "expected_qdisc_update_count": 68,
+    "gz_last_forward_fec_count": 0,
+    "gz_last_return_fec_count": 0,
+    "horizon_seconds": 600.0,
+    "inclination_bucket_deg": 97.5,
+    "longest_all_required_resolved_interval": null,
+    "parameter_update_batch_count": 6,
+    "path": "/tmp/skyseed_s4_coverage_probe_600s_10s",
+    "planes": 6,
+    "runtime_transaction_count": 55,
+    "sample_count": 61,
+    "satellites_per_plane": [
+      58
+    ],
+    "selected_satellite_count": 348,
+    "start_time_utc": "2026-06-21T17:36:48Z",
+    "step_seconds": 10.0,
+    "zone_summaries": [
+      {
+        "max_best_elevation_deg": 86.106,
+        "max_common_zone_ut_candidates": 0,
+        "max_zone_center_candidates_above_threshold": 12,
+        "reason_counts": {
+          "zone anchor selection failed: UT attach mismatch": 61
+        },
+        "resolved_count": 0,
+        "sample_count": 61,
+        "samples_with_common_zone_ut_candidate": 0,
+        "samples_with_zone_center_coverage": 61,
+        "zone_id": "zone-east-asia-pacific-wide"
+      },
+      {
+        "max_best_elevation_deg": 54.649,
+        "max_common_zone_ut_candidates": 0,
+        "max_zone_center_candidates_above_threshold": 12,
+        "reason_counts": {
+          "zone anchor selection failed: UT attach mismatch": 61
+        },
+        "resolved_count": 0,
+        "sample_count": 61,
+        "samples_with_common_zone_ut_candidate": 0,
+        "samples_with_zone_center_coverage": 61,
+        "zone_id": "zone-europe-west-wide"
+      },
+      {
+        "max_best_elevation_deg": 69.043,
+        "max_common_zone_ut_candidates": 0,
+        "max_zone_center_candidates_above_threshold": 12,
+        "reason_counts": {
+          "zone anchor selection failed: UT attach mismatch": 61
+        },
+        "resolved_count": 0,
+        "sample_count": 61,
+        "samples_with_common_zone_ut_candidate": 0,
+        "samples_with_zone_center_coverage": 61,
+        "zone_id": "zone-middle-east-south-asia-wide"
+      },
+      {
+        "max_best_elevation_deg": 10.045,
+        "max_common_zone_ut_candidates": 0,
+        "max_zone_center_candidates_above_threshold": 3,
+        "reason_counts": {
+          "zone anchor selection failed: UT attach mismatch": 61
+        },
+        "resolved_count": 0,
+        "sample_count": 61,
+        "samples_with_common_zone_ut_candidate": 0,
+        "samples_with_zone_center_coverage": 61,
+        "zone_id": "zone-north-america-east-wide"
+      },
+      {
+        "max_best_elevation_deg": 57.076,
+        "max_common_zone_ut_candidates": 0,
+        "max_zone_center_candidates_above_threshold": 12,
+        "reason_counts": {
+          "zone anchor selection failed: UT attach mismatch": 61
+        },
+        "resolved_count": 0,
+        "sample_count": 61,
+        "samples_with_common_zone_ut_candidate": 0,
+        "samples_with_zone_center_coverage": 61,
+        "zone_id": "zone-north-america-west-wide"
+      },
+      {
+        "max_best_elevation_deg": 87.12,
+        "max_common_zone_ut_candidates": 0,
+        "max_zone_center_candidates_above_threshold": 12,
+        "reason_counts": {
+          "zone anchor selection failed: UT attach mismatch": 61
+        },
+        "resolved_count": 0,
+        "sample_count": 61,
+        "samples_with_common_zone_ut_candidate": 0,
+        "samples_with_zone_center_coverage": 61,
+        "zone_id": "zone-south-america-wide"
+      }
+    ]
+  },
+  "s4_current_preview": {
+    "altitude_bucket_km": 550.0,
+    "expected_bpf_owned_scope_count": 0,
+    "expected_lifecycle_link_operation_count": 386,
+    "expected_linux_mpls_lfib_elision_count": 0,
+    "expected_qdisc_update_count": 37,
+    "gz_last_forward_fec_count": 0,
+    "gz_last_return_fec_count": 0,
+    "horizon_seconds": 120.0,
+    "inclination_bucket_deg": 97.5,
+    "longest_all_required_resolved_interval": null,
+    "parameter_update_batch_count": 3,
+    "path": "/tmp/skyseed_pre_s4_preview_final_full",
+    "planes": 6,
+    "runtime_transaction_count": 10,
+    "sample_count": 13,
+    "satellites_per_plane": [
+      58
+    ],
+    "selected_satellite_count": 348,
+    "start_time_utc": "2026-06-21T17:26:11Z",
+    "step_seconds": 10.0,
+    "zone_summaries": [
+      {
+        "max_best_elevation_deg": 55.062,
+        "max_common_zone_ut_candidates": 0,
+        "max_zone_center_candidates_above_threshold": 11,
+        "reason_counts": {
+          "zone anchor selection failed: UT attach mismatch": 13
+        },
+        "resolved_count": 0,
+        "sample_count": 13,
+        "samples_with_common_zone_ut_candidate": 0,
+        "samples_with_zone_center_coverage": 13,
+        "zone_id": "zone-east-asia-pacific-wide"
+      },
+      {
+        "max_best_elevation_deg": 74.102,
+        "max_common_zone_ut_candidates": 0,
+        "max_zone_center_candidates_above_threshold": 11,
+        "reason_counts": {
+          "zone anchor selection failed: UT attach mismatch": 13
+        },
+        "resolved_count": 0,
+        "sample_count": 13,
+        "samples_with_common_zone_ut_candidate": 0,
+        "samples_with_zone_center_coverage": 13,
+        "zone_id": "zone-europe-west-wide"
+      },
+      {
+        "max_best_elevation_deg": 83.589,
+        "max_common_zone_ut_candidates": 0,
+        "max_zone_center_candidates_above_threshold": 12,
+        "reason_counts": {
+          "zone anchor selection failed: UT attach mismatch": 13
+        },
+        "resolved_count": 0,
+        "sample_count": 13,
+        "samples_with_common_zone_ut_candidate": 0,
+        "samples_with_zone_center_coverage": 13,
+        "zone_id": "zone-middle-east-south-asia-wide"
+      },
+      {
+        "max_best_elevation_deg": 6.949,
+        "max_common_zone_ut_candidates": 0,
+        "max_zone_center_candidates_above_threshold": 0,
+        "reason_counts": {
+          "coverage margin below threshold": 13
+        },
+        "resolved_count": 0,
+        "sample_count": 13,
+        "samples_with_common_zone_ut_candidate": 0,
+        "samples_with_zone_center_coverage": 0,
+        "zone_id": "zone-north-america-east-wide"
+      },
+      {
+        "max_best_elevation_deg": 45.346,
+        "max_common_zone_ut_candidates": 0,
+        "max_zone_center_candidates_above_threshold": 11,
+        "reason_counts": {
+          "zone anchor selection failed: UT attach mismatch": 13
+        },
+        "resolved_count": 0,
+        "sample_count": 13,
+        "samples_with_common_zone_ut_candidate": 0,
+        "samples_with_zone_center_coverage": 13,
+        "zone_id": "zone-north-america-west-wide"
+      },
+      {
+        "max_best_elevation_deg": 54.824,
+        "max_common_zone_ut_candidates": 0,
+        "max_zone_center_candidates_above_threshold": 11,
+        "reason_counts": {
+          "zone anchor selection failed: UT attach mismatch": 13
+        },
+        "resolved_count": 0,
+        "sample_count": 13,
+        "samples_with_common_zone_ut_candidate": 0,
+        "samples_with_zone_center_coverage": 13,
+        "zone_id": "zone-south-america-wide"
+      }
+    ]
+  },
+  "schema": "skyseed_s4_coverage_blocker_diagnosis_summary_v1",
+  "workload_spatial_compatibility": [
+    {
+      "catalog_gateway_distance_km": {
+        "max": 2864.6
+      },
+      "catalog_ut_distance_km": {
+        "avg": 1985.2,
+        "max": 2863.2,
+        "min": 610.1
+      },
+      "default_gateway_id": "gw209",
+      "effective_gateway_distance_km": {
+        "max": 6289.2
+      },
+      "effective_ut_distance_km": {
+        "avg": 10313.9,
+        "max": 12371.2,
+        "min": 7132.3
+      },
+      "secondary_gateway_id": "gw210",
+      "ut_ids": [
+        "ut2017",
+        "ut2018",
+        "ut2019",
+        "ut2020"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "latitude_deg": 20.0,
+        "longitude_deg": 122.0
+      },
+      "zone_id": "zone-east-asia-pacific-wide",
+      "zone_name": "East Asia Pacific Wide"
+    },
+    {
+      "catalog_gateway_distance_km": {
+        "max": 928.7
+      },
+      "catalog_ut_distance_km": {
+        "avg": 850.6,
+        "max": 1471.3,
+        "min": 449.3
+      },
+      "default_gateway_id": "gw205",
+      "effective_gateway_distance_km": {
+        "max": 12828.9
+      },
+      "effective_ut_distance_km": {
+        "avg": 9399.4,
+        "max": 12788.8,
+        "min": 5116.7
+      },
+      "secondary_gateway_id": "gw206",
+      "ut_ids": [
+        "ut2009",
+        "ut2010",
+        "ut2011",
+        "ut2012"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "latitude_deg": 47.7,
+        "longitude_deg": 2.0
+      },
+      "zone_id": "zone-europe-west-wide",
+      "zone_name": "Europe West Wide"
+    },
+    {
+      "catalog_gateway_distance_km": {
+        "max": 974.6
+      },
+      "catalog_ut_distance_km": {
+        "avg": 925.4,
+        "max": 1426.7,
+        "min": 343.0
+      },
+      "default_gateway_id": "gw207",
+      "effective_gateway_distance_km": {
+        "max": 17901.8
+      },
+      "effective_ut_distance_km": {
+        "avg": 9177.3,
+        "max": 12173.6,
+        "min": 6809.0
+      },
+      "secondary_gateway_id": "gw208",
+      "ut_ids": [
+        "ut2013",
+        "ut2014",
+        "ut2015",
+        "ut2016"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "latitude_deg": 22.8,
+        "longitude_deg": 64.5
+      },
+      "zone_id": "zone-middle-east-south-asia-wide",
+      "zone_name": "Middle East South Asia Wide"
+    },
+    {
+      "catalog_gateway_distance_km": {
+        "max": 780.5
+      },
+      "catalog_ut_distance_km": {
+        "avg": 791.6,
+        "max": 1400.2,
+        "min": 461.6
+      },
+      "default_gateway_id": "gw203",
+      "effective_gateway_distance_km": {
+        "max": 7923.8
+      },
+      "effective_ut_distance_km": {
+        "avg": 8880.5,
+        "max": 13189.9,
+        "min": 3261.1
+      },
+      "secondary_gateway_id": "gw204",
+      "ut_ids": [
+        "ut2005",
+        "ut2006",
+        "ut2007",
+        "ut2008"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "latitude_deg": 38.2,
+        "longitude_deg": -82.5
+      },
+      "zone_id": "zone-north-america-east-wide",
+      "zone_name": "North America East Wide"
+    },
+    {
+      "catalog_gateway_distance_km": {
+        "max": 845.9
+      },
+      "catalog_ut_distance_km": {
+        "avg": 691.2,
+        "max": 930.6,
+        "min": 191.3
+      },
+      "default_gateway_id": "gw201",
+      "effective_gateway_distance_km": {
+        "max": 14644.8
+      },
+      "effective_ut_distance_km": {
+        "avg": 9279.5,
+        "max": 14644.8,
+        "min": 5329.8
+      },
+      "secondary_gateway_id": "gw202",
+      "ut_ids": [
+        "ut2001",
+        "ut2002",
+        "ut2003",
+        "ut2004"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "latitude_deg": 44.5,
+        "longitude_deg": -113.0
+      },
+      "zone_id": "zone-north-america-west-wide",
+      "zone_name": "North America West Wide"
+    },
+    {
+      "catalog_gateway_distance_km": {
+        "max": 1432.6
+      },
+      "catalog_ut_distance_km": {
+        "avg": 2079.4,
+        "max": 3205.4,
+        "min": 1268.3
+      },
+      "default_gateway_id": "gw211",
+      "effective_gateway_distance_km": {
+        "max": 8939.3
+      },
+      "effective_ut_distance_km": {
+        "avg": 11561.9,
+        "max": 13965.9,
+        "min": 8490.9
+      },
+      "secondary_gateway_id": "gw212",
+      "ut_ids": [
+        "ut2021",
+        "ut2022",
+        "ut2023",
+        "ut2024"
+      ],
+      "zone_center": {
+        "altitude_km": 0.0,
+        "latitude_deg": -25.5,
+        "longitude_deg": -59.0
+      },
+      "zone_id": "zone-south-america-wide",
+      "zone_name": "South America Wide"
+    }
+  ]
+}

@@ -349,7 +349,7 @@ class RollbackCleanupOptimizationTests(unittest.TestCase):
         ]
         batches = _group_node_local_batches(specs)
 
-        def fake_run(batch: Any) -> NodeLocalBatchResult:
+        def fake_run(batch: Any, **_: Any) -> NodeLocalBatchResult:
             return NodeLocalBatchResult(
                 node_id=batch.node_id,
                 phase=batch.phase,
@@ -2023,6 +2023,7 @@ class RollbackCleanupOptimizationTests(unittest.TestCase):
         )
         self.assertFalse(metrics["full_topology_candidate_inventory_fallback"])
         self.assertIn("OWNED_RESOURCE_INDEX_MISSING_BLOCKER", metrics["outcome_labels"])
+        self.assertNotIn("NORMAL_PATH_OWNED_SCOPE_ONLY", metrics["outcome_labels"])
         self.assertIn("GLOBAL_SCAN_DIAGNOSTIC_ONLY", metrics["outcome_labels"])
 
     def test_normal_runtime_apply_requires_explicit_owned_scope(self) -> None:

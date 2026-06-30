@@ -10,6 +10,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent / "apps"))
+
 from linux_mpls_runtime import (
     ActiveRuntimeSession,
     DEFAULT_RUNTIME_EPOCH_VALIDATION_SCOPE,
@@ -20,6 +23,7 @@ from linux_mpls_runtime import (
     _bpf_clsact_lifecycle_metrics,
     _bpf_owned_interface_role_completeness,
     _bpf_owned_merge_resident_attach_coverage,
+    _prepare_bpf_owned_preactivation_preload,
     _bpf_owned_reused_attach_clsact_guard,
     _bpf_owned_runtime_readiness_failure_message,
     _copy_bpf_prepare_timing_to_phase_timing,
@@ -34,12 +38,21 @@ from run_starlink_shell_experiment import (
     _bpf_attach_reuse_epoch_summary,
     _bpf_hotpath_reuse_audit,
     _cleanup_bpf_mpls_pins_after_runtime,
+    _annotate_epoch_queue_runtime_update_counts,
     _compact_bpf_real_backend_prepare,
     _compact_node_local_execution,
     _epoch_execution_detail_jsonl_record,
     _epoch_execution_runtime_report_record,
+    _epoch_requires_parameter_update_accounting,
     _final_cleanup_timing_summary,
     _interface_inventory_activation_contract,
+    _horizon_lifecycle_queue_contract,
+    _host_plan_source_state_id,
+    _host_plan_target_dynamic_state,
+    _runtime_host_state_ids_equivalent,
+    _assert_host_plan_source_state_aligned,
+    _lookahead_bpf_preload_entries_for_runtime_epoch,
+    _lookahead_entry_requires_resident_bpf_attach,
     _live_timing_summary,
     _lifecycle_aware_horizon_event_contract,
     _map_only_horizon_boundary_contract,
@@ -47,19 +60,29 @@ from run_starlink_shell_experiment import (
     _operational_clean_node_local_execution_summary,
     _operational_clean_heartbeat_summary,
     _operational_clean_bpf_owned_initial_readiness_attempt,
+    _operational_clean_runtime_attach_contract_violation,
     _operational_clean_bounded_cleanup_session,
     _operational_clean_pre_start_audit,
     _parameter_batch_reclassification,
     _parameter_epoch_recovery_contract,
     _parameter_update_batch_accounting,
     _parameter_update_category,
+    _precompose_pre_runtime_bpf_owned_prepare_gate,
+    _pre_runtime_bpf_owned_preflight_state,
+    _prepared_bundle_runtime_manifest_summary,
+    _prepared_owned_resource_index_from_scope,
+    _pre_runtime_bpf_owned_session_preflight,
+    _prepared_update_bundle_with_continuous_runtime_execution,
+    _prewarm_selected_slice_ids_for_horizon,
     _preflight_profile_for_args,
     _run_invocation_metadata,
+    _run_window_resource_coverage_plan,
     _runtime_failure_context_summary,
     _should_prepare_host_mpls_for_args,
     _should_skip_host_rollback_for_args,
     _should_run_parameter_epoch_validation_for_args,
     _should_run_runtime_epoch_validation_for_args,
+    _selected_access_prewarm_resource_scope_by_slot,
     _static_inventory_materialization_contract,
     _static_inventory_materialization_resource_scope_by_slot,
     _merge_resource_scope_by_slot,
@@ -73,6 +96,222 @@ from skyseed_preflight import (  # noqa: E402
 
 
 class RuntimeValidationDefaultTests(unittest.TestCase):
+    def test_pre_runtime_bpf_owned_preflight_matches_runtime_schema(self) -> None:
+        context = SimpleNamespace(
+            nodes_requiring_platform_labels=("stl-a", "gw-a"),
+            mpls_input_interfaces=(("stl-a", "if0"), ("gw-a", "if1")),
+            ut_id="ut-a",
+        )
+
+        preflight = _pre_runtime_bpf_owned_preflight_state(context)
+
+        self.assertEqual(preflight["preflight_backend"], "bpf_owned")
+        self.assertEqual(
+            preflight["preflight_source"],
+            "pre_runtime_bpf_owned_prepare",
+        )
+        self.assertIn("ut_default_route_present", preflight)
+        self.assertIn("sat_policy_default_present", preflight)
+        self.assertIn("gw_snat_rule_present", preflight)
+        self.assertEqual(
+            sorted(preflight["node_platform_labels"]),
+            ["gw-a", "stl-a"],
+        )
+        self.assertEqual(
+            sorted(preflight["mpls_input_state"]),
+            ["gw-a:if1", "stl-a:if0"],
+        )
+
+    def test_pre_runtime_bpf_owned_session_preflight_wraps_context_schema(self) -> None:
+        context = SimpleNamespace(
+            nodes_requiring_platform_labels=("stl-a",),
+            mpls_input_interfaces=(("stl-a", "if0"),),
+            ut_id="ut-a",
+        )
+        context_preflight = _pre_runtime_bpf_owned_preflight_state(context)
+
+        session_preflight = _pre_runtime_bpf_owned_session_preflight(
+            contexts=(context,),
+            context_preflights=(context_preflight,),
+            pre_runtime_bpf_owned_prepare_report={"ready": True},
+        )
+
+        self.assertEqual(
+            session_preflight["preflight_source"],
+            "pre_runtime_bpf_owned_prepare",
+        )
+        self.assertNotIn("ut_default_route_present", session_preflight)
+        self.assertEqual(session_preflight["context_count"], 1)
+        self.assertEqual(session_preflight["contexts"][0]["ut_id"], "ut-a")
+        self.assertIn(
+            "ut_default_route_present",
+            session_preflight["contexts"][0],
+        )
+        self.assertIn("sat_policy_default_present", session_preflight["contexts"][0])
+        self.assertIn("gw_snat_rule_present", session_preflight["contexts"][0])
+
+    def test_parameter_lookahead_preload_requires_resident_bpf_attach(self) -> None:
+        self.assertTrue(
+            _lookahead_entry_requires_resident_bpf_attach(
+                {
+                    "classification": "parameter_epoch",
+                    "horizon_execution_role": "lookahead_preload_only",
+                    "preload_required": True,
+                    "forwarding_relevant": True,
+                }
+            )
+        )
+        self.assertTrue(
+            _lookahead_entry_requires_resident_bpf_attach(
+                {
+                    "classification": "runtime_epoch",
+                    "horizon_execution_role": "lookahead_preload_only",
+                    "preload_required": False,
+                    "forwarding_relevant": True,
+                }
+            )
+        )
+        self.assertFalse(
+            _lookahead_entry_requires_resident_bpf_attach(
+                {
+                    "classification": "parameter_epoch",
+                    "horizon_execution_role": "lookahead_preload_only",
+                    "preload_required": False,
+                    "forwarding_relevant": False,
+                }
+            )
+        )
+        self.assertFalse(
+            _lookahead_entry_requires_resident_bpf_attach(
+                {
+                    "classification": "parameter_epoch",
+                    "horizon_execution_role": "not_selected_for_current_execution",
+                    "preload_required": True,
+                    "forwarding_relevant": True,
+                }
+            )
+        )
+
+    def test_host_plan_target_state_advances_only_effective_runtime_parameters(
+        self,
+    ) -> None:
+        source_state = {
+            "gw201-gateway-slot0": {
+                "slot_name": "gw201-gateway-slot0",
+                "slot_type": "gw_access",
+                "occupied": True,
+                "binding": {"gateway_id": "gw201", "satellite_id": "stl-1"},
+                "endpoints": [{"node_id": "gw201", "interface_name": "ix0"}],
+                "runtime_parameters": {
+                    "bandwidth_mbps": 1000.0,
+                    "delay_ms": 1.0,
+                    "distance_km": 300.0,
+                    "slot_type": "gw_access",
+                },
+            }
+        }
+        host_plan = SimpleNamespace(
+            operations=[
+                {
+                    "operation": "update_slot_parameters",
+                    "slot_name": "gw201-gateway-slot0",
+                    "slot_type": "gw_access",
+                    "target_occupied": True,
+                    "target_binding": {
+                        "gateway_id": "gw201",
+                        "satellite_id": "stl-1",
+                    },
+                    "target_endpoints": [
+                        {"node_id": "gw201", "interface_name": "ix0"}
+                    ],
+                    "target_runtime_parameters": {
+                        "bandwidth_mbps": 900.0,
+                        "delay_ms": 1.0,
+                        "distance_km": 300.0,
+                        "slot_type": "gw_access",
+                    },
+                    "target_runtime_parameter_snapshot": {
+                        "bandwidth_mbps": 900.0,
+                        "delay_ms": 2.0,
+                        "distance_km": 600.0,
+                        "slot_type": "gw_access",
+                    },
+                }
+            ]
+        )
+
+        next_source_state = _host_plan_target_dynamic_state(source_state, host_plan)
+
+        self.assertEqual(
+            next_source_state["gw201-gateway-slot0"]["runtime_parameters"],
+            {
+                "bandwidth_mbps": 900.0,
+                "delay_ms": 1.0,
+                "distance_km": 300.0,
+                "slot_type": "gw_access",
+            },
+        )
+
+    def test_frozen_prepare_and_live_host_state_ids_are_aliases(self) -> None:
+        self.assertTrue(
+            _runtime_host_state_ids_equivalent(
+                "frozen_prepare_host_state:topsnap-a:runtimeepoch-1",
+                "live_state:topsnap-a:runtimeepoch-1",
+            )
+        )
+        self.assertFalse(
+            _runtime_host_state_ids_equivalent(
+                "frozen_prepare_host_state:topsnap-a:runtimeepoch-1",
+                "live_state:topsnap-b:runtimeepoch-1",
+            )
+        )
+        self.assertFalse(
+            _runtime_host_state_ids_equivalent(
+                "link_state:link_state.json",
+                "live_state:topsnap-a:runtimeepoch-1",
+            )
+        )
+
+    def test_frozen_host_plan_source_state_alignment_accepts_live_alias(self) -> None:
+        host_plan = SimpleNamespace(
+            mutation_id="netmut-next",
+            source_snapshot={
+                "source_state_id": (
+                    "frozen_prepare_host_state:topsnap-a:runtimeepoch-1"
+                )
+            },
+        )
+
+        self.assertEqual(
+            _host_plan_source_state_id(host_plan),
+            "frozen_prepare_host_state:topsnap-a:runtimeepoch-1",
+        )
+        _assert_host_plan_source_state_aligned(
+            segment_key="initial:starlink-shell-slice-0002",
+            host_plan=host_plan,
+            current_state_id="live_state:topsnap-a:runtimeepoch-1",
+        )
+
+    def test_frozen_host_plan_source_state_alignment_fails_closed(self) -> None:
+        host_plan = SimpleNamespace(
+            mutation_id="netmut-stale",
+            source_snapshot={
+                "source_state_id": (
+                    "frozen_prepare_host_state:topsnap-stale:runtimeepoch-1"
+                )
+            },
+        )
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "frozen_bundle_host_plan_source_state_mismatch",
+        ):
+            _assert_host_plan_source_state_aligned(
+                segment_key="initial:starlink-shell-slice-0002",
+                host_plan=host_plan,
+                current_state_id="live_state:topsnap-current:runtimeepoch-1",
+            )
+
     def test_operational_clean_bpf_owned_initial_readiness_skips_legacy_route_gate(
         self,
     ) -> None:
@@ -854,6 +1093,495 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
                 "cleanup_finalizer_phase"
             ],
             [],
+        )
+
+    def test_lifecycle_aware_horizon_reclassifies_parameter_runtime_triggers(
+        self,
+    ) -> None:
+        contract = _lifecycle_aware_horizon_event_contract(
+            selected_epoch_queue=[
+                {
+                    "slice_id": "starlink-shell-slice-param",
+                    "classification": "parameter_epoch",
+                    "epoch_id": "parameterepoch-1",
+                    "trigger_reasons": ["bandwidth_threshold_exceeded"],
+                },
+                {
+                    "slice_id": "starlink-shell-slice-bpf",
+                    "classification": "parameter_epoch",
+                    "epoch_id": "parameterepoch-bpf",
+                    "trigger_reasons": [
+                        "bpf_generation_content_change",
+                        "g_to_z_path_change",
+                    ],
+                    "runtime_update_action_count": 7,
+                },
+            ],
+            interface_horizon_snapshots=[],
+        )
+
+        pure_parameter, bpf_triggered = contract["event_reports"]
+        self.assertEqual(pure_parameter["primary_class"], "parameter_update")
+        self.assertFalse(pure_parameter["parameter_runtime_update_triggered"])
+        self.assertFalse(pure_parameter["changed_topology_triggered"])
+        self.assertNotIn("topology_update", pure_parameter["secondary_classes"])
+        self.assertEqual(
+            pure_parameter["transaction_boundaries"]["sub_stages"],
+            ["parameter_apply"],
+        )
+        self.assertNotIn("map_load", pure_parameter["transaction_boundaries"]["sub_stages"])
+        self.assertNotIn("flip", pure_parameter["transaction_boundaries"]["sub_stages"])
+        self.assertFalse(pure_parameter["map_only_pass_eligible"])
+        self.assertEqual(bpf_triggered["primary_class"], "map_only_update")
+        self.assertIn("parameter_update", bpf_triggered["secondary_classes"])
+        self.assertIn("topology_update", bpf_triggered["secondary_classes"])
+        self.assertTrue(bpf_triggered["parameter_runtime_update_triggered"])
+        self.assertTrue(bpf_triggered["changed_topology_triggered"])
+        self.assertTrue(bpf_triggered["reclassified_from_parameter_update"])
+        self.assertFalse(bpf_triggered["map_only_pass_eligible"])
+        self.assertEqual(bpf_triggered["runtime_update_action_count"], 7)
+        self.assertEqual(
+            bpf_triggered["transaction_boundaries"]["sub_stages"],
+            ["map_load", "flip", "parameter_apply"],
+        )
+        self.assertEqual(
+            contract["classification_counts"],
+            {"map_only_update": 1, "parameter_update": 1},
+        )
+        self.assertEqual(
+            contract["secondary_class_counts"],
+            {"parameter_update": 1, "topology_update": 1},
+        )
+
+    def test_pure_parameter_update_records_no_bpf_delta_attach_or_readiness(self) -> None:
+        planned_operations = [
+            {
+                "operation": "update_slot_parameters",
+                "slot_name": "ut1-access-slot0",
+                "slot_type": "ut_access",
+                "changed_runtime_parameter_fields": ["bandwidth_mbps"],
+                "target_runtime_parameters": {"bandwidth_mbps": 50},
+            }
+        ]
+        runtime_update_plan = SimpleNamespace(to_dict=lambda: {"node_subplans": {}})
+
+        reclassification = _parameter_batch_reclassification(
+            classification="parameter_epoch",
+            planned_operations=planned_operations,
+            runtime_update_plan=runtime_update_plan,
+            trigger_reasons=["bandwidth_threshold_exceeded"],
+        )
+        contract = _lifecycle_aware_horizon_event_contract(
+            selected_epoch_queue=[
+                {
+                    "slice_id": "starlink-shell-slice-param",
+                    "classification": "parameter_epoch",
+                    "epoch_id": "parameterepoch-pure",
+                    "trigger_reasons": ["bandwidth_threshold_exceeded"],
+                    "runtime_update_action_count": 0,
+                }
+            ],
+            interface_horizon_snapshots=[],
+        )
+        event = contract["event_reports"][0]
+
+        self.assertFalse(reclassification["parameter_batch_reclassified_to_runtime"])
+        self.assertEqual(
+            reclassification["reclassification_reason"],
+            "pure_parameter_update_batch",
+        )
+        self.assertEqual(reclassification["structural_operation_counts"], {})
+        self.assertEqual(reclassification["runtime_update_action_count"], 0)
+        self.assertEqual(reclassification["runtime_update_trigger_reasons"], [])
+        self.assertFalse(reclassification["changed_gz_fec_triggered"])
+        self.assertFalse(reclassification["changed_zone_anchor_path_triggered"])
+        self.assertFalse(reclassification["changed_topology_triggered"])
+        self.assertEqual(event["primary_class"], "parameter_update")
+        self.assertEqual(event["secondary_classes"], [])
+        self.assertEqual(
+            event["transaction_boundaries"]["sub_stages"],
+            ["parameter_apply"],
+        )
+        self.assertFalse(event["parameter_runtime_update_triggered"])
+        self.assertFalse(event["changed_topology_triggered"])
+        self.assertFalse(event["changed_gz_fec_triggered"])
+        self.assertFalse(event["changed_zone_anchor_path_triggered"])
+        self.assertNotIn("map_load", event["transaction_boundaries"]["sub_stages"])
+        self.assertNotIn("flip", event["transaction_boundaries"]["sub_stages"])
+        self.assertFalse(event["map_only_pass_eligible"])
+
+        attach_reuse = _bpf_attach_reuse_epoch_summary(None)
+        self.assertFalse(attach_reuse["available"])
+        self.assertEqual(attach_reuse["delta_attach_count"], 0)
+        self.assertEqual(attach_reuse["full_attach_count"], 0)
+        self.assertEqual(attach_reuse["readiness_reason"], "")
+
+        apply_results = [
+            {
+                **planned_operations[0],
+                "qdisc_required": True,
+                "qdisc_apply_wall_seconds": 0.002,
+                "metadata_update_wall_seconds": 0.0,
+            }
+        ]
+        accounting = _parameter_update_batch_accounting(
+            planned_operations=planned_operations,
+            apply_results=apply_results,
+            host_apply_wall_seconds=0.003,
+        )
+        record = {
+            "epoch_type": "parameter_epoch",
+            "outcome": {"success": True},
+            "parameter_batch_reclassification": reclassification,
+            "parameter_batch_accounting": accounting,
+            "host_mutation_execution": {"apply_results": apply_results},
+            "node_local_execution": None,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "epoch_execution_details.jsonl").write_text(
+                json.dumps(record) + "\n",
+                encoding="utf-8",
+            )
+            heartbeat = _operational_clean_heartbeat_summary(
+                run_dir=run_dir,
+                progress_data={"run_wall_start_monotonic": 1.0},
+                now_monotonic=2.0,
+            )
+
+        self.assertEqual(heartbeat["parameter_update_batch_success_count"], 1)
+        self.assertEqual(heartbeat["attach_summary"]["delta_attach_count"], 0)
+        self.assertEqual(heartbeat["attach_summary"]["full_attach_count"], 0)
+        self.assertEqual(heartbeat["attach_summary"]["reused_attach_count"], 0)
+        self.assertNotIn("tc_bpf_mpls_delta_attach_failed", json.dumps(record))
+
+    def test_epoch_queue_runtime_update_counts_drive_parameter_reclassification(
+        self,
+    ) -> None:
+        selected_queue = _annotate_epoch_queue_runtime_update_counts(
+            selected_epoch_queue=[
+                {
+                    "slice_id": "starlink-shell-slice-param",
+                    "classification": "parameter_epoch",
+                    "epoch_id": "parameterepoch-bpf",
+                    "trigger_reasons": [],
+                }
+            ],
+            planner_preview={
+                "snapshots": [
+                    {
+                        "slice_id": "starlink-shell-slice-param",
+                        "runtime_update_plan": {
+                            "node_subplans": {
+                                "stl-1": {
+                                    "actions": [
+                                        {"kind": "classifier_update"},
+                                        {"kind": "core_lfib_update"},
+                                    ]
+                                }
+                            }
+                        },
+                    }
+                ]
+            },
+        )
+
+        self.assertEqual(selected_queue[0]["runtime_update_action_count"], 2)
+        contract = _lifecycle_aware_horizon_event_contract(
+            selected_epoch_queue=selected_queue,
+            interface_horizon_snapshots=[],
+        )
+        event = contract["event_reports"][0]
+        self.assertEqual(event["primary_class"], "map_only_update")
+        self.assertIn("parameter_update", event["secondary_classes"])
+        self.assertTrue(event["parameter_runtime_update_triggered"])
+        self.assertEqual(event["runtime_update_action_count"], 2)
+
+    def test_horizon_lifecycle_queue_splits_boundary_forwarding_parameter_preload_only(
+        self,
+    ) -> None:
+        selected_queue = [
+            {
+                "slice_id": f"starlink-shell-slice-000{index}",
+                "classification": "runtime_epoch",
+                "epoch_id": f"runtimeepoch-{index}",
+            }
+            for index in range(1, 5)
+        ]
+        selected_queue.append(
+            {
+                "slice_id": "starlink-shell-slice-0011",
+                "classification": "parameter_epoch",
+                "epoch_id": "parameterepoch-boundary",
+                "event_timeline_type": "parameter_update_batch",
+                "trigger_reasons": [
+                    "routing_cost_changed",
+                    "bandwidth_threshold_exceeded",
+                ],
+                "runtime_update_action_count": 220,
+                "runtime_update_node_subplan_count": 50,
+            }
+        )
+
+        contract = _horizon_lifecycle_queue_contract(
+            selected_epoch_queue=selected_queue,
+            max_runtime_epochs=4,
+            max_parameter_epochs=1,
+        )
+
+        self.assertEqual(contract["selected_event_count"], 5)
+        self.assertEqual(contract["current_execution_event_count"], 4)
+        self.assertEqual(contract["lookahead_preload_event_count"], 1)
+        self.assertEqual(contract["preload_required_event_count"], 1)
+        self.assertIn(
+            "parameterepoch-boundary",
+            contract["lookahead_preload_queue_epoch_ids"],
+        )
+        boundary = contract["lookahead_preload_queue"][0]
+        self.assertTrue(boundary["forwarding_relevant"])
+        self.assertTrue(boundary["preload_required"])
+        self.assertTrue(boundary["preload_only"])
+        self.assertFalse(boundary["current_activation_allowed"])
+        self.assertFalse(boundary["runtime_apply_allowed"])
+        self.assertEqual(
+            boundary["activation_contract"],
+            "preload_only_write_inactive_generation_no_flip",
+        )
+        self.assertEqual(
+            boundary["allowed_activation_outcomes_at_future_boundary"],
+            ["flip_only", "necessary_delta", "no_op_reuse"],
+        )
+        self.assertIn(
+            "HORIZON_PRELOAD_BOUNDARY_LOW_COST_PROOF_READY",
+            contract["outcome_labels"],
+        )
+        self.assertTrue(contract["lookahead_preload_scheduler_connected"])
+        self.assertTrue(contract["s4_precondition_low_cost_proof_complete"])
+        self.assertEqual(contract["s4_precondition_missing"], [])
+
+    def test_lookahead_preload_queue_selects_boundary_event_for_bpf_scheduler(
+        self,
+    ) -> None:
+        current_entry = {
+            "classification": "runtime_epoch",
+            "epoch_id": "runtimeepoch-4",
+            "activation_relative_time_seconds": 40.0,
+            "segment_epoch_key": "seg:slice-0004",
+        }
+        boundary_entry = {
+            "classification": "parameter_epoch",
+            "epoch_id": "parameterepoch-boundary",
+            "activation_relative_time_seconds": 50.0,
+            "segment_epoch_key": "seg:slice-0011",
+            "horizon_execution_role": "lookahead_preload_only",
+            "preload_required": True,
+            "forwarding_relevant": True,
+            "parameter_runtime_update_triggered": True,
+        }
+        queue = [
+            boundary_entry,
+            {
+                **boundary_entry,
+                "epoch_id": "parameterepoch-parameter-only",
+                "segment_epoch_key": "seg:slice-0012",
+                "preload_required": False,
+                "forwarding_relevant": False,
+                "parameter_runtime_update_triggered": False,
+            },
+            {
+                **boundary_entry,
+                "epoch_id": "parameterepoch-current-past",
+                "segment_epoch_key": "seg:slice-0013",
+                "activation_relative_time_seconds": 35.0,
+            },
+        ]
+        context_by_key = {
+            "seg:slice-0011": {"runtime_update_plan": "future-plan"},
+            "seg:slice-0012": {"runtime_update_plan": "parameter-only-plan"},
+            "seg:slice-0013": {"runtime_update_plan": "past-plan"},
+        }
+
+        selected = _lookahead_bpf_preload_entries_for_runtime_epoch(
+            current_entry=current_entry,
+            lookahead_preload_queue=queue,
+            completed_epoch_ids=[],
+            context_by_key=context_by_key,
+        )
+
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0]["entry"]["epoch_id"], "parameterepoch-boundary")
+        self.assertEqual(selected[0]["context"]["runtime_update_plan"], "future-plan")
+        self.assertTrue(selected[0]["entry"]["preload_required"])
+        self.assertEqual(
+            selected[0]["entry"]["horizon_execution_role"],
+            "lookahead_preload_only",
+        )
+
+        selected_after_completion = _lookahead_bpf_preload_entries_for_runtime_epoch(
+            current_entry=current_entry,
+            lookahead_preload_queue=queue,
+            completed_epoch_ids=["parameterepoch-boundary"],
+            context_by_key=context_by_key,
+        )
+        self.assertEqual(selected_after_completion, [])
+
+    def test_access_prewarm_scope_includes_lookahead_boundary_bindings(
+        self,
+    ) -> None:
+        snapshots = {
+            "snapshots": [
+                {
+                    "time_slice": {"slice_id": "slice-current"},
+                    "active_links": [
+                        {
+                            "link_id": "ut2001-access-slot0",
+                            "slot_type": "ut_access",
+                            "binding": {
+                                "ut_id": "ut2001",
+                                "satellite_id": "stl-current",
+                            },
+                        }
+                    ],
+                },
+                {
+                    "time_slice": {"slice_id": "slice-lookahead"},
+                    "active_links": [
+                        {
+                            "link_id": "ut2001-access-slot0",
+                            "slot_type": "ut_access",
+                            "binding": {
+                                "ut_id": "ut2001",
+                                "satellite_id": "stl-future",
+                            },
+                        },
+                        {
+                            "link_id": "gw201-gateway-slot0",
+                            "slot_type": "gw_access",
+                            "binding": {
+                                "gateway_id": "gw201",
+                                "satellite_id": "stl-future",
+                            },
+                        },
+                    ],
+                },
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot_preview = Path(tmp) / "snapshot_preview.json"
+            snapshot_preview.write_text(json.dumps(snapshots), encoding="utf-8")
+
+            selected_slice_ids = _prewarm_selected_slice_ids_for_horizon(
+                segment_queue=[{"slice_id": "slice-current"}],
+                lookahead_preload_queue=[{"slice_id": "slice-lookahead"}],
+            )
+            scope = _selected_access_prewarm_resource_scope_by_slot(
+                snapshot_preview_path=snapshot_preview,
+                selected_slice_ids=selected_slice_ids,
+            )
+
+        self.assertEqual(selected_slice_ids, ["slice-current", "slice-lookahead"])
+        self.assertEqual(
+            scope["ut2001-access-slot0"],
+            ["satellite:stl-current", "satellite:stl-future"],
+        )
+        self.assertEqual(scope["gw201-gateway-slot0"], ["satellite:stl-future"])
+
+    def test_run_window_resource_coverage_plan_covers_union_not_current_only(
+        self,
+    ) -> None:
+        snapshots = {
+            "snapshots": [
+                {
+                    "time_slice": {"slice_id": "slice-t0"},
+                    "active_links": [
+                        {
+                            "link_id": "ut2001-access-slot0",
+                            "slot_type": "ut_access",
+                            "binding": {
+                                "ut_id": "ut2001",
+                                "satellite_id": "stl-t0",
+                            },
+                        }
+                    ],
+                },
+                {
+                    "time_slice": {"slice_id": "slice-t1"},
+                    "active_links": [
+                        {
+                            "link_id": "ut2001-access-slot0",
+                            "slot_type": "ut_access",
+                            "binding": {
+                                "ut_id": "ut2001",
+                                "satellite_id": "stl-t1",
+                            },
+                        },
+                        {
+                            "link_id": "gw201-gateway-slot0",
+                            "slot_type": "gw_access",
+                            "binding": {
+                                "gateway_id": "gw201",
+                                "satellite_id": "stl-t1",
+                            },
+                        },
+                    ],
+                },
+                {
+                    "time_slice": {"slice_id": "slice-t2"},
+                    "active_links": [
+                        {
+                            "link_id": "ut2002-access-slot0",
+                            "slot_type": "ut_access",
+                            "binding": {
+                                "ut_id": "ut2002",
+                                "satellite_id": "stl-t2",
+                            },
+                        }
+                    ],
+                },
+            ],
+        }
+        topology = {"slot_inventory": {"cross_plane_isl": []}}
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot_preview = Path(tmp) / "snapshot_preview.json"
+            snapshot_preview.write_text(json.dumps(snapshots), encoding="utf-8")
+            current_only_scope = _selected_access_prewarm_resource_scope_by_slot(
+                snapshot_preview_path=snapshot_preview,
+                selected_slice_ids=["slice-t0"],
+            )
+            run_window_scope = _selected_access_prewarm_resource_scope_by_slot(
+                snapshot_preview_path=snapshot_preview,
+                selected_slice_ids=["slice-t0", "slice-t1", "slice-t2"],
+            )
+            current_only_plan = _run_window_resource_coverage_plan(
+                snapshot_preview_path=snapshot_preview,
+                segment_queue=[{"slice_id": "slice-t0", "classification": "runtime_epoch"}],
+                lookahead_preload_queue=[
+                    {"slice_id": "slice-t1"},
+                    {"slice_id": "slice-t2"},
+                ],
+                prepared_resource_scope_by_slot=current_only_scope,
+                topology=topology,
+            )
+            run_window_plan = _run_window_resource_coverage_plan(
+                snapshot_preview_path=snapshot_preview,
+                segment_queue=[{"slice_id": "slice-t0", "classification": "runtime_epoch"}],
+                lookahead_preload_queue=[
+                    {"slice_id": "slice-t1"},
+                    {"slice_id": "slice-t2"},
+                ],
+                prepared_resource_scope_by_slot=run_window_scope,
+                topology=topology,
+            )
+
+        self.assertGreater(current_only_plan["unresolved_count"], 0)
+        self.assertEqual(run_window_plan["planned_run_horizon_count"], 1)
+        self.assertEqual(run_window_plan["lookahead_horizon_count"], 2)
+        self.assertEqual(run_window_plan["required_resource_union_count"], 4)
+        self.assertEqual(run_window_plan["materialized_resource_count"], 4)
+        self.assertEqual(run_window_plan["unresolved_count"], 0)
+        self.assertEqual(
+            run_window_plan["newly_required_but_not_prematerialized_count"],
+            0,
         )
 
     def test_lifecycle_horizon_distinguishes_transaction_sub_stages(self) -> None:
@@ -1856,6 +2584,134 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
         self.assertEqual(audit["steady_map_only_evidence_status"], "observed_passed")
         self.assertTrue(audit["resident_map_only_path_proven"])
         self.assertEqual(audit["total_full_attach_count"], 0)
+        self.assertEqual(audit["bootstrap_attach_count"], 0)
+        self.assertEqual(audit["pre_runtime_attach_count"], 0)
+        self.assertEqual(audit["first_epoch_runtime_attach_count"], 8)
+        self.assertEqual(audit["first_epoch_runtime_full_attach_count"], 8)
+        self.assertEqual(audit["steady_runtime_attach_count"], 0)
+        self.assertEqual(audit["dirty_recovery_reset_count"], 0)
+        self.assertEqual(audit["dirty_recovery_reset_stage"], "none")
+
+    def test_bpf_hotpath_audit_attributes_initial_dirty_recovery_to_first_epoch(
+        self,
+    ) -> None:
+        records = [
+            {
+                "epoch_type": "runtime_epoch",
+                "sequence_index": 1,
+                "timing": {
+                    "bpf_attach_strategy": "dirty_recovery_reset",
+                    "bpf_attach_lifecycle_mode": "dirty_recovery_reset",
+                    "bpf_full_attach_count": 8,
+                    "bpf_delta_attach_count": 0,
+                    "bpf_interface_set_changed": True,
+                    "bpf_attach_seconds": 1.0,
+                },
+            },
+            {
+                "epoch_type": "runtime_epoch",
+                "sequence_index": 2,
+                "timing": {
+                    "bpf_attach_reuse_eligible": True,
+                    "bpf_attach_strategy": "full_reuse",
+                    "bpf_reused_attach_count": 8,
+                    "bpf_delta_attach_count": 0,
+                    "bpf_full_attach_count": 0,
+                    "bpf_interface_set_changed": False,
+                    "bpf_steady_epoch_map_only": True,
+                    "bpf_clsact_reuse_warning_count": 0,
+                    "bpf_attach_seconds": 0.0,
+                },
+            },
+        ]
+
+        audit = _bpf_hotpath_reuse_audit(
+            records,
+            runtime_mode="operational_clean",
+            forwarding_backend="bpf_owned",
+        )
+
+        self.assertTrue(audit["passed"])
+        self.assertEqual(audit["first_epoch_runtime_attach_count"], 8)
+        self.assertEqual(audit["steady_runtime_attach_count"], 0)
+        self.assertEqual(audit["dirty_recovery_reset_count"], 1)
+        self.assertEqual(audit["dirty_recovery_reset_stage"], "first_epoch_runtime")
+        self.assertEqual(
+            audit["dirty_recovery_reset_stage_counts"],
+            {"first_epoch_runtime": 1},
+        )
+
+    def test_operational_clean_runtime_attach_contract_blocks_first_epoch_attach(
+        self,
+    ) -> None:
+        violation = _operational_clean_runtime_attach_contract_violation(
+            runtime_epoch_index=1,
+            bpf_attach_reuse_summary={
+                "attach_strategy": "dirty_recovery_reset",
+                "attach_lifecycle_mode": "dirty_recovery_reset",
+                "full_attach_count": 8,
+                "delta_attach_count": 0,
+            },
+        )
+
+        self.assertTrue(violation["violated"])
+        self.assertEqual(violation["stage"], "first_epoch_runtime")
+        self.assertIn("runtime_full_attach", violation["reason"])
+        self.assertIn("runtime_dirty_recovery_reset", violation["reason"])
+
+    def test_operational_clean_runtime_attach_contract_allows_first_epoch_reuse(
+        self,
+    ) -> None:
+        violation = _operational_clean_runtime_attach_contract_violation(
+            runtime_epoch_index=1,
+            bpf_attach_reuse_summary={
+                "attach_strategy": "existing_readiness_reused_no_prepare",
+                "attach_lifecycle_mode": "existing_readiness_reused",
+                "full_attach_count": 0,
+                "delta_attach_count": 0,
+            },
+        )
+
+        self.assertFalse(violation["violated"])
+        self.assertEqual(violation["stage"], "first_epoch_runtime")
+
+    def test_precompose_pre_runtime_prepare_gate_plans_existing_readiness(
+        self,
+    ) -> None:
+        gate = _precompose_pre_runtime_bpf_owned_prepare_gate(
+            first_runtime_entry={
+                "epoch_id": "runtimeepoch-1",
+                "segment_epoch_key": "initial:slice-1",
+                "slice_id": "slice-1",
+            },
+            precompose_bpf_role_union_gate={
+                "passed": True,
+                "prepared_bpf_attach_capability": {
+                    "netns:gw1:ix0": ["z_to_g_classifier"],
+                    "netns:stl1:if0": ["g_to_z_core_lfib"],
+                },
+                "required_interface_role_union_count": 2,
+                "prepared_bpf_attach_capability_count": 2,
+                "interface_role_mismatch_count": 0,
+                "attach_reuse_ineligible_count": 0,
+                "blockers": [],
+            },
+        )
+
+        self.assertTrue(gate["ok"])
+        self.assertTrue(gate["pre_runtime_bpf_owned_prepare_present"])
+        self.assertTrue(gate["pre_runtime_bpf_owned_readiness_present"])
+        self.assertTrue(gate["first_runtime_epoch_receives_existing_session"])
+        self.assertTrue(gate["first_runtime_epoch_receives_existing_readiness"])
+        self.assertEqual(gate["pre_runtime_attach_count"], 2)
+        self.assertEqual(gate["pre_runtime_full_attach_count"], 2)
+        self.assertEqual(gate["pre_runtime_delta_attach_count"], 0)
+        self.assertEqual(gate["dirty_recovery_reset_count"], 0)
+        self.assertEqual(gate["runtime_dirty_recovery_reset_count"], 0)
+        self.assertEqual(gate["first_epoch_runtime_full_attach_expected"], 0)
+        self.assertEqual(gate["first_epoch_runtime_delta_attach_expected"], 0)
+        self.assertFalse(gate["runtime_dirty_recovery_allowed"])
+        self.assertTrue(gate["runtime_epoch_timing_excludes_pre_runtime_prepare"])
 
     def test_bpf_hotpath_audit_distinguishes_delta_attach_from_map_only_evidence(
         self,
@@ -2132,6 +2988,27 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
         self.assertEqual(capacities["lfib"], 256)
         self.assertEqual(capacities["handoffs"], 136)
 
+    def test_bpf_mpls_generation_map_capacities_reserve_prepared_generation_window(
+        self,
+    ) -> None:
+        capacities = _bpf_mpls_generation_map_capacities(
+            active_counts={
+                "ingress_classifier_map": 120,
+                "core_lfib_map": 3,
+                "egress_handoff_map": 60,
+            },
+            current_counts={
+                "ingress_classifier_map": 120,
+                "core_lfib_map": 3,
+                "egress_handoff_map": 60,
+            },
+            prepared_generation_window_count=3,
+        )
+
+        self.assertEqual(capacities["classifiers"], 496)
+        self.assertEqual(capacities["lfib"], 256)
+        self.assertEqual(capacities["handoffs"], 256)
+
     def test_bpf_hotpath_audit_blocks_missing_reuse_reason_and_clsact_warning(
         self,
     ) -> None:
@@ -2191,7 +3068,7 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
         )
 
         self.assertFalse(audit["passed"])
-        self.assertEqual(audit["steady_map_only_evidence_status"], "observed_failed")
+        self.assertEqual(audit["steady_map_only_evidence_status"], "violations_present")
         self.assertFalse(audit["resident_map_only_path_proven"])
         self.assertEqual(audit["steady_map_only_violation_count"], 1)
         self.assertEqual(
@@ -3175,24 +4052,79 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
                 "INTERFACE_ROLE_SET_MISMATCH_ROOT_CAUSE_IDENTIFIED",
             ],
         )
+        mismatch = reuse["interface_role_set_mismatches"][0]
+        self.assertEqual(mismatch["interface_ref"], "netns:stl-940001:ga-g207s0")
         self.assertEqual(
-            reuse["interface_role_set_mismatches"],
-            [
-                {
-                    "interface_ref": "netns:stl-940001:ga-g207s0",
-                    "previous_roles": [
-                        "g_to_z_egress_handoff",
-                        "legacy_previous_role",
-                    ],
-                    "current_roles": [
-                        "g_to_z_egress_handoff",
-                        "z_to_g_core_lfib",
-                    ],
-                    "missing_current_roles": ["z_to_g_core_lfib"],
-                    "extra_previous_roles": ["legacy_previous_role"],
-                    "role_sets_match": False,
-                }
-            ],
+            mismatch["previous_roles"],
+            ["g_to_z_egress_handoff", "legacy_previous_role"],
+        )
+        self.assertEqual(
+            mismatch["current_roles"],
+            ["g_to_z_egress_handoff", "z_to_g_core_lfib"],
+        )
+        self.assertEqual(mismatch["missing_current_roles"], ["z_to_g_core_lfib"])
+        self.assertEqual(mismatch["extra_previous_roles"], ["legacy_previous_role"])
+        self.assertEqual(mismatch["mismatch_type"], "missing_required_role")
+        self.assertFalse(mismatch["compatible_role_superset"])
+        self.assertEqual(reuse["interface_role_mismatch_count"], 1)
+        self.assertEqual(reuse["attach_reuse_ineligible_count"], 1)
+        self.assertEqual(
+            reuse["ineligible_reason_counts"],
+            {"interface_role_set_mismatch": 1},
+        )
+
+    def test_bpf_owned_attach_reuse_reports_role_union_capability_counts(
+        self,
+    ) -> None:
+        reuse = _bpf_owned_attach_reuse_plan(
+            compiled={
+                "attach_plan": {"netns:gw205:ix204": ["ingress"]},
+                "attached_interface_details": [
+                    {
+                        "interface_ref": "netns:gw205:ix204",
+                        "attach_directions": ["ingress"],
+                        "expected_roles": ["g_to_z_classifier"],
+                    }
+                ],
+            },
+            previous_readiness={
+                "attached_interface_details": [
+                    {
+                        "interface_ref": "netns:gw205:ix204",
+                        "attach_directions": ["ingress"],
+                        "expected_roles": [
+                            "g_to_z_classifier",
+                            "z_to_g_classifier",
+                        ],
+                    }
+                ],
+                "prepare_steps": {
+                    "real_backend_prepare": {
+                        "attach_plan": {"netns:gw205:ix204": ["ingress"]},
+                        "map_capacities": {
+                            "classifiers": 128,
+                            "lfib": 256,
+                            "handoffs": 128,
+                        },
+                    }
+                },
+            },
+        )
+
+        self.assertTrue(reuse["reuse_eligible"])
+        self.assertEqual(reuse["required_interface_role_union_count"], 1)
+        self.assertEqual(reuse["prepared_bpf_attach_capability_count"], 2)
+        self.assertEqual(reuse["interface_role_mismatch_count"], 0)
+        self.assertEqual(reuse["attach_reuse_eligible_count"], 1)
+        self.assertEqual(reuse["attach_reuse_ineligible_count"], 0)
+        self.assertEqual(reuse["ineligible_reason_counts"], {})
+        self.assertEqual(
+            reuse["interface_role_capability_source"],
+            "prepared_bpf_attach_capability_superset",
+        )
+        self.assertEqual(
+            reuse["compatible_role_superset_matches"][0]["mismatch_type"],
+            "compatible_role_superset",
         )
 
     def test_bpf_owned_resident_attach_coverage_does_not_merge_future_maps(
@@ -3484,6 +4416,14 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
             classifications[interface_ref],
             "ACTIVE_MATERIALIZED_CURRENT_AND_HORIZON",
         )
+        self.assertEqual(
+            merged["resident_attach_coverage"]["resident_attach_eligible_interface_count"],
+            1,
+        )
+        self.assertEqual(
+            merged["interface_set_contract"]["resident_attach_bootstrap_scope"],
+            "active_plus_future_materialized_attach_eligible",
+        )
 
     def test_bpf_owned_future_resident_interface_not_live_bound(self) -> None:
         active_contexts = (SimpleNamespace(flow_id="active-flow"),)
@@ -3634,19 +4574,56 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
                 'Device "ix204" does not exist.'
             )
 
-        with (
-            patch(
-                "linux_mpls_runtime._bpf_owned_compile_mpls_maps_for_contexts",
-                side_effect=compile_maps,
-            ),
-            patch(
-                "satellite.bpf_dataplane_canary.collect_environment",
-            ) as collect_environment,
-        ):
-            report = _bpf_owned_prepare_mpls_backend(
-                proof={"generation_id": 42, "map_entry_count": 1},
-                contexts=(SimpleNamespace(flow_id="active-flow"),),
-            )
+        context = SimpleNamespace(
+            flow_id="active-flow",
+            ut_id="ut2005",
+            zone_id="zone-a",
+            serving_satellite_id="stl-940023",
+            selected_gateway_id="gw205",
+            gateway_nat_interface="ix204",
+            target_host_node_id="as154-host-new",
+            ut_access_interface="ua-u2005s0",
+            forward_segments=(),
+            reverse_segments=(),
+        )
+        topology = {
+            "slot_inventory": {
+                "gw_access": [
+                    {
+                        "slot_name": "gw205-gateway-slot0",
+                        "slot_type": "gw_access",
+                        "binding": {
+                            "gateway_id": "gw205",
+                            "satellite_id": "stl-940023",
+                        },
+                        "preconnected_endpoints": [
+                            {
+                                "node_id": "gw205",
+                                "node_type": "gateway",
+                                "interface_name": "ga-g205s0",
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            topology_path = Path(tmp) / "topology.json"
+            topology_path.write_text(json.dumps(topology), encoding="utf-8")
+            with (
+                patch(
+                    "linux_mpls_runtime._bpf_owned_compile_mpls_maps_for_contexts",
+                    side_effect=compile_maps,
+                ),
+                patch(
+                    "satellite.bpf_dataplane_canary.collect_environment",
+                ) as collect_environment,
+            ):
+                report = _bpf_owned_prepare_mpls_backend(
+                    proof={"generation_id": 42, "map_entry_count": 1},
+                    contexts=(context,),
+                    topology_path=topology_path,
+                )
 
         collect_environment.assert_not_called()
         self.assertFalse(report["ok"])
@@ -3656,6 +4633,24 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
             "ACTIVE_INTERFACE_BINDING_MISSING",
         )
         self.assertIn("Device \"ix204\" does not exist", report["error"])
+        self.assertEqual(report["missing_interface_ref"], "netns:gw205:ix204")
+        self.assertEqual(report["missing_binding_context"]["node"], "gw205")
+        self.assertEqual(
+            report["missing_binding_context"]["logical_interface_id"],
+            "ix204",
+        )
+        self.assertEqual(
+            report["missing_binding_context"]["matches"][0]["role"],
+            "z_to_g_classifier",
+        )
+        self.assertEqual(
+            report["prepared_inventory_binding_status"]["classification"],
+            "PREPARED_OWNED_INVENTORY_BINDING_MISSING",
+        )
+        self.assertEqual(
+            report["root_cause_classification"],
+            "LOOKAHEAD_PRELOAD_PREPARED_OWNED_BINDING_MISSING",
+        )
 
     def test_bpf_owned_attach_cardinality_budget_fails_before_attach(self) -> None:
         interfaces = [
@@ -4034,6 +5029,95 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
             ["netns:gw205:ix204"],
         )
 
+    def test_bpf_owned_initial_prepare_is_not_dirty_recovery(self) -> None:
+        compiled = {
+            "attach_plan": {"netns:gw1:ix0": ["ingress"]},
+            "attached_interfaces": ["netns:gw1:ix0"],
+            "attached_interface_details": [
+                {
+                    "interface_ref": "netns:gw1:ix0",
+                    "interface_name": "netns:gw1:ix0",
+                    "container_interface_name": "ix0",
+                    "netns": "gw1",
+                    "ifindex": 10,
+                    "attach_directions": ["ingress"],
+                    "expected_roles": ["z_to_g_classifier"],
+                }
+            ],
+            "compiled_mpls_map_counts": {"ingress_classifier_map": 1},
+            "map_conflicts": [],
+            "map_conflict_summary": {"conflict_count": 0},
+            "label_allocation": {},
+            "resolved_mpls_flow_entries": [],
+        }
+
+        with (
+            patch(
+                "linux_mpls_runtime._bpf_owned_compile_mpls_maps_for_contexts",
+                return_value=compiled,
+            ),
+            patch(
+                "satellite.bpf_dataplane_canary.collect_environment",
+                return_value={},
+            ),
+            patch("satellite.bpf_dataplane_canary.attach_blockers", return_value=[]),
+            patch("satellite.bpf_dataplane_canary.command_ok", return_value=True),
+            patch(
+                "satellite.bpf_mpls_live.compile_mpls_bpf",
+                return_value={"returncode": 0},
+            ),
+            patch(
+                "satellite.bpf_mpls_live.rollback_mpls",
+                return_value={"returncode": 0},
+            ),
+            patch(
+                "satellite.bpf_mpls_live.attach_mpls",
+                return_value=[{"returncode": 0}],
+            ),
+            patch(
+                "satellite.bpf_mpls_live.interface_ipv4_addresses",
+                return_value=[],
+            ),
+            patch(
+                "satellite.bpf_mpls_live.read_mpls_tc_filter_stats",
+                return_value={},
+            ),
+            patch(
+                "satellite.bpf_mpls_live.load_mpls_maps",
+                return_value={
+                    "ok": True,
+                    "active_generation": 42,
+                    "active_generation_switch_count": 1,
+                    "loaded_classifier_count": 1,
+                    "loaded_core_lfib_count": 0,
+                    "loaded_egress_handoff_count": 0,
+                    "loaded_interface_role_count": 1,
+                },
+            ),
+            patch(
+                "linux_mpls_runtime._read_bpf_owned_interface_roles",
+                return_value={"ok": True, "command": {"returncode": 0}},
+            ),
+            patch(
+                "linux_mpls_runtime._bpf_owned_interface_role_completeness",
+                return_value={"ok": True},
+            ),
+        ):
+            report = _bpf_owned_prepare_mpls_backend(
+                proof={"generation_id": 42, "map_entry_count": 1},
+                contexts=(SimpleNamespace(flow_id="flow-1"),),
+                reuse_attached_readiness=None,
+            )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["attach_lifecycle_mode"], "initial_bpf_owned_prepare")
+        self.assertEqual(report["initial_bpf_owned_prepare_count"], 1)
+        self.assertEqual(report["dirty_recovery_reset_count"], 0)
+        self.assertFalse(report["dirty_recovery_evidence_present"])
+        self.assertEqual(report["dirty_recovery_trigger_source"], "")
+        self.assertEqual(report["dirty_recovery_stage"], "none")
+        self.assertEqual(report["runtime_dirty_recovery_reset_count"], 0)
+
     def test_bpf_owned_attach_reuse_rejects_ifindex_or_role_mismatch(self) -> None:
         compiled = {
             "attach_plan": {"netns:gw205:ix204": ["ingress"]},
@@ -4067,7 +5151,7 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
         self.assertFalse(reuse["steady_epoch_map_only"])
         self.assertEqual(reuse["full_attach_count"], 1)
 
-    def test_bpf_owned_steady_map_reload_skips_live_role_read(self) -> None:
+    def test_bpf_owned_preactivation_preload_writes_inactive_generation_then_flip_only(self) -> None:
         compiled = {
             "attach_plan": {"netns:gw205:ix204": ["ingress"]},
             "attached_interfaces": ["netns:gw205:ix204"],
@@ -4134,6 +5218,7 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
                     {
                         "ok": True,
                         "active_generation": 41,
+                        "target_generation": 42,
                         "map_write_wall_seconds": 0.03,
                         "map_write_update_count": 3,
                         "active_generation_flip_wall_seconds": 0.0,
@@ -4145,6 +5230,52 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
                         "loaded_egress_handoff_count": 1,
                         "loaded_interface_role_count": 1,
                         "outcome_labels": ["RUNTIME_MAP_DIFF_UPDATE_USED"],
+                        "runtime_reload_attribution": {
+                            "runtime_update_phase": "preactivation_preload",
+                            "preactivation_preload": True,
+                            "defer_active_generation_flip": True,
+                            "target_generation": 42,
+                            "active_generation_before": 41,
+                            "active_generation_after": 41,
+                            "map_diff_update_used": True,
+                            "actual_data_write_count": 3,
+                            "active_generation_update_count": 0,
+                            "inactive_preloaded_generation_visibility_proof": {
+                                "ok": True,
+                                "active_generation_flip_deferred": True,
+                                "target_entries_loaded_while_inactive": True,
+                                "visibility_enforced_by": "active_generation_map",
+                            },
+                            "map_diff_trace": {
+                                "ingress_classifier_map": {
+                                    "desired_count": 1,
+                                    "existing_count": 0,
+                                    "insert_count": 1,
+                                    "update_count": 0,
+                                    "delete_count": 0,
+                                    "noop_skipped_count": 0,
+                                    "wall_seconds": 0.01,
+                                },
+                                "core_lfib_map": {
+                                    "desired_count": 1,
+                                    "existing_count": 0,
+                                    "insert_count": 1,
+                                    "update_count": 0,
+                                    "delete_count": 0,
+                                    "noop_skipped_count": 0,
+                                    "wall_seconds": 0.01,
+                                },
+                                "egress_handoff_map": {
+                                    "desired_count": 1,
+                                    "existing_count": 0,
+                                    "insert_count": 1,
+                                    "update_count": 0,
+                                    "delete_count": 0,
+                                    "noop_skipped_count": 0,
+                                    "wall_seconds": 0.01,
+                                },
+                            },
+                        },
                     },
                     {
                         "ok": True,
@@ -4164,9 +5295,49 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
                             "RUNTIME_ACTIVE_GENERATION_FLIP_ONLY",
                             "RUNTIME_NOOP_MAP_WRITES_SKIPPED",
                         ],
+                        "runtime_reload_attribution": {
+                            "runtime_update_phase": "steady_map_only",
+                            "preloaded_generation_used": True,
+                            "active_generation_flip_only": True,
+                            "map_diff_update_used": False,
+                            "actual_data_write_count": 0,
+                            "noop_skipped_count": 3,
+                            "active_generation_before": 41,
+                            "active_generation_after": 42,
+                            "map_diff_trace": {
+                                "ingress_classifier_map": {
+                                    "desired_count": 1,
+                                    "existing_count": 1,
+                                    "insert_count": 0,
+                                    "update_count": 0,
+                                    "delete_count": 0,
+                                    "noop_skipped_count": 1,
+                                    "wall_seconds": 0.0,
+                                },
+                                "core_lfib_map": {
+                                    "desired_count": 1,
+                                    "existing_count": 1,
+                                    "insert_count": 0,
+                                    "update_count": 0,
+                                    "delete_count": 0,
+                                    "noop_skipped_count": 1,
+                                    "wall_seconds": 0.0,
+                                },
+                                "egress_handoff_map": {
+                                    "desired_count": 1,
+                                    "existing_count": 1,
+                                    "insert_count": 0,
+                                    "update_count": 0,
+                                    "delete_count": 0,
+                                    "noop_skipped_count": 1,
+                                    "wall_seconds": 0.0,
+                                },
+                            },
+                        },
                     },
                 ],
             ) as load_maps,
+            patch("satellite.bpf_mpls_live.attach_mpls") as attach_mpls,
             patch("linux_mpls_runtime._read_bpf_owned_interface_roles") as live_roles,
         ):
             report = _bpf_owned_prepare_mpls_backend(
@@ -4177,6 +5348,7 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
             )
 
         live_roles.assert_not_called()
+        attach_mpls.assert_not_called()
         self.assertEqual(load_maps.call_count, 2)
         self.assertEqual(
             load_maps.call_args_list[0].args[0]["bpf_runtime_update_phase"],
@@ -4192,6 +5364,42 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
         self.assertTrue(report["preactivation_preload_scheduled"])
         self.assertIn("RUNTIME_PRELOAD_SCHEDULED", report["outcome_labels"])
         self.assertEqual(report["full_attach_count"], 0)
+        self.assertEqual(report["delta_attach_count"], 0)
+        preload = report["steps"]["preactivation_preload"]
+        preload_attr = preload["runtime_reload_attribution"]
+        self.assertEqual(preload["map_write_update_count"], 3)
+        self.assertEqual(preload["active_generation_update_count"], 0)
+        self.assertTrue(preload_attr["preactivation_preload"])
+        self.assertTrue(preload_attr["defer_active_generation_flip"])
+        self.assertEqual(preload_attr["target_generation"], 42)
+        self.assertEqual(preload_attr["actual_data_write_count"], 3)
+        self.assertEqual(preload_attr["active_generation_before"], 41)
+        self.assertEqual(preload_attr["active_generation_after"], 41)
+        inactive_proof = preload_attr["inactive_preloaded_generation_visibility_proof"]
+        self.assertTrue(inactive_proof["ok"])
+        self.assertTrue(inactive_proof["target_entries_loaded_while_inactive"])
+        self.assertTrue(inactive_proof["active_generation_flip_deferred"])
+        self.assertEqual(preload["active_generation_update_count"], 0)
+        self.assertEqual(
+            preload_attr["map_diff_trace"]["ingress_classifier_map"]["insert_count"],
+            1,
+        )
+        map_load_attr = report["steps"]["map_load"]["runtime_reload_attribution"]
+        self.assertTrue(map_load_attr["preloaded_generation_used"])
+        self.assertTrue(map_load_attr["active_generation_flip_only"])
+        self.assertEqual(map_load_attr["actual_data_write_count"], 0)
+        self.assertEqual(map_load_attr["active_generation_before"], 41)
+        self.assertEqual(map_load_attr["active_generation_after"], 42)
+        self.assertEqual(
+            map_load_attr["map_diff_trace"]["ingress_classifier_map"][
+                "noop_skipped_count"
+            ],
+            1,
+        )
+        self.assertEqual(
+            report["timing_breakdown"]["bpf_preactivation_preload_update_count"],
+            3,
+        )
         self.assertEqual(report["timing_breakdown"]["bpf_attach_seconds"], 0.0)
         self.assertEqual(report["timing_breakdown"]["bpf_live_role_read_seconds"], 0.0)
         self.assertEqual(report["timing_breakdown"]["bpf_map_write_seconds"], 0.02)
@@ -4206,6 +5414,446 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
         self.assertTrue(
             report["steps"]["live_interface_roles_after_map_load"]["skipped"]
         )
+
+    def test_bpf_owned_lookahead_preload_only_writes_inactive_without_runtime_apply(
+        self,
+    ) -> None:
+        compiled = {
+            "attach_plan": {"netns:gw205:ix204": ["ingress"]},
+            "attached_interfaces": ["netns:gw205:ix204"],
+            "attached_interface_details": [
+                {
+                    "interface_ref": "netns:gw205:ix204",
+                    "attach_directions": ["ingress"],
+                    "expected_roles": ["z_to_g_classifier"],
+                }
+            ],
+            "compiled_mpls_map_counts": {
+                "ingress_classifier_map": 1,
+                "core_lfib_map": 1,
+                "egress_handoff_map": 1,
+            },
+            "map_conflicts": [],
+            "map_conflict_summary": {"conflict_count": 0},
+            "label_allocation": {},
+            "resolved_mpls_flow_entries": [],
+        }
+        previous_readiness = {
+            "prepare_steps": {
+                "real_backend_prepare": {
+                    "attach_plan": {"netns:gw205:ix204": ["ingress"]},
+                }
+            },
+            "attached_interface_details": [
+                {
+                    "interface_ref": "netns:gw205:ix204",
+                    "attach_directions": ["ingress"],
+                    "expected_roles": ["z_to_g_classifier"],
+                }
+            ],
+        }
+
+        with (
+            patch(
+                "linux_mpls_runtime._bpf_owned_compile_mpls_maps_for_contexts",
+                return_value=compiled,
+            ),
+            patch(
+                "satellite.bpf_dataplane_canary.collect_environment",
+                return_value={},
+            ),
+            patch("satellite.bpf_dataplane_canary.attach_blockers", return_value=[]),
+            patch(
+                "satellite.bpf_mpls_live.verify_mpls_clsact",
+                return_value=[
+                    {
+                        "returncode": 0,
+                        "clsact_lifecycle_event": "show_before_expected_reuse",
+                        "interface_ref": {"interface_ref": "netns:gw205:ix204"},
+                    }
+                ],
+            ),
+            patch(
+                "satellite.bpf_mpls_live.load_mpls_maps",
+                return_value={
+                    "ok": True,
+                    "active_generation": 41,
+                    "target_generation": 42,
+                    "map_write_update_count": 3,
+                    "active_generation_update_count": 0,
+                    "active_generation_switch_count": 0,
+                    "outcome_labels": ["RUNTIME_MAP_DIFF_UPDATE_USED"],
+                },
+            ) as load_maps,
+            patch("satellite.bpf_mpls_live.attach_mpls") as attach_mpls,
+            patch("linux_mpls_runtime._read_bpf_owned_interface_roles") as live_roles,
+        ):
+            report = _bpf_owned_prepare_mpls_backend(
+                proof={"generation_id": 42, "map_entry_count": 1},
+                contexts=(),
+                reuse_attached_readiness=previous_readiness,
+                fail_closed_on_reuse_miss=True,
+                preactivation_preload_only=True,
+            )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["prepare_mode"], "lookahead_preactivation_preload_only")
+        self.assertTrue(report["preactivation_preload_only"])
+        self.assertTrue(report["preactivation_preload_scheduled"])
+        self.assertTrue(report["inactive_generation_written"])
+        self.assertTrue(report["active_generation_flip_skipped"])
+        self.assertTrue(report["runtime_apply_skipped"])
+        self.assertFalse(report["runtime_generation_loaded"])
+        self.assertFalse(report["active_generation_set"])
+        self.assertFalse(report["map_ready"])
+        self.assertEqual(report["delta_attach_count"], 0)
+        self.assertEqual(report["full_attach_count"], 0)
+        self.assertIn("RUNTIME_PRELOAD_SCHEDULED", report["outcome_labels"])
+        self.assertIn("LOOKAHEAD_PRELOAD_ONLY", report["outcome_labels"])
+        self.assertEqual(load_maps.call_count, 1)
+        self.assertEqual(
+            load_maps.call_args.args[0]["bpf_runtime_update_phase"],
+            "preactivation_preload",
+        )
+        self.assertTrue(load_maps.call_args.args[0]["defer_active_generation_flip"])
+        self.assertTrue(report["steps"]["map_load"]["skipped"])
+        attach_mpls.assert_not_called()
+        live_roles.assert_not_called()
+
+    def test_bpf_owned_lookahead_preload_only_fails_closed_before_delta_attach(
+        self,
+    ) -> None:
+        compiled = {
+            "attach_plan": {
+                "netns:gw205:ix204": ["ingress"],
+                "netns:gw212:ix211": ["ingress"],
+            },
+            "attached_interfaces": ["netns:gw205:ix204", "netns:gw212:ix211"],
+            "attached_interface_details": [
+                {
+                    "interface_ref": "netns:gw205:ix204",
+                    "attach_directions": ["ingress"],
+                    "expected_roles": ["z_to_g_classifier"],
+                },
+                {
+                    "interface_ref": "netns:gw212:ix211",
+                    "attach_directions": ["ingress"],
+                    "expected_roles": ["z_to_g_classifier"],
+                },
+            ],
+            "compiled_mpls_map_counts": {"ingress_classifier_map": 2},
+            "map_conflicts": [],
+            "map_conflict_summary": {"conflict_count": 0},
+            "label_allocation": {},
+            "resolved_mpls_flow_entries": [],
+        }
+        previous_readiness = {
+            "prepare_steps": {
+                "real_backend_prepare": {
+                    "attach_plan": {"netns:gw205:ix204": ["ingress"]},
+                }
+            },
+            "attached_interface_details": [
+                {
+                    "interface_ref": "netns:gw205:ix204",
+                    "attach_directions": ["ingress"],
+                    "expected_roles": ["z_to_g_classifier"],
+                }
+            ],
+        }
+
+        with (
+            patch(
+                "linux_mpls_runtime._bpf_owned_compile_mpls_maps_for_contexts",
+                return_value=compiled,
+            ),
+            patch(
+                "satellite.bpf_dataplane_canary.collect_environment",
+                return_value={},
+            ),
+            patch("satellite.bpf_dataplane_canary.attach_blockers", return_value=[]),
+            patch(
+                "satellite.bpf_mpls_live.verify_mpls_clsact",
+                return_value=[
+                    {
+                        "returncode": 0,
+                        "clsact_lifecycle_event": "show_before_expected_reuse",
+                        "interface_ref": {"interface_ref": "netns:gw205:ix204"},
+                    }
+                ],
+            ),
+            patch("satellite.bpf_mpls_live.load_mpls_maps") as load_maps,
+            patch("satellite.bpf_mpls_live.attach_mpls") as attach_mpls,
+        ):
+            report = _bpf_owned_prepare_mpls_backend(
+                proof={"generation_id": 42, "map_entry_count": 1},
+                contexts=(),
+                reuse_attached_readiness=previous_readiness,
+                fail_closed_on_reuse_miss=True,
+                preactivation_preload_only=True,
+            )
+
+        self.assertFalse(report["ok"])
+        self.assertTrue(report["fail_closed"])
+        self.assertEqual(report["reason"], "bpf_lookahead_preload_delta_attach_required")
+        self.assertEqual(
+            report["blocked_stage"],
+            "bpf_lookahead_preactivation_preload_delta_attach",
+        )
+        self.assertEqual(report["delta_attach_count"], 0)
+        self.assertEqual(report["full_attach_count"], 0)
+        self.assertTrue(report["runtime_apply_skipped"])
+        self.assertTrue(report["steps"]["attach"]["skipped"])
+        load_maps.assert_not_called()
+        attach_mpls.assert_not_called()
+
+    def test_bpf_owned_lookahead_preload_fails_closed_on_role_capability_gap(
+        self,
+    ) -> None:
+        compiled = {
+            "attach_plan": {"netns:stl-940001:ga-g207s0": ["ingress"]},
+            "attached_interfaces": ["netns:stl-940001:ga-g207s0"],
+            "attached_interface_details": [
+                {
+                    "interface_ref": "netns:stl-940001:ga-g207s0",
+                    "interface_name": "netns:stl-940001:ga-g207s0",
+                    "container_interface_name": "ga-g207s0",
+                    "netns": "stl-940001",
+                    "ifindex": 6590,
+                    "attach_directions": ["ingress"],
+                    "expected_roles": [
+                        "g_to_z_egress_handoff",
+                        "z_to_g_core_lfib",
+                    ],
+                }
+            ],
+            "compiled_mpls_map_counts": {"ingress_classifier_map": 1},
+            "map_conflicts": [],
+            "map_conflict_summary": {"conflict_count": 0},
+            "label_allocation": {},
+            "resolved_mpls_flow_entries": [],
+        }
+        previous_readiness = {
+            "prepare_steps": {
+                "real_backend_prepare": {
+                    "attach_plan": {
+                        "netns:stl-940001:ga-g207s0": ["ingress"],
+                    },
+                    "map_capacities": {
+                        "classifiers": 128,
+                        "lfib": 256,
+                        "handoffs": 128,
+                    },
+                }
+            },
+            "attached_interface_details": [
+                {
+                    "interface_ref": "netns:stl-940001:ga-g207s0",
+                    "interface_name": "netns:stl-940001:ga-g207s0",
+                    "container_interface_name": "ga-g207s0",
+                    "netns": "stl-940001",
+                    "ifindex": 6590,
+                    "attach_directions": ["ingress"],
+                    "expected_roles": ["g_to_z_egress_handoff"],
+                }
+            ],
+        }
+
+        with (
+            patch(
+                "linux_mpls_runtime._bpf_owned_compile_mpls_maps_for_contexts",
+                return_value=compiled,
+            ),
+            patch(
+                "satellite.bpf_dataplane_canary.collect_environment",
+                return_value={},
+            ),
+            patch("satellite.bpf_dataplane_canary.attach_blockers", return_value=[]),
+            patch("satellite.bpf_mpls_live.load_mpls_maps") as load_maps,
+            patch("satellite.bpf_mpls_live.attach_mpls") as attach_mpls,
+        ):
+            report = _bpf_owned_prepare_mpls_backend(
+                proof={"generation_id": 42, "map_entry_count": 1},
+                contexts=(),
+                reuse_attached_readiness=previous_readiness,
+                fail_closed_on_reuse_miss=True,
+                preactivation_preload_only=True,
+            )
+
+        self.assertFalse(report["ok"])
+        self.assertTrue(report["fail_closed"])
+        self.assertEqual(
+            report["reason"],
+            "operational_clean_bpf_attach_reuse_not_eligible:"
+            "interface_role_set_mismatch",
+        )
+        self.assertEqual(
+            report["blocked_stage"],
+            "bpf_hotpath_attach_reuse",
+        )
+        self.assertFalse(report["attach_reuse"]["runtime_attach_allowed"])
+        self.assertEqual(report["attach_reuse"]["interface_role_mismatch_count"], 1)
+        mismatch = report["attach_reuse"]["interface_role_set_mismatches"][0]
+        self.assertEqual(mismatch["node"], "stl-940001")
+        self.assertEqual(mismatch["logical_interface_id"], "netns:stl-940001:ga-g207s0")
+        self.assertEqual(mismatch["physical_interface"], "netns:stl-940001:ga-g207s0")
+        self.assertEqual(mismatch["current_ifindex"], 6590)
+        self.assertEqual(mismatch["missing_required_roles"], ["z_to_g_core_lfib"])
+        self.assertEqual(mismatch["mismatch_type"], "missing_required_role")
+        self.assertEqual(int(report.get("delta_attach_count") or 0), 0)
+        self.assertEqual(int(report.get("full_attach_count") or 0), 0)
+        self.assertFalse(report.get("inactive_generation_written", False))
+        self.assertFalse(report.get("active_generation_set", False))
+        load_maps.assert_not_called()
+        attach_mpls.assert_not_called()
+
+    def test_bpf_owned_lookahead_preload_missing_binding_fails_closed_without_attach(
+        self,
+    ) -> None:
+        def compile_maps(*, contexts, generation_id, offline=False):
+            self.assertFalse(offline)
+            raise RuntimeError(
+                'missing canary interface netns:stl-future:ua-u2001s0: '
+                'Device "ua-u2001s0" does not exist.'
+            )
+
+        context = SimpleNamespace(
+            flow_id="ut-internet-egress:ut2001",
+            ut_id="ut2001",
+            zone_id="zone-a",
+            serving_satellite_id="stl-future",
+            selected_gateway_id="gw201",
+            gateway_nat_interface="ix200",
+            target_host_node_id="as160-host1",
+            ut_access_interface="ua-u2001s0",
+            forward_segments=(),
+            reverse_segments=(),
+        )
+        topology = {
+            "slot_inventory": {
+                "ut_access": [
+                    {
+                        "slot_name": "ut2001-access-slot0",
+                        "slot_type": "ut_access",
+                        "binding": {
+                            "ut_id": "ut2001",
+                            "satellite_id": "stl-other",
+                        },
+                        "dynamic_endpoints": [
+                            {
+                                "node_id": "stl-other",
+                                "node_type": "satellite",
+                                "interface_name": "ua-u2001s0",
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            topology_path = Path(tmp) / "topology.json"
+            topology_path.write_text(json.dumps(topology), encoding="utf-8")
+            with (
+                patch(
+                    "linux_mpls_runtime._bpf_owned_compile_mpls_maps_for_contexts",
+                    side_effect=compile_maps,
+                ),
+                patch("satellite.bpf_mpls_live.load_mpls_maps") as load_maps,
+                patch("satellite.bpf_mpls_live.attach_mpls") as attach_mpls,
+            ):
+                report = _bpf_owned_prepare_mpls_backend(
+                    proof={"generation_id": 43, "map_entry_count": 1},
+                    contexts=(context,),
+                    topology_path=topology_path,
+                    reuse_attached_readiness={"ready": True},
+                    fail_closed_on_reuse_miss=True,
+                    preactivation_preload_only=True,
+                )
+
+        self.assertFalse(report["ok"])
+        self.assertEqual(report["reason"], "ACTIVE_INTERFACE_BINDING_MISSING")
+        self.assertEqual(report["missing_interface_ref"], "netns:stl-future:ua-u2001s0")
+        self.assertEqual(
+            report["missing_binding_context"]["matches"][0]["expected_slot"],
+            "ut2001-access-slot0",
+        )
+        self.assertEqual(
+            report["prepared_inventory_binding_status"]["classification"],
+            "PREPARED_OWNED_INVENTORY_BINDING_MISSING",
+        )
+        self.assertFalse(report.get("inactive_generation_written", False))
+        self.assertEqual(int(report.get("delta_attach_count") or 0), 0)
+        self.assertEqual(int(report.get("full_attach_count") or 0), 0)
+        load_maps.assert_not_called()
+        attach_mpls.assert_not_called()
+
+    def test_prepare_bpf_owned_preactivation_preload_reports_future_inactive_write(
+        self,
+    ) -> None:
+        proof = {
+            "schema_version": "skyseed-bpf-owned-readiness-v1",
+            "logical_intent_ready": True,
+            "generation_id": 42,
+            "attached_interfaces": ["logical:gw1:ix0"],
+            "prepare_steps": {},
+        }
+        prepare_report = {
+            "ok": True,
+            "reason": "",
+            "preactivation_preload_only": True,
+            "preactivation_preload_scheduled": True,
+            "inactive_generation_written": True,
+            "active_generation_flip_skipped": True,
+            "runtime_apply_skipped": True,
+            "delta_attach_count": 0,
+            "full_attach_count": 0,
+            "runtime_full_generation_reload_count": 0,
+            "attached_interfaces": ["netns:gw1:ix0"],
+            "compiled_mpls_map_counts": {"ingress_classifier_map": 1},
+            "preactivation_preload": {"map_write_update_count": 1},
+            "steps": {"preactivation_preload": {"ok": True}},
+            "outcome_labels": ["RUNTIME_PRELOAD_SCHEDULED", "LOOKAHEAD_PRELOAD_ONLY"],
+        }
+
+        with (
+            patch(
+                "linux_mpls_runtime._derive_bpf_owned_readiness_proof",
+                return_value=proof,
+            ),
+            patch(
+                "linux_mpls_runtime._bpf_owned_host_interfaces_for_contexts",
+                return_value=["netns:gw1:ix0"],
+            ),
+            patch(
+                "linux_mpls_runtime._bpf_owned_prepare_mpls_backend",
+                return_value=prepare_report,
+            ) as prepare,
+        ):
+            report = _prepare_bpf_owned_preactivation_preload(
+                runtime_update_plan=SimpleNamespace(),
+                topology_path=Path("topology.json"),
+                contexts=(SimpleNamespace(flow_id="future-flow"),),
+                bpf_owned_readiness={"ready": True},
+            )
+
+        prepare.assert_called_once()
+        self.assertTrue(prepare.call_args.kwargs["preactivation_preload_only"])
+        self.assertTrue(prepare.call_args.kwargs["fail_closed_on_reuse_miss"])
+        self.assertTrue(report["ok"])
+        self.assertFalse(report["ready"])
+        self.assertTrue(report["preactivation_preload_only"])
+        self.assertTrue(report["preactivation_preload_scheduled"])
+        self.assertTrue(report["inactive_generation_written"])
+        self.assertTrue(report["active_generation_flip_skipped"])
+        self.assertTrue(report["runtime_apply_skipped"])
+        self.assertFalse(report["runtime_generation_loaded"])
+        self.assertFalse(report["active_generation_set"])
+        self.assertFalse(report["map_ready"])
+        self.assertFalse(report["fallback_to_linux"])
+        self.assertEqual(report["delta_attach_count"], 0)
+        self.assertEqual(report["full_attach_count"], 0)
+        self.assertIn("LOOKAHEAD_PRELOAD_ONLY", report["outcome_labels"])
 
     def test_bpf_owned_steady_map_reload_failure_fail_closes_without_full_attach(
         self,
@@ -4272,10 +5920,18 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
             ),
             patch(
                 "satellite.bpf_mpls_live.load_mpls_maps",
-                return_value={
-                    "ok": False,
-                    "reason": "active_generation_update_failed",
-                },
+                side_effect=[
+                    {
+                        "ok": True,
+                        "reason": "",
+                        "map_write_update_count": 0,
+                        "active_generation_update_count": 0,
+                    },
+                    {
+                        "ok": False,
+                        "reason": "active_generation_update_failed",
+                    },
+                ],
             ),
             patch("satellite.bpf_mpls_live.attach_mpls") as attach_mpls,
         ):
@@ -4296,6 +5952,8 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
             report["steps"]["reuse_map_load_attempt"]["reason"],
             "active_generation_update_failed",
         )
+        self.assertTrue(report["preactivation_preload_scheduled"])
+        self.assertTrue(report["preactivation_preload"]["ok"])
 
     def test_parameter_batch_reclassification_keeps_pure_parameter_batch(self) -> None:
         result = _parameter_batch_reclassification(
@@ -4310,6 +5968,9 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
         self.assertFalse(result["parameter_batch_reclassified_to_runtime"])
         self.assertEqual(result["reclassification_reason"], "pure_parameter_update_batch")
         self.assertEqual(result["parameter_update_count"], 1)
+        self.assertEqual(result["runtime_update_trigger_reasons"], [])
+        self.assertFalse(result["changed_gz_fec_triggered"])
+        self.assertFalse(result["changed_zone_anchor_path_triggered"])
 
     def test_parameter_batch_reclassification_marks_noop(self) -> None:
         result = _parameter_batch_reclassification(
@@ -4377,6 +6038,34 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
         )
         self.assertEqual(result["runtime_update_action_count"], 2)
         self.assertEqual(result["structural_operation_counts"], {})
+        self.assertEqual(
+            result["runtime_update_trigger_reasons"],
+            ["bpf_generation_content_change"],
+        )
+        self.assertTrue(result["changed_gz_fec_triggered"])
+        self.assertFalse(result["changed_zone_anchor_path_triggered"])
+        self.assertFalse(result["changed_topology_triggered"])
+
+    def test_parameter_batch_reclassification_marks_topology_trigger(self) -> None:
+        result = _parameter_batch_reclassification(
+            classification="parameter_epoch",
+            planned_operations=[
+                {"operation": "update_slot_parameters", "slot_name": "ut1"},
+            ],
+            runtime_update_plan=SimpleNamespace(to_dict=lambda: {"node_subplans": {}}),
+            trigger_reasons=["structural_link_change"],
+        )
+
+        self.assertTrue(result["parameter_batch_reclassified_to_runtime"])
+        self.assertEqual(
+            result["reclassification_reason"],
+            "runtime_update_trigger_in_parameter_update_batch",
+        )
+        self.assertEqual(result["runtime_update_action_count"], 0)
+        self.assertEqual(result["runtime_update_trigger_reasons"], ["structural_link_change"])
+        self.assertFalse(result["changed_gz_fec_triggered"])
+        self.assertTrue(result["changed_zone_anchor_path_triggered"])
+        self.assertTrue(result["changed_topology_triggered"])
 
     def test_parameter_epoch_recovery_blocks_hidden_bpf_owned_refresh(self) -> None:
         contract = _parameter_epoch_recovery_contract(
@@ -4557,6 +6246,45 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
         )
         self.assertAlmostEqual(parallel_accounting["qdisc_cumulative_seconds"], 1.5)
         self.assertAlmostEqual(parallel_accounting["qdisc_wall_seconds"], 0.9)
+
+    def test_runtime_epoch_parameter_updates_require_qdisc_accounting(self) -> None:
+        planned_operations = [
+            {
+                "operation": "update_slot_parameters",
+                "slot_type": "cross_plane_isl",
+                "slot_name": "cp-1",
+                "target_runtime_parameters": {
+                    "delay_ms": 6.0,
+                    "routing_cost": 20,
+                },
+            }
+        ]
+        apply_results = [
+            {
+                **planned_operations[0],
+                "qdisc_required": True,
+                "qdisc_apply_wall_seconds": 0.25,
+            }
+        ]
+
+        self.assertTrue(
+            _epoch_requires_parameter_update_accounting(
+                effective_epoch_type="runtime_epoch",
+                planned_operations=planned_operations,
+                apply_results=apply_results,
+            )
+        )
+        accounting = _parameter_update_batch_accounting(
+            planned_operations=planned_operations,
+            apply_results=apply_results,
+            host_apply_wall_seconds=0.3,
+        )
+
+        self.assertEqual(accounting["planned_qdisc_required_count"], 1)
+        self.assertEqual(accounting["applied_qdisc_required_count"], 1)
+        self.assertEqual(accounting["qdisc_command_count"], 1)
+        self.assertAlmostEqual(accounting["qdisc_cumulative_seconds"], 0.25)
+        self.assertAlmostEqual(accounting["qdisc_wall_seconds"], 0.25)
 
     def test_slot_capacity_audit_blocks_under_provisioned_inventory(self) -> None:
         audit = _slot_capacity_audit(
@@ -4782,6 +6510,89 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
         self.assertIn(
             "p003p004-stl-940120-stl-940178-cross-slot0",
             merged,
+        )
+
+    def test_prepared_owned_resource_index_records_bounded_scope(self) -> None:
+        index = _prepared_owned_resource_index_from_scope(
+            {
+                "cross-slot": {"resource-b", "resource-a"},
+                "ut-slot": ["resource-c"],
+            }
+        )
+
+        self.assertEqual(index["schema_version"], "skyseed-prepared-owned-resource-index-v1")
+        self.assertEqual(index["slot_count"], 2)
+        self.assertEqual(index["resource_count"], 3)
+        self.assertEqual(
+            index["resource_scope_by_slot"]["cross-slot"],
+            ["resource-a", "resource-b"],
+        )
+        self.assertIn("bounded resources owned by this run", index["scope_semantics"])
+
+    def test_prepared_bundle_manifest_summary_exposes_owned_index_counts(self) -> None:
+        index = _prepared_owned_resource_index_from_scope(
+            {
+                "cross-slot": {"resource-a", "resource-b"},
+                "ut-slot": ["resource-c"],
+            }
+        )
+        summary = _prepared_bundle_runtime_manifest_summary(
+            {
+                "source": "event_timeline",
+                "epoch_execution_queue": [{"epoch_id": "runtimeepoch-1"}],
+                "replenishment_events": [{"event_id": "replenish-1"}],
+                "prepared_owned_resource_index": index,
+            }
+        )
+        empty_summary = _prepared_bundle_runtime_manifest_summary(
+            {
+                "source": "event_timeline",
+                "prepared_owned_resource_index": _prepared_owned_resource_index_from_scope(
+                    {}
+                ),
+            }
+        )
+
+        self.assertTrue(summary["prepared_owned_resource_index_present"])
+        self.assertEqual(summary["prepared_owned_resource_index_slot_count"], 2)
+        self.assertEqual(summary["prepared_owned_resource_index_resource_count"], 3)
+        self.assertEqual(summary["epoch_execution_queue_count"], 1)
+        self.assertEqual(summary["replenishment_event_count"], 1)
+        self.assertFalse(empty_summary["prepared_owned_resource_index_present"])
+        self.assertEqual(empty_summary["prepared_owned_resource_index_slot_count"], 0)
+        self.assertEqual(empty_summary["prepared_owned_resource_index_resource_count"], 0)
+
+    def test_prepared_update_bundle_keeps_runtime_owned_index_for_profile_contract(
+        self,
+    ) -> None:
+        index = _prepared_owned_resource_index_from_scope(
+            {"cross-slot": {"resource-a"}}
+        )
+        updated = _prepared_update_bundle_with_continuous_runtime_execution(
+            prepared_update_bundle={
+                "schema_version": "skyseed-prepared-update-bundle-v1",
+                "selected_epoch_queue": [{"epoch_id": "runtimeepoch-1"}],
+            },
+            runtime_report={
+                "prepared_bundle_runtime": {
+                    "source": "event_timeline",
+                    "prepared_owned_resource_index": index,
+                    "prepared_resource_scope_by_slot": index["resource_scope_by_slot"],
+                }
+            },
+        )
+
+        self.assertEqual(
+            updated["schema_version"],
+            "skyseed-prepared-update-bundle-v1",
+        )
+        self.assertEqual(len(updated["selected_epoch_queue"]), 1)
+        runtime = updated["continuous_runtime_execution"]
+        self.assertEqual(runtime["prepared_owned_resource_index"]["slot_count"], 1)
+        self.assertEqual(runtime["prepared_owned_resource_index"]["resource_count"], 1)
+        self.assertEqual(
+            runtime["prepared_resource_scope_by_slot"],
+            {"cross-slot": ["resource-a"]},
         )
 
     def test_inactive_materialized_cross_plane_slot_remains_invisible_without_fallback(self) -> None:
@@ -5353,6 +7164,209 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
             "reuse_attached_bpf_map_reload",
         )
 
+    def test_bpf_owned_generation_mismatch_consumes_preloaded_generation_flip_only(
+        self,
+    ) -> None:
+        previous_readiness = {
+            "ready": True,
+            "ok": True,
+            "generation_id": 41,
+            "active_generation": 41,
+            "current_horizon_id": "H0",
+            "current_source_state_id": "live_state:old:epoch-41",
+            "prepared_generation_ids": [42, None, ""],
+            "attached_interfaces": ["netns:gw1:ix0"],
+            "sliding_horizon_generation_buffer": {
+                "schema_version": "skyseed-sliding-horizon-generation-buffer-v1",
+                "buffer_model": "previous_current_next_triple_buffer",
+            },
+            "preloaded_generation_records": [
+                {
+                    "record_id": "pregeneration-42",
+                    "ok": True,
+                    "horizon_id": "H0",
+                    "generation_id": 42,
+                    "horizon_generation_key": "H0:generation-42",
+                    "intent_hash": "intent-42",
+                    "source_state_id": "live_state:old:epoch-41",
+                    "target_state_id": "live_state:new:epoch-42",
+                    "inactive_generation_written": True,
+                    "retain_inactive_generations": [42, ""],
+                    "compiled_runtime_inputs": {
+                        "schema_version": (
+                            "skyseed-bpf-owned-compiled-runtime-inputs-v1"
+                        ),
+                        "active_generation": {"generation": 42},
+                        "ingress_classifier_map": [],
+                        "core_lfib_map": [],
+                        "egress_handoff_map": [],
+                        "attached_interfaces": ["netns:gw1:ix0"],
+                        "attached_interface_details": [],
+                        "compiled_mpls_map_counts": {
+                            "ingress_classifier_map": 1,
+                            "core_lfib_map": 1,
+                            "egress_handoff_map": 1,
+                        },
+                    },
+                }
+            ],
+        }
+        proof = {
+            "schema_version": "skyseed-bpf-owned-readiness-v1",
+            "logical_intent_ready": True,
+            "generation_id": 42,
+            "intent_hash": "intent-42",
+            "attached_interfaces": ["logical:gw1:ix0"],
+            "prepare_steps": {},
+        }
+
+        with (
+            patch(
+                "linux_mpls_runtime._prove_bpf_owned_readiness",
+                return_value={
+                    **previous_readiness,
+                    "ready": False,
+                    "ok": False,
+                    "readiness_mismatch_reason": (
+                        "bpf_owned_readiness_active_generation_mismatch"
+                    ),
+                },
+            ),
+            patch(
+                "linux_mpls_runtime._derive_bpf_owned_readiness_proof",
+                return_value=proof,
+            ),
+            patch(
+                "satellite.bpf_mpls_live.load_mpls_maps",
+                return_value={
+                    "ok": True,
+                    "active_generation_flip_only": True,
+                    "map_write_update_count": 0,
+                    "active_generation_update_count": 1,
+                    "active_generation_switch_count": 1,
+                    "map_write_wall_seconds": 0.01,
+                    "runtime_reload_attribution": {
+                        "preloaded_generation_used": True,
+                    },
+                },
+            ) as load_maps,
+            patch(
+                "linux_mpls_runtime._bpf_owned_prepare_mpls_backend",
+            ) as prepare,
+            patch(
+                "linux_mpls_runtime._bpf_owned_readiness_mismatch_reason",
+                return_value="",
+            ),
+        ):
+            result = _prepare_bpf_owned_readiness(
+                runtime_update_plan=SimpleNamespace(),
+                topology_path=Path("topology.json"),
+                contexts=(SimpleNamespace(),),
+                bpf_owned_readiness=previous_readiness,
+                fail_closed_on_reuse_miss=True,
+            )
+
+        load_maps.assert_called_once()
+        compiled_for_flip = load_maps.call_args.args[0]
+        self.assertTrue(compiled_for_flip["require_preloaded_generation_flip_only"])
+        self.assertEqual(compiled_for_flip["retain_inactive_generations"], [42])
+        prepare.assert_not_called()
+        self.assertTrue(result["ready"])
+        self.assertFalse(result["fallback_to_linux"])
+        self.assertTrue(result["preloaded_generation_consumed"])
+        self.assertEqual(result["current_horizon_id"], "H0")
+        self.assertEqual(result["current_source_state_id"], "live_state:new:epoch-42")
+        self.assertEqual(result["consumed_source_state_id"], "live_state:old:epoch-41")
+        self.assertEqual(result["active_horizon_generation_key"], "H0:generation-42")
+        self.assertEqual(result["preloaded_generation_records"], [])
+        self.assertEqual(
+            result["prepare_steps"]["real_backend_prepare"]["prepare_mode"],
+            "preloaded_generation_flip_only",
+        )
+
+    def test_bpf_owned_preloaded_generation_source_state_mismatch_fails_closed(
+        self,
+    ) -> None:
+        previous_readiness = {
+            "ready": True,
+            "ok": True,
+            "generation_id": 41,
+            "active_generation": 41,
+            "current_horizon_id": "H0",
+            "current_source_state_id": "live_state:actual:epoch-41",
+            "preloaded_generation_records": [
+                {
+                    "record_id": "pregeneration-42",
+                    "ok": True,
+                    "horizon_id": "H0",
+                    "generation_id": 42,
+                    "horizon_generation_key": "H0:generation-42",
+                    "intent_hash": "intent-42",
+                    "source_state_id": "live_state:stale:epoch-41",
+                    "target_state_id": "live_state:new:epoch-42",
+                    "inactive_generation_written": True,
+                    "compiled_runtime_inputs": {
+                        "schema_version": (
+                            "skyseed-bpf-owned-compiled-runtime-inputs-v1"
+                        ),
+                        "active_generation": {"generation": 42},
+                        "ingress_classifier_map": [],
+                        "core_lfib_map": [],
+                        "egress_handoff_map": [],
+                    },
+                }
+            ],
+        }
+        proof = {
+            "schema_version": "skyseed-bpf-owned-readiness-v1",
+            "logical_intent_ready": True,
+            "generation_id": 42,
+            "intent_hash": "intent-42",
+            "attached_interfaces": ["logical:gw1:ix0"],
+        }
+
+        with (
+            patch(
+                "linux_mpls_runtime._prove_bpf_owned_readiness",
+                return_value={
+                    **previous_readiness,
+                    "ready": False,
+                    "ok": False,
+                    "readiness_mismatch_reason": (
+                        "bpf_owned_readiness_intent_hash_mismatch"
+                    ),
+                },
+            ),
+            patch(
+                "linux_mpls_runtime._derive_bpf_owned_readiness_proof",
+                return_value=proof,
+            ),
+            patch(
+                "linux_mpls_runtime._bpf_owned_prepare_mpls_backend",
+            ) as prepare,
+            patch("satellite.bpf_mpls_live.load_mpls_maps") as load_maps,
+        ):
+            result = _prepare_bpf_owned_readiness(
+                runtime_update_plan=SimpleNamespace(),
+                topology_path=Path("topology.json"),
+                contexts=(SimpleNamespace(),),
+                bpf_owned_readiness=previous_readiness,
+                fail_closed_on_reuse_miss=True,
+            )
+
+        prepare.assert_not_called()
+        load_maps.assert_not_called()
+        self.assertFalse(result["ready"])
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["fail_closed"])
+        self.assertFalse(result["fallback_to_linux"])
+        self.assertEqual(result["reason"], "bpf_preloaded_generation_missing")
+        self.assertEqual(result["current_horizon_id"], "H0")
+        self.assertEqual(
+            result["current_source_state_id"],
+            "live_state:actual:epoch-41",
+        )
+
     def test_bpf_owned_readiness_passes_resident_attach_contexts(self) -> None:
         proof = {
             "schema_version": "skyseed-bpf-owned-readiness-v1",
@@ -5501,6 +7515,62 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
             result["prepare_steps"]["real_backend_prepare"]["blocked_stage"],
             "bpf_hotpath_attach_reuse",
         )
+
+    def test_bpf_owned_generation_mismatch_without_preload_fails_closed_no_fallback(
+        self,
+    ) -> None:
+        previous_readiness = {
+            "ready": True,
+            "ok": True,
+            "generation_id": 41,
+            "active_generation": 41,
+            "preloaded_generation_records": [],
+        }
+        proof = {
+            "schema_version": "skyseed-bpf-owned-readiness-v1",
+            "logical_intent_ready": True,
+            "generation_id": 42,
+            "intent_hash": "intent-42",
+            "attached_interfaces": ["logical:gw1:ix0"],
+        }
+
+        with (
+            patch(
+                "linux_mpls_runtime._prove_bpf_owned_readiness",
+                return_value={
+                    **previous_readiness,
+                    "ready": False,
+                    "ok": False,
+                    "readiness_mismatch_reason": (
+                        "bpf_owned_readiness_active_generation_mismatch"
+                    ),
+                },
+            ),
+            patch(
+                "linux_mpls_runtime._derive_bpf_owned_readiness_proof",
+                return_value=proof,
+            ),
+            patch(
+                "linux_mpls_runtime._bpf_owned_prepare_mpls_backend",
+            ) as prepare,
+        ):
+            result = _prepare_bpf_owned_readiness(
+                runtime_update_plan=SimpleNamespace(),
+                topology_path=Path("topology.json"),
+                contexts=(SimpleNamespace(),),
+                bpf_owned_readiness=previous_readiness,
+                fail_closed_on_reuse_miss=True,
+            )
+
+        prepare.assert_not_called()
+        self.assertFalse(result["ready"])
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["fail_closed"])
+        self.assertFalse(result["fallback_to_linux"])
+        self.assertFalse(result["runtime_attach_allowed"])
+        self.assertFalse(result["runtime_full_generation_reload_allowed"])
+        self.assertEqual(result["blocked_stage"], "bpf_preloaded_generation_handoff")
+        self.assertEqual(result["reason"], "bpf_preloaded_generation_missing")
 
     def test_bpf_owned_runtime_readiness_failure_message_preserves_blocker(self) -> None:
         message = _bpf_owned_runtime_readiness_failure_message(

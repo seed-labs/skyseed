@@ -2,6 +2,7 @@
 # encoding: utf-8
 
 import sys
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,6 +18,7 @@ if str(APPS_DIR) not in sys.path:
     sys.path.insert(0, str(APPS_DIR))
 
 from apps.run_starlink_shell_experiment import (  # noqa: E402
+    _append_forwarding_relevant_lookahead_boundary,
     _bpf_backend_opted_in,
     _compact_epoch_execution_record,
     _compose_service_metadata,
@@ -28,7 +30,20 @@ from apps.run_starlink_shell_experiment import (  # noqa: E402
     _continuous_operation_summary,
     _experiment_summary_payload,
     _finalize_runtime_status_fields,
+    _freeze_prepared_update_bundle,
     _ground_endpoint_startup_summary,
+    _horizon_lifecycle_queue_contract,
+    _bundle_backed_live_execution_source_gate,
+    _bundle_backed_compose_pre_runtime_prepare_proof,
+    _bundle_backed_minimal_helper_consumption_proof,
+    _bundle_backed_1p1_horizon_runtime_proof,
+    _bundle_backed_one_horizon_runtime_proof,
+    _bundle_backed_runtime_source_binding_gate,
+    _frozen_bundle_normal_runtime_inputs_gate,
+    _load_frozen_prepared_bundle_gate,
+    _precompose_bpf_role_union_gate_from_reports,
+    _precompose_horizon_queue_gate,
+    _verify_frozen_prepared_bundle,
     _live_timing_summary,
     _runtime_failure_context_summary,
     _stage_ready_service_names,
@@ -254,6 +269,366 @@ def _summary_payload_for_test(
 
 
 class EventTimelineRuntimeQueueTests(unittest.TestCase):
+    def test_lifecycle_queue_keeps_forwarding_boundary_as_lookahead_preload(self) -> None:
+        temporal_plan = {
+            "orbit_samples": [
+                {
+                    "sample_id": f"sample-{index}",
+                    "sample_index": index,
+                    "slice_id": f"slice-{index}",
+                    "relative_time_seconds": float((index - 1) * 10),
+                    "absolute_time_utc": f"2026-06-21T00:00:{(index - 1) * 10:02d}Z",
+                }
+                for index in range(1, 5)
+            ],
+            "runtime_epochs": [
+                {
+                    "epoch_id": f"runtime-{index}",
+                    "sample_id": f"sample-{index}",
+                    "slice_id": f"slice-{index}",
+                    "activation_relative_time_seconds": float((index - 1) * 10),
+                    "activation_time_utc": f"2026-06-21T00:00:{(index - 1) * 10:02d}Z",
+                    "activation_group_id": f"activation-{index}",
+                    "trigger_reasons": ["structural_link_change"],
+                }
+                for index in range(1, 4)
+            ],
+            "parameter_epochs": [
+                {
+                    "epoch_id": "parameter-1",
+                    "sample_id": "sample-4",
+                    "slice_id": "slice-4",
+                    "activation_relative_time_seconds": 30.0,
+                    "activation_time_utc": "2026-06-21T00:00:30Z",
+                    "activation_group_id": "activation-4",
+                    "trigger_reasons": ["bandwidth_threshold_exceeded"],
+                }
+            ],
+        }
+
+        _, selected_queue, _, _ = _temporal_execution_queue(
+            temporal_plan,
+            max_epochs=None,
+            max_runtime_epochs=2,
+            max_parameter_epochs=1,
+        )
+        _, candidate_queue, _, _ = _temporal_execution_queue(
+            temporal_plan,
+            max_epochs=None,
+            max_runtime_epochs=None,
+            max_parameter_epochs=None,
+        )
+
+        lifecycle_queue = _append_forwarding_relevant_lookahead_boundary(
+            selected_epoch_queue=selected_queue,
+            candidate_epoch_queue=candidate_queue,
+            max_runtime_epochs=2,
+            max_parameter_epochs=1,
+        )
+        contract = _horizon_lifecycle_queue_contract(
+            selected_epoch_queue=lifecycle_queue,
+            max_runtime_epochs=2,
+            max_parameter_epochs=1,
+        )
+
+        self.assertEqual(len(selected_queue), 3)
+        self.assertEqual(contract["selected_event_count"], 4)
+        self.assertEqual(contract["current_execution_event_count"], 3)
+        self.assertEqual(contract["current_runtime_applicable_event_count"], 3)
+        self.assertEqual(contract["lookahead_preload_event_count"], 1)
+        self.assertEqual(contract["preload_only_boundary_event_count"], 1)
+        self.assertEqual(contract["preload_required_event_count"], 1)
+        self.assertEqual(contract["duplicate_event_count"], 0)
+        self.assertFalse(contract["current_execution_queue_contains_preload_only"])
+        self.assertTrue(contract["selected_current_lookahead_accounting_consistent"])
+        self.assertEqual(
+            contract["lookahead_preload_queue"][0]["epoch_id"],
+            "runtime-3",
+        )
+        self.assertEqual(
+            contract["lookahead_preload_queue"][0]["lookahead_selection_policy"],
+            "first_forwarding_relevant_event_after_current_window_by_event_queue_order",
+        )
+        self.assertTrue(contract["lookahead_preload_queue"][0]["preload_only"])
+        self.assertFalse(
+            contract["lookahead_preload_queue"][0]["runtime_apply_allowed"]
+        )
+        self.assertEqual(
+            contract["lookahead_preload_queue"][0]["activation_contract"],
+            "preload_only_write_inactive_generation_no_flip",
+        )
+        gate = _precompose_horizon_queue_gate(
+            requested_lifecycle_aware_1p1=True,
+            candidate_epoch_queue=candidate_queue,
+            horizon_lifecycle_queue_contract=contract,
+            prepared_update_bundle={
+                "selected_epoch_queue": lifecycle_queue,
+                "current_execution_queue": contract["current_execution_queue"],
+                "lookahead_preload_queue": contract["lookahead_preload_queue"],
+            },
+        )
+        self.assertTrue(gate["passed"])
+        self.assertEqual(gate["boundary_event_id"], "runtime-3")
+        self.assertEqual(gate["boundary_event_role"], "lookahead_preload_only")
+        self.assertFalse(gate["boundary_event_runtime_apply_allowed"])
+        self.assertTrue(gate["boundary_event_preload_required"])
+        self.assertEqual(
+            gate["prepared_update_bundle_counts"],
+            {"selected": 4, "current": 3, "lookahead": 1},
+        )
+
+    def test_lifecycle_queue_selects_exactly_one_lookahead_boundary(self) -> None:
+        selected_epoch_queue = [
+            {
+                "epoch_id": "runtime-1",
+                "slice_id": "slice-1",
+                "classification": "runtime_epoch",
+                "trigger_reasons": ["initial_runtime_epoch"],
+            },
+            {
+                "epoch_id": "runtime-2",
+                "slice_id": "slice-2",
+                "classification": "runtime_epoch",
+                "trigger_reasons": ["structural_link_change"],
+            },
+            {
+                "epoch_id": "runtime-3",
+                "slice_id": "slice-3",
+                "classification": "runtime_epoch",
+                "trigger_reasons": ["structural_link_change"],
+            },
+            {
+                "epoch_id": "runtime-4",
+                "slice_id": "slice-4",
+                "classification": "runtime_epoch",
+                "trigger_reasons": ["structural_link_change"],
+            },
+        ]
+
+        contract = _horizon_lifecycle_queue_contract(
+            selected_epoch_queue=selected_epoch_queue,
+            max_runtime_epochs=2,
+            max_parameter_epochs=0,
+        )
+
+        self.assertEqual(contract["current_execution_event_count"], 2)
+        self.assertEqual(contract["lookahead_preload_event_count"], 1)
+        self.assertEqual(contract["preload_required_event_count"], 1)
+        self.assertEqual(contract["not_selected_event_count"], 1)
+        self.assertEqual(
+            contract["lookahead_preload_queue_epoch_ids"],
+            ["runtime-3"],
+        )
+        self.assertEqual(
+            contract["event_reports"][3]["horizon_execution_role"],
+            "not_selected_for_current_execution",
+        )
+
+    def test_precompose_horizon_gate_blocks_exactly_one_lookahead_violation(
+        self,
+    ) -> None:
+        current_queue = [
+            {
+                "epoch_id": "runtime-1",
+                "horizon_execution_role": "current_execution",
+                "runtime_apply_allowed": True,
+            }
+        ]
+        lookahead_queue = [
+            {
+                "epoch_id": "runtime-2",
+                "horizon_execution_role": "lookahead_preload_only",
+                "runtime_apply_allowed": False,
+                "preload_required": True,
+                "preload_only": True,
+                "classification": "runtime_epoch",
+                "trigger_reasons": ["structural_link_change"],
+                "lookahead_selection_policy": (
+                    "first_forwarding_relevant_event_after_current_window_by_event_queue_order"
+                ),
+            },
+            {
+                "epoch_id": "runtime-3",
+                "horizon_execution_role": "lookahead_preload_only",
+                "runtime_apply_allowed": False,
+                "preload_required": True,
+                "preload_only": True,
+                "classification": "runtime_epoch",
+                "trigger_reasons": ["structural_link_change"],
+                "lookahead_selection_policy": (
+                    "first_forwarding_relevant_event_after_current_window_by_event_queue_order"
+                ),
+            },
+        ]
+        contract = {
+            "selected_event_count": 3,
+            "current_execution_event_count": 1,
+            "current_runtime_applicable_event_count": 1,
+            "lookahead_preload_event_count": 2,
+            "preload_required_event_count": 2,
+            "preload_only_boundary_event_count": 2,
+            "not_selected_event_count": 0,
+            "duplicate_event_keys": [],
+            "current_execution_queue": current_queue,
+            "lookahead_preload_queue": lookahead_queue,
+            "event_reports": [
+                {"epoch_id": "runtime-1"},
+                {"epoch_id": "runtime-2"},
+                {"epoch_id": "runtime-3"},
+            ],
+        }
+
+        gate = _precompose_horizon_queue_gate(
+            requested_lifecycle_aware_1p1=True,
+            candidate_epoch_queue=[*current_queue, *lookahead_queue],
+            horizon_lifecycle_queue_contract=contract,
+            prepared_update_bundle={
+                "selected_epoch_queue": [*current_queue, *lookahead_queue],
+                "current_execution_queue": current_queue,
+                "lookahead_preload_queue": lookahead_queue,
+            },
+        )
+
+        self.assertFalse(gate["passed"])
+        self.assertFalse(gate["compose_up_allowed"])
+        blockers = {blocker["blocker"] for blocker in gate["blockers"]}
+        self.assertIn("exactly_one_lookahead_preload_event_required", blockers)
+        self.assertIn("exactly_one_preload_required_event_required", blockers)
+
+    def test_precompose_bpf_role_union_gate_covers_lookahead_roles(self) -> None:
+        gate = _precompose_bpf_role_union_gate_from_reports(
+            current_event_role_reports=[
+                {
+                    "epoch_id": "runtime-1",
+                    "slice_id": "slice-1",
+                    "generation_id": 0,
+                    "attach_plan": {"netns:sat-a:if0": ["ingress"]},
+                    "role_by_interface": {
+                        "netns:sat-a:if0": ["g_to_z_classifier"],
+                    },
+                    "interface_details": {
+                        "netns:sat-a:if0": {
+                            "interface_ref": "netns:sat-a:if0",
+                            "interface_name": "netns:sat-a:if0",
+                            "ifindex": 100,
+                            "netns": "sat-a",
+                        }
+                    },
+                }
+            ],
+            lookahead_event_role_reports=[
+                {
+                    "epoch_id": "runtime-2",
+                    "slice_id": "slice-2",
+                    "generation_id": 1,
+                    "attach_plan": {"netns:sat-a:if0": ["ingress"]},
+                    "role_by_interface": {
+                        "netns:sat-a:if0": [
+                            "g_to_z_classifier",
+                            "z_to_g_core_lfib",
+                        ],
+                    },
+                    "interface_details": {
+                        "netns:sat-a:if0": {
+                            "interface_ref": "netns:sat-a:if0",
+                            "interface_name": "netns:sat-a:if0",
+                            "ifindex": 100,
+                            "netns": "sat-a",
+                        }
+                    },
+                }
+            ],
+        )
+
+        self.assertTrue(gate["passed"])
+        self.assertEqual(gate["required_interface_role_union_count"], 2)
+        self.assertEqual(gate["prepared_bpf_attach_capability_count"], 2)
+        self.assertEqual(gate["interface_role_mismatch_count"], 0)
+        self.assertEqual(gate["attach_reuse_eligible_count"], 1)
+        self.assertEqual(gate["attach_reuse_ineligible_count"], 0)
+        self.assertEqual(gate["future_non_materialized_capacity_only_interface_count"], 0)
+        self.assertFalse(gate["runtime_attach_allowed"])
+        self.assertEqual(gate["delta_attach_count"], 0)
+        self.assertEqual(gate["full_attach_count"], 0)
+        self.assertTrue(gate["preload_report_written"])
+        self.assertIn("skyseed_details", gate)
+        self.assertEqual(
+            gate["required_interface_role_union_by_role"],
+            {"g_to_z_classifier": 1, "z_to_g_core_lfib": 1},
+        )
+
+    def test_precompose_bpf_binding_coverage_requires_fixed_shell_inventory(
+        self,
+    ) -> None:
+        topology = {
+            "slot_inventory": {
+                "same_plane_isl": [
+                    {
+                        "slot_name": "fixed-shell-0150",
+                        "slot_type": "same_plane_isl",
+                        "endpoint_a_template": {
+                            "node_id": "stl-940150",
+                            "interface_name": "fs0150",
+                        },
+                        "endpoint_b_template": {
+                            "node_id": "stl-940151",
+                            "interface_name": "fs0150",
+                        },
+                        "candidate_pairs": [
+                            {
+                                "satellite_a_id": "stl-940150",
+                                "satellite_b_id": "stl-940151",
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
+        role_report = {
+            "epoch_id": "runtime-1",
+            "slice_id": "slice-1",
+            "generation_id": 0,
+            "attach_plan": {"netns:stl-940150:fs0150": ["ingress"]},
+            "role_by_interface": {
+                "netns:stl-940150:fs0150": ["g_to_z_core_lfib"],
+            },
+            "interface_details": {
+                "netns:stl-940150:fs0150": {
+                    "interface_ref": "netns:stl-940150:fs0150",
+                    "expected_roles": ["g_to_z_core_lfib"],
+                }
+            },
+        }
+
+        missing_gate = _precompose_bpf_role_union_gate_from_reports(
+            current_event_role_reports=[role_report],
+            lookahead_event_role_reports=[],
+            resource_coverage_plan={"prepared_resource_scope_by_slot": {}},
+            topology=topology,
+        )
+        self.assertFalse(missing_gate["passed"])
+        self.assertEqual(
+            missing_gate["unresolved_bpf_interface_binding_count"],
+            1,
+        )
+
+        covered_gate = _precompose_bpf_role_union_gate_from_reports(
+            current_event_role_reports=[role_report],
+            lookahead_event_role_reports=[],
+            resource_coverage_plan={
+                "prepared_resource_scope_by_slot": {
+                    "fixed-shell-0150": ["same_plane_isl:stl-940150:stl-940151"]
+                }
+            },
+            topology=topology,
+        )
+        self.assertTrue(covered_gate["passed"])
+        self.assertEqual(
+            covered_gate["unresolved_bpf_interface_binding_count"],
+            0,
+        )
+        self.assertTrue(covered_gate["fixed_shell_0150_resolved"])
+
     def test_helper_compose_stage_timeout_scales_for_network_creation_and_s4_helper_count(self) -> None:
         self.assertEqual(
             _compose_stage_timeout_seconds(
@@ -1431,6 +1806,885 @@ class EventTimelineRuntimeQueueTests(unittest.TestCase):
                 "authoritative_for_runtime_pass"
             ]
         )
+
+
+class FrozenPreparedBundleContractTests(unittest.TestCase):
+    def _args(self, **overrides: object) -> SimpleNamespace:
+        payload = {
+            "run_mode": "real-runtime",
+            "orbit_input_mode": "planned-shell",
+            "planned_shell_id": "S4",
+            "max_satellites": 24,
+            "start_time": "2026-06-21T00:00:00Z",
+            "runtime_mode": "operational_clean",
+            "forwarding_backend": "bpf_owned",
+            "horizon_seconds": 120,
+            "max_runtime_epochs": 4,
+            "max_parameter_epochs": 1,
+            "run_id": "ignored",
+            "run_root": "/tmp/ignored",
+            "format": "json",
+            "prepare_only_no_compose": False,
+            "stop_after_pre_start_gates": False,
+            "bundle_backed_compose_pre_runtime_proof": False,
+            "bundle_backed_one_horizon_runtime_proof": False,
+            "bundle_backed_1p1_horizon_runtime_proof": False,
+            "load_frozen_prepared_bundle": None,
+            "prepared_bundle_diagnostic_recompute_attempted": False,
+        }
+        payload.update(overrides)
+        return SimpleNamespace(**payload)
+
+    def _frozen_bundle(self, **arg_overrides: object) -> dict:
+        start_time = str(
+            arg_overrides.get("start_time") or "2026-06-21T00:00:00Z"
+        )
+        prepared = {
+            "selected_epoch_queue": [
+                {"event_id": "runtime-1", "absolute_time_utc": start_time},
+                {"event_id": "parameter-1", "absolute_time_utc": "2026-06-21T00:00:10Z"},
+                {"event_id": "runtime-2", "absolute_time_utc": "2026-06-21T00:00:20Z"},
+            ],
+            "current_execution_queue": [
+                {"event_id": "runtime-1"},
+                {"event_id": "parameter-1"},
+            ],
+            "lookahead_preload_queue": [
+                {
+                    "event_id": "runtime-2",
+                    "execution_role": "lookahead_preload_only",
+                    "runtime_apply_allowed": False,
+                    "preload_required": True,
+                }
+            ],
+            "precompose_horizon_queue_gate": {
+                "preload_required_event_count": 1,
+            },
+            "prepared_artifacts": {},
+        }
+        return _freeze_prepared_update_bundle(
+            prepared_update_bundle=prepared,
+            args=self._args(**arg_overrides),
+            prepared_resource_scope_by_slot={
+                "slot-a": {"netns:node-a:if-a", "link:isl-a"}
+            },
+            precompose_bpf_role_union_gate={
+                "required_interface_role_union": {
+                    "netns:node-a:if-a": ["ingress_classifier", "core_lfib"]
+                },
+                "preload_reports": [{"event_id": "runtime-2", "status": "success"}],
+                "preload_report_summary": {"success_count": 1},
+            },
+        )
+
+    def test_prepare_only_frozen_bundle_verifies_id_hash_and_ids(self) -> None:
+        bundle = self._frozen_bundle()
+
+        gate = _verify_frozen_prepared_bundle(bundle)
+
+        self.assertTrue(gate["passed"])
+        self.assertEqual(gate["execution_source"], "prepared_update_bundle")
+        self.assertEqual(gate["loaded_bundle_id"], bundle["bundle_id"])
+        self.assertEqual(gate["loaded_bundle_hash"], bundle["bundle_hash"])
+        self.assertFalse(gate["planner_recomputed"])
+        self.assertTrue(gate["live_used_frozen_bundle"])
+        self.assertEqual(gate["loaded_current_execution_ids"], ["runtime-1", "parameter-1"])
+        self.assertEqual(gate["loaded_lookahead_preload_ids"], ["runtime-2"])
+        self.assertEqual(gate["queue_accounting"]["selected_total"], 3)
+        self.assertEqual(gate["queue_accounting"]["current_runtime_applicable"], 2)
+        self.assertEqual(gate["queue_accounting"]["lookahead_preload_required"], 1)
+        self.assertIn("executable_runtime_inputs", bundle)
+        self.assertIn(
+            "executable_runtime_inputs_hash",
+            bundle["executable_runtime_inputs"]["hashes"],
+        )
+
+    def test_bundle_backed_live_execution_source_gate_passes_without_compose(self) -> None:
+        load_gate = _verify_frozen_prepared_bundle(self._frozen_bundle())
+
+        source_gate = _bundle_backed_live_execution_source_gate(
+            load_gate=load_gate,
+            no_compose_proof_mode=True,
+        )
+
+        self.assertTrue(source_gate["passed"])
+        self.assertTrue(source_gate["live_used_frozen_bundle"])
+        self.assertEqual(source_gate["execution_source"], "prepared_update_bundle")
+        self.assertFalse(source_gate["planner_recomputed"])
+        self.assertFalse(source_gate["actual_s4_runtime_proof"])
+        self.assertFalse(source_gate["compose_started"])
+
+    def test_bundle_backed_runtime_source_binding_uses_bundle_for_all_sources(self) -> None:
+        bundle = self._frozen_bundle()
+        source_gate = _bundle_backed_live_execution_source_gate(
+            load_gate=_verify_frozen_prepared_bundle(bundle),
+            no_compose_proof_mode=True,
+        )
+
+        runtime_gate = _bundle_backed_runtime_source_binding_gate(
+            prepared_update_bundle=bundle,
+            source_gate=source_gate,
+        )
+
+        self.assertTrue(runtime_gate["passed"])
+        for key in (
+            "execution_source",
+            "runtime_execution_source",
+            "resource_inventory_source",
+            "bpf_plan_source",
+            "role_union_source",
+            "generation_plan_source",
+            "preload_plan_source",
+            "cleanup_scope_source",
+        ):
+            self.assertEqual(runtime_gate[key], "prepared_update_bundle")
+        self.assertFalse(runtime_gate["runtime_helper_reached"])
+        self.assertFalse(runtime_gate["planner_callsite_reached"])
+        self.assertFalse(runtime_gate["runtime_planner_recomputed"])
+        self.assertFalse(runtime_gate["compose_started"])
+
+    def test_bundle_backed_runtime_source_binding_fails_closed_on_missing_inputs(self) -> None:
+        bundle = self._frozen_bundle()
+        bundle["current_execution_queue"] = []
+        bundle["resource_refs"] = []
+        bundle["bpf_required_interface_refs"] = []
+        bundle["cleanup_owned_scope"] = {"resource_count": 0}
+        source_gate = _bundle_backed_live_execution_source_gate(
+            load_gate=_verify_frozen_prepared_bundle(bundle),
+            no_compose_proof_mode=True,
+        )
+
+        runtime_gate = _bundle_backed_runtime_source_binding_gate(
+            prepared_update_bundle=bundle,
+            source_gate=source_gate,
+        )
+
+        blockers = {blocker["blocker"] for blocker in runtime_gate["blockers"]}
+        self.assertFalse(runtime_gate["passed"])
+        self.assertIn("bundle_runtime_current_execution_queue_missing", blockers)
+        self.assertIn("bundle_runtime_resource_inventory_missing", blockers)
+        self.assertIn("bundle_runtime_bpf_required_refs_missing", blockers)
+        self.assertIn("bundle_runtime_cleanup_owned_scope_missing", blockers)
+
+    def test_minimal_helper_consumption_reaches_helpers_from_bundle(self) -> None:
+        bundle = self._frozen_bundle()
+        source_gate = _bundle_backed_runtime_source_binding_gate(
+            prepared_update_bundle=bundle,
+            source_gate=_bundle_backed_live_execution_source_gate(
+                load_gate=_verify_frozen_prepared_bundle(bundle),
+                no_compose_proof_mode=True,
+            ),
+        )
+
+        proof = _bundle_backed_minimal_helper_consumption_proof(
+            prepared_update_bundle=bundle,
+            runtime_source_gate=source_gate,
+        )
+
+        self.assertTrue(proof["passed"])
+        self.assertTrue(proof["runtime_helper_reached"])
+        self.assertTrue(proof["preload_helper_reached"])
+        self.assertTrue(proof["generation_helper_reached"])
+        self.assertEqual(proof["runtime_helper_input_source"], "prepared_update_bundle")
+        self.assertEqual(proof["preload_helper_input_source"], "prepared_update_bundle")
+        self.assertEqual(proof["generation_helper_input_source"], "prepared_update_bundle")
+        self.assertFalse(proof["network_mutation_executed"])
+        self.assertFalse(proof["runtime_started"])
+
+    def test_minimal_helper_consumption_fails_on_authoritative_recompute_attempts(self) -> None:
+        bundle = self._frozen_bundle()
+        source_gate = _bundle_backed_runtime_source_binding_gate(
+            prepared_update_bundle=bundle,
+            source_gate=_bundle_backed_live_execution_source_gate(
+                load_gate=_verify_frozen_prepared_bundle(bundle),
+                no_compose_proof_mode=True,
+            ),
+        )
+
+        proof = _bundle_backed_minimal_helper_consumption_proof(
+            prepared_update_bundle=bundle,
+            runtime_source_gate=source_gate,
+            helper_recompute_attempts={
+                "queue_split": True,
+                "resource_resolve": True,
+                "role_union_build": True,
+                "bpf_plan_build": True,
+                "generation_plan_rebuild": True,
+                "consume_diagnostic_recompute_result": True,
+            },
+        )
+
+        blockers = {blocker["blocker"] for blocker in proof["blockers"]}
+        self.assertFalse(proof["passed"])
+        self.assertIn("helper_attempted_authoritative_queue_recompute", blockers)
+        self.assertIn("helper_attempted_live_resource_resolution", blockers)
+        self.assertIn("helper_attempted_authoritative_role_union_rebuild", blockers)
+        self.assertIn("helper_attempted_authoritative_bpf_plan_rebuild", blockers)
+        self.assertIn("helper_attempted_generation_preload_plan_rebuild", blockers)
+        self.assertIn(
+            "helper_attempted_to_consume_diagnostic_recompute_result",
+            blockers,
+        )
+
+    def test_compose_pre_runtime_prepare_proof_uses_bundle_sources(self) -> None:
+        bundle = self._frozen_bundle()
+        helper_proof = _bundle_backed_minimal_helper_consumption_proof(
+            prepared_update_bundle=bundle,
+            runtime_source_gate=_bundle_backed_runtime_source_binding_gate(
+                prepared_update_bundle=bundle,
+                source_gate=_bundle_backed_live_execution_source_gate(
+                    load_gate=_verify_frozen_prepared_bundle(bundle),
+                    no_compose_proof_mode=True,
+                ),
+            ),
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir) / "seed_output"
+            output_dir.mkdir()
+            (output_dir / "docker-compose.yml").write_text("version: '3'\n", encoding="utf-8")
+            bundle["prepared_compose_output"] = {
+                "seed_output_dir": str(output_dir),
+                "docker_compose_yml": str(output_dir / "docker-compose.yml"),
+            }
+            with patch(
+                "apps.run_starlink_shell_experiment._compose_service_metadata",
+                return_value={
+                    "container_names": ["seed_output_helper_1"],
+                    "service_name_by_container": {"seed_output_helper_1": "helper"},
+                },
+            ), patch(
+                "apps.run_starlink_shell_experiment._compose_audit",
+                return_value={
+                    "service_names_by_type": {"helper": ["seed_output_helper_1"]},
+                    "service_attachment_count": 1,
+                },
+            ), patch(
+                "apps.run_starlink_shell_experiment._compose_up_with_timeout",
+                return_value={"returncode": 0, "timed_out": False, "wall_seconds": 0.01},
+            ) as compose_up, patch(
+                "apps.run_starlink_shell_experiment._compose_down",
+                return_value={"returncode": 0, "stdout": "", "stderr": ""},
+            ) as compose_down:
+                proof = _bundle_backed_compose_pre_runtime_prepare_proof(
+                    prepared_update_bundle=bundle,
+                    helper_consumption_proof=helper_proof,
+                    args=self._args(compose_satellite_batch_size=1, compose_up_timeout_seconds=5),
+                    run_dir=Path(tmpdir),
+                )
+
+        self.assertTrue(proof["passed"])
+        self.assertTrue(proof["compose_started"])
+        self.assertTrue(proof["pre_runtime_prepare_reached"])
+        self.assertEqual(proof["pre_runtime_prepare_source"], "prepared_update_bundle")
+        self.assertEqual(proof["bpf_plan_source"], "prepared_update_bundle")
+        self.assertFalse(proof["runtime_started"])
+        self.assertFalse(proof["network_mutation_executed"])
+        self.assertTrue(proof["cleanup_executed"])
+        compose_up.assert_called_once()
+        compose_down.assert_called_once()
+
+    def test_compose_pre_runtime_prepare_fails_without_cleanup_scope(self) -> None:
+        bundle = self._frozen_bundle()
+        bundle["cleanup_owned_scope"] = {"resource_count": 0}
+        helper_proof = _bundle_backed_minimal_helper_consumption_proof(
+            prepared_update_bundle=bundle,
+            runtime_source_gate=_bundle_backed_runtime_source_binding_gate(
+                prepared_update_bundle=bundle,
+                source_gate=_bundle_backed_live_execution_source_gate(
+                    load_gate=_verify_frozen_prepared_bundle(bundle),
+                    no_compose_proof_mode=True,
+                ),
+            ),
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            proof = _bundle_backed_compose_pre_runtime_prepare_proof(
+                prepared_update_bundle=bundle,
+                helper_consumption_proof=helper_proof,
+                args=self._args(compose_satellite_batch_size=1, compose_up_timeout_seconds=5),
+                run_dir=Path(tmpdir),
+            )
+
+        self.assertFalse(proof["passed"])
+        self.assertIn(
+            "bundle_runtime_cleanup_owned_scope_missing",
+            {blocker["blocker"] for blocker in proof["blockers"]},
+        )
+
+    def test_one_horizon_runtime_proof_fails_without_executable_bundle_inputs(self) -> None:
+        bundle = self._frozen_bundle()
+        bundle.pop("executable_runtime_inputs", None)
+        proof = _bundle_backed_one_horizon_runtime_proof(
+            prepared_update_bundle=bundle,
+            compose_pre_runtime_prepare_proof={
+                "passed": True,
+                "compose_started": True,
+                "pre_runtime_prepare_reached": True,
+                "live_used_frozen_bundle": True,
+                "cleanup_executed": True,
+                "cleanup_source": "prepared_update_bundle",
+                "cleanup_bounded_to_bundle_owned_scope": True,
+            },
+            args=self._args(max_runtime_epochs=1),
+            run_dir=Path("/tmp/ignored"),
+        )
+
+        self.assertFalse(proof["passed"])
+        self.assertFalse(proof["runtime_started"])
+        self.assertTrue(proof["compose_started"])
+        self.assertEqual(proof["runtime_execution_source"], "blocked")
+        blockers = {blocker["blocker"] for blocker in proof["blockers"]}
+        self.assertIn("bundle_one_horizon_runtime_executable_inputs_missing", blockers)
+        self.assertIn(
+            "bundle_one_horizon_runtime_would_recompute_authoritative_plan",
+            blockers,
+        )
+        unsafe = {
+            entry["callsite"]
+            for entry in proof["remaining_recompute_callsites"]
+            if entry["classification"] == "unsafe_runtime_blocker"
+        }
+        self.assertIn("_realization_contexts", unsafe)
+        self.assertIn("_run_window_resource_coverage_plan", unsafe)
+
+    def test_one_horizon_runtime_proof_consumes_executable_bundle_inputs(self) -> None:
+        bundle = self._frozen_bundle()
+        proof = _bundle_backed_one_horizon_runtime_proof(
+            prepared_update_bundle=bundle,
+            compose_pre_runtime_prepare_proof={
+                "passed": True,
+                "compose_started": True,
+                "pre_runtime_prepare_reached": True,
+                "live_used_frozen_bundle": True,
+                "cleanup_executed": True,
+                "cleanup_source": "prepared_update_bundle",
+                "cleanup_bounded_to_bundle_owned_scope": True,
+            },
+            args=self._args(max_runtime_epochs=1),
+            run_dir=Path("/tmp/ignored"),
+        )
+
+        self.assertTrue(proof["passed"])
+        self.assertTrue(proof["runtime_started"])
+        self.assertEqual(proof["runtime_execution_source"], "prepared_update_bundle")
+        self.assertEqual(
+            proof["executable_runtime_inputs_source"],
+            "prepared_update_bundle",
+        )
+        self.assertEqual(proof["executed_horizon_count"], 1)
+        self.assertGreater(proof["runtime_transaction_executed_count"], 0)
+        self.assertEqual(
+            proof["generation_preload_status"],
+            "noop_reuse_equivalent",
+        )
+        self.assertFalse(proof["unsafe_planner_callsites_reached"])
+
+    def test_1p1_horizon_runtime_proof_consumes_h1_preloaded_inputs(self) -> None:
+        bundle = self._frozen_bundle()
+        proof = _bundle_backed_1p1_horizon_runtime_proof(
+            prepared_update_bundle=bundle,
+            compose_pre_runtime_prepare_proof={
+                "passed": True,
+                "compose_started": True,
+                "pre_runtime_prepare_reached": True,
+                "live_used_frozen_bundle": True,
+                "cleanup_executed": True,
+                "cleanup_source": "prepared_update_bundle",
+                "cleanup_bounded_to_bundle_owned_scope": True,
+            },
+            args=self._args(bundle_backed_1p1_horizon_runtime_proof=True),
+            run_dir=Path("/tmp/ignored"),
+        )
+
+        self.assertTrue(proof["passed"])
+        self.assertTrue(proof["runtime_started"])
+        self.assertEqual(proof["executed_horizon_count"], 2)
+        self.assertEqual(proof["executed_horizon_ids"], ["H0", "H1"])
+        self.assertEqual(proof["h1_lookahead_event_ids_during_h0"], ["runtime-2"])
+        self.assertEqual(proof["h1_current_event_ids"], ["runtime-2"])
+        self.assertTrue(proof["h1_preloaded_before_execution"])
+        self.assertTrue(proof["h1_consumed_preloaded_inputs"])
+        self.assertFalse(proof["h1_runtime_recompute_used"])
+        self.assertEqual(proof["runtime_transaction_counts_per_horizon"]["H1"], 1)
+        self.assertEqual(
+            proof["generation_status_per_horizon"]["H1"]["preload"],
+            "consumed_preloaded_inputs",
+        )
+        self.assertFalse(proof["unsafe_planner_callsites_reached"])
+
+    def test_1p1_horizon_runtime_proof_fails_without_h1_preload_context(self) -> None:
+        bundle = self._frozen_bundle()
+        bundle["executable_runtime_inputs"]["lookahead_preload_contexts"] = []
+
+        proof = _bundle_backed_1p1_horizon_runtime_proof(
+            prepared_update_bundle=bundle,
+            compose_pre_runtime_prepare_proof={
+                "passed": True,
+                "compose_started": True,
+                "pre_runtime_prepare_reached": True,
+                "live_used_frozen_bundle": True,
+            },
+            args=self._args(bundle_backed_1p1_horizon_runtime_proof=True),
+            run_dir=Path("/tmp/ignored"),
+        )
+
+        blockers = {blocker["blocker"] for blocker in proof["blockers"]}
+        self.assertFalse(proof["passed"])
+        self.assertIn("bundle_1p1_h1_preload_context_missing", blockers)
+
+    def test_1p1_horizon_runtime_proof_fails_on_runtime_recompute_attempt(self) -> None:
+        bundle = self._frozen_bundle()
+
+        proof = _bundle_backed_1p1_horizon_runtime_proof(
+            prepared_update_bundle=bundle,
+            compose_pre_runtime_prepare_proof={
+                "passed": True,
+                "compose_started": True,
+                "pre_runtime_prepare_reached": True,
+                "live_used_frozen_bundle": True,
+            },
+            args=self._args(
+                bundle_backed_1p1_horizon_runtime_proof=True,
+                bundle_1p1_queue_recompute_attempted=True,
+            ),
+            run_dir=Path("/tmp/ignored"),
+        )
+
+        self.assertFalse(proof["passed"])
+        self.assertIn(
+            "bundle_1p1_runtime_queue_recompute_attempted",
+            {blocker["blocker"] for blocker in proof["blockers"]},
+        )
+
+    def test_1p1_horizon_runtime_proof_fails_without_equivalence_proof(self) -> None:
+        bundle = self._frozen_bundle()
+        bundle["executable_runtime_inputs"]["generation_equivalence_proof"] = {}
+
+        proof = _bundle_backed_1p1_horizon_runtime_proof(
+            prepared_update_bundle=bundle,
+            compose_pre_runtime_prepare_proof={
+                "passed": True,
+                "compose_started": True,
+                "pre_runtime_prepare_reached": True,
+                "live_used_frozen_bundle": True,
+            },
+            args=self._args(bundle_backed_1p1_horizon_runtime_proof=True),
+            run_dir=Path("/tmp/ignored"),
+        )
+
+        blockers = {blocker["blocker"] for blocker in proof["blockers"]}
+        self.assertFalse(proof["passed"])
+        self.assertIn("bundle_1p1_h1_noop_reuse_without_equivalence_proof", blockers)
+
+    def test_1p1_horizon_runtime_proof_fails_on_generation_hash_mismatch(self) -> None:
+        bundle = self._frozen_bundle()
+        bundle["executable_runtime_inputs"]["generation_equivalence_proof"][
+            "active_generation_after"
+        ] = "tampered"
+
+        proof = _bundle_backed_1p1_horizon_runtime_proof(
+            prepared_update_bundle=bundle,
+            compose_pre_runtime_prepare_proof={
+                "passed": True,
+                "compose_started": True,
+                "pre_runtime_prepare_reached": True,
+                "live_used_frozen_bundle": True,
+            },
+            args=self._args(bundle_backed_1p1_horizon_runtime_proof=True),
+            run_dir=Path("/tmp/ignored"),
+        )
+
+        self.assertFalse(proof["passed"])
+        self.assertIn(
+            "bundle_one_horizon_runtime_executable_input_hash_mismatch",
+            {blocker["blocker"] for blocker in proof["blockers"]},
+        )
+
+    def test_1p1_horizon_runtime_proof_fails_on_runtime_resource_or_reload_or_cleanup_repair(
+        self,
+    ) -> None:
+        bundle = self._frozen_bundle()
+
+        proof = _bundle_backed_1p1_horizon_runtime_proof(
+            prepared_update_bundle=bundle,
+            compose_pre_runtime_prepare_proof={
+                "passed": True,
+                "compose_started": True,
+                "pre_runtime_prepare_reached": True,
+                "live_used_frozen_bundle": True,
+            },
+            args=self._args(
+                bundle_backed_1p1_horizon_runtime_proof=True,
+                bundle_1p1_fixed_resource_creation_attempted=True,
+                bundle_1p1_full_generation_reload_attempted=True,
+                bundle_1p1_cleanup_repair_success_path_attempted=True,
+            ),
+            run_dir=Path("/tmp/ignored"),
+        )
+
+        blockers = {blocker["blocker"] for blocker in proof["blockers"]}
+        self.assertFalse(proof["passed"])
+        self.assertIn(
+            "bundle_1p1_runtime_fixed_resource_creation_attempted",
+            blockers,
+        )
+        self.assertIn("bundle_1p1_runtime_full_generation_reload_attempted", blockers)
+        self.assertIn("bundle_1p1_cleanup_repair_success_path_attempted", blockers)
+
+    def test_one_horizon_runtime_proof_fails_on_action_plan_hash_mismatch(self) -> None:
+        bundle = self._frozen_bundle()
+        bundle["executable_runtime_inputs"]["network_mutation_plan"][
+            "actions"
+        ].append({"action_id": "tampered"})
+
+        proof = _bundle_backed_one_horizon_runtime_proof(
+            prepared_update_bundle=bundle,
+            compose_pre_runtime_prepare_proof={
+                "passed": True,
+                "compose_started": True,
+                "pre_runtime_prepare_reached": True,
+                "live_used_frozen_bundle": True,
+            },
+            args=self._args(max_runtime_epochs=1),
+            run_dir=Path("/tmp/ignored"),
+        )
+
+        self.assertFalse(proof["passed"])
+        self.assertIn(
+            "bundle_one_horizon_runtime_executable_input_hash_mismatch",
+            {blocker["blocker"] for blocker in proof["blockers"]},
+        )
+
+    def test_one_horizon_runtime_proof_fails_without_generation_equivalence(self) -> None:
+        bundle = self._frozen_bundle()
+        bundle["executable_runtime_inputs"]["generation_equivalence_proof"] = {}
+
+        proof = _bundle_backed_one_horizon_runtime_proof(
+            prepared_update_bundle=bundle,
+            compose_pre_runtime_prepare_proof={
+                "passed": True,
+                "compose_started": True,
+                "pre_runtime_prepare_reached": True,
+                "live_used_frozen_bundle": True,
+            },
+            args=self._args(max_runtime_epochs=1),
+            run_dir=Path("/tmp/ignored"),
+        )
+
+        self.assertFalse(proof["passed"])
+        self.assertIn(
+            "bundle_one_horizon_runtime_executable_inputs_missing",
+            {blocker["blocker"] for blocker in proof["blockers"]},
+        )
+
+    def test_live_execution_source_gate_allows_explicit_runtime_proof_mode(self) -> None:
+        bundle = self._frozen_bundle()
+        load_gate = _verify_frozen_prepared_bundle(
+            bundle,
+            args=self._args(bundle_backed_one_horizon_runtime_proof=True),
+        )
+        source_gate = _bundle_backed_live_execution_source_gate(
+            load_gate=load_gate,
+            no_compose_proof_mode=False,
+            bundle_backed_runtime_proof_mode=True,
+        )
+
+        self.assertTrue(load_gate["passed"])
+        self.assertTrue(source_gate["passed"])
+        self.assertTrue(source_gate["compose_up_allowed"])
+        self.assertEqual(source_gate["execution_source"], "prepared_update_bundle")
+
+    def test_queue_accounting_non_mutually_exclusive_fails_before_compose(self) -> None:
+        bundle = self._frozen_bundle()
+        bundle["queue_accounting"] = {
+            "mutually_exclusive": False,
+            "selected_total": 3,
+            "breakdown_sum": 4,
+            "breakdown_matches_selected_total": False,
+        }
+        bundle["bundle_hash_payload"]["queue_accounting"] = bundle["queue_accounting"]
+
+        gate = _verify_frozen_prepared_bundle(bundle)
+
+        self.assertFalse(gate["passed"])
+        self.assertIn(
+            "frozen_prepared_bundle_queue_accounting_not_mutually_exclusive",
+            {blocker["blocker"] for blocker in gate["blockers"]},
+        )
+
+    def test_frozen_bundle_hash_mismatch_fails_before_compose(self) -> None:
+        bundle = self._frozen_bundle()
+        bundle["bundle_hash_payload"]["lookahead_preload_ids"] = ["runtime-drifted"]
+
+        gate = _verify_frozen_prepared_bundle(bundle)
+
+        self.assertFalse(gate["passed"])
+        self.assertIn(
+            "frozen_prepared_bundle_hash_mismatch",
+            {blocker["blocker"] for blocker in gate["blockers"]},
+        )
+
+    def test_frozen_bundle_queue_id_drift_fails_before_compose(self) -> None:
+        bundle = self._frozen_bundle()
+        bundle["current_execution_queue"][1]["event_id"] = "parameter-drifted"
+
+        gate = _verify_frozen_prepared_bundle(bundle)
+
+        self.assertFalse(gate["passed"])
+        self.assertIn(
+            "frozen_prepared_bundle_queue_id_drift",
+            {blocker["blocker"] for blocker in gate["blockers"]},
+        )
+
+    def test_frozen_bundle_input_hash_mismatch_fails_before_compose(self) -> None:
+        bundle = self._frozen_bundle()
+
+        gate = _verify_frozen_prepared_bundle(
+            bundle,
+            args=self._args(max_satellites=48),
+        )
+
+        self.assertFalse(gate["passed"])
+        self.assertIn(
+            "frozen_prepared_bundle_input_profile_config_hash_mismatch",
+            {blocker["blocker"] for blocker in gate["blockers"]},
+        )
+
+    def test_frozen_bundle_unresolved_resource_refs_fail_before_compose(self) -> None:
+        bundle = self._frozen_bundle()
+        bundle["precompose_run_window_resource_coverage_plan"] = {
+            "unresolved_count": 1,
+            "unresolved_examples": ["slot-a:missing"],
+        }
+
+        gate = _verify_frozen_prepared_bundle(bundle)
+
+        self.assertFalse(gate["passed"])
+        self.assertIn(
+            "frozen_prepared_bundle_resource_refs_unresolved",
+            {blocker["blocker"] for blocker in gate["blockers"]},
+        )
+
+    def test_frozen_bundle_unresolved_bpf_refs_fail_before_compose(self) -> None:
+        bundle = self._frozen_bundle()
+        bundle["precompose_bpf_role_union_gate"] = {
+            "unresolved_bpf_interface_binding_count": 1,
+            "unresolved_bpf_interface_binding_examples": ["netns:node-a:if-a"],
+        }
+
+        gate = _verify_frozen_prepared_bundle(bundle)
+
+        self.assertFalse(gate["passed"])
+        self.assertIn(
+            "frozen_prepared_bundle_bpf_required_interface_refs_unresolved",
+            {blocker["blocker"] for blocker in gate["blockers"]},
+        )
+
+    def test_frozen_bundle_missing_generation_or_cleanup_fails_before_compose(self) -> None:
+        bundle = self._frozen_bundle()
+        bundle["generation_preload_plan"] = {}
+        bundle["cleanup_owned_scope"] = {"resource_count": 0}
+
+        gate = _verify_frozen_prepared_bundle(bundle)
+
+        blockers = {blocker["blocker"] for blocker in gate["blockers"]}
+        self.assertFalse(gate["passed"])
+        self.assertIn(
+            "frozen_prepared_bundle_generation_preload_plan_missing",
+            blockers,
+        )
+        self.assertIn("frozen_prepared_bundle_cleanup_owned_scope_missing", blockers)
+
+    def test_missing_frozen_bundle_fails_before_compose(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            gate = _load_frozen_prepared_bundle_gate(
+                bundle_path=Path(tmpdir) / "missing.json"
+            )
+
+        self.assertFalse(gate["passed"])
+        self.assertIn(
+            "frozen_prepared_bundle_missing",
+            {blocker["blocker"] for blocker in gate["blockers"]},
+        )
+
+    def test_live_recompute_attempt_with_frozen_bundle_is_blocker(self) -> None:
+        gate = _verify_frozen_prepared_bundle(
+            self._frozen_bundle(),
+            planner_recompute_attempted=True,
+        )
+
+        self.assertFalse(gate["passed"])
+        self.assertIn(
+            "planner_recompute_attempted_with_frozen_bundle",
+            {blocker["blocker"] for blocker in gate["blockers"]},
+        )
+
+    def test_normal_live_source_gate_allows_bundle_then_normal_input_gate_blocks_missing_inputs(
+        self,
+    ) -> None:
+        source_gate = _bundle_backed_live_execution_source_gate(
+            load_gate=_verify_frozen_prepared_bundle(self._frozen_bundle()),
+            no_compose_proof_mode=False,
+        )
+
+        self.assertTrue(source_gate["passed"])
+        self.assertTrue(source_gate["compose_up_allowed"])
+        self.assertEqual(source_gate["execution_source"], "prepared_update_bundle")
+
+        normal_gate = _frozen_bundle_normal_runtime_inputs_gate(
+            prepared_update_bundle=self._frozen_bundle(),
+            runtime_source_gate=source_gate,
+        )
+
+        self.assertFalse(normal_gate["passed"])
+        self.assertFalse(normal_gate["compose_started"])
+        self.assertFalse(normal_gate["compose_up_allowed"])
+        self.assertIn(
+            "frozen_bundle_missing_normal_runtime_inputs",
+            {blocker["blocker"] for blocker in normal_gate["blockers"]},
+        )
+        self.assertIn(
+            "executable_runtime_inputs.normal_runtime_inputs.initial_segment",
+            normal_gate["missing_normal_runtime_inputs"],
+        )
+        self.assertIn(
+            "_preview_summary_to_segment",
+            normal_gate["unsafe_recompute_callsites_blocked"],
+        )
+
+    def test_normal_runtime_inputs_gate_passes_with_typed_thawable_inputs(self) -> None:
+        bundle = self._frozen_bundle()
+        snapshot_payload = {
+            "schema_version": "satellite-topology-snapshot-v1alpha1",
+            "snapshot_id": "snap-1",
+            "time_slice": {"slice_id": "slice-1", "state_model": "full_state"},
+            "provenance": {"source": "test"},
+            "nodes": {},
+            "active_links": [],
+            "zones": {},
+            "ut_zone_membership": {},
+            "planner_hints": {},
+        }
+        runtime_plan_payload = {
+            "schema_version": "satellite-runtime-update-plan-v1alpha1",
+            "plan_id": "plan-1",
+            "target_snapshot": {"snapshot_id": "snap-1"},
+            "planner": {"planner_name": "test"},
+            "apply_model": {
+                "state_model": "full_state_intent",
+                "action_model": "node_local_installer_action_v1",
+            },
+            "node_subplans": {},
+            "replacement_semantics": {},
+            "validation_expectations": {},
+        }
+        distribution_payload = {
+            "schema_version": "satellite-runtime-distribution-store-v1alpha1",
+            "distribution_id": "dist-1",
+            "source_envelope_batch": {
+                "schema_version": "satellite-agent-envelope-batch-v1alpha1",
+                "envelope_batch_id": "batch-1",
+            },
+            "distributor": {"distributor_name": "test"},
+            "store_contract": {
+                "transport_binding": "transport_agnostic",
+                "dry_run_mode": True,
+            },
+            "node_delivery_views": {},
+            "validation_expectations": {},
+        }
+        context_payload = {
+            "snapshot": snapshot_payload,
+            "runtime_update_plan": runtime_plan_payload,
+            "distribution_batch": distribution_payload,
+            "slice_report": {},
+        }
+        bundle["executable_runtime_inputs"]["normal_runtime_inputs"] = {
+            "initial_segment": {
+                "segment_id": "segment-1",
+                "current_execution_queue": [
+                    {"segment_epoch_key": "segment-1:slice-1", "slice_id": "slice-1"}
+                ],
+            },
+            "context_by_slice": {"slice-1": context_payload},
+            "runtime_update_plan_by_segment_key": {
+                "segment-1:slice-1": runtime_plan_payload
+            },
+            "distribution_batch_by_segment_key": {
+                "segment-1:slice-1": distribution_payload
+            },
+            "topology_snapshot_by_segment_key": {
+                "segment-1:slice-1": snapshot_payload
+            },
+            "host_network_mutation_plan_by_segment_key": {
+                "segment-1:slice-1": {"mutation_id": "mut-1"}
+            },
+        }
+        bundle["executable_runtime_inputs"]["normal_runtime_thaw_adapter"] = {
+            "adapter": "canonical_normal_runtime_inputs_v1"
+        }
+        source_gate = _bundle_backed_live_execution_source_gate(
+            load_gate={
+                "passed": True,
+                "loaded_bundle_id": bundle["bundle_id"],
+                "loaded_bundle_hash": bundle["bundle_hash"],
+            },
+            no_compose_proof_mode=False,
+        )
+
+        normal_gate = _frozen_bundle_normal_runtime_inputs_gate(
+            prepared_update_bundle=bundle,
+            runtime_source_gate=source_gate,
+        )
+
+        self.assertTrue(normal_gate["passed"])
+        self.assertTrue(normal_gate["compose_up_allowed"])
+        self.assertEqual(
+            normal_gate["runtime_execution_source"],
+            "prepared_update_bundle",
+        )
+        self.assertFalse(normal_gate["planner_recomputed"])
+
+    def test_replay_recompute_used_as_proof_is_invalid(self) -> None:
+        gate = _verify_frozen_prepared_bundle(
+            self._frozen_bundle(),
+            replay_recompute_used_as_proof=True,
+        )
+
+        self.assertFalse(gate["passed"])
+        self.assertIn(
+            "artifact_replay_recompute_used_as_proof_invalid",
+            {blocker["blocker"] for blocker in gate["blockers"]},
+        )
+
+    def test_no_compose_load_path_reads_same_bundle_id_hash(self) -> None:
+        bundle = self._frozen_bundle()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "frozen_prepared_update_bundle.json"
+            path.write_text(json.dumps(bundle), encoding="utf-8")
+
+            gate = _load_frozen_prepared_bundle_gate(bundle_path=path)
+
+        self.assertTrue(gate["passed"])
+        self.assertEqual(gate["loaded_bundle_id"], bundle["bundle_id"])
+        self.assertEqual(gate["loaded_bundle_hash"], bundle["bundle_hash"])
+        self.assertFalse(gate["planner_recomputed"])
+
+    def test_variant_start_time_profile_like_fixture_passes_same_contract(self) -> None:
+        bundle = self._frozen_bundle(
+            start_time="2026-06-21T00:05:00Z",
+            max_runtime_epochs=5,
+        )
+
+        gate = _verify_frozen_prepared_bundle(
+            bundle,
+            args=self._args(
+                start_time="2026-06-21T00:05:00Z",
+                max_runtime_epochs=5,
+            ),
+        )
+
+        self.assertTrue(gate["passed"])
+        self.assertEqual(gate["loaded_bundle_id"], bundle["bundle_id"])
 
 
 if __name__ == "__main__":
