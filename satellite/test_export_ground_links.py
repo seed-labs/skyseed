@@ -108,6 +108,46 @@ class ExportGroundLinksTests(unittest.TestCase):
         self.assertEqual(payload["timestamp"], "1782439276134")
         self.assertEqual(payload["interval"], "1s")
         self.assertEqual(len(payload["groundLinks"]), 3)
+        self.assertTrue(result.stdout.startswith('{\n  "timestamp": "1782439276134",\n  "interval": "1s",\n  "groundLinks": ['))
+        first_non_empty_sample = next(
+            (sample_links for sample_links in payload["groundLinks"] if sample_links),
+            None,
+        )
+        if first_non_empty_sample is not None:
+            self.assertEqual(list(first_non_empty_sample[0]), ["satelliteId", "groundStationId"])
+
+    def test_custom_ground_station_id_is_preserved_in_payload(self) -> None:
+        station_id = "starlink-gs-0178-puerto-montt-chile"
+        with tempfile.TemporaryDirectory() as tmp:
+            catalog_path = Path(tmp) / "ground_stations.json"
+            catalog_path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "groundStationId": station_id,
+                            "latitude_deg": 64.1466,
+                            "longitude_deg": -21.9426,
+                            "altitude_km": 0.0,
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            payload = build_ground_links_payload(
+                planned_shell="S4",
+                ground_station_catalog=catalog_path,
+                start_timestamp="1782439276134",
+                interval="1s",
+                steps=1,
+                max_satellites=24,
+            )
+
+        emitted_station_ids = {
+            link["groundStationId"]
+            for sample_links in payload["groundLinks"]
+            for link in sample_links
+        }
+        self.assertEqual(emitted_station_ids, {station_id})
 
     def test_cli_runs_when_copied_outside_skyseed_tree(self) -> None:
         script = Path(__file__).resolve().parent / "apps" / "visualization" / "export_ground_links.py"
