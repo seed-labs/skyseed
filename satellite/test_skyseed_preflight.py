@@ -15,10 +15,13 @@ from skyseed_preflight import (  # noqa: E402
     PREFLIGHT_PROFILE_LEGACY_MPLS,
     PREFLIGHT_PROFILE_OPERATIONAL_CLEAN_BPF_OWNED,
     _assess_skyseed_preflight,
+    _docker_container_state_project_scoped,
+    _docker_network_state_project_scoped,
     _skipped_host_mpls_readiness,
     cleanup_direct_backend_host_artifacts,
     cleanup_skyseed_environment_residue,
     render_preflight_summary,
+    run_skyseed_preflight,
 )
 
 
@@ -134,6 +137,59 @@ class SkyseedPreflightTests(unittest.TestCase):
         self.assertTrue(assessment["ready"])
         self.assertIn("host_mpls_preflight_skipped", assessment["warning_reasons"])
         self.assertNotIn("host_mpls_not_ready", assessment["blocking_reasons"])
+
+    def test_operational_clean_preflight_defers_global_diagnostics(self) -> None:
+        with (
+            patch("skyseed_preflight._run_jsonable", return_value={"ok": True}),
+            patch(
+                "skyseed_preflight._docker_container_state_project_scoped",
+                return_value={
+                    "compose_project_containers": [],
+                    "named_skyseed_containers": [],
+                    "compose_project_state_counts": {"running": 0, "exited": 0, "other": 0},
+                    "scope": "compose_project_label",
+                    "full_docker_container_scan": False,
+                },
+            ) as container_scope,
+            patch(
+                "skyseed_preflight._docker_network_state_project_scoped",
+                return_value={
+                    "compose_project_networks": [],
+                    "named_skyseed_networks": [],
+                    "scope": "compose_project_label",
+                    "full_docker_network_scan": False,
+                },
+            ) as network_scope,
+            patch("skyseed_preflight._direct_backend_host_artifacts") as direct_scan,
+            patch("skyseed_preflight._bpf_pinned_map_artifacts") as bpf_scan,
+            patch("skyseed_preflight._find_compose_outputs") as compose_outputs,
+            patch("skyseed_preflight._compose_processes", return_value={"processes": []}),
+            patch("skyseed_preflight._runtime_lock_files", return_value={"files": []}),
+            patch("skyseed_preflight._disk_space", return_value={"free_bytes": 32 * 1024 * 1024 * 1024}),
+            patch("skyseed_preflight._bridge_netfilter", return_value={"passthrough_ready": True}),
+            patch(
+                "skyseed_preflight._python_runtime",
+                return_value={
+                    "supported_version": True,
+                    "preferred_seed310_exists": False,
+                    "preferred_seed310_selected": False,
+                    "legacy_seed_emulator_pythonpath_override_present": False,
+                },
+            ),
+        ):
+            report = run_skyseed_preflight(
+                profile=PREFLIGHT_PROFILE_OPERATIONAL_CLEAN_BPF_OWNED
+            )
+
+        container_scope.assert_called_once()
+        network_scope.assert_called_once()
+        direct_scan.assert_not_called()
+        bpf_scan.assert_not_called()
+        compose_outputs.assert_not_called()
+        self.assertEqual(report["diagnostic_policy"]["mode"], "operational_clean_lightweight")
+        self.assertTrue(report["checks"]["direct_backend_host_artifacts"]["skipped"])
+        self.assertTrue(report["checks"]["bpf_pinned_map_artifacts"]["skipped"])
+        self.assertTrue(report["assessment"]["ready"])
 
     def test_legacy_mpls_profile_blocks_when_mpls_is_not_ready(self) -> None:
         checks = _base_checks()

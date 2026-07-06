@@ -22,6 +22,7 @@ from satellite.bpf_backend import compile_from_run_dir, parameter_loss_ppm
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SOURCE = REPO_ROOT / "satellite" / "experimental" / "bpf" / "skyseed_tc_dataplane_canary.c"
 PIN_BASE = Path("/sys/fs/bpf/tc/globals")
+_CONTAINER_PID_CACHE: dict[str, int] = {}
 CANARY_PINNED_MAPS = [
     "active_generation",
     "generation_status",
@@ -1303,13 +1304,23 @@ def interface_ref(interface_name: str) -> dict[str, str]:
 
 
 def container_pid(node_id: str) -> int:
+    node_key = str(node_id)
+    cached = _CONTAINER_PID_CACHE.get(node_key)
+    if cached is not None:
+        return cached
     result = run_command(
-        ["docker", "inspect", "-f", "{{.State.Pid}}", str(node_id)],
+        ["docker", "inspect", "-f", "{{.State.Pid}}", node_key],
         timeout=4.0,
     )
     if not command_ok(result):
         raise RuntimeError(f"unable to resolve container pid for {node_id}: {result['stderr']}")
-    return int(str(result.get("stdout") or "0").strip())
+    pid = int(str(result.get("stdout") or "0").strip())
+    _CONTAINER_PID_CACHE[node_key] = pid
+    return pid
+
+
+def clear_container_pid_cache() -> None:
+    _CONTAINER_PID_CACHE.clear()
 
 
 def interface_command(interface_name: str, args: Sequence[str]) -> list[str]:

@@ -74,6 +74,17 @@ Do not reconstruct the long-run command from chat memory. Use the
 the starting point, replace only `<run_id>`, and change performance-affecting
 flags only when the run objective explicitly says it is diagnostic.
 
+For the current high-iteration BPF-owned 3H/240s work, use
+`operational_iteration_profile.run_command` from the same session check. This
+profile is the handoff for new Codex conversations: it preserves the experiment
+shape that matters for the current debugging line (`--horizon-seconds 240`,
+10-second sample/event cadence, 3 horizons, `operational_clean`,
+`bpf_owned`, clean preflight, host prepare auto), while allowing each round to
+generate and freeze fresh prepared inputs. Do not require old
+`goal-1shell-*` preview/timing evidence to be present before a current
+operational iteration. Treat that older static evidence as reference material
+for the broader 1-shell objective, not as a blocker for the fast 240s rerun.
+
 Current reboot interpretation:
 
 - `ready=True` with zero scoped containers, networks, direct-backend host
@@ -134,6 +145,70 @@ use a fixed hygiene path instead of relying on session memory:
 5. Post-run preflight:
    - confirm whether the environment returned to a clean state
 
+## Expensive-Run Stabilization Gate
+
+Before spending a long real-runtime run, treat the last failed run as training
+data for a cheaper gate. Do not rerun only because the latest patch compiles.
+
+Use this stabilization checklist:
+
+1. Reconstruct the failure from artifacts:
+   - compare bootstrap/H0 cost with rolling/H1 cost
+   - count repeated operations by operation type and horizon/generation
+   - identify whether time was useful work, repeated work, waiting, reporting,
+     cleanup, or unknown
+2. Classify the issue:
+   - correctness: wrong state, missing readiness, unsafe future exposure,
+     polluted artifact reuse, partial work marked ready
+   - performance: serial bottleneck, unnecessary repetition, report blowup,
+     work done at the wrong boundary
+   - observability: reports or audits still describe the old behavior
+3. Fix the flow, not the symptom:
+   - do not use timeout-kill as a substitute for removing useless work
+   - if host work is skipped because BPF owns it, advance the metadata that
+     downstream validators compare
+   - if work is deferred, prove who completes it before the consumer needs it
+   - if work is parallelized, prove partial failure still fails closed and
+     active/visible state remains last or deferred
+4. Sweep adjacent contracts:
+   - loader/backend result fields
+   - runtime readiness checks
+   - scheduler or rolling-horizon maintenance
+   - compact artifacts and report summaries
+   - profile/audit tools
+   - tests that assert old labels, counts, or map names
+5. Run layered checks before the long run:
+   - compile/import checks for touched modules
+   - focused unit tests for the changed path
+   - failure-semantics tests
+   - report/audit propagation tests
+   - broader regression set around neighboring runtime paths
+
+For the 3H-240s BPF-owned rolling-horizon work, keep the gate focused on proof
+categories rather than one run's exact field names:
+
+- bootstrap/pre-runtime generation preload cost
+- rolling-horizon maintenance cost
+- count of real preloaded generations versus deferred or missing generations
+- evidence that skipped work was intentionally owned elsewhere
+- evidence that preactivation map writes used the intended execution strategy
+- evidence that worker preactivation consumes frozen compiled inputs and
+  prepared attach-capability proof instead of doing live discovery, binding,
+  full scans, or repeated attach guards
+- evidence that active generation changed only after all required data was ready
+- report/audit labels that match the current implementation rather than an old
+  full-serial preload path
+
+The run is not considered a clean validation if H1 reaches activation with
+missing preloaded generation records, if active generation flips before all
+required inactive map writes succeed, or if a report/audit still interprets the
+new path using obsolete assumptions.
+
+Keep exact field names, thresholds, and run-specific expectations in the active
+run note, session-check output, or tests. Update this runbook when a repeated
+failure reveals a durable category of risk; remove or generalize details that
+were only true for one implementation.
+
 ## Current Canonical Command Index
 
 The stable real-runtime path is planned-shell `S5` full `1-shell`, 6-zone
@@ -171,6 +246,13 @@ PYTHONPATH=/home/seed/skyseed/satellite \
   --format json \
   --write-report satellite/output/analysis/session_check_latest.json
 ```
+
+For the current BPF-owned operational-clean iteration, prefer
+`operational_iteration_profile.run_command` from the same JSON report. Replace
+only `<run_id>` unless the run note explicitly says this is a diagnostic
+variant. It is acceptable for this profile to regenerate and freeze a new
+prepared bundle each round; the docs in `satellite/docs/experiment_rounds/`
+carry the durable round-to-round evidence.
 
 - Short 6-zone real-runtime smoke:
   use the same command profile, keep `--zone-catalog
@@ -1645,6 +1727,47 @@ non-authoritative until it is updated for the current command-state accounting.
 - do not treat rollback/artifact cleanup as data-plane RuntimeEpoch cost
 - preserve current G/Z semantics; the remaining risk is runtime overhead and
   cleanup batching, not a planner semantic regression
+
+## Long-Run Discipline: Operational 3H Iteration Rounds
+
+### Symptoms
+
+- a later expensive run can appear to regress to an older class of failure when
+  the real issue is a stricter guard exposing an adjacent contract gap earlier
+  in the run
+- repeated failures can be misclassified if each run is summarized in isolation
+  instead of being compared against prior round artifacts
+- cheap local checks can become counterproductive if they encode a one-run
+  special case or block valid operational-clean paths
+
+### Detection
+
+For every failed operational 3H iteration, compare the new failure against the
+nearest prior round artifacts before editing:
+
+- runtime progress: horizon/slice reached, runtime epoch count, and first
+  fail-closed stage
+- maintenance artifacts: ready/blocked/failed status, preload record counts,
+  forbidden-work audit, and cleanup dependency reports
+- BPF generation evidence: slot assignments, runtime plan proof generation,
+  preloaded generation records, and active flip/consume records
+- forbidden work counters: fallback, full reload, full scan, live full map
+  dump/diff, runtime attach, and premature active/future-state exposure
+
+If the same class appears again, treat it as a shared contract or module-level
+problem until proven otherwise. Do not spend the next long run only checking
+whether the previous error string disappeared.
+
+### Fix / Mitigation
+
+- prefer module/contract fixes over H3-specific branches or run-id-specific
+  behavior
+- add cheap pre-run checks only when they assert stable contracts and do not
+  require live scans or hidden reconciliation
+- after each fix, inspect adjacent consumers: runtime readiness, worker
+  handoff, compact artifacts, reports, cleanup, and failure propagation
+- keep the goal of each long run as completing the 3H operational iteration;
+  bug-specific validation is only one checkpoint on that path
 
 ## When To Update This File
 

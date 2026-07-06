@@ -3,8 +3,8 @@
 
 """Standalone satellite-ground-station groundLinks prototype exporter.
 
-Primary contract: generate or POST only the external groundLinks payload:
-{"timestamp": "...", "interval": "...", "groundLinks": [[...]]}.
+Primary contract: generate the external links payload:
+{"timestamp": "...", "interval": "1s", "links": [{"groundLinks": [...], "satelliteLinks": []}]}.
 
 Planned-shell mode intentionally avoids Skyseed-internal imports so this
 prototype can be copied to another host.
@@ -13,19 +13,25 @@ prototype can be copied to another host.
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 import json
 import math
 from pathlib import Path
 import sys
+import tempfile
 from typing import Any, Dict, Iterable, List, Sequence
 from urllib import error, request
 
 
 EARTH_RADIUS_KM = 6371.0
 EARTH_MU_KM3_S2 = 398600.4418
-DEFAULT_START_TIMESTAMP_MS = "1782439276134"
+DEFAULT_START_TIMESTAMP_MS: str | None = None
+DEFAULT_GATEWAY_CATALOG_PATH = Path(__file__).resolve().with_name("starlink_gateways.json")
+DEFAULT_PLANNED_ORBIT_DATA_PATH = Path(__file__).resolve().with_name("planned_shell_orbit_data_s1_s5.json")
+PLANNED_SHELL_ALL_ALIASES = {"ALL", "S1-S5", "S1_S5"}
+GROUND_LINK_SPATIAL_BIN_DEG = 2.0
+DEFAULT_MAX_GROUND_LINK_DISTANCE_KM = 2500.0
 
 
 @dataclass(frozen=True)
@@ -48,6 +54,9 @@ PLANNED_STARLINK_PHASE1_SHELL_PRESETS: Dict[str, PlannedShellPreset] = {
     "S4": PlannedShellPreset("S4", 6, 58, 560.0, 97.6),
     "S5": PlannedShellPreset("S5", 4, 43, 560.0, 97.6),
 }
+PLANNED_SHELL_CHOICES = tuple(
+    sorted((*PLANNED_STARLINK_PHASE1_SHELL_PRESETS.keys(), "ALL", "S1-S5"))
+)
 
 
 DEFAULT_GATEWAY_CATALOG: Sequence[Dict[str, Any]] = (
@@ -151,9 +160,6 @@ class PropagatedSatelliteState:
     x_km: float
     y_km: float
     z_km: float
-    vx_km_s: float
-    vy_km_s: float
-    vz_km_s: float
 
 
 @dataclass(frozen=True)
@@ -177,21 +183,15 @@ class VisibleGroundLinkCandidate:
 
 
 @dataclass(frozen=True)
-class GroundLinkSample:
-    timestamp_utc: str
-    links: Sequence[Dict[str, str]]
-    candidates: Sequence[VisibleGroundLinkCandidate]
-    selected_candidates: Sequence[VisibleGroundLinkCandidate]
-    satellite_subpoints: Dict[str, Dict[str, float]]
+class GroundLinksResult:
+    payload: Dict[str, Any]
 
 
 @dataclass(frozen=True)
-class GroundLinksResult:
-    payload: Dict[str, Any]
-    samples: Sequence[GroundLinkSample]
-    stations: Sequence[GroundStation]
-    satellite_id_format: str
-    selection_metadata: Dict[str, Any]
+class GroundLinksComputation:
+    timestamp_ms: str
+    interval: str
+    samples: Iterable[List[Dict[str, str]]]
 
 
 def satellite_node_id(norad_id: int) -> str:
@@ -253,12 +253,40 @@ def _mean_motion_to_altitude_km(mean_motion_rev_per_day: float) -> float:
     return semi_major_axis_km - EARTH_RADIUS_KM
 
 
+def _normalize_planned_shell_id(shell_id: str) -> str:
+    normalized = str(shell_id).strip().upper()
+    if normalized in PLANNED_SHELL_ALL_ALIASES:
+        return "ALL"
+    return normalized
+
+
 def generate_planned_shell_records(
     *,
     shell_id: str,
     epoch_utc: datetime,
 ) -> Sequence[OrbitRecord]:
-    normalized = str(shell_id).upper()
+    normalized = _normalize_planned_shell_id(shell_id)
+    if normalized == "ALL":
+        records: List[OrbitRecord] = []
+        plane_offset = 0
+        for preset_id, preset in PLANNED_STARLINK_PHASE1_SHELL_PRESETS.items():
+            shell_records = generate_planned_shell_records(
+                shell_id=preset_id,
+                epoch_utc=epoch_utc,
+            )
+            records.extend(
+                replace(
+                    record,
+                    plane_index=(
+                        int(record.plane_index or 0) + plane_offset
+                        if record.plane_index is not None
+                        else None
+                    ),
+                )
+                for record in shell_records
+            )
+            plane_offset += preset.plane_count + 1000
+        return tuple(sorted(records, key=lambda record: record.norad_id))
     if normalized not in PLANNED_STARLINK_PHASE1_SHELL_PRESETS:
         raise ValueError(f"unknown planned shell preset: {shell_id}")
     preset = PLANNED_STARLINK_PHASE1_SHELL_PRESETS[normalized]
@@ -302,6 +330,92 @@ def generate_planned_shell_records(
     return tuple(records)
 
 
+def _planned_shell_id_for_norad(norad_id: int) -> str | None:
+    for preset_index, shell_id in enumerate(PLANNED_STARLINK_PHASE1_SHELL_PRESETS, start=1):
+        preset = PLANNED_STARLINK_PHASE1_SHELL_PRESETS[shell_id]
+        first_id = 900000 + (preset_index * 10000) + 1
+        last_id = first_id + preset.satellite_count - 1
+        if first_id <= int(norad_id) <= last_id:
+            return shell_id
+    return None
+
+
+def _infer_planned_indices(norad_id: int) -> tuple[int | None, int | None]:
+    shell_id = _planned_shell_id_for_norad(norad_id)
+    if shell_id is None:
+        return None, None
+    preset_index = list(PLANNED_STARLINK_PHASE1_SHELL_PRESETS).index(shell_id) + 1
+    preset = PLANNED_STARLINK_PHASE1_SHELL_PRESETS[shell_id]
+    zero_based = int(norad_id) - (900000 + (preset_index * 10000) + 1)
+    if zero_based < 0:
+        return None, None
+    return (
+        (zero_based // preset.satellites_per_plane) + 1,
+        (zero_based % preset.satellites_per_plane) + 1,
+    )
+
+
+def _planned_shell_plane_offset(shell_id: str) -> int:
+    offset = 0
+    for preset_id, preset in PLANNED_STARLINK_PHASE1_SHELL_PRESETS.items():
+        if preset_id == shell_id:
+            return offset
+        offset += preset.plane_count + 1000
+    return 0
+
+
+def _orbit_record_from_planned_data(entry: Dict[str, Any]) -> OrbitRecord:
+    norad_id = int(entry["norad_id"])
+    inferred_plane_index, inferred_satellite_index = _infer_planned_indices(norad_id)
+    return OrbitRecord(
+        satellite_name=str(entry.get("satellite_name") or entry.get("name") or f"SAT-{norad_id}"),
+        norad_id=norad_id,
+        epoch_utc=str(entry["epoch_utc"]),
+        inclination_deg=float(entry["inclination_deg"]),
+        eccentricity=float(entry.get("eccentricity", 0.0)),
+        mean_motion_rev_per_day=float(entry["mean_motion_rev_per_day"]),
+        raan_deg=float(entry["raan_deg"]),
+        argument_of_perigee_deg=float(entry.get("argument_of_perigee_deg", 0.0)),
+        mean_anomaly_deg=float(entry["mean_anomaly_deg"]),
+        line1=str(entry.get("line1", "")),
+        line2=str(entry.get("line2", "")),
+        plane_index=(
+            None if entry.get("plane_index") is None else int(entry["plane_index"])
+        ) or inferred_plane_index,
+        satellite_index_in_plane=(
+            None
+            if entry.get("satellite_index_in_plane") is None
+            else int(entry["satellite_index_in_plane"])
+        ) or inferred_satellite_index,
+    )
+
+
+def load_planned_orbit_data_records(path: Path, *, shell_id: str) -> Sequence[OrbitRecord]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    raw_records = payload.get("selected_records")
+    if not isinstance(raw_records, list):
+        raise ValueError(f"planned orbit data is missing selected_records: {path}")
+    normalized = _normalize_planned_shell_id(shell_id)
+    records: List[OrbitRecord] = []
+    for item in raw_records:
+        if not isinstance(item, dict):
+            continue
+        record = _orbit_record_from_planned_data(item)
+        record_shell_id = _planned_shell_id_for_norad(record.norad_id)
+        if normalized == "ALL" and record_shell_id is not None:
+            if record.plane_index is not None:
+                record = replace(
+                    record,
+                    plane_index=record.plane_index + _planned_shell_plane_offset(record_shell_id),
+                )
+            records.append(record)
+        elif record_shell_id == normalized:
+            records.append(record)
+    if not records:
+        raise ValueError(f"planned orbit data {path} has no records for shell {shell_id}")
+    return tuple(sorted(records, key=lambda record: record.norad_id))
+
+
 def _sample_evenly(items: Sequence[OrbitRecord], count: int) -> List[OrbitRecord]:
     if count >= len(items):
         return list(items)
@@ -320,7 +434,7 @@ def _sample_evenly(items: Sequence[OrbitRecord], count: int) -> List[OrbitRecord
 
 def select_orbit_records(records: Sequence[OrbitRecord], *, max_satellites: int) -> Sequence[OrbitRecord]:
     if max_satellites <= 0:
-        raise ValueError("max_satellites must be positive")
+        return tuple(sorted(records, key=lambda record: record.norad_id))
     if max_satellites >= len(records):
         return tuple(sorted(records, key=lambda record: record.norad_id))
     planned_records = [record for record in records if record.plane_index is not None]
@@ -332,6 +446,21 @@ def select_orbit_records(records: Sequence[OrbitRecord], *, max_satellites: int)
         plane_ids = sorted(planes)
         base_quota = max_satellites // len(plane_ids)
         extra = max_satellites % len(plane_ids)
+        if base_quota == 0:
+            for plane_id in _sample_evenly(plane_ids, max_satellites):
+                selected.extend(
+                    _sample_evenly(
+                        sorted(
+                            planes[plane_id],
+                            key=lambda record: (
+                                record.satellite_index_in_plane or 0,
+                                record.norad_id,
+                            ),
+                        ),
+                        1,
+                    )
+                )
+            return tuple(sorted(selected, key=lambda record: (record.plane_index or 0, record.norad_id)))
         for offset, plane_id in enumerate(plane_ids):
             quota = base_quota + (1 if offset < extra else 0)
             selected.extend(
@@ -400,14 +529,24 @@ def _load_orbit_records(
     tle_path: Path | None,
     max_satellites: int,
     start_time: datetime,
+    planned_orbit_data_path: Path | None = None,
 ) -> tuple[str, Sequence[OrbitRecord]]:
     if planned_shell and tle_path:
         raise ValueError("use either --planned-shell or --tle, not both")
     if planned_shell:
-        records = generate_planned_shell_records(
-            shell_id=str(planned_shell).upper(),
-            epoch_utc=start_time,
-        )
+        orbit_data_path = planned_orbit_data_path
+        if orbit_data_path is None and DEFAULT_PLANNED_ORBIT_DATA_PATH.exists():
+            orbit_data_path = DEFAULT_PLANNED_ORBIT_DATA_PATH
+        if orbit_data_path is not None:
+            records = load_planned_orbit_data_records(
+                orbit_data_path,
+                shell_id=str(planned_shell).upper(),
+            )
+        else:
+            records = generate_planned_shell_records(
+                shell_id=str(planned_shell).upper(),
+                epoch_utc=start_time,
+            )
         return "planned_shell", select_orbit_records(records, max_satellites=max_satellites)
     if tle_path is None:
         raise ValueError("one of --planned-shell or --tle is required")
@@ -417,7 +556,7 @@ def _load_orbit_records(
     return "tle", select_orbit_records(records, max_satellites=max_satellites)
 
 
-def _planned_position_velocity(record: OrbitRecord, timestamp: datetime) -> tuple[NodePosition, NodePosition]:
+def _planned_position(record: OrbitRecord, timestamp: datetime) -> NodePosition:
     epoch = datetime.fromisoformat(record.epoch_utc.replace("Z", "+00:00"))
     delta_seconds = (timestamp - epoch).total_seconds()
     semi_major_axis_km = EARTH_RADIUS_KM + _mean_motion_to_altitude_km(
@@ -433,8 +572,6 @@ def _planned_position_velocity(record: OrbitRecord, timestamp: datetime) -> tupl
     raan_rad = math.radians(record.raan_deg)
     inclination_rad = math.radians(record.inclination_deg)
     argument_of_perigee_rad = math.radians(record.argument_of_perigee_deg)
-    orbital_speed_km_s = math.sqrt(EARTH_MU_KM3_S2 / semi_major_axis_km)
-
     argument_rad = argument_of_perigee_rad + true_anomaly_rad
     cos_raan = math.cos(raan_rad)
     sin_raan = math.sin(raan_rad)
@@ -447,13 +584,7 @@ def _planned_position_velocity(record: OrbitRecord, timestamp: datetime) -> tupl
     y_km = semi_major_axis_km * (sin_raan * cos_arg + cos_raan * sin_arg * cos_inc)
     z_km = semi_major_axis_km * (sin_arg * sin_inc)
 
-    vx_km_s = orbital_speed_km_s * (-cos_raan * sin_arg - sin_raan * cos_arg * cos_inc)
-    vy_km_s = orbital_speed_km_s * (-sin_raan * sin_arg + cos_raan * cos_arg * cos_inc)
-    vz_km_s = orbital_speed_km_s * (cos_arg * sin_inc)
-    return (
-        NodePosition(round(x_km, 6), round(y_km, 6), round(z_km, 6)),
-        NodePosition(round(vx_km_s, 9), round(vy_km_s, 9), round(vz_km_s, 9)),
-    )
+    return NodePosition(round(x_km, 6), round(y_km, 6), round(z_km, 6))
 
 
 def _propagate_planned_records(
@@ -462,14 +593,13 @@ def _propagate_planned_records(
     start_time: datetime,
     step_seconds: float,
     slice_count: int,
-) -> Sequence[PropagatedOrbitSlice]:
-    slices: List[PropagatedOrbitSlice] = []
+) -> Iterable[PropagatedOrbitSlice]:
     utc_start = start_time.astimezone(timezone.utc)
     for slice_index in range(slice_count):
         timestamp = utc_start + timedelta(seconds=step_seconds * slice_index)
         satellite_states: Dict[str, PropagatedSatelliteState] = {}
         for record in records:
-            position, velocity = _planned_position_velocity(record, timestamp)
+            position = _planned_position(record, timestamp)
             node_id = satellite_node_id(record.norad_id)
             satellite_states[node_id] = PropagatedSatelliteState(
                 satellite_node_id=node_id,
@@ -478,19 +608,13 @@ def _propagate_planned_records(
                 x_km=position.x_km,
                 y_km=position.y_km,
                 z_km=position.z_km,
-                vx_km_s=velocity.x_km,
-                vy_km_s=velocity.y_km,
-                vz_km_s=velocity.z_km,
             )
-        slices.append(
-            PropagatedOrbitSlice(
-                slice_id=f"ground-links-slice-{slice_index + 1:04d}",
-                relative_time_seconds=round(step_seconds * slice_index, 6),
-                timestamp_utc=_render_utc(timestamp),
-                satellite_states=satellite_states,
-            )
+        yield PropagatedOrbitSlice(
+            slice_id=f"ground-links-slice-{slice_index + 1:04d}",
+            relative_time_seconds=round(step_seconds * slice_index, 6),
+            timestamp_utc=_render_utc(timestamp),
+            satellite_states=satellite_states,
         )
-    return tuple(slices)
 
 
 def _propagate_tle_records(
@@ -499,14 +623,13 @@ def _propagate_tle_records(
     start_time: datetime,
     step_seconds: float,
     slice_count: int,
-) -> Sequence[PropagatedOrbitSlice]:
+) -> Iterable[PropagatedOrbitSlice]:
     try:
         from sgp4.api import Satrec, jday  # type: ignore
     except ModuleNotFoundError as exc:
         raise RuntimeError("TLE propagation requires the optional sgp4 package") from exc
 
     satrecs = {record.norad_id: Satrec.twoline2rv(record.line1, record.line2) for record in records}
-    slices: List[PropagatedOrbitSlice] = []
     utc_start = start_time.astimezone(timezone.utc)
     for slice_index in range(slice_count):
         timestamp = utc_start + timedelta(seconds=step_seconds * slice_index)
@@ -521,7 +644,7 @@ def _propagate_tle_records(
         )
         satellite_states: Dict[str, PropagatedSatelliteState] = {}
         for record in records:
-            error_code, position_km, velocity_km_s = satrecs[record.norad_id].sgp4(jd, fraction)
+            error_code, position_km, _velocity_km_s = satrecs[record.norad_id].sgp4(jd, fraction)
             if error_code != 0:
                 continue
             node_id = satellite_node_id(record.norad_id)
@@ -532,19 +655,13 @@ def _propagate_tle_records(
                 x_km=round(float(position_km[0]), 6),
                 y_km=round(float(position_km[1]), 6),
                 z_km=round(float(position_km[2]), 6),
-                vx_km_s=round(float(velocity_km_s[0]), 9),
-                vy_km_s=round(float(velocity_km_s[1]), 9),
-                vz_km_s=round(float(velocity_km_s[2]), 9),
             )
-        slices.append(
-            PropagatedOrbitSlice(
-                slice_id=f"ground-links-slice-{slice_index + 1:04d}",
-                relative_time_seconds=round(step_seconds * slice_index, 6),
-                timestamp_utc=_render_utc(timestamp),
-                satellite_states=satellite_states,
-            )
+        yield PropagatedOrbitSlice(
+            slice_id=f"ground-links-slice-{slice_index + 1:04d}",
+            relative_time_seconds=round(step_seconds * slice_index, 6),
+            timestamp_utc=_render_utc(timestamp),
+            satellite_states=satellite_states,
         )
-    return tuple(slices)
 
 
 def _propagate_records(
@@ -554,7 +671,7 @@ def _propagate_records(
     start_time: datetime,
     interval_seconds: float,
     steps: int,
-) -> Sequence[PropagatedOrbitSlice]:
+) -> Iterable[PropagatedOrbitSlice]:
     if orbit_kind == "planned_shell":
         return _propagate_planned_records(
             records,
@@ -596,6 +713,18 @@ def _coerce_optional_positive_int(entry: Dict[str, Any], keys: Sequence[str]) ->
     return None
 
 
+def _coerce_altitude_km(entry: Dict[str, Any]) -> float:
+    if entry.get("altitude_km") is not None:
+        return float(entry["altitude_km"])
+    if entry.get("altitude") is not None:
+        return float(entry["altitude"])
+    if entry.get("altitudeMeters") is not None:
+        return float(entry["altitudeMeters"]) / 1000.0
+    if entry.get("altitude_m") is not None:
+        return float(entry["altitude_m"]) / 1000.0
+    return 0.0
+
+
 def _catalog_entries_from_payload(payload: Any) -> Sequence[Dict[str, Any]]:
     if isinstance(payload, list):
         return payload
@@ -609,10 +738,11 @@ def _catalog_entries_from_payload(payload: Any) -> Sequence[Dict[str, Any]]:
 
 def load_ground_station_catalog(path: Path | None = None) -> List[GroundStation]:
     entries: Sequence[Dict[str, Any]]
-    if path is None:
+    catalog_path = DEFAULT_GATEWAY_CATALOG_PATH if path is None and DEFAULT_GATEWAY_CATALOG_PATH.exists() else path
+    if catalog_path is None:
         entries = DEFAULT_GATEWAY_CATALOG
     else:
-        entries = _catalog_entries_from_payload(json.loads(path.read_text(encoding="utf-8")))
+        entries = _catalog_entries_from_payload(json.loads(catalog_path.read_text(encoding="utf-8")))
     stations = [
         GroundStation(
             ground_station_id=_coerce_ground_station_id(dict(entry)),
@@ -622,7 +752,7 @@ def load_ground_station_catalog(path: Path | None = None) -> List[GroundStation]
                 ("longitude_deg", "longitude", "lon", "lng"),
                 "longitude",
             ),
-            altitude_km=float(dict(entry).get("altitude_km", dict(entry).get("altitude", 0.0))),
+            altitude_km=_coerce_altitude_km(dict(entry)),
             max_satellite_links=_coerce_optional_positive_int(
                 dict(entry),
                 (
@@ -673,25 +803,18 @@ def _gmst_deg(timestamp: datetime) -> float:
 
 
 def _ground_position_inertial(station: GroundStation, *, timestamp: datetime) -> NodePosition:
+    return _ground_position_inertial_at_gmst(station, gmst_deg=_gmst_deg(timestamp))
+
+
+def _ground_position_inertial_at_gmst(station: GroundStation, *, gmst_deg: float) -> NodePosition:
     latitude_rad = math.radians(station.latitude_deg)
-    theta_rad = math.radians((_gmst_deg(timestamp) + station.longitude_deg) % 360.0)
+    theta_rad = math.radians((gmst_deg + station.longitude_deg) % 360.0)
     radius_km = EARTH_RADIUS_KM + station.altitude_km
     return NodePosition(
         x_km=radius_km * math.cos(latitude_rad) * math.cos(theta_rad),
         y_km=radius_km * math.cos(latitude_rad) * math.sin(theta_rad),
         z_km=radius_km * math.sin(latitude_rad),
     )
-
-
-def _satellite_subpoint(position: NodePosition, *, timestamp: datetime) -> Dict[str, float]:
-    radius_km = math.sqrt(position.x_km**2 + position.y_km**2 + position.z_km**2)
-    latitude_deg = math.degrees(math.asin(max(-1.0, min(1.0, position.z_km / radius_km))))
-    inertial_longitude_deg = math.degrees(math.atan2(position.y_km, position.x_km))
-    longitude_deg = ((inertial_longitude_deg - _gmst_deg(timestamp) + 540.0) % 360.0) - 180.0
-    return {
-        "latitude_deg": round(latitude_deg, 6),
-        "longitude_deg": round(longitude_deg, 6),
-    }
 
 
 def _distance_km(first: NodePosition, second: NodePosition) -> float:
@@ -746,6 +869,132 @@ def _elevation_deg(owner_position: NodePosition, candidate_position: NodePositio
     return math.degrees(math.asin(bounded_vertical))
 
 
+def _satellite_lat_lon_deg(position: NodePosition, *, gmst_deg: float) -> tuple[float, float]:
+    radius_km = math.sqrt(position.x_km**2 + position.y_km**2 + position.z_km**2)
+    if radius_km == 0.0:
+        return 0.0, 0.0
+    latitude_deg = math.degrees(math.asin(max(-1.0, min(1.0, position.z_km / radius_km))))
+    inertial_longitude_deg = math.degrees(math.atan2(position.y_km, position.x_km))
+    longitude_deg = ((inertial_longitude_deg - gmst_deg + 540.0) % 360.0) - 180.0
+    return latitude_deg, longitude_deg
+
+
+def _spatial_bin(lat_deg: float, lon_deg: float, *, bin_deg: float) -> tuple[int, int]:
+    lat_index = int(math.floor((max(-90.0, min(90.0, lat_deg)) + 90.0) / bin_deg))
+    lon_index = int(math.floor((((lon_deg + 180.0) % 360.0)) / bin_deg))
+    max_lat_index = int(math.ceil(180.0 / bin_deg)) - 1
+    max_lon_index = int(math.ceil(360.0 / bin_deg)) - 1
+    return min(max_lat_index, max(0, lat_index)), min(max_lon_index, max(0, lon_index))
+
+
+def _build_satellite_spatial_index(
+    satellite_positions: Dict[str, NodePosition],
+    *,
+    gmst_deg: float,
+    bin_deg: float,
+) -> tuple[Dict[tuple[int, int], List[tuple[str, NodePosition]]], int, int]:
+    lat_bin_count = int(math.ceil(180.0 / bin_deg))
+    lon_bin_count = int(math.ceil(360.0 / bin_deg))
+    bins: Dict[tuple[int, int], List[tuple[str, NodePosition]]] = {}
+    for satellite_id in sorted(satellite_positions):
+        position = satellite_positions[satellite_id]
+        lat_deg, lon_deg = _satellite_lat_lon_deg(position, gmst_deg=gmst_deg)
+        bins.setdefault(_spatial_bin(lat_deg, lon_deg, bin_deg=bin_deg), []).append(
+            (satellite_id, position)
+        )
+    return bins, lat_bin_count, lon_bin_count
+
+
+def _max_visible_central_angle_deg(
+    *,
+    station_radius_km: float,
+    max_satellite_radius_km: float,
+    min_elevation_deg: float,
+) -> float:
+    if max_satellite_radius_km <= station_radius_km:
+        return 0.0
+    elevation_rad = math.radians(max(-89.0, min(89.0, min_elevation_deg)))
+    ratio = station_radius_km / max_satellite_radius_km
+    central_angle_rad = math.acos(max(-1.0, min(1.0, ratio * math.cos(elevation_rad)))) - elevation_rad
+    return max(0.0, math.degrees(central_angle_rad))
+
+
+def _candidate_satellites_for_station(
+    bin_keys: Sequence[tuple[int, int]],
+    satellite_bins: Dict[tuple[int, int], List[tuple[str, NodePosition]]],
+    *,
+    lon_bin_count: int,
+) -> List[tuple[str, NodePosition]]:
+    candidates: List[tuple[str, NodePosition]] = []
+    seen: set[str] = set()
+    for lat_index, lon_index in bin_keys:
+        for satellite_id, position in satellite_bins.get((lat_index, lon_index % lon_bin_count), ()):
+            if satellite_id in seen:
+                continue
+            seen.add(satellite_id)
+            candidates.append((satellite_id, position))
+    return candidates
+
+
+def _station_spatial_bin_keys(
+    station: GroundStation,
+    *,
+    lat_bin_count: int,
+    lon_bin_count: int,
+    central_angle_deg: float,
+    bin_deg: float,
+) -> tuple[tuple[int, int], ...]:
+    lat_span_deg = min(180.0, central_angle_deg + (2.0 * bin_deg))
+    station_lat_rad = math.radians(station.latitude_deg)
+    if abs(station.latitude_deg) + lat_span_deg >= 89.0:
+        lon_span_deg = 180.0
+    else:
+        lon_span_deg = min(180.0, (central_angle_deg / max(0.12, math.cos(station_lat_rad))) + (2.0 * bin_deg))
+    lat_min = max(-90.0, station.latitude_deg - lat_span_deg)
+    lat_max = min(90.0, station.latitude_deg + lat_span_deg)
+    lat_start = int(math.floor((lat_min + 90.0) / bin_deg))
+    lat_end = int(math.floor((lat_max + 90.0) / bin_deg))
+    lon_center = ((station.longitude_deg + 180.0) % 360.0) - 180.0
+    lon_start = int(math.floor(((lon_center - lon_span_deg + 180.0) % 360.0) / bin_deg))
+    lon_end = int(math.floor(((lon_center + lon_span_deg + 180.0) % 360.0) / bin_deg))
+    if lon_span_deg >= 179.999:
+        lon_indices = range(lon_bin_count)
+    elif lon_start <= lon_end:
+        lon_indices = range(max(0, lon_start), min(lon_bin_count - 1, lon_end) + 1)
+    else:
+        lon_indices = list(range(max(0, lon_start), lon_bin_count)) + list(range(0, min(lon_bin_count - 1, lon_end) + 1))
+    keys: List[tuple[int, int]] = []
+    for lat_index in range(max(0, lat_start), min(lat_bin_count - 1, lat_end) + 1):
+        for lon_index in lon_indices:
+            keys.append((lat_index, lon_index % lon_bin_count))
+    return tuple(keys)
+
+
+def _build_station_spatial_bin_keys(
+    stations: Sequence[GroundStation],
+    *,
+    max_satellite_radius_km: float,
+    min_elevation_deg: float,
+    bin_deg: float,
+) -> Dict[str, tuple[tuple[int, int], ...]]:
+    lat_bin_count = int(math.ceil(180.0 / bin_deg))
+    lon_bin_count = int(math.ceil(360.0 / bin_deg))
+    return {
+        station.ground_station_id: _station_spatial_bin_keys(
+            station,
+            lat_bin_count=lat_bin_count,
+            lon_bin_count=lon_bin_count,
+            central_angle_deg=_max_visible_central_angle_deg(
+                station_radius_km=EARTH_RADIUS_KM + station.altitude_km,
+                max_satellite_radius_km=max_satellite_radius_km,
+                min_elevation_deg=min_elevation_deg,
+            ),
+            bin_deg=bin_deg,
+        )
+        for station in stations
+    }
+
+
 def _ground_station_capacity_map(
     stations: Sequence[GroundStation],
     *,
@@ -781,44 +1030,97 @@ def _visible_ground_link_candidates(
     min_elevation_deg: float,
     earth_clearance_km: float,
     max_distance_km: float | None,
-) -> tuple[List[VisibleGroundLinkCandidate], Dict[str, Dict[str, float]]]:
+    station_bin_keys_by_id: Dict[str, Sequence[tuple[int, int]]] | None = None,
+) -> List[VisibleGroundLinkCandidate]:
     timestamp = datetime.fromisoformat(orbit_slice.timestamp_utc.replace("Z", "+00:00"))
-    station_positions = {
-        station.ground_station_id: _ground_position_inertial(station, timestamp=timestamp)
-        for station in stations
-    }
+    gmst_deg = _gmst_deg(timestamp)
+    station_geometries: List[tuple[str, NodePosition, float, float, float]] = []
+    for station in stations:
+        ground_position = _ground_position_inertial_at_gmst(station, gmst_deg=gmst_deg)
+        ground_radius = EARTH_RADIUS_KM + station.altitude_km
+        station_geometries.append(
+            (
+                station.ground_station_id,
+                ground_position,
+                ground_position.x_km / ground_radius,
+                ground_position.y_km / ground_radius,
+                ground_position.z_km / ground_radius,
+            )
+        )
     satellite_positions = {
         satellite_id: NodePosition(state.x_km, state.y_km, state.z_km)
         for satellite_id, state in orbit_slice.satellite_states.items()
     }
-    subpoints = {
-        satellite_id: _satellite_subpoint(position, timestamp=timestamp)
-        for satellite_id, position in satellite_positions.items()
-    }
+    satellite_bins, lat_bin_count, lon_bin_count = _build_satellite_spatial_index(
+        satellite_positions,
+        gmst_deg=gmst_deg,
+        bin_deg=GROUND_LINK_SPATIAL_BIN_DEG,
+    )
     candidates: List[VisibleGroundLinkCandidate] = []
-    for satellite_id in sorted(satellite_positions):
-        satellite_position = satellite_positions[satellite_id]
-        for station in stations:
-            ground_position = station_positions[station.ground_station_id]
-            elevation_deg = _elevation_deg(ground_position, satellite_position)
-            if elevation_deg < min_elevation_deg:
+    min_elevation_sin = math.sin(math.radians(min_elevation_deg))
+    max_distance_sq = None if max_distance_km is None else float(max_distance_km) ** 2
+    station_lookup = {station.ground_station_id: station for station in stations}
+    for ground_station_id, ground_position, up_x, up_y, up_z in station_geometries:
+        station = station_lookup[ground_station_id]
+        if station_bin_keys_by_id is None:
+            max_satellite_radius_km = max(
+                (
+                    math.sqrt(position.x_km**2 + position.y_km**2 + position.z_km**2)
+                    for position in satellite_positions.values()
+                ),
+                default=EARTH_RADIUS_KM,
+            )
+            bin_keys = _station_spatial_bin_keys(
+                station,
+                lat_bin_count=lat_bin_count,
+                lon_bin_count=lon_bin_count,
+                central_angle_deg=_max_visible_central_angle_deg(
+                    station_radius_km=EARTH_RADIUS_KM + station.altitude_km,
+                    max_satellite_radius_km=max_satellite_radius_km,
+                    min_elevation_deg=min_elevation_deg,
+                ),
+                bin_deg=GROUND_LINK_SPATIAL_BIN_DEG,
+            )
+        else:
+            bin_keys = station_bin_keys_by_id[ground_station_id]
+        satellite_candidates = _candidate_satellites_for_station(
+            bin_keys,
+            satellite_bins,
+            lon_bin_count=lon_bin_count,
+        )
+        for satellite_id, satellite_position in satellite_candidates:
+            sx = satellite_position.x_km
+            sy = satellite_position.y_km
+            sz = satellite_position.z_km
+            los_x = sx - ground_position.x_km
+            los_y = sy - ground_position.y_km
+            los_z = sz - ground_position.z_km
+            distance_sq = los_x**2 + los_y**2 + los_z**2
+            if distance_sq <= 0.0:
                 continue
-            clearance_km = _earth_clearance_km(ground_position, satellite_position)
-            if clearance_km < earth_clearance_km:
+            if max_distance_sq is not None and distance_sq > max_distance_sq:
                 continue
-            distance_km = _distance_km(ground_position, satellite_position)
-            if max_distance_km is not None and distance_km > max_distance_km:
+            distance_km = math.sqrt(distance_sq)
+            elevation_sin = ((los_x * up_x) + (los_y * up_y) + (los_z * up_z)) / distance_km
+            if elevation_sin < min_elevation_sin:
                 continue
+            if earth_clearance_km > 0.0:
+                clearance_km = _earth_clearance_km(ground_position, satellite_position)
+                if clearance_km < earth_clearance_km:
+                    continue
+            else:
+                clearance_km = 0.0
+            elevation_deg = math.degrees(math.asin(max(-1.0, min(1.0, elevation_sin))))
             candidates.append(
                 VisibleGroundLinkCandidate(
                     satellite_id=satellite_id,
-                    ground_station_id=station.ground_station_id,
+                    ground_station_id=ground_station_id,
                     elevation_deg=elevation_deg,
                     distance_km=distance_km,
                     earth_clearance_km=clearance_km,
                 )
             )
-    return candidates, subpoints
+    return candidates
 
 
 def _candidate_sort_key(candidate: VisibleGroundLinkCandidate) -> tuple[float, float, str, str]:
@@ -1056,6 +1358,151 @@ def _select_per_satellite_best_links(
     return sorted(assigned_by_satellite.values(), key=lambda item: (item.ground_station_id, item.satellite_id))
 
 
+def _select_per_satellite_best_links_fast(
+    candidates: Sequence[VisibleGroundLinkCandidate],
+    *,
+    previous_assignment_by_satellite: Dict[str, str],
+    hold_steps_by_satellite: Dict[str, int],
+    hysteresis_elevation_deg: float,
+    capacity_by_station: Dict[str, int | None],
+    min_hold_steps: int,
+    elevation_weight: float,
+    distance_weight: float,
+    handover_penalty: float,
+    load_penalty: float,
+) -> List[VisibleGroundLinkCandidate]:
+    candidates_by_satellite: Dict[str, List[VisibleGroundLinkCandidate]] = {}
+    for candidate in candidates:
+        candidates_by_satellite.setdefault(candidate.satellite_id, []).append(candidate)
+    for satellite_id, satellite_candidates in list(candidates_by_satellite.items()):
+        candidates_by_satellite[satellite_id] = sorted(
+            satellite_candidates,
+            key=lambda item: (-item.elevation_deg, item.distance_km, item.ground_station_id),
+        )
+
+    assigned_by_satellite: Dict[str, VisibleGroundLinkCandidate] = {}
+    assigned_count_by_station: Dict[str, int] = {}
+
+    for satellite_id in sorted(candidates_by_satellite):
+        satellite_candidates = candidates_by_satellite[satellite_id]
+        previous_station_id = previous_assignment_by_satellite.get(satellite_id)
+        if previous_station_id is None:
+            continue
+        best_candidate: VisibleGroundLinkCandidate | None = None
+        best_score = float("-inf")
+        best_order_key: tuple[float, float, float, str, str] | None = None
+        previous_candidate: VisibleGroundLinkCandidate | None = None
+        previous_score = float("-inf")
+        for candidate in satellite_candidates:
+            score = _score_candidate(
+                candidate,
+                previous_ground_station_id=previous_station_id,
+                assigned_count_by_station=assigned_count_by_station,
+                capacity_by_station=capacity_by_station,
+                elevation_weight=elevation_weight,
+                distance_weight=distance_weight,
+                handover_penalty=handover_penalty,
+                load_penalty=load_penalty,
+            )
+            if candidate.ground_station_id == previous_station_id:
+                previous_candidate = candidate
+                previous_score = score
+            order_key = (
+                -score,
+                -candidate.elevation_deg,
+                candidate.distance_km,
+                candidate.ground_station_id,
+                candidate.satellite_id,
+            )
+            if best_order_key is None or order_key < best_order_key:
+                best_candidate = candidate
+                best_score = score
+                best_order_key = order_key
+        if best_candidate is None:
+            continue
+        retain_previous = False
+        if previous_candidate is not None:
+            if hold_steps_by_satellite.get(satellite_id, 0) < min_hold_steps:
+                retain_previous = True
+            else:
+                retain_previous = (
+                    previous_candidate.elevation_deg + hysteresis_elevation_deg
+                    >= best_candidate.elevation_deg
+                )
+        if not retain_previous:
+            continue
+        if not _capacity_available(
+            ground_station_id=previous_station_id,
+            assigned_count_by_station=assigned_count_by_station,
+            capacity_by_station=capacity_by_station,
+        ):
+            continue
+        assigned_by_satellite[satellite_id] = _scored_candidate(
+            previous_candidate,
+            score=previous_score,
+            selection_reason="retained_by_min_hold"
+            if hold_steps_by_satellite.get(satellite_id, 0) < min_hold_steps
+            else "retained_by_hysteresis",
+            retained_by_hysteresis=True,
+        )
+        assigned_count_by_station[previous_station_id] = (
+            assigned_count_by_station.get(previous_station_id, 0) + 1
+        )
+
+    remaining_satellite_ids = [
+        satellite_id
+        for satellite_id in sorted(
+            candidates_by_satellite,
+            key=lambda item: _candidate_sort_key(candidates_by_satellite[item][0]),
+        )
+        if satellite_id not in assigned_by_satellite
+    ]
+    for satellite_id in remaining_satellite_ids:
+        previous_station_id = previous_assignment_by_satellite.get(satellite_id)
+        best_candidate: VisibleGroundLinkCandidate | None = None
+        best_score = float("-inf")
+        best_order_key: tuple[float, float, float, str, str] | None = None
+        for candidate in candidates_by_satellite[satellite_id]:
+            if not _capacity_available(
+                ground_station_id=candidate.ground_station_id,
+                assigned_count_by_station=assigned_count_by_station,
+                capacity_by_station=capacity_by_station,
+            ):
+                continue
+            score = _score_candidate(
+                candidate,
+                previous_ground_station_id=previous_station_id,
+                assigned_count_by_station=assigned_count_by_station,
+                capacity_by_station=capacity_by_station,
+                elevation_weight=elevation_weight,
+                distance_weight=distance_weight,
+                handover_penalty=handover_penalty,
+                load_penalty=load_penalty,
+            )
+            order_key = (
+                -score,
+                -candidate.elevation_deg,
+                candidate.distance_km,
+                candidate.ground_station_id,
+                candidate.satellite_id,
+            )
+            if best_order_key is None or order_key < best_order_key:
+                best_candidate = candidate
+                best_score = score
+                best_order_key = order_key
+        if best_candidate is None:
+            continue
+        assigned_by_satellite[satellite_id] = _scored_candidate(
+            best_candidate,
+            score=best_score,
+            selection_reason="selected_by_score",
+        )
+        assigned_count_by_station[best_candidate.ground_station_id] = (
+            assigned_count_by_station.get(best_candidate.ground_station_id, 0) + 1
+        )
+    return sorted(assigned_by_satellite.values(), key=lambda item: (item.ground_station_id, item.satellite_id))
+
+
 def _select_ground_link_candidates(
     candidates: Sequence[VisibleGroundLinkCandidate],
     *,
@@ -1081,6 +1528,23 @@ def _select_ground_link_candidates(
             _scored_candidate(candidate, score=candidate.elevation_deg, selection_reason="selected_by_elevation")
             for candidate in _select_per_ground_station_best_links(candidates)
         ]
+    if (
+        selection_strategy == "per-satellite-best"
+        and top_k <= 1
+        and all(capacity is None for capacity in capacity_by_station.values())
+    ):
+        return _select_per_satellite_best_links_fast(
+            candidates,
+            previous_assignment_by_satellite=previous_assignment_by_satellite,
+            hold_steps_by_satellite=hold_steps_by_satellite,
+            hysteresis_elevation_deg=hysteresis_elevation_deg,
+            capacity_by_station=capacity_by_station,
+            min_hold_steps=min_hold_steps,
+            elevation_weight=elevation_weight,
+            distance_weight=distance_weight,
+            handover_penalty=handover_penalty,
+            load_penalty=load_penalty,
+        )
     if selection_strategy in {"per-satellite-best", "top-k-per-satellite"}:
         return _select_per_satellite_best_links(
             candidates,
@@ -1106,16 +1570,11 @@ def _render_satellite_id(satellite_node_id_value: str, *, satellite_id_format: s
     return satellite_node_id_value
 
 
-def _render_clearance_km(value: float) -> float | None:
-    if value > 100000000.0:
-        return None
-    return round(value, 3)
-
-
-def build_ground_links_result(
+def build_ground_links_computation(
     *,
     planned_shell: str | None = "S5",
     tle_path: Path | None = None,
+    planned_orbit_data: Path | None = None,
     ground_station_catalog: Path | None = None,
     ground_station_ids: str | None = None,
     max_ground_stations: int | None = None,
@@ -1123,7 +1582,7 @@ def build_ground_links_result(
     interval: str = "1s",
     steps: int | None = 3,
     duration: str | None = None,
-    max_satellites: int = 24,
+    max_satellites: int = 0,
     min_elevation_deg: float = 5.0,
     satellite_id_format: str = "norad",
     selection_strategy: str = "per-satellite-best",
@@ -1131,18 +1590,23 @@ def build_ground_links_result(
     max_satellites_per_ground_station: int | None = None,
     hysteresis_elevation_deg: float = 2.0,
     earth_clearance_km: float = 0.0,
-    max_distance_km: float | None = None,
+    max_distance_km: float | None = DEFAULT_MAX_GROUND_LINK_DISTANCE_KM,
     elevation_weight: float = 1.0,
     distance_weight: float = 0.002,
     handover_penalty: float = 3.0,
     load_penalty: float = 0.5,
     min_hold_steps: int = 2,
-) -> GroundLinksResult:
+) -> GroundLinksComputation:
     timestamp_ms, start_time = _parse_start_timestamp_ms(start_timestamp)
     interval_seconds = _parse_interval_seconds(interval)
     if interval_seconds <= 0.0:
         raise ValueError("interval must be positive")
     effective_steps = _derive_steps(steps=steps, duration=duration, interval_seconds=interval_seconds)
+    effective_max_distance_km = (
+        None
+        if max_distance_km is not None and float(max_distance_km) <= 0.0
+        else max_distance_km
+    )
     stations = _select_ground_stations(
         load_ground_station_catalog(ground_station_catalog),
         selected_ids=ground_station_ids,
@@ -1155,6 +1619,20 @@ def build_ground_links_result(
         tle_path=tle_path,
         max_satellites=max_satellites,
         start_time=start_time,
+        planned_orbit_data_path=planned_orbit_data,
+    )
+    max_satellite_radius_km = max(
+        (
+            EARTH_RADIUS_KM + _mean_motion_to_altitude_km(record.mean_motion_rev_per_day)
+            for record in records
+        ),
+        default=EARTH_RADIUS_KM,
+    )
+    station_bin_keys_by_id = _build_station_spatial_bin_keys(
+        stations,
+        max_satellite_radius_km=max_satellite_radius_km,
+        min_elevation_deg=float(min_elevation_deg),
+        bin_deg=GROUND_LINK_SPATIAL_BIN_DEG,
     )
     propagated_slices = _propagate_records(
         orbit_kind=orbit_kind,
@@ -1168,101 +1646,126 @@ def build_ground_links_result(
         override_capacity=max_satellites_per_ground_station,
     )
 
-    ground_links: List[List[Dict[str, str]]] = []
-    samples: List[GroundLinkSample] = []
-    previous_assignment_by_satellite: Dict[str, str] = {}
-    hold_steps_by_satellite: Dict[str, int] = {}
-    for orbit_slice in propagated_slices:
-        candidates, subpoints = _visible_ground_link_candidates(
-            orbit_slice,
-            stations=stations,
-            min_elevation_deg=float(min_elevation_deg),
-            earth_clearance_km=float(earth_clearance_km),
-            max_distance_km=max_distance_km,
-        )
-        selected_candidates = _select_ground_link_candidates(
-            candidates,
-            selection_strategy=selection_strategy,
-            previous_assignment_by_satellite=previous_assignment_by_satellite,
-            hold_steps_by_satellite=hold_steps_by_satellite,
-            hysteresis_elevation_deg=float(hysteresis_elevation_deg),
-            capacity_by_station=capacity_by_station,
-            top_k=int(top_k),
-            min_hold_steps=int(min_hold_steps),
-            elevation_weight=float(elevation_weight),
-            distance_weight=float(distance_weight),
-            handover_penalty=float(handover_penalty),
-            load_penalty=float(load_penalty),
-        )
-        next_assignment_by_satellite: Dict[str, str] = {}
-        for candidate in sorted(selected_candidates, key=_candidate_sort_key):
-            next_assignment_by_satellite.setdefault(
-                candidate.satellite_id,
-                candidate.ground_station_id,
+    def sample_iterator() -> Iterable[List[Dict[str, str]]]:
+        previous_assignment_by_satellite: Dict[str, str] = {}
+        hold_steps_by_satellite: Dict[str, int] = {}
+        for orbit_slice in propagated_slices:
+            candidates = _visible_ground_link_candidates(
+                orbit_slice,
+                stations=stations,
+                min_elevation_deg=float(min_elevation_deg),
+                earth_clearance_km=float(earth_clearance_km),
+                max_distance_km=effective_max_distance_km,
+                station_bin_keys_by_id=station_bin_keys_by_id,
             )
-        next_hold_steps: Dict[str, int] = {}
-        for satellite_id, ground_station_id in next_assignment_by_satellite.items():
-            if previous_assignment_by_satellite.get(satellite_id) == ground_station_id:
-                next_hold_steps[satellite_id] = hold_steps_by_satellite.get(satellite_id, 0) + 1
-            else:
-                next_hold_steps[satellite_id] = 0
-        previous_assignment_by_satellite = next_assignment_by_satellite
-        hold_steps_by_satellite = next_hold_steps
-        links = [
-            {
-                "satelliteId": _render_satellite_id(
+            selected_candidates = _select_ground_link_candidates(
+                candidates,
+                selection_strategy=selection_strategy,
+                previous_assignment_by_satellite=previous_assignment_by_satellite,
+                hold_steps_by_satellite=hold_steps_by_satellite,
+                hysteresis_elevation_deg=float(hysteresis_elevation_deg),
+                capacity_by_station=capacity_by_station,
+                top_k=int(top_k),
+                min_hold_steps=int(min_hold_steps),
+                elevation_weight=float(elevation_weight),
+                distance_weight=float(distance_weight),
+                handover_penalty=float(handover_penalty),
+                load_penalty=float(load_penalty),
+            )
+            next_assignment_by_satellite: Dict[str, str] = {}
+            for candidate in sorted(selected_candidates, key=_candidate_sort_key):
+                next_assignment_by_satellite.setdefault(
                     candidate.satellite_id,
-                    satellite_id_format=satellite_id_format,
-                ),
-                "groundStationId": candidate.ground_station_id,
-            }
-            for candidate in selected_candidates
-        ]
-        sorted_links = sorted(links, key=lambda item: (item["groundStationId"], item["satelliteId"]))
-        ground_links.append(sorted_links)
-        samples.append(
-            GroundLinkSample(
-                timestamp_utc=orbit_slice.timestamp_utc,
-                links=sorted_links,
-                candidates=tuple(candidates),
-                selected_candidates=tuple(selected_candidates),
-                satellite_subpoints=subpoints,
-            )
-        )
-    payload = {"timestamp": timestamp_ms, "interval": str(interval), "groundLinks": ground_links}
-    return GroundLinksResult(
-        payload=payload,
-        samples=tuple(samples),
-        stations=tuple(stations),
-        satellite_id_format=satellite_id_format,
-        selection_metadata={
-            "strategy": selection_strategy,
-            "topK": int(top_k),
-            "minElevationDeg": float(min_elevation_deg),
-            "hysteresisElevationDeg": float(hysteresis_elevation_deg),
-            "earthClearanceKm": float(earth_clearance_km),
-            "maxDistanceKm": max_distance_km,
-            "elevationWeight": float(elevation_weight),
-            "distanceWeight": float(distance_weight),
-            "handoverPenalty": float(handover_penalty),
-            "loadPenalty": float(load_penalty),
-            "minHoldSteps": int(min_hold_steps),
-            "maxSatellitesPerGroundStation": max_satellites_per_ground_station,
-            "orbitKind": orbit_kind,
-            "selectedSatelliteCount": len(records),
-            "selectedGroundStationCount": len(stations),
-        },
+                    candidate.ground_station_id,
+                )
+            next_hold_steps: Dict[str, int] = {}
+            for satellite_id, ground_station_id in next_assignment_by_satellite.items():
+                if previous_assignment_by_satellite.get(satellite_id) == ground_station_id:
+                    next_hold_steps[satellite_id] = hold_steps_by_satellite.get(satellite_id, 0) + 1
+                else:
+                    next_hold_steps[satellite_id] = 0
+            previous_assignment_by_satellite = next_assignment_by_satellite
+            hold_steps_by_satellite = next_hold_steps
+            links = [
+                {
+                    "satelliteId": _render_satellite_id(
+                        candidate.satellite_id,
+                        satellite_id_format=satellite_id_format,
+                    ),
+                    "groundStationId": candidate.ground_station_id,
+                }
+                for candidate in selected_candidates
+            ]
+            yield sorted(links, key=lambda item: (item["groundStationId"], item["satelliteId"]))
+
+    return GroundLinksComputation(
+        timestamp_ms=timestamp_ms,
+        interval=str(interval),
+        samples=sample_iterator(),
     )
+
+
+def build_ground_links_result(**kwargs: Any) -> GroundLinksResult:
+    computation = build_ground_links_computation(**kwargs)
+    ground_links = list(computation.samples)
+    payload = {
+        "timestamp": computation.timestamp_ms,
+        "interval": computation.interval,
+        "links": [
+            {
+                "groundLinks": sample_links,
+                "satelliteLinks": [],
+            }
+            for sample_links in ground_links
+        ],
+    }
+    return GroundLinksResult(payload=payload)
 
 
 def build_ground_links_payload(**kwargs: Any) -> Dict[str, Any]:
     return build_ground_links_result(**kwargs).payload
 
 
-def post_payload(url: str, payload: Dict[str, Any], *, timeout_seconds: float = 15.0) -> int:
-    body = json.dumps(payload).encode("utf-8")
+def _normalize_post_url(url: str) -> str:
+    text = str(url).strip()
+    if text.startswith("[") and "](" in text and text.endswith(")"):
+        return text.split("](", 1)[1][:-1].strip()
+    if text.startswith("<") and text.endswith(">"):
+        return text[1:-1].strip()
+    return text
+
+
+def _write_ground_links_json_stream(output, computation: GroundLinksComputation) -> None:
+    output.write("{")
+    output.write(f"\"timestamp\":{json.dumps(computation.timestamp_ms)},")
+    output.write(f"\"interval\":{json.dumps(computation.interval)},")
+    output.write("\"links\":[")
+    first_sample = True
+    for links in computation.samples:
+        if not first_sample:
+            output.write(",")
+        output.write(
+            json.dumps(
+                {
+                    "groundLinks": links,
+                    "satelliteLinks": [],
+                },
+                separators=(",", ":"),
+            )
+        )
+        first_sample = False
+    output.write("]}\n")
+
+
+def _write_ground_links_json_path(path: Path, computation: GroundLinksComputation) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as output:
+        _write_ground_links_json_stream(output, computation)
+
+
+def post_json_bytes(url: str, body: bytes, *, timeout_seconds: float = 15.0) -> int:
     req = request.Request(
-        url,
+        _normalize_post_url(url),
         data=body,
         headers={"Content-Type": "application/json"},
         method="POST",
@@ -1284,9 +1787,20 @@ def post_payload(url: str, payload: Dict[str, Any], *, timeout_seconds: float = 
         return 1
 
 
-def _write_json(path: Path, payload: Dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+def post_payload(url: str, payload: Dict[str, Any], *, timeout_seconds: float = 15.0) -> int:
+    return post_json_bytes(
+        url,
+        json.dumps(payload).encode("utf-8"),
+        timeout_seconds=timeout_seconds,
+    )
+
+
+def post_trigger(url: str, *, timeout_seconds: float = 15.0) -> int:
+    return post_json_bytes(
+        url,
+        b"{}",
+        timeout_seconds=timeout_seconds,
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -1300,31 +1814,46 @@ def parse_args() -> argparse.Namespace:
             "Minimal dry run:\n"
             "  export_ground_links.py --planned-shell S4 --steps 3 --interval 1s\n\n"
             "Payload contract:\n"
-            "  {\"timestamp\":\"...\",\"interval\":\"1s\",\"groundLinks\":[[{\"satelliteId\":\"...\",\"groundStationId\":\"...\"}]]}"
+            "  {\"timestamp\":\"...\",\"interval\":\"1s\",\"links\":[{\"groundLinks\":[{\"satelliteId\":\"...\",\"groundStationId\":\"...\"}],\"satelliteLinks\":[]}]}"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     orbit = parser.add_mutually_exclusive_group()
     orbit.add_argument(
         "--planned-shell",
-        choices=tuple(sorted(PLANNED_STARLINK_PHASE1_SHELL_PRESETS)),
+        choices=PLANNED_SHELL_CHOICES,
         default=None,
-        help="Use a deterministic planned shell preset. Default: S5.",
+        help='Use a deterministic planned shell preset. Use "ALL" or "S1-S5" for all shells. Default: S5.',
     )
     orbit.add_argument("--tle", type=Path, default=None, help="Path to a three-line TLE catalog.")
-    parser.add_argument("--ground-station-catalog", type=Path, default=None, help="Ground station JSON catalog. Defaults to built-in demo stations.")
+    parser.add_argument(
+        "--planned-orbit-data",
+        type=Path,
+        default=None,
+        help=(
+            "Optional fixed planned-shell orbit data JSON. When omitted, "
+            "planned-shell mode uses planned_shell_orbit_data_s1_s5.json beside "
+            "this script if it exists."
+        ),
+    )
+    parser.add_argument("--ground-station-catalog", type=Path, default=None, help="Ground station JSON catalog. Defaults to starlink_gateways.json beside this script.")
     parser.add_argument("--ground-station-ids", default=None, help="Comma-separated station ids to include.")
-    parser.add_argument("--max-ground-stations", type=int, default=3, help="Demo/default catalog cap when ids are not specified.")
-    parser.add_argument("--start-timestamp", default=DEFAULT_START_TIMESTAMP_MS, help="Start timestamp, epoch milliseconds or ISO-8601.")
+    parser.add_argument("--max-ground-stations", type=int, default=None, help="Optional station cap when ids are not specified. Default: no cap.")
+    parser.add_argument("--start-timestamp", default=DEFAULT_START_TIMESTAMP_MS, help="Start timestamp, epoch milliseconds or ISO-8601. Default: current UTC time.")
     parser.add_argument("--interval", default="1s", help='Sampling interval such as "1s" or "30s".')
     parser.add_argument("--steps", type=int, default=None, help="Number of samples. Defaults to 3 unless --duration is set.")
     parser.add_argument("--duration", default=None, help="Optional duration; derives steps from interval.")
-    parser.add_argument("--max-satellites", type=int, default=24, help="Prototype satellite sample cap.")
+    parser.add_argument("--max-satellites", type=int, default=0, help="Optional satellite cap. Default 0 means no cap.")
     parser.add_argument("--min-elevation-deg", type=float, default=5.0, help="Minimum satellite elevation for a candidate link.")
     parser.add_argument("--max-satellites-per-ground-station", type=int, default=None, help="Optional station capacity override; 0 means unlimited.")
     parser.add_argument("--hysteresis-elevation-deg", type=float, default=2.0, help="Handover hysteresis margin in degrees.")
     parser.add_argument("--earth-clearance-km", type=float, default=0.0, help="Minimum internal line-of-sight clearance above Earth.")
-    parser.add_argument("--max-distance-km", type=float, default=None, help="Optional maximum satellite-ground distance.")
+    parser.add_argument(
+        "--max-distance-km",
+        type=float,
+        default=DEFAULT_MAX_GROUND_LINK_DISTANCE_KM,
+        help="Maximum satellite-ground distance. Default: 2500 km. Use 0 or a negative value to disable.",
+    )
     parser.add_argument("--satellite-id-format", choices=("norad", "node-id"), default="norad", help="Payload satellite id format.")
     parser.add_argument(
         "--dry-run-json",
@@ -1333,16 +1862,17 @@ def parse_args() -> argparse.Namespace:
         default="-",
         help="Print JSON to stdout or write it to the optional path. This is the default mode.",
     )
-    parser.add_argument("--post-url", default=None, help="POST payload URL. Omit for dry-run.")
+    parser.add_argument("--post-url", default=None, help="POST trigger URL. Body is {}. Omit for dry-run.")
     parser.add_argument("--post-timeout-seconds", type=float, default=15.0)
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    result = build_ground_links_result(
+    computation = build_ground_links_computation(
         planned_shell=(None if args.tle is not None else (args.planned_shell or "S5")),
         tle_path=args.tle,
+        planned_orbit_data=args.planned_orbit_data,
         ground_station_catalog=args.ground_station_catalog,
         ground_station_ids=args.ground_station_ids,
         max_ground_stations=args.max_ground_stations,
@@ -1359,15 +1889,17 @@ def main() -> int:
         max_distance_km=args.max_distance_km,
     )
     if args.post_url:
-        return post_payload(
-            str(args.post_url),
-            result.payload,
-            timeout_seconds=float(args.post_timeout_seconds),
-        )
+        with tempfile.NamedTemporaryFile("w+b", suffix=".json") as tmp:
+            with open(tmp.name, "w", encoding="utf-8") as output:
+                _write_ground_links_json_stream(output, computation)
+            if args.dry_run_json != "-":
+                Path(args.dry_run_json).parent.mkdir(parents=True, exist_ok=True)
+                Path(args.dry_run_json).write_bytes(Path(tmp.name).read_bytes())
+            return post_trigger(str(args.post_url), timeout_seconds=float(args.post_timeout_seconds))
     if args.dry_run_json == "-":
-        print(json.dumps(result.payload, indent=2))
+        _write_ground_links_json_stream(sys.stdout, computation)
     else:
-        _write_json(Path(args.dry_run_json), result.payload)
+        _write_ground_links_json_path(Path(args.dry_run_json), computation)
     return 0
 
 

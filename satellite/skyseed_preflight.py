@@ -59,6 +59,17 @@ DIRECT_BACKEND_HOST_INTERFACE_PATTERNS = (
     re.compile(r"^vhs[0-9a-f]{11}$"),
     re.compile(r"^vtm[0-9a-f]{11}$"),
 )
+BPF_PIN_BASE = Path("/sys/fs/bpf/tc/globals")
+SKYSEED_BPF_PINNED_MAPS = (
+    "active_generation",
+    "ingress_classifier_map",
+    "core_lfib_map",
+    "egress_handoff_map",
+    "packet_counters",
+    "interface_counters",
+    "interface_role_map",
+    "miss_samples",
+)
 LOCK_FILE_PATTERNS = ("*.lock", "*.pid", "*.pidfile")
 LOW_DISK_WARN_BYTES = 10 * 1024 * 1024 * 1024
 LOW_DISK_ERROR_BYTES = 2 * 1024 * 1024 * 1024
@@ -190,6 +201,72 @@ def _docker_container_state() -> Dict[str, Any]:
     }
 
 
+def _docker_container_state_project_scoped() -> Dict[str, Any]:
+    inspect = _run(
+        [
+            "docker",
+            "ps",
+            "-a",
+            "--filter",
+            f"label=com.docker.compose.project={SKYSEED_COMPOSE_PROJECT}",
+            "--format",
+            "{{.Names}}\t{{.Status}}\t{{.Label \"com.docker.compose.project\"}}",
+        ]
+    )
+    compose_project_containers: List[Dict[str, Any]] = []
+    compose_project_state_counts = {
+        "running": 0,
+        "exited": 0,
+        "other": 0,
+    }
+    if inspect.returncode == 0:
+        for line in inspect.stdout.splitlines():
+            if not line.strip():
+                continue
+            parts = line.split("\t")
+            name = parts[0].strip()
+            status = parts[1].strip() if len(parts) > 1 else ""
+            project = parts[2].strip() if len(parts) > 2 else ""
+            state = (
+                "running"
+                if status.lower().startswith("up")
+                else "exited"
+                if status.lower().startswith("exited")
+                else "other"
+            )
+            compose_project_state_counts[state] = (
+                int(compose_project_state_counts.get(state, 0)) + 1
+            )
+            compose_project_containers.append(
+                {
+                    "name": name,
+                    "status": status,
+                    "compose_project": project or SKYSEED_COMPOSE_PROJECT,
+                    "state": state,
+                }
+            )
+    return {
+        "command": [
+            "docker",
+            "ps",
+            "-a",
+            "--filter",
+            f"label=com.docker.compose.project={SKYSEED_COMPOSE_PROJECT}",
+            "--format",
+            "{{.Names}}\\t{{.Status}}\\t{{.Label \"com.docker.compose.project\"}}",
+        ],
+        "ok": inspect.returncode == 0,
+        "returncode": inspect.returncode,
+        "stderr": inspect.stderr.strip(),
+        "scope": "compose_project_label",
+        "full_docker_container_scan": False,
+        "state_counts": dict(compose_project_state_counts),
+        "compose_project_state_counts": compose_project_state_counts,
+        "compose_project_containers": compose_project_containers,
+        "named_skyseed_containers": [],
+    }
+
+
 def _docker_network_state() -> Dict[str, Any]:
     listing = _run(
         [
@@ -243,6 +320,58 @@ def _docker_network_state() -> Dict[str, Any]:
         "named_skyseed_networks": named_skyseed_networks,
         "attachment_count": attachment_count,
         "attachment_failures": attachment_failures,
+    }
+
+
+def _docker_network_state_project_scoped() -> Dict[str, Any]:
+    listing = _run(
+        [
+            "docker",
+            "network",
+            "ls",
+            "--filter",
+            f"label=com.docker.compose.project={SKYSEED_COMPOSE_PROJECT}",
+            "--format",
+            "{{.Name}}\t{{.Label \"com.docker.compose.project\"}}",
+        ]
+    )
+    compose_project_networks: List[Dict[str, Any]] = []
+    if listing.returncode == 0:
+        for line in listing.stdout.splitlines():
+            if not line.strip():
+                continue
+            parts = line.split("\t")
+            name = parts[0].strip()
+            project = parts[1].strip() if len(parts) > 1 else ""
+            if name:
+                compose_project_networks.append(
+                    {
+                        "name": name,
+                        "compose_project": project or SKYSEED_COMPOSE_PROJECT,
+                        "attachment_count": None,
+                        "attachment_count_skipped": True,
+                    }
+                )
+    return {
+        "command": [
+            "docker",
+            "network",
+            "ls",
+            "--filter",
+            f"label=com.docker.compose.project={SKYSEED_COMPOSE_PROJECT}",
+            "--format",
+            "{{.Name}}\\t{{.Label \"com.docker.compose.project\"}}",
+        ],
+        "ok": listing.returncode == 0,
+        "returncode": listing.returncode,
+        "stderr": listing.stderr.strip(),
+        "scope": "compose_project_label",
+        "full_docker_network_scan": False,
+        "network_inspect_skipped": True,
+        "compose_project_networks": compose_project_networks,
+        "named_skyseed_networks": [],
+        "attachment_count": 0,
+        "attachment_failures": [],
     }
 
 
@@ -304,10 +433,37 @@ def _direct_backend_host_artifacts() -> Dict[str, Any]:
     }
 
 
+def _bpf_pinned_map_artifacts() -> Dict[str, Any]:
+    maps: List[str] = []
+    checked_paths: List[str] = []
+    for map_name in SKYSEED_BPF_PINNED_MAPS:
+        path = BPF_PIN_BASE / map_name
+        checked_paths.append(str(path))
+        completed = _run(["sudo", "-n", "test", "-e", str(path)])
+        if completed.returncode == 0:
+            maps.append(map_name)
+    return {
+        "pin_base": str(BPF_PIN_BASE),
+        "map_names": sorted(maps),
+        "checked_paths": checked_paths,
+        "ok": True,
+    }
+
+
 def direct_backend_host_artifacts_report() -> Dict[str, Any]:
     """Public wrapper for scoped direct-backend residue inspection."""
 
     return _direct_backend_host_artifacts()
+
+
+def _skipped_diagnostic_check(*, name: str, result_key: str) -> Dict[str, Any]:
+    return {
+        "ok": True,
+        "skipped": True,
+        "skip_reason": "operational_clean_lightweight_preflight_defers_global_diagnostic",
+        "diagnostic_only": True,
+        result_key: [],
+    }
 
 
 def cleanup_direct_backend_host_artifacts(
@@ -427,6 +583,92 @@ def _cleanup_command_result(
     }
 
 
+def _cleanup_compose_networks_with_stale_endpoints(
+    network_names: Sequence[str],
+    *,
+    apply: bool,
+) -> List[Dict[str, Any]]:
+    """Remove scoped compose networks, including Docker's stale endpoint-name case."""
+
+    names = sorted({str(name) for name in network_names if str(name)})
+    if not names:
+        return []
+    results: List[Dict[str, Any]] = []
+    initial = _cleanup_command_result(
+        command=["docker", "network", "rm", *names],
+        apply=apply,
+    )
+    results.append(initial)
+    if (
+        not apply
+        or initial.get("ok") is True
+        or "active endpoints" not in str(initial.get("stderr") or "")
+    ):
+        return results
+
+    for network_name in names:
+        inspect = _run(["docker", "network", "inspect", network_name])
+        inspect_result: Dict[str, Any] = {
+            "command": ["docker", "network", "inspect", network_name],
+            "planned": True,
+            "executed": True,
+            "returncode": inspect.returncode,
+            "stdout": inspect.stdout.strip(),
+            "stderr": inspect.stderr.strip(),
+            "ok": inspect.returncode == 0,
+            "stale_endpoint_disconnect": True,
+        }
+        results.append(inspect_result)
+        if inspect.returncode != 0:
+            continue
+        try:
+            payload = json.loads(inspect.stdout or "[]")
+        except json.JSONDecodeError as exc:
+            results[-1]["ok"] = False
+            results[-1]["stderr"] = f"json_decode_failed:{exc}"
+            continue
+        network = payload[0] if isinstance(payload, list) and payload else {}
+        containers = dict(network.get("Containers") or {})
+        endpoint_names = sorted(
+            {
+                str(meta.get("Name") or container_id)
+                for container_id, meta in containers.items()
+                if str(meta.get("Name") or container_id)
+            }
+        )
+        for endpoint_name in endpoint_names:
+            disconnect = _run(
+                ["docker", "network", "disconnect", "-f", network_name, endpoint_name]
+            )
+            results.append(
+                {
+                    "command": [
+                        "docker",
+                        "network",
+                        "disconnect",
+                        "-f",
+                        network_name,
+                        endpoint_name,
+                    ],
+                    "planned": True,
+                    "executed": True,
+                    "returncode": disconnect.returncode,
+                    "stdout": disconnect.stdout.strip(),
+                    "stderr": disconnect.stderr.strip(),
+                    "ok": disconnect.returncode == 0,
+                    "stale_endpoint_disconnect": True,
+                }
+            )
+
+    retry = _cleanup_command_result(
+        command=["docker", "network", "rm", *names],
+        apply=apply,
+    )
+    retry["retry_after_stale_endpoint_disconnect"] = True
+    results.append(retry)
+    return results
+
+
 def _cleanup_resource_names(
     entries: Sequence[Dict[str, Any]],
     *,
@@ -452,6 +694,7 @@ def cleanup_skyseed_environment_residue(
     containers = dict(docker_state.get("containers") or {})
     networks = dict(docker_state.get("networks") or {})
     direct_state = dict(checks.get("direct_backend_host_artifacts") or {})
+    bpf_pinned_state = dict(checks.get("bpf_pinned_map_artifacts") or {})
     lock_state = dict(checks.get("runtime_lock_files") or {})
 
     compose_project_containers = _cleanup_resource_names(
@@ -482,6 +725,13 @@ def cleanup_skyseed_environment_residue(
         for path in list(lock_state.get("files") or [])
         if include_runtime_locks and _runtime_lock_path_allowed(Path(path))
     ]
+    bpf_pinned_map_names = sorted(
+        {
+            str(name)
+            for name in list(bpf_pinned_state.get("map_names") or [])
+            if str(name) in SKYSEED_BPF_PINNED_MAPS
+        }
+    )
 
     command_results: List[Dict[str, Any]] = []
     if container_names:
@@ -492,9 +742,9 @@ def cleanup_skyseed_environment_residue(
             )
         )
     if network_names:
-        command_results.append(
-            _cleanup_command_result(
-                command=["docker", "network", "rm", *network_names],
+        command_results.extend(
+            _cleanup_compose_networks_with_stale_endpoints(
+                network_names,
                 apply=apply,
             )
         )
@@ -522,6 +772,22 @@ def cleanup_skyseed_environment_residue(
                 )
                 for name in interface_names
             )
+    if bpf_pinned_map_names:
+        command_results.append(
+            _cleanup_command_result(
+                command=[
+                    "sudo",
+                    "-n",
+                    "rm",
+                    "-f",
+                    *[
+                        str(BPF_PIN_BASE / map_name)
+                        for map_name in bpf_pinned_map_names
+                    ],
+                ],
+                apply=apply,
+            )
+        )
     removed_lock_paths: List[str] = []
     failed_lock_paths: List[Dict[str, Any]] = []
     for lock_path in lock_paths:
@@ -549,9 +815,19 @@ def cleanup_skyseed_environment_residue(
             )
 
     executed_results = [result for result in command_results if result.get("executed")]
-    failed_results = [
-        result for result in executed_results if result.get("ok") is not True
-    ]
+    failed_results: List[Dict[str, Any]] = []
+    for index, result in enumerate(executed_results):
+        if result.get("ok") is True:
+            continue
+        command_key = tuple(str(part) for part in list(result.get("command") or []))
+        later_success = any(
+            tuple(str(part) for part in list(later.get("command") or []))
+            == command_key
+            and later.get("ok") is True
+            for later in executed_results[index + 1 :]
+        )
+        if not later_success:
+            failed_results.append(result)
     return {
         "scope": "skyseed_only",
         "dry_run": not apply,
@@ -560,12 +836,14 @@ def cleanup_skyseed_environment_residue(
             "containers": len(container_names),
             "networks": len(network_names),
             "direct_backend_host_interfaces": len(interface_names),
+            "bpf_pinned_maps": len(bpf_pinned_map_names),
             "runtime_lock_files": len(lock_paths),
         },
         "resource_names": {
             "containers": container_names,
             "networks": network_names,
             "direct_backend_host_interfaces": interface_names,
+            "bpf_pinned_maps": bpf_pinned_map_names,
             "runtime_lock_files": lock_paths,
         },
         "command_results": command_results,
@@ -695,6 +973,7 @@ def _cleanup_suggestions(report: Dict[str, Any]) -> List[Dict[str, Any]]:
     process_state = report["checks"]["compose_processes"]
     direct_state = report["checks"]["direct_backend_host_artifacts"]
     lock_state = report["checks"]["runtime_lock_files"]
+    bpf_state = report["checks"]["bpf_pinned_map_artifacts"]
 
     compose_containers = docker_state["containers"].get("compose_project_containers", [])
     named_containers = docker_state["containers"].get("named_skyseed_containers", [])
@@ -778,6 +1057,22 @@ def _cleanup_suggestions(report: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "file_paths": list(lock_state["files"]),
             }
         )
+    if bpf_state.get("map_names"):
+        suggestions.append(
+            {
+                "id": "bpf_pinned_map_cleanup",
+                "scope": "skyseed_only_bpf_pinned_maps",
+                "reason": "Skyseed BPF maps remain pinned under /sys/fs/bpf/tc/globals.",
+                "commands": [
+                    "sudo rm -f "
+                    + " ".join(
+                        str(BPF_PIN_BASE / name)
+                        for name in list(bpf_state.get("map_names") or [])
+                    )
+                ],
+                "map_names": list(bpf_state.get("map_names") or []),
+            }
+        )
     return suggestions
 
 
@@ -808,6 +1103,14 @@ def _skyseed_cleanliness_counts(checks: Dict[str, Any]) -> Dict[str, int]:
         ),
         "runtime_lock_files": len(
             list(dict(checks.get("runtime_lock_files") or {}).get("files", []))
+        ),
+        "bpf_pinned_maps": len(
+            list(
+                dict(checks.get("bpf_pinned_map_artifacts") or {}).get(
+                    "map_names",
+                    [],
+                )
+            )
         ),
         "compose_or_runtime_processes": len(
             list(dict(checks.get("compose_processes") or {}).get("processes", []))
@@ -864,6 +1167,8 @@ def _assess_skyseed_preflight(
         warnings.append("direct_backend_host_interfaces_present")
     if cleanliness_counts["runtime_lock_files"]:
         warnings.append("runtime_lock_files_present")
+    if cleanliness_counts["bpf_pinned_maps"]:
+        warnings.append("bpf_pinned_maps_present")
 
     free_bytes = int(disk_space.get("free_bytes") or 0)
     if free_bytes < LOW_DISK_ERROR_BYTES:
@@ -914,17 +1219,43 @@ def run_skyseed_preflight(
     profile: str = PREFLIGHT_PROFILE_DEFAULT,
 ) -> Dict[str, Any]:
     profile = _normalize_preflight_profile(profile)
+    operational_clean_lightweight = (
+        profile == PREFLIGHT_PROFILE_OPERATIONAL_CLEAN_BPF_OWNED
+    )
     docker_version = _run_jsonable(["docker", "--version"])
     docker_compose_version = _run_jsonable(["docker-compose", "version"])
     docker_state = {
-        "containers": _docker_container_state(),
-        "networks": _docker_network_state(),
+        "containers": (
+            _docker_container_state_project_scoped()
+            if operational_clean_lightweight
+            else _docker_container_state()
+        ),
+        "networks": (
+            _docker_network_state_project_scoped()
+            if operational_clean_lightweight
+            else _docker_network_state()
+        ),
     }
     compose_processes = _compose_processes(ignore_pids=ignore_pids)
-    direct_backend = _direct_backend_host_artifacts()
+    direct_backend = (
+        _skipped_diagnostic_check(
+            name="direct_backend_host_artifacts",
+            result_key="interfaces",
+        )
+        if operational_clean_lightweight
+        else _direct_backend_host_artifacts()
+    )
+    bpf_pinned_maps = (
+        _skipped_diagnostic_check(
+            name="bpf_pinned_map_artifacts",
+            result_key="map_names",
+        )
+        if operational_clean_lightweight
+        else _bpf_pinned_map_artifacts()
+    )
     runtime_locks = _runtime_lock_files()
     disk_space = _disk_space()
-    if profile == PREFLIGHT_PROFILE_OPERATIONAL_CLEAN_BPF_OWNED:
+    if operational_clean_lightweight:
         mpls = _skipped_host_mpls_readiness(profile=profile)
     else:
         mpls = probe_host_mpls_readiness()
@@ -935,6 +1266,21 @@ def run_skyseed_preflight(
         "generated_at_utc": _timestamp_utc(),
         "workspace_root": str(WORKSPACE_ROOT),
         "profile": profile,
+        "diagnostic_policy": (
+            {
+                "mode": "operational_clean_lightweight",
+                "global_diagnostics_deferred": True,
+                "docker_scope": "compose_project_label",
+                "direct_backend_global_scan": "deferred",
+                "bpf_pin_global_scan": "deferred",
+                "known_compose_outputs_scan": "deferred",
+            }
+            if operational_clean_lightweight
+            else {
+                "mode": "default_full_diagnostic",
+                "global_diagnostics_deferred": False,
+            }
+        ),
         "checks": {
             "docker_toolchain": {
                 "docker": docker_version,
@@ -943,12 +1289,17 @@ def run_skyseed_preflight(
             "docker_state": docker_state,
             "compose_processes": compose_processes,
             "direct_backend_host_artifacts": direct_backend,
+            "bpf_pinned_map_artifacts": bpf_pinned_maps,
             "runtime_lock_files": runtime_locks,
             "disk_space": disk_space,
             "python_runtime": python_runtime,
             "host_mpls": mpls,
             "bridge_netfilter": bridge_netfilter,
-            "known_compose_outputs": _find_compose_outputs(),
+            "known_compose_outputs": (
+                []
+                if operational_clean_lightweight
+                else _find_compose_outputs()
+            ),
         },
     }
     report["assessment"] = _assess_skyseed_preflight(

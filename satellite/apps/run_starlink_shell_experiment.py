@@ -47,9 +47,12 @@ from linux_mpls_runtime import (
     OPERATIONAL_CLEAN_ROLLBACK_BATCH_TIMEOUT_SECONDS,
     RuntimeCommandFailure,
     _bpf_owned_compile_mpls_maps_for_contexts,
+    _bpf_owned_compiled_runtime_inputs,
     _bpf_owned_binding_context_for_interface,
+    _bpf_owned_planned_overlay_compiled_maps,
     _default_preflight_state,
     _derive_bpf_owned_readiness_proof,
+    _prepare_bpf_owned_preactivation_attach_capability,
     _prepare_bpf_owned_readiness,
     _prepare_bpf_owned_preactivation_preload,
     _realization_contexts,
@@ -71,6 +74,7 @@ from run_starlink_shell_runtime_attempt import (
     _build_slice_contexts,
     _classify_compose_failure,
     _compose_down,
+    _compose_project_name,
     _load_snapshots,
 )
 from mpls_host import HostMplsPreparationError, ensure_host_mpls_ready
@@ -96,6 +100,16 @@ from bpf_dataplane_canary import (
 from bpf_mpls_dataplane import assess_future_pre_attached_interface_inertness
 from contracts import NetworkMutationPlan, RuntimeUpdatePlan, TopologySnapshot
 from distribution_store import DistributedEnvelopeBatch
+from horizon_maintenance import (
+    HorizonMaintenanceRequest,
+    MaintenanceLock,
+    classify_horizon_maintenance,
+    load_ready_artifact,
+    publish_horizon_maintenance_result,
+    retired_cleanup_candidate_ready,
+    retired_cleanup_dependency_report,
+    successor_maintenance_gate,
+)
 from return_path_audit import audit_planner_preview
 from temporal_planning import enrich_snapshot_runtime_parameters
 
@@ -157,6 +171,57 @@ def _compose_residue_summary(preflight_report: Dict[str, Any]) -> Dict[str, Any]
     }
 
 
+def _preflight_report_with_authoritative_direct_backend_scan(
+    preflight_report: Mapping[str, Any],
+    *,
+    direct_backend_scan: Mapping[str, Any],
+    scan_source: str,
+) -> Dict[str, Any]:
+    """Overlay a lightweight preflight with a scoped direct-backend host scan."""
+
+    report = dict(preflight_report or {})
+    checks = dict(report.get("checks") or {})
+    scan = dict(direct_backend_scan or {})
+    scan["skipped"] = False
+    scan["diagnostic_only"] = False
+    scan["scan_source"] = str(scan_source)
+    checks["direct_backend_host_artifacts"] = scan
+    report["checks"] = checks
+
+    assessment = dict(report.get("assessment") or {})
+    counts = dict(assessment.get("cleanliness_counts") or {})
+    interface_count = len(list(scan.get("interfaces") or []))
+    counts["direct_backend_host_interfaces"] = interface_count
+    assessment["cleanliness_counts"] = counts
+
+    residue_reasons = sorted(
+        str(name) for name, count in counts.items() if int(count or 0) > 0
+    )
+    assessment["clean_residue_reasons"] = residue_reasons
+    assessment["environment_clean"] = not residue_reasons
+
+    warnings = [
+        str(reason)
+        for reason in list(assessment.get("warning_reasons") or [])
+        if str(reason) != "direct_backend_host_interfaces_present"
+    ]
+    if interface_count:
+        warnings.append("direct_backend_host_interfaces_present")
+    assessment["warning_reasons"] = list(dict.fromkeys(warnings))
+
+    blocking = [
+        str(reason)
+        for reason in list(assessment.get("blocking_reasons") or [])
+        if str(reason) != "skyseed_environment_not_clean"
+    ]
+    if assessment.get("clean_environment_required") is True and residue_reasons:
+        blocking.append("skyseed_environment_not_clean")
+    assessment["blocking_reasons"] = list(dict.fromkeys(blocking))
+    assessment["ready"] = not assessment["blocking_reasons"]
+    report["assessment"] = assessment
+    return report
+
+
 def _cleanup_bpf_mpls_pins_after_runtime() -> Dict[str, Any]:
     try:
         from bpf_mpls_live import rollback_mpls
@@ -200,11 +265,326 @@ def _compose_residue_details(preflight_report: Dict[str, Any]) -> Dict[str, Any]
     }
 
 
+def _compose_force_remove_project_residue(output_dir: Path) -> Dict[str, Any]:
+    project_name = _compose_project_name(output_dir)
+
+    def _run(
+        command: Sequence[str],
+        *,
+        timeout_seconds: float = 30.0,
+    ) -> Dict[str, Any]:
+        try:
+            completed = subprocess.run(
+                list(command),
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=float(timeout_seconds),
+            )
+        except subprocess.TimeoutExpired as exc:
+            return {
+                "command": list(command),
+                "returncode": None,
+                "stdout": exc.stdout or "",
+                "stderr": exc.stderr or "",
+                "timed_out": True,
+            }
+        return {
+            "command": list(command),
+            "returncode": completed.returncode,
+            "stdout": completed.stdout,
+            "stderr": completed.stderr,
+            "timed_out": False,
+        }
+
+    container_list = _run(
+        [
+            "docker",
+            "ps",
+            "-aq",
+            "--filter",
+            f"label=com.docker.compose.project={project_name}",
+        ]
+    )
+    container_ids = [
+        line.strip()
+        for line in str(container_list.get("stdout") or "").splitlines()
+        if line.strip()
+    ]
+    container_remove = None
+    if container_ids and container_list.get("returncode") == 0:
+        container_remove = _run(
+            ["docker", "rm", "-f", *container_ids],
+            timeout_seconds=max(60.0, min(300.0, float(len(container_ids) * 2))),
+        )
+
+    network_list = _run(
+        [
+            "docker",
+            "network",
+            "ls",
+            "-q",
+            "--filter",
+            f"label=com.docker.compose.project={project_name}",
+        ]
+    )
+    network_ids = [
+        line.strip()
+        for line in str(network_list.get("stdout") or "").splitlines()
+        if line.strip()
+    ]
+    network_remove = None
+    stale_endpoint_disconnects: List[Dict[str, Any]] = []
+    network_remove_retry = None
+    if network_ids and network_list.get("returncode") == 0:
+        network_remove = _run(
+            ["docker", "network", "rm", *network_ids],
+            timeout_seconds=max(60.0, min(300.0, float(len(network_ids) * 2))),
+        )
+        if (
+            network_remove.get("returncode") not in (0, None)
+            and "active endpoints" in str(network_remove.get("stderr") or "")
+        ):
+            for network_id in network_ids:
+                inspect = _run(["docker", "network", "inspect", network_id])
+                stale_endpoint_disconnects.append(
+                    {
+                        **inspect,
+                        "stale_endpoint_disconnect": True,
+                        "stage": "inspect_network_for_stale_endpoints",
+                    }
+                )
+                if inspect.get("returncode") != 0:
+                    continue
+                try:
+                    payload = json.loads(str(inspect.get("stdout") or "[]"))
+                except json.JSONDecodeError as exc:
+                    stale_endpoint_disconnects[-1] = {
+                        **stale_endpoint_disconnects[-1],
+                        "returncode": None,
+                        "stderr": f"json_decode_failed:{exc}",
+                    }
+                    continue
+                network = payload[0] if isinstance(payload, list) and payload else {}
+                endpoint_names = sorted(
+                    {
+                        str(meta.get("Name") or container_id)
+                        for container_id, meta in dict(
+                            network.get("Containers") or {}
+                        ).items()
+                        if str(meta.get("Name") or container_id)
+                    }
+                )
+                for endpoint_name in endpoint_names:
+                    disconnect = _run(
+                        [
+                            "docker",
+                            "network",
+                            "disconnect",
+                            "-f",
+                            network_id,
+                            endpoint_name,
+                        ]
+                    )
+                    stale_endpoint_disconnects.append(
+                        {
+                            **disconnect,
+                            "stale_endpoint_disconnect": True,
+                            "stage": "force_disconnect_stale_endpoint",
+                            "network_id": network_id,
+                            "endpoint_name": endpoint_name,
+                        }
+                    )
+            network_remove_retry = _run(
+                ["docker", "network", "rm", *network_ids],
+                timeout_seconds=max(60.0, min(300.0, float(len(network_ids) * 2))),
+            )
+            network_remove_retry["retry_after_stale_endpoint_disconnect"] = True
+
+    failures = [
+        item
+        for item in [
+            container_list,
+            container_remove,
+            network_list,
+            network_remove_retry or network_remove,
+        ]
+        if item is not None
+        and (
+            item.get("timed_out")
+            or item.get("returncode") not in (0, None)
+        )
+    ]
+    return {
+        "schema_version": "skyseed-compose-project-residue-cleanup-v1",
+        "project_name": project_name,
+        "bounded_by_compose_project_label": True,
+        "container_ids": container_ids,
+        "network_ids": network_ids,
+        "removed_container_count": len(container_ids)
+        if container_remove is not None
+        and container_remove.get("returncode") == 0
+        else 0,
+        "removed_network_count": len(network_ids)
+        if (network_remove_retry or network_remove) is not None
+        and (network_remove_retry or network_remove).get("returncode") == 0
+        else 0,
+        "container_list": container_list,
+        "container_remove": container_remove,
+        "network_list": network_list,
+        "network_remove": network_remove,
+        "stale_endpoint_disconnects": stale_endpoint_disconnects,
+        "network_remove_retry": network_remove_retry,
+        "cleanup_completed": not failures,
+        "failures": failures,
+    }
+
+
+def _bpf_preload_manifest_only_map_write_used(
+    preload_report: Mapping[str, Any],
+) -> bool:
+    report = dict(preload_report or {})
+    preactivation = dict(report.get("preactivation_preload") or {})
+    return bool(
+        report.get("bpf_map_write_manifest_only")
+        or report.get("manifest_only_loader")
+        or report.get("manifest_only_map_write_used")
+        or preactivation.get("manifest_only_loader")
+        or preactivation.get("manifest_only_map_write_used")
+    )
+
+
+def _bpf_triple_buffer_generation_slot_width(
+    max_generations_per_horizon: int,
+) -> int:
+    max_generations = max(1, int(max_generations_per_horizon or 0))
+    slack_generation_slots = max(
+        2,
+        int(math.ceil(float(max_generations) * 0.25)),
+    )
+    return max_generations + slack_generation_slots
+
+
+def _bpf_generation_slot_width_for_horizon_budget(
+    *,
+    horizon_seconds: float,
+    sample_interval_seconds: float,
+    observed_generation_count: int = 0,
+) -> int:
+    sample_interval = max(0.001, float(sample_interval_seconds or 0.0))
+    horizon = max(0.0, float(horizon_seconds or 0.0))
+    planned_generation_count = max(1, int(math.floor(horizon / sample_interval)) + 1)
+    return _bpf_triple_buffer_generation_slot_width(
+        max(planned_generation_count, int(observed_generation_count or 0), 1)
+    )
+
+
+def _bpf_map_capacity_generation_window_count(
+    *,
+    generation_slot_width: int,
+    observed_generation_count: int,
+) -> int:
+    slot_width = max(1, int(generation_slot_width or 1))
+    return max(1, int(observed_generation_count or 0), slot_width * 3)
+
+
+def _bpf_triple_buffer_physical_generation_id(
+    *,
+    horizon_sequence_index: int,
+    local_generation_id: int,
+    generation_slot_width: int,
+) -> int:
+    local_generation_id = int(local_generation_id)
+    generation_slot_width = max(1, int(generation_slot_width))
+    if local_generation_id < 0 or local_generation_id >= generation_slot_width:
+        raise RuntimeError(
+            "bpf_rolling_generation_slot_capacity_exceeded:"
+            + json.dumps(
+                {
+                    "horizon_sequence_index": int(horizon_sequence_index),
+                    "local_generation_id": local_generation_id,
+                    "generation_slot_width": generation_slot_width,
+                },
+                sort_keys=True,
+            )
+        )
+    return int(horizon_sequence_index % 3) * generation_slot_width + local_generation_id
+
+
 def _write_json(path: Path, payload: Dict[str, Any] | List[Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(_json_safe(payload), indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
+    )
+
+
+def _write_json_breaking_hardlink(
+    path: Path,
+    payload: Dict[str, Any] | List[Any],
+) -> None:
+    if path.exists() and not path.is_symlink():
+        try:
+            if path.stat().st_nlink > 1:
+                path.unlink()
+        except OSError:
+            pass
+    _write_json(path, payload)
+
+
+def _write_json_hardlink_alias(source_path: Path, alias_path: Path) -> Dict[str, Any]:
+    source_path = source_path.resolve()
+    alias_path.parent.mkdir(parents=True, exist_ok=True)
+    if alias_path.exists() or alias_path.is_symlink():
+        alias_path.unlink()
+    try:
+        os.link(source_path, alias_path)
+        storage_mode = "hardlink"
+    except OSError as exc:
+        shutil.copy2(source_path, alias_path)
+        storage_mode = f"copy_fallback:{exc.__class__.__name__}"
+    return {
+        "source_path": str(source_path),
+        "alias_path": str(alias_path.resolve()),
+        "storage_mode": storage_mode,
+    }
+
+
+def _loaded_frozen_bundle_reference(
+    *,
+    source_path: Path,
+    prepared_update_bundle: Mapping[str, Any],
+    artifact_role: str,
+) -> Dict[str, Any]:
+    stat = source_path.stat() if source_path.exists() else None
+    return {
+        "schema_version": "skyseed-loaded-frozen-prepared-bundle-reference-v1",
+        "artifact_role": artifact_role,
+        "source_path": str(source_path.resolve()),
+        "source_exists": source_path.exists(),
+        "source_size_bytes": int(stat.st_size) if stat is not None else None,
+        "bundle_id": str(prepared_update_bundle.get("bundle_id") or ""),
+        "bundle_hash": str(prepared_update_bundle.get("bundle_hash") or ""),
+        "bundle_hash_algorithm": str(
+            prepared_update_bundle.get("bundle_hash_algorithm") or ""
+        ),
+    }
+
+
+def _write_loaded_frozen_bundle_reference(
+    *,
+    run_dir: Path,
+    source_path: Path,
+    prepared_update_bundle: Mapping[str, Any],
+    artifact_role: str,
+) -> None:
+    _write_json(
+        run_dir / "loaded_frozen_prepared_bundle_reference.json",
+        _loaded_frozen_bundle_reference(
+            source_path=source_path,
+            prepared_update_bundle=prepared_update_bundle,
+            artifact_role=artifact_role,
+        ),
     )
 
 
@@ -503,6 +883,89 @@ def _reconcile_slot_names_for_epoch(
     )
 
 
+def _assert_operational_clean_host_apply_route(
+    *,
+    host_apply: Mapping[str, Any],
+    segment_key: str,
+) -> None:
+    outcome = dict(dict(host_apply).get("outcome") or {})
+    preparation_summary = dict(outcome.get("preparation_summary") or {})
+    reconcile_summary = dict(preparation_summary.get("reconcile_summary") or {})
+    bootstrap_summary = outcome.get("bootstrap_summary")
+    normal_path_scope = dict(outcome.get("normal_path_scope_contract") or {})
+    violations: List[Dict[str, Any]] = []
+    if reconcile_summary.get("full_sweep") is True:
+        violations.append(
+            {
+                "type": "host_reconcile_full_sweep",
+                "scope": str(reconcile_summary.get("scope") or ""),
+                "reconciled_slot_count": int(
+                    reconcile_summary.get("reconciled_slot_count") or 0
+                ),
+            }
+        )
+    if reconcile_summary.get("scope") == "trusted_cached_state_full_skip":
+        violations.append(
+            {
+                "type": "trusted_cached_state_full_skip",
+                "scope": str(reconcile_summary.get("scope") or ""),
+            }
+        )
+    if bootstrap_summary:
+        violations.append(
+            {
+                "type": "hidden_bootstrap_repair",
+                "summary": _json_safe(bootstrap_summary),
+            }
+        )
+    if normal_path_scope.get("hidden_repair_blocked") is True:
+        violations.append(
+            {
+                "type": "hidden_repair_blocked",
+                "normal_path_scope_contract": _json_safe(normal_path_scope),
+            }
+        )
+    if violations:
+        raise RuntimeError(
+            "OPERATIONAL_CLEAN_HOST_ROUTE_FALLBACK_BLOCKER:"
+            + json.dumps(
+                {
+                    "segment_epoch_key": segment_key,
+                    "violations": violations,
+                },
+                sort_keys=True,
+            )
+        )
+
+
+def _is_operational_clean_bpf_owned_route(
+    *,
+    operational_clean_mode: bool,
+    forwarding_backend: str,
+) -> bool:
+    return bool(operational_clean_mode) and str(forwarding_backend) == "bpf_owned"
+
+
+def _operational_clean_fallback_blocked_report(
+    *,
+    reason: str,
+    remaining_interfaces: Sequence[str] | None = None,
+    prestart_residue: Mapping[str, Any] | None = None,
+) -> Dict[str, Any]:
+    report: Dict[str, Any] = {
+        "attempted": False,
+        "reason": str(reason),
+        "clean_route_status": "fallback_blocked",
+    }
+    if remaining_interfaces is not None:
+        interfaces = [str(interface) for interface in remaining_interfaces]
+        report["remaining_interface_count"] = len(interfaces)
+        report["remaining_interfaces"] = interfaces
+    if prestart_residue is not None:
+        report["prestart_residue"] = dict(prestart_residue)
+    return report
+
+
 def _should_run_sampled_validation(
     *,
     epoch_index: int,
@@ -597,9 +1060,43 @@ def _operational_clean_node_local_execution_summary(session: Any) -> Dict[str, A
     preflight = dict(getattr(session, "preflight", {}) or {})
     timing = _safe_dict(getattr(session, "timing", {}) or {})
     timing.pop("flow_path_observations", None)
+    backend = _safe_dict(getattr(session, "backend", {}) or {})
+    if str(backend.get("forwarding_backend") or "") == "bpf_owned":
+        backend = {
+            **backend,
+            "bpf_owned_readiness": _compact_bpf_owned_readiness_for_artifact(
+                dict(backend.get("bpf_owned_readiness") or {})
+            ),
+            "pre_runtime_bpf_owned_prepare": dict(
+                backend.get("pre_runtime_bpf_owned_prepare") or {}
+            ),
+            "bpf_lookahead_preactivation_preload": {
+                **dict(backend.get("bpf_lookahead_preactivation_preload") or {}),
+                "reports": [
+                    {
+                        **{
+                            key: value
+                            for key, value in dict(item or {}).items()
+                            if key != "report"
+                        },
+                        "report": _compact_bpf_prepare_like_report(
+                            dict(dict(item or {}).get("report") or {})
+                        ),
+                    }
+                    for item in list(
+                        dict(
+                            backend.get("bpf_lookahead_preactivation_preload")
+                            or {}
+                        ).get("reports")
+                        or []
+                    )
+                    if isinstance(item, Mapping)
+                ],
+            },
+        }
     return {
         "session_id": getattr(session, "session_id", None),
-        "backend": _safe_dict(getattr(session, "backend", {}) or {}),
+        "backend": backend,
         "target_slice": {
             "slice_id": target_slice.get("slice_id"),
             "active_flow_count": target_slice.get("active_flow_count"),
@@ -815,14 +1312,21 @@ def _bpf_attach_reuse_epoch_summary(
         "evidence_source": str(real_prepare.get("evidence_source") or ""),
         "readiness_ready": readiness.get("ready"),
         "readiness_reason": str(readiness.get("reason") or ""),
-        "prepared_attached_interface_count": len(
-            _safe_list(readiness.get("attached_interfaces"))
+        "prepared_attached_interface_count": int(
+            _safe_dict(readiness.get("attached_interfaces_summary")).get("count", 0)
+            if readiness.get("attached_interfaces_summary") is not None
+            else len(_safe_list(readiness.get("attached_interfaces")))
         ),
         "prepared_attach_scope_count": len(
             _safe_list(real_prepare.get("attached_interfaces"))
         ),
-        "resolved_packet_route_entry_count": len(
-            _safe_list(readiness.get("resolved_packet_route_entries"))
+        "resolved_packet_route_entry_count": int(
+            _safe_dict(readiness.get("resolved_packet_route_entries_summary")).get(
+                "count",
+                0,
+            )
+            if readiness.get("resolved_packet_route_entries_summary") is not None
+            else len(_safe_list(readiness.get("resolved_packet_route_entries")))
         ),
         "resolved_mpls_flow_entry_count": len(
             _safe_list(readiness.get("resolved_mpls_flow_entries"))
@@ -1214,6 +1718,45 @@ def _bpf_hotpath_reuse_audit(
     }
 
 
+def _bpf_hotpath_latest_runtime_epoch_audit(
+    *,
+    first_runtime_epoch_record: Mapping[str, Any] | None,
+    latest_epoch_record: Mapping[str, Any],
+    runtime_mode: str,
+    forwarding_backend: str,
+) -> Dict[str, Any]:
+    latest = dict(latest_epoch_record or {})
+    if str(latest.get("epoch_type") or "") != "runtime_epoch":
+        return {
+            "schema_version": "skyseed-bpf-hotpath-reuse-audit-v1",
+            "audit_model": "incremental_latest_runtime_epoch",
+            "applicable": (
+                str(runtime_mode) == "operational_clean"
+                and str(forwarding_backend) == "bpf_owned"
+            ),
+            "passed": None,
+            "evidence_status": "not_runtime_epoch",
+            "violation_count": 0,
+            "violations": [],
+            "full_history_rescan_skipped": True,
+        }
+    first = dict(first_runtime_epoch_record or latest)
+    audit_records = [first] if first == latest else [first, latest]
+    audit = _bpf_hotpath_reuse_audit(
+        audit_records,
+        runtime_mode=runtime_mode,
+        forwarding_backend=forwarding_backend,
+    )
+    return {
+        **audit,
+        "audit_model": "incremental_latest_runtime_epoch",
+        "full_history_rescan_skipped": True,
+        "audited_epoch_record_count": len(audit_records),
+        "latest_sequence_index": latest.get("sequence_index"),
+        "latest_segment_epoch_key": latest.get("segment_epoch_key"),
+    }
+
+
 def _operational_clean_runtime_attach_contract_violation(
     *,
     runtime_epoch_index: int,
@@ -1256,6 +1799,46 @@ def _operational_clean_runtime_attach_contract_violation(
     }
 
 
+def _resident_attach_coverage_budget_from_role_union_gate(
+    precompose_bpf_role_union_gate: Mapping[str, Any] | None,
+) -> Dict[str, Any]:
+    role_gate = dict(precompose_bpf_role_union_gate or {})
+    prepared_capability = dict(role_gate.get("prepared_bpf_attach_capability") or {})
+    binding_coverage = dict(
+        role_gate.get("bpf_required_interface_binding_coverage") or {}
+    )
+    candidate_counts = [
+        int(role_gate.get("required_bpf_interface_ref_count") or 0),
+        int(binding_coverage.get("required_bpf_interface_ref_count") or 0),
+        int(role_gate.get("bootstrap_pre_runtime_full_attach_count") or 0),
+        len(prepared_capability),
+    ]
+    max_attach_interfaces = max(candidate_counts)
+    if max_attach_interfaces <= 0:
+        return {}
+    return {
+        "schema_version": "skyseed-bpf-resident-attach-budget-v1",
+        "budget_source": "official_precompose_bpf_role_union_gate",
+        "max_attach_interfaces": max_attach_interfaces,
+        "max_resident_attach_interfaces": max_attach_interfaces,
+        "slack_attach_interfaces": 0,
+        "fail_closed_if_live_attach_scope_exceeds_source": True,
+        "required_bpf_interface_ref_count": int(
+            role_gate.get("required_bpf_interface_ref_count")
+            or binding_coverage.get("required_bpf_interface_ref_count")
+            or max_attach_interfaces
+        ),
+        "bootstrap_pre_runtime_full_attach_count": int(
+            role_gate.get("bootstrap_pre_runtime_full_attach_count")
+            or len(prepared_capability)
+        ),
+        "prepared_bpf_attach_capability_count": int(
+            role_gate.get("prepared_bpf_attach_capability_count")
+            or sum(len(roles) for roles in prepared_capability.values())
+        ),
+    }
+
+
 def _precompose_pre_runtime_bpf_owned_prepare_gate(
     *,
     first_runtime_entry: Mapping[str, Any] | None,
@@ -1266,6 +1849,9 @@ def _precompose_pre_runtime_bpf_owned_prepare_gate(
     passed = bool(role_gate.get("passed"))
     first_entry = dict(first_runtime_entry or {})
     planned_attach_count = len(prepared_capability)
+    resident_attach_budget = _resident_attach_coverage_budget_from_role_union_gate(
+        role_gate
+    )
     return {
         "schema_version": "skyseed-pre-runtime-bpf-owned-prepare-v1",
         "stage": "no-compose/prepare-only",
@@ -1285,6 +1871,8 @@ def _precompose_pre_runtime_bpf_owned_prepare_gate(
         "pre_runtime_attach_count": planned_attach_count if passed else 0,
         "pre_runtime_full_attach_count": planned_attach_count if passed else 0,
         "pre_runtime_delta_attach_count": 0,
+        "resident_attach_coverage_budget": dict(resident_attach_budget),
+        "bpf_attach_budget": dict(resident_attach_budget),
         "pre_runtime_dirty_recovery_reset_count": 0,
         "initial_bpf_owned_prepare_count": 1 if passed else 0,
         "dirty_recovery_reset_count": 0,
@@ -1377,6 +1965,43 @@ def _prepared_bundle_start_time(bundle: Mapping[str, Any]) -> str | None:
     return None
 
 
+FROZEN_SOURCE_PROFILE_RUNTIME_ORCHESTRATION_FIELDS = {
+    "continuous",
+    "replenish_threshold_seconds",
+    "loop_count",
+    "interval",
+    "strict_activation_deadlines",
+}
+
+
+def _continuous_initial_horizon_seconds_for_profile_hash(
+    args: argparse.Namespace,
+) -> float | None:
+    total_horizon = getattr(args, "horizon_seconds", None)
+    if total_horizon is None:
+        return None
+    try:
+        total_horizon_value = max(0.0, float(total_horizon))
+    except (TypeError, ValueError):
+        return None
+    if total_horizon_value <= 0.0:
+        return None
+    sample_interval_raw = getattr(args, "sample_interval", None)
+    if sample_interval_raw is None:
+        sample_interval_raw = getattr(args, "step_seconds", 120.0)
+    try:
+        sample_interval = max(0.001, float(sample_interval_raw))
+    except (TypeError, ValueError):
+        sample_interval = 120.0
+    replenish_threshold_raw = getattr(args, "replenish_threshold_seconds", 120.0)
+    try:
+        replenish_threshold = max(sample_interval, float(replenish_threshold_raw))
+    except (TypeError, ValueError):
+        replenish_threshold = max(sample_interval, 120.0)
+    segment_horizon = max(sample_interval * 4.0, replenish_threshold * 2.0)
+    return min(total_horizon_value, segment_horizon)
+
+
 def _input_profile_config_hash(args: argparse.Namespace) -> str:
     fields = {
         key: value
@@ -1395,6 +2020,21 @@ def _input_profile_config_hash(args: argparse.Namespace) -> str:
             "prepared_bundle_diagnostic_recompute_attempted",
         }
     }
+    if bool(getattr(args, "continuous", False)):
+        initial_horizon_seconds = _continuous_initial_horizon_seconds_for_profile_hash(
+            args
+        )
+        if initial_horizon_seconds is not None:
+            fields["horizon_seconds"] = float(initial_horizon_seconds)
+    elif fields.get("horizon_seconds") is not None:
+        try:
+            fields["horizon_seconds"] = float(fields["horizon_seconds"])
+        except (TypeError, ValueError):
+            pass
+    if fields.get("horizon_seconds") is not None:
+        fields.pop("slice_count", None)
+    for key in FROZEN_SOURCE_PROFILE_RUNTIME_ORCHESTRATION_FIELDS:
+        fields.pop(key, None)
     return _canonical_json_hash(fields)
 
 
@@ -1511,12 +2151,16 @@ def _prepared_runtime_event_ref(
     segment_epoch_key = str(
         entry.get("segment_epoch_key") or f"{segment_id}:{event_id}"
     )
+    horizon_id = str(entry.get("horizon_id") or segment_id)
+    if role == "lookahead_preload" and not str(entry.get("horizon_id") or ""):
+        horizon_id = f"{segment_id}:next"
     return {
         "event_id": event_id,
         "epoch_id": str(entry.get("epoch_id") or event_id),
         "slice_id": str(entry.get("slice_id") or ""),
         "segment_id": segment_id,
         "segment_epoch_key": segment_epoch_key,
+        "horizon_id": horizon_id,
         "classification": str(entry.get("classification") or "runtime_epoch"),
         "horizon_role": role,
         "activation_time_utc": str(
@@ -1533,6 +2177,199 @@ def _prepared_runtime_event_ref(
         "preload_required": bool(entry.get("preload_required")),
         "forwarding_relevant": bool(entry.get("forwarding_relevant")),
         "runtime_update_count": int(entry.get("runtime_update_count") or 0),
+    }
+
+
+def _queue_entry_horizon_id(
+    entry: Mapping[str, Any],
+    *,
+    default_horizon_id: str = "",
+) -> str:
+    explicit = _queue_entry_declared_horizon_id(entry)
+    if explicit:
+        return explicit
+    if default_horizon_id:
+        return str(default_horizon_id)
+    event_id = _prepared_runtime_event_id(dict(entry or {}))
+    if event_id:
+        return "horizon:" + _canonical_json_hash(event_id)[:16]
+    return "horizon:unassigned"
+
+
+def _queue_entry_declared_horizon_id(entry: Mapping[str, Any]) -> str:
+    event = dict(entry or {})
+    explicit = str(event.get("horizon_id") or "").strip()
+    if explicit:
+        return explicit
+    segment_id = str(event.get("segment_id") or "").strip()
+    if segment_id:
+        return segment_id
+    segment_epoch_key = str(event.get("segment_epoch_key") or "").strip()
+    if ":" in segment_epoch_key:
+        return segment_epoch_key.split(":", 1)[0]
+    return ""
+
+
+def _queue_entry_identity_values(entry: Mapping[str, Any]) -> set[str]:
+    values: set[str] = set()
+    event = dict(entry or {})
+    for key in (
+        "event_id",
+        "epoch_id",
+        "source_event_id",
+    ):
+        value = str(event.get(key) or "")
+        if value:
+            values.add(value)
+    epoch_id = str(event.get("epoch_id") or "")
+    if epoch_id:
+        values.add(f"tempevent-{epoch_id}")
+    return values
+
+
+def _horizon_plan_entry_id_set(horizon: Mapping[str, Any]) -> set[str]:
+    ids: set[str] = set()
+    for key in (
+        "current_event_ids",
+        "runtime_transaction_ids",
+        "lookahead_preload_event_ids",
+    ):
+        ids.update(str(item) for item in list(dict(horizon).get(key) or []) if str(item))
+    return ids
+
+
+def _horizon_id_for_queue_entry_from_plan(
+    entry: Mapping[str, Any],
+    *,
+    horizon_plan_entries: Sequence[Mapping[str, Any]],
+    segment_queue: Sequence[Mapping[str, Any]],
+) -> str:
+    declared = _queue_entry_declared_horizon_id(entry)
+    if declared:
+        return declared
+    entry_ids = _queue_entry_identity_values(entry)
+    for horizon in horizon_plan_entries:
+        if entry_ids & _horizon_plan_entry_id_set(horizon):
+            return str(horizon.get("horizon_id") or "")
+    return "current-horizon:" + _canonical_json_hash(
+        [sorted(_queue_entry_identity_values(item)) for item in segment_queue]
+    )[:16]
+
+
+def _horizon_generation_key(*, horizon_id: str, generation_id: int) -> str:
+    return f"{str(horizon_id)}:generation-{int(generation_id)}"
+
+
+def _ordered_unique_horizon_ids(
+    entries: Sequence[Mapping[str, Any]],
+    *,
+    default_horizon_id: str,
+) -> List[str]:
+    ordered: List[str] = []
+    seen: set[str] = set()
+    for entry in entries:
+        horizon_id = _queue_entry_horizon_id(
+            entry,
+            default_horizon_id=default_horizon_id,
+        )
+        if horizon_id in seen:
+            continue
+        seen.add(horizon_id)
+        ordered.append(horizon_id)
+    return ordered
+
+
+def _sliding_horizon_window_contract(
+    *,
+    current_execution_queue: Sequence[Mapping[str, Any]],
+    lookahead_preload_queue: Sequence[Mapping[str, Any]],
+    default_current_horizon_id: str = "current-horizon",
+) -> Dict[str, Any]:
+    current_horizon_ids = _ordered_unique_horizon_ids(
+        current_execution_queue,
+        default_horizon_id=default_current_horizon_id,
+    )
+    lookahead_horizon_ids = _ordered_unique_horizon_ids(
+        lookahead_preload_queue,
+        default_horizon_id="next-horizon",
+    )
+    current_horizon_id = current_horizon_ids[0] if current_horizon_ids else ""
+    next_horizon_id = lookahead_horizon_ids[0] if lookahead_horizon_ids else ""
+    max_generations_per_horizon = max(
+        1,
+        len(list(current_execution_queue or [])),
+        len(list(lookahead_preload_queue or [])),
+    )
+    generation_slot_width = _bpf_triple_buffer_generation_slot_width(
+        max_generations_per_horizon
+    )
+    slack_generation_slots = generation_slot_width - max_generations_per_horizon
+    reserved_generation_slots = 3 * generation_slot_width
+    return {
+        "schema_version": "skyseed-sliding-horizon-window-contract-v1",
+        "buffer_model": "previous_current_next_triple_buffer",
+        "window_model": "rolling_horizon_window",
+        "test_horizon_count_hardcoded": False,
+        "startup_prepare_policy": "current_window_only",
+        "runtime_maintenance_policy": (
+            "prepare_next_window_during_current_window_cleanup_previous_after_boundary"
+        ),
+        "fail_closed_if_next_window_not_ready_at_boundary": True,
+        "capacity_contract": {
+            "generation_capacity_multiplier": 3,
+            "capacity_scales_with": "max_generations_per_live_window",
+            "capacity_must_not_scale_with": "total_future_runtime_epochs",
+            "max_generations_per_live_window": max_generations_per_horizon,
+            "slack_generation_slots": slack_generation_slots,
+            "reserved_generation_slots": reserved_generation_slots,
+            "physical_generation_slot_width": generation_slot_width,
+        },
+        "runtime_forbidden_operations": [
+            "delta_attach",
+            "full_attach",
+            "runtime_full_generation_reload",
+            "runtime_recompute_network_mutation_plan",
+            "runtime_fallback",
+        ],
+        "maintenance_allowed_operations": [
+            "preview_next_horizon_event_timeline",
+            "prepare_next_horizon_contexts",
+            "write_inactive_generation",
+            "retain_current_and_next_generation_ids",
+            "cleanup_previous_horizon_after_boundary",
+        ],
+        "maintenance_forbidden_operations": [
+            "flip_active_generation_before_boundary",
+            "preapply_qdisc_parameter_updates",
+            "apply_future_host_link_state",
+            "apply_future_forwarding_state",
+        ],
+        "windows": {
+            "previous": {
+                "horizon_id": "",
+                "status": "empty_until_first_boundary",
+            },
+            "current": {
+                "horizon_id": current_horizon_id,
+                "horizon_ids": current_horizon_ids,
+                "event_count": len(list(current_execution_queue or [])),
+                "status": (
+                    "startup_required"
+                    if current_execution_queue
+                    else "not_populated"
+                ),
+            },
+            "next": {
+                "horizon_id": next_horizon_id,
+                "horizon_ids": lookahead_horizon_ids,
+                "event_count": len(list(lookahead_preload_queue or [])),
+                "status": (
+                    "boundary_preload_pending"
+                    if lookahead_preload_queue
+                    else "reserved_for_replenishment"
+                ),
+            },
+        },
     }
 
 
@@ -1597,6 +2434,1060 @@ def _network_mutation_plan_from_payload(payload: Mapping[str, Any]) -> NetworkMu
         operations=list(data.get("operations") or []),
         validation_expectations=dict(data.get("validation_expectations") or {}),
     )
+
+
+def _delta_scoped_network_mutation_plan(
+    host_plan: NetworkMutationPlan,
+) -> NetworkMutationPlan:
+    operations = [dict(operation) for operation in list(host_plan.operations or [])]
+    delta_slot_names = sorted(
+        {
+            str(operation.get("slot_name") or "")
+            for operation in operations
+            if str(operation.get("slot_name") or "")
+        }
+    )
+    original_scope = dict(host_plan.target_scope)
+    original_managed_slot_names = [
+        str(slot_name)
+        for slot_name in list(original_scope.get("managed_slot_names") or [])
+        if str(slot_name)
+    ]
+    return NetworkMutationPlan(
+        schema_version=host_plan.schema_version,
+        mutation_id=host_plan.mutation_id,
+        source_snapshot=dict(host_plan.source_snapshot),
+        target_scope={
+            **original_scope,
+            "managed_slot_names": delta_slot_names,
+            "delta_first_target_scope": True,
+            "original_managed_slot_count": len(original_managed_slot_names),
+            "delta_managed_slot_count": len(delta_slot_names),
+        },
+        execution_boundary={
+            **dict(host_plan.execution_boundary),
+            "delta_first_target_scope": True,
+            "hot_path_full_scope_compare_allowed": False,
+        },
+        operations=operations,
+        validation_expectations=dict(host_plan.validation_expectations),
+    )
+
+
+BPF_OWNED_HOST_QDISC_RUNTIME_PARAMETER_FIELDS = {
+    "bandwidth_bps",
+    "bandwidth_mbps",
+    "delay_ms",
+    "latency_ms",
+    "one_way_delay_ms",
+    "rate_bps",
+    "rate_mbps",
+}
+
+
+def _bpf_owned_changed_runtime_parameter_fields(
+    operation: Mapping[str, Any],
+) -> set[str]:
+    changed_fields: set[str] = set()
+    for key in (
+        "changed_runtime_parameter_fields",
+        "parameter_changed_fields",
+        "changed_parameter_fields",
+    ):
+        value = operation.get(key)
+        if value is None:
+            continue
+        if isinstance(value, Mapping):
+            changed_fields.update(
+                str(field).removesuffix("_changed")
+                for field, changed in value.items()
+                if changed
+            )
+        elif isinstance(value, (list, tuple, set)):
+            changed_fields.update(str(field).removesuffix("_changed") for field in value)
+        else:
+            changed_fields.add(str(value).removesuffix("_changed"))
+    return changed_fields
+
+
+def _bpf_owned_parameter_update_requires_host_qdisc(
+    operation: Mapping[str, Any],
+) -> bool:
+    if str(operation.get("operation") or "") != "update_slot_parameters":
+        return False
+    changed_fields = _bpf_owned_changed_runtime_parameter_fields(operation)
+    if changed_fields:
+        return any(
+            field in BPF_OWNED_HOST_QDISC_RUNTIME_PARAMETER_FIELDS
+            for field in changed_fields
+        )
+    source_runtime_parameters = operation.get("source_runtime_parameters")
+    target_runtime_parameters = dict(
+        operation.get("target_runtime_parameters")
+        or operation.get("runtime_parameters")
+        or {}
+    )
+    if isinstance(source_runtime_parameters, Mapping):
+        source = dict(source_runtime_parameters)
+        return any(
+            field in BPF_OWNED_HOST_QDISC_RUNTIME_PARAMETER_FIELDS
+            and source.get(field) != target_runtime_parameters.get(field)
+            for field in set(source) | set(target_runtime_parameters)
+        )
+    return any(
+        field in target_runtime_parameters
+        and target_runtime_parameters.get(field) is not None
+        for field in BPF_OWNED_HOST_QDISC_RUNTIME_PARAMETER_FIELDS
+    )
+
+
+def _bpf_owned_host_qdisc_runtime_parameters(
+    operation: Mapping[str, Any],
+) -> Dict[str, Any]:
+    target_runtime_parameters = dict(
+        operation.get("target_runtime_parameters")
+        or operation.get("runtime_parameters")
+        or {}
+    )
+    return {
+        field: target_runtime_parameters[field]
+        for field in sorted(BPF_OWNED_HOST_QDISC_RUNTIME_PARAMETER_FIELDS)
+        if field in target_runtime_parameters
+        and target_runtime_parameters.get(field) is not None
+    }
+
+
+def _bpf_owned_host_plan_without_parameter_updates(
+    host_plan: NetworkMutationPlan,
+) -> Tuple[NetworkMutationPlan, Dict[str, Any]]:
+    operations = [dict(operation) for operation in list(host_plan.operations or [])]
+    parameter_updates = [
+        operation
+        for operation in operations
+        if str(operation.get("operation") or "") == "update_slot_parameters"
+    ]
+    skipped_parameter_updates = [
+        operation
+        for operation in parameter_updates
+        if not _bpf_owned_parameter_update_requires_host_qdisc(operation)
+    ]
+    retained_qdisc_parameter_updates: List[Dict[str, Any]] = []
+    kept_operations: List[Dict[str, Any]] = []
+    for operation in operations:
+        if str(operation.get("operation") or "") != "update_slot_parameters":
+            kept_operations.append(dict(operation))
+            continue
+        if not _bpf_owned_parameter_update_requires_host_qdisc(operation):
+            continue
+        retained_operation = {
+            **dict(operation),
+            "bpf_owned_host_qdisc_update": True,
+            "bpf_owned_host_qdisc_runtime_parameters": (
+                _bpf_owned_host_qdisc_runtime_parameters(operation)
+            ),
+        }
+        retained_qdisc_parameter_updates.append(retained_operation)
+        kept_operations.append(retained_operation)
+    if not parameter_updates:
+        return host_plan, {
+            "enabled": False,
+            "skipped_parameter_update_count": 0,
+            "retained_qdisc_required_update_count": 0,
+            "qdisc_required_skipped_forbidden_count": 0,
+            "kept_operation_count": len(kept_operations),
+            "original_operation_count": len(operations),
+        }
+    legacy_qdisc_required_count = sum(
+        1
+        for operation in parameter_updates
+        if runtime_parameter_update_requires_qdisc(operation)
+    )
+    skipped_bpf_parameter_map_update_count = sum(
+        1
+        for operation in skipped_parameter_updates
+        if bool(operation.get("bpf_parameter_map_update"))
+    )
+    filtered_plan = NetworkMutationPlan(
+        schema_version=host_plan.schema_version,
+        mutation_id=f"{host_plan.mutation_id}-bpfowned-hostparams-skipped",
+        source_snapshot=dict(host_plan.source_snapshot),
+        target_scope=dict(host_plan.target_scope),
+        execution_boundary={
+            **dict(host_plan.execution_boundary),
+            "bpf_owned_host_parameter_updates_skipped": bool(
+                skipped_parameter_updates
+            ),
+            "bpf_owned_host_parameter_update_count": len(parameter_updates),
+            "bpf_owned_host_parameter_update_skip_count": len(
+                skipped_parameter_updates
+            ),
+            "bpf_owned_host_qdisc_update_count": len(
+                retained_qdisc_parameter_updates
+            ),
+            "bpf_owned_host_qdisc_updates_retained": bool(
+                retained_qdisc_parameter_updates
+            ),
+            "bpf_owned_host_qdisc_ownership": "delay_rate_bandwidth",
+        },
+        operations=kept_operations,
+        validation_expectations=dict(host_plan.validation_expectations),
+    )
+    filtered_plan = _delta_scoped_network_mutation_plan(filtered_plan)
+    return filtered_plan, {
+        "enabled": True,
+        "reason": "bpf_owned_operational_clean_parameters_split_by_owner",
+        "ownership_model": {
+            "bpf_generation_map_fields": ["active", "loss", "drop", "counter"],
+            "host_qdisc_fields": sorted(BPF_OWNED_HOST_QDISC_RUNTIME_PARAMETER_FIELDS),
+        },
+        "original_parameter_update_count": len(parameter_updates),
+        "skipped_parameter_update_count": len(skipped_parameter_updates),
+        "skipped_qdisc_required_count": 0,
+        "legacy_qdisc_required_update_count": legacy_qdisc_required_count,
+        "retained_qdisc_required_update_count": len(retained_qdisc_parameter_updates),
+        "qdisc_required_skipped_forbidden_count": 0,
+        "skipped_bpf_parameter_map_update_count": (
+            skipped_bpf_parameter_map_update_count
+        ),
+        "kept_operation_count": len(kept_operations),
+        "original_operation_count": len(operations),
+        "skipped_slot_type_counts": dict(
+            Counter(
+                str(operation.get("slot_type") or "unknown")
+                for operation in skipped_parameter_updates
+            )
+        ),
+    }
+
+
+def _advance_link_state_for_bpf_owned_parameter_skip(
+    *,
+    link_state_path: Path,
+    skipped_operations: Sequence[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    parameter_updates = [
+        dict(operation)
+        for operation in list(skipped_operations or [])
+        if str(operation.get("operation") or "") == "update_slot_parameters"
+    ]
+    if not parameter_updates:
+        return {
+            "enabled": False,
+            "advanced_slot_count": 0,
+            "changed_slot_count": 0,
+            "missing_slot_count": 0,
+            "write_performed": False,
+        }
+
+    target_parameters_by_slot = {
+        str(operation.get("slot_name") or ""): dict(
+            operation.get("target_runtime_parameters") or {}
+        )
+        for operation in parameter_updates
+        if str(operation.get("slot_name") or "")
+    }
+    link_state = json.loads(Path(link_state_path).read_text(encoding="utf-8"))
+    updated_slots: List[Dict[str, Any]] = []
+    advanced_slots: List[str] = []
+    changed_slots: List[str] = []
+    for slot_entry in list(link_state.get("slots") or []):
+        slot_name = str(slot_entry.get("slot_name") or "")
+        if slot_name not in target_parameters_by_slot:
+            updated_slots.append(dict(slot_entry))
+            continue
+        updated_entry = dict(slot_entry)
+        target_parameters = dict(target_parameters_by_slot[slot_name])
+        if dict(updated_entry.get("runtime_parameters") or {}) != target_parameters:
+            changed_slots.append(slot_name)
+        updated_entry["runtime_parameters"] = target_parameters
+        updated_slots.append(updated_entry)
+        advanced_slots.append(slot_name)
+
+    missing_slots = sorted(set(target_parameters_by_slot) - set(advanced_slots))
+    link_state["slots"] = updated_slots
+    link_state["runtime_initialized"] = True
+    link_state["host_runtime_prepared"] = True
+    link_state["bpf_owned_parameter_metadata_advanced"] = True
+    link_state["last_bpf_owned_parameter_metadata_advance_epoch_seconds"] = round(
+        time.time(),
+        3,
+    )
+    _write_json_breaking_hardlink(Path(link_state_path), link_state)
+    return {
+        "enabled": True,
+        "advanced_slot_count": len(advanced_slots),
+        "changed_slot_count": len(changed_slots),
+        "missing_slot_count": len(missing_slots),
+        "advanced_slots": sorted(advanced_slots),
+        "changed_slots": sorted(changed_slots),
+        "missing_slots": missing_slots,
+        "write_performed": True,
+        "semantics": "metadata_only_runtime_parameters_no_qdisc_no_rebind",
+    }
+
+
+def _collection_artifact_summary(value: Any) -> Dict[str, Any]:
+    if isinstance(value, Mapping):
+        return {
+            "kind": "mapping",
+            "count": len(value),
+            "hash_elided": True,
+            "hash_elision_reason": "avoid_full_payload_hash_on_runtime_hot_path",
+        }
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return {
+            "kind": "sequence",
+            "count": len(value),
+            "hash_elided": True,
+            "hash_elision_reason": "avoid_full_payload_hash_on_runtime_hot_path",
+        }
+    return {
+        "kind": type(value).__name__,
+        "present": value is not None,
+        "hash": _canonical_json_hash(value) if value is not None else "",
+    }
+
+
+def _compact_bpf_prepare_like_report(report: Mapping[str, Any]) -> Dict[str, Any]:
+    source = dict(report or {})
+    compact: Dict[str, Any] = {}
+    scalar_keys = (
+        "schema_version",
+        "ok",
+        "ready",
+        "reason",
+        "fallback_reason",
+        "blocked_stage",
+        "fail_closed",
+        "generation_id",
+        "active_generation",
+        "intent_hash",
+        "map_entry_count",
+        "preactivation_attach_prepare_only",
+        "inactive_generation_written",
+        "active_generation_flip_skipped",
+        "runtime_apply_skipped",
+        "preactivation_preload_data_write_used",
+        "interface_role_map_updates_skipped",
+        "interface_role_map_skipped_update_count",
+        "interface_role_map_update_skip_reason",
+        "parallel_map_write_enabled",
+        "parallel_map_write_worker_count",
+        "parallel_map_write_scheduled_update_count",
+        "runtime_generation_loaded",
+        "active_generation_set",
+        "map_ready",
+        "delta_attach_count",
+        "full_attach_count",
+        "runtime_full_generation_reload_count",
+        "prepared_bpf_attach_capability_count",
+        "prepared_bpf_attach_interface_count",
+        "required_interface_role_union_count",
+        "compiled_runtime_inputs_source",
+        "attach_reuse_eligible_count",
+        "attach_reuse_ineligible_count",
+        "runtime_attach_allowed",
+    )
+    for key in scalar_keys:
+        if key in source:
+            compact[key] = source.get(key)
+    for key in (
+        "resident_attach_coverage_budget",
+        "bpf_attach_budget",
+        "attach_cardinality_budget",
+        "resident_attach_coverage",
+        "attach_reuse",
+        "preactivation_preload_attach_capability_contract",
+        "frozen_compiled_runtime_inputs_check",
+        "reused_attach_clsact_guard_metrics",
+        "timing_breakdown",
+        "generation_write_cost_audit",
+    ):
+        if key in source:
+            compact[key] = _json_safe(source.get(key))
+    for key in (
+        "attach_plan",
+        "attached_interfaces",
+        "attached_interface_details",
+        "logical_attached_interfaces",
+        "active_materialized_interfaces",
+        "resident_attach_eligible_interfaces",
+        "future_horizon_interfaces",
+        "future_materialized_attach_eligible_interfaces",
+        "future_non_materialized_capacity_only_interfaces",
+        "compile_capacity_interfaces",
+        "compiled_runtime_inputs",
+        "active_generation_compiled_runtime_inputs",
+    ):
+        if key in source:
+            compact[f"{key}_summary"] = _collection_artifact_summary(source.get(key))
+    prepare_steps = dict(source.get("prepare_steps") or {})
+    real_prepare = dict(prepare_steps.get("real_backend_prepare") or {})
+    if real_prepare:
+        compact["real_backend_prepare_summary"] = _compact_bpf_prepare_like_report(
+            real_prepare
+        )
+    return compact
+
+
+def _compact_preloaded_generation_record(record: Mapping[str, Any]) -> Dict[str, Any]:
+    source = dict(record or {})
+    compact = {
+        key: _json_safe(value)
+        for key, value in source.items()
+        if key not in {"compiled_runtime_inputs", "preload_report"}
+    }
+    if "compiled_runtime_inputs" in source:
+        compact["compiled_runtime_inputs_summary"] = _collection_artifact_summary(
+            source.get("compiled_runtime_inputs")
+        )
+    if "preload_report" in source:
+        compact["preload_report_summary"] = _compact_bpf_prepare_like_report(
+            dict(source.get("preload_report") or {})
+        )
+    return compact
+
+
+def _compact_retired_cleanup_record(record: Mapping[str, Any]) -> Dict[str, Any]:
+    source = dict(record or {})
+    compact = {
+        key: _json_safe(value)
+        for key, value in source.items()
+        if key not in {"delete_manifest", "cleanup_load"}
+    }
+    if "delete_manifest" in source:
+        compact["delete_manifest_summary"] = _collection_artifact_summary(
+            source.get("delete_manifest")
+        )
+    if "cleanup_load" in source:
+        load = dict(source.get("cleanup_load") or {})
+        compact["cleanup_load_summary"] = {
+            "ok": bool(load.get("ok")),
+            "manifest_only_loader": bool(load.get("manifest_only_loader")),
+            "batch_map_write_used": bool(load.get("batch_map_write_used")),
+            "actual_data_delete_count": int(
+                load.get("actual_data_delete_count") or 0
+            ),
+            "map_write_wall_seconds": float(load.get("map_write_wall_seconds") or 0.0),
+            "outcome_labels": list(load.get("outcome_labels") or []),
+        }
+    return compact
+
+
+def _merge_horizon_maintenance_handoff_preloaded_records(
+    *,
+    readiness: Mapping[str, Any],
+    target_horizon_id: str,
+    handoff_records: Sequence[Mapping[str, Any]],
+    expected_record_count: int,
+) -> Dict[str, Any]:
+    target_horizon = str(target_horizon_id or "")
+    expected_count = max(0, int(expected_record_count or 0))
+    existing_records = [
+        dict(item)
+        for item in list(dict(readiness or {}).get("preloaded_generation_records") or [])
+        if isinstance(item, Mapping)
+    ]
+    valid_handoff_records: List[Dict[str, Any]] = []
+    invalid_reasons: List[str] = []
+    for item_any in list(handoff_records or []):
+        item = dict(item_any or {})
+        record_horizon = str(item.get("horizon_id") or "")
+        if target_horizon and record_horizon and record_horizon != target_horizon:
+            invalid_reasons.append("horizon_mismatch")
+            continue
+        if item.get("ok") is not True:
+            invalid_reasons.append("record_not_ok")
+            continue
+        if item.get("inactive_generation_written") is not True:
+            invalid_reasons.append("inactive_generation_not_written")
+            continue
+        if not dict(item.get("compiled_runtime_inputs") or {}):
+            invalid_reasons.append("compiled_runtime_inputs_missing")
+            continue
+        valid_handoff_records.append(item)
+    if expected_count and len(valid_handoff_records) < expected_count:
+        raise RuntimeError(
+            "horizon_maintenance_handoff_preloaded_records_missing:"
+            + json.dumps(
+                {
+                    "horizon_id": target_horizon,
+                    "expected_record_count": expected_count,
+                    "valid_handoff_record_count": len(valid_handoff_records),
+                    "provided_handoff_record_count": len(list(handoff_records or [])),
+                    "invalid_reasons": sorted(set(invalid_reasons)),
+                },
+                sort_keys=True,
+            )
+        )
+
+    def record_key(record: Mapping[str, Any]) -> str:
+        return str(
+            record.get("physical_horizon_generation_key")
+            or record.get("horizon_generation_key")
+            or record.get("record_id")
+            or record.get("segment_epoch_key")
+            or ""
+        )
+
+    merged_by_key: Dict[str, Dict[str, Any]] = {}
+    for record in [*existing_records, *valid_handoff_records]:
+        key = record_key(record)
+        if not key:
+            continue
+        merged_by_key[key] = dict(record)
+
+    prepared_generation_ids: set[int] = set()
+    for generation in list(dict(readiness or {}).get("prepared_generation_ids") or []):
+        if generation in (None, "") or str(generation) == "None":
+            continue
+        prepared_generation_ids.add(int(generation))
+    for record in valid_handoff_records:
+        for generation in [
+            record.get("generation_id"),
+            *list(record.get("retain_inactive_generations") or []),
+        ]:
+            if generation in (None, "") or str(generation) == "None":
+                continue
+            prepared_generation_ids.add(int(generation))
+
+    merged_readiness = {
+        **dict(readiness or {}),
+        "preloaded_generation_records": list(merged_by_key.values()),
+        "prepared_generation_ids": sorted(prepared_generation_ids),
+        "horizon_maintenance_handoff_consumed": True,
+        "horizon_maintenance_handoff_horizon_id": target_horizon,
+        "horizon_maintenance_handoff_record_count": len(valid_handoff_records),
+    }
+    return {
+        "schema_version": "skyseed-horizon-maintenance-handoff-merge-v1",
+        "horizon_id": target_horizon,
+        "readiness": merged_readiness,
+        "existing_preloaded_generation_record_count": len(existing_records),
+        "handoff_preloaded_generation_record_count": len(valid_handoff_records),
+        "merged_preloaded_generation_record_count": len(merged_by_key),
+        "prepared_generation_id_count": len(prepared_generation_ids),
+    }
+
+
+def _rolling_horizon_deferred_bpf_generation_record(
+    *,
+    generation_item: Mapping[str, Any],
+    entry: Mapping[str, Any],
+    state_contract: Mapping[str, Any],
+    bpf_generation_slot_width: int,
+    retain_generation_ids: Sequence[int],
+) -> Dict[str, Any]:
+    logical_generation_id = int(
+        generation_item.get("logical_generation_id")
+        if generation_item.get("logical_generation_id") not in (None, "", "None")
+        else generation_item["generation_id"]
+    )
+    physical_generation_id = int(
+        generation_item.get("physical_generation_id")
+        if generation_item.get("physical_generation_id") not in (None, "", "None")
+        else generation_item["generation_id"]
+    )
+    horizon_id = _queue_entry_horizon_id(entry)
+    record_payload = {
+        "segment_epoch_key": generation_item["segment_epoch_key"],
+        "epoch_id": entry.get("epoch_id"),
+        "slice_id": entry.get("slice_id"),
+        "horizon_id": horizon_id,
+        "generation_id": int(generation_item["generation_id"]),
+        "logical_generation_id": logical_generation_id,
+        "physical_generation_id": physical_generation_id,
+        "generation_slot_width": int(
+            generation_item.get("generation_slot_width")
+            or bpf_generation_slot_width
+            or 1
+        ),
+        "horizon_sequence_index": int(generation_item.get("horizon_sequence_index") or 0),
+        "horizon_generation_key": _horizon_generation_key(
+            horizon_id=horizon_id,
+            generation_id=logical_generation_id,
+        ),
+        "physical_horizon_generation_key": _horizon_generation_key(
+            horizon_id=horizon_id,
+            generation_id=physical_generation_id,
+        ),
+        "intent_hash": str(generation_item["intent_hash"]),
+        "source_state_id": str(dict(state_contract).get("source_state_id") or ""),
+        "target_state_id": str(dict(state_contract).get("target_state_id") or ""),
+        "host_plan_mutation_id": str(
+            dict(state_contract).get("host_plan_mutation_id") or ""
+        ),
+    }
+    return {
+        "schema_version": "skyseed-rolling-horizon-deferred-bpf-generation-v1",
+        "record_id": "rolldeferredgeneration-"
+        + _canonical_json_hash(record_payload)[:16],
+        **record_payload,
+        "ok": True,
+        "reason": "",
+        "preload_deferred": True,
+        "deferred_reason": (
+            "rolling_horizon_maintenance_defers_inactive_generation_map_writes"
+        ),
+        "inactive_generation_written": False,
+        "active_generation_flip_skipped": True,
+        "runtime_apply_skipped": True,
+        "delta_attach_count": 0,
+        "full_attach_count": 0,
+        "runtime_full_generation_reload_count": 0,
+        "retain_inactive_generations": list(retain_generation_ids),
+        "compiled_runtime_inputs_summary": {
+            "kind": "deferred",
+            "present": False,
+        },
+        "preload_report_summary": {
+            "ok": True,
+            "preload_deferred": True,
+            "inactive_generation_written": False,
+            "runtime_apply_skipped": True,
+            "delta_attach_count": 0,
+            "full_attach_count": 0,
+            "runtime_full_generation_reload_count": 0,
+        },
+    }
+
+
+def _rolling_horizon_queued_bpf_generation_record(
+    *,
+    generation_item: Mapping[str, Any],
+    entry: Mapping[str, Any],
+    state_contract: Mapping[str, Any],
+    bpf_generation_slot_width: int,
+    retain_generation_ids: Sequence[int],
+) -> Dict[str, Any]:
+    record = _rolling_horizon_deferred_bpf_generation_record(
+        generation_item=generation_item,
+        entry=entry,
+        state_contract=state_contract,
+        bpf_generation_slot_width=bpf_generation_slot_width,
+        retain_generation_ids=retain_generation_ids,
+    )
+    record_payload = {
+        key: value
+        for key, value in record.items()
+        if key
+        not in {
+            "schema_version",
+            "record_id",
+            "preload_deferred",
+            "deferred_reason",
+            "compiled_runtime_inputs_summary",
+            "preload_report_summary",
+        }
+    }
+    return {
+        **record,
+        "schema_version": "skyseed-rolling-horizon-queued-bpf-generation-v1",
+        "record_id": "rollqueuedgeneration-"
+        + _canonical_json_hash(record_payload)[:16],
+        "preload_deferred": False,
+        "preload_queued": True,
+        "queued_reason": (
+            "rolling_horizon_epoch_work_queue_writes_inactive_generation"
+        ),
+        "deferred_reason": "",
+        "bpf_map_write_manifest_only": True,
+        "manifest_only_loader_required": True,
+        "batch_map_write_required": True,
+        "queued_preload_audit": {
+            "execution_strategy": "queued_manifest_only_batch_map_write",
+            "manifest_only_loader_required": True,
+            "batch_map_write_required": True,
+            "runtime_apply_skipped_until_epoch_work": True,
+            "active_generation_flip_allowed": False,
+        },
+        "compiled_runtime_inputs_summary": {
+            "kind": "queued",
+            "present": False,
+        },
+        "preload_report_summary": {
+            "ok": True,
+            "preload_queued": True,
+            "inactive_generation_written": False,
+            "runtime_apply_skipped": True,
+            "delta_attach_count": 0,
+            "full_attach_count": 0,
+            "runtime_full_generation_reload_count": 0,
+        },
+    }
+
+
+def _compiled_runtime_inputs_generation_id(
+    compiled_inputs: Mapping[str, Any],
+    *,
+    fallback_generation_id: int = 0,
+) -> int:
+    source = dict(compiled_inputs or {})
+    active_generation = dict(source.get("active_generation") or {})
+    for value in (
+        active_generation.get("value"),
+        active_generation.get("generation"),
+        source.get("generation_id"),
+    ):
+        if value not in (None, "", "None"):
+            return int(value)
+    return int(fallback_generation_id or 0)
+
+
+def _compiled_runtime_inputs_manifest_ready(
+    compiled_inputs: Mapping[str, Any],
+) -> bool:
+    source = dict(compiled_inputs or {})
+    if not source:
+        return False
+    if "compiled_runtime_inputs_summary" in source:
+        return False
+    if source.get("schema_version") != "skyseed-bpf-owned-compiled-runtime-inputs-v1":
+        return False
+    required_keys = (
+        "active_generation",
+        "ingress_classifier_map",
+        "core_lfib_map",
+        "egress_handoff_map",
+    )
+    return all(key in source for key in required_keys)
+
+
+def _bpf_active_base_generation_record_for_preload(
+    readiness: Mapping[str, Any],
+) -> Dict[str, Any]:
+    readiness_dict = dict(readiness or {})
+    prepare_steps = dict(readiness_dict.get("prepare_steps") or {})
+    real_backend_prepare = dict(prepare_steps.get("real_backend_prepare") or {})
+    source_candidates = (
+        (
+            "readiness.active_generation_compiled_runtime_inputs",
+            readiness_dict.get("active_generation_compiled_runtime_inputs"),
+        ),
+        ("readiness.compiled_runtime_inputs", readiness_dict.get("compiled_runtime_inputs")),
+        (
+            "readiness.prepare_steps.real_backend_prepare.compiled_runtime_inputs",
+            real_backend_prepare.get("compiled_runtime_inputs"),
+        ),
+    )
+    checked_sources: List[Dict[str, Any]] = []
+    fallback_generation_id = int(
+        readiness_dict.get("active_generation")
+        or readiness_dict.get("generation_id")
+        or 0
+    )
+    for source_name, source_value in source_candidates:
+        source = dict(source_value or {}) if isinstance(source_value, Mapping) else {}
+        checked_sources.append(
+            {
+                "source": source_name,
+                "present": bool(source),
+                "manifest_ready": _compiled_runtime_inputs_manifest_ready(source),
+                "schema_version": str(source.get("schema_version") or ""),
+                "summary_rejected": "compiled_runtime_inputs_summary" in source,
+            }
+        )
+        if not _compiled_runtime_inputs_manifest_ready(source):
+            continue
+        generation_id = _compiled_runtime_inputs_generation_id(
+            source,
+            fallback_generation_id=fallback_generation_id,
+        )
+        record_id = str(
+            readiness_dict.get("active_physical_horizon_generation_key")
+            or readiness_dict.get("active_horizon_generation_key")
+            or readiness_dict.get("current_horizon_id")
+            or f"generation-{generation_id}"
+        )
+        return {
+            "ok": True,
+            "reason": "",
+            "record_id": record_id,
+            "source": source_name,
+            "generation_id": generation_id,
+            "physical_generation_id": generation_id,
+            "compiled_runtime_inputs": dict(source),
+            "checked_sources": checked_sources,
+        }
+    return {
+        "ok": False,
+        "reason": "base_compiled_runtime_inputs_missing",
+        "record_id": "",
+        "generation_id": fallback_generation_id,
+        "physical_generation_id": fallback_generation_id,
+        "compiled_runtime_inputs": {},
+        "checked_sources": checked_sources,
+    }
+
+
+def _rolling_horizon_bpf_preload_work_item(
+    *,
+    segment_index: int,
+    segment_id: str,
+    horizon_id: str,
+    generation_item: Mapping[str, Any],
+    retain_generation_ids: Sequence[int],
+    prepared_generation_window_count: int,
+    base_generation_record: Mapping[str, Any],
+    frozen_compiled_runtime_inputs: Optional[Mapping[str, Any]] = None,
+    prepared_attach_capability_readiness: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    base_compiled_inputs = dict(
+        dict(base_generation_record or {}).get("compiled_runtime_inputs") or {}
+    )
+    base_generation_id = _compiled_runtime_inputs_generation_id(
+        base_compiled_inputs,
+        fallback_generation_id=int(
+            dict(base_generation_record or {}).get("physical_generation_id")
+            or dict(base_generation_record or {}).get("generation_id")
+            or 0
+        ),
+    )
+    frozen_inputs = dict(frozen_compiled_runtime_inputs or {})
+    frozen_ready = _compiled_runtime_inputs_manifest_ready(frozen_inputs)
+    frozen_generation_id = (
+        _compiled_runtime_inputs_generation_id(frozen_inputs)
+        if frozen_ready
+        else 0
+    )
+    attach_capability_readiness = dict(prepared_attach_capability_readiness or {})
+    return {
+        "schema_version": "skyseed-bpf-preload-work-item-v1",
+        "work_type": "preload_inactive_generation_delta",
+        "segment_index": int(segment_index),
+        "segment_id": str(segment_id),
+        "horizon_id": str(horizon_id),
+        "generation_item": dict(generation_item),
+        "retain_generation_ids": list(retain_generation_ids),
+        "prepared_generation_window_count": int(prepared_generation_window_count),
+        "base_generation_record_id": str(
+            dict(base_generation_record or {}).get("record_id") or ""
+        ),
+        "base_generation_source": str(
+            dict(base_generation_record or {}).get("source") or ""
+        ),
+        "base_generation_id": int(base_generation_id),
+        "base_generation_compiled_inputs": dict(base_compiled_inputs),
+        "frozen_compiled_runtime_inputs": dict(frozen_inputs),
+        "frozen_compiled_runtime_inputs_ready": bool(frozen_ready),
+        "frozen_compiled_runtime_inputs_generation_id": int(frozen_generation_id),
+        "frozen_compiled_runtime_inputs_required": True,
+        "prepared_attach_capability_readiness": attach_capability_readiness,
+        "prepared_attach_capability_readiness_required": True,
+        "prepared_attach_capability_readiness_ready": bool(
+            attach_capability_readiness
+            and dict(
+                attach_capability_readiness.get("preactivation_attach_prepare") or {}
+            ).get("ok")
+            is True
+        ),
+        "bpf_map_write_manifest_only": True,
+        "manifest_only_loader_required": True,
+        "batch_map_write_required": True,
+        "status": "queued",
+    }
+
+
+def _prepared_attach_capability_readiness_for_preload(
+    readiness: Mapping[str, Any],
+) -> Dict[str, Any]:
+    source = dict(readiness or {})
+    prepare_steps = dict(source.get("prepare_steps") or {})
+    real_prepare = dict(prepare_steps.get("real_backend_prepare") or {})
+    attach_prepare = dict(
+        source.get("preactivation_attach_prepare")
+        or prepare_steps.get("preactivation_attach_prepare")
+        or {}
+    )
+    attached_interface_details = [
+        dict(item)
+        for item in list(
+            source.get("attached_interface_details")
+            or real_prepare.get("attached_interface_details")
+            or attach_prepare.get("attached_interface_details")
+            or []
+        )
+        if isinstance(item, Mapping)
+    ]
+    attached_interfaces = sorted(
+        {
+            str(item)
+            for item in list(
+                source.get("attached_interfaces")
+                or real_prepare.get("attached_interfaces")
+                or attach_prepare.get("attached_interfaces")
+                or []
+            )
+            if str(item)
+        }
+        | {
+            str(
+                dict(item).get("interface_ref")
+                or dict(item).get("interface_name")
+                or ""
+            )
+            for item in attached_interface_details
+            if str(
+                dict(item).get("interface_ref")
+                or dict(item).get("interface_name")
+                or ""
+            )
+        }
+    )
+    attach_plan = {
+        str(interface_ref): sorted(
+            {
+                str(direction)
+                for direction in list(directions or [])
+                if str(direction)
+            }
+        )
+        for interface_ref, directions in dict(
+            source.get("attach_plan")
+            or real_prepare.get("attach_plan")
+            or attach_prepare.get("attach_plan")
+            or {}
+        ).items()
+        if str(interface_ref)
+    }
+    compact_real_prepare = {
+        "attach_plan": attach_plan,
+        "attached_interfaces": attached_interfaces,
+        "attached_interface_details": attached_interface_details,
+        "compiled_mpls_map_counts": dict(
+            real_prepare.get("compiled_mpls_map_counts")
+            or source.get("mpls_map_entry_counts")
+            or {}
+        ),
+        "map_capacities": dict(
+            real_prepare.get("map_capacities") or source.get("map_capacities") or {}
+        ),
+    }
+    compact_attach_prepare = {
+        key: attach_prepare.get(key)
+        for key in (
+            "ok",
+            "reason",
+            "runtime_apply_skipped",
+            "active_generation_set",
+            "map_ready",
+            "runtime_full_generation_reload_count",
+            "full_attach_count",
+            "delta_attach_count",
+            "prepared_bpf_attach_capability_count",
+            "prepared_bpf_attach_interface_count",
+            "artifact_path",
+        )
+        if key in attach_prepare
+    }
+    compact_attach_prepare.update(
+        {
+            "attach_plan": attach_plan,
+            "attached_interfaces": attached_interfaces,
+            "attached_interface_details": attached_interface_details,
+        }
+    )
+    records = [
+        dict(item)
+        for item in list(source.get("preactivation_attach_prepare_records") or [])
+        if isinstance(item, Mapping)
+    ]
+    prepared_role_count = int(
+        source.get("prepared_bpf_attach_capability_count")
+        or attach_prepare.get("prepared_bpf_attach_capability_count")
+        or sum(
+            len(list(dict(item).get("expected_roles") or []))
+            for item in attached_interface_details
+        )
+        or 0
+    )
+    return {
+        "schema_version": "skyseed-prepared-attach-capability-readiness-v1",
+        "ready": bool(source.get("ready")),
+        "ok": bool(source.get("ok", True)),
+        "reason": str(source.get("reason") or ""),
+        "attach_plan": attach_plan,
+        "attached_interfaces": attached_interfaces,
+        "attached_interface_details": attached_interface_details,
+        "mpls_map_entry_counts": dict(compact_real_prepare["compiled_mpls_map_counts"]),
+        "map_capacities": dict(compact_real_prepare["map_capacities"]),
+        "prepare_steps": {
+            "real_backend_prepare": compact_real_prepare,
+            "preactivation_attach_prepare": compact_attach_prepare,
+        },
+        "preactivation_attach_prepare": compact_attach_prepare,
+        "preactivation_attach_prepare_records": records,
+        "prepared_bpf_attach_capability_count": prepared_role_count,
+        "prepared_bpf_attach_interface_count": len(attached_interface_details),
+    }
+
+
+def _frozen_compiled_runtime_inputs_summary(
+    compiled_inputs: Mapping[str, Any],
+) -> Dict[str, Any]:
+    source = dict(compiled_inputs or {})
+    manifest_ready = _compiled_runtime_inputs_manifest_ready(source)
+    return {
+        "present": bool(source),
+        "manifest_ready": bool(manifest_ready),
+        "schema_version": str(source.get("schema_version") or ""),
+        "generation_id": (
+            _compiled_runtime_inputs_generation_id(source)
+            if manifest_ready
+            else 0
+        ),
+        "map_counts": {
+            key: len(list(source.get(key) or []))
+            for key in (
+                "ingress_classifier_map",
+                "core_lfib_map",
+                "egress_handoff_map",
+                "generation_base_map",
+            )
+            if key in source
+        },
+        "summary_rejected": "compiled_runtime_inputs_summary" in source,
+        "payload_elided": True,
+    }
+
+
+def _compact_bpf_owned_readiness_for_artifact(
+    readiness: Mapping[str, Any],
+) -> Dict[str, Any]:
+    source = dict(readiness or {})
+    compact = _compact_bpf_prepare_like_report(source)
+    for key in (
+        "current_horizon_id",
+        "previous_horizon_id",
+        "next_horizon_id",
+        "current_source_state_id",
+        "active_horizon_generation_key",
+        "active_logical_horizon_generation_key",
+        "active_physical_horizon_generation_key",
+        "prepared_generation_window_count",
+        "preloaded_generation_consumed",
+    ):
+        if key in source:
+            compact[key] = source.get(key)
+    for key in (
+        "prepared_generation_ids",
+        "prepared_horizon_generation_keys",
+        "prepared_physical_horizon_generation_keys",
+    ):
+        if key in source:
+            compact[key] = list(source.get(key) or [])
+    preloaded_records = [
+        _compact_preloaded_generation_record(record)
+        for record in list(source.get("preloaded_generation_records") or [])
+        if isinstance(record, Mapping)
+    ]
+    compact["preloaded_generation_record_count"] = len(preloaded_records)
+    compact["preloaded_generation_records"] = preloaded_records
+    if "sliding_horizon_generation_buffer" in source:
+        compact["sliding_horizon_generation_buffer"] = _json_safe(
+            source.get("sliding_horizon_generation_buffer")
+        )
+    return compact
 
 
 def _host_plan_target_dynamic_state(
@@ -1743,6 +3634,143 @@ def _assert_host_plan_source_state_aligned(
         )
 
 
+def _runtime_target_state_id_for_entry(
+    *,
+    snapshot: TopologySnapshot,
+    entry: Mapping[str, Any],
+    state_prefix: str = "live_state",
+) -> str:
+    return (
+        f"{state_prefix}:{snapshot.snapshot_id}:"
+        f"{entry.get('epoch_id') or entry.get('event_id') or entry.get('segment_epoch_key')}"
+    )
+
+
+def _prepare_replenished_host_plan_payloads(
+    *,
+    remaining_queue: Sequence[Mapping[str, Any]],
+    accepted_entries: Sequence[Mapping[str, Any]],
+    context_by_key: Mapping[str, Mapping[str, Any]],
+    replenished_context_by_key: Mapping[str, Mapping[str, Any]],
+    current_dynamic_state: Mapping[str, Mapping[str, Any]],
+    current_state_id: str,
+    resolve_existing_host_plan: Callable[
+        [Mapping[str, Any], Mapping[str, Any], Mapping[str, Mapping[str, Any]], str],
+        NetworkMutationPlan,
+    ],
+    build_host_plan: Callable[
+        [Mapping[str, Any], Mapping[str, Any], Mapping[str, Mapping[str, Any]], str],
+        NetworkMutationPlan,
+    ],
+) -> Dict[str, Any]:
+    simulated_state: Dict[str, Dict[str, Any]] = {
+        str(slot_name): dict(slot_state or {})
+        for slot_name, slot_state in dict(current_dynamic_state or {}).items()
+    }
+    simulated_state_id = str(current_state_id or "")
+    state_chain: List[Dict[str, Any]] = []
+
+    for entry_any in list(remaining_queue or []):
+        entry = dict(entry_any or {})
+        segment_key = str(entry.get("segment_epoch_key") or "")
+        if not segment_key:
+            continue
+        context = dict(context_by_key.get(segment_key) or {})
+        if not context:
+            raise RuntimeError(
+                "rolling_horizon_existing_queue_missing_context:"
+                f"{segment_key}"
+            )
+        host_plan = resolve_existing_host_plan(
+            entry,
+            context,
+            simulated_state,
+            simulated_state_id,
+        )
+        _assert_host_plan_source_state_aligned(
+            segment_key=segment_key,
+            host_plan=host_plan,
+            current_state_id=simulated_state_id,
+        )
+        snapshot = context["snapshot"]
+        target_state_id = _runtime_target_state_id_for_entry(
+            snapshot=snapshot,
+            entry=entry,
+        )
+        simulated_state = _host_plan_target_dynamic_state(
+            simulated_state,
+            host_plan,
+        )
+        state_chain.append(
+            {
+                "segment_epoch_key": segment_key,
+                "horizon_id": _queue_entry_horizon_id(entry),
+                "source_state_id": simulated_state_id,
+                "target_state_id": target_state_id,
+                "host_plan_mutation_id": str(host_plan.mutation_id),
+                "role": "remaining_current_window_source_chain",
+            }
+        )
+        simulated_state_id = target_state_id
+
+    prepared_payloads: Dict[str, Dict[str, Any]] = {}
+    prepared_chain: List[Dict[str, Any]] = []
+    for entry_any in list(accepted_entries or []):
+        entry = dict(entry_any or {})
+        segment_key = str(entry.get("segment_epoch_key") or "")
+        if not segment_key:
+            continue
+        context = dict(replenished_context_by_key.get(segment_key) or {})
+        if not context:
+            raise RuntimeError(
+                "rolling_horizon_replenished_queue_missing_context:"
+                f"{segment_key}"
+            )
+        host_plan = build_host_plan(
+            entry,
+            context,
+            simulated_state,
+            simulated_state_id,
+        )
+        _assert_host_plan_source_state_aligned(
+            segment_key=segment_key,
+            host_plan=host_plan,
+            current_state_id=simulated_state_id,
+        )
+        snapshot = context["snapshot"]
+        target_state_id = _runtime_target_state_id_for_entry(
+            snapshot=snapshot,
+            entry=entry,
+        )
+        prepared_payloads[segment_key] = host_plan.to_dict()
+        prepared_chain.append(
+            {
+                "segment_epoch_key": segment_key,
+                "horizon_id": _queue_entry_horizon_id(entry),
+                "source_state_id": simulated_state_id,
+                "target_state_id": target_state_id,
+                "host_plan_mutation_id": str(host_plan.mutation_id),
+                "role": "prepared_next_window_host_plan",
+            }
+        )
+        simulated_state = _host_plan_target_dynamic_state(
+            simulated_state,
+            host_plan,
+        )
+        simulated_state_id = target_state_id
+
+    return {
+        "schema_version": "skyseed-rolling-horizon-host-plan-preparation-v1",
+        "prepared_host_plan_by_segment_key": prepared_payloads,
+        "prepared_host_plan_count": len(prepared_payloads),
+        "source_state_chain": state_chain + prepared_chain,
+        "remaining_current_window_chain_count": len(state_chain),
+        "prepared_next_window_chain_count": len(prepared_chain),
+        "initial_source_state_id": str(current_state_id or ""),
+        "final_prepared_state_id": simulated_state_id,
+    }
+
+
 def _context_payload_from_runtime_context(context: Mapping[str, Any]) -> Dict[str, Any]:
     snapshot = context.get("snapshot")
     runtime_update_plan = context.get("runtime_update_plan")
@@ -1784,6 +3812,938 @@ def _runtime_context_from_payload(payload: Mapping[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _runtime_update_plan_with_bpf_resident_attach_budget(
+    runtime_update_plan: RuntimeUpdatePlan,
+    resident_attach_budget: Mapping[str, Any],
+) -> RuntimeUpdatePlan:
+    budget = dict(resident_attach_budget or {})
+    if not budget:
+        return runtime_update_plan
+    return replace(
+        runtime_update_plan,
+        target_snapshot={
+            **dict(runtime_update_plan.target_snapshot or {}),
+            "resident_attach_coverage_budget": dict(budget),
+            "bpf_resident_attach_coverage_budget": dict(budget),
+            "bpf_attach_budget": dict(budget),
+        },
+        planner={
+            **dict(runtime_update_plan.planner or {}),
+            "bpf_resident_attach_coverage_budget": dict(budget),
+        },
+    )
+
+
+def _runtime_context_with_bpf_resident_attach_budget(
+    context: Mapping[str, Any],
+    resident_attach_budget: Mapping[str, Any],
+) -> Dict[str, Any]:
+    updated = dict(context or {})
+    plan = updated.get("runtime_update_plan")
+    if isinstance(plan, RuntimeUpdatePlan):
+        updated["runtime_update_plan"] = (
+            _runtime_update_plan_with_bpf_resident_attach_budget(
+                plan,
+                resident_attach_budget,
+            )
+        )
+    return updated
+
+
+def _runtime_update_plan_with_bpf_generation_assignment(
+    runtime_update_plan: RuntimeUpdatePlan,
+    assignment: Mapping[str, Any],
+) -> RuntimeUpdatePlan:
+    generation_assignment = dict(assignment or {})
+    if not generation_assignment:
+        return runtime_update_plan
+    horizon_id = str(
+        generation_assignment.get("horizon_id")
+        or generation_assignment.get("bpf_generation_horizon_id")
+        or ""
+    )
+    logical_generation_id = int(
+        generation_assignment.get("logical_generation_id")
+        if generation_assignment.get("logical_generation_id") not in (None, "", "None")
+        else generation_assignment.get("generation_id") or 0
+    )
+    physical_generation_id = int(
+        generation_assignment.get("physical_generation_id")
+        if generation_assignment.get("physical_generation_id") not in (None, "", "None")
+        else generation_assignment.get("generation_id") or logical_generation_id
+    )
+    generation_slot_width = max(
+        1,
+        int(
+            generation_assignment.get("generation_slot_width")
+            or generation_assignment.get("bpf_generation_slot_width")
+            or 1
+        ),
+    )
+    horizon_sequence_index = int(
+        generation_assignment.get("horizon_sequence_index")
+        if generation_assignment.get("horizon_sequence_index") not in (None, "", "None")
+        else generation_assignment.get("bpf_generation_horizon_sequence_index") or 0
+    )
+    buffer_index = int(
+        generation_assignment.get("buffer_index")
+        if generation_assignment.get("buffer_index") not in (None, "", "None")
+        else horizon_sequence_index % 3
+    )
+    horizon_generation_key = str(
+        generation_assignment.get("horizon_generation_key")
+        or (
+            _horizon_generation_key(
+                horizon_id=horizon_id,
+                generation_id=logical_generation_id,
+            )
+            if horizon_id
+            else ""
+        )
+    )
+    physical_horizon_generation_key = str(
+        generation_assignment.get("physical_horizon_generation_key")
+        or (
+            _horizon_generation_key(
+                horizon_id=horizon_id,
+                generation_id=physical_generation_id,
+            )
+            if horizon_id
+            else ""
+        )
+    )
+    allocator = {
+        "schema_version": "skyseed-bpf-generation-slot-allocation-v1",
+        "buffer_model": "previous_current_next_triple_buffer",
+        "horizon_id": horizon_id,
+        "horizon_sequence_index": horizon_sequence_index,
+        "buffer_index": buffer_index,
+        "logical_generation_id": logical_generation_id,
+        "physical_generation_id": physical_generation_id,
+        "generation_slot_width": generation_slot_width,
+        "horizon_generation_key": horizon_generation_key,
+        "physical_horizon_generation_key": physical_horizon_generation_key,
+    }
+    return replace(
+        runtime_update_plan,
+        target_snapshot={
+            **dict(runtime_update_plan.target_snapshot or {}),
+            "bpf_logical_generation_id": logical_generation_id,
+            "bpf_physical_generation_id": physical_generation_id,
+            "bpf_generation_slot_width": generation_slot_width,
+            "bpf_generation_buffer_index": buffer_index,
+            "bpf_generation_horizon_id": horizon_id,
+            "bpf_generation_horizon_sequence_index": horizon_sequence_index,
+            "bpf_horizon_generation_key": horizon_generation_key,
+            "bpf_physical_horizon_generation_key": physical_horizon_generation_key,
+        },
+        planner={
+            **dict(runtime_update_plan.planner or {}),
+            "bpf_generation_slot_allocator": allocator,
+        },
+    )
+
+
+def _runtime_context_with_bpf_generation_assignment(
+    context: Mapping[str, Any],
+    assignment: Mapping[str, Any],
+) -> Dict[str, Any]:
+    updated = dict(context or {})
+    plan = updated.get("runtime_update_plan")
+    if isinstance(plan, RuntimeUpdatePlan):
+        updated["runtime_update_plan"] = (
+            _runtime_update_plan_with_bpf_generation_assignment(
+                plan,
+                assignment,
+            )
+        )
+    return updated
+
+
+def _runtime_context_with_bpf_runtime_plan_overlays(
+    context: Mapping[str, Any],
+    *,
+    generation_assignment: Mapping[str, Any] | None = None,
+    resident_attach_budget: Mapping[str, Any] | None = None,
+) -> Dict[str, Any]:
+    updated = dict(context or {})
+    if resident_attach_budget:
+        updated = _runtime_context_with_bpf_resident_attach_budget(
+            updated,
+            resident_attach_budget,
+        )
+    if generation_assignment:
+        updated = _runtime_context_with_bpf_generation_assignment(
+            updated,
+            generation_assignment,
+        )
+    return updated
+
+
+def _runtime_contexts_with_bpf_generation_assignments(
+    contexts_by_key: Mapping[str, Mapping[str, Any]],
+    assignments_by_segment_epoch_key: Mapping[str, Mapping[str, Any]],
+) -> Dict[str, Dict[str, Any]]:
+    updated_contexts = {
+        str(key): dict(value or {}) for key, value in dict(contexts_by_key or {}).items()
+    }
+    for segment_key, assignment in dict(assignments_by_segment_epoch_key or {}).items():
+        normalized_key = str(segment_key)
+        if normalized_key not in updated_contexts:
+            continue
+        updated_contexts[normalized_key] = (
+            _runtime_context_with_bpf_generation_assignment(
+                updated_contexts[normalized_key],
+                assignment,
+            )
+        )
+    return updated_contexts
+
+
+def _runtime_contexts_with_bpf_runtime_plan_overlays(
+    contexts_by_key: Mapping[str, Mapping[str, Any]],
+    *,
+    assignments_by_segment_epoch_key: Mapping[str, Mapping[str, Any]] | None = None,
+    resident_attach_budget: Mapping[str, Any] | None = None,
+) -> Dict[str, Dict[str, Any]]:
+    updated_contexts = {
+        str(key): dict(value or {}) for key, value in dict(contexts_by_key or {}).items()
+    }
+    for segment_key in list(updated_contexts):
+        updated_contexts[segment_key] = _runtime_context_with_bpf_runtime_plan_overlays(
+            updated_contexts[segment_key],
+            generation_assignment=dict(assignments_by_segment_epoch_key or {}).get(
+                segment_key
+            )
+            or {},
+            resident_attach_budget=resident_attach_budget or {},
+        )
+    return updated_contexts
+
+
+def _bpf_generation_assignment_context_audit(
+    *,
+    contexts_by_key: Mapping[str, Mapping[str, Any]],
+    assignments_by_segment_epoch_key: Mapping[str, Mapping[str, Any]],
+    require_all_assignments_present: bool = False,
+) -> Dict[str, Any]:
+    missing_context_keys: List[str] = []
+    missing_plan_keys: List[str] = []
+    mismatch_records: List[Dict[str, Any]] = []
+    checked_count = 0
+    for segment_key, assignment_any in sorted(
+        dict(assignments_by_segment_epoch_key or {}).items()
+    ):
+        assignment = dict(assignment_any or {})
+        if not assignment:
+            continue
+        normalized_key = str(segment_key)
+        context = dict(dict(contexts_by_key or {}).get(normalized_key) or {})
+        if not context:
+            if require_all_assignments_present:
+                missing_context_keys.append(normalized_key)
+            continue
+        runtime_update_plan = context.get("runtime_update_plan")
+        if not isinstance(runtime_update_plan, RuntimeUpdatePlan):
+            missing_plan_keys.append(normalized_key)
+            continue
+        proof = _derive_bpf_owned_readiness_proof(
+            runtime_update_plan=runtime_update_plan,
+        )
+        expected_generation_id = int(
+            assignment.get("physical_generation_id")
+            if assignment.get("physical_generation_id") not in (None, "", "None")
+            else assignment.get("generation_id") or 0
+        )
+        actual_generation_id = int(proof.get("generation_id") or 0)
+        checked_count += 1
+        if actual_generation_id != expected_generation_id:
+            mismatch_records.append(
+                {
+                    "segment_epoch_key": normalized_key,
+                    "expected_generation_id": expected_generation_id,
+                    "actual_generation_id": actual_generation_id,
+                    "generation_source": str(proof.get("generation_source") or ""),
+                    "horizon_id": str(assignment.get("horizon_id") or ""),
+                    "horizon_generation_key": str(
+                        assignment.get("horizon_generation_key") or ""
+                    ),
+                    "physical_horizon_generation_key": str(
+                        assignment.get("physical_horizon_generation_key") or ""
+                    ),
+                }
+            )
+    blocker_count = (
+        len(missing_context_keys) + len(missing_plan_keys) + len(mismatch_records)
+    )
+    return {
+        "schema_version": "skyseed-bpf-generation-assignment-context-audit-v1",
+        "ready": blocker_count == 0,
+        "checked_count": checked_count,
+        "assignment_count": len(dict(assignments_by_segment_epoch_key or {})),
+        "require_all_assignments_present": bool(require_all_assignments_present),
+        "blocker_count": blocker_count,
+        "missing_context_keys": missing_context_keys,
+        "missing_plan_keys": missing_plan_keys,
+        "mismatch_records": mismatch_records,
+    }
+
+
+def _materialized_lookahead_attach_budget_expansion(
+    *,
+    attach_prepare_report: Mapping[str, Any],
+    rolling_host_additive_prepare: Mapping[str, Any],
+) -> Dict[str, Any]:
+    attach_report = dict(attach_prepare_report or {})
+    host_report = dict(rolling_host_additive_prepare or {})
+    reason = str(attach_report.get("reason") or "")
+    if reason != "bpf_resident_attach_coverage_budget_exceeded":
+        return {
+            "allowed": False,
+            "reason": "attach_prepare_failure_not_budget_exceeded",
+        }
+    if host_report.get("ok") is not True:
+        return {"allowed": False, "reason": "host_additive_prepare_not_ok"}
+    if bool(host_report.get("future_host_link_state_apply_allowed")):
+        return {
+            "allowed": False,
+            "reason": "future_host_link_state_apply_would_be_required",
+        }
+    if bool(host_report.get("preapply_qdisc_parameter_updates_allowed")):
+        return {
+            "allowed": False,
+            "reason": "preapply_qdisc_parameter_updates_would_be_required",
+        }
+    if int(host_report.get("bridge_created_count") or 0) != 0:
+        return {"allowed": False, "reason": "bridge_creation_would_expose_future_path"}
+    if int(host_report.get("preconnected_endpoint_created_count") or 0) != 0:
+        return {
+            "allowed": False,
+            "reason": "endpoint_preconnect_would_expose_future_path",
+        }
+    if bool(attach_report.get("future_map_write_allowed")):
+        return {"allowed": False, "reason": "future_map_write_would_be_required"}
+    if bool(attach_report.get("active_generation_flip_allowed")):
+        return {
+            "allowed": False,
+            "reason": "active_generation_flip_would_be_required",
+        }
+
+    prepare_steps = dict(attach_report.get("prepare_steps") or {})
+    nested_prepare = dict(prepare_steps.get("preactivation_attach_prepare") or {})
+    future_non_materialized = list(
+        attach_report.get("future_non_materialized_capacity_only_interfaces")
+        or nested_prepare.get("future_non_materialized_capacity_only_interfaces")
+        or []
+    )
+    if future_non_materialized:
+        return {
+            "allowed": False,
+            "reason": "future_non_materialized_capacity_only_interfaces_present",
+            "future_non_materialized_capacity_only_interface_count": len(
+                future_non_materialized
+            ),
+            "future_non_materialized_capacity_only_interface_examples": (
+                future_non_materialized[:5]
+            ),
+        }
+
+    attach_cardinality_budget = dict(
+        attach_report.get("attach_cardinality_budget")
+        or nested_prepare.get("attach_cardinality_budget")
+        or {}
+    )
+    configured_budget = dict(attach_cardinality_budget.get("configured_budget") or {})
+    current_budget = dict(
+        attach_report.get("resident_attach_coverage_budget")
+        or attach_report.get("bpf_resident_attach_coverage_budget")
+        or attach_report.get("bpf_attach_budget")
+        or configured_budget
+    )
+    attach_plan = dict(
+        attach_report.get("attach_plan") or nested_prepare.get("attach_plan") or {}
+    )
+    observed_attach_scope_count = max(
+        len(attach_plan),
+        len(
+            list(
+                attach_report.get("attached_interfaces")
+                or nested_prepare.get("attached_interfaces")
+                or []
+            )
+        ),
+        int(attach_cardinality_budget.get("attach_eligible_count") or 0),
+        int(attach_cardinality_budget.get("attached_count") or 0),
+    )
+    current_max = max(
+        int(current_budget.get("max_attach_interfaces") or 0),
+        int(current_budget.get("max_resident_attach_interfaces") or 0),
+        int(attach_cardinality_budget.get("max_attach_interfaces") or 0),
+    )
+    prepared_capability_count = max(
+        int(current_budget.get("prepared_bpf_attach_capability_count") or 0),
+        int(attach_report.get("prepared_bpf_attach_capability_count") or 0),
+    )
+    expanded_max = max(observed_attach_scope_count, prepared_capability_count)
+    if expanded_max <= current_max:
+        return {
+            "allowed": False,
+            "reason": "observed_attach_scope_does_not_exceed_budget",
+            "observed_attach_scope_count": observed_attach_scope_count,
+            "current_max_attach_interfaces": current_max,
+        }
+
+    expanded_budget = {
+        **current_budget,
+        "schema_version": str(
+            current_budget.get("schema_version")
+            or "skyseed-bpf-resident-attach-budget-v1"
+        ),
+        "budget_source": (
+            str(current_budget.get("budget_source") or "unknown")
+            + "+materialized_lookahead_attach_scope"
+        ),
+        "max_attach_interfaces": expanded_max,
+        "max_resident_attach_interfaces": expanded_max,
+        "slack_attach_interfaces": 0,
+        "fail_closed_if_live_attach_scope_exceeds_source": True,
+        "required_bpf_interface_ref_count": max(
+            int(current_budget.get("required_bpf_interface_ref_count") or 0),
+            observed_attach_scope_count,
+        ),
+        "prepared_bpf_attach_capability_count": max(
+            prepared_capability_count,
+            observed_attach_scope_count,
+        ),
+        "runtime_budget_expansion_reason": (
+            "materialized_lookahead_attach_capability_prepare"
+        ),
+    }
+    return {
+        "allowed": True,
+        "reason": "materialized_lookahead_attach_scope_exceeds_current_budget",
+        "budget": expanded_budget,
+        "current_max_attach_interfaces": current_max,
+        "expanded_max_attach_interfaces": expanded_max,
+        "observed_attach_scope_count": observed_attach_scope_count,
+        "prepared_bpf_attach_capability_count": prepared_capability_count,
+        "future_non_materialized_capacity_only_interface_count": 0,
+        "bridge_created_count": int(host_report.get("bridge_created_count") or 0),
+        "preconnected_endpoint_created_count": int(
+            host_report.get("preconnected_endpoint_created_count") or 0
+        ),
+        "future_host_link_state_apply_allowed": False,
+        "preapply_qdisc_parameter_updates_allowed": False,
+        "future_map_write_allowed": False,
+        "active_generation_flip_allowed": False,
+    }
+
+
+def _runtime_update_plan_payload_with_bpf_generation_slot(
+    runtime_update_plan: Mapping[str, Any],
+    *,
+    horizon_id: str,
+    horizon_sequence_index: int,
+    logical_generation_id: int,
+    physical_generation_id: int,
+    generation_slot_width: int,
+) -> Dict[str, Any]:
+    plan = dict(runtime_update_plan or {})
+    target_snapshot = {
+        **dict(plan.get("target_snapshot") or {}),
+        "bpf_logical_generation_id": int(logical_generation_id),
+        "bpf_physical_generation_id": int(physical_generation_id),
+        "bpf_generation_slot_width": max(1, int(generation_slot_width)),
+        "bpf_generation_buffer_index": int(horizon_sequence_index % 3),
+        "bpf_generation_horizon_id": str(horizon_id),
+        "bpf_generation_horizon_sequence_index": int(horizon_sequence_index),
+        "bpf_horizon_generation_key": _horizon_generation_key(
+            horizon_id=str(horizon_id),
+            generation_id=int(logical_generation_id),
+        ),
+        "bpf_physical_horizon_generation_key": _horizon_generation_key(
+            horizon_id=str(horizon_id),
+            generation_id=int(physical_generation_id),
+        ),
+    }
+    planner = {
+        **dict(plan.get("planner") or {}),
+        "bpf_generation_slot_allocator": {
+            "schema_version": "skyseed-bpf-generation-slot-allocation-v1",
+            "buffer_model": "previous_current_next_triple_buffer",
+            "horizon_id": str(horizon_id),
+            "horizon_sequence_index": int(horizon_sequence_index),
+            "buffer_index": int(horizon_sequence_index % 3),
+            "logical_generation_id": int(logical_generation_id),
+            "physical_generation_id": int(physical_generation_id),
+            "generation_slot_width": max(1, int(generation_slot_width)),
+            "horizon_generation_key": _horizon_generation_key(
+                horizon_id=str(horizon_id),
+                generation_id=int(logical_generation_id),
+            ),
+            "physical_horizon_generation_key": _horizon_generation_key(
+                horizon_id=str(horizon_id),
+                generation_id=int(physical_generation_id),
+            ),
+        },
+    }
+    return {
+        **plan,
+        "target_snapshot": target_snapshot,
+        "planner": planner,
+    }
+
+
+def _bpf_generation_entry_allowed(entry: Mapping[str, Any]) -> bool:
+    return (
+        str(entry.get("classification") or "")
+        in {"runtime_epoch", "parameter_epoch"}
+        and bool(entry.get("runtime_apply_allowed", True)) is True
+    )
+
+
+def _normal_runtime_inputs_with_bpf_generation_slots(
+    *,
+    normal_runtime_inputs: Mapping[str, Any],
+    args: argparse.Namespace,
+) -> Dict[str, Any]:
+    updated = dict(normal_runtime_inputs or {})
+    if not _is_operational_clean_bpf_owned_args(args):
+        return updated
+
+    initial_segment = dict(updated.get("initial_segment") or {})
+    prepared_horizon_segments = [
+        dict(segment or {})
+        for segment in list(updated.get("prepared_horizon_segments") or [])
+    ]
+    if not prepared_horizon_segments and initial_segment:
+        prepared_horizon_segments = [dict(initial_segment)]
+    current_execution_queue = [
+        dict(entry or {})
+        for segment in prepared_horizon_segments
+        for entry in list(dict(segment).get("current_execution_queue") or [])
+    ]
+    runtime_plan_by_key = {
+        str(key): dict(value or {})
+        for key, value in dict(
+            updated.get("runtime_update_plan_by_segment_key") or {}
+        ).items()
+    }
+    if not current_execution_queue or not runtime_plan_by_key:
+        return updated
+
+    sample_interval = _sample_interval_seconds(args=args)
+    horizon_seconds = (
+        _initial_continuous_horizon_seconds(args=args)
+        if bool(getattr(args, "continuous", False))
+        else None
+    )
+    if horizon_seconds is None:
+        horizon_seconds = float(initial_segment.get("horizon_seconds") or 0.0)
+    if float(horizon_seconds or 0.0) <= 0.0:
+        horizon_seconds = _requested_horizon_seconds(args=args)
+    observed_generation_count_by_horizon: Dict[str, int] = {}
+    for entry in current_execution_queue:
+        if not _bpf_generation_entry_allowed(entry):
+            continue
+        segment_key = str(entry.get("segment_epoch_key") or "")
+        if not segment_key or segment_key not in runtime_plan_by_key:
+            continue
+        horizon_id = _queue_entry_horizon_id(
+            entry,
+            default_horizon_id=str(initial_segment.get("segment_id") or "current-horizon"),
+        )
+        observed_generation_count_by_horizon[horizon_id] = (
+            observed_generation_count_by_horizon.get(horizon_id, 0) + 1
+        )
+    observed_generation_count = max(
+        [1, *list(observed_generation_count_by_horizon.values())]
+    )
+    generation_slot_width = _bpf_generation_slot_width_for_horizon_budget(
+        horizon_seconds=float(horizon_seconds or 0.0),
+        sample_interval_seconds=sample_interval,
+        observed_generation_count=observed_generation_count,
+    )
+    horizon_sequence_by_id = {
+        horizon_id: index
+        for index, horizon_id in enumerate(
+            _ordered_unique_horizon_ids(
+                current_execution_queue,
+                default_horizon_id=str(initial_segment.get("segment_id") or "current-horizon"),
+            )
+        )
+    }
+    local_generation_index_by_horizon: Dict[str, int] = {}
+    context_by_segment_key = {
+        str(key): dict(value or {})
+        for key, value in dict(updated.get("context_by_segment_key") or {}).items()
+    }
+    context_by_slice = {
+        str(key): dict(value or {})
+        for key, value in dict(updated.get("context_by_slice") or {}).items()
+    }
+    context_by_slice_by_segment = {
+        str(segment_id): {
+            str(slice_id): dict(context or {})
+            for slice_id, context in dict(contexts or {}).items()
+        }
+        for segment_id, contexts in dict(
+            updated.get("context_by_slice_by_segment") or {}
+        ).items()
+    }
+    assignments: Dict[str, Dict[str, Any]] = {}
+    patched_queue_by_segment_id: Dict[str, List[Dict[str, Any]]] = {
+        str(segment.get("segment_id") or ""): []
+        for segment in prepared_horizon_segments
+    }
+
+    for entry in current_execution_queue:
+        entry_segment_id = str(
+            entry.get("segment_id")
+            or _queue_entry_horizon_id(
+                entry,
+                default_horizon_id=str(initial_segment.get("segment_id") or "current-horizon"),
+            )
+        )
+        patched_queue = patched_queue_by_segment_id.setdefault(entry_segment_id, [])
+        segment_key = str(entry.get("segment_epoch_key") or "")
+        if not segment_key or segment_key not in runtime_plan_by_key:
+            patched_queue.append(entry)
+            continue
+        if not _bpf_generation_entry_allowed(entry):
+            patched_queue.append(entry)
+            continue
+        horizon_id = _queue_entry_horizon_id(
+            entry,
+            default_horizon_id=str(initial_segment.get("segment_id") or "current-horizon"),
+        )
+        logical_generation_id = int(
+            local_generation_index_by_horizon.get(horizon_id, 0)
+        )
+        local_generation_index_by_horizon[horizon_id] = logical_generation_id + 1
+        horizon_sequence_index = int(horizon_sequence_by_id.get(horizon_id, 0))
+        physical_generation_id = _bpf_triple_buffer_physical_generation_id(
+            horizon_sequence_index=horizon_sequence_index,
+            local_generation_id=logical_generation_id,
+            generation_slot_width=generation_slot_width,
+        )
+        patched_plan = _runtime_update_plan_payload_with_bpf_generation_slot(
+            runtime_plan_by_key[segment_key],
+            horizon_id=horizon_id,
+            horizon_sequence_index=horizon_sequence_index,
+            logical_generation_id=logical_generation_id,
+            physical_generation_id=physical_generation_id,
+            generation_slot_width=generation_slot_width,
+        )
+        runtime_plan_by_key[segment_key] = patched_plan
+        if segment_key in context_by_segment_key:
+            context_by_segment_key[segment_key] = {
+                **dict(context_by_segment_key[segment_key]),
+                "runtime_update_plan": patched_plan,
+            }
+        slice_id = str(entry.get("slice_id") or "")
+        if slice_id in context_by_slice:
+            context_by_slice[slice_id] = {
+                **dict(context_by_slice[slice_id]),
+                "runtime_update_plan": patched_plan,
+            }
+        if (
+            entry_segment_id in context_by_slice_by_segment
+            and slice_id in context_by_slice_by_segment[entry_segment_id]
+        ):
+            context_by_slice_by_segment[entry_segment_id][slice_id] = {
+                **dict(context_by_slice_by_segment[entry_segment_id][slice_id]),
+                "runtime_update_plan": patched_plan,
+            }
+        patched_entry = {
+            **entry,
+            "bpf_logical_generation_id": logical_generation_id,
+            "bpf_physical_generation_id": physical_generation_id,
+            "bpf_generation_slot_width": generation_slot_width,
+            "bpf_generation_buffer_index": horizon_sequence_index % 3,
+            "bpf_generation_horizon_id": horizon_id,
+            "bpf_generation_horizon_sequence_index": horizon_sequence_index,
+            "bpf_horizon_generation_key": _horizon_generation_key(
+                horizon_id=horizon_id,
+                generation_id=logical_generation_id,
+            ),
+            "bpf_physical_horizon_generation_key": _horizon_generation_key(
+                horizon_id=horizon_id,
+                generation_id=physical_generation_id,
+            ),
+        }
+        assignments[segment_key] = {
+            "schema_version": "skyseed-bpf-generation-slot-assignment-v1",
+            "segment_epoch_key": segment_key,
+            "horizon_id": horizon_id,
+            "horizon_sequence_index": horizon_sequence_index,
+            "buffer_index": horizon_sequence_index % 3,
+            "logical_generation_id": logical_generation_id,
+            "physical_generation_id": physical_generation_id,
+            "generation_slot_width": generation_slot_width,
+            "horizon_generation_key": patched_entry["bpf_horizon_generation_key"],
+            "physical_horizon_generation_key": patched_entry[
+                "bpf_physical_horizon_generation_key"
+            ],
+        }
+        patched_queue.append(patched_entry)
+
+    if prepared_horizon_segments:
+        patched_segments: List[Dict[str, Any]] = []
+        for segment in prepared_horizon_segments:
+            segment_id = str(segment.get("segment_id") or "")
+            patched_segment = {
+                **dict(segment),
+                "current_execution_queue": list(
+                    patched_queue_by_segment_id.get(segment_id, [])
+                ),
+            }
+            patched_segments.append(patched_segment)
+        prepared_horizon_segments = patched_segments
+        initial_segment = dict(prepared_horizon_segments[0])
+    else:
+        initial_segment["current_execution_queue"] = list(
+            patched_queue_by_segment_id.get(str(initial_segment.get("segment_id") or ""), [])
+        )
+    updated["initial_segment"] = initial_segment
+    if prepared_horizon_segments:
+        updated["prepared_horizon_segments"] = prepared_horizon_segments
+    updated["context_by_slice"] = context_by_slice
+    if context_by_slice_by_segment:
+        updated["context_by_slice_by_segment"] = context_by_slice_by_segment
+    updated["context_by_segment_key"] = context_by_segment_key
+    updated["runtime_update_plan_by_segment_key"] = runtime_plan_by_key
+    updated["bpf_generation_slot_allocator"] = {
+        "schema_version": "skyseed-bpf-generation-slot-allocator-v1",
+        "buffer_model": "previous_current_next_triple_buffer",
+        "generation_slot_width": generation_slot_width,
+        "slot_width_source": "horizon_budget",
+        "horizon_seconds": float(horizon_seconds or 0.0),
+        "sample_interval_seconds": float(sample_interval),
+        "assignment_count": len(assignments),
+        "observed_generation_count_by_horizon": dict(
+            sorted(observed_generation_count_by_horizon.items())
+        ),
+        "assignments_by_segment_epoch_key": assignments,
+    }
+    hashes = dict(updated.get("hashes") or {})
+    hashes.update(
+        {
+            "initial_segment_hash": _canonical_json_hash(initial_segment),
+            "context_by_slice_hash": _canonical_json_hash(context_by_slice),
+            "context_by_segment_key_hash": _canonical_json_hash(
+                context_by_segment_key
+            ),
+            "runtime_update_plan_by_segment_key_hash": _canonical_json_hash(
+                runtime_plan_by_key
+            ),
+            "bpf_generation_slot_allocator_hash": _canonical_json_hash(
+                updated["bpf_generation_slot_allocator"]
+            ),
+        }
+    )
+    if prepared_horizon_segments:
+        hashes["prepared_horizon_segments_hash"] = _canonical_json_hash(
+            prepared_horizon_segments
+        )
+    if context_by_slice_by_segment:
+        hashes["context_by_slice_by_segment_hash"] = _canonical_json_hash(
+            context_by_slice_by_segment
+        )
+    updated["hashes"] = hashes
+    return updated
+
+
+def _runtime_update_plan_payload_with_bpf_resident_attach_budget(
+    runtime_update_plan: Mapping[str, Any],
+    *,
+    resident_attach_budget: Mapping[str, Any],
+) -> Dict[str, Any]:
+    plan = dict(runtime_update_plan or {})
+    budget = dict(resident_attach_budget or {})
+    if not plan or not budget:
+        return plan
+    target_snapshot = {
+        **dict(plan.get("target_snapshot") or {}),
+        "resident_attach_coverage_budget": dict(budget),
+        "bpf_resident_attach_coverage_budget": dict(budget),
+        "bpf_attach_budget": dict(budget),
+    }
+    planner = {
+        **dict(plan.get("planner") or {}),
+        "bpf_resident_attach_coverage_budget": dict(budget),
+    }
+    return {
+        **plan,
+        "target_snapshot": target_snapshot,
+        "planner": planner,
+    }
+
+
+def _normal_runtime_inputs_with_bpf_resident_attach_budget(
+    *,
+    normal_runtime_inputs: Mapping[str, Any],
+    precompose_bpf_role_union_gate: Mapping[str, Any],
+    resident_attach_budget: Mapping[str, Any] | None = None,
+) -> Dict[str, Any]:
+    updated = dict(normal_runtime_inputs or {})
+    selected_budget = dict(
+        resident_attach_budget
+        or _resident_attach_coverage_budget_from_role_union_gate(
+            precompose_bpf_role_union_gate
+        )
+    )
+    if not selected_budget:
+        return updated
+
+    updated["resident_attach_coverage_budget"] = dict(selected_budget)
+    updated["bpf_attach_budget"] = dict(selected_budget)
+    hashes = dict(updated.get("hashes") or {})
+    budget_hash = _canonical_json_hash(selected_budget)
+    hashes.update(
+        {
+            "resident_attach_coverage_budget_hash": budget_hash,
+            "resident_attach_budget_overlay_hash": _canonical_json_hash(
+                {
+                    "budget_hash": budget_hash,
+                    "handoff": "normal_runtime_inputs_top_level_thaw_injected",
+                }
+            ),
+        }
+    )
+    updated["hashes"] = hashes
+    return updated
+
+
+def _rolling_resident_attach_budget_from_normal_runtime_inputs(
+    *,
+    normal_runtime_inputs: Mapping[str, Any],
+    precompose_bpf_role_union_gate: Mapping[str, Any],
+) -> Dict[str, Any]:
+    base_budget = _resident_attach_coverage_budget_from_role_union_gate(
+        precompose_bpf_role_union_gate
+    )
+    inputs = dict(normal_runtime_inputs or {})
+    context_by_key = {
+        str(key): dict(value or {})
+        for key, value in dict(inputs.get("context_by_segment_key") or {}).items()
+    }
+    topology_path_text = str(inputs.get("topology_path") or "")
+    topology_path = Path(topology_path_text) if topology_path_text else Path()
+    prepared_segments = [
+        dict(segment or {})
+        for segment in list(inputs.get("prepared_horizon_segments") or [])
+        if isinstance(segment, Mapping)
+    ]
+    role_reports: List[Dict[str, Any]] = []
+    attach_plan_union: Dict[str, set[str]] = {}
+    compiled_keys: set[str] = set()
+    for segment in prepared_segments:
+        segment_id = str(segment.get("segment_id") or "")
+        for entry_any in list(segment.get("current_execution_queue") or []):
+            entry = dict(entry_any or {})
+            if not _bpf_generation_entry_allowed(entry):
+                continue
+            segment_key = _segment_context_key(segment_id, entry)
+            if segment_key in compiled_keys:
+                continue
+            context_payload = dict(context_by_key.get(segment_key) or {})
+            if not context_payload:
+                continue
+            runtime_context = _runtime_context_from_payload(context_payload)
+            generation_snapshot = dict(
+                runtime_context["runtime_update_plan"].target_snapshot or {}
+            )
+            generation_id = int(
+                generation_snapshot.get("bpf_physical_generation_id")
+                if generation_snapshot.get("bpf_physical_generation_id")
+                not in (None, "", "None")
+                else len(compiled_keys)
+            )
+            contexts = tuple(
+                _realization_contexts(
+                    topology_path=topology_path,
+                    topology_snapshot=runtime_context["snapshot"],
+                    runtime_update_plan=runtime_context["runtime_update_plan"],
+                )
+            )
+            compiled = _bpf_owned_compile_mpls_maps_for_contexts(
+                contexts=contexts,
+                generation_id=generation_id,
+                offline=True,
+            )
+            role_plan = _compiled_interface_role_plan(compiled)
+            role_reports.append(
+                {
+                    "epoch_id": entry.get("epoch_id") or entry.get("event_id"),
+                    "slice_id": entry.get("slice_id"),
+                    "generation_id": generation_id,
+                    **role_plan,
+                }
+            )
+            for interface_ref, directions in dict(
+                role_plan.get("attach_plan") or {}
+            ).items():
+                attach_plan_union.setdefault(str(interface_ref), set()).update(
+                    str(direction) for direction in list(directions or []) if str(direction)
+                )
+            compiled_keys.add(segment_key)
+
+    if not role_reports and not attach_plan_union:
+        return base_budget
+
+    required_role_union = _merge_interface_role_sets(role_reports)
+    required_role_count = sum(len(roles) for roles in required_role_union.values())
+    attach_interface_count = len(attach_plan_union)
+    base_max = max(
+        int(base_budget.get("max_attach_interfaces") or 0),
+        int(base_budget.get("max_resident_attach_interfaces") or 0),
+    )
+    rolling_max = max(
+        base_max,
+        attach_interface_count,
+        len(required_role_union),
+        required_role_count,
+    )
+    return {
+        **dict(base_budget),
+        "schema_version": str(
+            base_budget.get("schema_version")
+            or "skyseed-bpf-resident-attach-budget-v1"
+        ),
+        "budget_source": (
+            str(base_budget.get("budget_source") or "unknown")
+            + "+prepared_horizon_offline_role_union"
+        ),
+        "max_attach_interfaces": rolling_max,
+        "max_resident_attach_interfaces": rolling_max,
+        "slack_attach_interfaces": 0,
+        "fail_closed_if_live_attach_scope_exceeds_source": True,
+        "required_bpf_interface_ref_count": max(
+            int(base_budget.get("required_bpf_interface_ref_count") or 0),
+            attach_interface_count,
+            len(required_role_union),
+        ),
+        "prepared_bpf_attach_capability_count": max(
+            int(base_budget.get("prepared_bpf_attach_capability_count") or 0),
+            required_role_count,
+            attach_interface_count,
+        ),
+        "rolling_prepared_horizon_count": len(prepared_segments),
+        "rolling_compiled_generation_count": len(compiled_keys),
+        "rolling_attach_plan_interface_count": attach_interface_count,
+        "rolling_required_interface_role_count": required_role_count,
+        "rolling_required_interface_ref_count": len(required_role_union),
+        "rolling_attach_plan_hash": _canonical_json_hash(
+            {
+                interface_ref: sorted(directions)
+                for interface_ref, directions in sorted(attach_plan_union.items())
+            }
+        ),
+        "runtime_budget_expansion_expected": False,
+    }
+
+
 def _segment_context_key(segment_id: str, entry: Mapping[str, Any]) -> str:
     return str(
         entry.get("segment_epoch_key")
@@ -1798,18 +4758,46 @@ def _build_normal_runtime_inputs(
     link_state_path: Path,
     args: argparse.Namespace,
 ) -> Dict[str, Any]:
-    segment_id = str(initial_segment.get("segment_id") or "initial")
-    segment_payload = {
-        key: _json_safe(value)
-        for key, value in dict(initial_segment or {}).items()
-        if key != "context_by_slice"
-    }
-    context_by_slice = {
-        str(slice_id): _context_payload_from_runtime_context(dict(context or {}))
-        for slice_id, context in dict(
-            initial_segment.get("context_by_slice") or {}
-        ).items()
-    }
+    return _build_normal_runtime_inputs_for_segments(
+        prepared_horizon_segments=[initial_segment],
+        topology_path=topology_path,
+        link_state_path=link_state_path,
+        args=args,
+    )
+
+
+def _build_normal_runtime_inputs_for_segments(
+    *,
+    prepared_horizon_segments: Sequence[Mapping[str, Any]],
+    topology_path: Path,
+    link_state_path: Path,
+    args: argparse.Namespace,
+) -> Dict[str, Any]:
+    segments = [dict(segment or {}) for segment in list(prepared_horizon_segments or [])]
+    if not segments:
+        raise RuntimeError("frozen_bundle_no_prepared_horizon_segments")
+    initial_segment = dict(segments[0])
+    segment_payloads: List[Dict[str, Any]] = [
+        {
+            key: _json_safe(value)
+            for key, value in dict(segment or {}).items()
+            if key != "context_by_slice"
+        }
+        for segment in segments
+    ]
+    context_by_slice_by_segment: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    for segment in segments:
+        segment_id = str(segment.get("segment_id") or "initial")
+        context_by_slice_by_segment[segment_id] = {
+            str(slice_id): _context_payload_from_runtime_context(dict(context or {}))
+            for slice_id, context in dict(segment.get("context_by_slice") or {}).items()
+        }
+    context_by_slice = dict(
+        context_by_slice_by_segment.get(
+            str(initial_segment.get("segment_id") or "initial"),
+            {},
+        )
+    )
     context_by_key: Dict[str, Dict[str, Any]] = {}
     runtime_update_plan_by_segment_key: Dict[str, Dict[str, Any]] = {}
     distribution_batch_by_segment_key: Dict[str, Dict[str, Any]] = {}
@@ -1825,43 +4813,64 @@ def _build_normal_runtime_inputs(
         bandwidth_threshold_pct=float(args.bandwidth_threshold_pct),
         routing_cost_threshold=int(args.routing_cost_threshold),
     )
-    for entry in list(initial_segment.get("current_execution_queue") or []):
-        entry_payload = dict(entry or {})
-        slice_id = str(entry_payload.get("slice_id") or "")
-        context_payload = context_by_slice.get(slice_id)
-        if not context_payload:
-            continue
-        segment_key = _segment_context_key(segment_id, entry_payload)
-        context_by_key[segment_key] = dict(context_payload)
-        runtime_update_plan_by_segment_key[segment_key] = dict(
-            context_payload.get("runtime_update_plan") or {}
-        )
-        distribution_batch_by_segment_key[segment_key] = dict(
-            context_payload.get("distribution_batch") or {}
-        )
-        topology_snapshot_by_segment_key[segment_key] = dict(
-            context_payload.get("snapshot") or {}
-        )
-        snapshot = _topology_snapshot_from_payload(
-            dict(context_payload.get("snapshot") or {})
-        )
-        host_plan = build_network_mutation_plan(
-            source_state=current_dynamic_state,
-            source_state_id=current_state_id,
-            target_snapshot=enrich_snapshot_runtime_parameters(snapshot),
-            transition_name=f"{current_state_id}_to_{snapshot.time_slice.get('slice_id')}",
-            runtime_parameter_mutation_policy=runtime_parameter_mutation_policy,
-        )
-        host_plan_by_segment_key[segment_key] = host_plan.to_dict()
-        current_dynamic_state = _host_plan_target_dynamic_state(
-            current_dynamic_state,
-            host_plan,
-        )
-        current_state_id = (
-            f"frozen_prepare_host_state:{snapshot.snapshot_id}:"
-            f"{entry_payload.get('epoch_id') or entry_payload.get('event_id') or segment_key}"
-        )
-    return {
+    source_state_chain: List[Dict[str, Any]] = []
+    for segment in segments:
+        segment_id = str(segment.get("segment_id") or "initial")
+        segment_context_by_slice = dict(context_by_slice_by_segment.get(segment_id) or {})
+        for entry in list(segment.get("current_execution_queue") or []):
+            entry_payload = dict(entry or {})
+            slice_id = str(entry_payload.get("slice_id") or "")
+            context_payload = segment_context_by_slice.get(slice_id)
+            if not context_payload:
+                continue
+            segment_key = _segment_context_key(segment_id, entry_payload)
+            context_by_key[segment_key] = dict(context_payload)
+            runtime_update_plan_by_segment_key[segment_key] = dict(
+                context_payload.get("runtime_update_plan") or {}
+            )
+            distribution_batch_by_segment_key[segment_key] = dict(
+                context_payload.get("distribution_batch") or {}
+            )
+            topology_snapshot_by_segment_key[segment_key] = dict(
+                context_payload.get("snapshot") or {}
+            )
+            snapshot = _topology_snapshot_from_payload(
+                dict(context_payload.get("snapshot") or {})
+            )
+            source_state_id = current_state_id
+            host_plan = build_network_mutation_plan(
+                source_state=current_dynamic_state,
+                source_state_id=source_state_id,
+                target_snapshot=enrich_snapshot_runtime_parameters(snapshot),
+                transition_name=(
+                    f"{source_state_id}_to_{snapshot.time_slice.get('slice_id')}"
+                ),
+                runtime_parameter_mutation_policy=runtime_parameter_mutation_policy,
+            )
+            target_state_id = (
+                f"frozen_prepare_host_state:{snapshot.snapshot_id}:"
+                f"{entry_payload.get('epoch_id') or entry_payload.get('event_id') or segment_key}"
+            )
+            host_plan_by_segment_key[segment_key] = host_plan.to_dict()
+            source_state_chain.append(
+                {
+                    "segment_id": segment_id,
+                    "segment_epoch_key": segment_key,
+                    "horizon_id": _queue_entry_horizon_id(
+                        entry_payload,
+                        default_horizon_id=segment_id,
+                    ),
+                    "source_state_id": source_state_id,
+                    "target_state_id": target_state_id,
+                    "host_plan_mutation_id": str(host_plan.mutation_id),
+                }
+            )
+            current_dynamic_state = _host_plan_target_dynamic_state(
+                current_dynamic_state,
+                host_plan,
+            )
+            current_state_id = target_state_id
+    normal_runtime_inputs = {
         "schema_version": "skyseed-normal-runtime-inputs-v1",
         "source": "prepared_update_bundle",
         "normal_runtime_thaw_adapter": {
@@ -1873,24 +4882,39 @@ def _build_normal_runtime_inputs(
                 "NetworkMutationPlan",
             ],
         },
-        "initial_segment": segment_payload,
+        "initial_segment": dict(segment_payloads[0]),
+        "prepared_horizon_segments": list(segment_payloads),
+        "prepared_horizon_segment_count": len(segment_payloads),
         "context_by_slice": context_by_slice,
+        "context_by_slice_by_segment": context_by_slice_by_segment,
         "context_by_segment_key": context_by_key,
         "runtime_update_plan_by_segment_key": runtime_update_plan_by_segment_key,
         "distribution_batch_by_segment_key": distribution_batch_by_segment_key,
         "topology_snapshot_by_segment_key": topology_snapshot_by_segment_key,
         "host_network_mutation_plan_by_segment_key": host_plan_by_segment_key,
+        "host_network_mutation_source_state_chain": source_state_chain,
         "topology_path": str(topology_path),
         "link_state_path": str(link_state_path),
         "hashes": {
-            "initial_segment_hash": _canonical_json_hash(segment_payload),
+            "initial_segment_hash": _canonical_json_hash(segment_payloads[0]),
+            "prepared_horizon_segments_hash": _canonical_json_hash(segment_payloads),
             "context_by_slice_hash": _canonical_json_hash(context_by_slice),
+            "context_by_slice_by_segment_hash": _canonical_json_hash(
+                context_by_slice_by_segment
+            ),
             "context_by_segment_key_hash": _canonical_json_hash(context_by_key),
             "host_network_mutation_plan_by_segment_key_hash": _canonical_json_hash(
                 host_plan_by_segment_key
             ),
+            "host_network_mutation_source_state_chain_hash": _canonical_json_hash(
+                source_state_chain
+            ),
         },
     }
+    return _normal_runtime_inputs_with_bpf_generation_slots(
+        normal_runtime_inputs=normal_runtime_inputs,
+        args=args,
+    )
 
 
 def _thaw_normal_runtime_initial_segment(
@@ -1921,11 +4945,37 @@ def _thaw_normal_runtime_initial_segment(
     if str(adapter.get("adapter") or "") != "canonical_normal_runtime_inputs_v1":
         raise RuntimeError("frozen_bundle_missing_normal_runtime_thaw_adapter")
     initial_segment = dict(normal_runtime_inputs.get("initial_segment") or {})
-    context_by_slice = {
-        str(slice_id): _runtime_context_from_payload(dict(context_payload or {}))
-        for slice_id, context_payload in dict(
+    resident_attach_budget = dict(
+        normal_runtime_inputs.get("resident_attach_coverage_budget")
+        or normal_runtime_inputs.get("bpf_attach_budget")
+        or executable_inputs.get("resident_attach_coverage_budget")
+        or executable_inputs.get("bpf_attach_budget")
+        or bundle.get("resident_attach_coverage_budget")
+        or bundle.get("bpf_attach_budget")
+        or {}
+    )
+    raw_context_by_slice_by_segment = dict(
+        normal_runtime_inputs.get("context_by_slice_by_segment") or {}
+    )
+    initial_segment_id = str(initial_segment.get("segment_id") or "")
+    initial_context_payload_by_slice = dict(
+        raw_context_by_slice_by_segment.get(initial_segment_id) or {}
+    )
+    if not initial_context_payload_by_slice:
+        if raw_context_by_slice_by_segment:
+            raise RuntimeError(
+                "frozen_bundle_missing_initial_segment_scoped_contexts:"
+                + str(initial_segment_id)
+            )
+        initial_context_payload_by_slice = dict(
             normal_runtime_inputs.get("context_by_slice") or {}
-        ).items()
+        )
+    context_by_slice = {
+        str(slice_id): _runtime_context_with_bpf_resident_attach_budget(
+            _runtime_context_from_payload(dict(context_payload or {})),
+            resident_attach_budget,
+        )
+        for slice_id, context_payload in initial_context_payload_by_slice.items()
     }
     if not initial_segment or not context_by_slice:
         raise RuntimeError("frozen_bundle_missing_normal_runtime_inputs")
@@ -1933,13 +4983,46 @@ def _thaw_normal_runtime_initial_segment(
     initial_segment["source"] = "prepared_update_bundle"
     initial_segment["normal_runtime_inputs_source"] = "prepared_update_bundle"
     initial_segment["normal_runtime_thaw_adapter"] = dict(adapter)
+    context_by_slice_by_segment = {
+        str(segment_id): {
+            str(slice_id): _runtime_context_with_bpf_resident_attach_budget(
+                _runtime_context_from_payload(dict(context_payload or {})),
+                resident_attach_budget,
+            )
+            for slice_id, context_payload in dict(contexts or {}).items()
+        }
+        for segment_id, contexts in raw_context_by_slice_by_segment.items()
+    }
+    prepared_horizon_segments = []
+    for segment_payload_any in list(
+        normal_runtime_inputs.get("prepared_horizon_segments") or []
+    ):
+        segment_payload = dict(segment_payload_any or {})
+        segment_id = str(segment_payload.get("segment_id") or "")
+        thawed_segment = dict(segment_payload)
+        thawed_segment["context_by_slice"] = dict(
+            context_by_slice_by_segment.get(segment_id) or {}
+        )
+        thawed_segment["source"] = "prepared_update_bundle"
+        thawed_segment["normal_runtime_inputs_source"] = "prepared_update_bundle"
+        prepared_horizon_segments.append(thawed_segment)
+    if prepared_horizon_segments:
+        initial_segment["prepared_horizon_segments"] = prepared_horizon_segments
+        initial_segment["prepared_horizon_segment_count"] = len(
+            prepared_horizon_segments
+        )
     initial_segment["horizon_execution_plan"] = dict(
         executable_inputs.get("horizon_execution_plan") or {}
+    )
+    initial_segment["sliding_window_contract"] = dict(
+        executable_inputs.get("sliding_window_contract") or {}
     )
     initial_segment["host_network_mutation_plan_by_segment_key"] = dict(
         normal_runtime_inputs.get("host_network_mutation_plan_by_segment_key") or {}
     )
     initial_segment["prepared_resource_scope_by_slot"] = prepared_resource_scope_by_slot
+    initial_segment["resident_attach_coverage_budget"] = dict(resident_attach_budget)
+    initial_segment["bpf_attach_budget"] = dict(resident_attach_budget)
     initial_segment["prepared_resource_scope_source"] = (
         "precompose_run_window_resource_coverage_plan"
         if run_window_resource_coverage_plan.get("prepared_resource_scope_by_slot")
@@ -1969,6 +5052,11 @@ def _build_executable_runtime_inputs(
     normal_runtime_inputs: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     bundle = dict(prepared_update_bundle or {})
+    normal_inputs = dict(normal_runtime_inputs or {})
+    prepared_horizon_segments = [
+        dict(segment or {})
+        for segment in list(normal_inputs.get("prepared_horizon_segments") or [])
+    ]
     current_queue = [dict(entry) for entry in list(bundle.get("current_execution_queue") or [])]
     lookahead_queue = [
         dict(entry) for entry in list(bundle.get("lookahead_preload_queue") or [])
@@ -1990,9 +5078,54 @@ def _build_executable_runtime_inputs(
         )
         for entry in lookahead_queue
     ]
+    prepared_horizon_event_refs: List[List[Dict[str, Any]]] = []
+    if prepared_horizon_segments:
+        for segment_index, segment in enumerate(prepared_horizon_segments):
+            segment_id = str(segment.get("segment_id") or f"horizon-{segment_index}")
+            prepared_horizon_event_refs.append(
+                [
+                    _prepared_runtime_event_ref(
+                        dict(entry),
+                        role="current_execution",
+                        default_segment_id=segment_id,
+                    )
+                    for entry in list(segment.get("current_execution_queue") or [])
+                ]
+            )
+        current_event_refs = (
+            list(prepared_horizon_event_refs[0])
+            if prepared_horizon_event_refs
+            else current_event_refs
+        )
+        lookahead_event_refs = [
+            {
+                **dict(ref),
+                "horizon_role": "prepared_lookahead_execution",
+                "preload_required": True,
+                "preloaded_by_horizon": (
+                    str(
+                        prepared_horizon_segments[index - 1].get("segment_id")
+                        or f"horizon-{index - 1}"
+                    )
+                    if index > 0
+                    else ""
+                ),
+            }
+            for index, refs in enumerate(prepared_horizon_event_refs)
+            if index > 0
+            for ref in refs
+        ]
     runtime_event_refs = [
         ref
-        for ref in current_event_refs
+        for ref in (
+            [
+                ref
+                for refs in prepared_horizon_event_refs
+                for ref in refs
+            ]
+            if prepared_horizon_event_refs
+            else current_event_refs
+        )
         if ref["classification"] == "runtime_epoch"
         and bool(ref["runtime_apply_allowed"])
         and not bool(ref["preload_required"])
@@ -2067,37 +5200,129 @@ def _build_executable_runtime_inputs(
         }
         for context in lookahead_preload_contexts
     ]
-    horizon_execution_plan = {
-        "schema_version": "skyseed-frozen-1p1-horizon-execution-plan-v1",
-        "source": "prepared_update_bundle",
-        "horizons": [
+    if prepared_horizon_event_refs:
+        h1_ids = {
+            str(ref.get("event_id") or "")
+            for ref in (
+                prepared_horizon_event_refs[1]
+                if len(prepared_horizon_event_refs) > 1
+                else []
+            )
+        }
+        h1_current_contexts = [
             {
-                "horizon_id": "H0",
-                "role": "current_execution",
-                "current_event_ids": list(queue_ids.get("current_execution_ids") or []),
-                "runtime_transaction_ids": [
-                    ref["event_id"] for ref in runtime_event_refs
-                ],
-                "lookahead_preload_event_ids": [
-                    ref["event_id"] for ref in lookahead_event_refs
-                ],
-            },
-            {
-                "horizon_id": "H1",
-                "role": "current_execution_from_preloaded_lookahead",
-                "current_event_ids": [
-                    ref["event_id"] for ref in lookahead_event_refs
-                ],
-                "runtime_transaction_ids": [
-                    ref["event_id"]
-                    for ref in lookahead_event_refs
-                    if ref["classification"] == "runtime_epoch"
-                ],
-                "preloaded_by_horizon": "H0",
-            },
-        ],
-        "early_stop_after_horizon": "H1",
-    }
+                **dict(context),
+                "schema_version": "skyseed-frozen-h1-current-context-v1",
+                "source": "prepared_update_bundle",
+                "consumes_preload_context": True,
+                "preloaded_during_horizon": (
+                    str(prepared_horizon_segments[0].get("segment_id") or "H0")
+                    if prepared_horizon_segments
+                    else "H0"
+                ),
+                "executes_as_horizon": (
+                    str(prepared_horizon_segments[1].get("segment_id") or "H1")
+                    if len(prepared_horizon_segments) > 1
+                    else "H1"
+                ),
+                "runtime_apply_allowed_in_h1": True,
+            }
+            for context in lookahead_preload_contexts
+            if str(context.get("event_id") or "") in h1_ids
+        ]
+    if prepared_horizon_event_refs:
+        horizon_entries = []
+        for index, refs in enumerate(prepared_horizon_event_refs):
+            horizon_id = str(
+                prepared_horizon_segments[index].get("segment_id")
+                or f"horizon-{index}"
+            )
+            runtime_ids = [
+                ref["event_id"]
+                for ref in refs
+                if ref["classification"] == "runtime_epoch"
+                and bool(ref["runtime_apply_allowed"])
+            ]
+            next_refs = (
+                prepared_horizon_event_refs[index + 1]
+                if index + 1 < len(prepared_horizon_event_refs)
+                else []
+            )
+            horizon_entries.append(
+                {
+                    "horizon_id": horizon_id,
+                    "horizon_sequence_index": index,
+                    "role": (
+                        "current_execution"
+                        if index == 0
+                        else "current_execution_from_prepared_lookahead"
+                    ),
+                    "current_event_ids": [ref["event_id"] for ref in refs],
+                    "runtime_transaction_ids": runtime_ids,
+                    "lookahead_preload_event_ids": [
+                        ref["event_id"] for ref in next_refs
+                    ],
+                    "preloaded_by_horizon": (
+                        str(
+                            prepared_horizon_segments[index - 1].get("segment_id")
+                            or f"horizon-{index - 1}"
+                        )
+                        if index > 0
+                        else ""
+                    ),
+                }
+            )
+        horizon_execution_plan = {
+            "schema_version": "skyseed-frozen-rolling-horizon-execution-plan-v1",
+            "source": "prepared_update_bundle",
+            "window_model": "rolling_horizon_triple_buffer",
+            "horizons": horizon_entries,
+            "prepared_horizon_count": len(horizon_entries),
+            "early_stop_after_horizon": (
+                str(horizon_entries[-1].get("horizon_id") or "")
+                if horizon_entries
+                else ""
+            ),
+            "runtime_replenishment_preview_allowed": False,
+            "runtime_build_network_mutation_plan_allowed": False,
+        }
+    else:
+        horizon_execution_plan = {
+            "schema_version": "skyseed-frozen-1p1-horizon-execution-plan-v1",
+            "source": "prepared_update_bundle",
+            "horizons": [
+                {
+                    "horizon_id": "H0",
+                    "role": "current_execution",
+                    "current_event_ids": list(queue_ids.get("current_execution_ids") or []),
+                    "runtime_transaction_ids": [
+                        ref["event_id"] for ref in runtime_event_refs
+                    ],
+                    "lookahead_preload_event_ids": [
+                        ref["event_id"] for ref in lookahead_event_refs
+                    ],
+                },
+                {
+                    "horizon_id": "H1",
+                    "role": "current_execution_from_preloaded_lookahead",
+                    "current_event_ids": [
+                        ref["event_id"] for ref in lookahead_event_refs
+                    ],
+                    "runtime_transaction_ids": [
+                        ref["event_id"]
+                        for ref in lookahead_event_refs
+                        if ref["classification"] == "runtime_epoch"
+                    ],
+                    "preloaded_by_horizon": "H0",
+                },
+            ],
+            "early_stop_after_horizon": "H1",
+        }
+    sliding_window_contract = _sliding_horizon_window_contract(
+        current_execution_queue=current_event_refs,
+        lookahead_preload_queue=lookahead_event_refs,
+        default_current_horizon_id=default_segment_id,
+    )
     network_actions = [
         {
             "action_id": f"network-action:{_canonical_json_hash(ref)[:16]}",
@@ -2217,6 +5442,7 @@ def _build_executable_runtime_inputs(
         "runtime_contexts": runtime_contexts,
         "lookahead_preload_contexts": lookahead_preload_contexts,
         "h1_current_contexts": h1_current_contexts,
+        "sliding_window_contract": sliding_window_contract,
         "horizon_execution_plan": horizon_execution_plan,
         "network_mutation_plan": network_mutation_plan,
         "bpf_generation_action_plan": bpf_generation_action_plan,
@@ -2243,6 +5469,9 @@ def _build_executable_runtime_inputs(
             ),
             "h1_current_contexts_hash": _canonical_json_hash(
                 executable_payload["h1_current_contexts"]
+            ),
+            "sliding_window_contract_hash": _canonical_json_hash(
+                executable_payload["sliding_window_contract"]
             ),
             "horizon_execution_plan_hash": _canonical_json_hash(
                 executable_payload["horizon_execution_plan"]
@@ -2279,6 +5508,12 @@ def _freeze_prepared_update_bundle(
         precompose_bpf_role_union_gate.get("required_interface_role_union") or {}
     )
     bpf_required_interface_refs = sorted(str(key) for key in role_union.keys())
+    resident_attach_budget = dict(
+        dict(normal_runtime_inputs or {}).get("resident_attach_coverage_budget")
+        or _resident_attach_coverage_budget_from_role_union_gate(
+            precompose_bpf_role_union_gate
+        )
+    )
     prepared_owned_resource_index = _prepared_owned_resource_index_from_scope(
         prepared_resource_scope_by_slot
     )
@@ -2319,6 +5554,13 @@ def _freeze_prepared_update_bundle(
         cleanup_owned_scope=prepared_owned_resource_index,
         normal_runtime_inputs=normal_runtime_inputs,
     )
+    executable_hashes = dict(executable_runtime_inputs.get("hashes") or {})
+    horizon_execution_plan = dict(
+        executable_runtime_inputs.get("horizon_execution_plan") or {}
+    )
+    normal_inputs_for_manifest = dict(
+        executable_runtime_inputs.get("normal_runtime_inputs") or {}
+    )
     freeze_payload = {
         "schema_version": "skyseed-frozen-prepared-update-bundle-payload-v1",
         "input_profile_config_hash": _input_profile_config_hash(args),
@@ -2328,9 +5570,57 @@ def _freeze_prepared_update_bundle(
         "resource_refs": resource_refs,
         "resource_scope_by_slot": resource_scope_by_slot,
         "bpf_required_interface_refs": bpf_required_interface_refs,
+        "resident_attach_coverage_budget": dict(resident_attach_budget),
+        "bpf_attach_budget": dict(resident_attach_budget),
         "role_union": role_union,
         "generation_preload_plan": generation_preload_plan,
-        "executable_runtime_inputs": executable_runtime_inputs,
+        "executable_runtime_inputs_manifest": {
+            "schema_version": "skyseed-executable-runtime-inputs-manifest-v1",
+            "source": "prepared_update_bundle",
+            "executable_runtime_inputs_schema_version": str(
+                executable_runtime_inputs.get("schema_version") or ""
+            ),
+            "executable_runtime_inputs_hash": str(
+                executable_hashes.get("executable_runtime_inputs_hash") or ""
+            ),
+            "normal_runtime_inputs_hash": str(
+                executable_hashes.get("normal_runtime_inputs_hash") or ""
+            ),
+            "horizon_execution_plan_hash": str(
+                executable_hashes.get("horizon_execution_plan_hash") or ""
+            ),
+            "prepared_horizon_count": int(
+                horizon_execution_plan.get("prepared_horizon_count") or 0
+            ),
+            "prepared_horizon_segment_count": int(
+                normal_inputs_for_manifest.get("prepared_horizon_segment_count") or 0
+            ),
+            "runtime_context_count": len(
+                list(executable_runtime_inputs.get("runtime_contexts") or [])
+            ),
+            "lookahead_preload_context_count": len(
+                list(
+                    executable_runtime_inputs.get("lookahead_preload_contexts")
+                    or []
+                )
+            ),
+            "host_network_mutation_plan_count": len(
+                dict(
+                    normal_inputs_for_manifest.get(
+                        "host_network_mutation_plan_by_segment_key"
+                    )
+                    or {}
+                )
+            ),
+            "runtime_replenishment_preview_allowed": bool(
+                horizon_execution_plan.get("runtime_replenishment_preview_allowed")
+            ),
+            "runtime_build_network_mutation_plan_allowed": bool(
+                horizon_execution_plan.get(
+                    "runtime_build_network_mutation_plan_allowed"
+                )
+            ),
+        },
         "cleanup_owned_scope": prepared_owned_resource_index,
         "prepared_compose_output": {
             "seed_output_dir": str(seed_output_dir.resolve()) if seed_output_dir else "",
@@ -2428,6 +5718,42 @@ def _verify_frozen_prepared_bundle(
                 "expected_bundle_id": f"prepared-bundle-{expected_hash[:16]}",
             }
         )
+    executable_inputs = dict(bundle_dict.get("executable_runtime_inputs") or {})
+    executable_hashes = dict(executable_inputs.get("hashes") or {})
+    executable_manifest = dict(
+        payload.get("executable_runtime_inputs_manifest") or {}
+    )
+    if executable_manifest:
+        loaded_executable_hash = str(
+            executable_hashes.get("executable_runtime_inputs_hash") or ""
+        )
+        manifest_executable_hash = str(
+            executable_manifest.get("executable_runtime_inputs_hash") or ""
+        )
+        if (
+            manifest_executable_hash
+            and loaded_executable_hash
+            and manifest_executable_hash != loaded_executable_hash
+        ):
+            blockers.append(
+                {
+                    "blocker": "frozen_prepared_bundle_executable_manifest_hash_mismatch",
+                    "manifest_executable_runtime_inputs_hash": manifest_executable_hash,
+                    "loaded_executable_runtime_inputs_hash": loaded_executable_hash,
+                }
+            )
+        if bool(executable_manifest.get("runtime_replenishment_preview_allowed")):
+            blockers.append(
+                {
+                    "blocker": "frozen_prepared_bundle_runtime_replenishment_preview_allowed",
+                }
+            )
+        if bool(executable_manifest.get("runtime_build_network_mutation_plan_allowed")):
+            blockers.append(
+                {
+                    "blocker": "frozen_prepared_bundle_runtime_build_network_mutation_plan_allowed",
+                }
+            )
     if args is not None:
         expected_input_hash = str(bundle_dict.get("input_profile_config_hash") or "")
         actual_input_hash = _input_profile_config_hash(args)
@@ -2449,6 +5775,62 @@ def _verify_frozen_prepared_bundle(
                     "requested_start_time": requested_start_time,
                 }
             )
+        if bool(getattr(args, "continuous", False)):
+            executable_inputs = dict(bundle_dict.get("executable_runtime_inputs") or {})
+            normal_runtime_inputs = dict(
+                executable_inputs.get("normal_runtime_inputs") or {}
+            )
+            prepared_segments = list(
+                normal_runtime_inputs.get("prepared_horizon_segments") or []
+            )
+            horizon_plan = dict(executable_inputs.get("horizon_execution_plan") or {})
+            planned_horizons = list(horizon_plan.get("horizons") or [])
+            requested_horizon = _requested_horizon_seconds(args=args)
+            segment_horizon = (
+                _initial_continuous_horizon_seconds(args=args) or requested_horizon
+            )
+            expected_prepared_horizon_count = (
+                max(1, int(math.ceil(requested_horizon / segment_horizon)))
+                if requested_horizon > 0.0 and segment_horizon > 0.0
+                else 1
+            )
+            if (
+                requested_horizon > segment_horizon
+                and len(prepared_segments) < expected_prepared_horizon_count
+            ):
+                blockers.append(
+                    {
+                        "blocker": "frozen_prepared_bundle_missing_prepared_rolling_horizons",
+                        "prepared_horizon_segment_count": len(prepared_segments),
+                        "expected_prepared_horizon_count": expected_prepared_horizon_count,
+                        "requested_horizon_seconds": requested_horizon,
+                        "segment_horizon_seconds": segment_horizon,
+                        "runtime_replenishment_preview_allowed": False,
+                    }
+                )
+            if (
+                requested_horizon > segment_horizon
+                and len(planned_horizons) < expected_prepared_horizon_count
+            ):
+                blockers.append(
+                    {
+                        "blocker": "frozen_prepared_bundle_horizon_execution_plan_incomplete",
+                        "planned_horizon_count": len(planned_horizons),
+                        "expected_prepared_horizon_count": expected_prepared_horizon_count,
+                    }
+                )
+            if bool(horizon_plan.get("runtime_replenishment_preview_allowed")):
+                blockers.append(
+                    {
+                        "blocker": "frozen_prepared_bundle_runtime_replenishment_preview_allowed",
+                    }
+                )
+            if bool(horizon_plan.get("runtime_build_network_mutation_plan_allowed")):
+                blockers.append(
+                    {
+                        "blocker": "frozen_prepared_bundle_runtime_build_network_mutation_plan_allowed",
+                    }
+                )
     queue_ids = _prepared_bundle_queue_ids(bundle_dict)
     for key in ("selected_event_ids", "current_execution_ids", "lookahead_preload_ids"):
         top_level_ids = [str(item) for item in list(bundle_dict.get(key) or [])]
@@ -2537,9 +5919,12 @@ def _verify_frozen_prepared_bundle(
     generation_preload_plan = dict(
         bundle_dict.get("generation_preload_plan") or {}
     )
-    if (
-        not generation_preload_plan
-        or not list(generation_preload_plan.get("lookahead_preload_ids") or [])
+    preload_required_event_count = int(
+        generation_preload_plan.get("preload_required_event_count") or 0
+    )
+    if not generation_preload_plan or (
+        preload_required_event_count > 0
+        and not list(generation_preload_plan.get("lookahead_preload_ids") or [])
     ):
         blockers.append(
             {"blocker": "frozen_prepared_bundle_generation_preload_plan_missing"}
@@ -2652,6 +6037,32 @@ def _load_frozen_prepared_bundle_gate(
             "planner_recomputed": False,
             "live_used_frozen_bundle": False,
         }
+    contamination_marker = bundle_path.parent / "CONTAMINATED_DO_NOT_REUSE.json"
+    if contamination_marker.exists():
+        marker_payload: Dict[str, Any] = {}
+        try:
+            marker_payload = _read_json(contamination_marker)
+        except Exception as exc:  # noqa: BLE001
+            marker_payload = {"marker_read_error": str(exc)}
+        return {
+            "schema_version": "skyseed-frozen-prepared-bundle-load-gate-v1",
+            "stage": "no-compose/pre-compose",
+            "cost": "low",
+            "severity": "blocker",
+            "changes_system_state": False,
+            "hidden_repair_possible": False,
+            "passed": False,
+            "blockers": [
+                {
+                    "blocker": "frozen_prepared_bundle_marked_contaminated",
+                    "bundle_path": str(bundle_path),
+                    "contamination_marker": str(contamination_marker),
+                    "contamination": marker_payload,
+                }
+            ],
+            "planner_recomputed": False,
+            "live_used_frozen_bundle": False,
+        }
     gate = _verify_frozen_prepared_bundle(
         _read_json(bundle_path),
         args=args,
@@ -2718,6 +6129,12 @@ def _bundle_backed_runtime_source_binding_gate(
     blockers = list(gate.get("blockers") or [])
     current_queue = list(bundle.get("current_execution_queue") or [])
     lookahead_queue = list(bundle.get("lookahead_preload_queue") or [])
+    horizon_queue_gate = dict(bundle.get("precompose_horizon_queue_gate") or {})
+    full_current_horizon_mode = bool(
+        horizon_queue_gate.get("full_current_horizon_mode")
+        or str(horizon_queue_gate.get("queue_gate_mode") or "")
+        == "full_current_horizon"
+    )
     resource_refs = list(bundle.get("resource_refs") or [])
     bpf_required_refs = list(bundle.get("bpf_required_interface_refs") or [])
     role_union = dict(bundle.get("role_union") or {})
@@ -2725,7 +6142,7 @@ def _bundle_backed_runtime_source_binding_gate(
     cleanup_owned_scope = dict(bundle.get("cleanup_owned_scope") or {})
     if not current_queue:
         blockers.append({"blocker": "bundle_runtime_current_execution_queue_missing"})
-    if not lookahead_queue:
+    if not lookahead_queue and not full_current_horizon_mode:
         blockers.append({"blocker": "bundle_runtime_lookahead_preload_queue_missing"})
     if not resource_refs:
         blockers.append({"blocker": "bundle_runtime_resource_inventory_missing"})
@@ -3937,12 +7354,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--ut-ids",
-        default="ut3,ut4",
+        default="",
         help="Comma-separated UT ids to emulate.",
     )
     parser.add_argument(
         "--gateway-ids",
-        default="gw5,gw6,gw7",
+        default="",
         help="Comma-separated gateway ids to emulate.",
     )
     parser.add_argument(
@@ -5482,6 +8899,42 @@ def _compose_service_state_snapshot(
     }
 
 
+def _compose_startup_wall_time_attribution(
+    *,
+    stage_results: Sequence[Mapping[str, Any]],
+    total_wall_seconds: float,
+) -> Dict[str, Any]:
+    command_wall = 0.0
+    retry_command_wall = 0.0
+    backoff_wall = 0.0
+    retry_count = 0
+    stages = list(stage_results)
+    for stage in stages:
+        command_wall += float(stage.get("wall_seconds") or 0.0)
+        backoff_wall += float(stage.get("inter_stage_backoff_seconds") or 0.0)
+        retry = dict(stage.get("retry_after_timeout") or {})
+        retry_results = list(retry.get("retry_results") or [])
+        retry_count += len(retry_results)
+        for retry_result in retry_results:
+            retry_command_wall += float(dict(retry_result).get("wall_seconds") or 0.0)
+    total = float(total_wall_seconds or 0.0)
+    known = command_wall + retry_command_wall + backoff_wall
+    return {
+        "schema_version": "skyseed-compose-startup-wall-time-attribution-v1",
+        "stage_count": len(stages),
+        "retry_command_count": retry_count,
+        "compose_up_total_wall_seconds": round(total, 6),
+        "compose_up_command_wall_seconds": round(command_wall, 6),
+        "compose_up_retry_command_wall_seconds": round(retry_command_wall, 6),
+        "compose_up_inter_stage_backoff_wall_seconds": round(backoff_wall, 6),
+        "compose_up_orchestration_overhead_wall_seconds": round(
+            max(0.0, total - known),
+            6,
+        ),
+        "compose_up_known_accounted_wall_seconds": round(min(total, known), 6),
+    }
+
+
 def _compose_stage_timeout_seconds(
     *,
     remaining_timeout: float,
@@ -6287,6 +9740,8 @@ def _compose_force_remove_stale_networks(output_dir: Path) -> Dict[str, Any]:
             "docker",
             "network",
             "ls",
+            "--filter",
+            f"label=com.docker.compose.project={project_name}",
             "--format",
             "{{.Name}}\t{{.Label \"com.docker.compose.project\"}}",
         ],
@@ -6354,6 +9809,8 @@ def _compose_force_remove_stale_networks(output_dir: Path) -> Dict[str, Any]:
             )
     return {
         "project_name": project_name,
+        "bounded_by_compose_project_label": True,
+        "full_docker_network_scan": False,
         "candidate_network_count": len(candidate_networks),
         "candidate_networks": candidate_networks,
         "disconnected_endpoints": disconnected_endpoints,
@@ -6611,6 +10068,7 @@ def _parameter_update_batch_accounting(
     qdisc_cumulative_seconds = 0.0
     qdisc_wall_candidates: List[float] = []
     qdisc_command_count = 0
+    qdisc_apply_skipped_unchanged_count = 0
     qdisc_timed_command_count = 0
     qdisc_target_keys: set[str] = set()
     qdisc_target_key_sources: Counter[str] = Counter()
@@ -6652,12 +10110,26 @@ def _parameter_update_batch_accounting(
             metadata_wall_candidates.append(metadata_seconds)
         if category == "qdisc_required":
             applied_qdisc_slot_type_counts[slot_type] += 1
-            qdisc_command_count += 1
+            qdisc_command_count += int(
+                result.get("qdisc_apply_attempt_count")
+                if result.get("qdisc_apply_attempt_count") is not None
+                else 1
+            )
+            qdisc_apply_skipped_unchanged_count += int(
+                result.get("qdisc_apply_skipped_unchanged_count") or 0
+            )
             target_source, target_key = _parameter_update_target_key(result)
             qdisc_target_keys.add(target_key)
             qdisc_target_key_sources[target_source] += 1
         qdisc_seconds = float(result.get("qdisc_apply_wall_seconds") or 0.0)
-        if qdisc_seconds > 0.0:
+        qdisc_attempt_count = int(
+            result.get("qdisc_apply_attempt_count")
+            if result.get("qdisc_apply_attempt_count") is not None
+            else 1
+            if category == "qdisc_required"
+            else 0
+        )
+        if qdisc_seconds > 0.0 and qdisc_attempt_count > 0:
             qdisc_timed_command_count += 1
             qdisc_cumulative_seconds += qdisc_seconds
             qdisc_wall_candidates.append(qdisc_seconds)
@@ -6682,6 +10154,10 @@ def _parameter_update_batch_accounting(
     )
     planned_qdisc_required_count = int(planned_category_counts.get("qdisc_required", 0))
     applied_qdisc_required_count = int(applied_category_counts.get("qdisc_required", 0))
+    qdisc_required_skipped_count = max(
+        0,
+        planned_qdisc_required_count - applied_qdisc_required_count,
+    )
     return {
         "planned_update_count": len(list(planned_operations)),
         "applied_result_count": len(list(apply_results)),
@@ -6706,6 +10182,15 @@ def _parameter_update_batch_accounting(
         "qdisc_required_count": planned_qdisc_required_count,
         "planned_qdisc_required_count": planned_qdisc_required_count,
         "applied_qdisc_required_count": applied_qdisc_required_count,
+        "qdisc_required_skipped_count": qdisc_required_skipped_count,
+        "qdisc_required_skipped_forbidden_count": qdisc_required_skipped_count,
+        "qdisc_apply_status": (
+            "qdisc_not_required"
+            if planned_qdisc_required_count == 0
+            else "qdisc_required_applied"
+            if qdisc_required_skipped_count == 0
+            else "qdisc_required_skipped_forbidden"
+        ),
         "topology_rebind_required_count": topology_rebind_required_count,
         "applied_topology_rebind_required_count": int(
             applied_category_counts.get("topology_rebind_required", 0)
@@ -6724,6 +10209,7 @@ def _parameter_update_batch_accounting(
             6,
         ),
         "qdisc_command_count": qdisc_command_count,
+        "qdisc_apply_skipped_unchanged_count": qdisc_apply_skipped_unchanged_count,
         "qdisc_timed_command_count": qdisc_timed_command_count,
         "qdisc_target_group_count": len(qdisc_target_keys),
         "qdisc_target_key_sources": _counter_to_sorted_dict(qdisc_target_key_sources),
@@ -8129,6 +11615,42 @@ def _merge_resource_scope_by_slot(
     }
 
 
+def _resource_scope_delta_by_slot(
+    *,
+    required_resource_scope_by_slot: Mapping[str, Sequence[str] | set[str]],
+    prepared_resource_scope_by_slot: Mapping[str, Sequence[str] | set[str]],
+) -> Dict[str, List[str]]:
+    prepared_scope = {
+        str(slot_name): {
+            str(resource_key)
+            for resource_key in list(resource_keys or [])
+            if str(resource_key)
+        }
+        for slot_name, resource_keys in dict(
+            prepared_resource_scope_by_slot or {}
+        ).items()
+        if str(slot_name)
+    }
+    delta: Dict[str, List[str]] = {}
+    for slot_name, resource_keys in sorted(
+        dict(required_resource_scope_by_slot or {}).items()
+    ):
+        rendered_slot_name = str(slot_name)
+        if not rendered_slot_name:
+            continue
+        missing = sorted(
+            {
+                str(resource_key)
+                for resource_key in list(resource_keys or [])
+                if str(resource_key)
+            }
+            - prepared_scope.get(rendered_slot_name, set())
+        )
+        if missing:
+            delta[rendered_slot_name] = missing
+    return delta
+
+
 def _prepared_owned_resource_index_from_scope(
     prepared_resource_scope_by_slot: Mapping[str, Sequence[str] | set[str]] | None,
 ) -> Dict[str, Any]:
@@ -9173,6 +12695,10 @@ def _horizon_lifecycle_queue_contract(
 
         annotated = {
             **event,
+            "horizon_id": _queue_entry_horizon_id(
+                event,
+                default_horizon_id="current-horizon",
+            ),
             "horizon_execution_role": execution_role,
             "forwarding_relevant": forwarding_relevant,
             "preload_required": bool(
@@ -9189,7 +12715,7 @@ def _horizon_lifecycle_queue_contract(
                 else "not_current_horizon"
             ),
             "allowed_activation_outcomes_at_future_boundary": (
-                ["flip_only", "necessary_delta", "no_op_reuse"]
+                ["flip_only", "no_op_reuse"]
                 if execution_role == "lookahead_preload_only"
                 else []
             ),
@@ -9211,6 +12737,7 @@ def _horizon_lifecycle_queue_contract(
                 "queue_index": queue_index,
                 "slice_id": annotated.get("slice_id"),
                 "epoch_id": annotated.get("epoch_id"),
+                "horizon_id": annotated.get("horizon_id"),
                 "classification": event_type,
                 "horizon_execution_role": execution_role,
                 "forwarding_relevant": forwarding_relevant,
@@ -9257,6 +12784,11 @@ def _horizon_lifecycle_queue_contract(
         if report.get("classification") == "parameter_epoch"
         and report.get("horizon_execution_role") == "current_execution"
     ]
+    sliding_window_contract = _sliding_horizon_window_contract(
+        current_execution_queue=current_execution_queue,
+        lookahead_preload_queue=lookahead_preload_queue,
+        default_current_horizon_id="current-horizon",
+    )
     return {
         "schema_version": "skyseed-horizon-lifecycle-queue-contract-v1",
         "contract_summary": (
@@ -9305,6 +12837,7 @@ def _horizon_lifecycle_queue_contract(
         ],
         "current_execution_queue": current_execution_queue,
         "lookahead_preload_queue": lookahead_preload_queue,
+        "sliding_window_contract": sliding_window_contract,
         "event_reports": event_reports,
         "preload_scheduler_proof_required": bool(preload_required_count),
         "lookahead_preload_scheduler_connected": True,
@@ -9319,7 +12852,6 @@ def _horizon_lifecycle_queue_contract(
         "preload_must_not_flip_active_generation": bool(preload_required_count),
         "future_activation_allowed_outcomes": [
             "flip_only",
-            "necessary_delta",
             "no_op_reuse",
         ],
         "runtime_critical_path_forbidden_outcomes": [
@@ -9390,13 +12922,33 @@ def _precompose_horizon_queue_gate(
     prepared_lookahead_count = len(
         list(prepared_bundle_dict.get("lookahead_preload_queue") or [])
     )
+    full_current_horizon_mode = bool(
+        lookahead_count == 0
+        and preload_required_count == 0
+        and preload_only_boundary_count == 0
+        and not boundary_candidates
+    )
+    bounded_current_plus_lookahead_mode = bool(
+        lookahead_count > 0
+        or preload_required_count > 0
+        or preload_only_boundary_count > 0
+        or boundary_candidates
+    )
+    queue_gate_mode = (
+        "full_current_horizon"
+        if full_current_horizon_mode
+        else "bounded_current_plus_lookahead"
+        if bounded_current_plus_lookahead_mode
+        else "empty_or_unclassified"
+    )
 
     blockers: List[Dict[str, Any]] = []
     if requested_lifecycle_aware_1p1:
-        if lookahead_count != 1:
+        if bounded_current_plus_lookahead_mode and lookahead_count != 1:
             blockers.append(
                 {
                     "blocker": "exactly_one_lookahead_preload_event_required",
+                    "queue_gate_mode": queue_gate_mode,
                     "lookahead_preload_event_count": lookahead_count,
                     "lookahead_epoch_ids": [
                         str(event.get("epoch_id") or "")
@@ -9404,10 +12956,11 @@ def _precompose_horizon_queue_gate(
                     ],
                 }
             )
-        if preload_required_count != 1:
+        if bounded_current_plus_lookahead_mode and preload_required_count != 1:
             blockers.append(
                 {
                     "blocker": "exactly_one_preload_required_event_required",
+                    "queue_gate_mode": queue_gate_mode,
                     "preload_required_event_count": preload_required_count,
                     "lookahead_epoch_ids": [
                         str(event.get("epoch_id") or "")
@@ -9415,10 +12968,11 @@ def _precompose_horizon_queue_gate(
                     ],
                 }
             )
-        if preload_only_boundary_count != 1:
+        if bounded_current_plus_lookahead_mode and preload_only_boundary_count != 1:
             blockers.append(
                 {
                     "blocker": "exactly_one_preload_only_boundary_event_required",
+                    "queue_gate_mode": queue_gate_mode,
                     "preload_only_boundary_event_count": preload_only_boundary_count,
                 }
             )
@@ -9440,6 +12994,16 @@ def _precompose_horizon_queue_gate(
                         str(event.get("epoch_id") or "")
                         for event in lookahead_without_preload_required
                     ],
+                }
+            )
+        if full_current_horizon_mode and selected_count != current_count:
+            blockers.append(
+                {
+                    "blocker": "full_current_horizon_selection_not_current_only",
+                    "selected_event_count": selected_count,
+                    "current_execution_event_count": current_count,
+                    "lookahead_preload_event_count": lookahead_count,
+                    "not_selected_event_count": not_selected_count,
                 }
             )
         if current_preload_only_events:
@@ -9530,25 +13094,31 @@ def _precompose_horizon_queue_gate(
                             "current": prepared_current_ids,
                             "lookahead": prepared_lookahead_ids,
                         },
-                    }
-                )
-        boundary_policies = {
-            str(event.get("lookahead_selection_policy") or "")
-            for event in lookahead_queue
-            if _forwarding_relevant_queue_event(event)
-        }
-        if "" in boundary_policies or len(boundary_policies) != 1:
-            blockers.append(
-                {
-                    "blocker": "lookahead_boundary_policy_not_deterministic",
-                    "lookahead_selection_policies": sorted(boundary_policies),
                 }
             )
+        if bounded_current_plus_lookahead_mode:
+            boundary_policies = {
+                str(event.get("lookahead_selection_policy") or "")
+                for event in lookahead_queue
+                if _forwarding_relevant_queue_event(event)
+            }
+            if "" in boundary_policies or len(boundary_policies) != 1:
+                blockers.append(
+                    {
+                        "blocker": "lookahead_boundary_policy_not_deterministic",
+                        "queue_gate_mode": queue_gate_mode,
+                        "lookahead_selection_policies": sorted(boundary_policies),
+                    }
+                )
 
     boundary_event = lookahead_queue[0] if lookahead_queue else None
     return {
         "schema_version": "skyseed-precompose-horizon-queue-gate-v1",
         "requested_lifecycle_aware_1p1": bool(requested_lifecycle_aware_1p1),
+        "queue_gate_mode": queue_gate_mode,
+        "full_current_horizon_mode": full_current_horizon_mode,
+        "bounded_current_plus_lookahead_mode": bounded_current_plus_lookahead_mode,
+        "one_plus_one_boundary_required": bounded_current_plus_lookahead_mode,
         "passed": not blockers,
         "blockers": blockers,
         "boundary_forwarding_relevant_candidate_count": len(boundary_candidates),
@@ -10052,6 +13622,17 @@ def _precompose_bpf_role_union_gate_from_reports(
         "report_count": len(preload_reports),
     }
     first_failure = blockers[0] if blockers else None
+    resident_attach_budget = _resident_attach_coverage_budget_from_role_union_gate(
+        {
+            "prepared_bpf_attach_capability": prepared_capability,
+            "prepared_bpf_attach_capability_count": prepared_role_count,
+            "bootstrap_pre_runtime_full_attach_count": len(prepared_capability),
+            "required_bpf_interface_ref_count": int(
+                bpf_binding_coverage.get("required_bpf_interface_ref_count") or 0
+            ),
+            "bpf_required_interface_binding_coverage": bpf_binding_coverage,
+        }
+    )
     return {
         "schema_version": "skyseed-precompose-bpf-role-union-gate-v1",
         "passed": not blockers,
@@ -10079,6 +13660,8 @@ def _precompose_bpf_role_union_gate_from_reports(
         "delta_attach_count": 0,
         "full_attach_count": 0,
         "bootstrap_pre_runtime_full_attach_count": len(prepared_capability),
+        "resident_attach_coverage_budget": dict(resident_attach_budget),
+        "bpf_attach_budget": dict(resident_attach_budget),
         "required_interface_role_union": required_role_union,
         "prepared_bpf_attach_capability": prepared_capability,
         "current_event_role_reports": [dict(report) for report in current_event_role_reports],
@@ -10151,6 +13734,9 @@ def _precompose_bpf_role_union_gate(
         link_state_path=link_state_path,
         snapshots=execution_snapshots,
     )
+    for context in slice_contexts:
+        context["topology_path"] = str(topology_path)
+        context["link_state_path"] = str(link_state_path)
     context_by_slice = {
         str(context["snapshot"].time_slice.get("slice_id")): context
         for context in slice_contexts
@@ -10722,6 +14308,22 @@ def _initial_continuous_horizon_seconds(
     return min(total_horizon, segment_horizon)
 
 
+def _continuous_total_horizon_seconds(
+    *,
+    args: argparse.Namespace,
+    temporal_plan: Mapping[str, Any] | None = None,
+) -> float:
+    horizon_seconds = _requested_horizon_seconds(
+        args=args,
+        temporal_plan=temporal_plan,
+    )
+    if horizon_seconds <= 0.0:
+        return 0.0
+    if not bool(getattr(args, "continuous", False)):
+        return horizon_seconds
+    return horizon_seconds * max(1, int(getattr(args, "loop_count", 1) or 1))
+
+
 def _preview_summary_to_segment(
     *,
     segment_id: str,
@@ -10781,6 +14383,9 @@ def _preview_summary_to_segment(
         link_state_path=link_state_path,
         snapshots=execution_snapshots,
     )
+    for context in slice_contexts:
+        context["topology_path"] = str(topology_path)
+        context["link_state_path"] = str(link_state_path)
     context_by_slice = {
         str(context["snapshot"].time_slice.get("slice_id")): context
         for context in slice_contexts
@@ -10807,11 +14412,45 @@ def _preview_summary_to_segment(
             )
         payload["segment_id"] = segment_id
         payload["segment_epoch_key"] = f"{segment_id}:{payload.get('slice_id')}"
+        payload["horizon_id"] = segment_id
         queue_with_segment.append(payload)
     horizon_lifecycle_queue_contract = _horizon_lifecycle_queue_contract(
         selected_epoch_queue=queue_with_segment,
         max_runtime_epochs=max_runtime_epochs,
         max_parameter_epochs=max_parameter_epochs,
+    )
+    current_execution_queue = list(
+        horizon_lifecycle_queue_contract.get("current_execution_queue") or []
+    )
+    lookahead_preload_queue = list(
+        horizon_lifecycle_queue_contract.get("lookahead_preload_queue") or []
+    )
+    topology_for_segment = _read_json(topology_path)
+    segment_access_resource_scope_by_slot = (
+        _selected_access_prewarm_resource_scope_by_slot(
+            snapshot_preview_path=snapshot_preview_json,
+            selected_slice_ids=_prewarm_selected_slice_ids_for_horizon(
+                segment_queue=current_execution_queue,
+                lookahead_preload_queue=lookahead_preload_queue,
+            ),
+        )
+    )
+    segment_static_resource_scope_by_slot = (
+        _static_inventory_materialization_resource_scope_by_slot(
+            topology=topology_for_segment,
+            slot_types=("same_plane_isl", "cross_plane_isl"),
+        )
+    )
+    segment_prepared_resource_scope_by_slot = _merge_resource_scope_by_slot(
+        segment_access_resource_scope_by_slot,
+        segment_static_resource_scope_by_slot,
+    )
+    segment_run_window_resource_coverage_plan = _run_window_resource_coverage_plan(
+        snapshot_preview_path=snapshot_preview_json,
+        segment_queue=current_execution_queue,
+        lookahead_preload_queue=lookahead_preload_queue,
+        prepared_resource_scope_by_slot=segment_prepared_resource_scope_by_slot,
+        topology=topology_for_segment,
     )
     orbit_samples = list(temporal_plan.get("orbit_samples", []))
     segment_start_time_utc = (
@@ -10824,28 +14463,42 @@ def _preview_summary_to_segment(
         if orbit_samples
         else None
     )
+    segment_horizon_seconds = float(
+        temporal_plan.get("horizon_seconds")
+        or preview_summary.get("horizon_seconds")
+        or 0.0
+    )
+    if segment_horizon_seconds <= 0.0 and len(orbit_samples) >= 2:
+        segment_horizon_seconds = max(
+            0.0,
+            float(orbit_samples[-1].get("relative_time_seconds", 0.0))
+            - float(orbit_samples[0].get("relative_time_seconds", 0.0)),
+        )
     return {
         "segment_id": segment_id,
         "preview_summary": preview_summary,
         "temporal_plan": temporal_plan,
         "all_sample_frames": all_sample_frames,
         "selected_epoch_queue": queue_with_segment,
-        "current_execution_queue": list(
-            horizon_lifecycle_queue_contract.get("current_execution_queue") or []
-        ),
-        "lookahead_preload_queue": list(
-            horizon_lifecycle_queue_contract.get("lookahead_preload_queue") or []
-        ),
+        "current_execution_queue": current_execution_queue,
+        "lookahead_preload_queue": lookahead_preload_queue,
         "horizon_lifecycle_queue_contract": horizon_lifecycle_queue_contract,
         "selected_runtime_slice_ids": selected_runtime_slice_ids,
         "selected_parameter_slice_ids": selected_parameter_slice_ids,
         "context_by_slice": context_by_slice,
+        "topology_path": str(topology_path),
+        "link_state_path": str(link_state_path),
+        "snapshot_preview_path": str(snapshot_preview_json),
+        "prepared_resource_scope_by_slot": dict(
+            segment_prepared_resource_scope_by_slot
+        ),
+        "run_window_resource_coverage_plan": dict(
+            segment_run_window_resource_coverage_plan
+        ),
         "selected_slice_ids": selected_slice_ids,
         "start_time_utc": segment_start_time_utc,
         "end_time_utc": segment_end_time_utc,
-        "horizon_seconds": float(
-            preview_summary.get("temporal_plan", {}).get("horizon_seconds", 0.0)
-        ),
+        "horizon_seconds": segment_horizon_seconds,
         "summary": {
             "source": event_timeline_counts["source"],
             "orbit_sample_count": len(orbit_samples),
@@ -10892,6 +14545,7 @@ def _run_replenishment_preview(
     segment_dir = run_dir / "replenished_segments" / f"segment_{segment_index:03d}"
     config_dir = segment_dir / "config"
     output_dir = segment_dir / "preview_only"
+    segment_dir.mkdir(parents=True, exist_ok=True)
     segment_args = _namespace_with_overrides(
         args,
         run_mode="preview",
@@ -10924,12 +14578,19 @@ def _run_replenishment_preview(
         )
     preview_summary = json.loads(completed.stdout)
     temporal_artifacts = _load_temporal_artifacts(preview_summary)
+    artifacts = dict(temporal_artifacts.get("artifacts") or {})
+    segment_topology_path = Path(
+        artifacts.get("topology_json") or topology_path
+    ).resolve()
+    segment_link_state_path = Path(
+        artifacts.get("link_state_json") or link_state_path
+    ).resolve()
     segment = _preview_summary_to_segment(
         segment_id=f"replenished-{segment_index:03d}",
         preview_summary=preview_summary,
         temporal_artifacts=temporal_artifacts,
-        topology_path=topology_path,
-        link_state_path=link_state_path,
+        topology_path=segment_topology_path,
+        link_state_path=segment_link_state_path,
         run_start_time_utc=run_start_time_utc,
         max_epochs=None,
         max_runtime_epochs=None,
@@ -10937,6 +14598,119 @@ def _run_replenishment_preview(
     )
     _write_json(segment_dir / "segment_summary.json", segment["summary"])
     return segment
+
+
+def _with_prepared_horizon_segment_id(
+    segment: Mapping[str, Any],
+    *,
+    horizon_index: int,
+) -> Dict[str, Any]:
+    original = dict(segment or {})
+    old_segment_id = str(original.get("segment_id") or "")
+    horizon_id = f"H{int(horizon_index)}"
+
+    def _patch_entry(entry_any: Mapping[str, Any]) -> Dict[str, Any]:
+        entry = dict(entry_any or {})
+        old_key = str(entry.get("segment_epoch_key") or "")
+        if old_segment_id and old_key.startswith(f"{old_segment_id}:"):
+            suffix = old_key.split(":", 1)[1]
+            new_key = f"{horizon_id}:{suffix}"
+        else:
+            new_key = f"{horizon_id}:{entry.get('slice_id') or entry.get('event_id') or ''}"
+        return {
+            **entry,
+            "segment_id": horizon_id,
+            "horizon_id": horizon_id,
+            "segment_epoch_key": new_key,
+        }
+
+    patched = {
+        **original,
+        "segment_id": horizon_id,
+        "horizon_id": horizon_id,
+        "source_segment_id": old_segment_id,
+        "horizon_sequence_index": int(horizon_index),
+    }
+    for queue_name in (
+        "selected_epoch_queue",
+        "current_execution_queue",
+        "lookahead_preload_queue",
+    ):
+        patched[queue_name] = [
+            _patch_entry(dict(entry or {}))
+            for entry in list(original.get(queue_name) or [])
+        ]
+    return patched
+
+
+def _prepare_frozen_rolling_horizon_segments(
+    *,
+    args: argparse.Namespace,
+    run_dir: Path,
+    initial_segment: Mapping[str, Any],
+    topology_path: Path,
+    link_state_path: Path,
+    run_start_time_utc: str,
+) -> List[Dict[str, Any]]:
+    segments: List[Dict[str, Any]] = [
+        _with_prepared_horizon_segment_id(initial_segment, horizon_index=0)
+    ]
+    if not bool(getattr(args, "continuous", False)):
+        return segments
+    requested_total_horizon = _continuous_total_horizon_seconds(args=args)
+    segment_horizon = (
+        _initial_continuous_horizon_seconds(args=args) or requested_total_horizon
+    )
+    if requested_total_horizon <= 0.0 or segment_horizon <= 0.0:
+        return segments
+    sample_interval = _sample_interval_seconds(args=args)
+    target_segment_count = max(1, int(getattr(args, "loop_count", 1) or 1))
+    initial_end_time = str(initial_segment.get("end_time_utc") or "")
+    if not initial_end_time:
+        raise RuntimeError("frozen_bundle_initial_segment_missing_end_time")
+    next_start_time_utc = _format_utc_timestamp(
+        _parse_utc_timestamp(initial_end_time)
+    )
+    while len(segments) < target_segment_count:
+        produced_horizon = (
+            _parse_utc_timestamp(next_start_time_utc)
+            - _parse_utc_timestamp(run_start_time_utc)
+        ).total_seconds()
+        if produced_horizon >= requested_total_horizon:
+            break
+        replenish_horizon = min(
+            segment_horizon,
+            max(0.0, requested_total_horizon - produced_horizon),
+        )
+        if replenish_horizon <= 0.0:
+            break
+        segment_index = len(segments)
+        segment = _run_replenishment_preview(
+            args=args,
+            run_dir=run_dir,
+            segment_index=segment_index,
+            start_time_utc=next_start_time_utc,
+            horizon_seconds=replenish_horizon,
+            topology_path=topology_path,
+            link_state_path=link_state_path,
+            run_start_time_utc=run_start_time_utc,
+        )
+        segments.append(
+            _with_prepared_horizon_segment_id(
+                segment,
+                horizon_index=segment_index,
+            )
+        )
+        segment_end_time = str(segment.get("end_time_utc") or "")
+        if not segment_end_time:
+            raise RuntimeError(
+                "frozen_bundle_replenished_segment_missing_end_time:"
+                f"{segment.get('segment_id') or segment_index}"
+            )
+        next_start_time_utc = _format_utc_timestamp(
+            _parse_utc_timestamp(segment_end_time)
+        )
+    return segments
 
 
 TIMING_BREAKDOWN_DEFINITIONS = {
@@ -13009,6 +16783,152 @@ def _safe_list(value: Any) -> List[Any]:
         return []
 
 
+def _compact_bpf_map_diff_trace(value: Any) -> Dict[str, Any]:
+    trace = _safe_dict(value)
+    compact: Dict[str, Any] = {}
+    keep_keys = (
+        "desired_count",
+        "existing_count",
+        "insert_count",
+        "update_count",
+        "delete_count",
+        "noop_skipped_count",
+        "diff_trace_complete",
+        "loaded_generations",
+    )
+    for map_name, raw_entry in trace.items():
+        entry = _safe_dict(raw_entry)
+        compact[str(map_name)] = {
+            key: _json_safe(entry.get(key)) for key in keep_keys if key in entry
+        }
+    return compact
+
+
+def _compact_bpf_runtime_reload_attribution(value: Any) -> Dict[str, Any]:
+    attribution = _safe_dict(value)
+    if not attribution:
+        return {}
+    keep_keys = (
+        "schema_version",
+        "reload_strategy",
+        "runtime_update_phase",
+        "full_generation_reload",
+        "full_generation_reload_blocker",
+        "diff_update_enabled",
+        "require_preloaded_generation_flip_only",
+        "preactivation_preload",
+        "preactivation_preload_data_write_used",
+        "defer_active_generation_flip",
+        "manifest_only_loader",
+        "manifest_only_map_write_used",
+        "batch_map_write_required",
+        "batch_map_write_used",
+        "batch_map_write_update_count",
+        "batch_map_write_delete_count",
+        "parallel_map_write_enabled",
+        "parallel_map_write_worker_count",
+        "parallel_map_write_scheduled_update_count",
+        "interface_role_map_updates_skipped",
+        "interface_role_map_update_skip_reason",
+        "interface_role_map_skipped_update_count",
+        "preloaded_generation_used",
+        "active_generation_flip_only",
+        "map_diff_update_used",
+        "actual_data_write_count",
+        "expected_data_map_write_update_count",
+        "noop_skipped_count",
+        "active_generation_before",
+        "active_generation_after",
+        "validation_or_reporting_included_in_map_write_wall_time",
+        "schema_state_cache_scope",
+        "map_schema_dump_reused_within_load",
+        "duplicate_noop_detection_scope",
+    )
+    compact = {
+        key: _json_safe(attribution.get(key)) for key in keep_keys if key in attribution
+    }
+    for key in (
+        "retain_inactive_generations",
+        "inactive_preloaded_generation_visibility_proof",
+        "loaded_generations_by_map",
+        "per_map_operation_summary",
+        "generation_write_cost_audit",
+        "outcome_labels",
+    ):
+        if key in attribution:
+            compact[key] = _json_safe(attribution.get(key))
+    if "map_diff_trace" in attribution:
+        compact["map_diff_trace"] = _compact_bpf_map_diff_trace(
+            attribution.get("map_diff_trace")
+        )
+    return compact
+
+
+def _compact_bpf_map_load_step(value: Any) -> Dict[str, Any]:
+    step = _safe_dict(value)
+    if not step:
+        return {}
+    keep_keys = (
+        "ok",
+        "reason",
+        "active_generation",
+        "reload_strategy",
+        "diff_update_enabled",
+        "map_write_wall_seconds",
+        "active_generation_flip_wall_seconds",
+        "map_write_update_count",
+        "total_update_count",
+        "expected_data_map_write_update_count",
+        "actual_data_write_count",
+        "noop_map_write_count",
+        "full_generation_reload_blocker",
+        "preloaded_generation_used",
+        "active_generation_flip_only",
+        "active_generation_update_count",
+        "active_generation_switch_count",
+        "preactivation_preload_data_write_used",
+        "manifest_only_loader",
+        "manifest_only_map_write_used",
+        "batch_map_write_required",
+        "batch_map_write_used",
+        "batch_map_write_update_count",
+        "batch_map_write_delete_count",
+        "interface_role_map_updates_skipped",
+        "interface_role_map_skipped_update_count",
+        "interface_role_map_update_skip_reason",
+        "parallel_map_write_enabled",
+        "parallel_map_write_worker_count",
+        "parallel_map_write_scheduled_update_count",
+        "loaded_classifier_count",
+        "loaded_core_lfib_count",
+        "loaded_egress_handoff_count",
+        "loaded_generation_base_count",
+        "loaded_interface_role_count",
+        "generation_write_cost_audit",
+        "outcome_labels",
+    )
+    compact = {key: _json_safe(step.get(key)) for key in keep_keys if key in step}
+    if "runtime_reload_attribution" in step:
+        compact["runtime_reload_attribution"] = _compact_bpf_runtime_reload_attribution(
+            step.get("runtime_reload_attribution")
+        )
+    if "map_diff_trace" in step:
+        compact["map_diff_trace"] = _compact_bpf_map_diff_trace(
+            step.get("map_diff_trace")
+        )
+    for key in (
+        "updates",
+        "noop_map_updates",
+        "loaded_classifier_keys",
+        "loaded_core_keys",
+        "loaded_handoff_keys",
+        "loaded_interface_roles",
+    ):
+        if key in step:
+            compact[f"{key}_summary"] = _collection_artifact_summary(step.get(key))
+    return compact
+
+
 def _compact_bpf_real_backend_prepare(value: Any) -> Dict[str, Any]:
     if not isinstance(value, dict):
         return {}
@@ -13020,18 +16940,18 @@ def _compact_bpf_real_backend_prepare(value: Any) -> Dict[str, Any]:
         "prepare_mode",
         "attach_lifecycle_mode",
         "evidence_source",
-        "attached_interfaces",
-        "resolved_mpls_flow_entries",
         "compiled_mpls_map_counts",
         "map_capacities",
         "resident_attach_coverage",
-        "attach_plan",
         "attach_reuse",
         "clsact_lifecycle_metrics",
         "reused_attach_count",
         "delta_attach_count",
         "full_attach_count",
-        "delta_attach_interfaces",
+        "preactivation_preload_attach_capability_contract",
+        "frozen_compiled_runtime_inputs_check",
+        "compiled_runtime_inputs_source",
+        "reused_attach_clsact_guard_metrics",
         "active_generation",
         "active_generation_switch_count",
         "loaded_runtime_generation_count",
@@ -13039,27 +16959,39 @@ def _compact_bpf_real_backend_prepare(value: Any) -> Dict[str, Any]:
         "loaded_classifier_count",
         "loaded_core_lfib_count",
         "loaded_egress_handoff_count",
+        "loaded_generation_base_count",
         "loaded_interface_role_count",
         "timing_breakdown",
+        "generation_write_cost_audit",
         "wall_seconds",
     }
     compact = {key: value.get(key) for key in keep_keys if key in value}
+    for key in (
+        "attached_interfaces",
+        "resolved_mpls_flow_entries",
+        "attach_plan",
+        "delta_attach_interfaces",
+    ):
+        if key in value:
+            compact[f"{key}_summary"] = _collection_artifact_summary(value.get(key))
     steps = _safe_dict(value.get("steps"))
     if steps:
-        compact["steps"] = {
-            key: _safe_dict(steps.get(key))
-            for key in (
-                "compile",
-                "attach",
-                "map_load",
-                "reused_attach_clsact_guard",
-                "reused_attach_clsact_guard_metrics",
-                "clsact_lifecycle_metrics",
-                "live_interface_roles_after_map_load",
-                "interface_role_completeness_after_map_load",
+        compact["steps"] = {}
+        for key in (
+            "compile",
+            "attach",
+            "reused_attach_clsact_guard",
+            "reused_attach_clsact_guard_metrics",
+            "clsact_lifecycle_metrics",
+            "live_interface_roles_after_map_load",
+            "interface_role_completeness_after_map_load",
+        ):
+            if key in steps:
+                compact["steps"][key] = _safe_dict(steps.get(key))
+        if "map_load" in steps:
+            compact["steps"]["map_load"] = _compact_bpf_map_load_step(
+                steps.get("map_load")
             )
-            if key in steps
-        }
     return compact
 
 
@@ -13081,12 +17013,6 @@ def _compact_bpf_owned_readiness(value: Any) -> Dict[str, Any]:
         "z_to_g_scope_hash",
         "map_entry_count",
         "packet_route_entry_count",
-        "resolved_packet_route_entries",
-        "resolved_mpls_flow_entries",
-        "packet_route_entries",
-        "attached_interfaces",
-        "logical_attached_interfaces",
-        "resident_attach_coverage",
         "mpls_map_entry_counts",
         "mpls_map_conflict_summary",
         "map_ready",
@@ -13099,15 +17025,31 @@ def _compact_bpf_owned_readiness(value: Any) -> Dict[str, Any]:
         "readiness_mismatch_reason",
     }
     compact = {key: value.get(key) for key in keep_keys if key in value}
+    for key in (
+        "resolved_packet_route_entries",
+        "resolved_mpls_flow_entries",
+        "packet_route_entries",
+        "attached_interfaces",
+        "logical_attached_interfaces",
+        "resident_attach_coverage",
+    ):
+        if key in value:
+            compact[f"{key}_summary"] = _collection_artifact_summary(value.get(key))
     prepare_steps = _safe_dict(value.get("prepare_steps"))
     if prepare_steps:
         compact["prepare_steps"] = {
             "real_backend_prepare": _compact_bpf_real_backend_prepare(
                 prepare_steps.get("real_backend_prepare")
             ),
-            "compile": _safe_dict(prepare_steps.get("compile")),
-            "load": _safe_dict(prepare_steps.get("load")),
-            "attach": _safe_dict(prepare_steps.get("attach")),
+            "compile": _compact_bpf_prepare_like_report(
+                _safe_dict(prepare_steps.get("compile"))
+            ),
+            "load": _compact_bpf_prepare_like_report(
+                _safe_dict(prepare_steps.get("load"))
+            ),
+            "attach": _compact_bpf_prepare_like_report(
+                _safe_dict(prepare_steps.get("attach"))
+            ),
         }
     return compact
 
@@ -13798,7 +17740,17 @@ def _prepared_bundle_runtime_manifest_summary(
 ) -> Dict[str, Any]:
     prepared = dict(prepared_bundle_runtime or {})
     epoch_execution_queue = list(prepared.get("epoch_execution_queue", []))
+    epoch_execution_queue_count = int(
+        prepared.get("epoch_execution_queue_count")
+        or dict(prepared.get("epoch_execution_queue_summary") or {}).get(
+            "epoch_execution_queue_count"
+        )
+        or len(epoch_execution_queue)
+    )
     replenishment_events = list(prepared.get("replenishment_events", []))
+    horizon_maintenance_events = list(
+        prepared.get("horizon_maintenance_events", [])
+    )
     prepared_owned_index = dict(prepared.get("prepared_owned_resource_index") or {})
     return {
         "source": prepared.get("source"),
@@ -13810,7 +17762,17 @@ def _prepared_bundle_runtime_manifest_summary(
         "refined_event_count": prepared.get("refined_event_count"),
         "segments": list(prepared.get("segments", [])),
         "replenishment_event_count": len(replenishment_events),
-        "epoch_execution_queue_count": len(epoch_execution_queue),
+        "horizon_maintenance_event_count": len(horizon_maintenance_events),
+        "sliding_window_contract": dict(
+            prepared.get("sliding_window_contract") or {}
+        ),
+        "epoch_execution_queue_count": epoch_execution_queue_count,
+        "epoch_execution_queue_elided": bool(
+            prepared.get("epoch_execution_queue_elided")
+            or dict(prepared.get("epoch_execution_queue_summary") or {}).get(
+                "epoch_execution_queue_elided"
+            )
+        ),
         "epoch_execution_record_model": prepared.get("epoch_execution_record_model"),
         "epoch_execution_details_jsonl": prepared.get("epoch_execution_details_jsonl"),
         "prepared_owned_resource_index_present": bool(
@@ -13825,6 +17787,331 @@ def _prepared_bundle_runtime_manifest_summary(
     }
 
 
+def _epoch_execution_queue_artifact_summary(
+    records: Sequence[Mapping[str, Any]],
+    *,
+    detail_jsonl: str,
+    record_model: str,
+) -> Dict[str, Any]:
+    record_list = [dict(record) for record in records if isinstance(record, Mapping)]
+    first = record_list[0] if record_list else {}
+    last = record_list[-1] if record_list else {}
+    return {
+        "schema_version": "skyseed-epoch-execution-queue-artifact-summary-v1",
+        "epoch_execution_queue_count": len(record_list),
+        "epoch_execution_queue_elided": True,
+        "record_model": record_model,
+        "detail_jsonl": detail_jsonl,
+        "first_sequence_index": first.get("sequence_index"),
+        "first_segment_epoch_key": first.get("segment_epoch_key"),
+        "last_sequence_index": last.get("sequence_index"),
+        "last_segment_epoch_key": last.get("segment_epoch_key"),
+    }
+
+
+def _pre_runtime_bpf_owned_prepare_report_summary(
+    value: Mapping[str, Any] | None,
+    *,
+    artifact_path: str,
+) -> Dict[str, Any]:
+    report = dict(value or {})
+    if not report:
+        return {}
+    scalar_keys = {
+        "schema_version",
+        "stage",
+        "event_id",
+        "segment_epoch_key",
+        "slice_id",
+        "ready",
+        "ok",
+        "reason",
+        "current_horizon_id",
+        "previous_horizon_id",
+        "next_horizon_id",
+        "prepared_generation_window_count",
+        "preloaded_generation_count",
+        "pre_runtime_prepare_wall_seconds",
+        "pre_runtime_generation_preload_wall_seconds",
+        "pre_runtime_attach_wall_seconds",
+        "pre_runtime_dirty_recovery_wall_seconds",
+        "pre_runtime_attach_count",
+        "pre_runtime_full_attach_count",
+        "pre_runtime_delta_attach_count",
+        "initial_bpf_owned_prepare_count",
+        "dirty_recovery_reset_count",
+        "runtime_dirty_recovery_reset_count",
+        "pre_runtime_dirty_recovery_reset_count",
+        "pre_runtime_dirty_recovery_stage",
+        "attach_lifecycle_mode",
+        "runtime_attach_allowed",
+        "first_runtime_epoch_receives_existing_session",
+        "first_runtime_epoch_receives_existing_readiness",
+        "first_epoch_runtime_full_attach_expected",
+        "first_epoch_runtime_delta_attach_expected",
+        "runtime_dirty_recovery_allowed",
+        "runtime_attach_contract_guard_connected",
+        "runtime_epoch_timing_excludes_pre_runtime_prepare",
+    }
+    summary = {
+        key: report.get(key)
+        for key in sorted(scalar_keys)
+        if key in report
+    }
+    summary["artifact"] = artifact_path
+    for key in (
+        "prepared_generation_ids",
+        "prepared_horizon_generation_keys",
+        "prepared_physical_horizon_generation_keys",
+    ):
+        if key in report:
+            summary[key] = list(report.get(key) or [])
+    summary["preloaded_generation_record_count"] = _safe_count(
+        report.get("preloaded_generation_records")
+        if "preloaded_generation_records" in report
+        else report.get("preloaded_generation_count")
+    )
+    if "sliding_horizon_generation_buffer" in report:
+        summary["sliding_horizon_generation_buffer"] = _json_safe(
+            report.get("sliding_horizon_generation_buffer")
+        )
+    readiness = dict(report.get("readiness") or {})
+    if readiness:
+        readiness_summary = _compact_bpf_prepare_like_report(readiness)
+        for key in (
+            "current_horizon_id",
+            "previous_horizon_id",
+            "next_horizon_id",
+            "active_horizon_generation_key",
+            "active_logical_horizon_generation_key",
+            "active_physical_horizon_generation_key",
+            "preloaded_generation_record_count",
+        ):
+            if key in readiness:
+                readiness_summary[key] = readiness.get(key)
+        summary["readiness_summary"] = readiness_summary
+    return summary
+
+
+def _pre_epoch_host_prewarm_artifact_summary(
+    value: Mapping[str, Any] | None,
+) -> Dict[str, Any]:
+    prewarm = dict(value or {})
+    if not prewarm:
+        return {}
+    scalar_keys = {
+        "ok",
+        "ready",
+        "reason",
+        "prewarm_wall_seconds",
+        "prepare_wall_seconds",
+        "reconcile_wall_seconds",
+        "processed_slot_count",
+        "total_slot_count",
+        "requested_slot_count",
+        "reconciled_slot_count",
+        "activated_slot_count",
+        "deactivated_slot_count",
+        "remaining_slot_count",
+        "bridge_count",
+        "preconnected_endpoint_count",
+        "candidate_resource_count",
+        "candidate_endpoint_count",
+        "reconcile_mode",
+    }
+    summary = {
+        key: prewarm.get(key)
+        for key in sorted(scalar_keys)
+        if key in prewarm
+    }
+    for key in (
+        "manager_timing_breakdown",
+        "operation_timing_summary",
+        "slot_counts_by_type",
+        "prepared_resource_counts",
+        "reconcile_summary",
+    ):
+        if isinstance(prewarm.get(key), Mapping):
+            summary[key] = dict(prewarm.get(key) or {})
+    for key in (
+        "prepared_resource_scope_by_slot",
+        "reconcile_slot_names",
+        "results",
+        "slot_results",
+    ):
+        if key in prewarm:
+            summary[f"{key}_summary"] = _collection_artifact_summary(
+                prewarm.get(key)
+            )
+    return summary
+
+
+def _current_horizon_host_install_artifact_summary(
+    value: Mapping[str, Any] | None,
+) -> Dict[str, Any]:
+    install = dict(value or {})
+    if not install:
+        return {}
+    scalar_keys = {
+        "schema_version",
+        "stage",
+        "segment_epoch_key",
+        "source_state_id",
+        "target_state_id",
+        "host_plan_mutation_id",
+        "apply_host_plan_mutation_id",
+        "planned_operation_count",
+        "apply_operation_count",
+        "applied_operation_count",
+        "wall_seconds",
+        "runtime_epoch_host_materialization_allowed",
+    }
+    summary = {
+        key: install.get(key)
+        for key in sorted(scalar_keys)
+        if key in install
+    }
+    if isinstance(install.get("bpf_owned_host_parameter_skip"), Mapping):
+        summary["bpf_owned_host_parameter_skip"] = dict(
+            install.get("bpf_owned_host_parameter_skip") or {}
+        )
+    if isinstance(install.get("cleanup_tracking"), Mapping):
+        summary["cleanup_tracking"] = dict(install.get("cleanup_tracking") or {})
+    outcome = dict(install.get("outcome") or {})
+    if outcome:
+        summary["outcome"] = {
+            "apply_success": outcome.get("apply_success"),
+            "operation_count": outcome.get("operation_count"),
+            "applied_operation_count": _safe_count(
+                outcome.get("applied_operations")
+                if "applied_operations" in outcome
+                else outcome.get("applied_operation_count")
+            ),
+            "delta_summary": _compact_delta_summary(outcome.get("delta_summary")),
+            "operation_timing_summary": _safe_dict(
+                outcome.get("operation_timing_summary")
+            ),
+            "manager_timing_breakdown": _safe_dict(
+                outcome.get("manager_timing_breakdown")
+            ),
+        }
+    return summary
+
+
+def _prepared_bundle_runtime_artifact_payload(
+    prepared_bundle_runtime: Mapping[str, Any],
+) -> Dict[str, Any]:
+    prepared = dict(prepared_bundle_runtime or {})
+    records = [
+        dict(record)
+        for record in list(prepared.get("epoch_execution_queue") or [])
+        if isinstance(record, Mapping)
+    ]
+    detail_jsonl = str(prepared.get("epoch_execution_details_jsonl") or "")
+    record_model = str(
+        prepared.get("epoch_execution_record_model")
+        or "compact_with_detail_jsonl"
+    )
+    existing_queue_summary = dict(prepared.get("epoch_execution_queue_summary") or {})
+    existing_queue_count = int(
+        prepared.get("epoch_execution_queue_count")
+        or existing_queue_summary.get("epoch_execution_queue_count")
+        or 0
+    )
+    queue_count = len(records) if records else existing_queue_count
+    queue_summary = (
+        _epoch_execution_queue_artifact_summary(
+            records,
+            detail_jsonl=detail_jsonl,
+            record_model=record_model,
+        )
+        if records
+        else {
+            **existing_queue_summary,
+            "schema_version": existing_queue_summary.get(
+                "schema_version",
+                "skyseed-epoch-execution-queue-artifact-summary-v1",
+            ),
+            "epoch_execution_queue_count": queue_count,
+            "epoch_execution_queue_elided": True,
+            "record_model": existing_queue_summary.get("record_model", record_model),
+            "detail_jsonl": existing_queue_summary.get("detail_jsonl", detail_jsonl),
+        }
+    )
+    payload: Dict[str, Any] = {
+        "source": prepared.get("source"),
+        "physical_sample_count": prepared.get("physical_sample_count"),
+        "runtime_transaction_count": prepared.get("runtime_transaction_count"),
+        "parameter_update_batch_count": prepared.get("parameter_update_batch_count"),
+        "skipped_noop_sample_count": prepared.get("skipped_noop_sample_count"),
+        "sample_aligned_event_count": prepared.get("sample_aligned_event_count"),
+        "refined_event_count": prepared.get("refined_event_count"),
+        "segments": list(prepared.get("segments", [])),
+        "replenishment_events": list(prepared.get("replenishment_events", [])),
+        "horizon_maintenance_events": list(
+            prepared.get("horizon_maintenance_events", [])
+        ),
+        "replenishment_event_count": _safe_count(
+            prepared.get("replenishment_events")
+        ),
+        "horizon_maintenance_event_count": _safe_count(
+            prepared.get("horizon_maintenance_events")
+        ),
+        "lookahead_preload_queue_count": _safe_count(
+            prepared.get("lookahead_preload_queue")
+        ),
+        "horizon_lifecycle_queue_contract": dict(
+            prepared.get("horizon_lifecycle_queue_contract") or {}
+        ),
+        "sliding_window_contract": dict(
+            prepared.get("sliding_window_contract") or {}
+        ),
+        "prepared_owned_resource_index": dict(
+            prepared.get("prepared_owned_resource_index") or {}
+        ),
+        "prepared_resource_scope_by_slot": dict(
+            prepared.get("prepared_resource_scope_by_slot") or {}
+        ),
+        "bpf_generation_slot_allocator": dict(
+            prepared.get("bpf_generation_slot_allocator") or {}
+        ),
+        "pre_runtime_bpf_owned_prepare": (
+            _pre_runtime_bpf_owned_prepare_report_summary(
+                prepared.get("pre_runtime_bpf_owned_prepare"),
+                artifact_path=str(prepared.get("pre_runtime_bpf_owned_prepare_json") or ""),
+            )
+        ),
+        "pre_runtime_bpf_owned_prepare_json": str(
+            prepared.get("pre_runtime_bpf_owned_prepare_json") or ""
+        ),
+        "current_horizon_host_install": (
+            _current_horizon_host_install_artifact_summary(
+                prepared.get("current_horizon_host_install")
+            )
+        ),
+        "pre_epoch_host_prewarm": _pre_epoch_host_prewarm_artifact_summary(
+            prepared.get("pre_epoch_host_prewarm")
+        ),
+        "run_window_resource_coverage_plan_summary": (
+            _collection_artifact_summary(
+                prepared.get("run_window_resource_coverage_plan")
+            )
+            if "run_window_resource_coverage_plan" in prepared
+            else {}
+        ),
+        "epoch_execution_details_jsonl": detail_jsonl,
+        "epoch_execution_record_model": record_model,
+        "epoch_execution_queue_summary": queue_summary,
+        "epoch_execution_queue_count": queue_count,
+        "epoch_execution_queue_elided": True,
+    }
+    return {
+        key: value
+        for key, value in payload.items()
+        if value not in (None, {}, [])
+    }
+
+
 def _prepared_update_bundle_with_continuous_runtime_execution(
     *,
     prepared_update_bundle: Mapping[str, Any],
@@ -13832,8 +18119,10 @@ def _prepared_update_bundle_with_continuous_runtime_execution(
 ) -> Dict[str, Any]:
     updated = dict(prepared_update_bundle or {})
     if runtime_report.get("prepared_bundle_runtime") is not None:
-        updated["continuous_runtime_execution"] = dict(
-            runtime_report.get("prepared_bundle_runtime") or {}
+        updated["continuous_runtime_execution"] = (
+            _prepared_bundle_runtime_artifact_payload(
+                dict(runtime_report.get("prepared_bundle_runtime") or {})
+            )
         )
     return updated
 
@@ -14177,10 +18466,23 @@ def _finalize_runtime_status_fields(
             {**dict(record), **status_fields}
             for record in list(runtime_report.get(key, []))
         ]
-    prepared_bundle_runtime["epoch_execution_queue"] = [
-        {**dict(record), **status_fields}
-        for record in list(prepared_bundle_runtime.get("epoch_execution_queue", []))
-    ]
+    if "epoch_execution_queue" in prepared_bundle_runtime:
+        prepared_bundle_runtime["epoch_execution_queue"] = [
+            {**dict(record), **status_fields}
+            for record in list(prepared_bundle_runtime.get("epoch_execution_queue", []))
+        ]
+        prepared_bundle_runtime["epoch_execution_queue_count"] = len(
+            prepared_bundle_runtime["epoch_execution_queue"]
+        )
+    elif prepared_bundle_runtime.get("epoch_execution_queue_summary") is not None:
+        prepared_bundle_runtime["epoch_execution_queue_count"] = int(
+            prepared_bundle_runtime.get("epoch_execution_queue_count")
+            or dict(prepared_bundle_runtime.get("epoch_execution_queue_summary") or {}).get(
+                "epoch_execution_queue_count"
+            )
+            or len(list(runtime_report.get("iterations", [])))
+        )
+        prepared_bundle_runtime["epoch_execution_queue_elided"] = True
     runtime_report["prepared_bundle_runtime"] = prepared_bundle_runtime
     return runtime_report
 
@@ -14454,10 +18756,6 @@ def _run_live_temporal_runtime(
             runtime_mode=str(args.runtime_mode),
             forwarding_backend=str(args.forwarding_backend),
         )
-        runtime_report_payload["prepared_bundle_runtime"] = {
-            **dict(runtime_report_payload.get("prepared_bundle_runtime") or {}),
-            "epoch_execution_queue": epoch_record_snapshot,
-        }
         _write_json(
             run_dir / "timing.json",
             {
@@ -14587,21 +18885,30 @@ def _run_live_temporal_runtime(
         source_state: Mapping[str, Any],
         source_state_id: str,
     ) -> NetworkMutationPlan:
-        if bundle_backed_runtime_inputs:
+        if bundle_backed_runtime_inputs or _is_operational_clean_bpf_owned_args(args):
             payload = dict(frozen_host_plan_by_segment_key.get(segment_key) or {})
             if not payload:
                 raise RuntimeError(
-                    "frozen_bundle_missing_host_network_mutation_plan:"
+                    "operational_clean_missing_prepared_host_network_mutation_plan:"
                     f"{segment_key}"
                 )
-            return _network_mutation_plan_from_payload(payload)
-        return build_network_mutation_plan(
+            host_plan = _network_mutation_plan_from_payload(payload)
+            if _is_operational_clean_bpf_owned_args(args):
+                _assert_host_plan_source_state_aligned(
+                    segment_key=segment_key,
+                    host_plan=host_plan,
+                    current_state_id=source_state_id,
+                )
+                host_plan = _delta_scoped_network_mutation_plan(host_plan)
+            return host_plan
+        host_plan = build_network_mutation_plan(
             source_state=source_state,
             source_state_id=source_state_id,
             target_snapshot=enrich_snapshot_runtime_parameters(snapshot),
             transition_name=f"{source_state_id}_to_{snapshot.time_slice.get('slice_id')}",
             runtime_parameter_mutation_policy=runtime_parameter_mutation_policy,
         )
+        return host_plan
     _progress(
         phase="runtime_initial_readiness",
         event_type="initial_runtime_readiness_started",
@@ -14723,6 +19030,12 @@ def _run_live_temporal_runtime(
                 "horizon_lifecycle_queue_contract": dict(
                     horizon_lifecycle_queue_contract
                 ),
+                "sliding_window_contract": dict(
+                    initial_segment.get("sliding_window_contract")
+                    or horizon_lifecycle_queue_contract.get("sliding_window_contract")
+                    or {}
+                ),
+                "horizon_maintenance_events": [],
                 "lookahead_preload_event_count": len(lookahead_preload_queue),
             },
             "prepared_bundle_runtime": {
@@ -14746,6 +19059,12 @@ def _run_live_temporal_runtime(
                 "horizon_lifecycle_queue_contract": dict(
                     horizon_lifecycle_queue_contract
                 ),
+                "sliding_window_contract": dict(
+                    initial_segment.get("sliding_window_contract")
+                    or horizon_lifecycle_queue_contract.get("sliding_window_contract")
+                    or {}
+                ),
+                "horizon_maintenance_events": [],
             },
             "outcome": {
                 "real_apply_success": False,
@@ -14767,42 +19086,20 @@ def _run_live_temporal_runtime(
         dict(item) for item in list(horizon_execution_plan.get("horizons") or [])
     ]
 
-    def _event_identity_values(entry: Mapping[str, Any]) -> set[str]:
-        values: set[str] = set()
-        for key in (
-            "event_id",
-            "epoch_id",
-            "source_event_id",
-        ):
-            value = str(dict(entry).get(key) or "")
-            if value:
-                values.add(value)
-        epoch_id = str(dict(entry).get("epoch_id") or "")
-        if epoch_id:
-            values.add(f"tempevent-{epoch_id}")
-        return values
-
-    def _horizon_entry_id_set(horizon: Mapping[str, Any]) -> set[str]:
-        ids: set[str] = set()
-        for key in (
-            "current_event_ids",
-            "runtime_transaction_ids",
-            "lookahead_preload_event_ids",
-        ):
-            ids.update(str(item) for item in list(dict(horizon).get(key) or []) if str(item))
-        return ids
-
     def _horizon_id_for_queue_entry(entry: Mapping[str, Any]) -> str:
-        entry_ids = _event_identity_values(entry)
-        for horizon in horizon_plan_entries:
-            if entry_ids & _horizon_entry_id_set(horizon):
-                return str(horizon.get("horizon_id") or "")
-        explicit = str(dict(entry).get("horizon_id") or "")
-        if explicit:
-            return explicit
-        return "current-horizon:" + _canonical_json_hash(
-            [sorted(_event_identity_values(item)) for item in segment_queue]
-        )[:16]
+        return _horizon_id_for_queue_entry_from_plan(
+            entry,
+            horizon_plan_entries=horizon_plan_entries,
+            segment_queue=segment_queue,
+        )
+
+    def _context_topology_path(context: Mapping[str, Any]) -> Path:
+        rendered = str(dict(context).get("topology_path") or "")
+        return Path(rendered).resolve() if rendered else topology_path
+
+    def _context_link_state_path(context: Mapping[str, Any]) -> Path:
+        rendered = str(dict(context).get("link_state_path") or "")
+        return Path(rendered).resolve() if rendered else link_state_path
 
     current_runtime_horizon_id = (
         _horizon_id_for_queue_entry(segment_queue[0]) if segment_queue else ""
@@ -14840,7 +19137,11 @@ def _run_live_temporal_runtime(
         for item_any in prepared_generation_entries:
             item = dict(item_any)
             horizon_id = str(item.get("horizon_id") or "")
-            generation_id = int(item.get("generation_id") or 0)
+            generation_id = int(
+                item.get("logical_generation_id")
+                if item.get("logical_generation_id") not in (None, "", "None")
+                else item.get("generation_id") or 0
+            )
             horizon_generation_keys_by_horizon.setdefault(horizon_id, []).append(
                 _horizon_generation_key(
                     horizon_id=horizon_id,
@@ -14862,12 +19163,12 @@ def _run_live_temporal_runtime(
             len(next_horizon_generation_keys),
             len(previous_horizon_generation_keys),
         )
-        slack_generation_slots = max(
-            2,
-            int(math.ceil(float(max_generations_per_horizon) * 0.25)),
+        generation_slot_width = _bpf_triple_buffer_generation_slot_width(
+            max_generations_per_horizon
         )
+        slack_generation_slots = generation_slot_width - max_generations_per_horizon
         reserved_generation_slots = (
-            3 * max_generations_per_horizon + slack_generation_slots
+            3 * generation_slot_width
         )
         return {
             "schema_version": "skyseed-sliding-horizon-generation-buffer-v1",
@@ -14879,6 +19180,7 @@ def _run_live_temporal_runtime(
                 "max_generations_per_horizon": max_generations_per_horizon,
                 "slack_generation_slots": slack_generation_slots,
                 "reserved_generation_slots": reserved_generation_slots,
+                "physical_generation_slot_width": generation_slot_width,
                 "capacity_derivation": (
                     "observed_current_previous_next_horizon_generation_counts"
                 ),
@@ -14889,6 +19191,7 @@ def _run_live_temporal_runtime(
                 "previous_horizon_generation_count": len(
                     previous_horizon_generation_keys
                 ),
+                "physical_generation_slot_width": int(bpf_generation_slot_width),
             },
             "previous": {
                 "horizon_id": previous_runtime_horizon_id,
@@ -14936,33 +19239,343 @@ def _run_live_temporal_runtime(
             or readiness.get("generation_id")
             or 0
         )
-        horizon_generation_key = _horizon_generation_key(
-            horizon_id=str(horizon_id or readiness.get("current_horizon_id") or ""),
-            generation_id=generation_id,
+        target_horizon_id = str(
+            horizon_id or readiness.get("current_horizon_id") or ""
         )
+        existing_horizon_generation_key = str(
+            readiness.get("active_horizon_generation_key") or ""
+        )
+        existing_physical_horizon_generation_key = str(
+            readiness.get("active_physical_horizon_generation_key")
+            or readiness.get("physical_horizon_generation_key")
+            or ""
+        )
+        horizon_generation_key = (
+            existing_physical_horizon_generation_key
+            if existing_physical_horizon_generation_key
+            and str(readiness.get("current_horizon_id") or "") == target_horizon_id
+            else existing_horizon_generation_key
+            if existing_horizon_generation_key
+            and str(readiness.get("current_horizon_id") or "") == target_horizon_id
+            else _horizon_generation_key(
+                horizon_id=target_horizon_id,
+                generation_id=generation_id,
+            )
+        )
+        readiness.update(
+            {
+                "current_horizon_id": target_horizon_id,
+                "current_source_state_id": str(target_state_id or ""),
+                "active_horizon_generation_key": horizon_generation_key,
+                "last_applied_horizon_generation_key": horizon_generation_key,
+                "active_physical_horizon_generation_key": horizon_generation_key,
+                "last_applied_physical_horizon_generation_key": (
+                    horizon_generation_key
+                ),
+            }
+        )
+        backend["bpf_owned_readiness"] = readiness
+        return replace(session, backend=backend)
+
+    def _stage_session_horizon_for_next_apply(
+        session: ActiveRuntimeSession | None,
+        *,
+        horizon_id: str,
+        source_state_id: str,
+    ) -> ActiveRuntimeSession | None:
+        if session is None:
+            return None
+        backend = dict(session.backend or {})
+        if str(backend.get("forwarding_backend") or "") != "bpf_owned":
+            return session
+        readiness = dict(backend.get("bpf_owned_readiness") or {})
+        if not readiness:
+            return session
         readiness.update(
             {
                 "current_horizon_id": str(
                     horizon_id or readiness.get("current_horizon_id") or ""
                 ),
-                "current_source_state_id": str(target_state_id or ""),
-                "active_horizon_generation_key": horizon_generation_key,
-                "last_applied_horizon_generation_key": horizon_generation_key,
+                "current_source_state_id": str(source_state_id or ""),
+                "staged_horizon_for_preloaded_generation": True,
             }
         )
         backend["bpf_owned_readiness"] = readiness
         return replace(session, backend=backend)
+
+    def _bpf_generation_entry_allowed(entry: Mapping[str, Any]) -> bool:
+        return (
+            str(entry.get("classification") or "")
+            in {"runtime_epoch", "parameter_epoch"}
+            and bool(entry.get("runtime_apply_allowed", True)) is True
+        )
+
+    def _horizon_sequence_index(
+        horizon_id: str,
+        *,
+        fallback_index: int,
+    ) -> int:
+        normalized = str(horizon_id or "")
+        for index, horizon in enumerate(horizon_plan_entries):
+            if str(horizon.get("horizon_id") or "") == normalized:
+                return index
+        if normalized == "current-horizon":
+            return 0
+        if normalized.startswith("replenished-"):
+            suffix = normalized.rsplit("-", 1)[-1]
+            if suffix.isdigit():
+                return int(suffix)
+        return max(0, int(fallback_index))
+
+    def _physical_generation_id_for_horizon(
+        *,
+        horizon_id: str,
+        horizon_sequence_index: int,
+        logical_generation_id: int,
+        slot_width: int,
+    ) -> int:
+        try:
+            return _bpf_triple_buffer_physical_generation_id(
+                horizon_sequence_index=horizon_sequence_index,
+                local_generation_id=logical_generation_id,
+                generation_slot_width=slot_width,
+            )
+        except RuntimeError as exc:
+            raise RuntimeError(
+                "bpf_rolling_generation_slot_capacity_exceeded:"
+                + json.dumps(
+                    {
+                        "horizon_id": str(horizon_id),
+                        "horizon_sequence_index": int(horizon_sequence_index),
+                        "logical_generation_id": int(logical_generation_id),
+                        "generation_slot_width": max(1, int(slot_width)),
+                    },
+                    sort_keys=True,
+                )
+            ) from exc
+
+    def _runtime_update_plan_with_bpf_physical_generation(
+        runtime_update_plan: RuntimeUpdatePlan,
+        *,
+        horizon_id: str,
+        horizon_sequence_index: int,
+        logical_generation_id: int,
+        physical_generation_id: int,
+        generation_slot_width: int,
+    ) -> RuntimeUpdatePlan:
+        logical_generation_id = int(logical_generation_id)
+        physical_generation_id = int(physical_generation_id)
+        generation_slot_width = max(1, int(generation_slot_width))
+        target_snapshot = {
+            **dict(runtime_update_plan.target_snapshot or {}),
+            "bpf_logical_generation_id": logical_generation_id,
+            "bpf_physical_generation_id": physical_generation_id,
+            "bpf_generation_slot_width": generation_slot_width,
+            "bpf_generation_buffer_index": int(horizon_sequence_index % 3),
+            "bpf_generation_horizon_id": str(horizon_id),
+            "bpf_generation_horizon_sequence_index": int(horizon_sequence_index),
+            "bpf_horizon_generation_key": _horizon_generation_key(
+                horizon_id=str(horizon_id),
+                generation_id=logical_generation_id,
+            ),
+            "bpf_physical_horizon_generation_key": _horizon_generation_key(
+                horizon_id=str(horizon_id),
+                generation_id=physical_generation_id,
+            ),
+        }
+        planner = {
+            **dict(runtime_update_plan.planner or {}),
+            "bpf_generation_slot_allocator": {
+                "schema_version": "skyseed-bpf-generation-slot-allocation-v1",
+                "buffer_model": "previous_current_next_triple_buffer",
+                "horizon_id": str(horizon_id),
+                "horizon_sequence_index": int(horizon_sequence_index),
+                "buffer_index": int(horizon_sequence_index % 3),
+                "logical_generation_id": logical_generation_id,
+                "physical_generation_id": physical_generation_id,
+                "generation_slot_width": generation_slot_width,
+                "horizon_generation_key": _horizon_generation_key(
+                    horizon_id=str(horizon_id),
+                    generation_id=logical_generation_id,
+                ),
+                "physical_horizon_generation_key": _horizon_generation_key(
+                    horizon_id=str(horizon_id),
+                    generation_id=physical_generation_id,
+                ),
+            },
+        }
+        return replace(
+            runtime_update_plan,
+            target_snapshot=target_snapshot,
+            planner=planner,
+        )
+
+    def _bpf_generation_count_for_entries(
+        entries: Sequence[Mapping[str, Any]],
+        contexts_by_key: Mapping[str, Mapping[str, Any]],
+    ) -> int:
+        event_count_by_horizon: Dict[str, int] = {}
+        for entry_any in entries:
+            entry = dict(entry_any)
+            if not _bpf_generation_entry_allowed(entry):
+                continue
+            segment_key = str(entry.get("segment_epoch_key") or "")
+            context = contexts_by_key.get(segment_key)
+            if not context:
+                continue
+            proof = _derive_bpf_owned_readiness_proof(
+                runtime_update_plan=dict(context)["runtime_update_plan"],
+            )
+            if proof.get("logical_intent_ready") is not True:
+                continue
+            horizon_id = _horizon_id_for_queue_entry(entry)
+            event_count_by_horizon[horizon_id] = (
+                event_count_by_horizon.get(horizon_id, 0) + 1
+            )
+        return max(event_count_by_horizon.values(), default=1)
+
+    def _bpf_generation_slot_width_for_entries(
+        entries: Sequence[Mapping[str, Any]],
+        contexts_by_key: Mapping[str, Mapping[str, Any]],
+    ) -> int:
+        return _bpf_triple_buffer_generation_slot_width(
+            _bpf_generation_count_for_entries(entries, contexts_by_key)
+        )
+
+    def _assign_bpf_physical_generation_plans(
+        *,
+        entries: Sequence[Mapping[str, Any]],
+        contexts_by_key: Dict[str, Dict[str, Any]],
+        generation_slot_width: int,
+        fallback_horizon_sequence_index: int,
+    ) -> Dict[str, Dict[str, Any]]:
+        assignments: Dict[str, Dict[str, Any]] = {}
+        local_generation_index_by_horizon: Dict[str, int] = {}
+        for entry_any in entries:
+            entry = dict(entry_any)
+            if not _bpf_generation_entry_allowed(entry):
+                continue
+            segment_key = str(entry.get("segment_epoch_key") or "")
+            context = dict(contexts_by_key.get(segment_key) or {})
+            if not context:
+                continue
+            runtime_update_plan = context["runtime_update_plan"]
+            existing_snapshot = dict(runtime_update_plan.target_snapshot or {})
+            existing_physical = existing_snapshot.get("bpf_physical_generation_id")
+            proof = _derive_bpf_owned_readiness_proof(
+                runtime_update_plan=runtime_update_plan,
+            )
+            if proof.get("logical_intent_ready") is not True:
+                continue
+            horizon_id = _horizon_id_for_queue_entry(entry)
+            logical_generation_id = int(
+                local_generation_index_by_horizon.get(horizon_id, 0)
+            )
+            local_generation_index_by_horizon[horizon_id] = logical_generation_id + 1
+            horizon_sequence_index = _horizon_sequence_index(
+                horizon_id,
+                fallback_index=fallback_horizon_sequence_index,
+            )
+            physical_generation_id = (
+                int(existing_physical)
+                if existing_physical not in (None, "", "None")
+                else _physical_generation_id_for_horizon(
+                    horizon_id=horizon_id,
+                    horizon_sequence_index=horizon_sequence_index,
+                    logical_generation_id=logical_generation_id,
+                    slot_width=generation_slot_width,
+                )
+            )
+            patched_plan = _runtime_update_plan_with_bpf_physical_generation(
+                runtime_update_plan,
+                horizon_id=horizon_id,
+                horizon_sequence_index=horizon_sequence_index,
+                logical_generation_id=logical_generation_id,
+                physical_generation_id=physical_generation_id,
+                generation_slot_width=generation_slot_width,
+            )
+            context["runtime_update_plan"] = patched_plan
+            contexts_by_key[segment_key] = context
+            assignments[segment_key] = {
+                "schema_version": "skyseed-bpf-generation-slot-assignment-v1",
+                "segment_epoch_key": segment_key,
+                "horizon_id": horizon_id,
+                "horizon_sequence_index": horizon_sequence_index,
+                "buffer_index": horizon_sequence_index % 3,
+                "logical_generation_id": logical_generation_id,
+                "physical_generation_id": physical_generation_id,
+                "generation_id": physical_generation_id,
+                "generation_slot_width": max(1, int(generation_slot_width)),
+                "horizon_generation_key": _horizon_generation_key(
+                    horizon_id=horizon_id,
+                    generation_id=logical_generation_id,
+                ),
+                "physical_horizon_generation_key": _horizon_generation_key(
+                    horizon_id=horizon_id,
+                    generation_id=physical_generation_id,
+                ),
+            }
+        return assignments
+
     pre_epoch_host_prewarm: Dict[str, Any] | None = None
     lookahead_preload_completed_epoch_ids: set[str] = set()
     segment_records = [
         {
             "segment_id": initial_segment["segment_id"],
+            "horizon_id": str(
+                initial_segment.get("horizon_id") or initial_segment["segment_id"]
+            ),
             "segment_kind": "initial",
             "start_time_utc": initial_segment.get("start_time_utc"),
             "end_time_utc": initial_segment.get("end_time_utc"),
             "summary": dict(initial_segment.get("summary", {})),
         }
     ]
+    prepared_bundle_horizon_segments: List[Dict[str, Any]] = [
+        dict(segment or {})
+        for segment in list(initial_segment.get("prepared_horizon_segments") or [])
+    ]
+    if bundle_backed_runtime_inputs and not prepared_bundle_horizon_segments:
+        prepared_bundle_horizon_segments = [dict(initial_segment)]
+    horizon_maintenance_events: List[Dict[str, Any]] = []
+    bpf_preload_work_queue: List[Dict[str, Any]] = []
+    bpf_preload_work_completed_records: List[Dict[str, Any]] = []
+    horizon_maintenance_pending_by_horizon: Dict[str, Dict[str, Any]] = {}
+    horizon_maintenance_ready_by_horizon: Dict[str, Dict[str, Any]] = {}
+    horizon_maintenance_failed_by_horizon: Dict[str, Dict[str, Any]] = {}
+    horizon_maintenance_consumed_horizons: set[str] = set()
+    horizon_maintenance_deferred_successors: set[str] = set()
+    horizon_maintenance_worker_threads: List[threading.Thread] = []
+    horizon_maintenance_state_lock = threading.Lock()
+    horizon_maintenance_worker_enabled = _is_operational_clean_bpf_owned_args(args)
+    horizon_maintenance_lock_path = run_dir / "horizon_maintenance.lock"
+    bpf_retired_cleanup_work_queue: List[Dict[str, Any]] = []
+    bpf_retired_cleanup_completed_records: List[Dict[str, Any]] = []
+    bpf_retired_cleanup_blocked_records: List[Dict[str, Any]] = []
+
+    def _write_bpf_retired_generation_cleanup_artifact() -> None:
+        _write_json(
+            run_dir / "bpf_retired_generation_cleanup.json",
+            {
+                "schema_version": "skyseed-bpf-retired-generation-cleanup-v1",
+                "queued_count": len(bpf_retired_cleanup_work_queue),
+                "completed_count": len(bpf_retired_cleanup_completed_records),
+                "blocked_count": len(bpf_retired_cleanup_blocked_records),
+                "queued_records": [
+                    _compact_retired_cleanup_record(record)
+                    for record in bpf_retired_cleanup_work_queue
+                ],
+                "completed_records": [
+                    _compact_retired_cleanup_record(record)
+                    for record in bpf_retired_cleanup_completed_records
+                ],
+                "blocked_records": [
+                    _compact_retired_cleanup_record(record)
+                    for record in bpf_retired_cleanup_blocked_records
+                ],
+            },
+        )
+
     initial_context_keys = _segment_context_keys_for_epoch_queue(
         segment_id=str(initial_segment["segment_id"]),
         epoch_queue=[*segment_queue, *lookahead_preload_queue],
@@ -14976,17 +19589,68 @@ def _run_live_temporal_runtime(
         args=args,
         temporal_plan=initial_segment["temporal_plan"],
     )
-    requested_total_horizon = _requested_horizon_seconds(
+    requested_total_horizon = _continuous_total_horizon_seconds(
         args=args,
         temporal_plan=initial_segment["temporal_plan"],
     )
     segment_horizon = _initial_continuous_horizon_seconds(args=args) or requested_total_horizon
+    bpf_generation_slot_width = 1
+    observed_bpf_generation_count = 1
+    observed_bpf_generation_slot_width = 1
+    budgeted_bpf_generation_slot_width = 1
+    bpf_generation_slot_assignments: Dict[str, Dict[str, Any]] = {}
+    bpf_resident_attach_budget = dict(
+        initial_segment.get("resident_attach_coverage_budget")
+        or initial_segment.get("bpf_attach_budget")
+        or {}
+    )
+    if _is_operational_clean_bpf_owned_args(args):
+        observed_bpf_generation_count = _bpf_generation_count_for_entries(
+            segment_queue,
+            context_by_key,
+        )
+        observed_bpf_generation_slot_width = _bpf_generation_slot_width_for_entries(
+            segment_queue,
+            context_by_key,
+        )
+        budgeted_bpf_generation_slot_width = _bpf_generation_slot_width_for_horizon_budget(
+            horizon_seconds=segment_horizon,
+            sample_interval_seconds=sample_interval,
+            observed_generation_count=max(1, observed_bpf_generation_count),
+        )
+        bpf_generation_slot_width = max(
+            observed_bpf_generation_slot_width,
+            budgeted_bpf_generation_slot_width,
+        )
+        bpf_generation_slot_assignments.update(
+            _assign_bpf_physical_generation_plans(
+                entries=segment_queue,
+                contexts_by_key=context_by_key,
+                generation_slot_width=bpf_generation_slot_width,
+                fallback_horizon_sequence_index=max(0, current_horizon_index),
+            )
+        )
+        context_by_key = _runtime_contexts_with_bpf_runtime_plan_overlays(
+            context_by_key,
+            assignments_by_segment_epoch_key=bpf_generation_slot_assignments,
+            resident_attach_budget=bpf_resident_attach_budget,
+        )
+        generation_assignment_audit = _bpf_generation_assignment_context_audit(
+            contexts_by_key=context_by_key,
+            assignments_by_segment_epoch_key=bpf_generation_slot_assignments,
+            require_all_assignments_present=True,
+        )
+        if generation_assignment_audit.get("ready") is not True:
+            raise RuntimeError(
+                "bpf_generation_assignment_context_audit_failed:"
+                + json.dumps(generation_assignment_audit, sort_keys=True)
+            )
     run_start_time_utc = str(initial_segment.get("start_time_utc"))
     run_end_time_utc = _format_utc_timestamp(
         _parse_utc_timestamp(run_start_time_utc) + timedelta(seconds=requested_total_horizon)
     )
     next_replenishment_start_utc = _format_utc_timestamp(
-        _parse_utc_timestamp(initial_segment.get("end_time_utc")) + timedelta(seconds=sample_interval)
+        _parse_utc_timestamp(initial_segment.get("end_time_utc"))
     )
     epoch_execution_records: List[Dict[str, Any]] = []
     epoch_execution_details_jsonl = run_dir / "epoch_execution_details.jsonl"
@@ -15023,6 +19687,7 @@ def _run_live_temporal_runtime(
     current_horizon_host_install_completed = False
     current_horizon_host_install_segment_key = ""
     current_horizon_host_install_target_state_id = ""
+    operational_clean_mode = _is_operational_clean_mode(args)
     failure_reason: str | None = None
     final_runtime_connectivity_validation: Dict[str, Any] | None = None
     bpf_dataplane_canary: Dict[str, Any] | None = None
@@ -15033,6 +19698,20 @@ def _run_live_temporal_runtime(
     }
     runtime_count = 0
     parameter_count = 0
+    first_runtime_epoch_record_for_hotpath_audit: Dict[str, Any] | None = None
+    bpf_hotpath_reuse_audit: Dict[str, Any] = {
+        "schema_version": "skyseed-bpf-hotpath-reuse-audit-v1",
+        "audit_model": "incremental_latest_runtime_epoch",
+        "applicable": (
+            str(args.runtime_mode) == "operational_clean"
+            and str(args.forwarding_backend) == "bpf_owned"
+        ),
+        "passed": None,
+        "evidence_status": "not_started",
+        "violation_count": 0,
+        "violations": [],
+        "full_history_rescan_skipped": True,
+    }
     stopped_by_bound = "queue_exhausted"
     base_wall_seconds: float | None = None
     first_activation_relative_seconds: float | None = None
@@ -15127,11 +19806,116 @@ def _run_live_temporal_runtime(
                 ),
             },
             "horizon_lifecycle_queue_contract": dict(horizon_lifecycle_queue_contract),
+            "sliding_window_contract": dict(
+                initial_segment.get("sliding_window_contract")
+                or horizon_lifecycle_queue_contract.get("sliding_window_contract")
+                or {}
+            ),
+            "horizon_maintenance_events": list(horizon_maintenance_events),
             "lookahead_preload_event_count": len(lookahead_preload_queue),
+            "bpf_retired_generation_cleanup": {
+                "queued_count": len(bpf_retired_cleanup_work_queue),
+                "completed_count": len(bpf_retired_cleanup_completed_records),
+                "blocked_count": len(bpf_retired_cleanup_blocked_records),
+                "blocked_records": [
+                    _compact_retired_cleanup_record(record)
+                    for record in bpf_retired_cleanup_blocked_records
+                ],
+            },
         }
 
     def _current_runtime_report_payload(*, finalized: bool) -> Dict[str, Any]:
         status_fields = _current_runtime_status_fields(finalized=finalized)
+        prepared_bundle_runtime_payload = _prepared_bundle_runtime_artifact_payload(
+            {
+                "source": execution_source,
+                "physical_sample_count": physical_sample_count,
+                "runtime_transaction_count": planned_runtime_transaction_count,
+                "parameter_update_batch_count": planned_parameter_update_batch_count,
+                "skipped_noop_sample_count": skipped_noop_sample_count,
+                "sample_aligned_event_count": sample_aligned_event_count,
+                "refined_event_count": refined_event_count,
+                "segments": list(segment_records),
+                "replenishment_events": list(replenishment_events),
+                "horizon_maintenance_events": list(horizon_maintenance_events),
+                "epoch_execution_queue": list(epoch_execution_records),
+                "lookahead_preload_queue": list(lookahead_preload_queue),
+                "horizon_lifecycle_queue_contract": dict(
+                    horizon_lifecycle_queue_contract
+                ),
+                "sliding_window_contract": dict(
+                    initial_segment.get("sliding_window_contract")
+                    or horizon_lifecycle_queue_contract.get("sliding_window_contract")
+                    or {}
+                ),
+                "prepared_owned_resource_index": dict(prepared_owned_resource_index),
+                "prepared_resource_scope_by_slot": dict(
+                    prepared_owned_resource_index.get("resource_scope_by_slot") or {}
+                ),
+                "run_window_resource_coverage_plan": dict(
+                    run_window_resource_coverage_plan
+                ),
+                "bpf_generation_slot_allocator": {
+                    "schema_version": "skyseed-bpf-generation-slot-allocator-v1",
+                    "buffer_model": "previous_current_next_triple_buffer",
+                    "generation_slot_width": int(bpf_generation_slot_width),
+                    "observed_generation_count": int(observed_bpf_generation_count),
+                    "observed_generation_slot_width": int(
+                        observed_bpf_generation_slot_width
+                    ),
+                    "budgeted_generation_slot_width": int(
+                        budgeted_bpf_generation_slot_width
+                    ),
+                    "slot_width_source": (
+                        "horizon_budget"
+                        if int(budgeted_bpf_generation_slot_width)
+                        >= int(observed_bpf_generation_slot_width)
+                        else "observed_current_horizon"
+                    ),
+                    "horizon_seconds": float(segment_horizon),
+                    "sample_interval_seconds": float(sample_interval),
+                    "assignment_count": len(bpf_generation_slot_assignments),
+                    "assignments_by_segment_epoch_key": dict(
+                        bpf_generation_slot_assignments
+                    ),
+                },
+                "pre_runtime_bpf_owned_prepare": dict(
+                    pre_runtime_bpf_owned_prepare_report or {}
+                ),
+                "bpf_preload_work_completed_records": [
+                    _compact_preloaded_generation_record(record)
+                    for record in bpf_preload_work_completed_records
+                ],
+                "bpf_retired_generation_cleanup": {
+                    "queued_records": [
+                        _compact_retired_cleanup_record(record)
+                        for record in bpf_retired_cleanup_work_queue
+                    ],
+                    "completed_records": [
+                        _compact_retired_cleanup_record(record)
+                        for record in bpf_retired_cleanup_completed_records
+                    ],
+                    "blocked_records": [
+                        _compact_retired_cleanup_record(record)
+                        for record in bpf_retired_cleanup_blocked_records
+                    ],
+                    "queued_count": len(bpf_retired_cleanup_work_queue),
+                    "completed_count": len(bpf_retired_cleanup_completed_records),
+                    "blocked_count": len(bpf_retired_cleanup_blocked_records),
+                },
+                "current_horizon_host_install": dict(
+                    current_horizon_host_install or {}
+                ),
+                "pre_epoch_host_prewarm": dict(pre_epoch_host_prewarm or {}),
+                "pre_runtime_bpf_owned_prepare_json": (
+                    str(run_dir / "pre_runtime_bpf_owned_prepare.json")
+                    if pre_runtime_bpf_owned_prepare_report
+                    else ""
+                ),
+                "epoch_execution_details_jsonl": str(epoch_execution_details_jsonl),
+                "epoch_execution_record_model": "compact_with_detail_jsonl",
+            }
+        )
         return {
             "finalized": finalized,
             "mode": "live_continuous_temporal_runtime",
@@ -15144,42 +19928,7 @@ def _run_live_temporal_runtime(
             ),
             "final_cleanup": dict(final_cleanup),
             "temporal_audit": _current_temporal_audit_payload(finalized=finalized),
-            "prepared_bundle_runtime": {
-                "source": execution_source,
-                "physical_sample_count": physical_sample_count,
-                "runtime_transaction_count": planned_runtime_transaction_count,
-                "parameter_update_batch_count": planned_parameter_update_batch_count,
-                "skipped_noop_sample_count": skipped_noop_sample_count,
-                "sample_aligned_event_count": sample_aligned_event_count,
-                "refined_event_count": refined_event_count,
-                "segments": list(segment_records),
-                "replenishment_events": list(replenishment_events),
-                "epoch_execution_queue": list(epoch_execution_records),
-                "lookahead_preload_queue": list(lookahead_preload_queue),
-                "horizon_lifecycle_queue_contract": dict(
-                    horizon_lifecycle_queue_contract
-                ),
-                "prepared_owned_resource_index": dict(prepared_owned_resource_index),
-                "prepared_resource_scope_by_slot": dict(
-                    prepared_owned_resource_index.get("resource_scope_by_slot") or {}
-                ),
-                "run_window_resource_coverage_plan": dict(
-                    run_window_resource_coverage_plan
-                ),
-                "pre_runtime_bpf_owned_prepare": dict(
-                    pre_runtime_bpf_owned_prepare_report or {}
-                ),
-                "current_horizon_host_install": dict(
-                    current_horizon_host_install or {}
-                ),
-                "pre_runtime_bpf_owned_prepare_json": (
-                    str(run_dir / "pre_runtime_bpf_owned_prepare.json")
-                    if pre_runtime_bpf_owned_prepare_report
-                    else ""
-                ),
-                "epoch_execution_details_jsonl": str(epoch_execution_details_jsonl),
-                "epoch_execution_record_model": "compact_with_detail_jsonl",
-            },
+            "prepared_bundle_runtime": prepared_bundle_runtime_payload,
             "final_runtime_connectivity_validation": _safe_dict(
                 final_runtime_connectivity_validation
             ),
@@ -15205,9 +19954,17 @@ def _run_live_temporal_runtime(
             },
         }
 
-    def maybe_replenish(current_activation_relative: float) -> None:
-        nonlocal next_replenishment_start_utc
+    def maybe_replenish(
+        current_activation_relative: float,
+        *,
+        current_entry: Mapping[str, Any] | None = None,
+    ) -> None:
+        nonlocal active_session, next_replenishment_start_utc
+        nonlocal context_by_key
+        nonlocal prepared_owned_resource_index, run_window_resource_coverage_plan
         if not bool(args.continuous):
+            return
+        if len(segment_records) >= max(1, int(getattr(args, "loop_count", 1) or 1)):
             return
         last_queue_activation = max(
             (
@@ -15221,7 +19978,13 @@ def _run_live_temporal_runtime(
             _parse_utc_timestamp(next_replenishment_start_utc)
             - _parse_utc_timestamp(run_start_time_utc)
         ).total_seconds()
-        if remaining_horizon > float(args.replenish_threshold_seconds):
+        maintenance_lead_seconds = float(args.replenish_threshold_seconds)
+        if _is_operational_clean_bpf_owned_args(args) and bundle_backed_runtime_inputs:
+            maintenance_lead_seconds = max(
+                maintenance_lead_seconds,
+                float(segment_horizon),
+            )
+        if remaining_horizon > maintenance_lead_seconds:
             return
         if produced_horizon >= requested_total_horizon:
             return
@@ -15231,7 +19994,47 @@ def _run_live_temporal_runtime(
         )
         if replenish_horizon <= 0.0:
             return
+        maintenance_started = time.perf_counter()
         segment_index = len(segment_records)
+        if horizon_maintenance_worker_enabled and segment_index >= 2:
+            predecessor_horizon_id = str(segment_records[-1].get("horizon_id") or "")
+            with horizon_maintenance_state_lock:
+                successor_gate = successor_maintenance_gate(
+                    previous_horizon_id=predecessor_horizon_id,
+                    consumed_horizon_ids=sorted(horizon_maintenance_consumed_horizons),
+                    ready_horizon_ids=sorted(horizon_maintenance_ready_by_horizon),
+                    pending_horizon_ids=sorted(horizon_maintenance_pending_by_horizon),
+                    failed_horizon_ids=sorted(horizon_maintenance_failed_by_horizon),
+                )
+            successor_gate = {
+                **successor_gate,
+                "segment_index": segment_index,
+                "successor_start_time_utc": next_replenishment_start_utc,
+                "horizon_seconds": round(replenish_horizon, 6),
+            }
+            if successor_gate.get("status") == "failed":
+                raise RuntimeError(
+                    "previous_horizon_maintenance_failed_before_successor_prepare:"
+                    + json.dumps(successor_gate, sort_keys=True)
+                )
+            if successor_gate.get("allowed") is not True:
+                if predecessor_horizon_id not in horizon_maintenance_deferred_successors:
+                    horizon_maintenance_deferred_successors.add(predecessor_horizon_id)
+                    events.append(
+                        {
+                            "timestamp_utc": _timestamp_utc(),
+                            "event_type": "horizon_successor_maintenance_deferred",
+                            **successor_gate,
+                        }
+                    )
+                    _progress(
+                        phase="runtime_replenishment_deferred",
+                        event_type="horizon_successor_maintenance_deferred",
+                        phase_detail=successor_gate,
+                        runtime_epochs_completed=runtime_count,
+                        parameter_epochs_completed=parameter_count,
+                    )
+                return
         events.append(
             {
                 "timestamp_utc": _timestamp_utc(),
@@ -15239,6 +20042,8 @@ def _run_live_temporal_runtime(
                 "segment_index": segment_index,
                 "start_time_utc": next_replenishment_start_utc,
                 "horizon_seconds": replenish_horizon,
+                "maintenance_lead_seconds": round(maintenance_lead_seconds, 6),
+                "remaining_horizon_seconds": round(remaining_horizon, 6),
             }
         )
         _progress(
@@ -15248,23 +20053,61 @@ def _run_live_temporal_runtime(
                 "segment_index": segment_index,
                 "start_time_utc": next_replenishment_start_utc,
                 "horizon_seconds": round(replenish_horizon, 6),
+                "maintenance_lead_seconds": round(maintenance_lead_seconds, 6),
+                "remaining_horizon_seconds": round(remaining_horizon, 6),
             },
             runtime_epochs_completed=runtime_count,
             parameter_epochs_completed=parameter_count,
         )
-        segment = _run_replenishment_preview(
-            args=args,
-            run_dir=run_dir,
-            segment_index=segment_index,
-            start_time_utc=next_replenishment_start_utc,
-            horizon_seconds=replenish_horizon,
-            topology_path=topology_path,
-            link_state_path=link_state_path,
-            run_start_time_utc=run_start_time_utc,
+        if bundle_backed_runtime_inputs:
+            if segment_index >= len(prepared_bundle_horizon_segments):
+                raise RuntimeError(
+                    "frozen_bundle_missing_prepared_replenishment_segment:"
+                    + json.dumps(
+                        {
+                            "requested_segment_index": segment_index,
+                            "prepared_horizon_segment_count": len(
+                                prepared_bundle_horizon_segments
+                            ),
+                            "runtime_replenishment_preview_allowed": False,
+                            "runtime_build_network_mutation_plan_allowed": False,
+                        },
+                        sort_keys=True,
+                    )
+                )
+            segment = dict(prepared_bundle_horizon_segments[segment_index])
+            if not dict(segment.get("context_by_slice") or {}):
+                raise RuntimeError(
+                    "frozen_bundle_prepared_replenishment_segment_missing_context:"
+                    f"{segment.get('segment_id') or segment_index}"
+                )
+        else:
+            segment = _run_replenishment_preview(
+                args=args,
+                run_dir=run_dir,
+                segment_index=segment_index,
+                start_time_utc=next_replenishment_start_utc,
+                horizon_seconds=replenish_horizon,
+                topology_path=topology_path,
+                link_state_path=link_state_path,
+                run_start_time_utc=run_start_time_utc,
+            )
+        current_horizon_id_for_maintenance = (
+            _horizon_id_for_queue_entry(dict(current_entry or {}))
+            if current_entry
+            else str(segment_records[-1].get("horizon_id") or "")
+            if segment_records
+            else ""
+        )
+        previous_horizon_id_for_cleanup = (
+            str(segment_records[-2].get("horizon_id") or "")
+            if len(segment_records) >= 2
+            else ""
         )
         segment_records.append(
             {
                 "segment_id": segment["segment_id"],
+                "horizon_id": str(segment.get("horizon_id") or segment["segment_id"]),
                 "segment_kind": "replenished",
                 "start_time_utc": segment.get("start_time_utc"),
                 "end_time_utc": segment.get("end_time_utc"),
@@ -15295,7 +20138,6 @@ def _run_live_temporal_runtime(
                 continue
             accepted_entry = dict(entry)
             accepted_entries.append(accepted_entry)
-            segment_queue.append(accepted_entry)
         accepted_context_keys = _segment_context_keys_for_epoch_queue(
             segment_id=str(segment["segment_id"]),
             epoch_queue=[
@@ -15303,16 +20145,1730 @@ def _run_live_temporal_runtime(
                 *list(segment.get("lookahead_preload_queue") or []),
             ],
         )
-        context_by_key.update(
+        replenished_context_by_key = {
+            f"{segment['segment_id']}:{slice_id}": context
+            for slice_id, context in segment["context_by_slice"].items()
+            if f"{segment['segment_id']}:{slice_id}" in accepted_context_keys
+        }
+        host_plan_preparation = _prepare_replenished_host_plan_payloads(
+            remaining_queue=list(segment_queue),
+            accepted_entries=accepted_entries,
+            context_by_key=context_by_key,
+            replenished_context_by_key=replenished_context_by_key,
+            current_dynamic_state=current_dynamic_state,
+            current_state_id=current_state_id,
+            resolve_existing_host_plan=lambda entry, context, state, state_id: (
+                _host_plan_for_segment(
+                    segment_key=str(entry.get("segment_epoch_key") or ""),
+                    snapshot=context["snapshot"],
+                    source_state=state,
+                    source_state_id=state_id,
+                )
+            ),
+            build_host_plan=lambda entry, context, state, state_id: (
+                _host_plan_for_segment(
+                    segment_key=str(entry.get("segment_epoch_key") or ""),
+                    snapshot=context["snapshot"],
+                    source_state=state,
+                    source_state_id=state_id,
+                )
+                if bundle_backed_runtime_inputs
+                else build_network_mutation_plan(
+                    source_state=state,
+                    source_state_id=state_id,
+                    target_snapshot=enrich_snapshot_runtime_parameters(
+                        context["snapshot"]
+                    ),
+                    transition_name=(
+                        f"{state_id}_to_"
+                        f"{context['snapshot'].time_slice.get('slice_id')}"
+                    ),
+                    runtime_parameter_mutation_policy=(
+                        runtime_parameter_mutation_policy
+                    ),
+                )
+            ),
+        )
+        frozen_host_plan_by_segment_key.update(
             {
-                f"{segment['segment_id']}:{slice_id}": context
-                for slice_id, context in segment["context_by_slice"].items()
-                if f"{segment['segment_id']}:{slice_id}" in accepted_context_keys
+                str(key): dict(value or {})
+                for key, value in dict(
+                    host_plan_preparation.get(
+                        "prepared_host_plan_by_segment_key"
+                    )
+                    or {}
+                ).items()
             }
         )
+        context_by_key.update(replenished_context_by_key)
+        if _is_operational_clean_bpf_owned_args(args):
+            replenished_bpf_generation_slot_assignments = (
+                _assign_bpf_physical_generation_plans(
+                    entries=accepted_entries,
+                    contexts_by_key=context_by_key,
+                    generation_slot_width=bpf_generation_slot_width,
+                    fallback_horizon_sequence_index=segment_index,
+                )
+            )
+            bpf_generation_slot_assignments.update(
+                replenished_bpf_generation_slot_assignments
+            )
+            context_by_key = _runtime_contexts_with_bpf_runtime_plan_overlays(
+                context_by_key,
+                assignments_by_segment_epoch_key=(
+                    replenished_bpf_generation_slot_assignments
+                ),
+                resident_attach_budget=bpf_resident_attach_budget,
+            )
+            generation_assignment_audit = _bpf_generation_assignment_context_audit(
+                contexts_by_key=context_by_key,
+                assignments_by_segment_epoch_key=(
+                    replenished_bpf_generation_slot_assignments
+                ),
+                require_all_assignments_present=True,
+            )
+            if generation_assignment_audit.get("ready") is not True:
+                raise RuntimeError(
+                    "bpf_generation_assignment_context_audit_failed:"
+                    + json.dumps(generation_assignment_audit, sort_keys=True)
+                )
+        for accepted_entry in accepted_entries:
+            segment_queue.append(dict(accepted_entry))
         lookahead_preload_queue.extend(
             dict(entry) for entry in list(segment.get("lookahead_preload_queue") or [])
         )
+        replenished_topology_path = Path(str(segment.get("topology_path") or topology_path))
+        replenished_link_state_path = Path(
+            str(segment.get("link_state_path") or link_state_path)
+        )
+        replenished_snapshot_preview_path = Path(
+            str(segment.get("snapshot_preview_path") or "")
+        )
+        if not replenished_snapshot_preview_path.exists():
+            replenished_snapshot_preview_path = (
+                run_dir
+                / "replenished_segments"
+                / f"segment_{segment_index:03d}"
+                / "preview_only"
+                / "snapshot_preview.json"
+            )
+        if bundle_backed_runtime_inputs:
+            replenished_topology = {}
+            replenished_prepared_resource_scope_by_slot = {
+                str(slot_name): [
+                    str(resource_key)
+                    for resource_key in list(resource_keys or [])
+                    if str(resource_key)
+                ]
+                for slot_name, resource_keys in dict(
+                    segment.get("prepared_resource_scope_by_slot") or {}
+                ).items()
+                if str(slot_name)
+            }
+            if not replenished_prepared_resource_scope_by_slot:
+                raise RuntimeError(
+                    "frozen_bundle_prepared_replenishment_segment_missing_resource_scope:"
+                    f"{segment.get('segment_id') or segment_index}"
+                )
+        else:
+            replenished_topology = _read_json(replenished_topology_path)
+            replenished_access_resource_scope_by_slot = (
+                _selected_access_prewarm_resource_scope_by_slot(
+                    snapshot_preview_path=replenished_snapshot_preview_path,
+                    selected_slice_ids=_prewarm_selected_slice_ids_for_horizon(
+                        segment_queue=accepted_entries,
+                        lookahead_preload_queue=list(
+                            segment.get("lookahead_preload_queue") or []
+                        ),
+                    ),
+                )
+            )
+            replenished_static_resource_scope_by_slot = (
+                _static_inventory_materialization_resource_scope_by_slot(
+                    topology=replenished_topology,
+                    slot_types=("same_plane_isl", "cross_plane_isl"),
+                )
+            )
+            replenished_prepared_resource_scope_by_slot = _merge_resource_scope_by_slot(
+                replenished_access_resource_scope_by_slot,
+                replenished_static_resource_scope_by_slot,
+            )
+        existing_prepared_resource_scope_by_slot = {
+            str(slot_name): [
+                str(resource_key)
+                for resource_key in list(resource_keys or [])
+                if str(resource_key)
+            ]
+            for slot_name, resource_keys in dict(
+                dict(prepared_owned_resource_index).get("resource_scope_by_slot") or {}
+            ).items()
+            if str(slot_name)
+        }
+        replenished_delta_prepare_scope_by_slot = _resource_scope_delta_by_slot(
+            required_resource_scope_by_slot=replenished_prepared_resource_scope_by_slot,
+            prepared_resource_scope_by_slot=existing_prepared_resource_scope_by_slot,
+        )
+        replenished_planned_prepared_resource_scope_by_slot = _merge_resource_scope_by_slot(
+            existing_prepared_resource_scope_by_slot,
+            replenished_delta_prepare_scope_by_slot,
+        )
+        if bundle_backed_runtime_inputs:
+            replenished_resource_coverage_plan = dict(
+                segment.get("run_window_resource_coverage_plan") or {}
+            )
+            if not replenished_resource_coverage_plan:
+                raise RuntimeError(
+                    "frozen_bundle_prepared_replenishment_segment_missing_coverage_plan:"
+                    f"{segment.get('segment_id') or segment_index}"
+                )
+        else:
+            replenished_resource_coverage_plan = _run_window_resource_coverage_plan(
+                snapshot_preview_path=replenished_snapshot_preview_path,
+                segment_queue=accepted_entries,
+                lookahead_preload_queue=list(segment.get("lookahead_preload_queue") or []),
+                prepared_resource_scope_by_slot=(
+                    replenished_planned_prepared_resource_scope_by_slot
+                ),
+                topology=replenished_topology,
+            )
+        if int(replenished_resource_coverage_plan.get("unresolved_count") or 0):
+            raise RuntimeError(
+                "rolling_horizon_resource_coverage_unresolved:"
+                + json.dumps(
+                    {
+                        "segment_id": str(segment["segment_id"]),
+                        "unresolved_count": int(
+                            replenished_resource_coverage_plan.get(
+                                "unresolved_count"
+                            )
+                            or 0
+                        ),
+                        "unresolved_examples": list(
+                            replenished_resource_coverage_plan.get(
+                                "unresolved_resources"
+                            )
+                            or []
+                        )[:10],
+                    },
+                    sort_keys=True,
+                )
+            )
+        rolling_host_additive_prepare: Dict[str, Any] = {}
+        if _is_operational_clean_bpf_owned_args(args) and accepted_entries:
+            additive_started = time.perf_counter()
+
+            def _rolling_additive_prepare_progress(update: Dict[str, Any]) -> None:
+                detail = {
+                    "segment_id": str(segment["segment_id"]),
+                    "horizon_id": str(
+                        segment.get("horizon_id") or segment["segment_id"]
+                    ),
+                    "maintenance_stage": (
+                        "runtime/horizon_replenishment/additive_host_prepare"
+                    ),
+                    "future_host_link_state_apply_allowed": False,
+                    "preapply_qdisc_parameter_updates_allowed": False,
+                    "active_generation_flip_allowed": False,
+                }
+                for key in (
+                    "stage",
+                    "processed_slot_count",
+                    "total_slot_count",
+                    "remaining_slot_count",
+                    "current_slot_name",
+                    "bridge_created_count",
+                    "bridge_reused_count",
+                    "resource_created_count",
+                    "resource_reused_count",
+                    "candidate_endpoint_count",
+                    "elapsed_wall_seconds",
+                ):
+                    value = update.get(key)
+                    if value is not None:
+                        detail[key] = value
+                _progress(
+                    phase="rolling_horizon_host_additive_prepare",
+                    event_type="rolling_horizon_host_additive_prepare_progress",
+                    phase_detail=detail,
+                    runtime_epochs_completed=runtime_count,
+                    parameter_epochs_completed=parameter_count,
+                    write_events=False,
+                )
+
+            _progress(
+                phase="rolling_horizon_host_additive_prepare",
+                event_type="rolling_horizon_host_additive_prepare_started",
+                phase_detail={
+                    "segment_id": str(segment["segment_id"]),
+                    "horizon_id": str(
+                        segment.get("horizon_id") or segment["segment_id"]
+                    ),
+                    "slot_count": len(replenished_delta_prepare_scope_by_slot),
+                    "resource_count": sum(
+                        len(items)
+                        for items in replenished_delta_prepare_scope_by_slot.values()
+                    ),
+                    "required_prepare_scope_slot_count": len(
+                        replenished_prepared_resource_scope_by_slot
+                    ),
+                    "required_prepare_resource_count": sum(
+                        len(items)
+                        for items in replenished_prepared_resource_scope_by_slot.values()
+                    ),
+                    "already_prepared_scope_slot_count": len(
+                        existing_prepared_resource_scope_by_slot
+                    ),
+                    "already_prepared_resource_count": sum(
+                        len(items)
+                        for items in existing_prepared_resource_scope_by_slot.values()
+                    ),
+                    "delta_prepare_scope_slot_count": len(
+                        replenished_delta_prepare_scope_by_slot
+                    ),
+                    "delta_prepare_resource_count": sum(
+                        len(items)
+                        for items in replenished_delta_prepare_scope_by_slot.values()
+                    ),
+                    "required_access_resource_count": int(
+                        replenished_resource_coverage_plan.get(
+                            "required_access_resource_count"
+                        )
+                        or 0
+                    ),
+                    "required_static_inventory_resource_count": int(
+                        replenished_resource_coverage_plan.get(
+                            "required_static_inventory_resource_count"
+                        )
+                        or 0
+                    ),
+                    "future_host_link_state_apply_allowed": False,
+                    "preapply_qdisc_parameter_updates_allowed": False,
+                    "active_generation_flip_allowed": False,
+                },
+                runtime_epochs_completed=runtime_count,
+                parameter_epochs_completed=parameter_count,
+            )
+            if replenished_delta_prepare_scope_by_slot:
+                rolling_host_additive_prepare = (
+                    network_executor.prepare_additive_resources(
+                        topology_path=replenished_topology_path,
+                        link_state_path=replenished_link_state_path,
+                        prepared_resource_scope_by_slot=(
+                            replenished_delta_prepare_scope_by_slot
+                        ),
+                        progress_callback=_rolling_additive_prepare_progress,
+                    )
+                )
+            else:
+                rolling_host_additive_prepare = {
+                    "schema_version": "skyseed-additive-resource-prepare-v1",
+                    "ok": True,
+                    "additive_prepare_completed": True,
+                    "scope": "bounded_additive_delta_prepare",
+                    "slot_count": 0,
+                    "candidate_resource_count": 0,
+                    "candidate_endpoint_count": 0,
+                    "bridge_created_count": 0,
+                    "bridge_reused_count": 0,
+                    "resource_created_count": 0,
+                    "resource_reused_count": 0,
+                    "resource_skipped_count": 0,
+                    "preconnected_endpoint_created_count": 0,
+                    "preconnected_endpoint_reused_count": 0,
+                    "prepared_resource_scope_by_slot": {},
+                    "full_sweep": False,
+                    "full_host_scan_skipped": True,
+                    "reason": "rolling_horizon_additive_prepare_delta_empty",
+                }
+            rolling_host_additive_prepare = {
+                **dict(rolling_host_additive_prepare),
+                "segment_id": str(segment["segment_id"]),
+                "horizon_id": str(segment.get("horizon_id") or segment["segment_id"]),
+                "maintenance_stage": (
+                    "runtime/horizon_replenishment/additive_host_prepare"
+                ),
+                "resource_coverage_plan": dict(replenished_resource_coverage_plan),
+                "required_prepare_scope_slot_count": len(
+                    replenished_prepared_resource_scope_by_slot
+                ),
+                "required_prepare_resource_count": sum(
+                    len(items)
+                    for items in replenished_prepared_resource_scope_by_slot.values()
+                ),
+                "already_prepared_scope_slot_count": len(
+                    existing_prepared_resource_scope_by_slot
+                ),
+                "already_prepared_resource_count": sum(
+                    len(items)
+                    for items in existing_prepared_resource_scope_by_slot.values()
+                ),
+                "delta_prepare_scope_slot_count": len(
+                    replenished_delta_prepare_scope_by_slot
+                ),
+                "delta_prepare_resource_count": sum(
+                    len(items)
+                    for items in replenished_delta_prepare_scope_by_slot.values()
+                ),
+                "delta_prepare_resource_scope_by_slot": dict(
+                    replenished_delta_prepare_scope_by_slot
+                ),
+                "source_of_truth_delta_from_prepared_owned_resource_index": True,
+                "full_host_scan_skipped": True,
+                "future_host_link_state_apply_allowed": False,
+                "preapply_qdisc_parameter_updates_allowed": False,
+                "active_generation_flip_allowed": False,
+                "runtime_recompute_network_mutation_plan_allowed": False,
+                "full_prepare_allowed": False,
+                "wall_seconds": round(time.perf_counter() - additive_started, 6),
+            }
+            segment_prepare_artifact = (
+                run_dir
+                / "replenished_segments"
+                / f"segment_{segment_index:03d}"
+                / "rolling_horizon_host_additive_prepare.json"
+            )
+            segment_prepare_failure_artifact = (
+                run_dir
+                / "replenished_segments"
+                / f"segment_{segment_index:03d}"
+                / "rolling_horizon_host_additive_prepare_failure.json"
+            )
+            host_additive_prepare_ok = (
+                rolling_host_additive_prepare.get("ok") is True
+                and rolling_host_additive_prepare.get("additive_prepare_completed")
+                is True
+            )
+            if not host_additive_prepare_ok:
+                failure_reason = str(
+                    rolling_host_additive_prepare.get("reason")
+                    or rolling_host_additive_prepare.get("error")
+                    or "prepare_contract_not_ok"
+                )
+                _write_json(
+                    segment_prepare_failure_artifact,
+                    _json_safe(
+                        {
+                            **dict(rolling_host_additive_prepare),
+                            "ok": bool(rolling_host_additive_prepare.get("ok")),
+                            "failure_reason": failure_reason,
+                            "failure_stage": (
+                                "runtime/horizon_replenishment/additive_host_prepare"
+                            ),
+                        }
+                    ),
+                )
+                raise RuntimeError(
+                    "rolling_horizon_host_additive_prepare_failed:"
+                    + failure_reason
+                )
+            if int(rolling_host_additive_prepare.get("slot_count") or 0) > len(
+                replenished_delta_prepare_scope_by_slot
+            ):
+                _write_json(
+                    segment_prepare_failure_artifact,
+                    _json_safe(
+                        {
+                            **dict(rolling_host_additive_prepare),
+                            "failure_reason": (
+                                "rolling_horizon_host_additive_prepare_exceeded_delta_scope"
+                            ),
+                            "failure_stage": (
+                                "runtime/horizon_replenishment/additive_host_prepare"
+                            ),
+                        }
+                    ),
+                )
+                raise RuntimeError(
+                    "rolling_horizon_host_additive_prepare_exceeded_delta_scope:"
+                    + json.dumps(
+                        {
+                            "segment_id": str(segment["segment_id"]),
+                            "actual_slot_count": int(
+                                rolling_host_additive_prepare.get("slot_count") or 0
+                            ),
+                            "delta_prepare_scope_slot_count": len(
+                                replenished_delta_prepare_scope_by_slot
+                            ),
+                        },
+                        sort_keys=True,
+                    )
+                )
+            if int(
+                rolling_host_additive_prepare.get("candidate_resource_count") or 0
+            ) > sum(
+                len(items)
+                for items in replenished_delta_prepare_scope_by_slot.values()
+            ):
+                _write_json(
+                    segment_prepare_failure_artifact,
+                    _json_safe(
+                        {
+                            **dict(rolling_host_additive_prepare),
+                            "failure_reason": (
+                                "rolling_horizon_host_additive_prepare_exceeded_delta_resources"
+                            ),
+                            "failure_stage": (
+                                "runtime/horizon_replenishment/additive_host_prepare"
+                            ),
+                        }
+                    ),
+                )
+                raise RuntimeError(
+                    "rolling_horizon_host_additive_prepare_exceeded_delta_resources:"
+                    + json.dumps(
+                        {
+                            "segment_id": str(segment["segment_id"]),
+                            "candidate_resource_count": int(
+                                rolling_host_additive_prepare.get(
+                                    "candidate_resource_count"
+                                )
+                                or 0
+                            ),
+                            "delta_prepare_resource_count": sum(
+                                len(items)
+                                for items in replenished_delta_prepare_scope_by_slot.values()
+                            ),
+                        },
+                        sort_keys=True,
+                    )
+                )
+            _write_json(
+                segment_prepare_artifact,
+                _json_safe(rolling_host_additive_prepare),
+            )
+            merged_scope = _merge_resource_scope_by_slot(
+                dict(
+                    dict(prepared_owned_resource_index).get(
+                        "resource_scope_by_slot"
+                    )
+                    or {}
+                ),
+                replenished_prepared_resource_scope_by_slot,
+            )
+            prepared_owned_resource_index = (
+                _prepared_owned_resource_index_from_scope(merged_scope)
+            )
+            run_window_resource_coverage_plan = dict(
+                replenished_resource_coverage_plan
+            )
+            events.append(
+                {
+                    "timestamp_utc": _timestamp_utc(),
+                    "event_type": "rolling_horizon_host_additive_prepare_completed",
+                    **dict(rolling_host_additive_prepare),
+                    "artifact_path": str(segment_prepare_artifact),
+                }
+            )
+            _progress(
+                phase="rolling_horizon_host_additive_prepare_completed",
+                event_type="rolling_horizon_host_additive_prepare_completed",
+                phase_detail={
+                    "segment_id": str(segment["segment_id"]),
+                    "horizon_id": str(
+                        segment.get("horizon_id") or segment["segment_id"]
+                    ),
+                    "slot_count": int(
+                        rolling_host_additive_prepare.get("slot_count") or 0
+                    ),
+                    "resource_created_count": int(
+                        rolling_host_additive_prepare.get("resource_created_count")
+                        or 0
+                    ),
+                    "resource_reused_count": int(
+                        rolling_host_additive_prepare.get("resource_reused_count")
+                        or 0
+                    ),
+                    "bridge_created_count": int(
+                        rolling_host_additive_prepare.get("bridge_created_count")
+                        or 0
+                    ),
+                    "bridge_reused_count": int(
+                        rolling_host_additive_prepare.get("bridge_reused_count")
+                        or 0
+                    ),
+                    "wall_seconds": round(
+                        float(
+                            rolling_host_additive_prepare.get("wall_seconds") or 0.0
+                        ),
+                        6,
+                    ),
+                    "full_prepare_allowed": False,
+                },
+                runtime_epochs_completed=runtime_count,
+                parameter_epochs_completed=parameter_count,
+            )
+        bpf_preloaded_generation_records: List[Dict[str, Any]] = []
+        bpf_preload_delta_attach_count = 0
+        bpf_preload_full_attach_count = 0
+        bpf_preload_reload_count = 0
+        bpf_deferred_generation_records: List[Dict[str, Any]] = []
+        rolling_bpf_attach_capability_prepare: Dict[str, Any] = {}
+        bpf_attach_capability_prepare_delta_attach_count = 0
+        bpf_attach_capability_prepare_full_attach_count = 0
+        bpf_preload_work_queued_count = 0
+        base_generation_record: Dict[str, Any] = {}
+        base_generation_compiled_inputs: Dict[str, Any] = {}
+        generation_items: List[Dict[str, Any]] = []
+        horizon_maintenance_request: HorizonMaintenanceRequest | None = None
+        horizon_maintenance_queued_artifact = ""
+        preload_attach_reuse_audit_artifact: Path | None = None
+        frozen_compile_artifact: Path | None = None
+        frozen_compile_payload: Dict[str, Any] = {}
+        if _is_operational_clean_bpf_owned_args(args) and accepted_entries:
+            if active_session is None:
+                raise RuntimeError(
+                    "rolling_horizon_bpf_preload_missing_active_session:"
+                    f"{segment['segment_id']}"
+                )
+            readiness = dict(
+                dict(active_session.backend or {}).get("bpf_owned_readiness") or {}
+            )
+            if not readiness:
+                raise RuntimeError(
+                    "rolling_horizon_bpf_preload_missing_readiness:"
+                    f"{segment['segment_id']}"
+                )
+            state_contract_by_segment_key = {
+                str(item.get("segment_epoch_key") or ""): dict(item)
+                for item in list(
+                    host_plan_preparation.get("source_state_chain") or []
+                )
+                if str(item.get("role") or "") == "prepared_next_window_host_plan"
+            }
+            generation_items: List[Dict[str, Any]] = []
+            for entry in accepted_entries:
+                if str(entry.get("classification") or "") not in {
+                    "runtime_epoch",
+                    "parameter_epoch",
+                }:
+                    continue
+                if bool(entry.get("runtime_apply_allowed", True)) is not True:
+                    continue
+                segment_key_for_generation = str(entry.get("segment_epoch_key") or "")
+                entry_context = dict(context_by_key.get(segment_key_for_generation) or {})
+                if not entry_context:
+                    raise RuntimeError(
+                        "rolling_horizon_bpf_preload_missing_context:"
+                        f"{segment_key_for_generation}"
+                    )
+                generation_proof = _derive_bpf_owned_readiness_proof(
+                    runtime_update_plan=entry_context["runtime_update_plan"],
+                )
+                if generation_proof.get("logical_intent_ready") is not True:
+                    raise RuntimeError(
+                        "rolling_horizon_bpf_preload_intent_not_ready:"
+                        f"{segment_key_for_generation}:"
+                        f"{generation_proof.get('reason') or ''}"
+                    )
+                generation_snapshot = dict(
+                    entry_context["runtime_update_plan"].target_snapshot or {}
+                )
+                logical_generation_id = int(
+                    generation_snapshot.get("bpf_logical_generation_id")
+                    if generation_snapshot.get("bpf_logical_generation_id")
+                    not in (None, "", "None")
+                    else int(generation_proof.get("generation_id") or 0)
+                )
+                physical_generation_id = int(generation_proof.get("generation_id") or 0)
+                horizon_id = _horizon_id_for_queue_entry(entry)
+                generation_items.append(
+                    {
+                        "entry": dict(entry),
+                        "context": entry_context,
+                        "segment_epoch_key": segment_key_for_generation,
+                        "generation_id": physical_generation_id,
+                        "logical_generation_id": logical_generation_id,
+                        "physical_generation_id": physical_generation_id,
+                        "generation_slot_width": int(
+                            generation_snapshot.get("bpf_generation_slot_width")
+                            or bpf_generation_slot_width
+                            or 1
+                        ),
+                        "horizon_sequence_index": int(
+                            generation_snapshot.get(
+                                "bpf_generation_horizon_sequence_index"
+                            )
+                            or _horizon_sequence_index(
+                                horizon_id,
+                                fallback_index=segment_index,
+                            )
+                        ),
+                        "horizon_id": horizon_id,
+                        "horizon_generation_key": _horizon_generation_key(
+                            horizon_id=horizon_id,
+                            generation_id=logical_generation_id,
+                        ),
+                        "physical_horizon_generation_key": _horizon_generation_key(
+                            horizon_id=horizon_id,
+                            generation_id=physical_generation_id,
+                        ),
+                        "intent_hash": str(
+                            generation_proof.get("intent_hash") or ""
+                        ),
+                        "state_contract": dict(
+                            state_contract_by_segment_key.get(
+                                segment_key_for_generation
+                            )
+                            or {}
+                        ),
+                    }
+                )
+            retain_generation_ids = sorted(
+                {
+                    int(item)
+                    for item in list(readiness.get("prepared_generation_ids") or [])
+                    if str(item) not in {"", "None"}
+                }
+                | {int(item["generation_id"]) for item in generation_items}
+            )
+            prepared_generation_window_count = max(1, len(retain_generation_ids))
+
+            def _merge_bpf_attach_capability_into_readiness(
+                current_readiness: Mapping[str, Any],
+                attach_report: Mapping[str, Any],
+                *,
+                record: Mapping[str, Any],
+            ) -> Dict[str, Any]:
+                readiness_dict = dict(current_readiness or {})
+                prepare_steps = dict(readiness_dict.get("prepare_steps") or {})
+                real_backend_prepare = dict(
+                    prepare_steps.get("real_backend_prepare") or {}
+                )
+
+                merged_plan_sets: Dict[str, set[str]] = {}
+                for source_plan in (
+                    real_backend_prepare.get("attach_plan"),
+                    readiness_dict.get("attach_plan"),
+                    attach_report.get("attach_plan"),
+                ):
+                    for interface_ref, directions in dict(source_plan or {}).items():
+                        key = str(interface_ref)
+                        if not key:
+                            continue
+                        merged_plan_sets.setdefault(key, set()).update(
+                            str(direction)
+                            for direction in list(directions or [])
+                            if str(direction)
+                        )
+                merged_plan = {
+                    interface_ref: sorted(directions)
+                    for interface_ref, directions in sorted(merged_plan_sets.items())
+                }
+
+                merged_details: Dict[str, Dict[str, Any]] = {}
+                for detail_source in (
+                    real_backend_prepare.get("attached_interface_details"),
+                    readiness_dict.get("attached_interface_details"),
+                    attach_report.get("attached_interface_details"),
+                ):
+                    for detail_any in list(detail_source or []):
+                        detail = dict(detail_any or {})
+                        interface_ref = str(
+                            detail.get("interface_ref")
+                            or detail.get("interface_name")
+                            or ""
+                        )
+                        if not interface_ref:
+                            continue
+                        previous = dict(merged_details.get(interface_ref) or {})
+                        attach_directions = sorted(
+                            {
+                                *[
+                                    str(direction)
+                                    for direction in list(
+                                        previous.get("attach_directions") or []
+                                    )
+                                    if str(direction)
+                                ],
+                                *[
+                                    str(direction)
+                                    for direction in list(
+                                        detail.get("attach_directions") or []
+                                    )
+                                    if str(direction)
+                                ],
+                                *list(merged_plan.get(interface_ref) or []),
+                            }
+                        )
+                        expected_roles = sorted(
+                            {
+                                *[
+                                    str(role)
+                                    for role in list(previous.get("expected_roles") or [])
+                                    if str(role)
+                                ],
+                                *[
+                                    str(role)
+                                    for role in list(detail.get("expected_roles") or [])
+                                    if str(role)
+                                ],
+                            }
+                        )
+                        merged = {**previous, **detail, "interface_ref": interface_ref}
+                        if attach_directions:
+                            merged["attach_directions"] = attach_directions
+                        if expected_roles:
+                            merged["expected_roles"] = expected_roles
+                        merged_details[interface_ref] = merged
+                for interface_ref, directions in merged_plan.items():
+                    if interface_ref in merged_details:
+                        continue
+                    merged_details[interface_ref] = {
+                        "interface_ref": interface_ref,
+                        "interface_name": interface_ref,
+                        "attach_directions": list(directions),
+                    }
+                attached_interface_details = [
+                    merged_details[interface_ref]
+                    for interface_ref in sorted(merged_details)
+                ]
+                attached_interfaces = sorted(
+                    {
+                        *set(merged_plan.keys()),
+                        *{
+                            str(item)
+                            for item in list(
+                                readiness_dict.get("attached_interfaces") or []
+                            )
+                            if str(item)
+                        },
+                        *{
+                            str(item)
+                            for item in list(
+                                attach_report.get("attached_interfaces") or []
+                            )
+                            if str(item)
+                        },
+                    }
+                )
+                real_backend_prepare = {
+                    **real_backend_prepare,
+                    "attach_plan": merged_plan,
+                    "attached_interfaces": attached_interfaces,
+                    "attached_interface_details": attached_interface_details,
+                }
+                prepare_steps["real_backend_prepare"] = real_backend_prepare
+                prepare_steps["preactivation_attach_prepare"] = dict(attach_report)
+                records = [
+                    dict(item)
+                    for item in list(
+                        readiness_dict.get("preactivation_attach_prepare_records")
+                        or []
+                    )
+                    if isinstance(item, Mapping)
+                ]
+                records.append(dict(record))
+                return {
+                    **readiness_dict,
+                    "attach_plan": merged_plan,
+                    "attached_interfaces": attached_interfaces,
+                    "attached_interface_details": attached_interface_details,
+                    "prepare_steps": prepare_steps,
+                    "preactivation_attach_prepare": dict(attach_report),
+                    "preactivation_attach_prepare_records": records,
+                    "prepared_bpf_attach_capability_count": sum(
+                        len(list(detail.get("expected_roles") or []))
+                        for detail in attached_interface_details
+                    ),
+                    "prepared_bpf_attach_interface_count": len(
+                        attached_interface_details
+                    ),
+                }
+
+            if generation_items:
+                resident_attach_contexts: List[Any] = []
+                seen_resident_contexts: set[Tuple[str, str]] = set()
+                for item in generation_items:
+                    item_context = dict(item["context"])
+                    for resident_context in _realization_contexts(
+                        topology_path=_context_topology_path(item_context),
+                        topology_snapshot=item_context["snapshot"],
+                        runtime_update_plan=item_context["runtime_update_plan"],
+                    ):
+                        dedupe_key = (
+                            str(item["segment_epoch_key"]),
+                            str(getattr(resident_context, "flow_id", "")),
+                        )
+                        if dedupe_key in seen_resident_contexts:
+                            continue
+                        seen_resident_contexts.add(dedupe_key)
+                        resident_attach_contexts.append(resident_context)
+                seed_generation_item = dict(generation_items[0])
+                seed_context = dict(seed_generation_item["context"])
+                seed_attach_contexts = tuple(
+                    _realization_contexts(
+                        topology_path=_context_topology_path(seed_context),
+                        topology_snapshot=seed_context["snapshot"],
+                        runtime_update_plan=seed_context["runtime_update_plan"],
+                    )
+                )
+                _progress(
+                    phase="rolling_horizon_bpf_attach_capability_prepare",
+                    event_type=(
+                        "rolling_horizon_bpf_attach_capability_prepare_started"
+                    ),
+                    phase_detail={
+                        "segment_id": str(segment["segment_id"]),
+                        "horizon_id": str(
+                            segment.get("horizon_id") or segment["segment_id"]
+                        ),
+                        "generation_count": len(generation_items),
+                        "resident_context_count": len(resident_attach_contexts),
+                        "runtime_apply_allowed": False,
+                        "future_map_write_allowed": False,
+                        "active_generation_flip_allowed": False,
+                    },
+                    runtime_epochs_completed=runtime_count,
+                    parameter_epochs_completed=parameter_count,
+                )
+                attach_prepare_started = time.perf_counter()
+                attach_prepare_report = (
+                    _prepare_bpf_owned_preactivation_attach_capability(
+                        runtime_update_plan=seed_context["runtime_update_plan"],
+                        topology_path=_context_topology_path(seed_context),
+                        contexts=seed_attach_contexts,
+                        resident_attach_contexts=tuple(resident_attach_contexts),
+                        bpf_owned_readiness=readiness,
+                        retain_inactive_generations=retain_generation_ids,
+                        prepared_generation_window_count=(
+                            prepared_generation_window_count
+                        ),
+                    )
+                )
+                attach_budget_expansion = (
+                    _materialized_lookahead_attach_budget_expansion(
+                        attach_prepare_report=attach_prepare_report,
+                        rolling_host_additive_prepare=rolling_host_additive_prepare,
+                    )
+                )
+                if attach_budget_expansion.get("allowed") is True:
+                    expanded_budget = dict(
+                        attach_budget_expansion.get("budget") or {}
+                    )
+                    retry_plan = (
+                        _runtime_update_plan_with_bpf_resident_attach_budget(
+                            seed_context["runtime_update_plan"],
+                            expanded_budget,
+                        )
+                    )
+                    retry_started = time.perf_counter()
+                    retry_report = (
+                        _prepare_bpf_owned_preactivation_attach_capability(
+                            runtime_update_plan=retry_plan,
+                            topology_path=_context_topology_path(seed_context),
+                            contexts=seed_attach_contexts,
+                            resident_attach_contexts=tuple(resident_attach_contexts),
+                            bpf_owned_readiness=readiness,
+                            retain_inactive_generations=retain_generation_ids,
+                            prepared_generation_window_count=(
+                                prepared_generation_window_count
+                            ),
+                        )
+                    )
+                    attach_prepare_report = {
+                        **dict(retry_report),
+                        "budget_expansion_retry": True,
+                        "budget_expansion_retry_wall_seconds": round(
+                            time.perf_counter() - retry_started,
+                            6,
+                        ),
+                        "materialized_lookahead_attach_budget_expansion": dict(
+                            attach_budget_expansion
+                        ),
+                        "initial_attach_prepare_failure": {
+                            "reason": str(
+                                dict(attach_prepare_report).get("reason") or ""
+                            ),
+                            "attach_plan_count": len(
+                                dict(
+                                    dict(attach_prepare_report).get("attach_plan")
+                                    or {}
+                                )
+                            ),
+                            "attached_interface_count": len(
+                                list(
+                                    dict(attach_prepare_report).get(
+                                        "attached_interfaces"
+                                    )
+                                    or []
+                                )
+                            ),
+                            "resident_attach_coverage_budget": dict(
+                                dict(attach_prepare_report).get(
+                                    "resident_attach_coverage_budget"
+                                )
+                                or {}
+                            ),
+                        },
+                    }
+                else:
+                    attach_prepare_report = {
+                        **dict(attach_prepare_report),
+                        "materialized_lookahead_attach_budget_expansion": dict(
+                            attach_budget_expansion
+                        ),
+                    }
+                rolling_bpf_attach_capability_prepare = {
+                    **dict(attach_prepare_report),
+                    "segment_id": str(segment["segment_id"]),
+                    "horizon_id": str(
+                        segment.get("horizon_id") or segment["segment_id"]
+                    ),
+                    "maintenance_stage": (
+                        "runtime/horizon_replenishment/"
+                        "bpf_attach_capability_prepare"
+                    ),
+                    "generation_count": len(generation_items),
+                    "resident_context_count": len(resident_attach_contexts),
+                    "runtime_apply_allowed": False,
+                    "future_map_write_allowed": False,
+                    "active_generation_flip_allowed": False,
+                    "wall_seconds": round(
+                        time.perf_counter() - attach_prepare_started,
+                        6,
+                    ),
+                }
+                attach_prepare_artifact = (
+                    run_dir
+                    / "replenished_segments"
+                    / f"segment_{segment_index:03d}"
+                    / "rolling_horizon_bpf_attach_capability_prepare.json"
+                )
+                _write_json(
+                    attach_prepare_artifact,
+                    _json_safe(rolling_bpf_attach_capability_prepare),
+                )
+                bpf_attach_capability_prepare_delta_attach_count = int(
+                    rolling_bpf_attach_capability_prepare.get("delta_attach_count")
+                    or 0
+                )
+                bpf_attach_capability_prepare_full_attach_count = int(
+                    rolling_bpf_attach_capability_prepare.get("full_attach_count")
+                    or 0
+                )
+                attach_prepare_record = {
+                    "schema_version": (
+                        "skyseed-rolling-horizon-bpf-attach-capability-"
+                        "prepare-record-v1"
+                    ),
+                    "segment_id": str(segment["segment_id"]),
+                    "horizon_id": str(
+                        segment.get("horizon_id") or segment["segment_id"]
+                    ),
+                    "ok": bool(
+                        rolling_bpf_attach_capability_prepare.get("ok")
+                    ),
+                    "reason": str(
+                        rolling_bpf_attach_capability_prepare.get("reason")
+                        or ""
+                    ),
+                    "delta_attach_count": (
+                        bpf_attach_capability_prepare_delta_attach_count
+                    ),
+                    "full_attach_count": (
+                        bpf_attach_capability_prepare_full_attach_count
+                    ),
+                    "runtime_full_generation_reload_count": int(
+                        rolling_bpf_attach_capability_prepare.get(
+                            "runtime_full_generation_reload_count"
+                        )
+                        or 0
+                    ),
+                    "runtime_apply_skipped": True,
+                    "active_generation_set": False,
+                    "map_ready": False,
+                    "artifact_path": str(attach_prepare_artifact),
+                }
+                events.append(
+                    {
+                        "timestamp_utc": _timestamp_utc(),
+                        "event_type": (
+                            "rolling_horizon_bpf_attach_capability_"
+                            "prepare_completed"
+                        ),
+                        **attach_prepare_record,
+                    }
+                )
+                _progress(
+                    phase="rolling_horizon_bpf_attach_capability_prepare_completed",
+                    event_type=(
+                        "rolling_horizon_bpf_attach_capability_prepare_completed"
+                    ),
+                    phase_detail=attach_prepare_record,
+                    runtime_epochs_completed=runtime_count,
+                    parameter_epochs_completed=parameter_count,
+                )
+                if rolling_bpf_attach_capability_prepare.get("ok") is not True:
+                    failure_artifact = {
+                        "schema_version": (
+                            "skyseed-rolling-horizon-bpf-attach-capability-"
+                            "failure-v1"
+                        ),
+                        "segment_id": str(segment["segment_id"]),
+                        "horizon_id": str(
+                            segment.get("horizon_id") or segment["segment_id"]
+                        ),
+                        "reason": str(
+                            rolling_bpf_attach_capability_prepare.get("reason")
+                            or rolling_bpf_attach_capability_prepare.get(
+                                "blocked_stage"
+                            )
+                            or "unknown"
+                        ),
+                        "rolling_host_additive_prepare": dict(
+                            rolling_host_additive_prepare
+                        ),
+                        "attach_prepare": dict(
+                            rolling_bpf_attach_capability_prepare
+                        ),
+                    }
+                    _write_json(
+                        run_dir
+                        / "rolling_horizon_bpf_attach_capability_failure.json",
+                        _json_safe(failure_artifact),
+                    )
+                    raise RuntimeError(
+                        "rolling_horizon_bpf_attach_capability_prepare_failed:"
+                        f"{segment['segment_id']}:"
+                        + str(failure_artifact["reason"])
+                    )
+                readiness = _merge_bpf_attach_capability_into_readiness(
+                    readiness,
+                    rolling_bpf_attach_capability_prepare,
+                    record=attach_prepare_record,
+                )
+            base_generation_record = _bpf_active_base_generation_record_for_preload(
+                readiness
+            )
+            base_generation_compiled_inputs = dict(
+                base_generation_record.get("compiled_runtime_inputs") or {}
+            )
+            if base_generation_record.get("ok") is not True:
+                _write_json(
+                    run_dir
+                    / "rolling_horizon_bpf_preload_base_compiled_inputs_failure.json",
+                    _json_safe(
+                        {
+                            "schema_version": (
+                                "skyseed-rolling-horizon-bpf-preload-base-"
+                                "compiled-inputs-failure-v1"
+                            ),
+                            "segment_id": str(segment["segment_id"]),
+                            "horizon_id": str(
+                                segment.get("horizon_id") or segment["segment_id"]
+                            ),
+                            "reason": str(
+                                base_generation_record.get("reason")
+                                or "base_compiled_runtime_inputs_missing"
+                            ),
+                            "checked_sources": list(
+                                base_generation_record.get("checked_sources") or []
+                            ),
+                            "compact_summary_rejected": True,
+                        }
+                    ),
+                )
+                raise RuntimeError(
+                    "rolling_horizon_bpf_preload_base_compiled_inputs_missing:"
+                    f"{segment['segment_id']}"
+                )
+            frozen_compile_started = time.perf_counter()
+            frozen_compile_records: List[Dict[str, Any]] = []
+            frozen_compile_by_segment_key: Dict[str, Dict[str, Any]] = {}
+            frozen_interface_ifindex_cache: Dict[str, int] = {}
+            frozen_interface_mac_cache: Dict[str, str] = {}
+            for generation_item in generation_items:
+                generation_entry = dict(generation_item.get("entry") or {})
+                generation_context = dict(generation_item.get("context") or {})
+                physical_generation_id = int(
+                    generation_item.get("physical_generation_id")
+                    if generation_item.get("physical_generation_id")
+                    not in (None, "", "None")
+                    else generation_item.get("generation_id") or 0
+                )
+                segment_epoch_key = str(
+                    generation_item.get("segment_epoch_key") or ""
+                )
+                try:
+                    freeze_contexts = tuple(
+                        _realization_contexts(
+                            topology_path=_context_topology_path(generation_context),
+                            topology_snapshot=generation_context["snapshot"],
+                            runtime_update_plan=generation_context[
+                                "runtime_update_plan"
+                            ],
+                        )
+                    )
+                    target_compiled = _bpf_owned_compile_mpls_maps_for_contexts(
+                        contexts=freeze_contexts,
+                        generation_id=physical_generation_id,
+                        interface_ifindex_cache=frozen_interface_ifindex_cache,
+                        interface_mac_cache=frozen_interface_mac_cache,
+                    )
+                    overlay_compiled = _bpf_owned_planned_overlay_compiled_maps(
+                        target_compiled=target_compiled,
+                        base_compiled=base_generation_compiled_inputs,
+                        target_generation_id=physical_generation_id,
+                        base_generation_id=int(
+                            base_generation_record.get("physical_generation_id")
+                            or base_generation_record.get("generation_id")
+                            or 0
+                        ),
+                    )
+                    frozen_inputs = _bpf_owned_compiled_runtime_inputs(
+                        overlay_compiled
+                    )
+                    ready = _compiled_runtime_inputs_manifest_ready(
+                        frozen_inputs
+                    ) and not list(frozen_inputs.get("map_conflicts") or [])
+                    reason = (
+                        ""
+                        if ready
+                        else "frozen_compiled_runtime_inputs_invalid_or_conflicted"
+                    )
+                except Exception as exc:
+                    frozen_inputs = {}
+                    ready = False
+                    reason = str(exc) or exc.__class__.__name__
+                record = {
+                    "schema_version": (
+                        "skyseed-rolling-horizon-frozen-compiled-runtime-"
+                        "inputs-record-v1"
+                    ),
+                    "segment_epoch_key": segment_epoch_key,
+                    "epoch_id": str(generation_entry.get("epoch_id") or ""),
+                    "slice_id": str(generation_entry.get("slice_id") or ""),
+                    "horizon_id": str(generation_item.get("horizon_id") or ""),
+                    "physical_generation_id": physical_generation_id,
+                    "ok": bool(ready),
+                    "reason": str(reason),
+                    "compiled_runtime_inputs": dict(frozen_inputs),
+                    "compiled_runtime_inputs_summary": (
+                        _frozen_compiled_runtime_inputs_summary(frozen_inputs)
+                    ),
+                }
+                frozen_compile_records.append(record)
+                frozen_compile_by_segment_key[segment_epoch_key] = record
+            frozen_compile_artifact = (
+                run_dir
+                / "replenished_segments"
+                / f"segment_{segment_index:03d}"
+                / "rolling_horizon_frozen_compiled_runtime_inputs.json"
+            )
+            frozen_compile_payload = {
+                "schema_version": (
+                    "skyseed-rolling-horizon-frozen-compiled-runtime-inputs-v1"
+                ),
+                "segment_id": str(segment["segment_id"]),
+                "horizon_id": str(segment.get("horizon_id") or segment["segment_id"]),
+                "record_count": len(frozen_compile_records),
+                "ready_count": sum(
+                    1 for record in frozen_compile_records if record.get("ok") is True
+                ),
+                "failed_count": sum(
+                    1 for record in frozen_compile_records if record.get("ok") is not True
+                ),
+                "ok": all(record.get("ok") is True for record in frozen_compile_records),
+                "wall_seconds": round(time.perf_counter() - frozen_compile_started, 6),
+                "interface_cache_summary": {
+                    "scope": "rolling_horizon_freeze_compiled_inputs",
+                    "ifindex_cache_entry_count": len(frozen_interface_ifindex_cache),
+                    "mac_cache_entry_count": len(frozen_interface_mac_cache),
+                },
+                "records": [
+                    {
+                        key: _json_safe(value)
+                        for key, value in record.items()
+                        if key != "compiled_runtime_inputs"
+                    }
+                    for record in frozen_compile_records
+                ],
+            }
+            _write_json(frozen_compile_artifact, frozen_compile_payload)
+            if frozen_compile_payload["ok"] is not True:
+                _write_json(
+                    run_dir
+                    / "rolling_horizon_bpf_frozen_compiled_inputs_failure.json",
+                    _json_safe(frozen_compile_payload),
+                )
+                raise RuntimeError(
+                    "rolling_horizon_bpf_frozen_compiled_inputs_missing:"
+                    f"{segment['segment_id']}"
+                )
+            audit_started = time.perf_counter()
+            preload_attach_reuse_audit_artifact = (
+                run_dir
+                / "replenished_segments"
+                / f"segment_{segment_index:03d}"
+                / "rolling_horizon_bpf_preload_attach_reuse_audit.json"
+            )
+            preload_attach_reuse_audits = [
+                {
+                    "schema_version": (
+                        "skyseed-bpf-preactivation-preload-attach-reuse-audit-"
+                        "record-v1"
+                    ),
+                    "segment_epoch_key": str(
+                        generation_item.get("segment_epoch_key") or ""
+                    ),
+                    "horizon_id": str(generation_item.get("horizon_id") or ""),
+                    "physical_generation_id": int(
+                        generation_item.get("physical_generation_id")
+                        or generation_item.get("generation_id")
+                        or 0
+                    ),
+                    "logical_generation_id": int(
+                        generation_item.get("logical_generation_id")
+                        if generation_item.get("logical_generation_id")
+                        not in (None, "", "None")
+                        else generation_item.get("generation_id") or 0
+                    ),
+                    "ok": None,
+                    "reason": "deferred_to_horizon_maintenance_worker",
+                    "blocked_stage": "",
+                    "attach_reuse_eligible": None,
+                    "attach_strategy": "deferred_to_worker",
+                    "reuse_rejected_reason": "",
+                    "delta_attach_count": 0,
+                    "full_attach_count": 0,
+                    "interface_role_mismatch_count": 0,
+                    "ineligible_reason_counts": {},
+                    "interface_role_set_mismatches": [],
+                    "map_capacity_mismatches": [],
+                    "worker_fail_closed_validation_required": True,
+                }
+                for generation_item in generation_items
+            ]
+            preload_attach_reuse_audit_payload = {
+                "schema_version": (
+                    "skyseed-rolling-horizon-bpf-preload-attach-reuse-audit-v1"
+                ),
+                "segment_id": str(segment["segment_id"]),
+                "horizon_id": str(segment.get("horizon_id") or segment["segment_id"]),
+                "record_count": len(preload_attach_reuse_audits),
+                "failed_count": 0,
+                "ok": None,
+                "status": "deferred_to_horizon_maintenance_worker",
+                "audit_deferred": True,
+                "deferred_reason": (
+                    "avoid_runtime_loop_recompiling_future_generation_attach_plans"
+                ),
+                "worker_fail_closed_validation_required": True,
+                "wall_seconds": round(time.perf_counter() - audit_started, 6),
+                "base_generation_id": int(
+                    base_generation_record.get("physical_generation_id")
+                    or base_generation_record.get("generation_id")
+                    or 0
+                ),
+                "records": preload_attach_reuse_audits,
+            }
+            _write_json(
+                preload_attach_reuse_audit_artifact,
+                _json_safe(preload_attach_reuse_audit_payload),
+            )
+            queued_generation_items = list(generation_items)
+            bpf_preload_work_queued_count = len(queued_generation_items)
+            prepared_attach_capability_readiness = (
+                _prepared_attach_capability_readiness_for_preload(readiness)
+            )
+            for generation_item in queued_generation_items:
+                frozen_record = dict(
+                    frozen_compile_by_segment_key.get(
+                        str(generation_item.get("segment_epoch_key") or "")
+                    )
+                    or {}
+                )
+                bpf_preload_work_queue.append(
+                    _rolling_horizon_bpf_preload_work_item(
+                        segment_index=segment_index,
+                        segment_id=str(segment["segment_id"]),
+                        horizon_id=str(
+                            segment.get("horizon_id") or segment["segment_id"]
+                        ),
+                        generation_item=dict(generation_item),
+                        retain_generation_ids=retain_generation_ids,
+                        prepared_generation_window_count=(
+                            prepared_generation_window_count
+                        ),
+                        base_generation_record=base_generation_record,
+                        frozen_compiled_runtime_inputs=dict(
+                            frozen_record.get("compiled_runtime_inputs") or {}
+                        ),
+                        prepared_attach_capability_readiness=(
+                            prepared_attach_capability_readiness
+                        ),
+                    )
+                )
+            bpf_deferred_generation_records.extend(
+                [
+                    {
+                        **_rolling_horizon_queued_bpf_generation_record(
+                            generation_item=dict(item),
+                            entry=dict(dict(item).get("entry") or {}),
+                            state_contract=dict(dict(item).get("state_contract") or {}),
+                            bpf_generation_slot_width=bpf_generation_slot_width,
+                            retain_generation_ids=retain_generation_ids,
+                        ),
+                        "frozen_compiled_runtime_inputs_required": True,
+                        "frozen_compiled_runtime_inputs_summary": (
+                            _frozen_compiled_runtime_inputs_summary(
+                                dict(
+                                    dict(
+                                        frozen_compile_by_segment_key.get(
+                                            str(item.get("segment_epoch_key") or "")
+                                        )
+                                        or {}
+                                    ).get("compiled_runtime_inputs")
+                                    or {}
+                                )
+                            )
+                        ),
+                    }
+                    for item in queued_generation_items
+                ]
+            )
+            readiness = {
+                **dict(readiness),
+                "deferred_generation_records": list(bpf_deferred_generation_records),
+                "prepared_generation_ids": list(retain_generation_ids),
+                "prepared_generation_window_count": prepared_generation_window_count,
+                "rolling_horizon_generation_preload_deferred": bool(
+                    bpf_preload_work_queue
+                ),
+                "rolling_horizon_deferred_generation_count": len(
+                    bpf_preload_work_queue
+                ),
+                "rolling_horizon_queued_generation_count": len(
+                    bpf_preload_work_queue
+                ),
+            }
+            backend = dict(active_session.backend or {})
+            backend["bpf_owned_readiness"] = readiness
+            active_session = replace(active_session, backend=backend)
+            segment_preload_artifact = (
+                run_dir
+                / "replenished_segments"
+                / f"segment_{segment_index:03d}"
+                / "rolling_horizon_preloaded_bpf_generations.json"
+            )
+            segment_preload_artifact.parent.mkdir(parents=True, exist_ok=True)
+            segment_preload_payload = {
+                "schema_version": (
+                    "skyseed-rolling-horizon-preloaded-bpf-generations-v1"
+                ),
+                "records": [
+                    _compact_preloaded_generation_record(record)
+                    for record in bpf_preloaded_generation_records
+                ],
+                "record_count": len(bpf_preloaded_generation_records),
+                "deferred_records": list(bpf_deferred_generation_records),
+                "deferred_record_count": len(bpf_deferred_generation_records),
+                "queued_records": list(bpf_deferred_generation_records),
+                "queued_record_count": len(bpf_deferred_generation_records),
+                "base_generation_source": str(
+                    base_generation_record.get("source") or ""
+                ),
+                "base_generation_id": int(
+                    base_generation_record.get("generation_id") or 0
+                ),
+                "base_generation_compiled_inputs_summary": (
+                    _collection_artifact_summary(base_generation_compiled_inputs)
+                ),
+                "frozen_compiled_runtime_inputs_artifact": str(
+                    frozen_compile_artifact
+                ),
+                "frozen_compiled_runtime_inputs_record_count": int(
+                    frozen_compile_payload.get("record_count") or 0
+                ),
+                "frozen_compiled_runtime_inputs_ready_count": int(
+                    frozen_compile_payload.get("ready_count") or 0
+                ),
+                "segment_index": segment_index,
+                "segment_id": str(segment["segment_id"]),
+                "horizon_id": str(segment.get("horizon_id") or segment["segment_id"]),
+                "synchronous_generation_preload_skipped": False,
+                "skip_reason": "",
+            }
+            _write_json(segment_preload_artifact, segment_preload_payload)
+            _write_json(
+                run_dir
+                / "rolling_horizon_preloaded_bpf_generations.json",
+                {
+                    "schema_version": (
+                        "skyseed-rolling-horizon-preloaded-bpf-generation-index-v1"
+                    ),
+                    "latest_segment_index": segment_index,
+                    "segment_id": str(segment["segment_id"]),
+                    "horizon_id": str(
+                        segment.get("horizon_id") or segment["segment_id"]
+                    ),
+                    "latest_segment_artifact": str(segment_preload_artifact),
+                    "record_count": len(bpf_preloaded_generation_records),
+                    "deferred_record_count": len(bpf_deferred_generation_records),
+                    "queued_record_count": len(bpf_deferred_generation_records),
+                    "artifact_semantics": (
+                        "index_only_records_are_segment_scoped_to_prevent_"
+                        "rolling_horizon_artifact_overwrite"
+                    ),
+                },
+            )
+            horizon_maintenance_request = HorizonMaintenanceRequest(
+                segment_index=segment_index,
+                segment_id=str(segment["segment_id"]),
+                current_horizon_id=current_horizon_id_for_maintenance,
+                next_horizon_id=str(
+                    segment.get("horizon_id") or segment["segment_id"]
+                ),
+                previous_horizon_id=previous_horizon_id_for_cleanup,
+                source_state_id=str(current_state_id),
+                base_generation_id=int(
+                    base_generation_record.get("physical_generation_id")
+                    or base_generation_record.get("generation_id")
+                    or 0
+                ),
+                prepared_generation_ids=tuple(retain_generation_ids),
+                expected_preload_count=len(bpf_deferred_generation_records),
+                worker_mode=(
+                    "background_thread"
+                    if horizon_maintenance_worker_enabled
+                    else "synchronous"
+                ),
+                forbidden_work_policy={
+                    "future_host_link_activation_allowed": False,
+                    "runtime_full_reload_allowed": False,
+                    "full_attach_fallback_allowed": False,
+                    "active_generation_flip_allowed": False,
+                    "live_full_map_dump_diff_allowed": False,
+                    "target_generation_cleanup_scan_allowed": False,
+                    "generation_gc_scan_allowed": False,
+                },
+            )
+            horizon_maintenance_queued_payload = {
+                "schema_version": "skyseed-horizon-maintenance-queued-v1",
+                "request": horizon_maintenance_request.to_payload(),
+                "request_hash": horizon_maintenance_request.request_hash,
+                "segment_index": segment_index,
+                "segment_id": str(segment["segment_id"]),
+                "horizon_id": str(segment.get("horizon_id") or segment["segment_id"]),
+                "status": "queued",
+                "queued_preload_record_count": len(bpf_deferred_generation_records),
+                "expected_preload_count": len(bpf_deferred_generation_records),
+                "frozen_compiled_runtime_inputs_artifact": str(
+                    frozen_compile_artifact
+                ),
+                "frozen_compiled_runtime_inputs_required": True,
+                "frozen_compiled_runtime_inputs_ready_count": int(
+                    frozen_compile_payload.get("ready_count") or 0
+                ),
+                "ready_artifact_name": "horizon_maintenance_ready.json",
+                "ready_requires_inactive_preload_completion": True,
+                "worker_mode": (
+                    "background_thread"
+                    if horizon_maintenance_worker_enabled
+                    else "synchronous"
+                ),
+            }
+            horizon_maintenance_queued_path = (
+                run_dir
+                / "replenished_segments"
+                / f"segment_{segment_index:03d}"
+                / "horizon_maintenance_queued.json"
+            )
+            _write_json(horizon_maintenance_queued_path, horizon_maintenance_queued_payload)
+            horizon_maintenance_queued_artifact = str(horizon_maintenance_queued_path)
+            if horizon_maintenance_worker_enabled:
+                with horizon_maintenance_state_lock:
+                    horizon_maintenance_pending_by_horizon[
+                        str(segment.get("horizon_id") or segment["segment_id"])
+                    ] = {
+                        "request": horizon_maintenance_request,
+                        "segment_dir": str(horizon_maintenance_queued_path.parent),
+                        "host_additive_prepare": dict(rolling_host_additive_prepare),
+                        "attach_capability_prepare": dict(
+                            rolling_bpf_attach_capability_prepare
+                        ),
+                        "base_generation_record": dict(base_generation_record),
+                        "queued_preload_records": list(bpf_deferred_generation_records),
+                        "worker_started": False,
+                        "queued_artifact": str(horizon_maintenance_queued_path),
+                        "maintenance_started": maintenance_started,
+                    }
+                _start_horizon_maintenance_preload_worker(
+                    horizon_id=str(segment.get("horizon_id") or segment["segment_id"]),
+                )
+        maintenance_wall_seconds = round(
+            time.perf_counter() - maintenance_started,
+            6,
+        )
+        maintenance_event = {
+            "schema_version": "skyseed-rolling-horizon-maintenance-event-v1",
+            "event_type": "rolling_horizon_window_maintenance",
+            "window_model": "previous_current_next_triple_buffer",
+            "segment_index": segment_index,
+            "current_horizon_id": current_horizon_id_for_maintenance,
+            "prepared_next_horizon_id": str(
+                segment.get("horizon_id") or segment["segment_id"]
+            ),
+            "cleanup_previous_horizon_id": previous_horizon_id_for_cleanup,
+            "accepted_event_count": len(accepted_entries),
+            "accepted_runtime_event_count": sum(
+                1
+                for item in accepted_entries
+                if str(item.get("classification") or "") == "runtime_epoch"
+            ),
+            "accepted_parameter_event_count": sum(
+                1
+                for item in accepted_entries
+                if str(item.get("classification") or "") == "parameter_epoch"
+            ),
+            "prepared_host_plan_count": int(
+                host_plan_preparation.get("prepared_host_plan_count") or 0
+            ),
+            "prepared_host_plan_keys": sorted(
+                dict(
+                    host_plan_preparation.get(
+                        "prepared_host_plan_by_segment_key"
+                    )
+                    or {}
+                ).keys()
+            ),
+            "source_state_chain": list(
+                host_plan_preparation.get("source_state_chain") or []
+            ),
+            "host_additive_prepare": dict(rolling_host_additive_prepare),
+            "bpf_attach_capability_prepare": dict(
+                rolling_bpf_attach_capability_prepare
+            ),
+            "bpf_attach_capability_prepare_delta_attach_count": (
+                bpf_attach_capability_prepare_delta_attach_count
+            ),
+            "bpf_attach_capability_prepare_full_attach_count": (
+                bpf_attach_capability_prepare_full_attach_count
+            ),
+            "host_additive_prepare_completed": bool(
+                rolling_host_additive_prepare.get("additive_prepare_completed")
+            ),
+            "host_additive_prepare_resource_created_count": int(
+                rolling_host_additive_prepare.get("resource_created_count") or 0
+            ),
+            "host_additive_prepare_resource_reused_count": int(
+                rolling_host_additive_prepare.get("resource_reused_count") or 0
+            ),
+            "bpf_preloaded_generation_count": len(
+                [
+                    record
+                    for record in bpf_preloaded_generation_records
+                    if record.get("inactive_generation_written") is True
+                ]
+            ),
+            "bpf_deferred_generation_count": len(bpf_deferred_generation_records),
+            "bpf_preload_work_queued_count": bpf_preload_work_queued_count,
+            "bpf_preload_work_queue_depth": len(bpf_preload_work_queue),
+            "frozen_compiled_runtime_inputs_artifact": (
+                str(frozen_compile_artifact)
+                if generation_items and frozen_compile_artifact is not None
+                else ""
+            ),
+            "frozen_compiled_runtime_inputs_required": bool(generation_items),
+            "frozen_compiled_runtime_inputs_ready_count": int(
+                frozen_compile_payload.get("ready_count") if generation_items else 0
+            ),
+            "horizon_maintenance_module": "satellite.horizon_maintenance",
+            "horizon_maintenance_worker_mode": (
+                "background_thread"
+                if horizon_maintenance_worker_enabled
+                else "synchronous"
+            ),
+            "horizon_maintenance_request_hash": (
+                horizon_maintenance_request.request_hash
+                if horizon_maintenance_request is not None
+                else ""
+            ),
+            "horizon_maintenance_queued_artifact": (
+                horizon_maintenance_queued_artifact
+            ),
+            "horizon_maintenance_ready_artifact": "",
+            "horizon_maintenance_status": (
+                "worker_queued"
+                if horizon_maintenance_request is not None
+                and horizon_maintenance_worker_enabled
+                else "not_applicable"
+            ),
+            "preload_attach_reuse_audit_artifact": (
+                str(preload_attach_reuse_audit_artifact)
+                if preload_attach_reuse_audit_artifact is not None
+                else ""
+            ),
+            "preload_attach_reuse_audit_status": (
+                "deferred_to_horizon_maintenance_worker"
+                if horizon_maintenance_worker_enabled
+                and bpf_preload_work_queued_count
+                else (
+                    "not_applicable"
+                    if not bpf_preload_work_queued_count
+                    else "synchronous"
+                )
+            ),
+            "worker_fail_closed_attach_reuse_validation_required": bool(
+                horizon_maintenance_worker_enabled and bpf_preload_work_queued_count
+            ),
+            "synchronous_generation_preload_skipped": bool(
+                bpf_deferred_generation_records
+            ),
+            "bpf_preload_delta_attach_count": bpf_preload_delta_attach_count,
+            "bpf_preload_full_attach_count": bpf_preload_full_attach_count,
+            "bpf_preload_runtime_full_generation_reload_count": (
+                bpf_preload_reload_count
+            ),
+            "maintenance_wall_seconds": maintenance_wall_seconds,
+            "lookahead_preload_event_count": len(
+                list(segment.get("lookahead_preload_queue") or [])
+            ),
+            "maintenance_stage": "runtime/horizon_replenishment",
+            "blocking_epoch_transition": True,
+            "blocking_reason": (
+                "synchronous_next_horizon_host_and_attach_capability_prepare_"
+                "worker_handles_attach_reuse_validation_and_inactive_preload"
+                if horizon_maintenance_worker_enabled
+                else (
+                    "synchronous_next_horizon_host_and_attach_capability_prepare_"
+                    "in_current_loop"
+                )
+            ),
+            "blocking_components": [
+                "host_additive_prepare",
+                "bpf_attach_capability_prepare",
+                *(
+                    ["bpf_generation_preactivation_preload"]
+                    if bpf_preloaded_generation_records
+                    else []
+                ),
+            ],
+            "generation_preload_blocking_epoch_transition": bool(
+                bpf_preloaded_generation_records
+            ),
+            "generation_preload_blocking_reason": (
+                "rolling_horizon_generation_preload_queued_for_epoch_work"
+                if bpf_deferred_generation_records
+                else (
+                    "bounded_parallel_preactivation_preload"
+                    if bpf_preloaded_generation_records
+                    else ""
+                )
+            ),
+            "active_generation_flip_allowed": False,
+            "runtime_apply_allowed_for_prepared_horizon": False,
+            "preapply_qdisc_parameter_updates_allowed": False,
+            "future_host_link_state_apply_allowed": False,
+            "future_forwarding_state_apply_allowed": False,
+            "runtime_recompute_network_mutation_plan_allowed": False,
+            "delta_attach_allowed": False,
+            "full_attach_allowed": False,
+            "full_generation_reload_allowed": False,
+            "cleanup_previous_after_boundary": bool(previous_horizon_id_for_cleanup),
+            "status": "next_horizon_contexts_registered",
+        }
+        horizon_maintenance_events.append(maintenance_event)
         segment_queue.sort(
             key=lambda item: (
                 float(item.get("activation_relative_time_seconds", 0.0)),
@@ -15341,6 +21897,7 @@ def _run_live_temporal_runtime(
                 "orbit_sample_count": segment["summary"]["orbit_sample_count"],
                 "runtime_epoch_count": segment["summary"]["runtime_epoch_count"],
                 "parameter_epoch_count": segment["summary"]["parameter_epoch_count"],
+                "horizon_maintenance_event": maintenance_event,
             }
         )
         _progress(
@@ -15394,7 +21951,7 @@ def _run_live_temporal_runtime(
             if entry_context is None:
                 continue
             for runtime_context in _realization_contexts(
-                topology_path=topology_path,
+                topology_path=_context_topology_path(entry_context),
                 topology_snapshot=entry_context["snapshot"],
                 runtime_update_plan=entry_context["runtime_update_plan"],
             ):
@@ -15428,7 +21985,7 @@ def _run_live_temporal_runtime(
             entry_context = dict(preload_selection["context"])
             contexts = tuple(
                 _realization_contexts(
-                    topology_path=topology_path,
+                    topology_path=_context_topology_path(entry_context),
                     topology_snapshot=entry_context["snapshot"],
                     runtime_update_plan=entry_context["runtime_update_plan"],
                 )
@@ -15461,6 +22018,16 @@ def _run_live_temporal_runtime(
     if first_runtime_entry is not None:
         first_segment_key = str(first_runtime_entry.get("segment_epoch_key"))
         first_context = context_by_key.get(first_segment_key)
+        if first_context is not None and _is_operational_clean_bpf_owned_args(args):
+            first_context = _runtime_context_with_bpf_runtime_plan_overlays(
+                first_context,
+                generation_assignment=bpf_generation_slot_assignments.get(
+                    first_segment_key
+                )
+                or {},
+                resident_attach_budget=bpf_resident_attach_budget,
+            )
+            context_by_key[first_segment_key] = dict(first_context)
         if first_context is not None:
             selected_slice_ids_for_prewarm = _prewarm_selected_slice_ids_for_horizon(
                 segment_queue=segment_queue,
@@ -15717,6 +22284,19 @@ def _run_live_temporal_runtime(
                 first_horizon_host_install_operations = list(
                     getattr(first_host_plan, "operations", []) or []
                 )
+                first_horizon_host_install_apply_plan = first_host_plan
+                first_horizon_host_install_bpf_parameter_skip: Dict[str, Any] = {
+                    "enabled": False,
+                    "skipped_parameter_update_count": 0,
+                }
+                (
+                    first_horizon_host_install_apply_plan,
+                    first_horizon_host_install_bpf_parameter_skip,
+                ) = _bpf_owned_host_plan_without_parameter_updates(first_host_plan)
+                first_horizon_host_install_apply_operations = list(
+                    getattr(first_horizon_host_install_apply_plan, "operations", [])
+                    or []
+                )
                 install_started_at = time.perf_counter()
                 _progress(
                     phase="current_horizon_host_install",
@@ -15732,16 +22312,22 @@ def _run_live_temporal_runtime(
                         "planned_operation_count": len(
                             first_horizon_host_install_operations
                         ),
+                        "apply_operation_count": len(
+                            first_horizon_host_install_apply_operations
+                        ),
+                        "bpf_owned_host_parameter_skip": dict(
+                            first_horizon_host_install_bpf_parameter_skip
+                        ),
                         "reconcile_slot_count": len(prewarm_slot_names),
                         "install_stage": "startup/current_horizon_host_install",
                         "runtime_epoch_host_materialization_allowed": False,
                     },
                 )
-                if first_horizon_host_install_operations:
+                if first_horizon_host_install_apply_operations:
                     install_result = network_executor.apply(
                         topology_path=topology_path,
                         link_state_path=link_state_path,
-                        network_mutation_plan=first_host_plan,
+                        network_mutation_plan=first_horizon_host_install_apply_plan,
                         reconcile_slot_names=prewarm_slot_names,
                     )
                     install_report = install_result.to_dict()
@@ -15786,7 +22372,7 @@ def _run_live_temporal_runtime(
                         host_entry={
                             "epoch_type": "current_horizon_host_install",
                             "segment_epoch_key": first_segment_key,
-                            "host_plan": first_host_plan,
+                            "host_plan": first_horizon_host_install_apply_plan,
                             "applied_operations": install_applied_operations,
                         },
                         operational_clean_active_only=(
@@ -15817,8 +22403,17 @@ def _run_live_temporal_runtime(
                     "source_state_id": first_horizon_host_install_source_state_id,
                     "target_state_id": first_horizon_host_install_target_state_id,
                     "host_plan_mutation_id": first_host_plan.mutation_id,
+                    "apply_host_plan_mutation_id": (
+                        first_horizon_host_install_apply_plan.mutation_id
+                    ),
                     "planned_operation_count": len(
                         first_horizon_host_install_operations
+                    ),
+                    "apply_operation_count": len(
+                        first_horizon_host_install_apply_operations
+                    ),
+                    "bpf_owned_host_parameter_skip": dict(
+                        first_horizon_host_install_bpf_parameter_skip
                     ),
                     "applied_operation_count": len(install_applied_operations),
                     "wall_seconds": install_wall_seconds,
@@ -15833,6 +22428,9 @@ def _run_live_temporal_runtime(
                     phase_timing[
                         "current_horizon_host_install_operation_count"
                     ] = len(first_horizon_host_install_operations)
+                    phase_timing[
+                        "current_horizon_host_install_apply_operation_count"
+                    ] = len(first_horizon_host_install_apply_operations)
                 events.append(
                     {
                         "timestamp_utc": _timestamp_utc(),
@@ -15862,7 +22460,7 @@ def _run_live_temporal_runtime(
             if _is_operational_clean_bpf_owned_args(args):
                 pre_runtime_contexts = tuple(
                     _realization_contexts(
-                        topology_path=topology_path,
+                        topology_path=_context_topology_path(first_context),
                         topology_snapshot=first_context["snapshot"],
                         runtime_update_plan=first_context["runtime_update_plan"],
                     )
@@ -15896,11 +22494,23 @@ def _run_live_temporal_runtime(
                     if entry_context_for_state is None:
                         continue
                     snapshot_for_state = entry_context_for_state["snapshot"]
+                    host_plan_source_state_id_for_lookup = generation_source_state_id
+                    if (
+                        current_horizon_host_install_completed
+                        and segment_key_for_state
+                        == current_horizon_host_install_segment_key
+                    ):
+                        host_plan_source_state_id_for_lookup = str(
+                            dict(current_horizon_host_install or {}).get(
+                                "source_state_id"
+                            )
+                            or generation_source_state_id
+                        )
                     host_plan_for_state = _host_plan_for_segment(
                         segment_key=segment_key_for_state,
                         snapshot=snapshot_for_state,
                         source_state=generation_source_state,
-                        source_state_id=generation_source_state_id,
+                        source_state_id=host_plan_source_state_id_for_lookup,
                     )
                     target_state_id = (
                         f"live_state:{snapshot_for_state.snapshot_id}:"
@@ -16001,18 +22611,53 @@ def _run_live_temporal_runtime(
                     )
                     if generation_proof.get("logical_intent_ready") is not True:
                         continue
+                    generation_snapshot = dict(
+                        entry_context["runtime_update_plan"].target_snapshot or {}
+                    )
+                    logical_generation_id = int(
+                        generation_snapshot.get("bpf_logical_generation_id")
+                        if generation_snapshot.get("bpf_logical_generation_id")
+                        not in (None, "", "None")
+                        else int(generation_proof.get("generation_id") or 0)
+                    )
+                    physical_generation_id = int(
+                        generation_proof.get("generation_id") or 0
+                    )
+                    horizon_id = _horizon_id_for_queue_entry(entry)
                     pre_runtime_generation_entries.append(
                         {
                             "entry": entry,
                             "context": entry_context,
                             "segment_epoch_key": segment_key_for_generation,
-                            "generation_id": int(
-                                generation_proof.get("generation_id") or 0
+                            "generation_id": physical_generation_id,
+                            "logical_generation_id": logical_generation_id,
+                            "physical_generation_id": physical_generation_id,
+                            "generation_slot_width": int(
+                                generation_snapshot.get("bpf_generation_slot_width")
+                                or bpf_generation_slot_width
+                                or 1
+                            ),
+                            "horizon_sequence_index": int(
+                                generation_snapshot.get(
+                                    "bpf_generation_horizon_sequence_index"
+                                )
+                                or _horizon_sequence_index(
+                                    horizon_id,
+                                    fallback_index=max(0, current_horizon_index),
+                                )
                             ),
                             "intent_hash": str(
                                 generation_proof.get("intent_hash") or ""
                             ),
-                            "horizon_id": _horizon_id_for_queue_entry(entry),
+                            "horizon_id": horizon_id,
+                            "horizon_generation_key": _horizon_generation_key(
+                                horizon_id=horizon_id,
+                                generation_id=logical_generation_id,
+                            ),
+                            "physical_horizon_generation_key": _horizon_generation_key(
+                                horizon_id=horizon_id,
+                                generation_id=physical_generation_id,
+                            ),
                             "state_contract": dict(
                                 generation_state_contract_by_segment_key.get(
                                     segment_key_for_generation
@@ -16031,18 +22676,38 @@ def _run_live_temporal_runtime(
                     1,
                     len(prepared_generation_ids),
                 )
+                bpf_map_capacity_generation_window_count = (
+                    _bpf_map_capacity_generation_window_count(
+                        generation_slot_width=bpf_generation_slot_width,
+                        observed_generation_count=prepared_generation_window_count,
+                    )
+                )
+
+                def _pre_runtime_bpf_prepare_progress(
+                    detail: Mapping[str, Any],
+                ) -> None:
+                    _progress(
+                        phase="pre_runtime_bpf_owned_prepare",
+                        event_type="pre_runtime_bpf_owned_prepare_progress",
+                        phase_detail={
+                            "segment_epoch_key": first_segment_key,
+                            **dict(detail),
+                        },
+                    )
+
                 pre_runtime_prepare_started = time.perf_counter()
                 pre_runtime_bpf_owned_readiness = _prepare_bpf_owned_readiness(
                     runtime_update_plan=first_context["runtime_update_plan"],
-                    topology_path=topology_path,
+                    topology_path=_context_topology_path(first_context),
                     contexts=pre_runtime_contexts,
                     resident_attach_contexts=pre_runtime_resident_contexts,
                     bpf_owned_readiness=None,
                     fail_closed_on_reuse_miss=False,
                     retain_inactive_generations=prepared_generation_ids,
                     prepared_generation_window_count=(
-                        prepared_generation_window_count
+                        bpf_map_capacity_generation_window_count
                     ),
+                    progress_callback=_pre_runtime_bpf_prepare_progress,
                 )
                 pre_runtime_prepare_wall = round(
                     time.perf_counter() - pre_runtime_prepare_started,
@@ -16076,39 +22741,244 @@ def _run_live_temporal_runtime(
                     pre_runtime_prepare.get("initial_bpf_owned_prepare_count") or 0
                 )
                 if pre_runtime_bpf_owned_readiness.get("ready") is not True:
+                    pre_runtime_failure_reason = str(
+                        pre_runtime_bpf_owned_readiness.get("reason")
+                        or "bpf_owned_readiness_not_ready"
+                    )
+                    pre_runtime_failure_report = {
+                        "schema_version": "skyseed-pre-runtime-bpf-owned-prepare-v1",
+                        "stage": "pre-runtime/bootstrap/prepare",
+                        "event_id": first_runtime_entry.get("epoch_id"),
+                        "segment_epoch_key": first_segment_key,
+                        "slice_id": first_runtime_entry.get("slice_id"),
+                        "ready": False,
+                        "ok": False,
+                        "reason": pre_runtime_failure_reason,
+                        "classification": str(
+                            pre_runtime_bpf_owned_readiness.get("classification")
+                            or ""
+                        ),
+                        "pre_runtime_prepare_wall_time": pre_runtime_prepare_wall,
+                        "pre_runtime_prepare_wall_seconds": pre_runtime_prepare_wall,
+                        "pre_runtime_attach_wall_time": pre_runtime_attach_wall,
+                        "pre_runtime_attach_wall_seconds": pre_runtime_attach_wall,
+                        "pre_runtime_dirty_recovery_wall_time": (
+                            pre_runtime_dirty_recovery_wall
+                        ),
+                        "pre_runtime_dirty_recovery_wall_seconds": (
+                            pre_runtime_dirty_recovery_wall
+                        ),
+                        "pre_runtime_attach_count": int(
+                            pre_runtime_prepare.get("full_attach_count") or 0
+                        )
+                        + int(pre_runtime_prepare.get("delta_attach_count") or 0),
+                        "pre_runtime_full_attach_count": int(
+                            pre_runtime_prepare.get("full_attach_count") or 0
+                        ),
+                        "pre_runtime_delta_attach_count": int(
+                            pre_runtime_prepare.get("delta_attach_count") or 0
+                        ),
+                        "initial_bpf_owned_prepare_count": (
+                            pre_runtime_initial_prepare_count
+                        ),
+                        "dirty_recovery_reset_count": (
+                            pre_runtime_dirty_recovery_reset_count
+                        ),
+                        "runtime_attach_allowed": False,
+                        "runtime_delta_attach_allowed": False,
+                        "runtime_full_attach_allowed": False,
+                        "runtime_dirty_recovery_allowed": False,
+                        "runtime_attach_contract_guard_connected": True,
+                        "runtime_epoch_timing_excludes_pre_runtime_prepare": True,
+                        "resident_attach_coverage_budget": dict(
+                            pre_runtime_bpf_owned_readiness.get(
+                                "resident_attach_coverage_budget"
+                            )
+                            or {}
+                        ),
+                        "bpf_attach_budget": dict(
+                            pre_runtime_bpf_owned_readiness.get("bpf_attach_budget")
+                            or {}
+                        ),
+                        "attach_cardinality_budget": dict(
+                            pre_runtime_bpf_owned_readiness.get(
+                                "attach_cardinality_budget"
+                            )
+                            or pre_runtime_prepare.get("attach_cardinality_budget")
+                            or {}
+                        ),
+                        "resident_attach_coverage": dict(
+                            pre_runtime_bpf_owned_readiness.get(
+                                "resident_attach_coverage"
+                            )
+                            or pre_runtime_prepare.get("resident_attach_coverage")
+                            or {}
+                        ),
+                        "prepared_generation_ids": list(prepared_generation_ids),
+                        "prepared_generation_window_count": (
+                            prepared_generation_window_count
+                        ),
+                        "bpf_map_capacity_generation_window_count": (
+                            bpf_map_capacity_generation_window_count
+                        ),
+                        "readiness": _compact_bpf_owned_readiness_for_artifact(
+                            pre_runtime_bpf_owned_readiness
+                        ),
+                    }
+                    _write_json(
+                        run_dir / "pre_runtime_bpf_owned_prepare.json",
+                        pre_runtime_failure_report,
+                    )
+                    events.append(
+                        {
+                            "timestamp_utc": _timestamp_utc(),
+                            "event_type": "pre_runtime_bpf_owned_prepare_failed",
+                            "segment_epoch_key": first_segment_key,
+                            "ready": False,
+                            "reason": pre_runtime_failure_reason,
+                            "pre_runtime_prepare_wall_seconds": (
+                                pre_runtime_prepare_wall
+                            ),
+                            "attach_cardinality_budget": dict(
+                                pre_runtime_failure_report.get(
+                                    "attach_cardinality_budget"
+                                )
+                                or {}
+                            ),
+                        }
+                    )
+                    _progress(
+                        phase="pre_runtime_bpf_owned_prepare",
+                        event_type="pre_runtime_bpf_owned_prepare_failed",
+                        phase_detail={
+                            "segment_epoch_key": first_segment_key,
+                            "reason": pre_runtime_failure_reason,
+                            "pre_runtime_prepare_wall_seconds": (
+                                pre_runtime_prepare_wall
+                            ),
+                        },
+                    )
                     raise RuntimeError(
                         "pre_runtime_bpf_owned_prepare_failed:"
-                        + str(
-                            pre_runtime_bpf_owned_readiness.get("reason")
-                            or "bpf_owned_readiness_not_ready"
-                        )
+                        + pre_runtime_failure_reason
                     )
                 first_generation_id = int(
                     pre_runtime_bpf_owned_readiness.get("generation_id") or 0
                 )
+                pre_runtime_base_compiled_inputs = dict(
+                    dict(
+                        dict(
+                            pre_runtime_bpf_owned_readiness.get("prepare_steps") or {}
+                        ).get("real_backend_prepare")
+                        or {}
+                    ).get("compiled_runtime_inputs")
+                    or pre_runtime_bpf_owned_readiness.get("compiled_runtime_inputs")
+                    or {}
+                )
                 preloaded_generation_records: List[Dict[str, Any]] = []
                 preload_window_started = time.perf_counter()
-                for generation_item in pre_runtime_generation_entries:
-                    if int(generation_item["generation_id"]) == first_generation_id:
-                        continue
+                pre_runtime_preload_generation_entries = [
+                    item
+                    for item in pre_runtime_generation_entries
+                    if int(item["generation_id"]) != first_generation_id
+                ]
+                pre_runtime_preload_total = len(
+                    pre_runtime_preload_generation_entries
+                )
+                if pre_runtime_preload_total:
+                    _progress(
+                        phase="pre_runtime_bpf_owned_prepare",
+                        event_type="pre_runtime_bpf_owned_prepare_progress",
+                        phase_detail={
+                            "segment_epoch_key": first_segment_key,
+                            "stage": "pre_runtime_generation_preload_window_started",
+                            "generation_id": first_generation_id,
+                            "preload_generation_count": pre_runtime_preload_total,
+                            "prepared_generation_ids": list(prepared_generation_ids),
+                            "retain_inactive_generations": list(
+                                prepared_generation_ids
+                            ),
+                        },
+                    )
+                for preload_index, generation_item in enumerate(
+                    pre_runtime_preload_generation_entries,
+                    start=1,
+                ):
                     entry = dict(generation_item["entry"])
                     entry_context = dict(generation_item["context"])
+                    preload_generation_started = time.perf_counter()
+                    preload_generation_id = int(generation_item["generation_id"])
+                    preload_segment_key = str(
+                        generation_item["segment_epoch_key"]
+                    )
+                    _progress(
+                        phase="pre_runtime_bpf_owned_prepare",
+                        event_type="pre_runtime_bpf_owned_prepare_progress",
+                        phase_detail={
+                            "segment_epoch_key": first_segment_key,
+                            "stage": "pre_runtime_generation_preload_started",
+                            "preload_index": preload_index,
+                            "preload_generation_count": pre_runtime_preload_total,
+                            "preload_segment_epoch_key": preload_segment_key,
+                            "preload_generation_id": preload_generation_id,
+                            "preload_horizon_id": str(
+                                generation_item.get("horizon_id") or ""
+                            ),
+                        },
+                    )
+
+                    def _pre_runtime_generation_preload_progress(
+                        detail: Mapping[str, Any],
+                        *,
+                        preload_index: int = preload_index,
+                        preload_generation_id: int = preload_generation_id,
+                        preload_segment_key: str = preload_segment_key,
+                    ) -> None:
+                        _progress(
+                            phase="pre_runtime_bpf_owned_prepare",
+                            event_type="pre_runtime_bpf_owned_prepare_progress",
+                            phase_detail={
+                                "segment_epoch_key": first_segment_key,
+                                "stage": (
+                                    "pre_runtime_generation_preload_"
+                                    + str(dict(detail).get("stage") or "progress")
+                                ),
+                                "preload_index": preload_index,
+                                "preload_generation_count": (
+                                    pre_runtime_preload_total
+                                ),
+                                "preload_segment_epoch_key": preload_segment_key,
+                                "preload_generation_id": preload_generation_id,
+                                **dict(detail),
+                            },
+                        )
+
                     preload_contexts = tuple(
                         _realization_contexts(
-                            topology_path=topology_path,
+                            topology_path=_context_topology_path(entry_context),
                             topology_snapshot=entry_context["snapshot"],
                             runtime_update_plan=entry_context["runtime_update_plan"],
                         )
                     )
                     preload_report = _prepare_bpf_owned_preactivation_preload(
                         runtime_update_plan=entry_context["runtime_update_plan"],
-                        topology_path=topology_path,
+                        topology_path=_context_topology_path(entry_context),
                         contexts=preload_contexts,
                         bpf_owned_readiness=dict(pre_runtime_bpf_owned_readiness),
                         retain_inactive_generations=prepared_generation_ids,
                         prepared_generation_window_count=(
-                            prepared_generation_window_count
+                            bpf_map_capacity_generation_window_count
                         ),
+                        base_generation_compiled_inputs=(
+                            pre_runtime_base_compiled_inputs or None
+                        ),
+                        progress_callback=(
+                            _pre_runtime_generation_preload_progress
+                        ),
+                    )
+                    preload_generation_wall = round(
+                        time.perf_counter() - preload_generation_started,
+                        6,
                     )
                     record_payload = {
                         "segment_epoch_key": generation_item["segment_epoch_key"],
@@ -16116,7 +22986,36 @@ def _run_live_temporal_runtime(
                         "slice_id": entry.get("slice_id"),
                         "horizon_id": str(generation_item.get("horizon_id") or ""),
                         "generation_id": int(generation_item["generation_id"]),
+                        "logical_generation_id": int(
+                            generation_item.get("logical_generation_id")
+                            if generation_item.get("logical_generation_id")
+                            not in (None, "", "None")
+                            else generation_item["generation_id"]
+                        ),
+                        "physical_generation_id": int(
+                            generation_item.get("physical_generation_id")
+                            if generation_item.get("physical_generation_id")
+                            not in (None, "", "None")
+                            else generation_item["generation_id"]
+                        ),
+                        "generation_slot_width": int(
+                            generation_item.get("generation_slot_width")
+                            or bpf_generation_slot_width
+                            or 1
+                        ),
+                        "horizon_sequence_index": int(
+                            generation_item.get("horizon_sequence_index") or 0
+                        ),
                         "horizon_generation_key": _horizon_generation_key(
+                            horizon_id=str(generation_item.get("horizon_id") or ""),
+                            generation_id=int(
+                                generation_item.get("logical_generation_id")
+                                if generation_item.get("logical_generation_id")
+                                not in (None, "", "None")
+                                else generation_item["generation_id"]
+                            ),
+                        ),
+                        "physical_horizon_generation_key": _horizon_generation_key(
                             horizon_id=str(generation_item.get("horizon_id") or ""),
                             generation_id=int(generation_item["generation_id"]),
                         ),
@@ -16187,6 +23086,33 @@ def _run_live_temporal_runtime(
                         "preload_report": preload_report,
                     }
                     preloaded_generation_records.append(preloaded_record)
+                    _progress(
+                        phase="pre_runtime_bpf_owned_prepare",
+                        event_type="pre_runtime_bpf_owned_prepare_progress",
+                        phase_detail={
+                            "segment_epoch_key": first_segment_key,
+                            "stage": "pre_runtime_generation_preload_completed",
+                            "preload_index": preload_index,
+                            "preload_generation_count": pre_runtime_preload_total,
+                            "preload_segment_epoch_key": preload_segment_key,
+                            "preload_generation_id": preload_generation_id,
+                            "ok": bool(preload_report.get("ok")),
+                            "reason": str(preload_report.get("reason") or ""),
+                            "inactive_generation_written": bool(
+                                preload_report.get("inactive_generation_written")
+                            ),
+                            "active_generation_flip_skipped": bool(
+                                preload_report.get("active_generation_flip_skipped")
+                            ),
+                            "runtime_apply_skipped": bool(
+                                preload_report.get("runtime_apply_skipped")
+                            ),
+                            "wall_seconds": preload_generation_wall,
+                            "preloaded_generation_record_count": len(
+                                preloaded_generation_records
+                            ),
+                        },
+                    )
                     if preload_report.get("ok") is not True:
                         raise RuntimeError(
                             "pre_runtime_bpf_generation_preload_failed:"
@@ -16201,21 +23127,71 @@ def _run_live_temporal_runtime(
                     time.perf_counter() - preload_window_started,
                     6,
                 )
+                first_generation_snapshot = dict(
+                    first_context["runtime_update_plan"].target_snapshot or {}
+                )
+                first_logical_generation_id = int(
+                    first_generation_snapshot.get("bpf_logical_generation_id")
+                    if first_generation_snapshot.get("bpf_logical_generation_id")
+                    not in (None, "", "None")
+                    else first_generation_id
+                )
+                first_physical_generation_id = int(
+                    pre_runtime_bpf_owned_readiness.get("active_generation")
+                    or pre_runtime_bpf_owned_readiness.get("generation_id")
+                    or first_generation_id
+                )
+                first_logical_horizon_generation_key = _horizon_generation_key(
+                    horizon_id=current_runtime_horizon_id,
+                    generation_id=first_logical_generation_id,
+                )
+                first_physical_horizon_generation_key = _horizon_generation_key(
+                    horizon_id=current_runtime_horizon_id,
+                    generation_id=first_physical_generation_id,
+                )
                 pre_runtime_bpf_owned_readiness = {
                     **dict(pre_runtime_bpf_owned_readiness),
                     "current_horizon_id": current_runtime_horizon_id,
                     "previous_horizon_id": previous_runtime_horizon_id,
                     "next_horizon_id": next_runtime_horizon_id,
                     "current_source_state_id": current_state_id,
-                    "active_horizon_generation_key": _horizon_generation_key(
-                        horizon_id=current_runtime_horizon_id,
-                        generation_id=first_generation_id,
+                    "active_horizon_generation_key": (
+                        first_physical_horizon_generation_key
+                    ),
+                    "active_logical_horizon_generation_key": (
+                        first_logical_horizon_generation_key
+                    ),
+                    "active_physical_horizon_generation_key": (
+                        first_physical_horizon_generation_key
                     ),
                     "prepared_generation_ids": list(prepared_generation_ids),
                     "prepared_horizon_generation_keys": [
-                        _horizon_generation_key(
-                            horizon_id=str(item.get("horizon_id") or ""),
-                            generation_id=int(item["generation_id"]),
+                        str(
+                            item.get("horizon_generation_key")
+                            or _horizon_generation_key(
+                                horizon_id=str(item.get("horizon_id") or ""),
+                                generation_id=int(
+                                    item.get("logical_generation_id")
+                                    if item.get("logical_generation_id")
+                                    not in (None, "", "None")
+                                    else item["generation_id"]
+                                ),
+                            )
+                        )
+                        for item in pre_runtime_generation_entries
+                    ],
+                    "prepared_physical_horizon_generation_keys": [
+                        str(
+                            item.get("physical_horizon_generation_key")
+                            or _horizon_generation_key(
+                                horizon_id=str(item.get("horizon_id") or ""),
+                                generation_id=int(
+                                    item.get("physical_generation_id")
+                                    if item.get("physical_generation_id")
+                                    not in (None, "", "None")
+                                    else item["generation_id"]
+                                ),
+                            )
                         )
                         for item in pre_runtime_generation_entries
                     ],
@@ -16264,15 +23240,25 @@ def _run_live_temporal_runtime(
                         )
                         or []
                     ),
+                    "prepared_physical_horizon_generation_keys": list(
+                        pre_runtime_bpf_owned_readiness.get(
+                            "prepared_physical_horizon_generation_keys"
+                        )
+                        or []
+                    ),
                     "prepared_generation_window_count": (
                         prepared_generation_window_count
+                    ),
+                    "bpf_map_capacity_generation_window_count": (
+                        bpf_map_capacity_generation_window_count
                     ),
                     "preloaded_generation_count": len(
                         preloaded_generation_records
                     ),
-                    "preloaded_generation_records": list(
-                        preloaded_generation_records
-                    ),
+                    "preloaded_generation_records": [
+                        _compact_preloaded_generation_record(record)
+                        for record in preloaded_generation_records
+                    ],
                     "pre_runtime_attach_wall_time": pre_runtime_attach_wall,
                     "pre_runtime_attach_wall_seconds": pre_runtime_attach_wall,
                     "pre_runtime_dirty_recovery_wall_time": (
@@ -16324,7 +23310,9 @@ def _run_live_temporal_runtime(
                     "runtime_dirty_recovery_allowed": False,
                     "runtime_attach_contract_guard_connected": True,
                     "runtime_epoch_timing_excludes_pre_runtime_prepare": True,
-                    "readiness": pre_runtime_bpf_owned_readiness,
+                    "readiness": _compact_bpf_owned_readiness_for_artifact(
+                        pre_runtime_bpf_owned_readiness
+                    ),
                 }
                 _write_json(
                     run_dir / "pre_runtime_bpf_owned_prepare.json",
@@ -16456,6 +23444,896 @@ def _run_live_temporal_runtime(
                     },
                 )
 
+    def _bpf_compiled_inputs_base_generation_refs(
+        compiled_inputs: Mapping[str, Any],
+    ) -> List[int]:
+        refs: set[int] = set()
+        source = dict(compiled_inputs or {})
+        overlay_manifest = dict(source.get("bpf_generation_overlay_manifest") or {})
+        for key in ("base_generation", "root_base_generation"):
+            value = overlay_manifest.get(key)
+            if value not in (None, "", "None"):
+                refs.add(int(value))
+        value = source.get("bpf_overlay_root_base_generation_id")
+        if value not in (None, "", "None"):
+            refs.add(int(value))
+        for item in list(source.get("generation_base_map") or []):
+            base_generation = dict(dict(item or {}).get("value") or {}).get(
+                "base_generation"
+            )
+            if base_generation not in (None, "", "None"):
+                refs.add(int(base_generation))
+        return sorted(refs)
+
+    def _bpf_retired_generation_cleanup_dependency_report(
+        *,
+        generation_id: int,
+        readiness: Mapping[str, Any],
+    ) -> Dict[str, Any]:
+        active_refs = _bpf_compiled_inputs_base_generation_refs(
+            dict(readiness.get("compiled_runtime_inputs") or {})
+        )
+        preloaded_refs: Dict[str, List[int]] = {}
+        for record in list(readiness.get("preloaded_generation_records") or []):
+            if not isinstance(record, Mapping):
+                continue
+            record_id = str(record.get("record_id") or "")
+            refs = _bpf_compiled_inputs_base_generation_refs(
+                dict(record.get("compiled_runtime_inputs") or {})
+            )
+            if refs:
+                preloaded_refs[record_id] = refs
+        queued_refs: Dict[str, List[int]] = {}
+        for work_item in list(bpf_preload_work_queue):
+            generation_item = dict(dict(work_item).get("generation_item") or {})
+            work_key = str(
+                generation_item.get("physical_horizon_generation_key")
+                or generation_item.get("horizon_generation_key")
+                or generation_item.get("segment_epoch_key")
+                or ""
+            )
+            refs = _bpf_compiled_inputs_base_generation_refs(
+                dict(dict(work_item).get("base_generation_compiled_inputs") or {})
+            )
+            if refs:
+                queued_refs[work_key] = refs
+        blockers = []
+        if int(readiness.get("active_generation") or -1) == int(generation_id):
+            blockers.append("candidate_is_active_generation")
+        if int(generation_id) in active_refs:
+            blockers.append("active_generation_overlay_base_reference")
+        if any(int(generation_id) in refs for refs in preloaded_refs.values()):
+            blockers.append("preloaded_generation_overlay_base_reference")
+        if any(int(generation_id) in refs for refs in queued_refs.values()):
+            blockers.append("queued_generation_overlay_base_reference")
+        return {
+            "generation_id": int(generation_id),
+            "safe_to_delete": not blockers,
+            "blockers": blockers,
+            "active_base_generation_refs": active_refs,
+            "preloaded_base_generation_refs": preloaded_refs,
+            "queued_base_generation_refs": queued_refs,
+        }
+
+    def _enqueue_retired_bpf_generation_cleanup(
+        *,
+        readiness: Mapping[str, Any],
+    ) -> Dict[str, Any]:
+        candidate = dict(
+            dict(readiness or {}).get("retired_bpf_generation_cleanup_candidate")
+            or {}
+        )
+        if not candidate:
+            return {"queued": False, "reason": "no_retired_generation_candidate"}
+        compiled_inputs = dict(candidate.get("compiled_runtime_inputs") or {})
+        candidate_check = retired_cleanup_candidate_ready(candidate)
+        if candidate_check.get("ready") is not True:
+            raise RuntimeError(
+                "retired_bpf_generation_cleanup_manifest_missing:"
+                + json.dumps(
+                    {
+                        "generation_id": candidate_check.get(
+                            "generation_id", candidate.get("generation_id")
+                        ),
+                        "generation_id_present": bool(
+                            candidate_check.get("generation_id_present")
+                        ),
+                        "compiled_inputs_present": bool(
+                            candidate_check.get("compiled_inputs_present")
+                        ),
+                        "reason": str(candidate_check.get("reason") or ""),
+                    },
+                    sort_keys=True,
+                )
+            )
+        generation_id = int(candidate_check["generation_id"])
+        dependency_report = _bpf_retired_generation_cleanup_dependency_report(
+            generation_id=generation_id,
+            readiness=readiness,
+        )
+        record_payload = {
+            "generation_id": generation_id,
+            "horizon_id": str(candidate.get("horizon_id") or ""),
+            "horizon_generation_key": str(
+                candidate.get("horizon_generation_key") or ""
+            ),
+        }
+        if dependency_report["safe_to_delete"] is not True:
+            blocked_record = {
+                "schema_version": (
+                    "skyseed-retired-bpf-generation-cleanup-blocked-v1"
+                ),
+                "record_id": "retiredcleanupblocked-"
+                + _canonical_json_hash(record_payload)[:16],
+                **record_payload,
+                "queued": False,
+                "dependency_report": dependency_report,
+            }
+            blocked_now = False
+            if not any(
+                str(item.get("record_id") or "") == str(blocked_record["record_id"])
+                for item in bpf_retired_cleanup_blocked_records
+            ):
+                bpf_retired_cleanup_blocked_records.append(blocked_record)
+                blocked_now = True
+            if blocked_now:
+                _write_bpf_retired_generation_cleanup_artifact()
+                events.append(
+                    {
+                        "timestamp_utc": _timestamp_utc(),
+                        "event_type": "bpf_retired_generation_cleanup_blocked",
+                        "record_id": str(blocked_record.get("record_id") or ""),
+                        "generation_id": generation_id,
+                        "horizon_id": str(blocked_record.get("horizon_id") or ""),
+                        "blockers": list(dependency_report.get("blockers") or []),
+                    }
+                )
+            return blocked_record
+        from bpf_mpls_live import (
+            generation_delete_manifest_for_compiled_mpls_maps,
+        )
+
+        delete_manifest = generation_delete_manifest_for_compiled_mpls_maps(
+            compiled_inputs,
+            generation_id=generation_id,
+        )
+        if not delete_manifest:
+            raise RuntimeError(
+                f"retired_bpf_generation_cleanup_empty_manifest:{generation_id}"
+            )
+        work_item = {
+            "schema_version": "skyseed-retired-bpf-generation-cleanup-work-v1",
+            "work_type": "delete_retired_generation_manifest_keys",
+            "record_id": "retiredcleanup-"
+            + _canonical_json_hash(
+                {
+                    **record_payload,
+                    "delete_manifest_count": len(delete_manifest),
+                }
+            )[:16],
+            **record_payload,
+            "generation_id": generation_id,
+            "delete_manifest": delete_manifest,
+            "delete_manifest_count": len(delete_manifest),
+            "status": "queued",
+            "dependency_report": dependency_report,
+        }
+        queued_now = False
+        if not any(
+            str(item.get("record_id") or "") == str(work_item["record_id"])
+            for item in bpf_retired_cleanup_work_queue
+        ) and not any(
+            str(item.get("record_id") or "") == str(work_item["record_id"])
+            for item in bpf_retired_cleanup_completed_records
+        ):
+            bpf_retired_cleanup_work_queue.append(work_item)
+            queued_now = True
+        if queued_now:
+            _write_bpf_retired_generation_cleanup_artifact()
+            events.append(
+                {
+                    "timestamp_utc": _timestamp_utc(),
+                    "event_type": "bpf_retired_generation_cleanup_queued",
+                    "record_id": str(work_item.get("record_id") or ""),
+                    "generation_id": generation_id,
+                    "horizon_id": str(work_item.get("horizon_id") or ""),
+                    "delete_manifest_count": len(delete_manifest),
+                    "queue_depth": len(bpf_retired_cleanup_work_queue),
+                }
+            )
+        return work_item
+
+    def _consume_one_retired_bpf_cleanup_work_item(
+        *,
+        epoch_context: Mapping[str, Any],
+    ) -> Dict[str, Any] | None:
+        if not bpf_retired_cleanup_work_queue:
+            return None
+        work_item = dict(bpf_retired_cleanup_work_queue.pop(0))
+        from bpf_mpls_live import load_mpls_maps
+
+        cleanup_started = time.perf_counter()
+        generation_id = int(work_item.get("generation_id") or 0)
+        _progress(
+            phase="bpf_retired_generation_cleanup",
+            event_type="bpf_retired_generation_cleanup_started",
+            phase_detail={
+                "record_id": str(work_item.get("record_id") or ""),
+                "generation_id": generation_id,
+                "delete_manifest_count": int(
+                    work_item.get("delete_manifest_count") or 0
+                ),
+                "queued_cleanup_remaining_before": len(
+                    bpf_retired_cleanup_work_queue
+                ),
+            },
+            epoch_context=dict(epoch_context),
+            runtime_epochs_completed=runtime_count,
+            parameter_epochs_completed=parameter_count,
+        )
+        cleanup_load = load_mpls_maps(
+            {
+                "active_generation": {"value": generation_id},
+                "bpf_runtime_update_phase": "retired_generation_cleanup",
+                "defer_active_generation_flip": True,
+                "bpf_map_write_manifest_only": True,
+                "batch_map_write_required": True,
+                "skip_interface_role_map_updates": True,
+                "bpf_map_delete_manifest": list(
+                    work_item.get("delete_manifest") or []
+                ),
+            }
+        )
+        record = {
+            **work_item,
+            "schema_version": "skyseed-retired-bpf-generation-cleanup-completed-v1",
+            "status": "completed" if cleanup_load.get("ok") is True else "failed",
+            "ok": bool(cleanup_load.get("ok")),
+            "reason": str(
+                cleanup_load.get("reason")
+                or dict(cleanup_load.get("first_failed_update") or {}).get("reason")
+                or ""
+            ),
+            "cleanup_load": cleanup_load,
+            "wall_seconds": round(time.perf_counter() - cleanup_started, 6),
+            "queued_cleanup_remaining_after": len(bpf_retired_cleanup_work_queue),
+        }
+        if cleanup_load.get("ok") is not True:
+            raise RuntimeError(
+                "retired_bpf_generation_cleanup_failed:"
+                + str(record.get("reason") or generation_id)
+            )
+        bpf_retired_cleanup_completed_records.append(record)
+        _write_bpf_retired_generation_cleanup_artifact()
+        events.append(
+            {
+                "timestamp_utc": _timestamp_utc(),
+                "event_type": "bpf_retired_generation_cleanup_completed",
+                "record_id": str(record.get("record_id") or ""),
+                "generation_id": generation_id,
+                "horizon_id": str(record.get("horizon_id") or ""),
+                "delete_manifest_count": int(
+                    work_item.get("delete_manifest_count") or 0
+                ),
+                "batch_map_write_used": bool(cleanup_load.get("batch_map_write_used")),
+                "actual_data_delete_count": int(
+                    cleanup_load.get("actual_data_delete_count") or 0
+                ),
+                "queued_cleanup_remaining_after": len(
+                    bpf_retired_cleanup_work_queue
+                ),
+                "artifact_path": str(run_dir / "bpf_retired_generation_cleanup.json"),
+            }
+        )
+        _progress(
+            phase="bpf_retired_generation_cleanup",
+            event_type="bpf_retired_generation_cleanup_completed",
+            phase_detail={
+                "record_id": str(record.get("record_id") or ""),
+                "generation_id": generation_id,
+                "delete_manifest_count": int(
+                    work_item.get("delete_manifest_count") or 0
+                ),
+                "batch_map_write_used": bool(cleanup_load.get("batch_map_write_used")),
+                "actual_data_delete_count": int(
+                    cleanup_load.get("actual_data_delete_count") or 0
+                ),
+                "queued_cleanup_remaining_after": len(
+                    bpf_retired_cleanup_work_queue
+                ),
+            },
+            epoch_context=dict(epoch_context),
+            runtime_epochs_completed=runtime_count,
+            parameter_epochs_completed=parameter_count,
+        )
+        return record
+
+    def _consume_one_bpf_preload_work_item(
+        *,
+        epoch_context: Mapping[str, Any],
+        horizon_id: str | None = None,
+        interface_ifindex_cache: Dict[str, int] | None = None,
+        interface_mac_cache: Dict[str, str] | None = None,
+    ) -> Dict[str, Any] | None:
+        nonlocal active_session
+        if not bpf_preload_work_queue:
+            return None
+        if active_session is None:
+            raise RuntimeError("bpf_preload_work_queue_missing_active_session")
+        work_index = 0
+        target_horizon_id = str(horizon_id or "")
+        if target_horizon_id:
+            work_index = next(
+                (
+                    index
+                    for index, item in enumerate(bpf_preload_work_queue)
+                    if str(dict(item).get("horizon_id") or "") == target_horizon_id
+                ),
+                -1,
+            )
+            if work_index < 0:
+                return None
+        work_item = dict(bpf_preload_work_queue.pop(work_index))
+        generation_item = dict(work_item.get("generation_item") or {})
+        entry = dict(generation_item.get("entry") or {})
+        entry_context = dict(generation_item.get("context") or {})
+        state_contract = dict(generation_item.get("state_contract") or {})
+        backend = dict(active_session.backend or {})
+        live_readiness = dict(backend.get("bpf_owned_readiness") or {})
+        if not live_readiness:
+            raise RuntimeError("bpf_preload_work_queue_missing_readiness")
+        prepared_attach_readiness = dict(
+            work_item.get("prepared_attach_capability_readiness") or {}
+        )
+        if not prepared_attach_readiness:
+            raise RuntimeError(
+                "bpf_preload_work_missing_prepared_attach_capability_readiness"
+            )
+        preload_contexts = tuple(
+            _realization_contexts(
+                topology_path=_context_topology_path(entry_context),
+                topology_snapshot=entry_context["snapshot"],
+                runtime_update_plan=entry_context["runtime_update_plan"],
+            )
+        )
+        _progress(
+            phase="bpf_preload_work",
+            event_type="bpf_preload_work_started",
+            phase_detail={
+                "work_type": str(work_item.get("work_type") or ""),
+                "segment_id": str(work_item.get("segment_id") or ""),
+                "horizon_id": str(work_item.get("horizon_id") or ""),
+                "segment_epoch_key": str(generation_item.get("segment_epoch_key") or ""),
+                "base_generation_id": int(work_item.get("base_generation_id") or 0),
+                "queued_work_remaining_before": len(bpf_preload_work_queue),
+            },
+            epoch_context=dict(epoch_context),
+            runtime_epochs_completed=runtime_count,
+            parameter_epochs_completed=parameter_count,
+        )
+        preload_report = _prepare_bpf_owned_preactivation_preload(
+            runtime_update_plan=entry_context["runtime_update_plan"],
+            topology_path=_context_topology_path(entry_context),
+            contexts=preload_contexts,
+            bpf_owned_readiness=prepared_attach_readiness,
+            retain_inactive_generations=list(work_item.get("retain_generation_ids") or []),
+            prepared_generation_window_count=int(
+                work_item.get("prepared_generation_window_count") or 1
+            ),
+            base_generation_compiled_inputs=dict(
+                work_item.get("base_generation_compiled_inputs") or {}
+            )
+            or None,
+            frozen_compiled_runtime_inputs=dict(
+                work_item.get("frozen_compiled_runtime_inputs") or {}
+            )
+            or None,
+            require_frozen_compiled_runtime_inputs=True,
+            interface_ifindex_cache=interface_ifindex_cache,
+            interface_mac_cache=interface_mac_cache,
+            require_prepared_attach_capability=True,
+        )
+        logical_generation_id = int(
+            generation_item.get("logical_generation_id")
+            if generation_item.get("logical_generation_id") not in (None, "", "None")
+            else generation_item.get("generation_id") or 0
+        )
+        physical_generation_id = int(
+            generation_item.get("physical_generation_id")
+            if generation_item.get("physical_generation_id") not in (None, "", "None")
+            else generation_item.get("generation_id") or 0
+        )
+        horizon_id = _queue_entry_horizon_id(entry)
+        record_payload = {
+            "segment_epoch_key": generation_item.get("segment_epoch_key"),
+            "epoch_id": entry.get("epoch_id"),
+            "slice_id": entry.get("slice_id"),
+            "horizon_id": horizon_id,
+            "generation_id": int(generation_item.get("generation_id") or 0),
+            "logical_generation_id": logical_generation_id,
+            "physical_generation_id": physical_generation_id,
+            "generation_slot_width": int(
+                generation_item.get("generation_slot_width")
+                or bpf_generation_slot_width
+                or 1
+            ),
+            "horizon_sequence_index": int(
+                generation_item.get("horizon_sequence_index") or 0
+            ),
+            "horizon_generation_key": _horizon_generation_key(
+                horizon_id=horizon_id,
+                generation_id=logical_generation_id,
+            ),
+            "physical_horizon_generation_key": _horizon_generation_key(
+                horizon_id=horizon_id,
+                generation_id=physical_generation_id,
+            ),
+            "intent_hash": str(generation_item.get("intent_hash") or ""),
+            "source_state_id": str(state_contract.get("source_state_id") or ""),
+            "target_state_id": str(state_contract.get("target_state_id") or ""),
+            "host_plan_mutation_id": str(
+                state_contract.get("host_plan_mutation_id") or ""
+            ),
+        }
+        preloaded_record = {
+            "schema_version": "skyseed-queued-bpf-preloaded-generation-v1",
+            "record_id": "queuepregeneration-"
+            + _canonical_json_hash(record_payload)[:16],
+            **record_payload,
+            "ok": bool(preload_report.get("ok")),
+            "reason": str(preload_report.get("reason") or ""),
+            "inactive_generation_written": bool(
+                preload_report.get("inactive_generation_written")
+            ),
+            "active_generation_flip_skipped": bool(
+                preload_report.get("active_generation_flip_skipped")
+            ),
+            "runtime_apply_skipped": bool(preload_report.get("runtime_apply_skipped")),
+            "delta_attach_count": int(preload_report.get("delta_attach_count") or 0),
+            "full_attach_count": int(preload_report.get("full_attach_count") or 0),
+            "runtime_full_generation_reload_count": int(
+                preload_report.get("runtime_full_generation_reload_count") or 0
+            ),
+            "retain_inactive_generations": list(
+                work_item.get("retain_generation_ids") or []
+            ),
+            "compiled_runtime_inputs": dict(
+                preload_report.get("compiled_runtime_inputs") or {}
+            ),
+            "frozen_compiled_runtime_inputs_required": True,
+            "frozen_compiled_runtime_inputs_summary": (
+                _frozen_compiled_runtime_inputs_summary(
+                    dict(work_item.get("frozen_compiled_runtime_inputs") or {})
+                )
+            ),
+            "compiled_runtime_inputs_source": str(
+                preload_report.get("compiled_runtime_inputs_source") or ""
+            ),
+            "bpf_map_write_manifest_only": _bpf_preload_manifest_only_map_write_used(
+                preload_report
+            ),
+            "manifest_only_loader": bool(
+                preload_report.get("manifest_only_loader")
+                or dict(preload_report.get("preactivation_preload") or {}).get(
+                    "manifest_only_loader"
+                )
+            ),
+            "manifest_only_map_write_used": _bpf_preload_manifest_only_map_write_used(
+                preload_report
+            ),
+            "batch_map_write_required": bool(
+                preload_report.get("batch_map_write_required")
+                or work_item.get("batch_map_write_required")
+            ),
+            "batch_map_write_used": bool(
+                preload_report.get("batch_map_write_used")
+                or dict(preload_report.get("preactivation_preload") or {}).get(
+                    "batch_map_write_used"
+                )
+            ),
+            "batch_map_write_update_count": int(
+                preload_report.get("batch_map_write_update_count")
+                or dict(preload_report.get("preactivation_preload") or {}).get(
+                    "batch_map_write_update_count"
+                )
+                or 0
+            ),
+            "actual_data_write_count": int(
+                preload_report.get("actual_data_write_count")
+                or dict(preload_report.get("preactivation_preload") or {}).get(
+                    "actual_data_write_count"
+                )
+                or 0
+            ),
+            "preload_report": preload_report,
+            "preactivation_preload_attach_capability_contract": dict(
+                preload_report.get("preactivation_preload_attach_capability_contract")
+                or {}
+            ),
+            "prepared_attach_capability_readiness_source": (
+                "queued_horizon_maintenance_prepared_attach_capability"
+            ),
+            "prepared_attach_capability_readiness_required": True,
+            "prepared_attach_capability_role_count": int(
+                prepared_attach_readiness.get("prepared_bpf_attach_capability_count")
+                or 0
+            ),
+        }
+        existing_records = [
+            dict(item)
+            for item in list(live_readiness.get("preloaded_generation_records") or [])
+            if isinstance(item, Mapping)
+        ]
+        if preload_report.get("ok") is not True:
+            bpf_preload_work_completed_records.append(preloaded_record)
+            raise RuntimeError(
+                "bpf_preload_work_failed:"
+                + str(
+                    preload_report.get("reason")
+                    or dict(preload_report.get("preactivation_preload") or {}).get(
+                        "failed_map"
+                    )
+                    or dict(preload_report.get("preactivation_preload") or {}).get(
+                        "failed_operation"
+                    )
+                    or preload_report.get("blocked_stage")
+                    or entry.get("epoch_id")
+                    or "unknown"
+                )
+            )
+        readiness = {
+            **live_readiness,
+            "preloaded_generation_records": [
+                *existing_records,
+                preloaded_record,
+            ],
+            "rolling_horizon_generation_preload_deferred": bool(
+                bpf_preload_work_queue
+            ),
+            "rolling_horizon_deferred_generation_count": len(
+                bpf_preload_work_queue
+            ),
+        }
+        backend["bpf_owned_readiness"] = readiness
+        active_session = replace(active_session, backend=backend)
+        bpf_preload_work_completed_records.append(preloaded_record)
+        _progress(
+            phase="bpf_preload_work",
+            event_type="bpf_preload_work_completed",
+            phase_detail={
+                "record_id": preloaded_record["record_id"],
+                "segment_epoch_key": str(generation_item.get("segment_epoch_key") or ""),
+                "horizon_id": horizon_id,
+                "physical_generation_id": physical_generation_id,
+                "queued_work_remaining_after": len(bpf_preload_work_queue),
+                "map_write_update_count": int(
+                    dict(preload_report.get("preactivation_preload") or {}).get(
+                        "map_write_update_count"
+                    )
+                    or preload_report.get("map_write_update_count")
+                    or 0
+                ),
+            },
+            epoch_context=dict(epoch_context),
+            runtime_epochs_completed=runtime_count,
+            parameter_epochs_completed=parameter_count,
+        )
+        return preloaded_record
+
+    def _start_horizon_maintenance_preload_worker(*, horizon_id: str) -> None:
+        if not horizon_maintenance_worker_enabled:
+            return
+        target_horizon_id = str(horizon_id or "")
+        if not target_horizon_id:
+            return
+        with horizon_maintenance_state_lock:
+            pending = horizon_maintenance_pending_by_horizon.get(target_horizon_id)
+            if not pending or bool(pending.get("worker_started")):
+                return
+            pending["worker_started"] = True
+
+        def _worker() -> None:
+            worker_started = time.perf_counter()
+            completed_records: List[Dict[str, Any]] = []
+            worker_failure: Dict[str, Any] | None = None
+            interface_ifindex_cache: Dict[str, int] = {}
+            interface_mac_cache: Dict[str, str] = {}
+            _progress(
+                phase="horizon_maintenance_worker",
+                event_type="horizon_maintenance_worker_started",
+                phase_detail={
+                    "horizon_id": target_horizon_id,
+                    "worker_mode": "background_thread",
+                    "critical_path": False,
+                },
+                runtime_epochs_completed=runtime_count,
+                parameter_epochs_completed=parameter_count,
+            )
+            try:
+                while True:
+                    has_target_work = any(
+                        str(item.get("horizon_id") or "") == target_horizon_id
+                        for item in list(bpf_preload_work_queue)
+                    )
+                    if not has_target_work:
+                        break
+                    with MaintenanceLock(horizon_maintenance_lock_path):
+                        record = _consume_one_bpf_preload_work_item(
+                            epoch_context={
+                                "source": "horizon_maintenance_worker",
+                                "horizon_id": target_horizon_id,
+                                "critical_path": False,
+                            },
+                            horizon_id=target_horizon_id,
+                            interface_ifindex_cache=interface_ifindex_cache,
+                            interface_mac_cache=interface_mac_cache,
+                        )
+                    if record is None:
+                        break
+                    if str(record.get("horizon_id") or "") == target_horizon_id:
+                        completed_records.append(dict(record))
+            except Exception as exc:  # pragma: no cover - exercised by integration runs.
+                completed_records = [
+                    dict(record)
+                    for record in list(bpf_preload_work_completed_records)
+                    if str(record.get("horizon_id") or "") == target_horizon_id
+                ]
+                worker_failure = {
+                    "schema_version": "skyseed-horizon-maintenance-worker-failure-v1",
+                    "horizon_id": target_horizon_id,
+                    "exception_type": exc.__class__.__name__,
+                    "reason": str(exc),
+                    "traceback": traceback.format_exc(),
+                }
+            with horizon_maintenance_state_lock:
+                pending_after = dict(
+                    horizon_maintenance_pending_by_horizon.get(target_horizon_id)
+                    or {}
+                )
+            request = pending_after.get("request")
+            if not isinstance(request, HorizonMaintenanceRequest):
+                worker_failure = worker_failure or {
+                    "schema_version": "skyseed-horizon-maintenance-worker-failure-v1",
+                    "horizon_id": target_horizon_id,
+                    "reason": "horizon_maintenance_pending_request_missing",
+                }
+                return
+            cleanup_report = retired_cleanup_dependency_report(
+                previous_horizon_id=str(request.previous_horizon_id),
+                queued_count=len(bpf_retired_cleanup_work_queue),
+                completed_count=len(bpf_retired_cleanup_completed_records),
+                blocked_count=len(bpf_retired_cleanup_blocked_records),
+                blockers=bpf_retired_cleanup_blocked_records,
+            )
+            cleanup_report = {
+                **cleanup_report,
+                "worker_interface_cache_summary": {
+                    "schema_version": (
+                        "skyseed-horizon-maintenance-interface-cache-summary-v1"
+                    ),
+                    "scope": "single_horizon_worker",
+                    "ifindex_cache_entry_count": len(interface_ifindex_cache),
+                    "mac_cache_entry_count": len(interface_mac_cache),
+                    "cache_crosses_runtime_epoch_boundary": False,
+                    "cache_crosses_horizon_boundary": False,
+                },
+            }
+            if worker_failure is not None:
+                cleanup_report = {
+                    **cleanup_report,
+                    "worker_failure": dict(worker_failure),
+                }
+            result = classify_horizon_maintenance(
+                request=request,
+                host_additive_prepare=dict(
+                    pending_after.get("host_additive_prepare") or {}
+                ),
+                attach_capability_prepare=dict(
+                    pending_after.get("attach_capability_prepare") or {}
+                ),
+                base_generation_record=dict(
+                    pending_after.get("base_generation_record") or {}
+                ),
+                queued_preload_records=list(
+                    pending_after.get("queued_preload_records") or []
+                ),
+                inactive_preload_records=completed_records,
+                retired_cleanup_report=cleanup_report,
+                wall_seconds=time.perf_counter() - worker_started,
+            )
+            if worker_failure is not None:
+                result = {
+                    **result,
+                    "status": "failed",
+                    "ready": False,
+                    "blockers": [
+                        *list(result.get("blockers") or []),
+                        {
+                            "stage": "horizon_maintenance_worker",
+                            "reason": str(worker_failure.get("reason") or ""),
+                        },
+                    ],
+                    "blocker_count": int(result.get("blocker_count") or 0) + 1,
+                }
+            segment_dir = Path(str(pending_after.get("segment_dir") or run_dir))
+            artifact_path = publish_horizon_maintenance_result(
+                result=result,
+                segment_dir=segment_dir,
+            )
+            result_with_artifact = {
+                **dict(result),
+                "artifact_path": str(artifact_path),
+                "handoff_preloaded_generation_records": list(completed_records),
+                "handoff_preloaded_generation_record_count": len(completed_records),
+            }
+            with horizon_maintenance_state_lock:
+                if result.get("status") == "ready":
+                    horizon_maintenance_ready_by_horizon[target_horizon_id] = (
+                        result_with_artifact
+                    )
+                    horizon_maintenance_pending_by_horizon.pop(
+                        target_horizon_id,
+                        None,
+                    )
+                else:
+                    horizon_maintenance_failed_by_horizon[target_horizon_id] = (
+                        result_with_artifact
+                    )
+            events.append(
+                {
+                    "timestamp_utc": _timestamp_utc(),
+                    "event_type": "horizon_maintenance_worker_completed",
+                    "horizon_id": target_horizon_id,
+                    "status": str(result.get("status") or ""),
+                    "ready": bool(result.get("ready")),
+                    "artifact_path": str(artifact_path),
+                    "queued_preload_record_count": int(
+                        result.get("queued_preload_record_count") or 0
+                    ),
+                    "inactive_preload_record_count": int(
+                        result.get("inactive_preload_record_count") or 0
+                    ),
+                    "wall_seconds": round(time.perf_counter() - worker_started, 6),
+                    "ifindex_cache_entry_count": len(interface_ifindex_cache),
+                    "mac_cache_entry_count": len(interface_mac_cache),
+                }
+            )
+            _progress(
+                phase="horizon_maintenance_worker",
+                event_type="horizon_maintenance_worker_completed",
+                phase_detail={
+                    "horizon_id": target_horizon_id,
+                    "status": str(result.get("status") or ""),
+                    "ready": bool(result.get("ready")),
+                    "artifact_path": str(artifact_path),
+                    "queued_preload_record_count": int(
+                        result.get("queued_preload_record_count") or 0
+                    ),
+                    "inactive_preload_record_count": int(
+                        result.get("inactive_preload_record_count") or 0
+                    ),
+                    "ifindex_cache_entry_count": len(interface_ifindex_cache),
+                    "mac_cache_entry_count": len(interface_mac_cache),
+                },
+                runtime_epochs_completed=runtime_count,
+                parameter_epochs_completed=parameter_count,
+            )
+
+        thread = threading.Thread(
+            target=_worker,
+            name=f"horizon-maintenance-{target_horizon_id}",
+            daemon=True,
+        )
+        horizon_maintenance_worker_threads.append(thread)
+        thread.start()
+
+    def _consume_horizon_maintenance_ready_for_boundary(
+        *,
+        entry: Mapping[str, Any],
+    ) -> Dict[str, Any]:
+        nonlocal active_session
+        target_horizon_id = _horizon_id_for_queue_entry(entry)
+        if not target_horizon_id:
+            return {}
+        if active_session is None:
+            return {}
+        readiness = dict(
+            dict(active_session.backend or {}).get("bpf_owned_readiness") or {}
+        )
+        if str(readiness.get("current_horizon_id") or "") == target_horizon_id:
+            return {}
+        with horizon_maintenance_state_lock:
+            ready_record = dict(
+                horizon_maintenance_ready_by_horizon.get(target_horizon_id) or {}
+            )
+            failed_record = dict(
+                horizon_maintenance_failed_by_horizon.get(target_horizon_id) or {}
+            )
+            pending_record = dict(
+                horizon_maintenance_pending_by_horizon.get(target_horizon_id) or {}
+            )
+        if failed_record:
+            raise RuntimeError(
+                "horizon_maintenance_failed_before_boundary:"
+                + json.dumps(
+                    {
+                        "horizon_id": target_horizon_id,
+                        "status": str(failed_record.get("status") or ""),
+                        "artifact_path": str(failed_record.get("artifact_path") or ""),
+                        "blockers": list(failed_record.get("blockers") or [])[:5],
+                    },
+                    sort_keys=True,
+                )
+            )
+        ready_artifact_value = str(ready_record.get("artifact_path") or "")
+        artifact_path = Path(ready_artifact_value) if ready_artifact_value else None
+        expected_hash = str(ready_record.get("request_hash") or "")
+        if (artifact_path is None or not artifact_path.exists()) and pending_record:
+            segment_dir = Path(str(pending_record.get("segment_dir") or ""))
+            artifact_path = segment_dir / "horizon_maintenance_ready.json"
+            request = pending_record.get("request")
+            expected_hash = (
+                request.request_hash
+                if isinstance(request, HorizonMaintenanceRequest)
+                else ""
+            )
+        if artifact_path is None or not artifact_path.exists():
+            raise RuntimeError(
+                "horizon_maintenance_ready_missing_before_boundary:"
+                + json.dumps(
+                    {
+                        "horizon_id": target_horizon_id,
+                        "pending": bool(pending_record),
+                        "ready_record_present": bool(ready_record),
+                    },
+                    sort_keys=True,
+                )
+            )
+        loaded = load_ready_artifact(
+            artifact_path,
+            expected_request_hash=expected_hash or None,
+            expected_next_horizon_id=target_horizon_id,
+        )
+        handoff_merge: Dict[str, Any] = {}
+        expected_handoff_count = int(loaded.get("inactive_preload_record_count") or 0)
+        if expected_handoff_count:
+            handoff_records = list(
+                ready_record.get("handoff_preloaded_generation_records") or []
+            )
+            handoff_merge = _merge_horizon_maintenance_handoff_preloaded_records(
+                readiness=readiness,
+                target_horizon_id=target_horizon_id,
+                handoff_records=handoff_records,
+                expected_record_count=expected_handoff_count,
+            )
+            backend = dict(active_session.backend or {})
+            backend["bpf_owned_readiness"] = dict(handoff_merge["readiness"])
+            active_session = replace(active_session, backend=backend)
+        with horizon_maintenance_state_lock:
+            horizon_maintenance_consumed_horizons.add(target_horizon_id)
+        events.append(
+            {
+                "timestamp_utc": _timestamp_utc(),
+                "event_type": "horizon_maintenance_ready_consumed",
+                "horizon_id": target_horizon_id,
+                "artifact_path": str(artifact_path),
+                "request_hash": str(loaded.get("request_hash") or ""),
+                "active_generation_flip_allowed_in_maintenance": bool(
+                    loaded.get("active_generation_flip_allowed")
+                ),
+                "boundary_consumer": "runtime_epoch_flip_only_activation",
+                "handoff_preloaded_generation_record_count": int(
+                    handoff_merge.get("handoff_preloaded_generation_record_count")
+                    or 0
+                ),
+                "merged_preloaded_generation_record_count": int(
+                    handoff_merge.get("merged_preloaded_generation_record_count")
+                    or 0
+                ),
+            }
+        )
+        return loaded
+
     checkpoint_thread.start()
     try:
         while segment_queue:
@@ -16488,7 +24366,8 @@ def _run_live_temporal_runtime(
                 if args.max_runtime_epochs is not None and runtime_count >= int(args.max_runtime_epochs):
                     stopped_by_bound = "max_runtime_epochs_reached"
                     maybe_replenish(
-                        float(next_entry.get("activation_relative_time_seconds", 0.0))
+                        float(next_entry.get("activation_relative_time_seconds", 0.0)),
+                        current_entry=next_entry,
                     )
                     continue
             elif classification == "parameter_epoch":
@@ -16498,7 +24377,8 @@ def _run_live_temporal_runtime(
                 ):
                     stopped_by_bound = "max_parameter_epochs_reached"
                     maybe_replenish(
-                        float(next_entry.get("activation_relative_time_seconds", 0.0))
+                        float(next_entry.get("activation_relative_time_seconds", 0.0)),
+                        current_entry=next_entry,
                     )
                     continue
 
@@ -16524,6 +24404,18 @@ def _run_live_temporal_runtime(
             )
             if sleep_seconds > 0.0:
                 time.sleep(sleep_seconds)
+            bpf_preload_work_record: Dict[str, Any] | None = None
+            bpf_retired_cleanup_work_record: Dict[str, Any] | None = None
+            horizon_maintenance_ready_artifact: Dict[str, Any] = {}
+            if (
+                classification == "runtime_epoch"
+                and _is_operational_clean_bpf_owned_args(args)
+                and bpf_preload_work_queue
+                and not horizon_maintenance_worker_enabled
+            ):
+                bpf_preload_work_record = _consume_one_bpf_preload_work_item(
+                    epoch_context=current_epoch_context,
+                )
             apply_started_wall = time.perf_counter()
             apply_started_epoch = time.time()
             epoch_timing_wall_marks: Dict[str, float | None] = {
@@ -16578,17 +24470,41 @@ def _run_live_temporal_runtime(
             context = context_by_key.pop(segment_key, None)
             if context is None:
                 raise RuntimeError(f"missing slice context for {segment_key}")
+            if _is_operational_clean_bpf_owned_args(args):
+                context = _runtime_context_with_bpf_runtime_plan_overlays(
+                    context,
+                    generation_assignment=(
+                        bpf_generation_slot_assignments.get(segment_key) or {}
+                    ),
+                    resident_attach_budget=bpf_resident_attach_budget,
+                )
             snapshot = context["snapshot"]
             enriched_snapshot = enrich_snapshot_runtime_parameters(snapshot)
+            host_plan_source_state_id_for_lookup = current_state_id
+            if (
+                _is_operational_clean_bpf_owned_args(args)
+                and current_horizon_host_install_completed
+                and segment_key == current_horizon_host_install_segment_key
+            ):
+                host_plan_source_state_id_for_lookup = str(
+                    dict(current_horizon_host_install or {}).get("source_state_id")
+                    or current_state_id
+                )
             host_plan = _host_plan_for_segment(
                 segment_key=segment_key,
                 snapshot=snapshot,
                 source_state=current_dynamic_state,
-                source_state_id=current_state_id,
+                source_state_id=host_plan_source_state_id_for_lookup,
             )
+            logical_host_plan = host_plan
             planned_operations = list(getattr(host_plan, "operations", []) or [])
             current_horizon_consumed_operation_count = 0
             parameter_safety_skipped_operations = 0
+            bpf_owned_generation_map_parameter_operation_count = 0
+            bpf_owned_host_parameter_skip: Dict[str, Any] = {
+                "enabled": False,
+                "skipped_parameter_update_count": 0,
+            }
             if classification == "parameter_epoch":
                 non_parameter_operations = [
                     operation
@@ -16710,6 +24626,25 @@ def _run_live_temporal_runtime(
                     host_plan=host_plan,
                     current_state_id=current_state_id,
                 )
+            host_apply_skipped_by_bpf_owned_parameter_only = False
+            if (
+                _is_operational_clean_bpf_owned_args(args)
+                and not host_apply_skipped_by_current_horizon_install
+            ):
+                host_plan, bpf_owned_host_parameter_skip = (
+                    _bpf_owned_host_plan_without_parameter_updates(host_plan)
+                )
+                if bpf_owned_host_parameter_skip.get("enabled"):
+                    planned_operations = list(getattr(host_plan, "operations", []) or [])
+                    bpf_owned_generation_map_parameter_operation_count += int(
+                        bpf_owned_host_parameter_skip.get(
+                            "skipped_parameter_update_count"
+                        )
+                        or 0
+                    )
+                    host_apply_skipped_by_bpf_owned_parameter_only = (
+                        not planned_operations
+                    )
             non_parameter_operations = [
                 operation
                 for operation in planned_operations
@@ -16727,6 +24662,17 @@ def _run_live_temporal_runtime(
                 ]
             )
             effective_epoch_type = "runtime_epoch" if escalated else classification
+            if (
+                effective_epoch_type == "runtime_epoch"
+                and horizon_maintenance_worker_enabled
+                and _is_operational_clean_bpf_owned_args(args)
+                and segment_key != current_horizon_host_install_segment_key
+            ):
+                horizon_maintenance_ready_artifact = (
+                    _consume_horizon_maintenance_ready_for_boundary(
+                        entry=next_entry,
+                    )
+                )
             noop_parameter_epoch = (
                 classification == "parameter_epoch"
                 and effective_epoch_type == "parameter_epoch"
@@ -16755,8 +24701,17 @@ def _run_live_temporal_runtime(
                     "host_apply_skipped_by_current_horizon_install": (
                         host_apply_skipped_by_current_horizon_install
                     ),
+                    "host_apply_skipped_by_bpf_owned_parameter_only": (
+                        host_apply_skipped_by_bpf_owned_parameter_only
+                    ),
+                    "bpf_owned_host_parameter_skip": dict(
+                        bpf_owned_host_parameter_skip
+                    ),
                     "current_horizon_consumed_operation_count": (
                         current_horizon_consumed_operation_count
+                    ),
+                    "bpf_owned_generation_map_parameter_operation_count": (
+                        bpf_owned_generation_map_parameter_operation_count
                     ),
                 },
                 epoch_context={
@@ -16847,11 +24802,20 @@ def _run_live_temporal_runtime(
             host_apply_started_at = time.perf_counter()
             epoch_timing_wall_marks["data_plane_apply_start_utc"] = host_apply_started_at
             epoch_timing_wall_marks["host_apply_start"] = host_apply_started_at
-            if noop_parameter_epoch or host_apply_skipped_by_current_horizon_install:
+            if (
+                noop_parameter_epoch
+                or host_apply_skipped_by_current_horizon_install
+                or host_apply_skipped_by_bpf_owned_parameter_only
+            ):
                 if host_apply_skipped_by_current_horizon_install:
                     envelope_kind = "current_horizon_host_install_consumed"
                     concurrency_model = (
                         "skipped_runtime_host_apply_current_horizon_installed"
+                    )
+                elif host_apply_skipped_by_bpf_owned_parameter_only:
+                    envelope_kind = "bpf_owned_host_parameter_update_skipped"
+                    concurrency_model = (
+                        "skipped_host_qdisc_apply_bpf_owned_generation_maps"
                     )
                 else:
                     envelope_kind = "noop_parameter_epoch"
@@ -16870,6 +24834,9 @@ def _run_live_temporal_runtime(
                         "delta_summary": {
                             "managed_slot_count": 0,
                             "expected_operations": 0,
+                            "bpf_owned_host_parameter_skip": dict(
+                                bpf_owned_host_parameter_skip
+                            ),
                         },
                         "preparation_summary": {
                             "prepare_summary": {},
@@ -16894,6 +24861,36 @@ def _run_live_temporal_runtime(
             if host_apply["outcome"]["apply_success"] is not True:
                 raise RuntimeError(
                     f"host-side epoch apply failed for {segment_key}"
+                )
+            if _is_operational_clean_bpf_owned_args(args):
+                _assert_operational_clean_host_apply_route(
+                    host_apply=host_apply,
+                    segment_key=segment_key,
+                )
+            bpf_owned_parameter_metadata_advance: Dict[str, Any] = {
+                "enabled": False,
+                "advanced_slot_count": 0,
+                "changed_slot_count": 0,
+                "write_performed": False,
+            }
+            if (
+                _is_operational_clean_bpf_owned_args(args)
+                and bpf_owned_host_parameter_skip.get("enabled")
+            ):
+                skipped_parameter_operations = [
+                    dict(operation)
+                    for operation in list(getattr(logical_host_plan, "operations", []) or [])
+                    if str(operation.get("operation") or "")
+                    == "update_slot_parameters"
+                    and not _bpf_owned_parameter_update_requires_host_qdisc(
+                        operation
+                    )
+                ]
+                bpf_owned_parameter_metadata_advance = (
+                    _advance_link_state_for_bpf_owned_parameter_skip(
+                        link_state_path=link_state_path,
+                        skipped_operations=skipped_parameter_operations,
+                    )
                 )
             if not noop_parameter_epoch and not host_apply_skipped_by_current_horizon_install:
                 operational_clean_mode_for_host_history = _is_operational_clean_mode(args)
@@ -17028,12 +25025,24 @@ def _run_live_temporal_runtime(
                 epoch_timing_wall_marks["node_local_apply_start"] = (
                     node_local_apply_started_wall
                 )
+                if (
+                    operational_clean_mode
+                    and str(args.forwarding_backend) == "bpf_owned"
+                ):
+                    active_session = _stage_session_horizon_for_next_apply(
+                        active_session,
+                        horizon_id=_horizon_id_for_queue_entry(next_entry),
+                        source_state_id=current_state_id,
+                    )
                 active_session = real_installer.apply_and_validate(
                     topology_path=topology_path,
                     topology_snapshot=snapshot,
                     runtime_update_plan=context["runtime_update_plan"],
                     distribution_batch=context["distribution_batch"],
-                    require_preview_validation=True,
+                    require_preview_validation=not (
+                        operational_clean_mode
+                        and str(args.forwarding_backend) == "bpf_owned"
+                    ),
                     host_runtime_summary=host_apply["boundary"],
                     existing_session=active_session,
                     max_node_workers=int(args.max_node_workers),
@@ -17175,6 +25184,9 @@ def _run_live_temporal_runtime(
                             is not True
                             or str(
                                 runtime_readiness.get(
+                                    "active_physical_horizon_generation_key"
+                                )
+                                or runtime_readiness.get(
                                     "active_horizon_generation_key"
                                 )
                                 or ""
@@ -17201,6 +25213,18 @@ def _run_live_temporal_runtime(
                                         "actual_horizon_generation_key": str(
                                             runtime_readiness.get(
                                                 "active_horizon_generation_key"
+                                            )
+                                            or ""
+                                        ),
+                                        "actual_physical_horizon_generation_key": str(
+                                            runtime_readiness.get(
+                                                "active_physical_horizon_generation_key"
+                                            )
+                                            or ""
+                                        ),
+                                        "actual_logical_horizon_generation_key": str(
+                                            runtime_readiness.get(
+                                                "active_logical_horizon_generation_key"
                                             )
                                             or ""
                                         ),
@@ -17504,7 +25528,15 @@ def _run_live_temporal_runtime(
                         )
                     parameter_count += 1
 
-            if not noop_parameter_epoch:
+            if (
+                _is_operational_clean_bpf_owned_args(args)
+                and bpf_owned_host_parameter_skip.get("enabled")
+            ):
+                current_dynamic_state = _host_plan_target_dynamic_state(
+                    current_dynamic_state,
+                    logical_host_plan,
+                )
+            elif not noop_parameter_epoch:
                 current_dynamic_state = dynamic_slot_state_from_link_state(
                     load_link_state(link_state_path)
                 )
@@ -17516,6 +25548,46 @@ def _run_live_temporal_runtime(
                 horizon_id=_horizon_id_for_queue_entry(next_entry),
                 target_state_id=current_state_id,
             )
+            if (
+                _is_operational_clean_bpf_owned_args(args)
+                and str(args.forwarding_backend) == "bpf_owned"
+                and effective_epoch_type == "runtime_epoch"
+                and active_session is not None
+            ):
+                runtime_readiness_for_cleanup = dict(
+                    dict(active_session.backend or {}).get("bpf_owned_readiness")
+                    or {}
+                )
+                cleanup_enqueue_record = _enqueue_retired_bpf_generation_cleanup(
+                    readiness=runtime_readiness_for_cleanup,
+                )
+                if cleanup_enqueue_record.get("queued") is not False:
+                    _progress(
+                        phase="bpf_retired_generation_cleanup",
+                        event_type="bpf_retired_generation_cleanup_queued",
+                        phase_detail={
+                            "record_id": str(
+                                cleanup_enqueue_record.get("record_id") or ""
+                            ),
+                            "generation_id": int(
+                                cleanup_enqueue_record.get("generation_id") or 0
+                            ),
+                            "delete_manifest_count": int(
+                                cleanup_enqueue_record.get("delete_manifest_count")
+                                or 0
+                            ),
+                            "queue_depth": len(bpf_retired_cleanup_work_queue),
+                        },
+                        epoch_context=current_epoch_context,
+                        runtime_epochs_completed=runtime_count,
+                        parameter_epochs_completed=parameter_count,
+                    )
+                if bpf_retired_cleanup_work_queue:
+                    bpf_retired_cleanup_work_record = (
+                        _consume_one_retired_bpf_cleanup_work_item(
+                            epoch_context=current_epoch_context,
+                        )
+                    )
             apply_end_wall = time.perf_counter()
             apply_end_epoch = time.time()
             epoch_timing_wall_marks["epoch_end_time_utc"] = apply_end_wall
@@ -17529,7 +25601,12 @@ def _run_live_temporal_runtime(
                 0,
                 int(host_apply["outcome"].get("delta_summary", {}).get("managed_slot_count", 0))
                 - int(host_apply["outcome"].get("operation_count", applied_operation_count)),
-            ) + int(parameter_safety_skipped_operations)
+            )
+            if not (
+                _is_operational_clean_bpf_owned_args(args)
+                and bpf_owned_host_parameter_skip.get("enabled")
+            ):
+                skipped_operation_count += int(parameter_safety_skipped_operations)
             node_local_preflight = _safe_dict(
                 (node_local_execution_public or {}).get("preflight")
             )
@@ -17634,6 +25711,18 @@ def _run_live_temporal_runtime(
                 "host_apply_skipped_by_current_horizon_install": (
                     host_apply_skipped_by_current_horizon_install
                 ),
+                "host_apply_skipped_by_bpf_owned_parameter_only": (
+                    host_apply_skipped_by_bpf_owned_parameter_only
+                ),
+                "bpf_owned_host_parameter_skip": dict(
+                    bpf_owned_host_parameter_skip
+                ),
+                "bpf_owned_parameter_metadata_advance": dict(
+                    bpf_owned_parameter_metadata_advance
+                ),
+                "bpf_owned_generation_map_parameter_operation_count": (
+                    bpf_owned_generation_map_parameter_operation_count
+                ),
                 "current_horizon_host_install_consumed": (
                     host_apply_skipped_by_current_horizon_install
                 ),
@@ -17699,6 +25788,47 @@ def _run_live_temporal_runtime(
                     bpf_counter_summary.get("bpf_return_handoff_hit_count") or 0
                 ),
                 "bpf_attach_reuse": bpf_attach_reuse_summary,
+                "bpf_preload_work_record": (
+                    _compact_preloaded_generation_record(bpf_preload_work_record)
+                    if bpf_preload_work_record
+                    else {}
+                ),
+                "horizon_maintenance_ready_artifact": {
+                    "status": str(horizon_maintenance_ready_artifact.get("status") or ""),
+                    "artifact_path": str(
+                        horizon_maintenance_ready_artifact.get("artifact_path") or ""
+                    ),
+                    "request_hash": str(
+                        horizon_maintenance_ready_artifact.get("request_hash") or ""
+                    ),
+                    "queued_preload_record_count": int(
+                        horizon_maintenance_ready_artifact.get(
+                            "queued_preload_record_count"
+                        )
+                        or 0
+                    ),
+                    "inactive_preload_record_count": int(
+                        horizon_maintenance_ready_artifact.get(
+                            "inactive_preload_record_count"
+                        )
+                        or 0
+                    ),
+                    "worker_mode": str(
+                        horizon_maintenance_ready_artifact.get("worker_mode") or ""
+                    ),
+                },
+                "bpf_preload_work_queue_remaining": len(bpf_preload_work_queue),
+                "bpf_retired_cleanup_work_record": (
+                    _compact_retired_cleanup_record(bpf_retired_cleanup_work_record)
+                    if bpf_retired_cleanup_work_record
+                    else {}
+                ),
+                "bpf_retired_cleanup_work_queue_remaining": len(
+                    bpf_retired_cleanup_work_queue
+                ),
+                "bpf_retired_cleanup_blocked_count": len(
+                    bpf_retired_cleanup_blocked_records
+                ),
                 "topology_mutation_count": topology_mutation_count,
                 "forwarding_mutation_count": forwarding_mutation_count,
                 "network_mutation_count": int(host_apply["outcome"].get("operation_count", 0)),
@@ -18223,11 +26353,19 @@ def _run_live_temporal_runtime(
                 ),
             )
             epoch_execution_records.append(compact_epoch_record)
-            bpf_hotpath_reuse_audit = _bpf_hotpath_reuse_audit(
-                epoch_execution_records,
-                runtime_mode=str(args.runtime_mode),
-                forwarding_backend=str(args.forwarding_backend),
-            )
+            if str(compact_epoch_record.get("epoch_type") or "") == "runtime_epoch":
+                if first_runtime_epoch_record_for_hotpath_audit is None:
+                    first_runtime_epoch_record_for_hotpath_audit = dict(
+                        compact_epoch_record
+                    )
+                bpf_hotpath_reuse_audit = _bpf_hotpath_latest_runtime_epoch_audit(
+                    first_runtime_epoch_record=(
+                        first_runtime_epoch_record_for_hotpath_audit
+                    ),
+                    latest_epoch_record=compact_epoch_record,
+                    runtime_mode=str(args.runtime_mode),
+                    forwarding_backend=str(args.forwarding_backend),
+                )
             completion_event_type = (
                 "parameter_epoch_noop_skipped"
                 if noop_parameter_epoch
@@ -18309,7 +26447,7 @@ def _run_live_temporal_runtime(
                 current_epoch_context = None
                 break
             current_epoch_context = None
-            maybe_replenish(activation_relative)
+            maybe_replenish(activation_relative, current_entry=next_entry)
         if active_session is not None and not _is_operational_clean_mode(args):
             final_validation_scope = str(args.runtime_epoch_validation_scope)
             final_validation_primary_only = final_validation_scope != "all_active_flows"
@@ -18735,78 +26873,133 @@ def _run_live_temporal_runtime(
                 - host_artifact_cleanup_started_at,
             },
         }
+        if operational_clean_mode and str(args.forwarding_backend) == "bpf_owned":
+            cleanup_metrics = dict(
+                dict(host_artifact_cleanup).get("cleanup_metrics") or {}
+            )
+            if (
+                cleanup_metrics.get("full_topology_candidate_inventory_fallback")
+                is True
+                or cleanup_metrics.get("bounded_owned_scope") is not True
+            ):
+                raise RuntimeError(
+                    "OPERATIONAL_CLEAN_CLEANUP_SCOPE_FALLBACK_BLOCKER:"
+                    + json.dumps(
+                        {
+                            "cleanup_scope_source": str(
+                                cleanup_metrics.get("cleanup_scope_source") or ""
+                            ),
+                            "bounded_owned_scope": bool(
+                                cleanup_metrics.get("bounded_owned_scope")
+                            ),
+                            "full_topology_candidate_inventory_fallback": bool(
+                                cleanup_metrics.get(
+                                    "full_topology_candidate_inventory_fallback"
+                                )
+                            ),
+                        },
+                        sort_keys=True,
+                    )
+                )
         post_cleanup_direct_backend_artifacts = direct_backend_host_artifacts_report()
         direct_backend_fallback_cleanup = None
         remaining_direct_backend_interfaces = list(
             post_cleanup_direct_backend_artifacts.get("interfaces", [])
         )
         if remaining_direct_backend_interfaces:
-            _progress(
-                phase="runtime_rollback:direct_backend_artifacts",
-                event_type="runtime_cleanup_direct_backend_artifact_fallback_started",
-                phase_detail={
-                    "remaining_interface_count": len(
-                        remaining_direct_backend_interfaces
-                    ),
-                    "cleanup_scope": "skyseed_only_direct_backend_host_interfaces",
-                },
-                runtime_epochs_completed=runtime_count,
-                parameter_epochs_completed=parameter_count,
-            )
-
-            def _direct_backend_cleanup_progress(update: Dict[str, Any]) -> None:
+            if _is_operational_clean_bpf_owned_route(
+                operational_clean_mode=operational_clean_mode,
+                forwarding_backend=str(args.forwarding_backend),
+            ):
+                direct_backend_fallback_cleanup = (
+                    _operational_clean_fallback_blocked_report(
+                        reason=(
+                            "operational_clean_disables_direct_backend_fallback_cleanup"
+                        ),
+                        remaining_interfaces=remaining_direct_backend_interfaces,
+                    )
+                )
                 _progress(
                     phase="runtime_rollback:direct_backend_artifacts",
-                    event_type="runtime_cleanup_direct_backend_artifact_progress",
-                    phase_detail=dict(update),
+                    event_type="runtime_cleanup_direct_backend_artifact_fallback_blocked",
+                    phase_detail=dict(direct_backend_fallback_cleanup),
+                    runtime_epochs_completed=runtime_count,
+                    parameter_epochs_completed=parameter_count,
+                )
+            else:
+                _progress(
+                    phase="runtime_rollback:direct_backend_artifacts",
+                    event_type="runtime_cleanup_direct_backend_artifact_fallback_started",
+                    phase_detail={
+                        "remaining_interface_count": len(
+                            remaining_direct_backend_interfaces
+                        ),
+                        "cleanup_scope": "skyseed_only_direct_backend_host_interfaces",
+                    },
                     runtime_epochs_completed=runtime_count,
                     parameter_epochs_completed=parameter_count,
                 )
 
-            direct_backend_fallback_started_at = time.perf_counter()
-            direct_backend_fallback_cleanup = cleanup_direct_backend_host_artifacts(
-                remaining_direct_backend_interfaces,
-                progress_callback=_direct_backend_cleanup_progress,
-            )
-            direct_backend_fallback_cleanup = {
-                **dict(direct_backend_fallback_cleanup),
-                "timing": {
-                    "cleanup_wall_seconds": time.perf_counter()
-                    - direct_backend_fallback_started_at,
-                },
-            }
-            post_cleanup_direct_backend_artifacts = direct_backend_host_artifacts_report()
-            _progress(
-                phase="runtime_rollback:direct_backend_artifacts",
-                event_type="runtime_cleanup_direct_backend_artifact_fallback_completed",
-                phase_detail={
-                    "requested_interface_count": int(
-                        direct_backend_fallback_cleanup.get(
-                            "requested_interface_count",
-                            0,
-                        )
-                    ),
-                    "removed_interface_count": int(
-                        direct_backend_fallback_cleanup.get("removed_interface_count", 0)
-                    ),
-                    "remaining_interface_count": len(
-                        list(post_cleanup_direct_backend_artifacts.get("interfaces", []))
-                    ),
-                    "failed_interface_removal_count": len(
-                        list(
+                def _direct_backend_cleanup_progress(update: Dict[str, Any]) -> None:
+                    _progress(
+                        phase="runtime_rollback:direct_backend_artifacts",
+                        event_type="runtime_cleanup_direct_backend_artifact_progress",
+                        phase_detail=dict(update),
+                        runtime_epochs_completed=runtime_count,
+                        parameter_epochs_completed=parameter_count,
+                    )
+
+                direct_backend_fallback_started_at = time.perf_counter()
+                direct_backend_fallback_cleanup = cleanup_direct_backend_host_artifacts(
+                    remaining_direct_backend_interfaces,
+                    progress_callback=_direct_backend_cleanup_progress,
+                )
+                direct_backend_fallback_cleanup = {
+                    **dict(direct_backend_fallback_cleanup),
+                    "timing": {
+                        "cleanup_wall_seconds": time.perf_counter()
+                        - direct_backend_fallback_started_at,
+                    },
+                }
+                post_cleanup_direct_backend_artifacts = direct_backend_host_artifacts_report()
+                _progress(
+                    phase="runtime_rollback:direct_backend_artifacts",
+                    event_type="runtime_cleanup_direct_backend_artifact_fallback_completed",
+                    phase_detail={
+                        "requested_interface_count": int(
                             direct_backend_fallback_cleanup.get(
-                                "failed_interface_removals",
-                                [],
+                                "requested_interface_count",
+                                0,
                             )
-                        )
-                    ),
-                    "cleanup_wall_seconds": dict(
-                        direct_backend_fallback_cleanup.get("timing") or {}
-                    ).get("cleanup_wall_seconds"),
-                },
-                runtime_epochs_completed=runtime_count,
-                parameter_epochs_completed=parameter_count,
-            )
+                        ),
+                        "removed_interface_count": int(
+                            direct_backend_fallback_cleanup.get(
+                                "removed_interface_count",
+                                0,
+                            )
+                        ),
+                        "remaining_interface_count": len(
+                            list(
+                                post_cleanup_direct_backend_artifacts.get(
+                                    "interfaces", []
+                                )
+                            )
+                        ),
+                        "failed_interface_removal_count": len(
+                            list(
+                                direct_backend_fallback_cleanup.get(
+                                    "failed_interface_removals",
+                                    [],
+                                )
+                            )
+                        ),
+                        "cleanup_wall_seconds": dict(
+                            direct_backend_fallback_cleanup.get("timing") or {}
+                        ).get("cleanup_wall_seconds"),
+                    },
+                    runtime_epochs_completed=runtime_count,
+                    parameter_epochs_completed=parameter_count,
+                )
         if host_artifact_cleanup.get("cleanup_completed") is not True:
             host_cleanup_success = False
         if list(post_cleanup_direct_backend_artifacts.get("interfaces", [])):
@@ -18868,8 +27061,14 @@ def _run_live_temporal_runtime(
         **_current_runtime_report_payload(finalized=True),
         "prepared_bundle_runtime": {
             **_current_runtime_report_payload(finalized=True)["prepared_bundle_runtime"],
-            "pre_epoch_host_prewarm": pre_epoch_host_prewarm,
-            "current_horizon_host_install": current_horizon_host_install,
+            "pre_epoch_host_prewarm": _pre_epoch_host_prewarm_artifact_summary(
+                pre_epoch_host_prewarm
+            ),
+            "current_horizon_host_install": (
+                _current_horizon_host_install_artifact_summary(
+                    current_horizon_host_install
+                )
+            ),
         },
         "failure_context": failure_context,
         "outcome": {
@@ -18961,6 +27160,18 @@ def _timing_analysis(
     return {
         "startup_preparation": {
             "compose_up_wall_seconds": float(phase_timing.get("compose_up_wall_seconds", 0.0)),
+            "compose_up_command_wall_seconds": float(
+                phase_timing.get("compose_up_command_wall_seconds", 0.0)
+            ),
+            "compose_up_retry_command_wall_seconds": float(
+                phase_timing.get("compose_up_retry_command_wall_seconds", 0.0)
+            ),
+            "compose_up_inter_stage_backoff_wall_seconds": float(
+                phase_timing.get("compose_up_inter_stage_backoff_wall_seconds", 0.0)
+            ),
+            "compose_up_orchestration_overhead_wall_seconds": float(
+                phase_timing.get("compose_up_orchestration_overhead_wall_seconds", 0.0)
+            ),
             "container_readiness_wall_seconds": float(
                 phase_timing.get("container_readiness_wall_seconds", 0.0)
             ),
@@ -18976,11 +27187,17 @@ def _timing_analysis(
             "current_horizon_host_install_operation_count": int(
                 phase_timing.get("current_horizon_host_install_operation_count", 0)
             ),
+            "current_horizon_host_install_apply_operation_count": int(
+                phase_timing.get("current_horizon_host_install_apply_operation_count", 0)
+            ),
             "pre_epoch_host_runtime_prepare_wall_seconds": float(
                 phase_timing.get("pre_epoch_host_runtime_prepare_wall_seconds", 0.0)
             ),
             "pre_epoch_host_runtime_reconcile_wall_seconds": float(
                 phase_timing.get("pre_epoch_host_runtime_reconcile_wall_seconds", 0.0)
+            ),
+            "current_horizon_host_install_apply_operation_count": int(
+                phase_timing.get("current_horizon_host_install_apply_operation_count", 0)
             ),
             "pre_first_epoch_direct_backend_prepare_wall_seconds": first_prepare,
             "pre_first_epoch_runtime_manager_reconcile_wall_seconds": first_reconcile,
@@ -21518,6 +29735,18 @@ def _write_full_s4_retry_timing_breakdown(
         "docker_compose_up_wall_seconds": float(
             phase_timing.get("compose_up_wall_seconds") or 0.0
         ),
+        "docker_compose_up_command_wall_seconds": float(
+            phase_timing.get("compose_up_command_wall_seconds") or 0.0
+        ),
+        "docker_compose_up_retry_command_wall_seconds": float(
+            phase_timing.get("compose_up_retry_command_wall_seconds") or 0.0
+        ),
+        "docker_compose_up_inter_stage_backoff_wall_seconds": float(
+            phase_timing.get("compose_up_inter_stage_backoff_wall_seconds") or 0.0
+        ),
+        "docker_compose_up_orchestration_overhead_wall_seconds": float(
+            phase_timing.get("compose_up_orchestration_overhead_wall_seconds") or 0.0
+        ),
         "container_readiness_polling_wall_seconds": float(
             phase_timing.get("container_readiness_wall_seconds") or 0.0
         ),
@@ -22009,6 +30238,7 @@ def main() -> int:
     loaded_frozen_runtime_initial_segment: Dict[str, Any] | None = None
     loaded_frozen_runtime_inputs_gate: Dict[str, Any] | None = None
     loaded_frozen_runtime_source_gate: Dict[str, Any] | None = None
+    fresh_prepared_runtime_initial_segment: Dict[str, Any] | None = None
 
     if args.load_frozen_prepared_bundle is not None:
         bundle_path = Path(args.load_frozen_prepared_bundle).resolve()
@@ -22100,8 +30330,17 @@ def main() -> int:
                 loaded_frozen_runtime_source_gate = runtime_source_gate
             final_bundle_handoff_proof = normal_runtime_inputs_gate
         if loaded_bundle:
-            _write_json(run_dir / "prepared_update_bundle.json", loaded_bundle)
-            _write_json(run_dir / "frozen_prepared_update_bundle.json", loaded_bundle)
+            if loaded_frozen_runtime_bundle is None:
+                _write_json_hardlink_alias(
+                    bundle_path,
+                    run_dir / "prepared_update_bundle.json",
+                )
+            _write_loaded_frozen_bundle_reference(
+                run_dir=run_dir,
+                source_path=bundle_path,
+                prepared_update_bundle=loaded_bundle,
+                artifact_role="load_frozen_prepared_bundle_source",
+            )
         _write_json(run_dir / "prepared_bundle_load_gate.json", load_gate)
         _write_json(run_dir / "bundle_backed_live_execution_source_gate.json", gate)
         _write_json(
@@ -22397,6 +30636,10 @@ def main() -> int:
             ),
             "compose_build_wall_seconds": 0.0,
             "compose_up_wall_seconds": 0.0,
+            "compose_up_command_wall_seconds": 0.0,
+            "compose_up_retry_command_wall_seconds": 0.0,
+            "compose_up_inter_stage_backoff_wall_seconds": 0.0,
+            "compose_up_orchestration_overhead_wall_seconds": 0.0,
             "container_readiness_wall_seconds": 0.0,
             "host_prepare_wall_seconds": 0.0,
             "post_run_preflight_wall_seconds": 0.0,
@@ -22409,6 +30652,7 @@ def main() -> int:
             "first_runtime_epoch_node_local_apply_wall_seconds": 0.0,
             "first_runtime_epoch_direct_backend_prepare_wall_seconds": 0.0,
             "first_runtime_epoch_direct_backend_reconcile_wall_seconds": 0.0,
+            "current_horizon_host_install_apply_operation_count": 0,
         }
         original_sigterm_handler = signal.getsignal(signal.SIGTERM)
         signal.signal(signal.SIGTERM, _sigterm_as_keyboard_interrupt)
@@ -22687,6 +30931,10 @@ def main() -> int:
             horizon_lifecycle_queue_contract,
         )
         _write_json(
+            run_dir / "sliding_horizon_window_contract.json",
+            dict(horizon_lifecycle_queue_contract.get("sliding_window_contract") or {}),
+        )
+        _write_json(
             run_dir / "map_only_horizon_boundary_contract.json",
             map_only_horizon_boundary_contract,
         )
@@ -22750,6 +30998,9 @@ def main() -> int:
                     "horizon_lifecycle_queue_contract_json": str(
                         run_dir / "horizon_lifecycle_queue_contract.json"
                     ),
+                    "sliding_horizon_window_contract_json": str(
+                        run_dir / "sliding_horizon_window_contract.json"
+                    ),
                     "lifecycle_aware_horizon_contract_json": str(
                         run_dir / "lifecycle_aware_horizon_contract.json"
                     ),
@@ -22777,6 +31028,9 @@ def main() -> int:
             "lookahead_preload_queue": lookahead_preload_queue_for_precompose,
             "runtime_epoch_summaries": runtime_epoch_summary,
             "horizon_lifecycle_queue_contract": horizon_lifecycle_queue_contract,
+            "sliding_window_contract": dict(
+                horizon_lifecycle_queue_contract.get("sliding_window_contract") or {}
+            ),
             "map_only_horizon_boundary_contract": map_only_horizon_boundary_contract,
             "lifecycle_aware_horizon_contract": lifecycle_aware_horizon_contract,
             "parameter_epoch_summaries": parameter_epoch_summary,
@@ -22899,11 +31153,67 @@ def main() -> int:
             max_runtime_epochs=args.max_runtime_epochs,
             max_parameter_epochs=args.max_parameter_epochs,
         )
-        normal_runtime_inputs = _build_normal_runtime_inputs(
-            initial_segment=normal_runtime_initial_segment,
+        normal_runtime_run_start_time_utc = (
+            list(temporal_plan.get("orbit_samples", []))[0].get(
+                "absolute_time_utc"
+            )
+            if list(temporal_plan.get("orbit_samples", []))
+            else str(normal_runtime_initial_segment.get("start_time_utc") or "")
+        )
+        frozen_prepared_horizon_segments = (
+            _prepare_frozen_rolling_horizon_segments(
+                args=args,
+                run_dir=run_dir,
+                initial_segment=normal_runtime_initial_segment,
+                topology_path=run_dir / "topology.json",
+                link_state_path=run_dir / "link_state.json",
+                run_start_time_utc=str(normal_runtime_run_start_time_utc or ""),
+            )
+            if bool(args.continuous)
+            else [dict(normal_runtime_initial_segment)]
+        )
+        _write_json(
+            run_dir / "frozen_prepared_horizon_segments.json",
+            [
+                {
+                    key: _json_safe(value)
+                    for key, value in dict(segment).items()
+                    if key != "context_by_slice"
+                }
+                for segment in frozen_prepared_horizon_segments
+            ],
+        )
+        normal_runtime_inputs = _build_normal_runtime_inputs_for_segments(
+            prepared_horizon_segments=frozen_prepared_horizon_segments,
             topology_path=run_dir / "topology.json",
             link_state_path=run_dir / "link_state.json",
             args=args,
+        )
+        rolling_resident_attach_budget = (
+            _rolling_resident_attach_budget_from_normal_runtime_inputs(
+                normal_runtime_inputs=normal_runtime_inputs,
+                precompose_bpf_role_union_gate=precompose_bpf_role_union_gate,
+            )
+            if _is_operational_clean_bpf_owned_args(args)
+            else {}
+        )
+        if rolling_resident_attach_budget:
+            precompose_bpf_role_union_gate = {
+                **dict(precompose_bpf_role_union_gate),
+                "rolling_resident_attach_coverage_budget": dict(
+                    rolling_resident_attach_budget
+                ),
+                "resident_attach_coverage_budget": dict(
+                    rolling_resident_attach_budget
+                ),
+            }
+            prepared_update_bundle[
+                "precompose_bpf_role_union_gate"
+            ] = precompose_bpf_role_union_gate
+        normal_runtime_inputs = _normal_runtime_inputs_with_bpf_resident_attach_budget(
+            normal_runtime_inputs=normal_runtime_inputs,
+            precompose_bpf_role_union_gate=precompose_bpf_role_union_gate,
+            resident_attach_budget=rolling_resident_attach_budget,
         )
         prepared_update_bundle = _freeze_prepared_update_bundle(
             prepared_update_bundle=prepared_update_bundle,
@@ -22912,6 +31222,46 @@ def main() -> int:
             precompose_bpf_role_union_gate=precompose_bpf_role_union_gate,
             seed_output_dir=output_dir,
             normal_runtime_inputs=normal_runtime_inputs,
+        )
+        fresh_prepared_runtime_initial_segment = (
+            _thaw_normal_runtime_initial_segment(prepared_update_bundle)
+        )
+        _write_json(
+            run_dir / "fresh_prepared_runtime_handoff.json",
+            {
+                "schema_version": "skyseed-fresh-prepared-runtime-handoff-v1",
+                "source": "fresh_prepared_update_bundle",
+                "initial_segment_id": str(
+                    fresh_prepared_runtime_initial_segment.get("segment_id") or ""
+                ),
+                "initial_horizon_id": str(
+                    fresh_prepared_runtime_initial_segment.get("horizon_id") or ""
+                ),
+                "current_execution_queue_count": len(
+                    list(
+                        fresh_prepared_runtime_initial_segment.get(
+                            "current_execution_queue"
+                        )
+                        or []
+                    )
+                ),
+                "host_network_mutation_plan_count": len(
+                    dict(
+                        fresh_prepared_runtime_initial_segment.get(
+                            "host_network_mutation_plan_by_segment_key"
+                        )
+                        or {}
+                    )
+                ),
+                "prepared_horizon_segment_count": len(
+                    list(
+                        fresh_prepared_runtime_initial_segment.get(
+                            "prepared_horizon_segments"
+                        )
+                        or []
+                    )
+                ),
+            },
         )
         prepared_update_bundle["prepared_artifacts"][
             "frozen_prepared_update_bundle_json"
@@ -22928,11 +31278,13 @@ def main() -> int:
             run_dir / "pre_runtime_bpf_owned_prepare.json",
             precompose_pre_runtime_bpf_owned_prepare,
         )
-        _write_json(run_dir / "prepared_update_bundle.json", prepared_update_bundle)
-        _write_json(
-            run_dir / "frozen_prepared_update_bundle.json",
-            prepared_update_bundle,
-        )
+        prepared_bundle_path = run_dir / "prepared_update_bundle.json"
+        frozen_bundle_path = run_dir / "frozen_prepared_update_bundle.json"
+        _write_json(prepared_bundle_path, prepared_update_bundle)
+        if bool(args.prepare_only_no_compose) or bool(args.preview_only_no_compile):
+            _write_json_hardlink_alias(prepared_bundle_path, frozen_bundle_path)
+        else:
+            _write_json(frozen_bundle_path, prepared_update_bundle)
         _write_json(
             run_dir / "ping_results.json",
             {
@@ -23122,6 +31474,20 @@ def main() -> int:
             if not str(artifact_key).endswith("_json"):
                 continue
             source_path = Path(str(artifact_value)).resolve()
+            if str(artifact_key) == "frozen_prepared_update_bundle_json":
+                if not source_path.exists():
+                    raise RuntimeError(
+                        "frozen_bundle_missing_prepared_artifact:"
+                        f"{artifact_key}:{source_path}"
+                    )
+                artifacts[str(artifact_key)] = str(source_path)
+                _write_loaded_frozen_bundle_reference(
+                    run_dir=run_dir,
+                    source_path=source_path,
+                    prepared_update_bundle=prepared_update_bundle,
+                    artifact_role="prepared_artifact_frozen_bundle_source",
+                )
+                continue
             if not source_path.exists():
                 if str(artifact_key) in required_frozen_artifact_keys:
                     raise RuntimeError(
@@ -23327,8 +31693,10 @@ def main() -> int:
                 run_dir / "bundle_backed_runtime_source_binding_gate.json",
                 loaded_frozen_runtime_source_gate,
             )
-        _write_json(run_dir / "prepared_update_bundle.json", prepared_update_bundle)
-        _write_json(run_dir / "frozen_prepared_update_bundle.json", prepared_update_bundle)
+        _write_json_hardlink_alias(
+            bundle_path,
+            run_dir / "prepared_update_bundle.json",
+        )
         _write_json(run_dir / "horizon_lifecycle_queue_contract.json", horizon_lifecycle_queue_contract)
         _write_json(run_dir / "precompose_horizon_queue_gate.json", precompose_horizon_queue_gate)
         _write_json(run_dir / "precompose_bpf_role_union_gate.json", precompose_bpf_role_union_gate)
@@ -23910,11 +32278,13 @@ def main() -> int:
                 }
                 _write_json(run_dir / "preflight.json", preflight_report)
         compose_down_before = None
+        compose_project_residue_cleanup_before = None
         compose_network_scrub_before = None
         compose_build = None
         compose_up = None
         compose_up_stage_results = []
         compose_down_after = None
+        compose_project_residue_cleanup_after = None
         container_readiness = None
         compose_service_snapshot = None
         compose_environment_reuse: Dict[str, Any] | None = None
@@ -24037,13 +32407,79 @@ def main() -> int:
                         }
                     else:
                         compose_down_before = _compose_down(output_dir)
+                        compose_project_residue_cleanup_before = (
+                            _compose_force_remove_project_residue(output_dir)
+                        )
                         compose_network_scrub_before = _compose_force_remove_stale_networks(
                             output_dir
+                        )
+                        operational_clean_bpf_owned_route = (
+                            _is_operational_clean_bpf_owned_route(
+                                operational_clean_mode=_is_operational_clean_mode(args),
+                                forwarding_backend=str(args.forwarding_backend),
+                            )
                         )
                         prestart_preflight = run_skyseed_preflight(
                             ignore_pids=_current_preflight_ignore_pids(),
                             profile=preflight_profile,
                         )
+                        prestart_authoritative_direct_backend_scan = None
+                        if operational_clean_bpf_owned_route:
+                            prestart_authoritative_direct_backend_scan = (
+                                direct_backend_host_artifacts_report()
+                            )
+                            prestart_preflight = (
+                                _preflight_report_with_authoritative_direct_backend_scan(
+                                    prestart_preflight,
+                                    direct_backend_scan=(
+                                        prestart_authoritative_direct_backend_scan
+                                    ),
+                                    scan_source=(
+                                        "operational_clean_prestart_residue_gate"
+                                    ),
+                                )
+                            )
+                            events.append(
+                                {
+                                    "timestamp_utc": _timestamp_utc(),
+                                    "event_type": (
+                                        "prestart_direct_backend_authoritative_scan"
+                                    ),
+                                    "interface_count": len(
+                                        list(
+                                            prestart_authoritative_direct_backend_scan.get(
+                                                "interfaces", []
+                                            )
+                                        )
+                                    ),
+                                    "scan_ok": (
+                                        prestart_authoritative_direct_backend_scan.get(
+                                            "ok"
+                                        )
+                                        is True
+                                    ),
+                                    "scan_source": (
+                                        "operational_clean_prestart_residue_gate"
+                                    ),
+                                }
+                            )
+                            if (
+                                prestart_authoritative_direct_backend_scan.get("ok")
+                                is not True
+                            ):
+                                runtime_blocker = {
+                                    "stage": "compose_cleanup_before_startup",
+                                    "classified_blocker": (
+                                        "prestart_direct_backend_scan_failed"
+                                    ),
+                                    "prestart_authoritative_direct_backend_scan": (
+                                        prestart_authoritative_direct_backend_scan
+                                    ),
+                                    "prestart_preflight": prestart_preflight,
+                                }
+                                raise RuntimeError(
+                                    "prestart direct-backend residue scan failed"
+                                )
                         prestart_residue = _compose_residue_summary(prestart_preflight)
                         auto_prestart_cleanup = None
                         direct_backend_only_residue = (
@@ -24062,10 +32498,24 @@ def main() -> int:
                                     .get("interfaces", [])
                                 )
                             )
+                            auto_prestart_cleanup = {
+                                **dict(auto_prestart_cleanup),
+                                "clean_mode_prestart_sanitation": (
+                                    operational_clean_bpf_owned_route
+                                ),
+                                "runtime_clean_path_fallback": False,
+                                "cleanup_phase": "prestart_before_compose",
+                                "full_scope_repair_used": False,
+                                "full_scope_reconcile_used": False,
+                            }
                             events.append(
                                 {
                                     "timestamp_utc": _timestamp_utc(),
                                     "event_type": "prestart_direct_backend_cleanup_completed",
+                                    "clean_mode_prestart_sanitation": (
+                                        operational_clean_bpf_owned_route
+                                    ),
+                                    "runtime_clean_path_fallback": False,
                                     "removed_interface_count": int(
                                         auto_prestart_cleanup.get("removed_interface_count", 0)
                                     ),
@@ -24085,6 +32535,21 @@ def main() -> int:
                                 ignore_pids=_current_preflight_ignore_pids(),
                                 profile=preflight_profile,
                             )
+                            if operational_clean_bpf_owned_route:
+                                prestart_authoritative_direct_backend_scan = (
+                                    direct_backend_host_artifacts_report()
+                                )
+                                prestart_preflight = (
+                                    _preflight_report_with_authoritative_direct_backend_scan(
+                                        prestart_preflight,
+                                        direct_backend_scan=(
+                                            prestart_authoritative_direct_backend_scan
+                                        ),
+                                        scan_source=(
+                                            "operational_clean_prestart_post_cleanup_residue_gate"
+                                        ),
+                                    )
+                                )
                             prestart_residue = _compose_residue_summary(prestart_preflight)
                         if any(int(value) > 0 for value in prestart_residue.values()):
                             runtime_blocker = {
@@ -24100,8 +32565,14 @@ def main() -> int:
                                         "stderr": compose_down_before.stderr,
                                     }
                                 ),
+                                "compose_project_residue_cleanup_before": (
+                                    compose_project_residue_cleanup_before
+                                ),
                                 "compose_network_scrub_before": compose_network_scrub_before,
                                 "auto_prestart_cleanup": auto_prestart_cleanup,
+                                "prestart_authoritative_direct_backend_scan": (
+                                    prestart_authoritative_direct_backend_scan
+                                ),
                                 "prestart_residue": prestart_residue,
                                 "prestart_preflight": prestart_preflight,
                             }
@@ -24963,12 +33434,47 @@ def main() -> int:
                             time.perf_counter() - compose_up_started_at,
                             6,
                         )
+                        compose_startup_wall_time = _compose_startup_wall_time_attribution(
+                            stage_results=compose_up_stage_results,
+                            total_wall_seconds=float(
+                                phase_timing["compose_up_wall_seconds"]
+                            ),
+                        )
+                        phase_timing["compose_up_command_wall_seconds"] = float(
+                            compose_startup_wall_time[
+                                "compose_up_command_wall_seconds"
+                            ]
+                        )
+                        phase_timing[
+                            "compose_up_retry_command_wall_seconds"
+                        ] = float(
+                            compose_startup_wall_time[
+                                "compose_up_retry_command_wall_seconds"
+                            ]
+                        )
+                        phase_timing[
+                            "compose_up_inter_stage_backoff_wall_seconds"
+                        ] = float(
+                            compose_startup_wall_time[
+                                "compose_up_inter_stage_backoff_wall_seconds"
+                            ]
+                        )
+                        phase_timing[
+                            "compose_up_orchestration_overhead_wall_seconds"
+                        ] = float(
+                            compose_startup_wall_time[
+                                "compose_up_orchestration_overhead_wall_seconds"
+                            ]
+                        )
                         events.append(
                             {
                                 "timestamp_utc": _timestamp_utc(),
                                 "event_type": "compose_up_completed",
                                 "output_dir": str(output_dir),
                                 "wall_seconds": phase_timing["compose_up_wall_seconds"],
+                                "wall_time_attribution": dict(
+                                    compose_startup_wall_time
+                                ),
                             }
                         )
                         _progress_update(
@@ -24976,6 +33482,24 @@ def main() -> int:
                             event_type="compose_up_completed",
                             phase_detail={
                                 "compose_up_wall_seconds": phase_timing["compose_up_wall_seconds"],
+                                "compose_up_command_wall_seconds": (
+                                    phase_timing["compose_up_command_wall_seconds"]
+                                ),
+                                "compose_up_retry_command_wall_seconds": (
+                                    phase_timing[
+                                        "compose_up_retry_command_wall_seconds"
+                                    ]
+                                ),
+                                "compose_up_inter_stage_backoff_wall_seconds": (
+                                    phase_timing[
+                                        "compose_up_inter_stage_backoff_wall_seconds"
+                                    ]
+                                ),
+                                "compose_up_orchestration_overhead_wall_seconds": (
+                                    phase_timing[
+                                        "compose_up_orchestration_overhead_wall_seconds"
+                                    ]
+                                ),
                             },
                         )
                         compose_up_stage_results_summary = list(compose_up_stage_results)
@@ -25020,6 +33544,14 @@ def main() -> int:
                         )
                     else:
                         phase_timing["compose_up_wall_seconds"] = 0.0
+                        phase_timing["compose_up_command_wall_seconds"] = 0.0
+                        phase_timing["compose_up_retry_command_wall_seconds"] = 0.0
+                        phase_timing[
+                            "compose_up_inter_stage_backoff_wall_seconds"
+                        ] = 0.0
+                        phase_timing[
+                            "compose_up_orchestration_overhead_wall_seconds"
+                        ] = 0.0
                         phase_timing["container_readiness_wall_seconds"] = 0.0
                         events.append(
                             {
@@ -25156,6 +33688,38 @@ def main() -> int:
                         )
                         if loaded_frozen_runtime_initial_segment is not None:
                             initial_segment = loaded_frozen_runtime_initial_segment
+                        elif fresh_prepared_runtime_initial_segment is not None:
+                            initial_segment = fresh_prepared_runtime_initial_segment
+                            events.append(
+                                {
+                                    "timestamp_utc": _timestamp_utc(),
+                                    "event_type": (
+                                        "fresh_prepared_runtime_handoff_consumed"
+                                    ),
+                                    "segment_id": str(
+                                        initial_segment.get("segment_id") or ""
+                                    ),
+                                    "horizon_id": str(
+                                        initial_segment.get("horizon_id") or ""
+                                    ),
+                                    "current_execution_queue_count": len(
+                                        list(
+                                            initial_segment.get(
+                                                "current_execution_queue"
+                                            )
+                                            or []
+                                        )
+                                    ),
+                                    "host_network_mutation_plan_count": len(
+                                        dict(
+                                            initial_segment.get(
+                                                "host_network_mutation_plan_by_segment_key"
+                                            )
+                                            or {}
+                                        )
+                                    ),
+                                }
+                            )
                         else:
                             initial_segment = _preview_summary_to_segment(
                                 segment_id="initial",
@@ -25361,9 +33925,23 @@ def main() -> int:
                     time.perf_counter() - compose_down_after_started_at,
                     6,
                 )
+                compose_project_residue_cleanup_after_started_at = time.perf_counter()
+                compose_project_residue_cleanup_after = (
+                    _compose_force_remove_project_residue(output_dir)
+                )
+                phase_timing[
+                    "compose_project_residue_cleanup_after_wall_seconds"
+                ] = round(
+                    time.perf_counter()
+                    - compose_project_residue_cleanup_after_started_at,
+                    6,
+                )
             else:
                 compose_down_after = None
                 phase_timing["compose_down_after_wall_seconds"] = 0.0
+                phase_timing[
+                    "compose_project_residue_cleanup_after_wall_seconds"
+                ] = 0.0
             if runtime_lock_active and runtime_lock_path.exists():
                 runtime_lock_path.unlink()
                 runtime_lock_active = False
@@ -25429,6 +34007,9 @@ def main() -> int:
                             "stderr": compose_down_before.stderr,
                         }
                     ),
+                    "compose_project_residue_cleanup_before": (
+                        compose_project_residue_cleanup_before
+                    ),
                     "compose_network_scrub_before": compose_network_scrub_before,
                     "compose_build": (
                         None
@@ -25463,6 +34044,9 @@ def main() -> int:
                             ),
                         }
                     ),
+                    "compose_project_residue_cleanup_after": (
+                        compose_project_residue_cleanup_after
+                    ),
                     "post_run_preflight": post_run_preflight_report,
                     "post_run_compose_residue_summary": post_run_residue,
                     "post_run_compose_residue_details": post_run_residue_details,
@@ -25486,14 +34070,15 @@ def main() -> int:
                 prepared_update_bundle=_read_json(prepared_bundle_path),
                 runtime_report=runtime_report,
             )
-            _write_json(prepared_bundle_path, prepared_bundle)
+            _write_json_breaking_hardlink(prepared_bundle_path, prepared_bundle)
             _write_json(
-                run_dir / "epoch_execution_queue.json",
-                list(
+                run_dir / "executed_epoch_queue_manifest.json",
+                dict(
                     runtime_report.get("prepared_bundle_runtime", {}).get(
-                        "epoch_execution_queue",
-                        [],
+                        "epoch_execution_queue_summary",
+                        {},
                     )
+                    or {}
                 ),
             )
     final_timing_report = _runtime_report_for_final_timing(run_dir, runtime_report)
@@ -25533,6 +34118,13 @@ def main() -> int:
                             [],
                         )
                     )
+                )
+                or int(
+                    runtime_report.get("prepared_bundle_runtime", {}).get(
+                        "epoch_execution_queue_count",
+                        0,
+                    )
+                    or 0
                 ),
                 "prepared_runtime_epoch_count": int(
                     runtime_report.get("timing_summary", {})
@@ -25746,6 +34338,9 @@ def main() -> int:
         "observation_frame_summary_json": str(run_dir / "observation_frame_summary.json"),
         "return_path_audit_json": str(run_dir / "return_path_audit.json"),
         "epoch_execution_queue_json": str(run_dir / "epoch_execution_queue.json"),
+        "executed_epoch_queue_manifest_json": str(
+            run_dir / "executed_epoch_queue_manifest.json"
+        ),
         "temporal_plan_json": str(run_dir / "temporal_plan.json"),
         "resource_budget_json": str(run_dir / "resource_budget.json"),
         "slot_capacity_audit_json": str(run_dir / "slot_capacity_audit.json"),

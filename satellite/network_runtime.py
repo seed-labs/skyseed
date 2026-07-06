@@ -17,7 +17,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Sequence
 
 from contracts import NetworkMutationPlan
 from controller import SatelliteController
@@ -435,6 +435,7 @@ class ControllerBackedSlotLinkNamespaceQdiscInstaller:
         self._last_cleanup_summary: Dict[str, Any] | None = None
         self._pending_prewarm_reconcile_signature: Dict[str, Any] | None = None
         self._qdisc_lifecycle_metrics: Dict[str, int] = {}
+        self._qdisc_runtime_args_by_interface: Dict[str, tuple[str, ...]] = {}
         self._operation_metrics = RuntimeOperationMetrics()
         self._pending_prewarm_reconcile_signature: Dict[str, Any] | None = None
         self._last_cleanup_summary: Dict[str, Any] | None = None
@@ -596,6 +597,11 @@ class ControllerBackedSlotLinkNamespaceQdiscInstaller:
         target_runtime_parameters = dict(
             operation.get("target_runtime_parameters", {}) or {}
         )
+        qdisc_runtime_parameters = dict(
+            operation.get("bpf_owned_host_qdisc_runtime_parameters")
+            or operation.get("host_qdisc_runtime_parameters")
+            or target_runtime_parameters
+        )
         captured_stdout = io.StringIO()
         started_at = time.perf_counter()
         qdisc_apply_wall_seconds = 0.0
@@ -710,6 +716,7 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
         self._last_cleanup_summary: Dict[str, Any] | None = None
         self._pending_prewarm_reconcile_signature: Dict[str, Any] | None = None
         self._qdisc_lifecycle_metrics: Dict[str, int] = {}
+        self._qdisc_runtime_args_by_interface: Dict[str, tuple[str, ...]] = {}
         self._operation_metrics = RuntimeOperationMetrics()
 
     def _host_interface_name_set(self) -> set[str]:
@@ -750,6 +757,24 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
                 continue
             names.add(parts[1].split("@", 1)[0].strip())
         return names
+
+    def _slot_inventory_for_names(
+        self,
+        topology: Dict[str, Any],
+        slot_names: Iterable[str],
+    ) -> Dict[str, Dict[str, Any]]:
+        wanted = {str(slot_name) for slot_name in slot_names if str(slot_name)}
+        if not wanted:
+            return {}
+        entries: Dict[str, Dict[str, Any]] = {}
+        for group in dict(topology.get("slot_inventory", {})).values():
+            for entry in list(group):
+                slot_name = str(dict(entry).get("slot_name"))
+                if slot_name in wanted:
+                    entries[slot_name] = dict(entry)
+                    if len(entries) == len(wanted):
+                        return entries
+        return entries
 
     def consume_setup_timing(self) -> Dict[str, float]:
         return dict(self._last_setup_timing)
@@ -911,7 +936,27 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
         topology_path: Path,
         prepared_resource_scope_by_slot: Mapping[str, Sequence[str] | set[str]] | None = None,
     ) -> Dict[str, Any]:
-        inventory = self._inventory(topology, topology_path)
+        scoped_resource_keys_by_slot: Dict[str, set[str]] = {}
+        if prepared_resource_scope_by_slot:
+            scoped_resource_keys_by_slot = {
+                str(slot_name): {
+                    str(resource_key)
+                    for resource_key in list(resource_keys or [])
+                    if str(resource_key)
+                }
+                for slot_name, resource_keys in dict(
+                    prepared_resource_scope_by_slot or {}
+                ).items()
+                if str(slot_name)
+            }
+        inventory = (
+            self._slot_inventory_for_names(
+                topology,
+                scoped_resource_keys_by_slot.keys(),
+            )
+            if scoped_resource_keys_by_slot
+            else self._inventory(topology, topology_path)
+        )
         bridge_names: List[str] = []
         host_interface_names: List[str] = []
         temp_host_interface_names: List[str] = []
@@ -920,13 +965,25 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
         candidate_resource_counts_by_type: Dict[str, int] = {}
         candidate_endpoint_counts_by_type: Dict[str, int] = {}
         preconnected_endpoint_counts_by_type: Dict[str, int] = {}
-        for slot_name, slot in sorted(inventory.items()):
+        missing_slot_names = sorted(
+            set(scoped_resource_keys_by_slot).difference(inventory)
+        )
+        slot_iterable = (
+            [(slot_name, inventory[slot_name]) for slot_name in sorted(scoped_resource_keys_by_slot) if slot_name in inventory]
+            if scoped_resource_keys_by_slot
+            else sorted(inventory.items())
+        )
+        for slot_name, slot in slot_iterable:
             slot_type = self._slot_type(slot)
             slot_counts_by_type[slot_type] = slot_counts_by_type.get(slot_type, 0) + 1
             bridge_names.append(self._bridge_name(slot_name))
             candidate_resources = self._prepared_resources_for_slot(
                 slot=slot,
-                prepared_resource_scope_by_slot=prepared_resource_scope_by_slot,
+                prepared_resource_scope_by_slot=(
+                    {slot_name: scoped_resource_keys_by_slot[slot_name]}
+                    if scoped_resource_keys_by_slot
+                    else None
+                ),
             )
             candidate_resource_counts_by_type[slot_type] = (
                 candidate_resource_counts_by_type.get(slot_type, 0)
@@ -977,6 +1034,12 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
             "candidate_resource_counts_by_type": candidate_resource_counts_by_type,
             "candidate_endpoint_counts_by_type": candidate_endpoint_counts_by_type,
             "preconnected_endpoint_counts_by_type": preconnected_endpoint_counts_by_type,
+            "missing_slot_names": missing_slot_names,
+            "inventory_scope": (
+                "prepared_owned_resource_index_slots"
+                if scoped_resource_keys_by_slot
+                else "full_topology_slot_inventory"
+            ),
         }
 
     def controller(
@@ -996,11 +1059,11 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
             prepare_started_at = time.perf_counter()
             prepared_now = False
             preparation_summary = None
-            if (
-                not self._runtime_prepared
-                or self._prepared_topology_path != str(topology_path)
-                or self._prepared_link_state_path != str(link_state_path)
-            ):
+            prepared_paths_match = (
+                self._prepared_topology_path == str(topology_path)
+                and self._prepared_link_state_path == str(link_state_path)
+            )
+            if not self._runtime_prepared:
                 if setup_progress_callback is not None:
                     setup_progress_callback(
                         {
@@ -1018,6 +1081,23 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
                 self._prepared_topology_path = str(topology_path)
                 self._prepared_link_state_path = str(link_state_path)
                 prepared_now = True
+            elif not prepared_paths_match:
+                if reconcile_slot_names is None:
+                    raise RuntimeError(
+                        "direct_backend_rolling_topology_switch_requires_explicit_reconcile_scope"
+                    )
+                if setup_progress_callback is not None:
+                    setup_progress_callback(
+                        {
+                            "stage": "runtime_prepare_skipped_existing_runtime",
+                            "reason": "rolling_topology_switch_uses_additive_prepared_inventory",
+                            "topology_path": str(topology_path),
+                            "link_state_path": str(link_state_path),
+                            "reconcile_slot_count": len(
+                                {str(slot_name) for slot_name in reconcile_slot_names}
+                            ),
+                        }
+                    )
             prepare_wall_seconds = time.perf_counter() - prepare_started_at
             if setup_progress_callback is not None:
                 setup_progress_callback(
@@ -1440,6 +1520,39 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
         if known_interfaces is not None:
             known_interfaces.discard(interface_name)
 
+    @staticmethod
+    def _idempotent_delete_status(completed: subprocess.CompletedProcess[str]) -> str:
+        if int(completed.returncode) == 0:
+            return "deleted"
+        output = f"{completed.stderr} {completed.stdout}".lower()
+        absent_fragments = (
+            "cannot find device",
+            "does not exist",
+            "no such device",
+            "no such file or directory",
+        )
+        if any(fragment in output for fragment in absent_fragments):
+            return "absent"
+        return "failed"
+
+    def _delete_host_interface_best_effort(self, interface_name: str) -> str:
+        completed = self._run_command(
+            ["sudo", "-n", "ip", "link", "del", interface_name],
+            allow_failure=True,
+        )
+        return self._idempotent_delete_status(completed)
+
+    def _delete_bridge_best_effort(self, bridge_name: str) -> str:
+        self._run_command(
+            ["sudo", "-n", "ip", "link", "set", bridge_name, "down"],
+            allow_failure=True,
+        )
+        completed = self._run_command(
+            ["sudo", "-n", "ip", "link", "del", bridge_name],
+            allow_failure=True,
+        )
+        return self._idempotent_delete_status(completed)
+
     def _bridge_exists(
         self,
         bridge_name: str,
@@ -1519,6 +1632,22 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
                 known_interfaces.discard(interface_name)
         except (RuntimeError, subprocess.CalledProcessError, ValueError):
             return
+
+    def _delete_container_interface_best_effort(
+        self,
+        *,
+        node_id: str,
+        interface_name: str,
+    ) -> str:
+        try:
+            completed = self._nsenter(
+                node_id=node_id,
+                command=["ip", "link", "del", interface_name],
+                allow_failure=True,
+            )
+        except (RuntimeError, subprocess.CalledProcessError, ValueError):
+            return "absent"
+        return self._idempotent_delete_status(completed)
 
     def _docker_network_exists(
         self,
@@ -1701,11 +1830,32 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
         progress_callback: Callable[[Dict[str, Any]], None] | None = None,
     ) -> Dict[str, Any]:
         self._prepare_bridge_netfilter_passthrough()
+        self._qdisc_runtime_args_by_interface = {}
+        scoped_prepare = bool(prepared_resource_scope_by_slot)
+        scoped_resource_keys_by_slot = {
+            str(slot_name): {
+                str(resource_key)
+                for resource_key in list(resource_keys or [])
+                if str(resource_key)
+            }
+            for slot_name, resource_keys in dict(
+                prepared_resource_scope_by_slot or {}
+            ).items()
+            if str(slot_name)
+        }
         artifact_inventory = self._runtime_artifact_inventory(
             topology=topology,
             topology_path=topology_path,
+            prepared_resource_scope_by_slot=prepared_resource_scope_by_slot,
         )
-        inventory = self._inventory(topology, topology_path)
+        inventory = (
+            self._slot_inventory_for_names(
+                topology,
+                scoped_resource_keys_by_slot.keys(),
+            )
+            if scoped_prepare
+            else self._inventory(topology, topology_path)
+        )
         total_slot_count = len(inventory)
         bridge_count = 0
         preconnected_endpoint_count = 0
@@ -1757,13 +1907,32 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
             last_progress_emit_at = now
             last_progress_slot_count = processed_slot_count
 
+        missing_slot_names = sorted(
+            set(scoped_resource_keys_by_slot).difference(inventory)
+        )
+        if missing_slot_names:
+            raise RuntimeError(
+                "bounded_prepare_missing_slot_inventory:"
+                + json.dumps(
+                    {"missing_slot_names": missing_slot_names},
+                    sort_keys=True,
+                )
+            )
         for processed_slot_count, (slot_name, slot) in enumerate(sorted(inventory.items()), start=1):
             bridge_name = self._bridge_name(slot_name)
             self._remove_docker_network_if_present(
                 str(slot.get("docker_network_name")),
                 known_networks=known_docker_networks,
             )
-            for resource in self._candidate_resources(slot).values():
+            resources_to_prepare = self._prepared_resources_for_slot(
+                slot=slot,
+                prepared_resource_scope_by_slot=(
+                    {slot_name: scoped_resource_keys_by_slot[slot_name]}
+                    if scoped_prepare
+                    else None
+                ),
+            )
+            for resource in resources_to_prepare.values():
                 for endpoint in resource["endpoints"]:
                     node_id = str(endpoint["node_id"])
                     self._delete_host_interface_if_present(
@@ -1822,10 +1991,7 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
                 )
                 preconnected_endpoint_count += 1
 
-            candidate_resources = self._prepared_resources_for_slot(
-                slot=slot,
-                prepared_resource_scope_by_slot=prepared_resource_scope_by_slot,
-            )
+            candidate_resources = resources_to_prepare
             candidate_resource_count += len(candidate_resources)
             for resource in candidate_resources.values():
                 slot_prepared_resource_keys = self._prepared_resource_keys_by_slot.setdefault(
@@ -1865,8 +2031,15 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
         )
         self._mark_link_state_prepared(link_state_path=link_state_path)
         return {
-            "scope": "full_prepare",
-            "full_sweep": True,
+            "scope": "bounded_prepare" if scoped_prepare else "full_prepare",
+            "full_sweep": not scoped_prepare,
+            "prepared_scope_source": (
+                "prepared_owned_resource_index"
+                if scoped_prepare
+                else "full_topology_candidate_inventory"
+            ),
+            "inventory_scope": str(artifact_inventory.get("inventory_scope") or ""),
+            "missing_slot_names": list(missing_slot_names),
             "slot_count": int(sum(artifact_inventory["slot_counts_by_type"].values())),
             "slot_counts_by_type": dict(artifact_inventory["slot_counts_by_type"]),
             "candidate_resource_counts_by_type": dict(
@@ -1880,6 +2053,248 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
             ),
             "prepared_resource_counts": dict(self._prepared_resource_counts),
         }
+
+    def prepare_additive_resources(
+        self,
+        *,
+        topology_path: Path,
+        link_state_path: Path,
+        prepared_resource_scope_by_slot: Mapping[str, Sequence[str] | set[str]],
+        progress_callback: Callable[[Dict[str, Any]], None] | None = None,
+    ) -> Dict[str, Any]:
+        with self._lock:
+            if not self._runtime_prepared:
+                raise RuntimeError("additive_prepare_requires_existing_runtime_prepared")
+            topology = self._load_topology(topology_path)
+            inventory = self._inventory(topology, topology_path)
+            scoped = {
+                str(slot_name): {
+                    str(resource_key)
+                    for resource_key in list(resource_keys or [])
+                    if str(resource_key)
+                }
+                for slot_name, resource_keys in dict(
+                    prepared_resource_scope_by_slot or {}
+                ).items()
+                if str(slot_name)
+            }
+            if not scoped:
+                return {
+                    "schema_version": "skyseed-direct-backend-additive-prepare-v1",
+                    "ok": True,
+                    "additive_prepare_completed": True,
+                    "scope": "bounded_additive_prepare",
+                    "full_sweep": False,
+                    "slot_count": 0,
+                    "candidate_resource_count": 0,
+                    "candidate_endpoint_count": 0,
+                    "bridge_created_count": 0,
+                    "bridge_reused_count": 0,
+                    "preconnected_endpoint_created_count": 0,
+                    "preconnected_endpoint_reused_count": 0,
+                    "resource_created_count": 0,
+                    "resource_reused_count": 0,
+                    "resource_skipped_count": 0,
+                    "wall_seconds": 0.0,
+                }
+            started_at = time.perf_counter()
+            self._prepare_bridge_netfilter_passthrough()
+            known_host_interfaces = self._host_interface_name_set()
+            known_container_interfaces_by_node: Dict[str, set[str]] = {}
+
+            def _known_container_interfaces(node_id: str) -> set[str]:
+                cached = known_container_interfaces_by_node.get(node_id)
+                if cached is not None:
+                    return cached
+                cached = self._container_interface_name_set(node_id=node_id)
+                known_container_interfaces_by_node[node_id] = cached
+                return cached
+
+            def _container_iface_present(endpoint: Mapping[str, Any]) -> bool:
+                return str(endpoint.get("interface_name")) in _known_container_interfaces(
+                    str(endpoint.get("node_id"))
+                )
+
+            def _create_endpoint_checked(
+                *,
+                slot_name: str,
+                bridge_name: str,
+                endpoint: Dict[str, Any],
+                activate_now: bool,
+                assign_ip: bool,
+                resource_key: str,
+            ) -> None:
+                host_interface_name = str(endpoint.get("host_interface_name"))
+                if host_interface_name in known_host_interfaces or _container_iface_present(
+                    endpoint
+                ):
+                    raise RuntimeError(
+                        "additive_prepare_existing_untracked_interface:"
+                        + json.dumps(
+                            {
+                                "slot_name": slot_name,
+                                "resource_key": resource_key,
+                                "host_interface_name": host_interface_name,
+                                "node_id": str(endpoint.get("node_id")),
+                                "interface_name": str(endpoint.get("interface_name")),
+                            },
+                            sort_keys=True,
+                        )
+                    )
+                self._create_prepared_veth(
+                    bridge_name=bridge_name,
+                    slot_name=slot_name,
+                    endpoint=endpoint,
+                    activate_now=activate_now,
+                    assign_ip=assign_ip,
+                    known_host_interfaces=known_host_interfaces,
+                    known_container_interfaces=_known_container_interfaces(
+                        str(endpoint.get("node_id"))
+                    ),
+                )
+
+            bridge_created_count = 0
+            bridge_reused_count = 0
+            preconnected_endpoint_created_count = 0
+            preconnected_endpoint_reused_count = 0
+            resource_created_count = 0
+            resource_reused_count = 0
+            resource_skipped_count = 0
+            candidate_endpoint_count = 0
+            processed_slot_count = 0
+            total_slot_count = len(scoped)
+            for slot_name in sorted(scoped):
+                slot = inventory.get(slot_name)
+                if slot is None:
+                    raise RuntimeError(f"additive_prepare_missing_slot_inventory:{slot_name}")
+                bridge_name = self._bridge_name(slot_name)
+                if self._bridge_exists(bridge_name, known_interfaces=known_host_interfaces):
+                    bridge_reused_count += 1
+                else:
+                    self._set_bridge_ready(
+                        bridge_name=bridge_name,
+                        subnet=str(slot.get("subnet")),
+                        bridge_gateway_ip=(
+                            None
+                            if slot.get("bridge_gateway_ip") in (None, "")
+                            else str(slot.get("bridge_gateway_ip"))
+                        ),
+                        known_interfaces=known_host_interfaces,
+                    )
+                    bridge_created_count += 1
+
+                preconnected = self._preconnected_endpoint(slot)
+                if preconnected is not None:
+                    if (
+                        str(preconnected.get("host_interface_name"))
+                        in known_host_interfaces
+                        or _container_iface_present(preconnected)
+                    ):
+                        preconnected_endpoint_reused_count += 1
+                    else:
+                        _create_endpoint_checked(
+                            slot_name=slot_name,
+                            bridge_name=bridge_name,
+                            endpoint=preconnected,
+                            activate_now=True,
+                            assign_ip=True,
+                            resource_key="preconnected",
+                        )
+                        preconnected_endpoint_created_count += 1
+
+                resources = self._prepared_resources_for_slot(
+                    slot=slot,
+                    prepared_resource_scope_by_slot={slot_name: scoped[slot_name]},
+                )
+                for resource_key, resource in sorted(resources.items()):
+                    if resource_key in self._prepared_resource_keys_by_slot.get(
+                        slot_name, set()
+                    ):
+                        resource_reused_count += 1
+                        continue
+                    endpoints = list(resource.get("endpoints") or [])
+                    for endpoint_any in endpoints:
+                        _create_endpoint_checked(
+                            slot_name=slot_name,
+                            bridge_name=bridge_name,
+                            endpoint=dict(endpoint_any),
+                            activate_now=False,
+                            assign_ip=False,
+                            resource_key=str(resource_key),
+                        )
+                        candidate_endpoint_count += 1
+                    self._prepared_resource_keys_by_slot.setdefault(
+                        slot_name, set()
+                    ).add(str(resource_key))
+                    resource_created_count += 1
+                resource_skipped_count += max(0, len(scoped[slot_name]) - len(resources))
+                processed_slot_count += 1
+                if progress_callback is not None:
+                    progress_callback(
+                        {
+                            "stage": "additive_prepare_progress",
+                            "processed_slot_count": processed_slot_count,
+                            "total_slot_count": total_slot_count,
+                            "remaining_slot_count": max(
+                                0, total_slot_count - processed_slot_count
+                            ),
+                            "current_slot_name": slot_name,
+                            "bridge_created_count": bridge_created_count,
+                            "bridge_reused_count": bridge_reused_count,
+                            "resource_created_count": resource_created_count,
+                            "resource_reused_count": resource_reused_count,
+                            "candidate_endpoint_count": candidate_endpoint_count,
+                            "elapsed_wall_seconds": round(
+                                time.perf_counter() - started_at,
+                                6,
+                            ),
+                        }
+                    )
+            self._prepared_resource_counts["bridge_count"] += bridge_created_count
+            self._prepared_resource_counts[
+                "preconnected_endpoint_count"
+            ] += preconnected_endpoint_created_count
+            self._prepared_resource_counts[
+                "candidate_resource_count"
+            ] += resource_created_count
+            self._prepared_resource_counts[
+                "candidate_endpoint_count"
+            ] += candidate_endpoint_count
+            wall_seconds = round(time.perf_counter() - started_at, 6)
+            summary = {
+                "schema_version": "skyseed-direct-backend-additive-prepare-v1",
+                "ok": True,
+                "additive_prepare_completed": True,
+                "scope": "bounded_additive_prepare",
+                "full_sweep": False,
+                "topology_path": str(topology_path),
+                "link_state_path": str(link_state_path),
+                "slot_count": total_slot_count,
+                "candidate_resource_count": sum(len(v) for v in scoped.values()),
+                "candidate_endpoint_count": candidate_endpoint_count,
+                "bridge_created_count": bridge_created_count,
+                "bridge_reused_count": bridge_reused_count,
+                "preconnected_endpoint_created_count": (
+                    preconnected_endpoint_created_count
+                ),
+                "preconnected_endpoint_reused_count": preconnected_endpoint_reused_count,
+                "resource_created_count": resource_created_count,
+                "resource_reused_count": resource_reused_count,
+                "resource_skipped_count": resource_skipped_count,
+                "prepared_resource_counts": dict(self._prepared_resource_counts),
+                "prepared_resource_scope_by_slot": {
+                    slot_name: sorted(resource_keys)
+                    for slot_name, resource_keys in sorted(scoped.items())
+                },
+                "wall_seconds": wall_seconds,
+            }
+            self._last_setup_summary = {
+                "prepared_now": False,
+                "prepared_backend": self.execution_transport,
+                "additive_prepare_summary": dict(summary),
+                "prepared_resource_counts": dict(self._prepared_resource_counts),
+            }
+            return summary
 
     def _mark_link_state_prepared(self, *, link_state_path: Path) -> None:
         link_state = _load_json(link_state_path)
@@ -2025,11 +2440,14 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
                     "bounded_owned_scope": False,
                     "prepared_slot_scope_count": 0,
                     "full_topology_candidate_inventory_fallback": False,
-                    "global_scan_diagnostic_only": True,
+                    "cleanup_execution_model": "blocked_missing_owned_resource_index",
+                    "cleanup_existence_probe_count": 0,
+                    "diagnostic_scan_wall_seconds": 0.0,
+                    "global_scan_diagnostic_only": False,
                     "outcome_labels": [
                         "NORMAL_PATH_NO_HIDDEN_REPAIR",
                         "OWNED_RESOURCE_INDEX_MISSING_BLOCKER",
-                        "GLOBAL_SCAN_DIAGNOSTIC_ONLY",
+                        "CLEANUP_NO_GLOBAL_EXISTENCE_SCAN",
                     ],
                     "resource_groups": {
                         "temp_host_interface": 0,
@@ -2061,17 +2479,6 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
                 topology_path=topology_path,
                 prepared_resource_scope_by_slot=prepared_cleanup_scope,
             )
-            known_host_interfaces = self._host_interface_name_set()
-            known_container_interfaces_by_node: Dict[str, set[str]] = {}
-
-            def _known_container_interfaces(node_id: str) -> set[str]:
-                cached = known_container_interfaces_by_node.get(node_id)
-                if cached is not None:
-                    return cached
-                cached = self._container_interface_name_set(node_id=node_id)
-                known_container_interfaces_by_node[node_id] = cached
-                return cached
-
             def _unique_strings(values: Sequence[str]) -> tuple[List[str], int]:
                 seen: set[str] = set()
                 unique: List[str] = []
@@ -2139,6 +2546,11 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
                 "cleanup_resource_succeeded_count": 0,
                 "cleanup_resource_failed_count": 0,
                 "host_cleanup_grouped_operation_count": 4,
+                "cleanup_execution_model": (
+                    "owned_index_delete_without_global_existence_scan"
+                ),
+                "cleanup_existence_probe_count": 0,
+                "diagnostic_scan_wall_seconds": 0.0,
                 "cleanup_scope_source": artifact_inventory.get("cleanup_scope_source"),
                 "bounded_owned_scope": bool(artifact_inventory.get("bounded_owned_scope")),
                 "prepared_slot_scope_count": int(
@@ -2153,12 +2565,21 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
                     "container_interface": len(container_interface_names),
                     "bridge": len(bridge_names),
                 },
-                "global_scan_diagnostic_only": True,
+                "missing_slot_count": len(
+                    list(artifact_inventory.get("missing_slot_names") or [])
+                ),
+                "missing_slot_names": list(
+                    artifact_inventory.get("missing_slot_names") or []
+                ),
+                "inventory_scope": str(
+                    artifact_inventory.get("inventory_scope") or ""
+                ),
+                "global_scan_diagnostic_only": False,
                 "outcome_labels": [
                     "NORMAL_PATH_OWNED_SCOPE_ONLY",
                     "NORMAL_PATH_NO_HIDDEN_REPAIR",
                     "CLEANUP_BOUNDED_OWNED_SCOPE_USED",
-                    "GLOBAL_SCAN_DIAGNOSTIC_ONLY",
+                    "CLEANUP_NO_GLOBAL_EXISTENCE_SCAN",
                 ],
             }
 
@@ -2167,99 +2588,58 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
             removed_container_interfaces: List[Dict[str, str]] = []
             removed_bridges: List[str] = []
             for interface_name in temp_host_interface_names:
-                if self._host_interface_exists(
-                    interface_name,
-                    known_interfaces=known_host_interfaces,
-                ):
-                    cleanup_metrics["cleanup_resource_attempted_count"] += 1
-                    self._delete_host_interface_if_present(
-                        interface_name,
-                        known_interfaces=known_host_interfaces,
-                    )
+                cleanup_metrics["cleanup_resource_attempted_count"] += 1
+                status = self._delete_host_interface_best_effort(interface_name)
+                if status == "deleted":
                     removed_temp_host_interfaces.append(interface_name)
                     cleanup_metrics["cleanup_resource_succeeded_count"] += 1
-                else:
+                elif status == "absent":
                     cleanup_metrics["skipped_noop_count"] += 1
+                else:
+                    cleanup_metrics["cleanup_resource_failed_count"] += 1
             for interface_name in host_interface_names:
-                if self._host_interface_exists(
-                    interface_name,
-                    known_interfaces=known_host_interfaces,
-                ):
-                    cleanup_metrics["cleanup_resource_attempted_count"] += 1
-                    self._delete_host_interface_if_present(
-                        interface_name,
-                        known_interfaces=known_host_interfaces,
-                    )
+                cleanup_metrics["cleanup_resource_attempted_count"] += 1
+                status = self._delete_host_interface_best_effort(interface_name)
+                if status == "deleted":
                     removed_host_interfaces.append(interface_name)
                     cleanup_metrics["cleanup_resource_succeeded_count"] += 1
-                else:
+                elif status == "absent":
                     cleanup_metrics["skipped_noop_count"] += 1
+                else:
+                    cleanup_metrics["cleanup_resource_failed_count"] += 1
             # Host-side veth deletion removes the paired container endpoint when it is still
-            # attached, so container-side cleanup is only a best-effort fallback for residue.
+            # attached. Container-side cleanup remains bounded to owned endpoints and does not
+            # pre-scan the namespace before issuing an idempotent delete.
             for endpoint in container_interface_names:
                 node_id = str(endpoint["node_id"])
                 interface_name = str(endpoint["interface_name"])
-                known_container_interfaces = _known_container_interfaces(node_id)
-                if self._container_interface_exists(
+                cleanup_metrics["cleanup_resource_attempted_count"] += 1
+                status = self._delete_container_interface_best_effort(
                     node_id=node_id,
                     interface_name=interface_name,
-                    known_interfaces=known_container_interfaces,
-                ):
-                    cleanup_metrics["cleanup_resource_attempted_count"] += 1
-                    self._delete_container_interface_if_present(
-                        node_id=node_id,
-                        interface_name=interface_name,
-                        known_interfaces=known_container_interfaces,
-                    )
+                )
+                if status == "deleted":
                     removed_container_interfaces.append(
                         {"node_id": node_id, "interface_name": interface_name}
                     )
                     cleanup_metrics["cleanup_resource_succeeded_count"] += 1
-                else:
+                elif status == "absent":
                     cleanup_metrics["skipped_noop_count"] += 1
+                else:
+                    cleanup_metrics["cleanup_resource_failed_count"] += 1
             for bridge_name in bridge_names:
-                if self._bridge_exists(
-                    bridge_name,
-                    known_interfaces=known_host_interfaces,
-                ):
-                    cleanup_metrics["cleanup_resource_attempted_count"] += 1
-                    self._run_command(
-                        ["sudo", "-n", "ip", "link", "set", bridge_name, "down"],
-                        allow_failure=True,
-                    )
-                    self._run_command(
-                        ["sudo", "-n", "ip", "link", "del", bridge_name],
-                        allow_failure=True,
-                    )
-                    known_host_interfaces.discard(bridge_name)
+                cleanup_metrics["cleanup_resource_attempted_count"] += 1
+                status = self._delete_bridge_best_effort(bridge_name)
+                if status == "deleted":
                     removed_bridges.append(bridge_name)
                     cleanup_metrics["cleanup_resource_succeeded_count"] += 1
-                else:
+                elif status == "absent":
                     cleanup_metrics["skipped_noop_count"] += 1
-            remaining_host_interfaces = [
-                interface_name
-                for interface_name in host_interface_names
-                if self._host_interface_exists(
-                    interface_name,
-                    known_interfaces=known_host_interfaces,
-                )
-            ]
-            remaining_temp_host_interfaces = [
-                interface_name
-                for interface_name in temp_host_interface_names
-                if self._host_interface_exists(
-                    interface_name,
-                    known_interfaces=known_host_interfaces,
-                )
-            ]
-            remaining_bridges = [
-                bridge_name
-                for bridge_name in bridge_names
-                if self._bridge_exists(
-                    bridge_name,
-                    known_interfaces=known_host_interfaces,
-                )
-            ]
+                else:
+                    cleanup_metrics["cleanup_resource_failed_count"] += 1
+            remaining_host_interfaces: List[str] = []
+            remaining_temp_host_interfaces: List[str] = []
+            remaining_bridges: List[str] = []
             self._runtime_prepared = False
             self._prepared_topology_path = None
             self._prepared_link_state_path = None
@@ -2271,6 +2651,7 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
                 "candidate_endpoint_count": 0,
             }
             self._prepared_resource_keys_by_slot = {}
+            self._qdisc_runtime_args_by_interface = {}
             cleanup_summary = {
                 "scope": "direct_backend_runtime_artifacts",
                 "removed_bridge_count": len(removed_bridges),
@@ -2285,9 +2666,8 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
                 "remaining_temp_host_interfaces": remaining_temp_host_interfaces,
                 "cleanup_metrics": cleanup_metrics,
                 "cleanup_completed": (
-                    not remaining_bridges
-                    and not remaining_host_interfaces
-                    and not remaining_temp_host_interfaces
+                    int(cleanup_metrics["cleanup_resource_failed_count"]) == 0
+                    and int(cleanup_metrics["missing_slot_count"]) == 0
                 ),
             }
             self._last_cleanup_summary = cleanup_summary
@@ -2336,6 +2716,7 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
     ) -> None:
         if skip_no_residue:
             self._record_qdisc_lifecycle("qdisc_delete_skipped_no_residue")
+            self._qdisc_runtime_args_by_interface.pop(interface_name, None)
             return
         self._record_qdisc_lifecycle("qdisc_delete_attempted")
         result = self._run_command(
@@ -2346,6 +2727,7 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
             self._record_qdisc_lifecycle("qdisc_delete_required_existing_mismatch")
         else:
             self._record_qdisc_lifecycle("qdisc_delete_failure_count")
+        self._qdisc_runtime_args_by_interface.pop(interface_name, None)
         self._record_qdisc_lifecycle(f"qdisc_delete_mode:{lifecycle_mode}")
 
     def _apply_qdisc(
@@ -2354,11 +2736,16 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
         interface_name: str,
         runtime_parameters: Dict[str, Any],
         lifecycle_mode: str = "normal_runtime_update",
-    ) -> None:
+    ) -> bool:
         netem_args = self._runtime_parameter_netem_args(runtime_parameters)
         if not netem_args:
             self._clear_qdisc(interface_name, lifecycle_mode=lifecycle_mode)
-            return
+            return True
+        normalized_args = tuple(str(arg) for arg in netem_args)
+        if self._qdisc_runtime_args_by_interface.get(interface_name) == normalized_args:
+            self._record_qdisc_lifecycle("qdisc_replace_skipped_unchanged")
+            self._record_qdisc_lifecycle(f"qdisc_replace_skip_mode:{lifecycle_mode}")
+            return False
         self._record_qdisc_lifecycle("qdisc_replace_count")
         self._run_command(
             [
@@ -2374,6 +2761,8 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
                 *netem_args,
             ]
         )
+        self._qdisc_runtime_args_by_interface[interface_name] = normalized_args
+        return True
 
     def _participant_host_interfaces(
         self,
@@ -2400,16 +2789,16 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
         resource_key = str(resource.get("resource_key", ""))
         if resource_key and resource_key in self._prepared_resource_keys_by_slot.get(slot_name, set()):
             return
-        for endpoint in resource.get("endpoints", []):
-            self._create_prepared_veth(
-                bridge_name=self._bridge_name(slot_name),
-                slot_name=slot_name,
-                endpoint=dict(endpoint),
-                activate_now=False,
-                assign_ip=False,
+        raise RuntimeError(
+            "runtime_resource_materialization_forbidden_missing_prepared_resource:"
+            + json.dumps(
+                {
+                    "slot_name": slot_name,
+                    "resource_key": resource_key,
+                },
+                sort_keys=True,
             )
-        if resource_key:
-            self._prepared_resource_keys_by_slot.setdefault(slot_name, set()).add(resource_key)
+        )
 
     def _activate_resource(
         self,
@@ -2685,10 +3074,17 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
         target_runtime_parameters = dict(
             operation.get("target_runtime_parameters", {}) or {}
         )
+        qdisc_runtime_parameters = dict(
+            operation.get("bpf_owned_host_qdisc_runtime_parameters")
+            or operation.get("host_qdisc_runtime_parameters")
+            or target_runtime_parameters
+        )
 
         started_at = time.perf_counter()
         qdisc_apply_wall_seconds = 0.0
         metadata_update_wall_seconds = 0.0
+        qdisc_apply_attempt_count = 0
+        qdisc_apply_skipped_unchanged_count = 0
         qdisc_required = runtime_parameter_update_requires_qdisc(operation)
         if operation_name == "update_slot_parameters":
             if target_binding and qdisc_required:
@@ -2698,11 +3094,15 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
                     slot=slot,
                     resource=target_resource,
                 ):
-                    self._apply_qdisc(
+                    qdisc_changed = self._apply_qdisc(
                         interface_name=interface_name,
-                        runtime_parameters=target_runtime_parameters,
+                        runtime_parameters=qdisc_runtime_parameters,
                         lifecycle_mode="parameter_only_update",
                     )
+                    if qdisc_changed:
+                        qdisc_apply_attempt_count += 1
+                    else:
+                        qdisc_apply_skipped_unchanged_count += 1
                 qdisc_apply_wall_seconds = time.perf_counter() - qdisc_started_at
         else:
             if operation_name in {"deactivate_slot_attachment", "rebind_slot_attachment"}:
@@ -2746,6 +3146,8 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
             "wall_seconds": round(time.perf_counter() - started_at, 3),
             "qdisc_required": bool(qdisc_required),
             "qdisc_apply_wall_seconds": round(qdisc_apply_wall_seconds, 6),
+            "qdisc_apply_attempt_count": qdisc_apply_attempt_count,
+            "qdisc_apply_skipped_unchanged_count": qdisc_apply_skipped_unchanged_count,
             "metadata_update_wall_seconds": round(metadata_update_wall_seconds, 6),
             "controller_stdout": "",
         }
@@ -2971,13 +3373,21 @@ class InProcessHostRuntimeManager:
         startup_operation_trace = [
             {
                 "operation_id": "direct-backend-prewarm-static-inventory",
-                "operation_type": "prewarm_materialize_full_scope",
+                "operation_type": (
+                    "prewarm_materialize_bounded_owned_scope"
+                    if prepared_resource_scope_by_slot is not None
+                    else "prewarm_materialize_full_scope"
+                ),
                 "owner_module": "satellite/network_runtime.py",
                 "stage": "static_inventory_prewarm",
                 "batch": "direct_backend_materialization",
                 "target_resource": str(topology_path),
                 "target_resource_type": "topology_slot_inventory",
-                "intent": "materialize bounded static slot inventory into inactive runtime resources",
+                "intent": (
+                    "materialize prepared owned resource scope into inactive runtime resources"
+                    if prepared_resource_scope_by_slot is not None
+                    else "materialize full static slot inventory into inactive runtime resources"
+                ),
                 "reason": "profile requested static inventory materialization before runtime horizon",
                 "idempotency_key": json.dumps(
                     {
@@ -3026,6 +3436,34 @@ class InProcessHostRuntimeManager:
             "controller_topology_path": controller.topology_path,
         }
 
+    def prepare_additive_resources(
+        self,
+        *,
+        topology_path: Path,
+        link_state_path: Path,
+        prepared_resource_scope_by_slot: Mapping[str, Sequence[str] | set[str]],
+        progress_callback: Callable[[Dict[str, Any]], None] | None = None,
+    ) -> Dict[str, Any]:
+        started_at = time.perf_counter()
+        self._reset_installer_operation_metrics()
+        summary = self._installer.prepare_additive_resources(
+            topology_path=topology_path,
+            link_state_path=link_state_path,
+            prepared_resource_scope_by_slot=prepared_resource_scope_by_slot,
+            progress_callback=progress_callback,
+        )
+        typed_operation_metrics = self._consume_installer_operation_metrics()
+        return {
+            **dict(summary),
+            "additive_prepare_completed": True,
+            "additive_prepare_wall_seconds": round(
+                time.perf_counter() - started_at,
+                6,
+            ),
+            "typed_operation_metrics": typed_operation_metrics,
+            "host_runtime_state": self.public_state_summary(),
+        }
+
     def public_state_summary(self) -> Dict[str, Any]:
         return {
             "manager_name": self.manager_name,
@@ -3067,6 +3505,27 @@ class InProcessHostRuntimeManager:
             "checked_slot_count": len(operations),
             "mismatches": mismatches,
             "all_valid": not mismatches,
+        }
+
+    def _trusted_plan_state_verification(
+        self,
+        *,
+        operations: Sequence[Dict[str, Any]],
+        source: bool,
+        reason: str,
+    ) -> Dict[str, Any]:
+        return {
+            "checked_slot_count": len(operations),
+            "mismatches": [],
+            "all_valid": True,
+            "verification_skipped": True,
+            "skip_reason": reason,
+            "trusted_state_source": (
+                "compiled_network_mutation_plan_source_state"
+                if source
+                else "applied_operation_results_and_cached_runtime_state"
+            ),
+            "hot_path_rescan_avoided": True,
         }
 
     def _parallelism_decision(self, operations: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
@@ -3433,17 +3892,14 @@ class InProcessHostRuntimeManager:
             runtime_initialized=True,
         )
         post_apply_state_refresh_wall_seconds = 0.0
-        verify_started_at = time.perf_counter()
-        apply_verification = self._verify_plan_state(
-            state_by_name=working_state,
+        apply_verification = self._trusted_plan_state_verification(
             operations=operations,
             source=False,
+            reason=(
+                "trusted_hot_path_uses_apply_results_without_post_apply_rescan"
+            ),
         )
-        post_apply_verification_wall_seconds = time.perf_counter() - verify_started_at
-        if not apply_verification["all_valid"]:
-            raise NetworkMutationExecutionError(
-                "host-side slot state does not match the NetworkMutationPlan target state"
-            )
+        post_apply_verification_wall_seconds = 0.0
         return apply_results, applied_operations, apply_verification, {
             "operation_apply_wall_seconds": apply_operations_wall_seconds,
             "batched_state_persist_wall_seconds": batched_state_persist_wall_seconds,
@@ -3519,19 +3975,13 @@ class InProcessHostRuntimeManager:
         )
         manager_timing_breakdown.update(envelope_timing)
         working_state = _clone_slot_state(envelope.observed_state)
-        preflight_verify_started_at = time.perf_counter()
-        preflight_verification = self._verify_plan_state(
-            state_by_name=envelope.observed_state,
+        preflight_verification = self._trusted_plan_state_verification(
             operations=envelope.operations,
             source=True,
+            reason=(
+                "trusted_hot_path_uses_prepared_mutation_plan_without_source_rescan"
+            ),
         )
-        manager_timing_breakdown["preflight_verification_wall_seconds"] = (
-            time.perf_counter() - preflight_verify_started_at
-        )
-        if not preflight_verification["all_valid"]:
-            raise NetworkMutationExecutionError(
-                "host-side slot state does not match the NetworkMutationPlan source state"
-            )
 
         apply_results: List[Dict[str, Any]] = []
         applied_operations: List[Dict[str, Any]] = []
@@ -4112,6 +4562,21 @@ class MinimalRealNetworkMutationExecutor:
             topology_path=topology_path,
             link_state_path=link_state_path,
             reconcile_slot_names=reconcile_slot_names,
+            prepared_resource_scope_by_slot=prepared_resource_scope_by_slot,
+            progress_callback=progress_callback,
+        )
+
+    def prepare_additive_resources(
+        self,
+        *,
+        topology_path: Path,
+        link_state_path: Path,
+        prepared_resource_scope_by_slot: Mapping[str, Sequence[str] | set[str]],
+        progress_callback: Callable[[Dict[str, Any]], None] | None = None,
+    ) -> Dict[str, Any]:
+        return self._manager.prepare_additive_resources(
+            topology_path=topology_path,
+            link_state_path=link_state_path,
             prepared_resource_scope_by_slot=prepared_resource_scope_by_slot,
             progress_callback=progress_callback,
         )

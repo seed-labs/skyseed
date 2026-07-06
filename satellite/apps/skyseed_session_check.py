@@ -96,6 +96,96 @@ CANONICAL_FAST_LONG_RUN_ARGS = [
     "json",
 ]
 
+OPERATIONAL_ITERATION_RUN_ARGS = [
+    "--run-mode",
+    "real-runtime",
+    "--run-id",
+    "<run_id>",
+    "--run-root",
+    "satellite/output/validation_profiles",
+    "--orbit-input-mode",
+    "planned-shell",
+    "--planned-shell-id",
+    "S4",
+    "--max-satellites",
+    "348",
+    "--ut-catalog",
+    "satellite/configs/starlink_shell_ground/s4_gz_rich_validation_ut_catalog_32.json",
+    "--gateway-catalog",
+    "satellite/configs/starlink_shell_ground/realistic_preview_gateway_catalog_12.json",
+    "--zone-catalog",
+    "satellite/configs/starlink_shell_ground/s4_gz_rich_validation_zone_catalog_16.json",
+    "--ut-ids",
+    "ut2001,ut2002,ut2003,ut2004,ut2005,ut2006,ut2007,ut2008,ut2009,ut2010,ut2011,ut2012,ut2013,ut2014,ut2015,ut2016,ut2017,ut2018,ut2019,ut2020,ut2021,ut2022,ut2023,ut2024,ut2025,ut2026,ut2027,ut2028,ut2029,ut2030,ut2031,ut2032",
+    "--gateway-ids",
+    "gw201,gw202,gw203,gw204,gw205,gw206,gw207,gw208,gw209,gw210,gw211,gw212",
+    "--max-uts",
+    "32",
+    "--max-gateways",
+    "12",
+    "--ground-placement",
+    "shell-aware",
+    "--sample-interval",
+    "10",
+    "--event-evaluation-interval",
+    "10",
+    "--horizon-seconds",
+    "240",
+    "--continuous",
+    "--runtime-mode",
+    "operational_clean",
+    "--loop-count",
+    "3",
+    "--interval",
+    "0",
+    "--pre-transition-probe-interval",
+    "0",
+    "--runtime-epoch-validation-interval",
+    "0",
+    "--runtime-epoch-validation-scope",
+    "reapplied_gateway_class_sample",
+    "--parameter-epoch-validation-interval",
+    "0",
+    "--preflight-policy",
+    "require-clean",
+    "--host-prepare-policy",
+    "auto",
+    "--forwarding-backend",
+    "bpf_owned",
+    "--bpf-backend",
+    "off",
+    "--compose-build-policy",
+    "if-needed",
+    "--compose-up-timeout-seconds",
+    "900",
+    "--startup-high-progress-grace-ratio",
+    "0.95",
+    "--startup-high-progress-grace-seconds",
+    "420",
+    "--startup-slow-progress-grace-seconds",
+    "180",
+    "--startup-absolute-max-seconds",
+    "1500",
+    "--compose-build-timeout-seconds",
+    "900",
+    "--container-readiness-timeout-seconds",
+    "600",
+    "--initial-runtime-readiness-timeout-seconds",
+    "300",
+    "--progress-heartbeat-seconds",
+    "15",
+    "--startup-stall-warning-seconds",
+    "900",
+    "--epoch-stall-warning-seconds",
+    "300",
+    "--docker-dummy-network-pool",
+    "10.128.0.0/9",
+    "--docker-dummy-network-mask",
+    "19",
+    "--format",
+    "json",
+]
+
 from inspect_goal_readiness import (  # noqa: E402
     DEFAULT_BASELINE_REAL_RUN,
     DEFAULT_FAR_RUN,
@@ -211,6 +301,107 @@ def canonical_fast_long_run_profile() -> Dict[str, Any]:
     }
 
 
+def operational_iteration_profile() -> Dict[str, Any]:
+    run_command = [
+        SEED310_PYTHON,
+        str(SATELLITE_DIR / "apps" / "run_starlink_shell_experiment.py"),
+        *OPERATIONAL_ITERATION_RUN_ARGS,
+    ]
+    return {
+        "profile_id": "s4_h3_240s_bpf_owned_operational_iteration",
+        "profile_status": "current_fast_iteration_path",
+        "purpose": (
+            "Current high-iteration BPF-owned operational-clean run. It keeps "
+            "the experiment shape stable at 240s horizons, 10s slice/evaluation "
+            "cadence, and 3 horizons, while allowing each round to generate and "
+            "freeze fresh prepared inputs."
+        ),
+        "run_command": run_command,
+        "fresh_prepared_inputs_allowed": True,
+        "load_frozen_prepared_bundle_required": False,
+        "stale_static_goal_evidence_blocks_iteration": False,
+        "must_keep_invariants": [
+            "horizon_seconds=240",
+            "sample_interval_seconds=10",
+            "event_evaluation_interval_seconds=10",
+            "loop_count=3",
+            "runtime_mode=operational_clean",
+            "forwarding_backend=bpf_owned",
+            "preflight_policy=require_clean",
+            "host_prepare_policy=auto",
+            "no full reload, full scan, hidden repair, or fallback route",
+        ],
+        "expected_artifact_root": "satellite/output/validation_profiles",
+    }
+
+
+def _operational_iteration_gate(
+    *,
+    readiness: Dict[str, Any],
+    profile: Dict[str, Any],
+) -> Dict[str, Any]:
+    preflight = dict(readiness.get("preflight") or {})
+    warnings = set(str(item) for item in list(preflight.get("warning_reasons") or []))
+    blocking_reasons = [
+        str(item) for item in list(preflight.get("blocking_reasons") or [])
+    ]
+    blocking_warnings = sorted(
+        warning
+        for warning in warnings
+        if warning not in {"host_mpls_not_ready", "bridge_netfilter_passthrough_not_ready"}
+    )
+    command = list(profile.get("run_command") or [])
+    command_text = " ".join(command)
+    command_shape_ready = all(
+        required in command_text
+        for required in (
+            "--horizon-seconds 240",
+            "--sample-interval 10",
+            "--event-evaluation-interval 10",
+            "--loop-count 3",
+            "--runtime-mode operational_clean",
+            "--forwarding-backend bpf_owned",
+            "--host-prepare-policy auto",
+        )
+    )
+    preflight_present = bool(preflight.get("present"))
+    scoped_hygiene_ready = bool(preflight.get("scoped_hygiene_ready"))
+    preferred_python = bool(preflight.get("preferred_seed310_selected"))
+    ready = (
+        preflight_present
+        and scoped_hygiene_ready
+        and preferred_python
+        and not blocking_reasons
+        and not blocking_warnings
+        and command_shape_ready
+    )
+    blockers = []
+    if not preflight_present:
+        blockers.append("live_preflight_missing")
+    if not scoped_hygiene_ready:
+        blockers.append("scoped_environment_hygiene_not_ready")
+    if not preferred_python:
+        blockers.append("preferred_seed310_python_not_selected")
+    blockers.extend(f"preflight_blocker:{reason}" for reason in blocking_reasons)
+    blockers.extend(f"preflight_warning:{warning}" for warning in blocking_warnings)
+    if not command_shape_ready:
+        blockers.append("operational_iteration_command_shape_mismatch")
+    return {
+        "schema_version": "skyseed-operational-iteration-gate-v1",
+        "ready": ready,
+        "blockers": blockers,
+        "non_blocking_warnings": sorted(
+            warning
+            for warning in warnings
+            if warning in {"host_mpls_not_ready", "bridge_netfilter_passthrough_not_ready"}
+        ),
+        "stale_static_goal_evidence_blocks_iteration": False,
+        "static_evidence_ready": bool(readiness.get("static_evidence_ready")),
+        "command_shape_ready": command_shape_ready,
+        "profile_id": str(profile.get("profile_id") or ""),
+    }
+
+
 def _run_git_status(repo_root: Path) -> Dict[str, Any]:
     result = subprocess.run(
         ["git", "status", "--short", "--branch"],
@@ -248,6 +439,7 @@ def summarize_session_check(
         protection_run=baseline_real_run,
         live_preflight=live_preflight,
     )
+    iteration_profile = operational_iteration_profile()
     return {
         "check_kind": "skyseed_post_reboot_session_check",
         "schema_version": "skyseed-session-check-v1alpha1",
@@ -256,12 +448,19 @@ def summarize_session_check(
         "git_status": _run_git_status(REPO_ROOT),
         "goal_readiness": readiness,
         "canonical_fast_long_run_profile": canonical_fast_long_run_profile(),
+        "operational_iteration_profile": iteration_profile,
+        "operational_iteration_gate": _operational_iteration_gate(
+            readiness=readiness,
+            profile=iteration_profile,
+        ),
     }
 
 
 def render_session_check_summary(report: Dict[str, Any]) -> str:
     git = dict(report.get("git_status", {}))
     readiness = dict(report.get("goal_readiness", {}))
+    iteration_gate = dict(report.get("operational_iteration_gate", {}))
+    iteration_profile = dict(report.get("operational_iteration_profile", {}))
     profile = dict(report.get("canonical_fast_long_run_profile", {}))
     validation_profile = dict(profile.get("representative_validation_profile", {}))
     timing_policy = dict(profile.get("timing_policy", {}))
@@ -273,6 +472,12 @@ def render_session_check_summary(report: Dict[str, Any]) -> str:
         f"  static_evidence_ready={readiness.get('static_evidence_ready')}",
         f"  long_real_run_ready={readiness.get('long_real_run_ready')}",
         f"  next_action={readiness.get('next_action')}",
+        f"  operational_iteration_ready={iteration_gate.get('ready')}",
+        f"  operational_iteration_profile={iteration_profile.get('profile_id')}",
+        (
+            "  operational_iteration_warnings="
+            f"{','.join(iteration_gate.get('non_blocking_warnings', [])) or 'none'}"
+        ),
         f"  canonical_fast_profile={profile.get('profile_id')}",
         (
             "  representative_validation: "
@@ -294,6 +499,7 @@ def render_session_check_summary(report: Dict[str, Any]) -> str:
 def format_status_note(report: Dict[str, Any]) -> str:
     git = dict(report.get("git_status", {}))
     readiness = dict(report.get("goal_readiness", {}))
+    iteration_gate = dict(report.get("operational_iteration_gate", {}))
     preflight = dict(readiness.get("preflight", {}))
     return "\n".join(
         [
@@ -304,6 +510,7 @@ def format_status_note(report: Dict[str, Any]) -> str:
             f"dirty entries `{git.get('dirty_entry_count')}`, "
             f"static_ready `{readiness.get('static_evidence_ready')}`, "
             f"long_real_run_ready `{readiness.get('long_real_run_ready')}`, "
+            f"operational_iteration_ready `{iteration_gate.get('ready')}`, "
             f"next_action `{readiness.get('next_action')}`, "
             f"preflight warnings "
             f"`{','.join(preflight.get('warning_reasons', [])) or 'none'}`.",
@@ -364,7 +571,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(rendered_json, end="")
     else:
         print(render_session_check_summary(report))
-    return 0 if report["goal_readiness"].get("static_evidence_ready") is True else 1
+    return 0 if report["operational_iteration_gate"].get("ready") is True else 1
 
 
 if __name__ == "__main__":

@@ -40,6 +40,10 @@
 #define SKYSEED_BPF_MAX_INTERFACE_COUNTER_ENTRIES 8192
 #endif
 
+#ifndef SKYSEED_BPF_MAX_GENERATION_BASES
+#define SKYSEED_BPF_MAX_GENERATION_BASES 8192
+#endif
+
 #ifndef SKYSEED_BPF_MAX_MPLS_PACKET_COUNTERS
 #define SKYSEED_BPF_MAX_MPLS_PACKET_COUNTERS 23
 #endif
@@ -159,6 +163,14 @@ struct egress_handoff_value {
     unsigned char src_mac[6];
 };
 
+struct generation_base_key {
+    __u32 generation;
+};
+
+struct generation_base_value {
+    __u32 base_generation;
+};
+
 struct interface_counter_key {
     __u32 ifindex;
     __u32 counter;
@@ -246,6 +258,14 @@ struct bpf_elf_map SEC("maps") egress_handoff_map = {
     .pinning = PIN_GLOBAL_NS,
 };
 
+struct bpf_elf_map SEC("maps") generation_base_map = {
+    .type = BPF_MAP_TYPE_HASH,
+    .size_key = sizeof(struct generation_base_key),
+    .size_value = sizeof(struct generation_base_value),
+    .max_elem = SKYSEED_BPF_MAX_GENERATION_BASES,
+    .pinning = PIN_GLOBAL_NS,
+};
+
 struct bpf_elf_map SEC("maps") packet_counters = {
     .type = BPF_MAP_TYPE_ARRAY,
     .size_key = sizeof(__u32),
@@ -253,6 +273,70 @@ struct bpf_elf_map SEC("maps") packet_counters = {
     .max_elem = SKYSEED_BPF_MAX_MPLS_PACKET_COUNTERS,
     .pinning = PIN_GLOBAL_NS,
 };
+
+static __always_inline __u32 planned_base_generation(__u32 generation)
+{
+    struct generation_base_key key = {
+        .generation = generation,
+    };
+    struct generation_base_value *base = bpf_map_lookup_elem(&generation_base_map, &key);
+
+    if (!base)
+        return generation;
+    if (base->base_generation == generation)
+        return generation;
+    return base->base_generation;
+}
+
+static __always_inline struct core_lfib_value *
+lookup_core_lfib_planned_overlay(struct lfib_key *key)
+{
+    struct core_lfib_value *current = bpf_map_lookup_elem(&core_lfib_map, key);
+    __u32 current_generation = key->generation;
+    __u32 base_generation;
+
+    if (current)
+        return current;
+    base_generation = planned_base_generation(current_generation);
+    if (base_generation == current_generation)
+        return 0;
+    key->generation = base_generation;
+    return bpf_map_lookup_elem(&core_lfib_map, key);
+}
+
+static __always_inline struct egress_handoff_value *
+lookup_egress_handoff_planned_overlay(struct lfib_key *key)
+{
+    struct egress_handoff_value *current = bpf_map_lookup_elem(&egress_handoff_map, key);
+    __u32 current_generation = key->generation;
+    __u32 base_generation;
+
+    if (current)
+        return current;
+    base_generation = planned_base_generation(current_generation);
+    if (base_generation == current_generation)
+        return 0;
+    key->generation = base_generation;
+    return bpf_map_lookup_elem(&egress_handoff_map, key);
+}
+
+static __always_inline struct ingress_classifier_value *
+lookup_classifier_planned_overlay(struct ingress_classifier_key *key)
+{
+    struct ingress_classifier_value *current = bpf_map_lookup_elem(
+        &ingress_classifier_map,
+        key);
+    __u32 current_generation = key->generation;
+    __u32 base_generation;
+
+    if (current)
+        return current;
+    base_generation = planned_base_generation(current_generation);
+    if (base_generation == current_generation)
+        return 0;
+    key->generation = base_generation;
+    return bpf_map_lookup_elem(&ingress_classifier_map, key);
+}
 
 struct bpf_elf_map SEC("maps") interface_counters = {
     .type = BPF_MAP_TYPE_HASH,
@@ -552,11 +636,12 @@ int skyseed_mpls_dataplane(struct __sk_buff *skb)
             .label = label,
             .direction = direction,
         };
-        struct core_lfib_value *core = bpf_map_lookup_elem(&core_lfib_map, &key);
+        struct core_lfib_value *core = lookup_core_lfib_planned_overlay(&key);
         sample_has_mpls = 1;
         sample_key_label = label;
         sample_key_direction = direction;
         sample_key_ingress_ifindex = skb->ifindex;
+        sample_key_generation = key.generation;
         sample_map_id = MISS_MAP_CORE_LFIB;
         sample_reason = MISS_REASON_MPLS_LFIB_HANDOFF;
         sample_slot = MISS_SAMPLE_SLOT_MPLS_LFIB_HANDOFF;
@@ -581,7 +666,9 @@ int skyseed_mpls_dataplane(struct __sk_buff *skb)
 
         {
             struct egress_handoff_value *handoff;
-            handoff = bpf_map_lookup_elem(&egress_handoff_map, &key);
+            key.generation = active_generation_value;
+            handoff = lookup_egress_handoff_planned_overlay(&key);
+            sample_key_generation = key.generation;
             if (!handoff || !handoff->active) {
                 sample_map_id = MISS_MAP_EGRESS_HANDOFF;
                 goto miss;
@@ -698,7 +785,8 @@ int skyseed_mpls_dataplane(struct __sk_buff *skb)
             sample_slot = MISS_SAMPLE_SLOT_UNKNOWN_ROLE;
             goto miss;
         }
-        classifier = bpf_map_lookup_elem(&ingress_classifier_map, &key);
+        classifier = lookup_classifier_planned_overlay(&key);
+        sample_key_generation = key.generation;
         if (!classifier || !classifier->active)
             goto miss;
         count_packet(COUNTER_CLASSIFIER_HIT);

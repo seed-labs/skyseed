@@ -13,6 +13,7 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from satellite import bpf_dataplane_canary
 from satellite.bpf_dataplane_canary import ipv4_little_endian_u32
 from satellite.bpf_mpls_live import (
     BPF_MAP_GENERATION_CAPACITY_BLOCKER,
@@ -26,6 +27,7 @@ from satellite.bpf_mpls_live import (
     attach_mpls,
     build_minimal_live_maps,
     compile_mpls_bpf,
+    generation_delete_manifest_for_compiled_mpls_maps,
     load_mpls_maps,
     mpls_map_state,
     pack_u32s,
@@ -38,12 +40,41 @@ from linux_mpls_runtime import (
     MplsPathSegment,
     _bpf_mpls_context_fec_ids,
     _bpf_owned_compile_mpls_maps_for_contexts,
+    _bpf_owned_planned_overlay_compiled_maps,
     _bpf_owned_runtime_generation_id,
 )
 from contracts import RUNTIME_ACTION_MODEL_VERSION, RUNTIME_UPDATE_PLAN_SCHEMA_VERSION, RuntimeUpdatePlan
 
 
 class BpfMplsLiveTests(unittest.TestCase):
+    def tearDown(self) -> None:
+        bpf_dataplane_canary.clear_container_pid_cache()
+
+    def test_container_pid_cache_reuses_successful_docker_inspect(self) -> None:
+        bpf_dataplane_canary.clear_container_pid_cache()
+        calls: list[list[str]] = []
+
+        def fake_run_command(args, *, timeout=10.0, privileged=False):
+            calls.append([str(part) for part in args])
+            return {
+                "returncode": 0,
+                "stdout": "12345\n",
+                "stderr": "",
+                "args": list(args),
+            }
+
+        with patch(
+            "satellite.bpf_dataplane_canary.run_command",
+            side_effect=fake_run_command,
+        ):
+            self.assertEqual(bpf_dataplane_canary.container_pid("ut2017"), 12345)
+            self.assertEqual(bpf_dataplane_canary.container_pid("ut2017"), 12345)
+
+        self.assertEqual(
+            calls,
+            [["docker", "inspect", "-f", "{{.State.Pid}}", "ut2017"]],
+        )
+
     def _mock_bpf_maps(
         self,
         *,
@@ -58,6 +89,7 @@ class BpfMplsLiveTests(unittest.TestCase):
             "egress_handoff_map": 103,
             "active_generation": 104,
             "interface_role_map": 105,
+            "generation_base_map": 106,
         }
         id_to_map = {str(map_id): name for name, map_id in map_ids.items()}
 
@@ -168,6 +200,282 @@ class BpfMplsLiveTests(unittest.TestCase):
             "egress_handoff_map": [],
         }
 
+    def test_planned_overlay_compiled_maps_emit_delta_and_tombstone(self) -> None:
+        base = {
+            "active_generation": {"value": 10},
+            "ingress_classifier_map": [],
+            "core_lfib_map": [
+                {
+                    "key": {
+                        "generation": 10,
+                        "ingress_ifindex": 21,
+                        "label": 100,
+                        "direction": G_TO_Z,
+                    },
+                    "value": {
+                        "active": True,
+                        "action": "swap",
+                        "out_label": 101,
+                        "out_ifindex": 22,
+                    },
+                },
+                {
+                    "key": {
+                        "generation": 10,
+                        "ingress_ifindex": 31,
+                        "label": 200,
+                        "direction": G_TO_Z,
+                    },
+                    "value": {
+                        "active": True,
+                        "action": "swap",
+                        "out_label": 201,
+                        "out_ifindex": 32,
+                    },
+                },
+            ],
+            "egress_handoff_map": [],
+        }
+        target = {
+            **base,
+            "active_generation": {"value": 20},
+            "core_lfib_map": [
+                {
+                    "key": {
+                        "generation": 20,
+                        "ingress_ifindex": 21,
+                        "label": 100,
+                        "direction": G_TO_Z,
+                    },
+                    "value": {
+                        "active": True,
+                        "action": "swap",
+                        "out_label": 999,
+                        "out_ifindex": 22,
+                    },
+                }
+            ],
+        }
+
+        overlay = _bpf_owned_planned_overlay_compiled_maps(
+            target_compiled=target,
+            base_compiled=base,
+            target_generation_id=20,
+            base_generation_id=10,
+        )
+
+        self.assertTrue(overlay["bpf_map_write_manifest_only"])
+        self.assertTrue(overlay["batch_map_write_required"])
+        self.assertEqual(overlay["generation_base_map"][0]["value"], {"base_generation": 10})
+        self.assertEqual(
+            overlay["bpf_generation_overlay_manifest"]["delta_write_counts"][
+                "core_lfib_map"
+            ],
+            2,
+        )
+        self.assertEqual(
+            overlay["bpf_generation_overlay_manifest"]["tombstone_write_counts"][
+                "core_lfib_map"
+            ],
+            1,
+        )
+        self.assertEqual(len(overlay["core_lfib_map"]), 2)
+        self.assertEqual(
+            [entry["value"]["active"] for entry in overlay["core_lfib_map"]],
+            [True, False],
+        )
+        self.assertTrue(
+            all(
+                int(entry["key"]["generation"]) == 20
+                for entry in overlay["core_lfib_map"]
+            )
+        )
+
+    def test_planned_overlay_chain_uses_physical_root_base(self) -> None:
+        root = {
+            "active_generation": {"value": 10},
+            "ingress_classifier_map": [],
+            "core_lfib_map": [
+                {
+                    "key": {
+                        "generation": 10,
+                        "ingress_ifindex": 21,
+                        "label": 100,
+                        "direction": G_TO_Z,
+                    },
+                    "value": {
+                        "active": True,
+                        "action": "swap",
+                        "out_label": 101,
+                        "out_ifindex": 22,
+                    },
+                },
+                {
+                    "key": {
+                        "generation": 10,
+                        "ingress_ifindex": 31,
+                        "label": 200,
+                        "direction": G_TO_Z,
+                    },
+                    "value": {
+                        "active": True,
+                        "action": "swap",
+                        "out_label": 201,
+                        "out_ifindex": 32,
+                    },
+                },
+            ],
+            "egress_handoff_map": [],
+        }
+        h1_full = {
+            **root,
+            "active_generation": {"value": 20},
+            "core_lfib_map": [
+                root["core_lfib_map"][0],
+                {
+                    **root["core_lfib_map"][1],
+                    "key": {
+                        **root["core_lfib_map"][1]["key"],
+                        "generation": 20,
+                    },
+                    "value": {
+                        **root["core_lfib_map"][1]["value"],
+                        "out_label": 777,
+                    },
+                },
+            ],
+        }
+        h1_overlay = _bpf_owned_planned_overlay_compiled_maps(
+            target_compiled=h1_full,
+            base_compiled=root,
+            target_generation_id=20,
+            base_generation_id=10,
+        )
+        h2_full = {
+            **h1_full,
+            "active_generation": {"value": 30},
+            "core_lfib_map": [
+                {
+                    **entry,
+                    "key": {**entry["key"], "generation": 30},
+                }
+                for entry in h1_full["core_lfib_map"]
+            ],
+        }
+
+        h2_overlay = _bpf_owned_planned_overlay_compiled_maps(
+            target_compiled=h2_full,
+            base_compiled=h1_overlay,
+            target_generation_id=30,
+            base_generation_id=20,
+        )
+
+        self.assertEqual(
+            h2_overlay["generation_base_map"][0]["value"],
+            {"base_generation": 10},
+        )
+        self.assertEqual(
+            h2_overlay["bpf_generation_overlay_manifest"]["root_base_generation"],
+            10,
+        )
+        self.assertEqual(
+            h2_overlay["bpf_generation_overlay_manifest"][
+                "immediate_planning_base_generation"
+            ],
+            20,
+        )
+        self.assertEqual(len(h2_overlay["core_lfib_map"]), 1)
+        self.assertEqual(h2_overlay["core_lfib_map"][0]["value"]["out_label"], 777)
+
+    def test_manifest_only_loader_uses_batch_without_live_diff_probe(self) -> None:
+        compiled = {
+            **self._compiled_core_generation(generation=7),
+            "bpf_runtime_update_phase": "preactivation_preload",
+            "defer_active_generation_flip": True,
+            "skip_interface_role_map_updates": True,
+            "bpf_map_write_manifest_only": True,
+            "batch_map_write_required": True,
+            "generation_base_map": [
+                {
+                    "key": {"generation": 7},
+                    "value": {"base_generation": 3},
+                }
+            ],
+        }
+        batch_calls: list[list[str]] = []
+        active_updates: list[str] = []
+
+        def fake_bpftool(args, *, timeout=10.0):
+            batch_calls.append([str(part) for part in args])
+            return {"returncode": 0, "stdout": "", "stderr": "", "args": list(args)}
+
+        def fake_update(map_name, key_bytes, value_bytes):
+            active_updates.append(map_name)
+            return {"returncode": 0, "stdout": "", "stderr": ""}
+
+        with patch("satellite.bpf_mpls_live.bpftool", side_effect=fake_bpftool), patch(
+            "satellite.bpf_mpls_live.read_mpls_active_generation",
+            side_effect=AssertionError("manifest-only must not probe active generation"),
+        ), patch(
+            "satellite.bpf_mpls_live.mpls_map_state",
+            side_effect=AssertionError("manifest-only must not dump live maps"),
+        ), patch(
+            "satellite.bpf_mpls_live.update_mpls_map",
+            side_effect=fake_update,
+        ):
+            result = load_mpls_maps(compiled)
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["manifest_only_loader"])
+        self.assertTrue(result["batch_map_write_used"])
+        self.assertEqual(result["batch_map_write_update_count"], 2)
+        self.assertEqual(len(batch_calls), 1)
+        self.assertEqual(batch_calls[0][0:2], ["batch", "file"])
+        self.assertEqual(active_updates, [])
+
+    def test_manifest_only_delete_manifest_uses_batch_without_live_dump(self) -> None:
+        compiled = self._compiled_core_generation(generation=9)
+        delete_manifest = generation_delete_manifest_for_compiled_mpls_maps(
+            compiled,
+            generation_id=9,
+        )
+        batch_files: list[Path] = []
+
+        def fake_bpftool(args, *, timeout=10.0):
+            rendered = [str(part) for part in args]
+            if rendered[:2] == ["batch", "file"]:
+                batch_files.append(Path(rendered[2]))
+                batch_text = Path(rendered[2]).read_text(encoding="utf-8")
+                self.assertIn("map delete pinned", batch_text)
+                self.assertNotIn("map update pinned", batch_text)
+            return {"returncode": 0, "stdout": "", "stderr": "", "args": list(args)}
+
+        with patch("satellite.bpf_mpls_live.bpftool", side_effect=fake_bpftool), patch(
+            "satellite.bpf_mpls_live.read_mpls_active_generation",
+            side_effect=AssertionError("manifest-only cleanup must not read active generation"),
+        ), patch(
+            "satellite.bpf_mpls_live.mpls_map_state",
+            side_effect=AssertionError("manifest-only cleanup must not dump live maps"),
+        ):
+            result = load_mpls_maps(
+                {
+                    "active_generation": {"value": 9},
+                    "bpf_runtime_update_phase": "retired_generation_cleanup",
+                    "defer_active_generation_flip": True,
+                    "bpf_map_write_manifest_only": True,
+                    "batch_map_write_required": True,
+                    "bpf_map_delete_manifest": delete_manifest,
+                }
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["manifest_only_loader"])
+        self.assertTrue(result["batch_map_write_used"])
+        self.assertEqual(result["actual_data_write_count"], 0)
+        self.assertEqual(result["actual_data_delete_count"], len(delete_manifest))
+        self.assertEqual(result["generation_write_cost_audit"]["batch_command_count"], 1)
+        self.assertEqual(len(batch_files), 1)
+
     def test_delta_attach_new_interface_missing_clsact_is_idempotent(self) -> None:
         calls: list[list[str]] = []
 
@@ -202,6 +510,67 @@ class BpfMplsLiveTests(unittest.TestCase):
         )
         self.assertTrue(
             any(call[:4] == ["tc", "filter", "add", "dev"] for call in calls)
+        )
+
+    def test_delta_attach_new_interface_existing_clsact_is_idempotent(self) -> None:
+        def fake_run(interface_ref, args, *, timeout):
+            rendered = [str(part) for part in args]
+            if rendered[:4] == ["tc", "qdisc", "show", "dev"]:
+                return {"returncode": 0, "stdout": "", "stderr": ""}
+            if rendered[:4] == ["tc", "qdisc", "add", "dev"]:
+                return {
+                    "returncode": 2,
+                    "stdout": "",
+                    "stderr": "Error: Exclusivity flag on, cannot modify.",
+                }
+            return {"returncode": 0, "stdout": "", "stderr": ""}
+
+        with patch("satellite.bpf_mpls_live.run_mpls_interface_command", side_effect=fake_run):
+            results = attach_mpls(
+                "netns:gw204:ix203",
+                Path("/tmp/skyseed_tc_mpls_dataplane.o"),
+                directions=["ingress"],
+                clsact_setup_mode="ensure_new_delta",
+            )
+
+        self.assertTrue(all(int(result.get("returncode") or 0) == 0 for result in results))
+        self.assertTrue(
+            any(
+                result.get("clsact_lifecycle_event")
+                == "add_existing_ok_for_new_delta"
+                for result in results
+            )
+        )
+
+    def test_delta_attach_existing_control_plane_bypass_is_idempotent(self) -> None:
+        def fake_run(interface_ref, args, *, timeout):
+            rendered = [str(part) for part in args]
+            if rendered[:4] == ["tc", "qdisc", "show", "dev"]:
+                return {"returncode": 0, "stdout": "qdisc clsact ffff:", "stderr": ""}
+            if "flower" in rendered:
+                return {
+                    "returncode": 2,
+                    "stdout": "",
+                    "stderr": "RTNETLINK answers: File exists",
+                }
+            return {"returncode": 0, "stdout": "", "stderr": ""}
+
+        with patch("satellite.bpf_mpls_live.run_mpls_interface_command", side_effect=fake_run):
+            results = attach_mpls(
+                "netns:gw204:ix203",
+                Path("/tmp/skyseed_tc_mpls_dataplane.o"),
+                directions=["ingress"],
+                control_plane_ipv4_addrs=["10.203.0.250"],
+                clsact_setup_mode="ensure_new_delta",
+            )
+
+        self.assertTrue(all(int(result.get("returncode") or 0) == 0 for result in results))
+        self.assertTrue(
+            any(
+                result.get("clsact_lifecycle_event")
+                == "control_plane_bypass_existing_ok"
+                for result in results
+            )
         )
 
     def test_delta_attach_expected_reuse_missing_clsact_fails_closed(self) -> None:
@@ -292,6 +661,33 @@ class BpfMplsLiveTests(unittest.TestCase):
         self.assertEqual(
             _bpf_owned_runtime_generation_id(plan),
             (1, "target_snapshot.slice_id"),
+        )
+
+    def test_runtime_generation_prefers_physical_generation_slot(self) -> None:
+        plan = RuntimeUpdatePlan(
+            schema_version=RUNTIME_UPDATE_PLAN_SCHEMA_VERSION,
+            plan_id="rtplan-test",
+            target_snapshot={
+                "snapshot_id": "topsnap-test",
+                "slice_id": "starlink-shell-slice-0007",
+                "bpf_logical_generation_id": 6,
+                "bpf_physical_generation_id": 19,
+                "bpf_generation_horizon_id": "replenished-001",
+                "bpf_generation_slot_width": 13,
+            },
+            planner={"planner_name": "test"},
+            apply_model={
+                "state_model": "full_state_intent",
+                "action_model": RUNTIME_ACTION_MODEL_VERSION,
+            },
+            node_subplans={},
+            replacement_semantics={},
+            validation_expectations={},
+        )
+
+        self.assertEqual(
+            _bpf_owned_runtime_generation_id(plan),
+            (19, "target_snapshot.bpf_physical_generation_id"),
         )
 
     def test_core_lfib_c_struct_does_not_key_on_destination_ip(self) -> None:
@@ -559,6 +955,229 @@ class BpfMplsLiveTests(unittest.TestCase):
         ]
         self.assertTrue(proof["active_generation_flip_deferred"])
         self.assertTrue(proof["ok"])
+
+    def test_preactivation_preload_can_skip_interface_role_map_updates(self) -> None:
+        compiled = {
+            **self._compiled_core_generation(generation=1),
+            "bpf_runtime_update_phase": "preactivation_preload",
+            "skip_interface_role_map_updates": True,
+        }
+        updates: list[str] = []
+
+        def fake_update(map_name: str, key_bytes: list[str], value_bytes: list[str]) -> dict[str, object]:
+            updates.append(map_name)
+            return {"returncode": 0, "stdout": "", "stderr": ""}
+
+        with self._mock_bpf_maps(
+            active_generation=0,
+            entries_by_map={"interface_role_map": [self._interface_role_entry()]},
+        ), patch("satellite.bpf_mpls_live.update_mpls_map", side_effect=fake_update), patch(
+            "satellite.bpf_mpls_live.delete_mpls_map_key",
+            return_value={"returncode": 0, "stdout": "", "stderr": ""},
+        ):
+            result = load_mpls_maps(compiled)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(updates, ["core_lfib_map"])
+        self.assertEqual(result["loaded_interface_role_count"], 1)
+        self.assertTrue(result["interface_role_map_updates_skipped"])
+        self.assertEqual(result["interface_role_map_skipped_update_count"], 1)
+        write_audit = result["generation_write_cost_audit"]
+        self.assertEqual(
+            write_audit["schema_version"],
+            "skyseed-bpf-generation-write-cost-audit-v1",
+        )
+        self.assertFalse(write_audit["contains_full_entry_payloads"])
+        self.assertEqual(write_audit["desired_data_update_count"], 1)
+        self.assertEqual(write_audit["scheduled_data_write_count"], 1)
+        self.assertEqual(write_audit["interface_role_map_skipped_update_count"], 1)
+        self.assertEqual(write_audit["current_schema_skipped_now_count"], 2)
+        self.assertEqual(write_audit["schema_optimization_candidate_count"], 1)
+        self.assertEqual(
+            write_audit["per_map"]["core_lfib_map"][
+                "schema_optimization_candidate_count"
+            ],
+            1,
+        )
+        self.assertIn(
+            "generation-keyed dataplane entries",
+            write_audit["schema_optimization_candidate_reason"],
+        )
+        self.assertNotIn("interface_role_map", result["map_diff_trace"])
+        self.assertNotIn(
+            "interface_role_map",
+            result["runtime_reload_attribution"]["per_map_operation_summary"],
+        )
+        self.assertEqual(
+            result["runtime_reload_attribution"]["generation_write_cost_audit"][
+                "scheduled_data_write_count"
+            ],
+            1,
+        )
+        self.assertIn(
+            "RUNTIME_INTERFACE_ROLE_MAP_UPDATES_SKIPPED",
+            result["outcome_labels"],
+        )
+        self.assertIn("RUNTIME_MAP_DIFF_UPDATE_USED", result["outcome_labels"])
+        self.assertEqual(result["expected_data_map_write_update_count"], 1)
+        self.assertTrue(
+            result["runtime_reload_attribution"][
+                "preactivation_preload_data_write_used"
+            ]
+        )
+
+    def test_preactivation_preload_parallelizes_inactive_map_writes(self) -> None:
+        compiled = {
+            "active_generation": {"value": 1},
+            "bpf_runtime_update_phase": "preactivation_preload",
+            "skip_interface_role_map_updates": True,
+            "parallel_preactivation_preload_map_update_workers": 4,
+            "ingress_classifier_map": [
+                {
+                    "key": {
+                        "generation": 1,
+                        "ingress_ifindex": 11,
+                        "dst_ipv4": ipv4_little_endian_u32("10.0.0.9"),
+                    },
+                    "value": {
+                        "active": True,
+                        "fec_id": "fec-a",
+                        "direction": G_TO_Z,
+                        "initial_label": 100,
+                        "out_ifindex": 12,
+                    },
+                }
+            ],
+            "core_lfib_map": [
+                {
+                    "key": {
+                        "generation": 1,
+                        "ingress_ifindex": 21,
+                        "label": 100,
+                        "direction": G_TO_Z,
+                    },
+                    "value": {
+                        "active": True,
+                        "action": "swap",
+                        "out_label": 101,
+                        "out_ifindex": 22,
+                    },
+                }
+            ],
+            "egress_handoff_map": [
+                {
+                    "key": {
+                        "generation": 1,
+                        "ingress_ifindex": 31,
+                        "label": 101,
+                        "direction": G_TO_Z,
+                    },
+                    "value": {"active": True, "out_ifindex": 0},
+                }
+            ],
+        }
+        updates: list[str] = []
+
+        def fake_update(map_name: str, key_bytes: list[str], value_bytes: list[str]) -> dict[str, object]:
+            updates.append(map_name)
+            return {"returncode": 0, "stdout": "", "stderr": ""}
+
+        with self._mock_bpf_maps(active_generation=0, entries_by_map={}), patch(
+            "satellite.bpf_mpls_live.update_mpls_map",
+            side_effect=fake_update,
+        ), patch(
+            "satellite.bpf_mpls_live.delete_mpls_map_key",
+            return_value={"returncode": 0, "stdout": "", "stderr": ""},
+        ):
+            result = load_mpls_maps(compiled)
+
+        self.assertTrue(result["ok"])
+        self.assertCountEqual(
+            updates,
+            ["ingress_classifier_map", "core_lfib_map", "egress_handoff_map"],
+        )
+        self.assertTrue(result["parallel_map_write_enabled"])
+        self.assertEqual(result["parallel_map_write_worker_count"], 3)
+        self.assertEqual(result["parallel_map_write_scheduled_update_count"], 3)
+        self.assertEqual(result["map_write_update_count"], 3)
+        self.assertEqual(result["active_generation_update_count"], 0)
+        attribution = result["runtime_reload_attribution"]
+        self.assertTrue(attribution["parallel_map_write_enabled"])
+        self.assertEqual(attribution["parallel_map_write_worker_count"], 3)
+        self.assertTrue(attribution["preactivation_preload_data_write_used"])
+        self.assertIn(
+            "RUNTIME_PREACTIVATION_PRELOAD_PARALLEL_MAP_WRITE_USED",
+            result["outcome_labels"],
+        )
+
+    def test_parallel_preactivation_preload_failure_keeps_active_generation_unchanged(
+        self,
+    ) -> None:
+        compiled = {
+            "active_generation": {"value": 1},
+            "bpf_runtime_update_phase": "preactivation_preload",
+            "skip_interface_role_map_updates": True,
+            "parallel_preactivation_preload_map_update_workers": 4,
+            "ingress_classifier_map": [
+                {
+                    "key": {
+                        "generation": 1,
+                        "ingress_ifindex": 11,
+                        "dst_ipv4": ipv4_little_endian_u32("10.0.0.9"),
+                    },
+                    "value": {
+                        "active": True,
+                        "fec_id": "fec-a",
+                        "direction": G_TO_Z,
+                        "initial_label": 100,
+                        "out_ifindex": 12,
+                    },
+                }
+            ],
+            "core_lfib_map": [
+                {
+                    "key": {
+                        "generation": 1,
+                        "ingress_ifindex": 21,
+                        "label": 100,
+                        "direction": G_TO_Z,
+                    },
+                    "value": {
+                        "active": True,
+                        "action": "swap",
+                        "out_label": 101,
+                        "out_ifindex": 22,
+                    },
+                }
+            ],
+        }
+
+        def fake_update(map_name: str, key_bytes: list[str], value_bytes: list[str]) -> dict[str, object]:
+            if map_name == "core_lfib_map":
+                return {"returncode": 1, "stdout": "", "stderr": "boom"}
+            return {"returncode": 0, "stdout": "", "stderr": ""}
+
+        with self._mock_bpf_maps(active_generation=0, entries_by_map={}), patch(
+            "satellite.bpf_mpls_live.update_mpls_map",
+            side_effect=fake_update,
+        ), patch(
+            "satellite.bpf_mpls_live.delete_mpls_map_key",
+            return_value={"returncode": 0, "stdout": "", "stderr": ""},
+        ):
+            result = load_mpls_maps(compiled)
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["parallel_map_write_enabled"])
+        self.assertEqual(result["active_generation_update_count"], 0)
+        self.assertTrue(result["active_generation_left_unchanged_by_loader"])
+        self.assertEqual(
+            result["active_generation_update"]["map_update"]["operation"],
+            "active_generation_flip",
+        )
+        self.assertEqual(
+            result["active_generation_update"]["stderr"],
+            "data_map_update_failed_before_active_generation_flip",
+        )
 
     def test_preactivation_preload_fails_closed_when_target_already_active(self) -> None:
         compiled = {
@@ -1945,8 +2564,22 @@ class BpfMplsLiveTests(unittest.TestCase):
                 "ingress_classifier_map": 3,
                 "core_lfib_map": 4,
                 "egress_handoff_map": 2,
+                "generation_base_map": 1,
                 "active_generation": 1,
             },
+        )
+        self.assertEqual(
+            compiled["generation_base_map"],
+            [
+                {
+                    "key": {"generation": 9},
+                    "value": {"base_generation": 9},
+                    "metadata": {
+                        "planning_semantics": "planned_generation_overlay_base",
+                        "runtime_detection_or_fallback": False,
+                    },
+                }
+            ],
         )
         self.assertFalse(compiled["intermediate_core_lookup_uses_dst_ip"])
         self.assertFalse(compiled["map_conflicts"])

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import ipaddress
 import json
@@ -12,7 +13,7 @@ from pathlib import Path
 import shutil
 import tempfile
 import time
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from satellite.bpf_dataplane_canary import (
     PIN_BASE,
@@ -42,6 +43,7 @@ MPLS_PINNED_MAPS = [
     "ingress_classifier_map",
     "core_lfib_map",
     "egress_handoff_map",
+    "generation_base_map",
     "packet_counters",
     "interface_counters",
     "interface_role_map",
@@ -52,6 +54,7 @@ MPLS_KERNEL_MAP_NAMES = {
     "ingress_classifier_map": "ingress_classif",
     "core_lfib_map": "core_lfib_map",
     "egress_handoff_map": "egress_handoff_",
+    "generation_base_map": "generation_base",
     "packet_counters": "packet_counters",
     "interface_counters": "interface_count",
     "interface_role_map": "interface_role_",
@@ -81,6 +84,12 @@ MPLS_MAP_SHAPES = {
         "bytes_key": 16,
         "bytes_value": 32,
         "max_entries": 128,
+    },
+    "generation_base_map": {
+        "type": "hash",
+        "bytes_key": 4,
+        "bytes_value": 4,
+        "max_entries": 8192,
     },
     "packet_counters": {
         "type": "array",
@@ -193,6 +202,7 @@ def compile_mpls_bpf(
         "handoffs": 128,
         "packet_counters": 23,
         "interface_counter_entries": 8192,
+        "generation_bases": 8192,
         **dict(capacities or {}),
     }
     if object_path is None:
@@ -211,6 +221,8 @@ def compile_mpls_bpf(
         f"{int(capacities['packet_counters'])}",
         "-DSKYSEED_BPF_MAX_INTERFACE_COUNTER_ENTRIES="
         f"{int(capacities['interface_counter_entries'])}",
+        "-DSKYSEED_BPF_MAX_GENERATION_BASES="
+        f"{int(capacities['generation_bases'])}",
     ]
     source_bytes = source.read_bytes()
     source_sha256 = hashlib.sha256(source_bytes).hexdigest()
@@ -414,6 +426,11 @@ def _tc_clsact_present(result: dict[str, Any]) -> bool:
     return command_ok(result) and "clsact" in _tc_result_text(result)
 
 
+def _tc_clsact_already_present(result: dict[str, Any]) -> bool:
+    text = _tc_result_text(result)
+    return "File exists" in text or "Exclusivity flag on, cannot modify" in text
+
+
 def _normalized_clsact_result(
     result: dict[str, Any],
     *,
@@ -519,9 +536,8 @@ def attach_mpls(
             timeout=8.0,
         )
         add_result["clsact_lifecycle_event"] = "add"
-        if (
-            int(add_result.get("returncode") or 0) != 0
-            and "File exists" in _tc_result_text(add_result)
+        if int(add_result.get("returncode") or 0) != 0 and _tc_clsact_already_present(
+            add_result
         ):
             add_result = _normalized_clsact_result(
                 add_result,
@@ -554,31 +570,38 @@ def attach_mpls(
                 {str(ip) for ip in control_plane_ipv4_addrs if str(ip)}
             ):
                 ip_match_field = "dst_ip" if direction == "ingress" else "src_ip"
-                results.append(
-                    run_mpls_interface_command(
-                        interface_ref,
-                        [
-                            "tc",
-                            "filter",
-                            "add",
-                            "dev",
-                            "{iface}",
-                            direction,
-                            "prio",
-                            "1",
-                            "protocol",
-                            "ip",
-                            "flower",
-                            ip_match_field,
-                            dst_ip,
-                            "action",
-                            "goto",
-                            "chain",
-                            "100",
-                        ],
-                        timeout=10.0,
-                    )
+                flower_result = run_mpls_interface_command(
+                    interface_ref,
+                    [
+                        "tc",
+                        "filter",
+                        "add",
+                        "dev",
+                        "{iface}",
+                        direction,
+                        "prio",
+                        "1",
+                        "protocol",
+                        "ip",
+                        "flower",
+                        ip_match_field,
+                        dst_ip,
+                        "action",
+                        "goto",
+                        "chain",
+                        "100",
+                    ],
+                    timeout=10.0,
                 )
+                if (
+                    int(flower_result.get("returncode") or 0) != 0
+                    and "File exists" in _tc_result_text(flower_result)
+                ):
+                    flower_result = _normalized_clsact_result(
+                        flower_result,
+                        event="control_plane_bypass_existing_ok",
+                    )
+                results.append(flower_result)
         results.append(
             run_mpls_interface_command(
                 interface_ref,
@@ -918,6 +941,13 @@ def _decode_map_update_fields(
                 "dst_mac": _hex_bytes_to_mac(value_bytes, 20),
                 "src_mac": _hex_bytes_to_mac(value_bytes, 26),
             }
+    elif map_name == "generation_base_map":
+        decoded_key = {"generation": _hex_bytes_to_int_le(key_bytes, 0)}
+        decoded_value = {"base_generation": _hex_bytes_to_int_le(value_bytes, 0)}
+        if len(key_bytes) != 4:
+            warnings.append(f"unexpected_key_length:{len(key_bytes)}")
+        if len(value_bytes) != 4:
+            warnings.append(f"unexpected_value_length:{len(value_bytes)}")
     elif map_name in {"active_generation", "interface_role_map"}:
         decoded_key = {"slot_or_ifindex": _hex_bytes_to_int_le(key_bytes, 0)}
         decoded_value = {"value": _hex_bytes_to_int_le(value_bytes, 0)}
@@ -987,6 +1017,129 @@ def _annotated_map_update(
     return result
 
 
+def _bpftool_batch_update_result(
+    *,
+    pending_updates: Sequence[Mapping[str, Any]],
+    command_result: Mapping[str, Any],
+    wall_seconds: float,
+) -> list[dict[str, Any]]:
+    update_count = max(1, len(list(pending_updates)))
+    per_update_wall_seconds = round(float(wall_seconds) / float(update_count), 6)
+    returncode = 0 if command_ok(dict(command_result)) else 1
+    results: list[dict[str, Any]] = []
+    for index, pending in enumerate(pending_updates):
+        map_name = str(pending["map_name"])
+        key_bytes = list(pending.get("key_bytes") or [])
+        value_bytes = list(pending.get("value_bytes") or [])
+        results.append(
+            {
+                "args": [
+                    "bpftool",
+                    "batch",
+                    "file",
+                    "<skyseed-bpf-map-update-batch>",
+                ],
+                "returncode": returncode,
+                "stdout": str(command_result.get("stdout") or ""),
+                "stderr": str(command_result.get("stderr") or ""),
+                "batched": True,
+                "batch_index": index,
+                "batch_update_count": len(list(pending_updates)),
+                "batch_command": dict(command_result),
+                "map_update_wall_seconds": per_update_wall_seconds,
+                "map_update": _map_update_metadata(
+                    map_name=map_name,
+                    operation=str(pending.get("operation") or "update"),
+                    generation=(
+                        int(pending.get("generation"))
+                        if pending.get("generation") not in (None, "", "None")
+                        else None
+                    ),
+                    key_bytes=key_bytes,
+                    value_bytes=value_bytes,
+                    logical_key=dict(pending.get("logical_key") or {}),
+                ),
+            }
+        )
+    return results
+
+
+def _bpftool_batch_update_line(
+    *,
+    map_name: str,
+    key_bytes: Sequence[str],
+    value_bytes: Sequence[str],
+) -> str:
+    pinned_path = PIN_BASE / str(map_name)
+    key_hex = " ".join(str(part).lower().replace("0x", "").zfill(2) for part in key_bytes)
+    value_hex = " ".join(
+        str(part).lower().replace("0x", "").zfill(2) for part in value_bytes
+    )
+    return f"map update pinned {pinned_path} key hex {key_hex} value hex {value_hex}"
+
+
+def _bpftool_batch_delete_line(
+    *,
+    map_name: str,
+    key_bytes: Sequence[str],
+) -> str:
+    pinned_path = PIN_BASE / str(map_name)
+    key_hex = " ".join(
+        str(part).lower().replace("0x", "").zfill(2) for part in key_bytes
+    )
+    return f"map delete pinned {pinned_path} key hex {key_hex}"
+
+
+def _annotated_batch_map_updates(
+    pending_updates: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    pending = [dict(item) for item in pending_updates]
+    if not pending:
+        return []
+    batch_file: Path | None = None
+    started_at = time.perf_counter()
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            prefix="skyseed-bpf-map-update-",
+            suffix=".bpftool",
+            delete=False,
+        ) as handle:
+            batch_file = Path(handle.name)
+            for item in pending:
+                operation = str(item.get("operation") or "update")
+                if operation.startswith("delete_"):
+                    handle.write(
+                        _bpftool_batch_delete_line(
+                            map_name=str(item["map_name"]),
+                            key_bytes=list(item.get("key_bytes") or []),
+                        )
+                    )
+                else:
+                    handle.write(
+                        _bpftool_batch_update_line(
+                            map_name=str(item["map_name"]),
+                            key_bytes=list(item.get("key_bytes") or []),
+                            value_bytes=list(item.get("value_bytes") or []),
+                        )
+                    )
+                handle.write("\n")
+        command_result = bpftool(["batch", "file", str(batch_file)], timeout=120.0)
+    finally:
+        if batch_file is not None:
+            try:
+                batch_file.unlink()
+            except OSError:
+                pass
+    wall_seconds = round(time.perf_counter() - started_at, 6)
+    return _bpftool_batch_update_result(
+        pending_updates=pending,
+        command_result=command_result,
+        wall_seconds=wall_seconds,
+    )
+
+
 def _annotated_map_delete(
     map_name: str,
     key_bytes: list[str],
@@ -1007,6 +1160,92 @@ def _annotated_map_delete(
         logical_key=logical_key,
     )
     return result
+
+
+def generation_delete_manifest_for_compiled_mpls_maps(
+    compiled: Mapping[str, Any],
+    *,
+    generation_id: int,
+) -> list[dict[str, Any]]:
+    """Build preplanned BPF map delete work from compiled runtime inputs."""
+
+    active_generation = int(generation_id)
+    manifest: list[dict[str, Any]] = []
+
+    def append_delete(
+        map_name: str,
+        key_bytes: list[str],
+        *,
+        logical_key: Mapping[str, Any],
+    ) -> None:
+        manifest.append(
+            {
+                "map_name": map_name,
+                "key_bytes": list(key_bytes),
+                "operation": "delete_manifest_generation_key",
+                "generation": active_generation,
+                "logical_key": dict(logical_key or {}),
+            }
+        )
+
+    for entry in list(dict(compiled or {}).get("ingress_classifier_map") or []):
+        key = dict(dict(entry).get("key") or {})
+        generation = int(key.get("generation", active_generation))
+        if generation != active_generation:
+            continue
+        ingress_ifindex = int(key.get("ingress_ifindex") or 0)
+        dst_ipv4 = int(
+            key.get("dst_ipv4") or target_prefix_to_ipv4(key.get("target_prefix"))
+        )
+        service_class = int(
+            key.get("service_class_u32") or service_class_u32(key.get("service_class"))
+        )
+        append_delete(
+            "ingress_classifier_map",
+            pack_u32s(generation, ingress_ifindex, dst_ipv4, service_class),
+            logical_key={
+                "generation": generation,
+                "ingress_ifindex": ingress_ifindex,
+                "dst_ipv4": dst_ipv4,
+                "service_class": service_class,
+            },
+        )
+
+    for map_name in ("core_lfib_map", "egress_handoff_map"):
+        for entry in list(dict(compiled or {}).get(map_name) or []):
+            key = dict(dict(entry).get("key") or {})
+            generation = int(key.get("generation", active_generation))
+            if generation != active_generation:
+                continue
+            append_delete(
+                map_name,
+                pack_u32s(
+                    generation,
+                    int(key.get("ingress_ifindex") or 0),
+                    int(key.get("label") or 0),
+                    direction_u32(key.get("direction", G_TO_Z)),
+                ),
+                logical_key=dict(key),
+            )
+
+    for entry in list(dict(compiled or {}).get("generation_base_map") or []):
+        key = dict(dict(entry).get("key") or {})
+        generation = int(key.get("generation", active_generation))
+        if generation != active_generation:
+            continue
+        append_delete(
+            "generation_base_map",
+            pack_u32s(generation),
+            logical_key={"generation": generation},
+        )
+
+    if not any(item["map_name"] == "generation_base_map" for item in manifest):
+        append_delete(
+            "generation_base_map",
+            pack_u32s(active_generation),
+            logical_key={"generation": active_generation},
+        )
+    return manifest
 
 
 def _skipped_map_update(
@@ -1063,6 +1302,217 @@ def _noop_map_update(
             value_bytes=value_bytes,
             logical_key=logical_key,
         ),
+    }
+
+
+def _normalized_generationless_logical_key(
+    map_name: str,
+    logical_key: Mapping[str, Any],
+) -> dict[str, Any]:
+    normalized = {
+        str(key): value
+        for key, value in dict(logical_key or {}).items()
+        if str(key) != "generation"
+    }
+    if map_name == "ingress_classifier_map":
+        return {
+            key: normalized.get(key)
+            for key in ("ingress_ifindex", "dst_ipv4", "service_class")
+            if key in normalized
+        }
+    if map_name in {"core_lfib_map", "egress_handoff_map"}:
+        return {
+            key: normalized.get(key)
+            for key in ("ingress_ifindex", "label", "direction")
+            if key in normalized
+        }
+    return normalized
+
+
+def _generationless_key_fingerprint(
+    *,
+    map_name: str,
+    logical_key: Mapping[str, Any],
+) -> str:
+    payload = {
+        "map_name": str(map_name),
+        "logical_key_without_generation": _normalized_generationless_logical_key(
+            str(map_name),
+            logical_key,
+        ),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:16]
+
+
+def _value_fingerprint(value_bytes: Sequence[str]) -> str:
+    return hashlib.sha256(
+        " ".join(
+            str(part).lower().replace("0x", "").zfill(2)
+            for part in list(value_bytes or [])
+        ).encode("utf-8")
+    ).hexdigest()[:16]
+
+
+def _map_update_generation_write_cost_audit(
+    *,
+    pending_map_updates: Sequence[Mapping[str, Any]],
+    filtered_pending_map_updates: Sequence[Mapping[str, Any]],
+    noop_map_updates: Sequence[Mapping[str, Any]],
+    map_diff_trace: Mapping[str, Mapping[str, Any]],
+    updates: Sequence[Mapping[str, Any]],
+    loaded_interface_role_count: int,
+    skip_interface_role_map_updates: bool,
+    active_generation_update: Mapping[str, Any],
+    active_generation_update_count: int,
+    defer_active_generation_flip: bool,
+    runtime_update_phase: str,
+    active_generation: int,
+    live_active_generation_before: int | None,
+    map_write_wall_seconds: float,
+    active_generation_flip_wall_seconds: float,
+    manifest_only_loader: bool = False,
+    batch_map_write_required: bool = False,
+    batch_map_write_used: bool = False,
+) -> dict[str, Any]:
+    started_at = time.perf_counter()
+    pending = [dict(item) for item in pending_map_updates]
+    scheduled = [dict(item) for item in filtered_pending_map_updates]
+    noop = [dict(item) for item in noop_map_updates]
+    scheduled_by_map: dict[str, int] = {}
+    desired_by_map: dict[str, int] = {}
+    noop_by_map: dict[str, int] = {}
+    generation_keyed_desired_by_map: dict[str, int] = {}
+    generation_keyed_scheduled_by_map: dict[str, int] = {}
+    invariant_groups: dict[tuple[str, str, str], set[int]] = {}
+    for item in pending:
+        map_name = str(item.get("map_name") or "")
+        desired_by_map[map_name] = desired_by_map.get(map_name, 0) + 1
+        if map_name not in GENERATION_KEYED_MPLS_MAPS:
+            continue
+        generation_keyed_desired_by_map[map_name] = (
+            generation_keyed_desired_by_map.get(map_name, 0) + 1
+        )
+        group_key = (
+            map_name,
+            _generationless_key_fingerprint(
+                map_name=map_name,
+                logical_key=dict(item.get("logical_key") or {}),
+            ),
+            _value_fingerprint(list(item.get("value_bytes") or [])),
+        )
+        generations = invariant_groups.setdefault(group_key, set())
+        if item.get("generation") not in (None, "", "None"):
+            generations.add(int(item.get("generation") or 0))
+    for item in scheduled:
+        map_name = str(item.get("map_name") or "")
+        scheduled_by_map[map_name] = scheduled_by_map.get(map_name, 0) + 1
+        if map_name in GENERATION_KEYED_MPLS_MAPS:
+            generation_keyed_scheduled_by_map[map_name] = (
+                generation_keyed_scheduled_by_map.get(map_name, 0) + 1
+            )
+    for item in noop:
+        update = dict(item.get("map_update") or {})
+        map_name = str(update.get("map_name") or "")
+        noop_by_map[map_name] = noop_by_map.get(map_name, 0) + 1
+    delete_update_count = sum(
+        1
+        for item in updates
+        if str(dict(item.get("map_update") or {}).get("operation") or "").startswith(
+            "delete_"
+        )
+    )
+    batched_updates = [dict(item) for item in updates if item.get("batched")]
+    batch_command_count = 1 if batched_updates else 0
+    role_map_skipped_count = (
+        int(loaded_interface_role_count) if skip_interface_role_map_updates else 0
+    )
+    active_generation_noop_or_deferred = bool(
+        active_generation_update.get("noop_skipped") or defer_active_generation_flip
+    )
+    current_schema_skipped_now_count = (
+        len(noop)
+        + role_map_skipped_count
+        + (1 if active_generation_noop_or_deferred else 0)
+    )
+    generation_keyed_desired_count = sum(generation_keyed_desired_by_map.values())
+    generation_keyed_scheduled_count = sum(generation_keyed_scheduled_by_map.values())
+    invariant_group_count = len(invariant_groups)
+    repeated_invariant_group_count = sum(
+        1 for generations in invariant_groups.values() if len(generations) > 1
+    )
+    repeated_invariant_occurrence_count = sum(
+        max(0, len(generations) - 1) for generations in invariant_groups.values()
+    )
+    per_map: dict[str, dict[str, Any]] = {}
+    all_maps = sorted(
+        set(desired_by_map)
+        | set(scheduled_by_map)
+        | set(noop_by_map)
+        | set(str(key) for key in map_diff_trace.keys())
+    )
+    for map_name in all_maps:
+        diff = dict(map_diff_trace.get(map_name) or {})
+        desired_count = int(desired_by_map.get(map_name, 0))
+        scheduled_count = int(scheduled_by_map.get(map_name, 0))
+        noop_count = int(noop_by_map.get(map_name, 0))
+        schema_candidate = (
+            scheduled_count if map_name in GENERATION_KEYED_MPLS_MAPS else 0
+        )
+        per_map[map_name] = {
+            "desired_update_count": desired_count,
+            "scheduled_write_count": scheduled_count,
+            "noop_skipped_count": noop_count,
+            "insert_count": int(diff.get("insert_count") or 0),
+            "update_count": int(diff.get("update_count") or 0),
+            "delete_count": int(diff.get("delete_count") or 0),
+            "existing_count": diff.get("existing_count"),
+            "generation_keyed": map_name in GENERATION_KEYED_MPLS_MAPS,
+            "current_schema_mandatory_write_count": schema_candidate,
+            "schema_optimization_candidate_count": schema_candidate,
+        }
+    return {
+        "schema_version": "skyseed-bpf-generation-write-cost-audit-v1",
+        "audit_scope": "single_load_mpls_maps_call",
+        "runtime_update_phase": str(runtime_update_phase),
+        "active_generation": int(active_generation),
+        "live_active_generation_before": live_active_generation_before,
+        "manifest_only_loader": bool(manifest_only_loader),
+        "batch_map_write_required": bool(batch_map_write_required),
+        "batch_map_write_used": bool(batch_map_write_used),
+        "batch_command_count": batch_command_count,
+        "batched_sub_update_count": len(batched_updates),
+        "desired_data_update_count": len(pending),
+        "scheduled_data_write_count": len(scheduled),
+        "actual_data_noop_skipped_count": len(noop),
+        "delete_update_count": delete_update_count,
+        "interface_role_map_skipped_update_count": role_map_skipped_count,
+        "active_generation_update_count": int(active_generation_update_count),
+        "active_generation_noop_or_deferred": active_generation_noop_or_deferred,
+        "current_schema_skipped_now_count": current_schema_skipped_now_count,
+        "current_schema_bpftool_data_write_count": len(scheduled),
+        "current_schema_generation_keyed_desired_count": generation_keyed_desired_count,
+        "current_schema_generation_keyed_scheduled_write_count": (
+            generation_keyed_scheduled_count
+        ),
+        "schema_optimization_candidate_count": generation_keyed_scheduled_count,
+        "schema_optimization_candidate_reason": (
+            "generation-keyed dataplane entries must be written per generation "
+            "under the current BPF lookup schema; skipping them requires a shared "
+            "content map/default-generation indirection or equivalent schema change"
+        ),
+        "generation_invariant_group_count": invariant_group_count,
+        "generation_invariant_repeated_group_count": repeated_invariant_group_count,
+        "generation_invariant_repeated_occurrence_count": (
+            repeated_invariant_occurrence_count
+        ),
+        "per_map": per_map,
+        "map_write_wall_seconds": float(map_write_wall_seconds),
+        "active_generation_flip_wall_seconds": float(active_generation_flip_wall_seconds),
+        "audit_wall_seconds": round(time.perf_counter() - started_at, 6),
+        "audit_included_in_map_write_wall_time": False,
+        "contains_full_entry_payloads": False,
     }
 
 
@@ -1633,6 +2083,7 @@ def _first_failed_map_update(
     *,
     expected_entries_by_map: dict[str, int],
     active_generation: int,
+    allow_live_failure_analysis: bool = True,
 ) -> dict[str, Any] | None:
     for index, update in enumerate(updates):
         if command_ok(update):
@@ -1640,11 +2091,18 @@ def _first_failed_map_update(
         metadata = dict(update.get("map_update") or {})
         map_name = str(metadata.get("map_name") or "unknown")
         direct_error = _direct_error_evidence(update)
-        map_state = mpls_map_state(
-            map_name,
-            expected_entries=expected_entries_by_map.get(map_name),
-            active_generation=active_generation,
-            target_generation=metadata.get("generation"),
+        map_state = (
+            mpls_map_state(
+                map_name,
+                expected_entries=expected_entries_by_map.get(map_name),
+                active_generation=active_generation,
+                target_generation=metadata.get("generation"),
+            )
+            if allow_live_failure_analysis
+            else {
+                "skipped": True,
+                "reason": "manifest_only_fail_closed_without_live_map_dump",
+            }
         )
         if update.get("generation_capacity_contract"):
             map_state["generation_capacity_contract"] = dict(
@@ -1723,6 +2181,18 @@ def load_mpls_maps(compiled: dict[str, Any]) -> dict[str, Any]:
         compiled.get("defer_active_generation_flip")
         or preactivation_preload_phase
     )
+    overlay_manifest = dict(compiled.get("bpf_generation_overlay_manifest") or {})
+    manifest_only_loader = bool(
+        compiled.get("bpf_map_write_manifest_only")
+        or compiled.get("bpf_clean_manifest_only")
+        or overlay_manifest.get("manifest_only_loader_required")
+    )
+    batch_map_write_required = bool(
+        compiled.get("batch_map_write_required") or manifest_only_loader
+    )
+    skip_interface_role_map_updates = bool(
+        compiled.get("skip_interface_role_map_updates")
+    )
     interface_roles: dict[int, int] = {}
     interface_role_sources: dict[int, set[str]] = {}
     map_write_started_at = time.perf_counter()
@@ -1742,6 +2212,10 @@ def load_mpls_maps(compiled: dict[str, Any]) -> dict[str, Any]:
         retain_inactive_generations.add(int(generation))
     require_preloaded_generation_flip_only = bool(
         compiled.get("require_preloaded_generation_flip_only")
+    )
+    parallel_preactivation_workers = max(
+        1,
+        int(compiled.get("parallel_preactivation_preload_map_update_workers") or 8),
     )
     generation_gc_cleanup: dict[str, Any] = {
         "attempted": True,
@@ -1934,6 +2408,80 @@ def load_mpls_maps(compiled: dict[str, Any]) -> dict[str, Any]:
         )
         loaded_handoff_keys.append(dict(key))
 
+    loaded_generation_base_keys: list[dict[str, Any]] = []
+    generation_base_entries = list(compiled.get("generation_base_map") or [])
+    if not generation_base_entries and compiled.get("generation_base") is not None:
+        generation_base = dict(compiled.get("generation_base") or {})
+        generation_base_entries = [
+            {
+                "key": {
+                    "generation": int(
+                        generation_base.get("generation")
+                        if generation_base.get("generation") not in (None, "", "None")
+                        else active_generation
+                    )
+                },
+                "value": {
+                    "base_generation": int(
+                        generation_base.get("base_generation")
+                        if generation_base.get("base_generation")
+                        not in (None, "", "None")
+                        else active_generation
+                    )
+                },
+            }
+        ]
+    for entry in generation_base_entries:
+        key = dict(entry.get("key") or {})
+        value = dict(entry.get("value") or {})
+        generation = int(key.get("generation", active_generation))
+        base_generation = int(value.get("base_generation", generation))
+        append_map_update(
+            "generation_base_map",
+            pack_u32s(generation),
+            pack_u32s(base_generation),
+            operation="update",
+            generation=generation,
+            logical_key={"generation": generation},
+        )
+        loaded_generation_base_keys.append(
+            {
+                "generation": generation,
+                "base_generation": base_generation,
+            }
+        )
+
+    loaded_delete_manifest_keys: list[dict[str, Any]] = []
+    for entry in list(compiled.get("bpf_map_delete_manifest") or []):
+        item = dict(entry or {})
+        map_name = str(item.get("map_name") or "")
+        if map_name not in MPLS_MAP_SHAPES:
+            raise ValueError(f"unknown BPF map in delete manifest: {map_name}")
+        key_bytes = list(item.get("key_bytes") or [])
+        if not key_bytes:
+            raise ValueError(f"missing key bytes in BPF delete manifest: {map_name}")
+        generation = (
+            int(item.get("generation"))
+            if item.get("generation") not in (None, "", "None")
+            else None
+        )
+        logical_key = dict(item.get("logical_key") or {})
+        append_map_update(
+            map_name,
+            key_bytes,
+            [],
+            operation=str(item.get("operation") or "delete_manifest_key"),
+            generation=generation,
+            logical_key=logical_key,
+        )
+        loaded_delete_manifest_keys.append(
+            {
+                "map_name": map_name,
+                "generation": generation,
+                "logical_key": logical_key,
+            }
+        )
+
     for detail in compiled.get("attached_interface_details", []) or []:
         attached_detail = dict(detail or {})
         role_bits = expected_role_bits(attached_detail.get("expected_roles"))
@@ -1946,14 +2494,15 @@ def load_mpls_maps(compiled: dict[str, Any]) -> dict[str, Any]:
 
     loaded_interface_roles: list[dict[str, Any]] = []
     for ifindex, role in sorted(interface_roles.items()):
-        append_map_update(
+        if not skip_interface_role_map_updates:
+            append_map_update(
                 "interface_role_map",
                 pack_u32s(ifindex),
                 pack_u32s(role),
                 operation="update",
                 generation=active_generation,
                 logical_key={"ifindex": ifindex},
-        )
+            )
         loaded_interface_roles.append(
             {
                 "ifindex": ifindex,
@@ -1967,10 +2516,23 @@ def load_mpls_maps(compiled: dict[str, Any]) -> dict[str, Any]:
         "ingress_classifier_map": len(loaded_classifier_keys),
         "core_lfib_map": len(loaded_core_keys),
         "egress_handoff_map": len(loaded_handoff_keys),
-        "interface_role_map": len(loaded_interface_roles),
+        "generation_base_map": len(loaded_generation_base_keys),
         "active_generation": 1,
     }
-    live_active_generation_read = read_mpls_active_generation()
+    interface_role_map_update_expected_count = (
+        0 if skip_interface_role_map_updates else len(loaded_interface_roles)
+    )
+    if not skip_interface_role_map_updates:
+        expected_entries_by_map["interface_role_map"] = len(loaded_interface_roles)
+    live_active_generation_read = (
+        {
+            "skipped": True,
+            "reason": "manifest_only_loader_does_not_probe_live_active_generation",
+            "active_generation": None,
+        }
+        if manifest_only_loader
+        else read_mpls_active_generation()
+    )
     live_active_generation = live_active_generation_read.get("active_generation")
     live_active_generation_int = (
         int(live_active_generation)
@@ -2032,6 +2594,8 @@ def load_mpls_maps(compiled: dict[str, Any]) -> dict[str, Any]:
         map_write_blocked = True
 
     if (
+        not manifest_only_loader
+        and
         preactivation_preload_phase
         and live_active_generation_int == int(active_generation)
         and pending_map_updates
@@ -2041,11 +2605,26 @@ def load_mpls_maps(compiled: dict[str, Any]) -> dict[str, Any]:
             reason="RUNTIME_PRELOAD_VISIBILITY_PROOF_FAILED",
         )
 
+    if manifest_only_loader:
+        generation_gc_cleanup["attempted"] = False
+        generation_gc_cleanup["reason"] = (
+            "manifest_only_loader_uses_preplanned_cleanup_work_items"
+        )
+        generation_gc_cleanup["policy"]["verify_generation_breakdown_after_cleanup"] = False
+        target_generation_cleanup["attempted"] = False
+        target_generation_cleanup["reason"] = (
+            "manifest_only_loader_uses_preplanned_cleanup_work_items"
+        )
     for map_name in (
-        "ingress_classifier_map",
-        "core_lfib_map",
-        "egress_handoff_map",
-        "interface_role_map",
+        ()
+        if manifest_only_loader
+        else (
+            "ingress_classifier_map",
+            "core_lfib_map",
+            "egress_handoff_map",
+            "generation_base_map",
+            "interface_role_map",
+        )
     ):
         pending = first_pending_for(map_name)
         if pending is None:
@@ -2293,7 +2872,58 @@ def load_mpls_maps(compiled: dict[str, Any]) -> dict[str, Any]:
 
     noop_map_updates: list[dict[str, Any]] = []
     filtered_pending_map_updates: list[dict[str, Any]] = []
-    if not map_write_blocked:
+    if manifest_only_loader and not map_write_blocked:
+        if require_preloaded_generation_flip_only:
+            filtered_pending_map_updates = []
+            for map_name, desired_updates in desired_updates_by_map.items():
+                diff = map_diff_trace.setdefault(
+                    map_name,
+                    {
+                        "map_name": map_name,
+                        "desired_count": len(desired_updates),
+                        "existing_count": None,
+                        "insert_count": 0,
+                        "update_count": 0,
+                        "delete_count": 0,
+                        "noop_skipped_count": 0,
+                        "wall_seconds": 0.0,
+                        "diff_trace_complete": True,
+                    },
+                )
+                diff["manifest_only_flip_only_data_write_skipped"] = len(
+                    desired_updates
+                )
+                diff["diff_trace_complete"] = True
+        else:
+            filtered_pending_map_updates = [dict(item) for item in pending_map_updates]
+            for map_name, desired_updates in desired_updates_by_map.items():
+                desired_delete_count = sum(
+                    1
+                    for item in desired_updates
+                    if str(item.get("operation") or "").startswith("delete_")
+                )
+                desired_write_count = len(desired_updates) - desired_delete_count
+                diff = map_diff_trace.setdefault(
+                    map_name,
+                    {
+                        "map_name": map_name,
+                        "desired_count": len(desired_updates),
+                        "existing_count": None,
+                        "insert_count": 0,
+                        "update_count": 0,
+                        "delete_count": 0,
+                        "noop_skipped_count": 0,
+                        "wall_seconds": 0.0,
+                        "diff_trace_complete": True,
+                    },
+                )
+                diff["insert_count"] = desired_write_count
+                diff["delete_count"] = desired_delete_count
+                diff["existing_count"] = None
+                diff["loaded_generations"] = {}
+                diff["manifest_only_loader"] = True
+                diff["diff_trace_complete"] = True
+    elif not map_write_blocked:
         for map_name, desired_updates in desired_updates_by_map.items():
             diff_started_at = time.perf_counter()
             if map_name in post_gc_map_states:
@@ -2371,9 +3001,19 @@ def load_mpls_maps(compiled: dict[str, Any]) -> dict[str, Any]:
         len(loaded_classifier_keys)
         + len(loaded_core_keys)
         + len(loaded_handoff_keys)
-        + len(loaded_interface_roles)
+        + len(loaded_generation_base_keys)
+        + interface_role_map_update_expected_count
     )
-    actual_data_write_count = len(filtered_pending_map_updates)
+    actual_data_write_count = sum(
+        1
+        for item in filtered_pending_map_updates
+        if not str(item.get("operation") or "").startswith("delete_")
+    )
+    actual_data_delete_count = sum(
+        1
+        for item in filtered_pending_map_updates
+        if str(item.get("operation") or "").startswith("delete_")
+    )
     full_generation_reload_blocker = (
         steady_map_only_phase
         and expected_data_map_write_update_count > 0
@@ -2392,7 +3032,7 @@ def load_mpls_maps(compiled: dict[str, Any]) -> dict[str, Any]:
     if (
         not map_write_blocked
         and require_preloaded_generation_flip_only
-        and actual_data_write_count > 0
+        and (actual_data_write_count + actual_data_delete_count) > 0
         and filtered_pending_map_updates
     ):
         block_with_skipped_update(
@@ -2400,20 +3040,62 @@ def load_mpls_maps(compiled: dict[str, Any]) -> dict[str, Any]:
             reason="RUNTIME_PRELOADED_GENERATION_MISSING_OR_INCOMPLETE",
         )
 
-    if not map_write_blocked:
-        for pending in filtered_pending_map_updates:
-            update = _annotated_map_update(
+    parallel_map_write_enabled = bool(
+        preactivation_preload_phase
+        and len(filtered_pending_map_updates) > 1
+        and parallel_preactivation_workers > 1
+        and not batch_map_write_required
+    )
+    parallel_map_write_worker_count = (
+        min(parallel_preactivation_workers, len(filtered_pending_map_updates))
+        if parallel_map_write_enabled
+        else 1
+    )
+
+    def write_pending_map_update(pending: Mapping[str, Any]) -> dict[str, Any]:
+        operation = str(pending.get("operation") or "update")
+        if operation.startswith("delete_"):
+            return _annotated_map_delete(
                 str(pending["map_name"]),
                 list(pending["key_bytes"]),
-                list(pending["value_bytes"]),
-                operation=str(pending["operation"]),
+                operation=operation,
                 generation=pending.get("generation"),
                 logical_key=dict(pending.get("logical_key") or {}),
             )
-            updates.append(update)
-            if not command_ok(update):
+        return _annotated_map_update(
+            str(pending["map_name"]),
+            list(pending["key_bytes"]),
+            list(pending["value_bytes"]),
+            operation=operation,
+            generation=pending.get("generation"),
+            logical_key=dict(pending.get("logical_key") or {}),
+        )
+
+    if not map_write_blocked:
+        if batch_map_write_required and filtered_pending_map_updates:
+            written_updates = _annotated_batch_map_updates(
+                filtered_pending_map_updates
+            )
+            updates.extend(written_updates)
+            if not all(command_ok(update) for update in written_updates):
                 map_write_blocked = True
-                break
+        elif parallel_map_write_enabled:
+            with ThreadPoolExecutor(
+                max_workers=parallel_map_write_worker_count
+            ) as executor:
+                written_updates = list(
+                    executor.map(write_pending_map_update, filtered_pending_map_updates)
+                )
+            updates.extend(written_updates)
+            if not all(command_ok(update) for update in written_updates):
+                map_write_blocked = True
+        else:
+            for pending in filtered_pending_map_updates:
+                update = write_pending_map_update(pending)
+                updates.append(update)
+                if not command_ok(update):
+                    map_write_blocked = True
+                    break
 
     map_write_update_count = len(
         [
@@ -2497,11 +3179,34 @@ def load_mpls_maps(compiled: dict[str, Any]) -> dict[str, Any]:
         and not active_generation_update.get("noop_skipped")
         else 0
     )
+    generation_write_cost_audit = _map_update_generation_write_cost_audit(
+        pending_map_updates=pending_map_updates,
+        filtered_pending_map_updates=filtered_pending_map_updates,
+        noop_map_updates=noop_map_updates,
+        map_diff_trace=map_diff_trace,
+        updates=updates,
+        loaded_interface_role_count=len(loaded_interface_roles),
+        skip_interface_role_map_updates=skip_interface_role_map_updates,
+        active_generation_update=active_generation_update,
+        active_generation_update_count=active_generation_update_count,
+        defer_active_generation_flip=defer_active_generation_flip,
+        runtime_update_phase=runtime_update_phase,
+        active_generation=active_generation,
+        live_active_generation_before=live_active_generation_int,
+        map_write_wall_seconds=map_write_wall_seconds,
+        active_generation_flip_wall_seconds=active_generation_flip_wall_seconds,
+        manifest_only_loader=manifest_only_loader,
+        batch_map_write_required=batch_map_write_required,
+        batch_map_write_used=bool(
+            batch_map_write_required and filtered_pending_map_updates
+        ),
+    )
     expected_data_map_write_update_count = (
         len(loaded_classifier_keys)
         + len(loaded_core_keys)
         + len(loaded_handoff_keys)
-        + len(loaded_interface_roles)
+        + len(loaded_generation_base_keys)
+        + interface_role_map_update_expected_count
     )
     first_failed_update = _first_failed_map_update(
         updates,
@@ -2511,6 +3216,7 @@ def load_mpls_maps(compiled: dict[str, Any]) -> dict[str, Any]:
             if live_active_generation is not None
             else active_generation
         ),
+        allow_live_failure_analysis=not manifest_only_loader,
     )
     per_map_operation_summary: dict[str, dict[str, Any]] = {
         map_name: {
@@ -2671,14 +3377,36 @@ def load_mpls_maps(compiled: dict[str, Any]) -> dict[str, Any]:
         and expected_data_map_write_update_count > 0
         and active_generation_update_count == 1
     )
-    map_diff_update_used = (
-        not full_generation_reload_blocker
+    preactivation_preload_data_write_used = (
+        preactivation_preload_phase
+        and not full_generation_reload_blocker
         and actual_data_write_count > 0
-        and actual_data_write_count < expected_data_map_write_update_count
+    )
+    manifest_only_map_write_used = (
+        manifest_only_loader
+        and not full_generation_reload_blocker
+        and (actual_data_write_count + actual_data_delete_count) > 0
+    )
+    map_diff_update_used = (
+        (
+            preactivation_preload_data_write_used
+            and not manifest_only_loader
+        )
+        or (
+            not manifest_only_loader
+            and
+            not full_generation_reload_blocker
+            and actual_data_write_count > 0
+            and actual_data_write_count < expected_data_map_write_update_count
+        )
     )
     outcome_labels: list[str] = []
     if preloaded_generation_used:
         outcome_labels.append("RUNTIME_PRELOADED_GENERATION_USED")
+    if manifest_only_map_write_used:
+        outcome_labels.append("RUNTIME_MANIFEST_ONLY_MAP_WRITE_USED")
+    if manifest_only_map_write_used and batch_map_write_required:
+        outcome_labels.append("RUNTIME_MANIFEST_ONLY_BATCH_MAP_WRITE_USED")
     if map_diff_update_used:
         outcome_labels.append("RUNTIME_MAP_DIFF_UPDATE_USED")
     if total_noop_skipped_count:
@@ -2691,11 +3419,19 @@ def load_mpls_maps(compiled: dict[str, Any]) -> dict[str, Any]:
         outcome_labels.append("RUNTIME_DIFF_TRACE_INCOMPLETE")
     if preactivation_preload_phase and live_active_generation_int == int(active_generation):
         outcome_labels.append("RUNTIME_PRELOAD_VISIBILITY_PROOF_FAILED")
+    if skip_interface_role_map_updates and loaded_interface_roles:
+        outcome_labels.append("RUNTIME_INTERFACE_ROLE_MAP_UPDATES_SKIPPED")
+    if parallel_map_write_enabled:
+        outcome_labels.append("RUNTIME_PREACTIVATION_PRELOAD_PARALLEL_MAP_WRITE_USED")
     if not outcome_labels and actual_data_write_count:
         outcome_labels.append("RUNTIME_MAP_DIFF_UPDATE_USED")
     reload_strategy = (
         "preloaded_generation_active_generation_flip_only"
         if active_generation_flip_only
+        else "manifest_only_batch_map_write"
+        if manifest_only_map_write_used and batch_map_write_required
+        else "manifest_only_map_write"
+        if manifest_only_map_write_used
         else "map_diff_update"
         if map_diff_update_used or total_noop_skipped_count
         else "full_generation_reload_blocked"
@@ -2709,16 +3445,46 @@ def load_mpls_maps(compiled: dict[str, Any]) -> dict[str, Any]:
         "full_generation_reload": False,
         "full_generation_reload_blocker": full_generation_reload_blocker,
         "diff_update_enabled": True,
+        "manifest_only_loader": manifest_only_loader,
+        "batch_map_write_required": batch_map_write_required,
+        "batch_map_write_used": bool(
+            batch_map_write_required and filtered_pending_map_updates
+        ),
+        "batch_map_write_update_count": (
+            len(filtered_pending_map_updates) if batch_map_write_required else 0
+        ),
+        "batch_map_write_delete_count": (
+            actual_data_delete_count if batch_map_write_required else 0
+        ),
         "retain_inactive_generations": sorted(retain_inactive_generations),
         "require_preloaded_generation_flip_only": (
             require_preloaded_generation_flip_only
         ),
         "preactivation_preload": preactivation_preload_phase,
+        "preactivation_preload_data_write_used": (
+            preactivation_preload_data_write_used
+        ),
         "defer_active_generation_flip": defer_active_generation_flip,
+        "parallel_map_write_enabled": parallel_map_write_enabled,
+        "parallel_map_write_worker_count": parallel_map_write_worker_count,
+        "parallel_map_write_scheduled_update_count": (
+            len(filtered_pending_map_updates) if parallel_map_write_enabled else 0
+        ),
+        "interface_role_map_updates_skipped": skip_interface_role_map_updates,
+        "interface_role_map_update_skip_reason": (
+            "roles_prepared_by_attach_capability"
+            if skip_interface_role_map_updates
+            else ""
+        ),
+        "interface_role_map_skipped_update_count": (
+            len(loaded_interface_roles) if skip_interface_role_map_updates else 0
+        ),
         "preloaded_generation_used": preloaded_generation_used,
         "active_generation_flip_only": active_generation_flip_only,
         "map_diff_update_used": map_diff_update_used,
+        "manifest_only_map_write_used": manifest_only_map_write_used,
         "actual_data_write_count": actual_data_write_count,
+        "actual_data_delete_count": actual_data_delete_count,
         "expected_data_map_write_update_count": expected_data_map_write_update_count,
         "noop_skipped_count": total_noop_skipped_count,
         "loaded_generations_by_map": {
@@ -2751,6 +3517,7 @@ def load_mpls_maps(compiled: dict[str, Any]) -> dict[str, Any]:
         "duplicate_noop_detection_scope": "live_key_value_diff",
         "map_diff_trace": map_diff_trace,
         "per_map_operation_summary": per_map_operation_summary,
+        "generation_write_cost_audit": generation_write_cost_audit,
         "outcome_labels": outcome_labels,
     }
 
@@ -2760,10 +3527,14 @@ def load_mpls_maps(compiled: dict[str, Any]) -> dict[str, Any]:
         "runtime_reload_attribution": runtime_reload_attribution,
         "reload_strategy": runtime_reload_attribution["reload_strategy"],
         "diff_update_enabled": True,
+        "manifest_only_loader": manifest_only_loader,
+        "batch_map_write_required": batch_map_write_required,
         "map_diff_trace": map_diff_trace,
+        "generation_write_cost_audit": generation_write_cost_audit,
         "noop_map_updates": noop_map_updates,
         "noop_map_write_count": total_noop_skipped_count,
         "actual_data_write_count": actual_data_write_count,
+        "actual_data_delete_count": actual_data_delete_count,
         "full_generation_reload_blocker": full_generation_reload_blocker,
         "preloaded_generation_used": preloaded_generation_used,
         "active_generation_flip_only": active_generation_flip_only,
@@ -2771,6 +3542,20 @@ def load_mpls_maps(compiled: dict[str, Any]) -> dict[str, Any]:
         "active_generation": active_generation,
         "active_generation_update": active_generation_update,
         "map_write_update_count": map_write_update_count,
+        "parallel_map_write_enabled": parallel_map_write_enabled,
+        "batch_map_write_used": bool(
+            batch_map_write_required and filtered_pending_map_updates
+        ),
+        "batch_map_write_update_count": (
+            len(filtered_pending_map_updates) if batch_map_write_required else 0
+        ),
+        "batch_map_write_delete_count": (
+            actual_data_delete_count if batch_map_write_required else 0
+        ),
+        "parallel_map_write_worker_count": parallel_map_write_worker_count,
+        "parallel_map_write_scheduled_update_count": (
+            len(filtered_pending_map_updates) if parallel_map_write_enabled else 0
+        ),
         "active_generation_update_count": active_generation_update_count,
         "active_generation_switch_count": active_generation_update_count,
         "active_generation_flip_skipped": (
@@ -2817,7 +3602,18 @@ def load_mpls_maps(compiled: dict[str, Any]) -> dict[str, Any]:
         "loaded_classifier_count": len(loaded_classifier_keys),
         "loaded_core_lfib_count": len(loaded_core_keys),
         "loaded_egress_handoff_count": len(loaded_handoff_keys),
+        "loaded_generation_base_count": len(loaded_generation_base_keys),
+        "loaded_delete_manifest_count": len(loaded_delete_manifest_keys),
         "loaded_interface_role_count": len(loaded_interface_roles),
+        "interface_role_map_updates_skipped": skip_interface_role_map_updates,
+        "interface_role_map_update_skip_reason": (
+            "roles_prepared_by_attach_capability"
+            if skip_interface_role_map_updates
+            else ""
+        ),
+        "interface_role_map_skipped_update_count": (
+            len(loaded_interface_roles) if skip_interface_role_map_updates else 0
+        ),
         "loaded_classifier_keys": loaded_classifier_keys,
         "loaded_core_lfib_keys": loaded_core_keys,
         "loaded_egress_handoff_keys": loaded_handoff_keys,

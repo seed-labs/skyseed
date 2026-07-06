@@ -3132,6 +3132,8 @@ def evaluate_runtime_preload_diff_contract(
     preactivation_preload_epoch_count = 0
     preloaded_generation_used_count = 0
     diff_update_used_count = 0
+    manifest_only_map_write_used_count = 0
+    manifest_only_batch_map_write_used_count = 0
     noop_skipped_epoch_count = 0
     active_generation_flip_only_count = 0
     inactive_generation_write_count = 0
@@ -3142,6 +3144,16 @@ def evaluate_runtime_preload_diff_contract(
     preactivation_preload_skipped_count = 0
     preactivation_preload_result_detail_incomplete_count = 0
     preactivation_preload_skip_reasons: Counter[str] = Counter()
+    preactivation_preload_interface_role_map_skip_count = 0
+    preactivation_preload_parallel_map_write_epoch_count = 0
+    preactivation_preload_parallel_map_write_scheduled_update_count = 0
+    preactivation_preload_manifest_only_epoch_count = 0
+    preactivation_preload_batch_map_write_epoch_count = 0
+    preactivation_preload_batch_map_write_update_count = 0
+    preactivation_preload_batch_map_write_delete_count = 0
+    runtime_batch_map_write_epoch_count = 0
+    runtime_batch_map_write_update_count = 0
+    runtime_batch_map_write_delete_count = 0
     full_generation_reload_blocker_count = 0
     runtime_full_generation_write_count = 0
     runtime_full_generation_reload_count = 0
@@ -3207,12 +3219,83 @@ def evaluate_runtime_preload_diff_contract(
                 timing_skip_reason or "lookahead_preload_skipped"
             ] += timing_skipped_count
         preload_update_count = int(preactivation_preload.get("map_write_update_count") or 0)
+        preload_manifest_only_map_write_used = bool(
+            preload_attribution.get("manifest_only_map_write_used")
+            or preactivation_preload.get("manifest_only_map_write_used")
+        )
+        preload_manifest_only_loader = bool(
+            preload_attribution.get("manifest_only_loader")
+            or preactivation_preload.get("manifest_only_loader")
+        )
+        preload_batch_map_write_used = bool(
+            preload_attribution.get("batch_map_write_used")
+            or preactivation_preload.get("batch_map_write_used")
+        )
+        preload_batch_map_write_update_count = int(
+            preload_attribution.get("batch_map_write_update_count")
+            or preactivation_preload.get("batch_map_write_update_count")
+            or 0
+        )
+        preload_batch_map_write_delete_count = int(
+            preload_attribution.get("batch_map_write_delete_count")
+            or preactivation_preload.get("batch_map_write_delete_count")
+            or 0
+        )
+        if preload_manifest_only_loader or preload_manifest_only_map_write_used:
+            preactivation_preload_manifest_only_epoch_count += 1
+        if preload_batch_map_write_used:
+            preactivation_preload_batch_map_write_epoch_count += 1
+            preactivation_preload_batch_map_write_update_count += (
+                preload_batch_map_write_update_count
+            )
+            preactivation_preload_batch_map_write_delete_count += (
+                preload_batch_map_write_delete_count
+            )
         if preload_update_count > 0:
             inactive_generation_write_count += 1
         preload_diff_used = bool(preload_attribution.get("map_diff_update_used"))
         preload_noop_skipped_count = int(
             preload_attribution.get("noop_skipped_count") or 0
         )
+        preload_interface_role_map_updates_skipped = bool(
+            preload_attribution.get("interface_role_map_updates_skipped")
+            or preactivation_preload.get("interface_role_map_updates_skipped")
+        )
+        preload_interface_role_map_skipped_update_count = int(
+            preload_attribution.get("interface_role_map_skipped_update_count")
+            or preactivation_preload.get("interface_role_map_skipped_update_count")
+            or 0
+        )
+        preload_interface_role_map_update_skip_reason = str(
+            preload_attribution.get("interface_role_map_update_skip_reason")
+            or preactivation_preload.get("interface_role_map_update_skip_reason")
+            or ""
+        )
+        if preload_interface_role_map_updates_skipped:
+            preactivation_preload_interface_role_map_skip_count += (
+                preload_interface_role_map_skipped_update_count or 1
+            )
+        preload_parallel_map_write_enabled = bool(
+            preload_attribution.get("parallel_map_write_enabled")
+            or preactivation_preload.get("parallel_map_write_enabled")
+        )
+        preload_parallel_map_write_worker_count = int(
+            preload_attribution.get("parallel_map_write_worker_count")
+            or preactivation_preload.get("parallel_map_write_worker_count")
+            or 0
+        )
+        preload_parallel_map_write_scheduled_update_count = int(
+            preload_attribution.get("parallel_map_write_scheduled_update_count")
+            or preactivation_preload.get(
+                "parallel_map_write_scheduled_update_count"
+            )
+            or 0
+        )
+        if preload_parallel_map_write_enabled:
+            preactivation_preload_parallel_map_write_epoch_count += 1
+            preactivation_preload_parallel_map_write_scheduled_update_count += (
+                preload_parallel_map_write_scheduled_update_count
+            )
         preload_success_without_writes = bool(
             preload_dispatched
             and (timing_success_count or detail_preload_report_present)
@@ -3229,6 +3312,34 @@ def evaluate_runtime_preload_diff_contract(
             preloaded_generation_used_count += 1
         if bool(attribution.get("map_diff_update_used")) or preload_diff_used:
             diff_update_used_count += 1
+        manifest_only_map_write_used = bool(
+            attribution.get("manifest_only_map_write_used")
+            or preload_manifest_only_map_write_used
+        )
+        if manifest_only_map_write_used:
+            manifest_only_map_write_used_count += 1
+        batch_map_write_used = bool(
+            attribution.get("batch_map_write_used")
+            or map_load.get("batch_map_write_used")
+        )
+        batch_map_write_update_count = int(
+            attribution.get("batch_map_write_update_count")
+            or map_load.get("batch_map_write_update_count")
+            or 0
+        )
+        batch_map_write_delete_count = int(
+            attribution.get("batch_map_write_delete_count")
+            or map_load.get("batch_map_write_delete_count")
+            or 0
+        )
+        if batch_map_write_used:
+            runtime_batch_map_write_epoch_count += 1
+            runtime_batch_map_write_update_count += batch_map_write_update_count
+            runtime_batch_map_write_delete_count += batch_map_write_delete_count
+        if manifest_only_map_write_used and (
+            batch_map_write_used or preload_batch_map_write_used
+        ):
+            manifest_only_batch_map_write_used_count += 1
         if (
             int(attribution.get("noop_skipped_count") or 0) > 0
             or preload_noop_skipped_count > 0
@@ -3290,7 +3401,38 @@ def evaluate_runtime_preload_diff_contract(
                 ),
                 "preactivation_preload_update_count": preload_update_count,
                 "preactivation_preload_map_diff_update_used": preload_diff_used,
+                "preactivation_preload_manifest_only_loader": preload_manifest_only_loader,
+                "preactivation_preload_manifest_only_map_write_used": (
+                    preload_manifest_only_map_write_used
+                ),
+                "preactivation_preload_batch_map_write_used": (
+                    preload_batch_map_write_used
+                ),
+                "preactivation_preload_batch_map_write_update_count": (
+                    preload_batch_map_write_update_count
+                ),
+                "preactivation_preload_batch_map_write_delete_count": (
+                    preload_batch_map_write_delete_count
+                ),
                 "preactivation_preload_noop_skipped_count": preload_noop_skipped_count,
+                "preactivation_preload_interface_role_map_updates_skipped": (
+                    preload_interface_role_map_updates_skipped
+                ),
+                "preactivation_preload_interface_role_map_skipped_update_count": (
+                    preload_interface_role_map_skipped_update_count
+                ),
+                "preactivation_preload_interface_role_map_update_skip_reason": (
+                    preload_interface_role_map_update_skip_reason
+                ),
+                "preactivation_preload_parallel_map_write_enabled": (
+                    preload_parallel_map_write_enabled
+                ),
+                "preactivation_preload_parallel_map_write_worker_count": (
+                    preload_parallel_map_write_worker_count
+                ),
+                "preactivation_preload_parallel_map_write_scheduled_update_count": (
+                    preload_parallel_map_write_scheduled_update_count
+                ),
                 "preactivation_preload_noop_reuse": preload_success_without_writes,
                 "preloaded_generation_used": bool(
                     attribution.get("preloaded_generation_used")
@@ -3298,6 +3440,10 @@ def evaluate_runtime_preload_diff_contract(
                 "map_diff_update_used": bool(
                     attribution.get("map_diff_update_used")
                 ),
+                "manifest_only_map_write_used": manifest_only_map_write_used,
+                "batch_map_write_used": batch_map_write_used,
+                "batch_map_write_update_count": batch_map_write_update_count,
+                "batch_map_write_delete_count": batch_map_write_delete_count,
                 "active_generation_flip_only": bool(
                     attribution.get("active_generation_flip_only")
                 ),
@@ -3335,6 +3481,10 @@ def evaluate_runtime_preload_diff_contract(
         outcome_labels.append("RUNTIME_PRELOAD_DISPATCHED")
     if diff_update_used_count:
         outcome_labels.append("RUNTIME_MAP_DIFF_UPDATE_USED")
+    if manifest_only_map_write_used_count:
+        outcome_labels.append("RUNTIME_MANIFEST_ONLY_MAP_WRITE_USED")
+    if manifest_only_batch_map_write_used_count:
+        outcome_labels.append("RUNTIME_MANIFEST_ONLY_BATCH_MAP_WRITE_USED")
     if noop_skipped_epoch_count:
         outcome_labels.append("RUNTIME_NOOP_MAP_WRITES_SKIPPED")
     if preloaded_generation_used_count:
@@ -3347,6 +3497,12 @@ def evaluate_runtime_preload_diff_contract(
         outcome_labels.append("RUNTIME_FULL_GENERATION_WRITE_OBSERVED")
     if runtime_full_generation_reload_count:
         outcome_labels.append("RUNTIME_FULL_GENERATION_RELOAD_OBSERVED")
+    if preactivation_preload_interface_role_map_skip_count:
+        outcome_labels.append("RUNTIME_INTERFACE_ROLE_MAP_UPDATES_SKIPPED")
+    if preactivation_preload_parallel_map_write_epoch_count:
+        outcome_labels.append("RUNTIME_PREACTIVATION_PRELOAD_PARALLEL_MAP_WRITE_USED")
+    if preactivation_preload_batch_map_write_epoch_count:
+        outcome_labels.append("RUNTIME_PREACTIVATION_PRELOAD_BATCH_MAP_WRITE_USED")
     if bpf_delta_attach_count:
         outcome_labels.append("RUNTIME_BPF_DELTA_ATTACH_OBSERVED")
     if bpf_full_attach_count:
@@ -3557,6 +3713,27 @@ def evaluate_runtime_preload_diff_contract(
         "preactivation_preload_result_detail_incomplete_count": (
             preactivation_preload_result_detail_incomplete_count
         ),
+        "preactivation_preload_interface_role_map_skip_count": (
+            preactivation_preload_interface_role_map_skip_count
+        ),
+        "preactivation_preload_parallel_map_write_epoch_count": (
+            preactivation_preload_parallel_map_write_epoch_count
+        ),
+        "preactivation_preload_parallel_map_write_scheduled_update_count": (
+            preactivation_preload_parallel_map_write_scheduled_update_count
+        ),
+        "preactivation_preload_manifest_only_epoch_count": (
+            preactivation_preload_manifest_only_epoch_count
+        ),
+        "preactivation_preload_batch_map_write_epoch_count": (
+            preactivation_preload_batch_map_write_epoch_count
+        ),
+        "preactivation_preload_batch_map_write_update_count": (
+            preactivation_preload_batch_map_write_update_count
+        ),
+        "preactivation_preload_batch_map_write_delete_count": (
+            preactivation_preload_batch_map_write_delete_count
+        ),
         "preload_noop_reuse_equivalence_proof_available": (
             preload_noop_reuse_equivalence_proof_available
         ),
@@ -3570,6 +3747,13 @@ def evaluate_runtime_preload_diff_contract(
         "active_generation_flip_count": active_generation_flip_only_count,
         "preloaded_generation_used_epoch_count": preloaded_generation_used_count,
         "map_diff_update_epoch_count": diff_update_used_count,
+        "manifest_only_map_write_epoch_count": manifest_only_map_write_used_count,
+        "manifest_only_batch_map_write_epoch_count": (
+            manifest_only_batch_map_write_used_count
+        ),
+        "runtime_batch_map_write_epoch_count": runtime_batch_map_write_epoch_count,
+        "runtime_batch_map_write_update_count": runtime_batch_map_write_update_count,
+        "runtime_batch_map_write_delete_count": runtime_batch_map_write_delete_count,
         "noop_skipped_epoch_count": noop_skipped_epoch_count,
         "active_generation_flip_only_epoch_count": active_generation_flip_only_count,
         "full_generation_reload_blocker_count": full_generation_reload_blocker_count,
@@ -3581,6 +3765,8 @@ def evaluate_runtime_preload_diff_contract(
         "generation_update_reporting_contract": {
             "full_generation_write": "runtime_full_generation_write_epoch_count",
             "diff_write": "map_diff_update_epoch_count",
+            "manifest_only_write": "manifest_only_map_write_epoch_count",
+            "manifest_only_batch_write": "manifest_only_batch_map_write_epoch_count",
             "noop_reuse": "noop_skipped_epoch_count/preloaded_generation_used_epoch_count",
             "preactivation_preload_write": "preactivation_preload_epoch_count",
             "activation_flip_only": "active_generation_flip_only_epoch_count",

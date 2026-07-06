@@ -6,6 +6,7 @@ import unittest
 from skyseed_session_check import (
     canonical_fast_long_run_profile,
     format_status_note,
+    operational_iteration_profile,
     render_session_check_summary,
 )
 
@@ -27,6 +28,13 @@ class SkyseedSessionCheckTests(unittest.TestCase):
                 "runtime_update_protection": {},
                 "timing_classification": {},
                 "preflight": {"warning_reasons": ["host_mpls_not_ready"]},
+            },
+            "operational_iteration_gate": {
+                "ready": True,
+                "non_blocking_warnings": ["host_mpls_not_ready"],
+            },
+            "operational_iteration_profile": {
+                "profile_id": "s4_h3_240s_bpf_owned_operational_iteration",
             },
             "canonical_fast_long_run_profile": {
                 "profile_id": "1shell_172_12ut6gw_gz_2h_fast_representative",
@@ -59,6 +67,12 @@ class SkyseedSessionCheckTests(unittest.TestCase):
             "next_action=run_host_prepare_then_recheck_preflight_before_real_run",
             rendered,
         )
+        self.assertIn("operational_iteration_ready=True", rendered)
+        self.assertIn(
+            "operational_iteration_profile=s4_h3_240s_bpf_owned_operational_iteration",
+            rendered,
+        )
+        self.assertIn("operational_iteration_warnings=host_mpls_not_ready", rendered)
         self.assertIn(
             "canonical_fast_profile=1shell_172_12ut6gw_gz_2h_fast_representative",
             rendered,
@@ -84,6 +98,10 @@ class SkyseedSessionCheckTests(unittest.TestCase):
                     ],
                 },
             },
+            "operational_iteration_gate": {
+                "ready": True,
+                "non_blocking_warnings": ["host_mpls_not_ready"],
+            },
         }
 
         note = format_status_note(report)
@@ -91,10 +109,41 @@ class SkyseedSessionCheckTests(unittest.TestCase):
         self.assertIn("## Session Check Log", note)
         self.assertIn("dirty entries `3`", note)
         self.assertIn("long_real_run_ready `False`", note)
+        self.assertIn("operational_iteration_ready `True`", note)
         self.assertIn(
             "host_mpls_not_ready,bridge_netfilter_passthrough_not_ready",
             note,
         )
+
+    def test_operational_iteration_profile_pins_current_240s_route(self) -> None:
+        profile = operational_iteration_profile()
+        command = list(profile["run_command"])
+
+        self.assertEqual(
+            profile["profile_id"],
+            "s4_h3_240s_bpf_owned_operational_iteration",
+        )
+        self.assertTrue(profile["fresh_prepared_inputs_allowed"])
+        self.assertFalse(profile["load_frozen_prepared_bundle_required"])
+        self.assertFalse(profile["stale_static_goal_evidence_blocks_iteration"])
+        self.assertIn("--horizon-seconds", command)
+        self.assertEqual("240", command[command.index("--horizon-seconds") + 1])
+        self.assertIn("--sample-interval", command)
+        self.assertEqual("10", command[command.index("--sample-interval") + 1])
+        self.assertIn("--event-evaluation-interval", command)
+        self.assertEqual(
+            "10",
+            command[command.index("--event-evaluation-interval") + 1],
+        )
+        self.assertIn("--loop-count", command)
+        self.assertEqual("3", command[command.index("--loop-count") + 1])
+        self.assertIn("--runtime-mode", command)
+        self.assertIn("operational_clean", command)
+        self.assertIn("--forwarding-backend", command)
+        self.assertIn("bpf_owned", command)
+        self.assertIn("--host-prepare-policy", command)
+        self.assertEqual("auto", command[command.index("--host-prepare-policy") + 1])
+        self.assertNotIn("--load-frozen-prepared-bundle", command)
 
     def test_canonical_fast_profile_pins_representative_long_run_route(self) -> None:
         profile = canonical_fast_long_run_profile()

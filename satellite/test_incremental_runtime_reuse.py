@@ -966,6 +966,46 @@ class IncrementalRuntimeReuseTests(unittest.TestCase):
             ["flow-b"],
         )
 
+    def test_bpf_owned_host_required_selection_ignores_core_label_changes(self) -> None:
+        old_flow = _context(
+            flow_id="flow-a",
+            ut_id="ut101",
+            serving_satellite_id="stl-950117",
+            selected_gateway_id="gw1",
+            selected_gateway_satellite_id="stl-950117",
+            forward_label=10000,
+            reverse_label=200000,
+            gateway_class_id="zone-a:default-gateway:gw1",
+        )
+        new_flow = _context(
+            flow_id="flow-a",
+            ut_id="ut101",
+            serving_satellite_id="stl-950118",
+            selected_gateway_id="gw1",
+            selected_gateway_satellite_id="stl-950118",
+            forward_label=10512,
+            reverse_label=200512,
+            gateway_class_id="zone-a:default-gateway:gw1",
+        )
+
+        full_selection = _select_incremental_runtime_contexts(
+            all_contexts=(new_flow,),
+            existing_session=_session(old_flow),
+        )
+        bpf_owned_selection = _select_incremental_runtime_contexts(
+            all_contexts=(new_flow,),
+            existing_session=_session(old_flow),
+            bpf_owned_host_required_only=True,
+        )
+
+        self.assertEqual(full_selection["incremental_cleanup_flow_ids"], ["flow-a"])
+        self.assertEqual(bpf_owned_selection["incremental_cleanup_flow_ids"], [])
+        self.assertEqual(bpf_owned_selection["changed_contexts"], ())
+        self.assertEqual(
+            bpf_owned_selection["signature_scope"],
+            "bpf_owned_host_required",
+        )
+
     def test_selection_marks_removed_flows_for_cleanup(self) -> None:
         old_a = _context(
             flow_id="flow-a",

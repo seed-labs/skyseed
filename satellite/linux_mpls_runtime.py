@@ -15,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, MutableMapping, Optional, Sequence, Tuple
 
 from contracts import RuntimeUpdatePlan, TopologySnapshot
 from distribution_store import DistributedEnvelopeBatch
@@ -601,6 +601,26 @@ def _copy_bpf_prepare_timing_to_phase_timing(
 def _context_signature(context: DirectGatewayExperimentContext) -> str:
     """Fingerprint dataplane-relevant context so unchanged flows can be held."""
     return _fingerprint(asdict(context))
+
+
+def _bpf_owned_host_required_context_signature(
+    context: DirectGatewayExperimentContext,
+) -> str:
+    """Fingerprint only Linux-host responsibilities left outside BPF-owned core."""
+    return _fingerprint(
+        {
+            "flow_id": context.flow_id,
+            "ut_id": context.ut_id,
+            "ut_access_interface": context.ut_access_interface,
+            "ut_access_ip": context.ut_access_ip,
+            "ut_access_peer_ip": context.ut_access_peer_ip,
+            "selected_gateway_id": context.selected_gateway_id,
+            "gateway_access_interface": context.gateway_access_interface,
+            "gateway_nat_interface": context.gateway_nat_interface,
+            "gateway_nat_source_ip": context.gateway_nat_source_ip,
+            "return_target_prefix": context.return_target_prefix,
+        }
+    )
 
 
 def _zone_id_from_gateway_class(gateway_class_id: str | None) -> str:
@@ -1266,6 +1286,217 @@ def _bpf_owned_entry_hash(entries: Sequence[Dict[str, Any]]) -> str:
     return _sha256({"entries": list(entries)})
 
 
+BPF_GENERATION_OVERLAY_MAPS = (
+    "ingress_classifier_map",
+    "core_lfib_map",
+    "egress_handoff_map",
+)
+
+
+def _bpf_generationless_entry_key(
+    *,
+    map_name: str,
+    entry: Mapping[str, Any],
+) -> Tuple[Any, ...]:
+    key = dict(dict(entry).get("key") or {})
+    if map_name == "ingress_classifier_map":
+        return (
+            int(key.get("ingress_ifindex") or 0),
+            int(key.get("dst_ipv4") or 0),
+            int(key.get("service_class_u32") or key.get("service_class") or 0),
+        )
+    return (
+        int(key.get("ingress_ifindex") or 0),
+        int(key.get("label") or 0),
+        str(key.get("direction") or ""),
+    )
+
+
+def _bpf_entry_value_fingerprint(entry: Mapping[str, Any]) -> str:
+    return _sha256({"value": dict(dict(entry).get("value") or {})})
+
+
+def _bpf_generation_overlay_tombstone(
+    *,
+    map_name: str,
+    base_entry: Mapping[str, Any],
+    target_generation_id: int,
+) -> Dict[str, Any]:
+    entry = {
+        "key": {
+            **dict(dict(base_entry).get("key") or {}),
+            "generation": int(target_generation_id),
+        },
+        "value": {
+            **dict(dict(base_entry).get("value") or {}),
+            "active": False,
+        },
+        "metadata": {
+            **dict(dict(base_entry).get("metadata") or {}),
+            "planned_overlay_tombstone": True,
+            "base_generation_entry_deleted": True,
+            "runtime_detection_or_fallback": False,
+        },
+    }
+    if map_name == "egress_handoff_map":
+        entry["value"].setdefault("action", "pop_and_handoff")
+    return entry
+
+
+def _bpf_owned_planned_overlay_compiled_maps(
+    *,
+    target_compiled: Mapping[str, Any],
+    base_compiled: Mapping[str, Any],
+    target_generation_id: int,
+    base_generation_id: int,
+) -> Dict[str, Any]:
+    target = dict(target_compiled or {})
+    root_base_compiled = dict(
+        dict(base_compiled or {}).get("bpf_overlay_root_base_compiled_inputs")
+        or base_compiled
+        or {}
+    )
+    root_base_generation_id = int(
+        dict(base_compiled or {}).get("bpf_overlay_root_base_generation_id")
+        if dict(base_compiled or {}).get("bpf_overlay_root_base_generation_id")
+        not in (None, "", "None")
+        else dict(
+            dict(base_compiled or {}).get("bpf_generation_overlay_manifest") or {}
+        ).get("root_base_generation")
+        if dict(
+            dict(base_compiled or {}).get("bpf_generation_overlay_manifest") or {}
+        ).get("root_base_generation")
+        not in (None, "", "None")
+        else base_generation_id
+    )
+    overlay_counts: Dict[str, int] = {}
+    inherited_counts: Dict[str, int] = {}
+    tombstone_counts: Dict[str, int] = {}
+    for map_name in BPF_GENERATION_OVERLAY_MAPS:
+        target_entries = [dict(item) for item in list(target.get(map_name) or [])]
+        base_entries = [
+            dict(item) for item in list(root_base_compiled.get(map_name) or [])
+        ]
+        target_by_key = {
+            _bpf_generationless_entry_key(map_name=map_name, entry=entry): entry
+            for entry in target_entries
+        }
+        base_by_key = {
+            _bpf_generationless_entry_key(map_name=map_name, entry=entry): entry
+            for entry in base_entries
+        }
+        overlay_entries: List[Dict[str, Any]] = []
+        inherited_count = 0
+        for key, target_entry in sorted(target_by_key.items(), key=lambda item: str(item[0])):
+            base_entry = base_by_key.get(key)
+            if (
+                base_entry is not None
+                and _bpf_entry_value_fingerprint(base_entry)
+                == _bpf_entry_value_fingerprint(target_entry)
+            ):
+                inherited_count += 1
+                continue
+            patched_entry = {
+                **dict(target_entry),
+                "key": {
+                    **dict(target_entry.get("key") or {}),
+                    "generation": int(target_generation_id),
+                },
+                "metadata": {
+                    **dict(target_entry.get("metadata") or {}),
+                    "planned_overlay_delta_write": True,
+                    "base_generation": int(root_base_generation_id),
+                    "immediate_planning_base_generation": int(base_generation_id),
+                    "runtime_detection_or_fallback": False,
+                },
+            }
+            overlay_entries.append(patched_entry)
+        deleted_keys = sorted(set(base_by_key) - set(target_by_key), key=str)
+        for key in deleted_keys:
+            overlay_entries.append(
+                _bpf_generation_overlay_tombstone(
+                    map_name=map_name,
+                    base_entry=base_by_key[key],
+                    target_generation_id=target_generation_id,
+                )
+            )
+        target[map_name] = overlay_entries
+        overlay_counts[map_name] = len(overlay_entries)
+        inherited_counts[map_name] = inherited_count
+        tombstone_counts[map_name] = len(deleted_keys)
+    generation_base_map = [
+        {
+            "key": {"generation": int(target_generation_id)},
+            "value": {"base_generation": int(root_base_generation_id)},
+            "metadata": {
+                "planning_semantics": "planned_generation_overlay_base",
+                "immediate_planning_base_generation": int(base_generation_id),
+                "runtime_detection_or_fallback": False,
+            },
+        }
+    ]
+    target["active_generation"] = {"value": int(target_generation_id)}
+    target["generation_base"] = {
+        "generation": int(target_generation_id),
+        "base_generation": int(root_base_generation_id),
+        "immediate_planning_base_generation": int(base_generation_id),
+        "planning_semantics": "planned_generation_overlay_base",
+    }
+    target["generation_base_map"] = generation_base_map
+    target["compiled_mpls_map_counts"] = {
+        "ingress_classifier_map": len(target.get("ingress_classifier_map") or []),
+        "core_lfib_map": len(target.get("core_lfib_map") or []),
+        "egress_handoff_map": len(target.get("egress_handoff_map") or []),
+        "generation_base_map": len(generation_base_map),
+        "active_generation": 1,
+    }
+    target["bpf_generation_overlay_manifest"] = {
+        "schema_version": "skyseed-bpf-generation-overlay-manifest-v1",
+        "manifest_source": "planned_compiled_delta_against_base_generation",
+        "runtime_detection_or_fallback": False,
+        "generation": int(target_generation_id),
+        "base_generation": int(root_base_generation_id),
+        "immediate_planning_base_generation": int(base_generation_id),
+        "root_base_generation": int(root_base_generation_id),
+        "overlay_mode": "planned_delta_overlay_generation",
+        "delta_write_counts": overlay_counts,
+        "inherited_entry_counts": inherited_counts,
+        "tombstone_write_counts": tombstone_counts,
+        "delta_write_count": sum(overlay_counts.values()),
+        "inherited_entry_count": sum(inherited_counts.values()),
+        "tombstone_write_count": sum(tombstone_counts.values()),
+        "manifest_only_loader_required": True,
+        "batch_map_write_required": True,
+    }
+    target["bpf_planned_full_generation_inputs"] = {
+        "schema_version": "skyseed-bpf-planned-full-generation-inputs-v1",
+        "active_generation": {"value": int(target_generation_id)},
+        "ingress_classifier_map": [
+            dict(entry) for entry in list(dict(target_compiled or {}).get("ingress_classifier_map") or [])
+        ],
+        "core_lfib_map": [
+            dict(entry) for entry in list(dict(target_compiled or {}).get("core_lfib_map") or [])
+        ],
+        "egress_handoff_map": [
+            dict(entry) for entry in list(dict(target_compiled or {}).get("egress_handoff_map") or [])
+        ],
+        "generation_base_map": [
+            {
+                "key": {"generation": int(target_generation_id)},
+                "value": {"base_generation": int(target_generation_id)},
+            }
+        ],
+        "compiled_mpls_map_counts": dict(
+            dict(target_compiled or {}).get("compiled_mpls_map_counts") or {}
+        ),
+    }
+    target["bpf_overlay_root_base_generation_id"] = int(root_base_generation_id)
+    target["bpf_overlay_root_base_compiled_inputs"] = dict(root_base_compiled)
+    target["bpf_map_write_manifest_only"] = True
+    target["batch_map_write_required"] = True
+    return target
+
+
 def _bpf_owned_attached_interfaces_from_entries(
     entries: Sequence[Dict[str, Any]],
 ) -> List[str]:
@@ -1294,6 +1525,11 @@ def _bpf_owned_runtime_generation_id(
     runtime_update_plan: RuntimeUpdatePlan,
 ) -> Tuple[int, str]:
     target_snapshot = dict(runtime_update_plan.target_snapshot or {})
+    for field_name in ("bpf_physical_generation_id", "physical_generation_id"):
+        value = target_snapshot.get(field_name)
+        if value in (None, "") or str(value) == "None":
+            continue
+        return max(0, int(value)), f"target_snapshot.{field_name}"
     for field_name in ("slice_id", "time_slice", "snapshot_id"):
         value = str(target_snapshot.get(field_name) or "").strip()
         if not value:
@@ -2539,6 +2775,140 @@ def _bpf_owned_attach_reuse_plan(
     }
 
 
+def _bpf_owned_attach_reuse_with_role_capability_expansion(
+    attach_reuse: Mapping[str, Any],
+) -> Dict[str, Any]:
+    reuse = dict(attach_reuse or {})
+    if str(
+        reuse.get("reuse_rejected_reason") or reuse.get("reason") or ""
+    ) != "interface_role_set_mismatch":
+        return reuse
+    if list(reuse.get("map_capacity_mismatches") or []):
+        return reuse
+    if list(reuse.get("ifindex_mismatches") or []):
+        return reuse
+    role_mismatches = [dict(item) for item in list(
+        reuse.get("interface_role_set_mismatches") or []
+    )]
+    if not role_mismatches:
+        return reuse
+    safe_expansions: List[Dict[str, Any]] = []
+    for mismatch in role_mismatches:
+        previous_roles = {
+            str(role)
+            for role in list(
+                mismatch.get("previous_roles")
+                or mismatch.get("prepared_capability_roles")
+                or []
+            )
+            if str(role)
+        }
+        current_roles = {
+            str(role)
+            for role in list(
+                mismatch.get("current_roles")
+                or mismatch.get("current_required_roles")
+                or []
+            )
+            if str(role)
+        }
+        missing_roles = sorted(current_roles - previous_roles)
+        if not previous_roles or not current_roles or not missing_roles:
+            return reuse
+        previous_ifindex = mismatch.get("previous_ifindex")
+        current_ifindex = mismatch.get("current_ifindex")
+        if (
+            previous_ifindex not in (None, "")
+            and current_ifindex not in (None, "")
+            and int(previous_ifindex) != int(current_ifindex)
+        ):
+            return reuse
+        safe_expansions.append(
+            {
+                **mismatch,
+                "missing_required_roles": missing_roles,
+                "capability_expansion_safe": True,
+                "capability_expansion_stage": (
+                    "runtime/horizon_replenishment/bpf_attach_capability_prepare"
+                ),
+            }
+        )
+    delta_attach_plan = {
+        str(interface_ref): sorted(
+            str(direction)
+            for direction in list(directions or [])
+            if str(direction)
+        )
+        for interface_ref, directions in dict(
+            reuse.get("delta_attach_plan") or {}
+        ).items()
+        if str(interface_ref)
+    }
+    required_plan = dict(reuse.get("required_attach_plan") or {})
+    required_interface_count = int(
+        reuse.get("required_interface_count") or len(required_plan)
+    )
+    required_role_count = int(reuse.get("required_interface_role_union_count") or 0)
+    prepared_role_count_before = int(
+        reuse.get("prepared_bpf_attach_capability_count") or 0
+    )
+    outcome_labels = list(reuse.get("outcome_labels") or [])
+    outcome_labels = list(
+        dict.fromkeys(
+            [
+                *outcome_labels,
+                "INTERFACE_ROLE_CAPABILITY_EXPANSION_PREPARED_IN_MAINTENANCE",
+                (
+                    "EXPLICIT_DELTA_ATTACH_TRANSACTION_REQUIRED"
+                    if delta_attach_plan
+                    else "STEADY_ATTACH_REUSE_CONTRACT_PASS"
+                ),
+            ]
+        )
+    )
+    reuse.update(
+        {
+            "reuse_eligible": True,
+            "reason": "",
+            "reuse_rejected_reason": "",
+            "attach_strategy": (
+                "delta_attach_with_role_capability_expansion"
+                if delta_attach_plan
+                else "full_reuse_with_role_capability_expansion"
+            ),
+            "steady_epoch_map_only": not bool(delta_attach_plan),
+            "delta_attach_plan": delta_attach_plan,
+            "delta_attach_interfaces": sorted(delta_attach_plan),
+            "reused_attach_count": max(0, required_interface_count - len(delta_attach_plan)),
+            "delta_attach_count": len(delta_attach_plan),
+            "full_attach_count": 0,
+            "attach_reuse_eligible_count": 1,
+            "attach_reuse_ineligible_count": 0,
+            "ineligible_reason_counts": {},
+            "interface_role_capability_source": (
+                "maintenance_prepared_bpf_attach_capability_expansion"
+            ),
+            "prepared_bpf_attach_capability_count_before_expansion": (
+                prepared_role_count_before
+            ),
+            "prepared_bpf_attach_capability_count_after_expansion": (
+                required_role_count
+            ),
+            "prepared_bpf_attach_capability_count": required_role_count,
+            "role_capability_expansion_allowed": True,
+            "role_capability_expansion_count": len(safe_expansions),
+            "role_capability_expansion_interfaces": [
+                str(item.get("interface_ref") or "")
+                for item in safe_expansions
+                if str(item.get("interface_ref") or "")
+            ],
+            "role_capability_expansions": safe_expansions,
+            "outcome_labels": outcome_labels,
+        }
+    )
+    return reuse
+
+
 def _bpf_owned_existing_readiness_reuse_summary(
     readiness: Dict[str, Any],
 ) -> Dict[str, Any]:
@@ -2613,6 +2983,17 @@ def _bpf_owned_existing_readiness_prepare_evidence(
             or previous_prepare.get("map_capacities")
             or {}
         ),
+        "compiled_runtime_inputs": dict(
+            readiness.get("compiled_runtime_inputs")
+            or previous_prepare.get("compiled_runtime_inputs")
+            or {}
+        ),
+        "active_generation_compiled_runtime_inputs": dict(
+            readiness.get("active_generation_compiled_runtime_inputs")
+            or readiness.get("compiled_runtime_inputs")
+            or previous_prepare.get("compiled_runtime_inputs")
+            or {}
+        ),
         "resident_attach_coverage": dict(
             readiness.get("resident_attach_coverage") or {}
         ),
@@ -2678,6 +3059,29 @@ def _bpf_owned_compiled_runtime_inputs(compiled: Mapping[str, Any]) -> Dict[str,
         "egress_handoff_map": [
             dict(entry) for entry in list(compiled.get("egress_handoff_map") or [])
         ],
+        "generation_base": dict(compiled.get("generation_base") or {}),
+        "generation_base_map": [
+            dict(entry) for entry in list(compiled.get("generation_base_map") or [])
+        ],
+        "bpf_generation_overlay_manifest": dict(
+            compiled.get("bpf_generation_overlay_manifest") or {}
+        ),
+        "bpf_planned_full_generation_inputs": dict(
+            compiled.get("bpf_planned_full_generation_inputs") or {}
+        ),
+        "bpf_overlay_root_base_generation_id": (
+            int(compiled.get("bpf_overlay_root_base_generation_id"))
+            if compiled.get("bpf_overlay_root_base_generation_id")
+            not in (None, "", "None")
+            else None
+        ),
+        "bpf_overlay_root_base_compiled_inputs": dict(
+            compiled.get("bpf_overlay_root_base_compiled_inputs") or {}
+        ),
+        "bpf_map_write_manifest_only": bool(
+            compiled.get("bpf_map_write_manifest_only")
+        ),
+        "batch_map_write_required": bool(compiled.get("batch_map_write_required")),
         "attach_plan": dict(compiled.get("attach_plan") or {}),
         "attached_interfaces": list(compiled.get("attached_interfaces") or []),
         "attached_interface_details": [
@@ -2703,6 +3107,87 @@ def _bpf_owned_compiled_runtime_inputs(compiled: Mapping[str, Any]) -> Dict[str,
         "map_conflict_summary": dict(compiled.get("map_conflict_summary") or {}),
         "map_conflicts": list(compiled.get("map_conflicts") or []),
         "label_allocation": dict(compiled.get("label_allocation") or {}),
+    }
+
+
+def _bpf_owned_frozen_compiled_runtime_inputs_check(
+    compiled_inputs: Mapping[str, Any],
+    *,
+    expected_generation_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    source = dict(compiled_inputs or {})
+    if not source:
+        return {"ready": False, "reason": "frozen_compiled_runtime_inputs_missing"}
+    if "compiled_runtime_inputs_summary" in source:
+        return {
+            "ready": False,
+            "reason": "frozen_compiled_runtime_inputs_summary_rejected",
+        }
+    if source.get("schema_version") != "skyseed-bpf-owned-compiled-runtime-inputs-v1":
+        return {
+            "ready": False,
+            "reason": "frozen_compiled_runtime_inputs_schema_invalid",
+            "schema_version": str(source.get("schema_version") or ""),
+        }
+    required_keys = (
+        "active_generation",
+        "ingress_classifier_map",
+        "core_lfib_map",
+        "egress_handoff_map",
+    )
+    missing_keys = [key for key in required_keys if key not in source]
+    if missing_keys:
+        return {
+            "ready": False,
+            "reason": "frozen_compiled_runtime_inputs_required_keys_missing",
+            "missing_keys": missing_keys,
+        }
+    if list(source.get("map_conflicts") or []):
+        return {
+            "ready": False,
+            "reason": "frozen_compiled_runtime_inputs_map_conflicts_present",
+            "conflict_count": len(list(source.get("map_conflicts") or [])),
+        }
+    active_generation = dict(source.get("active_generation") or {})
+    generation_value = active_generation.get("value")
+    if generation_value in (None, "", "None"):
+        return {
+            "ready": False,
+            "reason": "frozen_compiled_runtime_inputs_generation_missing",
+        }
+    generation_id = int(generation_value)
+    if (
+        expected_generation_id is not None
+        and int(expected_generation_id) != int(generation_id)
+    ):
+        return {
+            "ready": False,
+            "reason": "frozen_compiled_runtime_inputs_generation_mismatch",
+            "expected_generation_id": int(expected_generation_id),
+            "generation_id": generation_id,
+        }
+    map_counts = {
+        key: len(list(source.get(key) or []))
+        for key in (
+            "ingress_classifier_map",
+            "core_lfib_map",
+            "egress_handoff_map",
+            "generation_base_map",
+        )
+    }
+    return {
+        "ready": True,
+        "reason": "",
+        "schema_version": str(source.get("schema_version") or ""),
+        "generation_id": generation_id,
+        "map_counts": map_counts,
+        "manifest_only_loader_required": bool(
+            source.get("bpf_map_write_manifest_only")
+            or source.get("batch_map_write_required")
+            or dict(source.get("bpf_generation_overlay_manifest") or {}).get(
+                "manifest_only_loader_required"
+            )
+        ),
     }
 
 
@@ -2766,7 +3251,7 @@ def _bpf_owned_activate_preloaded_generation(
         runtime_update_plan=runtime_update_plan,
     )
     horizon_id = str(record.get("horizon_id") or readiness.get("current_horizon_id") or "")
-    horizon_generation_key = str(
+    logical_horizon_generation_key = str(
         record.get("horizon_generation_key")
         or (
             f"{horizon_id}:generation-{int(proof.get('generation_id') or 0)}"
@@ -2774,6 +3259,15 @@ def _bpf_owned_activate_preloaded_generation(
             else ""
         )
     )
+    physical_horizon_generation_key = str(
+        record.get("physical_horizon_generation_key")
+        or (
+            f"{horizon_id}:generation-{int(proof.get('generation_id') or 0)}"
+            if horizon_id
+            else ""
+        )
+    )
+    horizon_generation_key = physical_horizon_generation_key
     compiled_inputs = dict(record.get("compiled_runtime_inputs") or {})
     retain_generation_ids: set[int] = set()
     for generation in list(readiness.get("prepared_generation_ids") or []) + list(
@@ -2788,10 +3282,15 @@ def _bpf_owned_activate_preloaded_generation(
         "bpf_runtime_update_phase": "steady_map_only",
         "retain_inactive_generations": retain_generations,
         "require_preloaded_generation_flip_only": True,
+        "bpf_map_write_manifest_only": True,
+        "batch_map_write_required": True,
     }
     map_load_started_at = time.perf_counter()
     map_load = load_mpls_maps(compiled_for_flip)
     map_load_wall = round(time.perf_counter() - map_load_started_at, 6)
+    generation_write_cost_audit = dict(
+        map_load.get("generation_write_cost_audit") or {}
+    )
     runtime_reload = dict(map_load.get("runtime_reload_attribution") or {})
     flip_only = bool(map_load.get("active_generation_flip_only"))
     ok = bool(map_load.get("ok")) and flip_only
@@ -2828,6 +3327,9 @@ def _bpf_owned_activate_preloaded_generation(
         "active_generation_flip_seconds": float(
             map_load.get("active_generation_flip_wall_seconds") or 0.0
         ),
+        "bpf_generation_write_audit_seconds": float(
+            generation_write_cost_audit.get("audit_wall_seconds") or 0.0
+        ),
         "active_generation_update_count": int(
             map_load.get("active_generation_update_count")
             or map_load.get("active_generation_switch_count")
@@ -2842,14 +3344,19 @@ def _bpf_owned_activate_preloaded_generation(
     }
     previous_records = _bpf_owned_preloaded_generation_records(readiness)
     consumed_horizon_generation_key = str(
-        record.get("horizon_generation_key") or horizon_generation_key
+        record.get("physical_horizon_generation_key")
+        or record.get("horizon_generation_key")
+        or horizon_generation_key
     )
     remaining_records: List[Dict[str, Any]] = []
     for item_any in previous_records:
         item = dict(item_any)
-        item_horizon_generation_key = str(item.get("horizon_generation_key") or "")
-        if consumed_horizon_generation_key and (
-            item_horizon_generation_key == consumed_horizon_generation_key
+        item_horizon_generation_keys = {
+            str(item.get("physical_horizon_generation_key") or ""),
+            str(item.get("horizon_generation_key") or ""),
+        }
+        if consumed_horizon_generation_key and consumed_horizon_generation_key in (
+            item_horizon_generation_keys
         ):
             continue
         if not consumed_horizon_generation_key and int(
@@ -2914,6 +3421,7 @@ def _bpf_owned_activate_preloaded_generation(
             "map_load": map_load,
             "preloaded_generation_record": dict(record),
         },
+        "generation_write_cost_audit": generation_write_cost_audit,
         "timing_breakdown": timing_breakdown,
         "wall_seconds": timing_breakdown[
             "bpf_preloaded_generation_activation_wall_seconds"
@@ -2940,6 +3448,8 @@ def _bpf_owned_activate_preloaded_generation(
         "preloaded_generation_consumed": ok,
         "horizon_id": horizon_id,
         "horizon_generation_key": horizon_generation_key,
+        "logical_horizon_generation_key": logical_horizon_generation_key,
+        "physical_horizon_generation_key": physical_horizon_generation_key,
         "source_state_id": str(record.get("source_state_id") or ""),
         "target_state_id": str(record.get("target_state_id") or ""),
     }
@@ -2972,6 +3482,36 @@ def _bpf_owned_activate_preloaded_generation(
             },
         },
         "preloaded_generation_records": remaining_records,
+        "compiled_runtime_inputs": dict(compiled_inputs),
+        "active_generation_compiled_runtime_inputs": dict(compiled_inputs),
+        "retired_bpf_generation_cleanup_candidate": {
+            "schema_version": "skyseed-retired-bpf-generation-cleanup-candidate-v1",
+            "generation_id": int(
+                readiness.get("active_generation")
+                or readiness.get("generation_id")
+                or 0
+            ),
+            "horizon_id": str(
+                readiness.get("current_horizon_id")
+                or readiness.get("horizon_id")
+                or ""
+            ),
+            "horizon_generation_key": str(
+                readiness.get("active_physical_horizon_generation_key")
+                or readiness.get("active_horizon_generation_key")
+                or ""
+            ),
+            "compiled_runtime_inputs": dict(
+                readiness.get("compiled_runtime_inputs")
+                or dict(
+                    dict(readiness.get("prepare_steps") or {}).get(
+                        "real_backend_prepare"
+                    )
+                    or {}
+                ).get("compiled_runtime_inputs")
+                or {}
+            ),
+        },
         "prepared_generation_ids": [
             int(item.get("generation_id"))
             for item in remaining_records
@@ -2981,6 +3521,8 @@ def _bpf_owned_activate_preloaded_generation(
         "preloaded_generation_record_id": str(record.get("record_id") or ""),
         "current_horizon_id": horizon_id,
         "active_horizon_generation_key": horizon_generation_key,
+        "active_logical_horizon_generation_key": logical_horizon_generation_key,
+        "active_physical_horizon_generation_key": physical_horizon_generation_key,
         "current_source_state_id": str(record.get("target_state_id") or ""),
         "consumed_source_state_id": str(record.get("source_state_id") or ""),
         "target_state_id": str(record.get("target_state_id") or ""),
@@ -3011,7 +3553,13 @@ def _bpf_owned_resident_attach_budget(proof: Dict[str, Any]) -> Dict[str, Any]:
     configured = dict(proof.get("resident_attach_coverage_budget") or {})
     if not configured:
         configured = dict(proof.get("bpf_attach_budget") or {})
-    budget_source = "profile" if configured else "default"
+    budget_source = (
+        str(configured.get("budget_source") or "")
+        if configured
+        else "default"
+    )
+    if configured and not budget_source:
+        budget_source = "profile"
     max_attach_interfaces = int(
         configured.get("max_attach_interfaces")
         or configured.get("max_resident_attach_interfaces")
@@ -3021,6 +3569,7 @@ def _bpf_owned_resident_attach_budget(proof: Dict[str, Any]) -> Dict[str, Any]:
         "schema_version": "skyseed-bpf-resident-attach-budget-v1",
         "budget_source": budget_source,
         "max_attach_interfaces": max_attach_interfaces,
+        "configured_budget": configured,
     }
 
 
@@ -3496,6 +4045,92 @@ def _bpf_owned_reused_attach_clsact_guard(
     }
 
 
+def _bpf_owned_prepared_attach_capability_contract(
+    readiness: Mapping[str, Any],
+) -> Dict[str, Any]:
+    source = dict(readiness or {})
+    attach_prepare = dict(source.get("preactivation_attach_prepare") or {})
+    records = [
+        dict(item)
+        for item in list(source.get("preactivation_attach_prepare_records") or [])
+        if isinstance(item, Mapping)
+    ]
+    if not attach_prepare:
+        return {
+            "ok": False,
+            "reason": "prepared_attach_capability_report_missing",
+            "record_count": len(records),
+        }
+    if attach_prepare.get("ok") is not True:
+        return {
+            "ok": False,
+            "reason": str(
+                attach_prepare.get("reason")
+                or attach_prepare.get("blocked_stage")
+                or "prepared_attach_capability_not_ok"
+            ),
+            "record_count": len(records),
+        }
+    if attach_prepare.get("runtime_apply_skipped") is not True:
+        return {
+            "ok": False,
+            "reason": "prepared_attach_capability_runtime_apply_not_skipped",
+            "record_count": len(records),
+        }
+    forbidden_reasons: List[str] = []
+    if bool(attach_prepare.get("active_generation_set")):
+        forbidden_reasons.append("active_generation_set")
+    if bool(attach_prepare.get("map_ready")):
+        forbidden_reasons.append("map_ready")
+    if int(attach_prepare.get("runtime_full_generation_reload_count") or 0):
+        forbidden_reasons.append("runtime_full_generation_reload")
+    if int(attach_prepare.get("full_attach_count") or 0):
+        forbidden_reasons.append("full_attach_fallback")
+    if forbidden_reasons:
+        return {
+            "ok": False,
+            "reason": "prepared_attach_capability_forbidden_work:"
+            + ",".join(forbidden_reasons),
+            "record_count": len(records),
+            "forbidden_reasons": forbidden_reasons,
+        }
+    prepared_interface_count = int(
+        source.get("prepared_bpf_attach_interface_count")
+        or len(list(attach_prepare.get("attached_interface_details") or []))
+        or len(list(attach_prepare.get("attached_interfaces") or []))
+        or 0
+    )
+    prepared_role_count = int(
+        source.get("prepared_bpf_attach_capability_count")
+        or attach_prepare.get("prepared_bpf_attach_capability_count")
+        or 0
+    )
+    if prepared_interface_count <= 0:
+        return {
+            "ok": False,
+            "reason": "prepared_attach_capability_empty_interface_scope",
+            "record_count": len(records),
+        }
+    return {
+        "ok": True,
+        "reason": "",
+        "record_count": len(records),
+        "prepared_interface_count": prepared_interface_count,
+        "prepared_role_count": prepared_role_count,
+        "delta_attach_count": int(attach_prepare.get("delta_attach_count") or 0),
+        "full_attach_count": int(attach_prepare.get("full_attach_count") or 0),
+        "runtime_full_generation_reload_count": int(
+            attach_prepare.get("runtime_full_generation_reload_count") or 0
+        ),
+        "artifact_paths": [
+            str(item.get("artifact_path") or "")
+            for item in records
+            if str(item.get("artifact_path") or "")
+        ],
+        "source": "preactivation_attach_prepare",
+    }
+
+
 def _bpf_mpls_values_equal(
     first: Dict[str, Any],
     second: Dict[str, Any],
@@ -3608,6 +4243,9 @@ def _bpf_owned_compile_mpls_maps_for_contexts(
     contexts: Sequence[DirectGatewayExperimentContext],
     generation_id: int,
     offline: bool = False,
+    base_generation_id: Optional[int] = None,
+    interface_ifindex_cache: Optional[MutableMapping[str, int]] = None,
+    interface_mac_cache: Optional[MutableMapping[str, str]] = None,
 ) -> Dict[str, Any]:
     from satellite.bpf_mpls_live import (
         ETH_P_IP,
@@ -3625,8 +4263,12 @@ def _bpf_owned_compile_mpls_maps_for_contexts(
             interface_name=str(interface_name),
         )
 
-    ifindex_cache: Dict[str, int] = {}
-    mac_cache: Dict[str, str] = {}
+    ifindex_cache: MutableMapping[str, int] = (
+        interface_ifindex_cache if interface_ifindex_cache is not None else {}
+    )
+    mac_cache: MutableMapping[str, str] = (
+        interface_mac_cache if interface_mac_cache is not None else {}
+    )
 
     def ifindex(interface_ref: str) -> int:
         if interface_ref not in ifindex_cache:
@@ -4271,18 +4913,53 @@ def _bpf_owned_compile_mpls_maps_for_contexts(
         }
         for interface_ref, directions in attach_plan.items()
     ]
+    planned_base_generation_id = int(
+        generation_id if base_generation_id is None else base_generation_id
+    )
+    generation_base_map = [
+        {
+            "key": {"generation": int(generation_id)},
+            "value": {"base_generation": planned_base_generation_id},
+            "metadata": {
+                "planning_semantics": "planned_generation_overlay_base",
+                "runtime_detection_or_fallback": False,
+            },
+        }
+    ]
     map_counts = {
         "ingress_classifier_map": len(ingress_classifier_map),
         "core_lfib_map": len(core_lfib_map),
         "egress_handoff_map": len(egress_handoff_map),
+        "generation_base_map": len(generation_base_map),
         "active_generation": 1,
     }
     return {
         "schema_version": "skyseed-runtime-bpf-owned-mpls-maps-v1",
         "active_generation": {"value": int(generation_id)},
+        "generation_base": {
+            "generation": int(generation_id),
+            "base_generation": planned_base_generation_id,
+            "planning_semantics": "planned_generation_overlay_base",
+        },
         "ingress_classifier_map": ingress_classifier_map,
         "core_lfib_map": core_lfib_map,
         "egress_handoff_map": egress_handoff_map,
+        "generation_base_map": generation_base_map,
+        "bpf_generation_overlay_manifest": {
+            "schema_version": "skyseed-bpf-generation-overlay-manifest-v1",
+            "manifest_source": "compiled_runtime_plan",
+            "runtime_detection_or_fallback": False,
+            "generation": int(generation_id),
+            "base_generation": planned_base_generation_id,
+            "overlay_mode": (
+                "self_contained_base_generation"
+                if planned_base_generation_id == int(generation_id)
+                else "planned_delta_overlay_generation"
+            ),
+            "delta_writes_planned": False,
+            "tombstone_writes_planned": False,
+            "manifest_only_loader_required": False,
+        },
         "attach_plan": attach_plan,
         "attached_interfaces": list(attach_plan.keys()),
         "attached_interface_details": attached_interface_details,
@@ -4689,8 +5366,17 @@ def _bpf_owned_prepare_mpls_backend(
     reuse_attached_readiness: Optional[Dict[str, Any]] = None,
     fail_closed_on_reuse_miss: bool = False,
     preactivation_preload_only: bool = False,
+    preactivation_attach_prepare_only: bool = False,
+    allow_role_capability_expansion: bool = False,
     retain_inactive_generations: Optional[Sequence[int]] = None,
     prepared_generation_window_count: int = 1,
+    base_generation_compiled_inputs: Optional[Mapping[str, Any]] = None,
+    frozen_compiled_runtime_inputs: Optional[Mapping[str, Any]] = None,
+    require_frozen_compiled_runtime_inputs: bool = False,
+    interface_ifindex_cache: Optional[MutableMapping[str, int]] = None,
+    interface_mac_cache: Optional[MutableMapping[str, str]] = None,
+    require_prepared_attach_capability_for_preactivation_preload: bool = False,
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
     try:
         from satellite.bpf_dataplane_canary import (
@@ -4718,6 +5404,119 @@ def _bpf_owned_prepare_mpls_backend(
         }
 
     started_at = time.perf_counter()
+
+    def emit_progress(stage: str, **fields: Any) -> None:
+        if progress_callback is None:
+            return
+        try:
+            progress_callback(
+                {
+                    "stage": stage,
+                    "elapsed_seconds": round(time.perf_counter() - started_at, 6),
+                    **fields,
+                }
+            )
+        except Exception:
+            pass
+
+    def interface_role_completeness_after_map_load(
+        *,
+        compiled: Mapping[str, Any],
+        map_load: Mapping[str, Any],
+        read_reason: str,
+    ) -> tuple[Dict[str, Any], bool, Dict[str, Any]]:
+        loaded_interface_roles = list(
+            dict(map_load or {}).get("loaded_interface_roles") or []
+        )
+        if loaded_interface_roles:
+            live_interface_roles = {
+                "ok": True,
+                "skipped": True,
+                "reason": "map_load_reported_interface_roles_used",
+                "read_reason": str(read_reason),
+                "entries": [],
+                "entry_count": 0,
+                "map_load_reported_entry_count": len(loaded_interface_roles),
+                "source": "map_load_reported_roles",
+                "command": {
+                    "returncode": 0,
+                    "skipped": True,
+                    "reason": "map_load_reported_interface_roles_used",
+                },
+            }
+            timing_breakdown[
+                "bpf_interface_role_live_read_wall_seconds"
+            ] = 0.0
+            timing_breakdown["bpf_live_role_read_seconds"] = 0.0
+            emit_progress(
+                "interface_role_live_read_skipped",
+                generation_id=generation_id,
+                read_reason=str(read_reason),
+                source="map_load_reported_roles",
+                loaded_interface_role_count=len(loaded_interface_roles),
+            )
+        else:
+            emit_progress(
+                "interface_role_live_read_started",
+                generation_id=generation_id,
+                read_reason=str(read_reason),
+            )
+            live_role_started_at = time.perf_counter()
+            live_interface_roles = _read_bpf_owned_interface_roles()
+            role_read_wall = round(time.perf_counter() - live_role_started_at, 6)
+            timing_breakdown[
+                "bpf_interface_role_live_read_wall_seconds"
+            ] = role_read_wall
+            timing_breakdown["bpf_live_role_read_seconds"] = role_read_wall
+            emit_progress(
+                "interface_role_live_read_completed",
+                generation_id=generation_id,
+                read_reason=str(read_reason),
+                ok=bool(live_interface_roles.get("ok") is True),
+                entry_count=len(list(live_interface_roles.get("entries") or [])),
+                wall_seconds=role_read_wall,
+            )
+        live_role_readable = bool(
+            live_interface_roles.get("ok") is True
+            and _command_succeeded(dict(live_interface_roles.get("command") or {}))
+        )
+        emit_progress(
+            "interface_role_completeness_started",
+            generation_id=generation_id,
+            read_reason=str(read_reason),
+            live_role_readable=live_role_readable,
+        )
+        role_completeness = _bpf_owned_interface_role_completeness(
+            {
+                "attached_interface_details": list(
+                    dict(compiled or {}).get("attached_interface_details") or []
+                ),
+                "prepare_steps": {
+                    "real_backend_prepare": {
+                        "steps": {"map_load": dict(map_load or {})},
+                    }
+                },
+                "live_interface_roles": live_interface_roles,
+            }
+        )
+        emit_progress(
+            "interface_role_completeness_completed",
+            generation_id=generation_id,
+            read_reason=str(read_reason),
+            ok=bool(role_completeness.get("ok") is True),
+            role_source=str(role_completeness.get("role_source") or ""),
+            expected_interface_count=int(
+                role_completeness.get("expected_interface_count") or 0
+            ),
+            loaded_interface_role_count=int(
+                role_completeness.get("loaded_interface_role_count") or 0
+            ),
+            incomplete_interface_count=int(
+                role_completeness.get("incomplete_interface_count") or 0
+            ),
+        )
+        return live_interface_roles, live_role_readable, role_completeness
+
     generation_id = int(proof.get("generation_id") or 0)
     retained_generation_id_set: set[int] = set()
     for generation in list(retain_inactive_generations or []):
@@ -4732,13 +5531,87 @@ def _bpf_owned_prepare_mpls_backend(
         "active_generation_flip_seconds": 0.0,
         "bpf_attach_seconds": 0.0,
         "bpf_live_role_read_seconds": 0.0,
+        "bpf_reused_attach_clsact_guard_seconds": 0.0,
+        "bpf_prepared_attach_capability_contract_seconds": 0.0,
+        "frozen_compiled_runtime_inputs_handoff_seconds": 0.0,
     }
     logical_compile_started_at = time.perf_counter()
-    try:
-        compiled = _bpf_owned_compile_mpls_maps_for_contexts(
-            contexts=contexts,
-            generation_id=generation_id,
+    frozen_inputs = dict(frozen_compiled_runtime_inputs or {})
+    frozen_inputs_check = _bpf_owned_frozen_compiled_runtime_inputs_check(
+        frozen_inputs,
+        expected_generation_id=generation_id if frozen_inputs else None,
+    )
+    if require_frozen_compiled_runtime_inputs and frozen_inputs_check.get("ready") is not True:
+        timing_breakdown["interface_discovery_logical_binding_wall_seconds"] = 0.0
+        timing_breakdown["total_wall_seconds"] = round(
+            time.perf_counter() - started_at,
+            6,
         )
+        return {
+            "ok": False,
+            "reason": "frozen_compiled_runtime_inputs_required:"
+            + str(frozen_inputs_check.get("reason") or "unknown"),
+            "classification": "FROZEN_COMPILED_RUNTIME_INPUTS_MISSING",
+            "fail_closed": True,
+            "blocked_stage": "bpf_lookahead_preactivation_preload_frozen_compiled_inputs",
+            "attached_interfaces": [],
+            "frozen_compiled_runtime_inputs_check": dict(frozen_inputs_check),
+            "compiled_runtime_inputs_source": "missing_required_frozen_handoff",
+            "wall_seconds": timing_breakdown["total_wall_seconds"],
+            "timing_breakdown": timing_breakdown,
+        }
+    try:
+        if frozen_inputs:
+            if frozen_inputs_check.get("ready") is not True:
+                timing_breakdown[
+                    "interface_discovery_logical_binding_wall_seconds"
+                ] = 0.0
+                timing_breakdown["total_wall_seconds"] = round(
+                    time.perf_counter() - started_at,
+                    6,
+                )
+                return {
+                    "ok": False,
+                    "reason": "frozen_compiled_runtime_inputs_invalid:"
+                    + str(frozen_inputs_check.get("reason") or "unknown"),
+                    "classification": "FROZEN_COMPILED_RUNTIME_INPUTS_INVALID",
+                    "fail_closed": True,
+                    "blocked_stage": (
+                        "bpf_lookahead_preactivation_preload_frozen_compiled_inputs"
+                    ),
+                    "attached_interfaces": [],
+                    "frozen_compiled_runtime_inputs_check": dict(frozen_inputs_check),
+                    "compiled_runtime_inputs_source": "invalid_frozen_handoff",
+                    "wall_seconds": timing_breakdown["total_wall_seconds"],
+                    "timing_breakdown": timing_breakdown,
+                }
+            compiled = dict(frozen_inputs)
+            timing_breakdown[
+                "frozen_compiled_runtime_inputs_handoff_seconds"
+            ] = round(time.perf_counter() - logical_compile_started_at, 6)
+            timing_breakdown["interface_discovery_logical_binding_wall_seconds"] = 0.0
+            emit_progress(
+                "frozen_compiled_runtime_inputs_consumed",
+                generation_id=generation_id,
+                map_counts=dict(frozen_inputs_check.get("map_counts") or {}),
+                source="queued_horizon_maintenance_frozen_manifest",
+            )
+        else:
+            compiled = _bpf_owned_compile_mpls_maps_for_contexts(
+                contexts=contexts,
+                generation_id=generation_id,
+                interface_ifindex_cache=interface_ifindex_cache,
+                interface_mac_cache=interface_mac_cache,
+            )
+            emit_progress(
+                "logical_map_compile_completed",
+                generation_id=generation_id,
+                context_count=len(contexts),
+                attached_interface_count=len(
+                    list(compiled.get("attached_interfaces") or [])
+                ),
+                map_counts=dict(compiled.get("compiled_mpls_map_counts") or {}),
+            )
     except Exception as exc:
         error = str(exc)
         active_binding_missing = (
@@ -4801,11 +5674,21 @@ def _bpf_owned_prepare_mpls_backend(
     try:
         resident_compiled: Dict[str, Any] | None = None
         future_interface_materialization: Dict[str, Any] | None = None
-        if resident_attach_contexts is not None:
+        if frozen_inputs:
+            timing_breakdown["interface_discovery_logical_binding_wall_seconds"] = 0.0
+        elif resident_attach_contexts is not None:
             resident_compiled = _bpf_owned_compile_mpls_maps_for_contexts(
                 contexts=resident_attach_contexts,
                 generation_id=generation_id,
                 offline=True,
+            )
+            emit_progress(
+                "resident_attach_compile_completed",
+                generation_id=generation_id,
+                resident_context_count=len(resident_attach_contexts),
+                resident_attach_interface_count=len(
+                    list(resident_compiled.get("attached_interfaces") or [])
+                ),
             )
             active_plan_refs = {
                 str(interface_ref)
@@ -4829,14 +5712,54 @@ def _bpf_owned_prepare_mpls_backend(
             timing_breakdown[
                 "future_interface_materialization_wall_seconds"
             ] = round(time.perf_counter() - materialization_started_at, 6)
-        compiled = _bpf_owned_merge_resident_attach_coverage(
-            compiled=compiled,
-            resident_compiled=resident_compiled,
-            future_interface_materialization=future_interface_materialization,
-        )
-        timing_breakdown["interface_discovery_logical_binding_wall_seconds"] = round(
-            time.perf_counter() - logical_compile_started_at,
-            6,
+        if not frozen_inputs:
+            compiled = _bpf_owned_merge_resident_attach_coverage(
+                compiled=compiled,
+                resident_compiled=resident_compiled,
+                future_interface_materialization=future_interface_materialization,
+            )
+        if base_generation_compiled_inputs and not frozen_inputs:
+            base_inputs = dict(base_generation_compiled_inputs or {})
+            base_generation_id = int(
+                dict(base_inputs.get("active_generation") or {}).get("value")
+                if dict(base_inputs.get("active_generation") or {}).get("value")
+                not in (None, "", "None")
+                else base_inputs.get("generation_id")
+                if base_inputs.get("generation_id") not in (None, "", "None")
+                else generation_id
+            )
+            compiled = _bpf_owned_planned_overlay_compiled_maps(
+                target_compiled=compiled,
+                base_compiled=base_inputs,
+                target_generation_id=generation_id,
+                base_generation_id=base_generation_id,
+            )
+            emit_progress(
+                "planned_overlay_delta_compiled",
+                generation_id=generation_id,
+                base_generation_id=base_generation_id,
+                overlay_manifest=dict(
+                    compiled.get("bpf_generation_overlay_manifest") or {}
+                ),
+            )
+        if not frozen_inputs:
+            timing_breakdown["interface_discovery_logical_binding_wall_seconds"] = round(
+                time.perf_counter() - logical_compile_started_at,
+                6,
+            )
+        emit_progress(
+            "resident_attach_coverage_merged",
+            generation_id=generation_id,
+            attach_scope_count=len(dict(compiled.get("attach_plan") or {})),
+            active_materialized_interface_count=len(
+                list(compiled.get("active_materialized_interfaces") or [])
+            ),
+            future_materialized_attach_eligible_interface_count=len(
+                list(
+                    compiled.get("future_materialized_attach_eligible_interfaces")
+                    or []
+                )
+            ),
         )
     except Exception as exc:
         return {
@@ -4921,12 +5844,20 @@ def _bpf_owned_prepare_mpls_backend(
 
     effective_attached_interfaces = list(compiled.get("attached_interfaces") or [])
     environment_started_at = time.perf_counter()
-    environment = collect_environment()
-    blockers = attach_blockers(environment)
-    timing_breakdown["bpf_environment_check_wall_seconds"] = round(
-        time.perf_counter() - environment_started_at,
-        6,
-    )
+    if preactivation_preload_only or preactivation_attach_prepare_only:
+        environment = {
+            "skipped": True,
+            "reason": "preactivation_uses_prepared_environment_contract",
+        }
+        blockers = []
+        timing_breakdown["bpf_environment_check_wall_seconds"] = 0.0
+    else:
+        environment = collect_environment()
+        blockers = attach_blockers(environment)
+        timing_breakdown["bpf_environment_check_wall_seconds"] = round(
+            time.perf_counter() - environment_started_at,
+            6,
+        )
     reuse_audit_started_at = time.perf_counter()
     attach_reuse = _bpf_owned_attach_reuse_plan(
         compiled=compiled,
@@ -4990,8 +5921,21 @@ def _bpf_owned_prepare_mpls_backend(
             compiled.get("resident_attach_coverage") or {}
         ),
         "attach_reuse": attach_reuse,
+        "frozen_compiled_runtime_inputs_check": dict(frozen_inputs_check),
+        "compiled_runtime_inputs_source": (
+            "queued_horizon_maintenance_frozen_manifest"
+            if frozen_inputs
+            else "runtime_compile"
+        ),
         "preactivation_preload_only": bool(preactivation_preload_only),
-        "runtime_apply_allowed": not bool(preactivation_preload_only),
+        "preactivation_attach_prepare_only": bool(
+            preactivation_attach_prepare_only
+        ),
+        "allow_role_capability_expansion": bool(allow_role_capability_expansion),
+        "runtime_apply_allowed": not (
+            bool(preactivation_preload_only)
+            or bool(preactivation_attach_prepare_only)
+        ),
         "retain_inactive_generations": list(retained_generation_ids),
         "steps": {},
         "timing_breakdown": timing_breakdown,
@@ -5006,6 +5950,19 @@ def _bpf_owned_prepare_mpls_backend(
             ),
         }
         report["attach_reuse"] = dict(attach_reuse)
+    if allow_role_capability_expansion and preactivation_attach_prepare_only:
+        attach_reuse = _bpf_owned_attach_reuse_with_role_capability_expansion(
+            attach_reuse
+        )
+        report["attach_reuse"] = dict(attach_reuse)
+        report["outcome_labels"] = list(
+            dict.fromkeys(
+                [
+                    *list(report.get("outcome_labels") or []),
+                    *list(attach_reuse.get("outcome_labels") or []),
+                ]
+            )
+        )
     if blockers:
         report["reason"] = "toolchain_or_privilege_blocked"
         report["wall_seconds"] = round(time.perf_counter() - started_at, 6)
@@ -5033,16 +5990,28 @@ def _bpf_owned_prepare_mpls_backend(
     effective_active_counts_for_capacity = dict(
         previous_counts_for_capacity or counts
     )
-    capacities = _bpf_mpls_generation_map_capacities(
-        current_counts=compile_capacity_counts,
-        active_counts=previous_counts_for_capacity,
-        prepared_generation_window_count=prepared_generation_window_count,
+    previous_capacities_for_capacity = dict(
+        previous_prepare_for_capacity.get("map_capacities")
+        or dict(reuse_attached_readiness or {}).get("map_capacities")
+        or {}
     )
+    if previous_capacities_for_capacity:
+        capacities = dict(previous_capacities_for_capacity)
+        capacity_source = "existing_pinned_bpf_map_schema"
+    else:
+        capacities = _bpf_mpls_generation_map_capacities(
+            current_counts=compile_capacity_counts,
+            active_counts=previous_counts_for_capacity,
+            prepared_generation_window_count=prepared_generation_window_count,
+        )
+        capacity_source = "computed_for_new_bpf_map_schema"
     report["map_capacities"] = dict(capacities)
     report["map_capacity_contract"] = {
         "schema_version": "skyseed-bpf-map-generation-capacity-source-v1",
         "generation_keyed_maps_require_active_plus_target_plus_slack": True,
         "bootstrap_reserves_target_sized_inactive_generation": True,
+        "capacity_source": capacity_source,
+        "reuse_existing_pinned_map_schema": bool(previous_capacities_for_capacity),
         "prepared_generation_window_count": int(prepared_generation_window_count or 1),
         "retain_inactive_generations": list(retained_generation_ids),
         "active_generation_counts": previous_counts_for_capacity,
@@ -5050,8 +6019,16 @@ def _bpf_owned_prepare_mpls_backend(
         "target_generation_counts": counts,
         "compile_capacity_generation_counts": compile_capacity_counts,
         "slack_entries": 16,
+        "previous_map_capacities": dict(previous_capacities_for_capacity),
         "capacities": dict(capacities),
     }
+    emit_progress(
+        "map_capacity_contract_ready",
+        generation_id=generation_id,
+        capacity_source=capacity_source,
+        prepared_generation_window_count=int(prepared_generation_window_count or 1),
+        capacities=dict(capacities),
+    )
 
     def map_reload_root_cause(map_load: Dict[str, Any]) -> Dict[str, Any]:
         first_failed = dict(map_load.get("first_failed_update") or {})
@@ -5171,9 +6148,71 @@ def _bpf_owned_prepare_mpls_backend(
         timing_breakdown["total_wall_seconds"] = float(report["wall_seconds"])
         return report
     if attach_reuse.get("reuse_eligible") is True:
-        reused_clsact_guard = _bpf_owned_reused_attach_clsact_guard(
-            attach_reuse=attach_reuse,
-            verify_clsact=verify_mpls_clsact,
+        guard_started_at = time.perf_counter()
+        prepared_attach_contract: Dict[str, Any] = {}
+        if (
+            preactivation_preload_only
+            and require_prepared_attach_capability_for_preactivation_preload
+        ):
+            contract_started_at = time.perf_counter()
+            prepared_attach_contract = _bpf_owned_prepared_attach_capability_contract(
+                reuse_attached_readiness or {}
+            )
+            timing_breakdown[
+                "bpf_prepared_attach_capability_contract_seconds"
+            ] = round(time.perf_counter() - contract_started_at, 6)
+            report["preactivation_preload_attach_capability_contract"] = dict(
+                prepared_attach_contract
+            )
+            if prepared_attach_contract.get("ok") is not True:
+                report["reason"] = (
+                    "bpf_lookahead_preload_prepared_attach_capability_missing:"
+                    + str(prepared_attach_contract.get("reason") or "unknown")
+                )
+                report["fail_closed"] = True
+                report["blocked_stage"] = (
+                    "bpf_lookahead_preactivation_preload_attach_capability"
+                )
+                report["delta_attach_count"] = 0
+                report["full_attach_count"] = 0
+                report["runtime_full_generation_reload_count"] = 0
+                report["runtime_apply_skipped"] = True
+                report["steps"]["reused_attach_clsact_guard"] = {
+                    "ok": False,
+                    "skipped": True,
+                    "reason": str(prepared_attach_contract.get("reason") or ""),
+                    "checked_interfaces": [],
+                    "missing_interfaces": [],
+                    "source": "prepared_attach_capability_contract",
+                }
+                report["wall_seconds"] = round(time.perf_counter() - started_at, 6)
+                timing_breakdown["total_wall_seconds"] = float(report["wall_seconds"])
+                timing_breakdown[
+                    "bpf_reused_attach_clsact_guard_seconds"
+                ] = round(time.perf_counter() - guard_started_at, 6)
+                return report
+            reused_clsact_guard = {
+                "ok": True,
+                "skipped": True,
+                "reason": "prepared_attach_capability_contract_reused",
+                "attach_reuse": attach_reuse,
+                "checked_interfaces": [],
+                "missing_interfaces": [],
+                "results": [],
+                "metrics": _bpf_clsact_lifecycle_metrics([]),
+                "source": "prepared_attach_capability_contract",
+                "prepared_attach_capability_contract": dict(
+                    prepared_attach_contract
+                ),
+            }
+        else:
+            reused_clsact_guard = _bpf_owned_reused_attach_clsact_guard(
+                attach_reuse=attach_reuse,
+                verify_clsact=verify_mpls_clsact,
+            )
+        timing_breakdown["bpf_reused_attach_clsact_guard_seconds"] = round(
+            time.perf_counter() - guard_started_at,
+            6,
         )
         report["steps"]["reused_attach_clsact_guard"] = {
             "ok": bool(reused_clsact_guard.get("ok")),
@@ -5184,6 +6223,10 @@ def _bpf_owned_prepare_mpls_backend(
             ),
             "missing_interfaces": list(
                 reused_clsact_guard.get("missing_interfaces") or []
+            ),
+            "source": str(reused_clsact_guard.get("source") or "live_clsact_guard"),
+            "prepared_attach_capability_contract": dict(
+                reused_clsact_guard.get("prepared_attach_capability_contract") or {}
             ),
             "results": list(reused_clsact_guard.get("results") or []),
         }
@@ -5375,6 +6418,37 @@ def _bpf_owned_prepare_mpls_backend(
                 "reason": "existing_tc_bpf_attach_reused",
                 "attached_interfaces": list(compiled.get("attached_interfaces") or []),
             }
+        if preactivation_attach_prepare_only:
+            report["steps"]["map_load"] = {
+                "skipped": True,
+                "reason": "preactivation_attach_prepare_only_no_map_writes",
+            }
+            report["ok"] = True
+            report["reason"] = ""
+            report["prepare_mode"] = "lookahead_preactivation_attach_prepare_only"
+            report["preactivation_attach_prepare_scheduled"] = True
+            report["runtime_apply_skipped"] = True
+            report["runtime_generation_loaded"] = False
+            report["active_generation_set"] = False
+            report["map_ready"] = False
+            report["loaded_runtime_generation_count"] = 0
+            report["active_generation_switch_count"] = 0
+            report["runtime_full_generation_reload_count"] = 0
+            report["compiled_runtime_inputs"] = _bpf_owned_compiled_runtime_inputs(
+                compiled
+            )
+            report["outcome_labels"] = list(
+                dict.fromkeys(
+                    [
+                        *list(report.get("outcome_labels") or []),
+                        "LOOKAHEAD_PREACTIVATION_ATTACH_CAPABILITY_PREPARED",
+                        "NO_FUTURE_MAP_WRITE_OR_ACTIVE_GENERATION_FLIP",
+                    ]
+                )
+            )
+            report["wall_seconds"] = round(time.perf_counter() - started_at, 6)
+            timing_breakdown["total_wall_seconds"] = float(report["wall_seconds"])
+            return report
         preactivation_preload = None
         if not delta_attach_plan:
             preload_started_at = time.perf_counter()
@@ -5383,6 +6457,9 @@ def _bpf_owned_prepare_mpls_backend(
                 "bpf_runtime_update_phase": "preactivation_preload",
                 "defer_active_generation_flip": True,
                 "retain_inactive_generations": list(retained_generation_ids),
+                "skip_interface_role_map_updates": True,
+                "bpf_map_write_manifest_only": True,
+                "batch_map_write_required": True,
             }
             preactivation_preload = load_mpls_maps(compiled_for_preload)
             report["steps"]["preactivation_preload"] = preactivation_preload
@@ -5394,18 +6471,28 @@ def _bpf_owned_prepare_mpls_backend(
                 dict(preactivation_preload or {}).get("map_write_update_count") or 0
             )
             if preactivation_preload.get("ok") is not True:
-                report["reason"] = str(
-                    preactivation_preload.get("first_failed_update", {}).get("reason")
-                    or preactivation_preload.get("reason")
-                    or "RUNTIME_PRELOAD_VISIBILITY_PROOF_FAILED"
+                first_failed_update = dict(
+                    preactivation_preload.get("first_failed_update") or {}
                 )
+                report["reason"] = str(
+                    first_failed_update.get("reason")
+                    or preactivation_preload.get("reason")
+                    or preactivation_preload.get("failed_operation")
+                    or preactivation_preload.get("failed_map")
+                    or "bpf_preactivation_preload_map_write_failed"
+                )
+                if first_failed_update:
+                    report["first_failed_update"] = first_failed_update
+                for failure_key in ("failed_map", "failed_operation", "failed_generation"):
+                    if preactivation_preload.get(failure_key) not in (None, "", "None"):
+                        report[failure_key] = preactivation_preload.get(failure_key)
                 report["fail_closed"] = True
                 report["blocked_stage"] = "bpf_preactivation_preload"
                 report["outcome_labels"] = list(
                     dict.fromkeys(
                         [
                             *list(report.get("outcome_labels") or []),
-                            "RUNTIME_PRELOAD_VISIBILITY_PROOF_FAILED",
+                            "BPF_PREACTIVATION_PRELOAD_FAILED",
                         ]
                     )
                 )
@@ -5428,8 +6515,58 @@ def _bpf_owned_prepare_mpls_backend(
                 "map_write_update_count": int(
                     preactivation_preload.get("map_write_update_count") or 0
                 ),
+                "expected_data_map_write_update_count": int(
+                    preactivation_preload.get("expected_data_map_write_update_count")
+                    or 0
+                ),
                 "active_generation_update_count": int(
                     preactivation_preload.get("active_generation_update_count") or 0
+                ),
+                "interface_role_map_updates_skipped": bool(
+                    preactivation_preload.get("interface_role_map_updates_skipped")
+                ),
+                "interface_role_map_skipped_update_count": int(
+                    preactivation_preload.get(
+                        "interface_role_map_skipped_update_count"
+                    )
+                    or 0
+                ),
+                "interface_role_map_update_skip_reason": str(
+                    preactivation_preload.get(
+                        "interface_role_map_update_skip_reason"
+                    )
+                    or ""
+                ),
+                "parallel_map_write_enabled": bool(
+                    preactivation_preload.get("parallel_map_write_enabled")
+                ),
+                "parallel_map_write_worker_count": int(
+                    preactivation_preload.get("parallel_map_write_worker_count")
+                    or 0
+                ),
+                "parallel_map_write_scheduled_update_count": int(
+                    preactivation_preload.get(
+                        "parallel_map_write_scheduled_update_count"
+                    )
+                    or 0
+                ),
+                "manifest_only_loader": bool(
+                    preactivation_preload.get("manifest_only_loader")
+                ),
+                "manifest_only_map_write_used": bool(
+                    preactivation_preload.get("manifest_only_map_write_used")
+                ),
+                "batch_map_write_required": bool(
+                    preactivation_preload.get("batch_map_write_required")
+                ),
+                "batch_map_write_used": bool(
+                    preactivation_preload.get("batch_map_write_used")
+                ),
+                "batch_map_write_update_count": int(
+                    preactivation_preload.get("batch_map_write_update_count") or 0
+                ),
+                "actual_data_write_count": int(
+                    preactivation_preload.get("actual_data_write_count") or 0
                 ),
                 "outcome_labels": list(
                     preactivation_preload.get("outcome_labels") or []
@@ -5477,15 +6614,54 @@ def _bpf_owned_prepare_mpls_backend(
         }
         map_load = load_mpls_maps(compiled_for_map_load)
         report["steps"]["map_load"] = map_load
+        generation_write_cost_audit = dict(
+            map_load.get("generation_write_cost_audit") or {}
+        )
+        report["generation_write_cost_audit"] = generation_write_cost_audit
         if preactivation_preload is not None:
             report["preactivation_preload_scheduled"] = True
             report["preactivation_preload"] = {
                 "ok": bool(preactivation_preload.get("ok")),
+                "generation_write_cost_audit": dict(
+                    preactivation_preload.get("generation_write_cost_audit") or {}
+                ),
                 "map_write_update_count": int(
                     preactivation_preload.get("map_write_update_count") or 0
                 ),
+                "expected_data_map_write_update_count": int(
+                    preactivation_preload.get("expected_data_map_write_update_count")
+                    or 0
+                ),
                 "active_generation_update_count": int(
                     preactivation_preload.get("active_generation_update_count") or 0
+                ),
+                "interface_role_map_updates_skipped": bool(
+                    preactivation_preload.get("interface_role_map_updates_skipped")
+                ),
+                "interface_role_map_skipped_update_count": int(
+                    preactivation_preload.get(
+                        "interface_role_map_skipped_update_count"
+                    )
+                    or 0
+                ),
+                "interface_role_map_update_skip_reason": str(
+                    preactivation_preload.get(
+                        "interface_role_map_update_skip_reason"
+                    )
+                    or ""
+                ),
+                "parallel_map_write_enabled": bool(
+                    preactivation_preload.get("parallel_map_write_enabled")
+                ),
+                "parallel_map_write_worker_count": int(
+                    preactivation_preload.get("parallel_map_write_worker_count")
+                    or 0
+                ),
+                "parallel_map_write_scheduled_update_count": int(
+                    preactivation_preload.get(
+                        "parallel_map_write_scheduled_update_count"
+                    )
+                    or 0
                 ),
                 "outcome_labels": list(
                     preactivation_preload.get("outcome_labels") or []
@@ -5534,6 +6710,9 @@ def _bpf_owned_prepare_mpls_backend(
         timing_breakdown["active_generation_flip_seconds"] = float(
             dict(map_load or {}).get("active_generation_flip_wall_seconds") or 0.0
         )
+        timing_breakdown["bpf_generation_write_audit_seconds"] = float(
+            generation_write_cost_audit.get("audit_wall_seconds") or 0.0
+        )
         if map_load.get("ok"):
             if not delta_attach_plan:
                 report["steps"]["live_interface_roles_after_map_load"] = {
@@ -5571,36 +6750,15 @@ def _bpf_owned_prepare_mpls_backend(
                 report["wall_seconds"] = round(time.perf_counter() - started_at, 6)
                 timing_breakdown["total_wall_seconds"] = float(report["wall_seconds"])
                 return report
-            live_role_started_at = time.perf_counter()
-            live_interface_roles = _read_bpf_owned_interface_roles()
-            report["steps"]["live_interface_roles_after_map_load"] = (
-                live_interface_roles
-            )
-            timing_breakdown["bpf_interface_role_live_read_wall_seconds"] = round(
-                time.perf_counter() - live_role_started_at,
-                6,
-            )
-            timing_breakdown["bpf_live_role_read_seconds"] = timing_breakdown[
-                "bpf_interface_role_live_read_wall_seconds"
-            ]
-            live_role_readable = bool(
-                live_interface_roles.get("ok") is True
-                and _command_succeeded(
-                    dict(live_interface_roles.get("command") or {})
+            live_interface_roles, live_role_readable, role_completeness = (
+                interface_role_completeness_after_map_load(
+                    compiled=compiled,
+                    map_load=map_load,
+                    read_reason="reuse_attached_map_load",
                 )
             )
-            role_completeness = _bpf_owned_interface_role_completeness(
-                {
-                    "attached_interface_details": list(
-                        compiled.get("attached_interface_details") or []
-                    ),
-                    "prepare_steps": {
-                        "real_backend_prepare": {
-                            "steps": {"map_load": map_load},
-                        }
-                    },
-                    "live_interface_roles": live_interface_roles,
-                }
+            report["steps"]["live_interface_roles_after_map_load"] = (
+                live_interface_roles
             )
             report["steps"]["interface_role_completeness_after_map_load"] = (
                 role_completeness
@@ -5680,6 +6838,15 @@ def _bpf_owned_prepare_mpls_backend(
             if not command_ok(report["steps"]["compile"]):
                 report["reason"] = "compile_failed"
                 return report
+            emit_progress(
+                "bpf_object_ready",
+                generation_id=generation_id,
+                cache_hit=bool(
+                    dict(report["steps"]["compile"].get("cache") or {}).get(
+                        "cache_hit"
+                    )
+                ),
+            )
             attach_reuse_reason = str(
                 attach_reuse.get("reason")
                 or attach_reuse.get("reuse_rejected_reason")
@@ -5721,6 +6888,14 @@ def _bpf_owned_prepare_mpls_backend(
                 time.perf_counter() - cleanup_started_at,
                 6,
             )
+            emit_progress(
+                "cleanup_before_attach_completed",
+                generation_id=generation_id,
+                attach_interface_count=len(effective_attached_interfaces),
+                cleanup_wall_seconds=timing_breakdown[
+                    "tc_qdisc_cleanup_before_attach_wall_seconds"
+                ],
+            )
             attach_started_at = time.perf_counter()
             attach_results: List[Dict[str, Any]] = []
             attach_plan = dict(compiled.get("attach_plan") or {})
@@ -5729,7 +6904,11 @@ def _bpf_owned_prepare_mpls_backend(
                 for detail in list(compiled.get("attached_interface_details") or [])
             }
             control_plane_bypass_by_interface: Dict[str, List[str]] = {}
-            for interface_ref, directions in attach_plan.items():
+            attach_total = len(attach_plan)
+            for attach_index, (interface_ref, directions) in enumerate(
+                attach_plan.items(),
+                start=1,
+            ):
                 detail = dict(attached_details_by_ref.get(str(interface_ref)) or {})
                 expected_roles = [
                     str(role)
@@ -5753,6 +6932,14 @@ def _bpf_owned_prepare_mpls_backend(
                     )
                 )
                 attached.append(str(interface_ref))
+                if attach_index == 1 or attach_index == attach_total or attach_index % 16 == 0:
+                    emit_progress(
+                        "tc_bpf_attach_progress",
+                        generation_id=generation_id,
+                        completed_attach_interface_count=attach_index,
+                        total_attach_interface_count=attach_total,
+                        current_interface_ref=str(interface_ref),
+                    )
             report["steps"]["attach"] = attach_results
             report["clsact_lifecycle_metrics"] = _bpf_clsact_lifecycle_metrics(
                 attach_results
@@ -5794,13 +6981,29 @@ def _bpf_owned_prepare_mpls_backend(
             ):
                 report["reason"] = "tc_bpf_mpls_attach_failed"
                 return report
+            emit_progress(
+                "tc_bpf_attach_completed",
+                generation_id=generation_id,
+                attach_interface_count=attach_total,
+                attach_result_count=len(attach_results),
+                attach_wall_seconds=timing_breakdown["bpf_attach_seconds"],
+            )
             map_load_started_at = time.perf_counter()
             compiled_for_map_load = {
                 **dict(compiled),
                 "bpf_runtime_update_phase": "bootstrap",
             }
+            emit_progress(
+                "map_load_started",
+                generation_id=generation_id,
+                expected_map_counts=dict(compiled.get("compiled_mpls_map_counts") or {}),
+            )
             map_load = load_mpls_maps(compiled_for_map_load)
             report["steps"]["map_load"] = map_load
+            generation_write_cost_audit = dict(
+                map_load.get("generation_write_cost_audit") or {}
+            )
+            report["generation_write_cost_audit"] = generation_write_cost_audit
             map_load_total_wall_seconds = round(
                 time.perf_counter() - map_load_started_at,
                 6,
@@ -5836,39 +7039,32 @@ def _bpf_owned_prepare_mpls_backend(
             timing_breakdown["active_generation_flip_seconds"] = float(
                 dict(map_load or {}).get("active_generation_flip_wall_seconds") or 0.0
             )
+            timing_breakdown["bpf_generation_write_audit_seconds"] = float(
+                generation_write_cost_audit.get("audit_wall_seconds") or 0.0
+            )
             if not map_load.get("ok"):
                 report["reason"] = "bpf_mpls_map_load_failed"
                 return report
-            live_role_started_at = time.perf_counter()
-            live_interface_roles = _read_bpf_owned_interface_roles()
-            report["steps"]["live_interface_roles_after_map_load"] = (
-                live_interface_roles
+            emit_progress(
+                "map_load_completed",
+                generation_id=generation_id,
+                total_update_count=int(map_load.get("total_update_count") or 0),
+                map_write_wall_seconds=float(
+                    map_load.get("map_write_wall_seconds") or 0.0
+                ),
+                active_generation_update_count=int(
+                    map_load.get("active_generation_update_count") or 0
+                ),
             )
-            timing_breakdown["bpf_interface_role_live_read_wall_seconds"] = round(
-                time.perf_counter() - live_role_started_at,
-                6,
-            )
-            timing_breakdown["bpf_live_role_read_seconds"] = timing_breakdown[
-                "bpf_interface_role_live_read_wall_seconds"
-            ]
-            live_role_readable = bool(
-                live_interface_roles.get("ok") is True
-                and _command_succeeded(
-                    dict(live_interface_roles.get("command") or {})
+            live_interface_roles, live_role_readable, role_completeness = (
+                interface_role_completeness_after_map_load(
+                    compiled=compiled,
+                    map_load=map_load,
+                    read_reason="full_attach_map_load",
                 )
             )
-            role_completeness = _bpf_owned_interface_role_completeness(
-                {
-                    "attached_interface_details": list(
-                        compiled.get("attached_interface_details") or []
-                    ),
-                    "prepare_steps": {
-                        "real_backend_prepare": {
-                            "steps": {"map_load": map_load},
-                        }
-                    },
-                    "live_interface_roles": live_interface_roles,
-                }
+            report["steps"]["live_interface_roles_after_map_load"] = (
+                live_interface_roles
             )
             report["steps"]["interface_role_completeness_after_map_load"] = (
                 role_completeness
@@ -5891,6 +7087,9 @@ def _bpf_owned_prepare_mpls_backend(
             report["loaded_gz_fec_count"] = int(proof.get("map_entry_count") or 0)
             report["loaded_dataplane_route_count"] = 0
             report["loaded_dataplane_parameter_entry_count"] = 0
+            report["compiled_runtime_inputs"] = _bpf_owned_compiled_runtime_inputs(
+                compiled
+            )
             report["loaded_classifier_count"] = int(
                 map_load.get("loaded_classifier_count") or 0
             )
@@ -5932,6 +7131,7 @@ def _prepare_bpf_owned_readiness(
     fail_closed_on_reuse_miss: bool = False,
     retain_inactive_generations: Optional[Sequence[int]] = None,
     prepared_generation_window_count: int = 1,
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
     previous_readiness_mismatch_reason = ""
     if bpf_owned_readiness:
@@ -5970,11 +7170,26 @@ def _prepare_bpf_owned_readiness(
         )
         if checked.get("ready") is True:
             prepare_steps = dict(checked.get("prepare_steps") or {})
+            existing_prepare_evidence = _bpf_owned_existing_readiness_prepare_evidence(
+                checked
+            )
             prepare_steps["real_backend_prepare"] = (
-                _bpf_owned_existing_readiness_prepare_evidence(checked)
+                existing_prepare_evidence
+            )
+            active_compiled_inputs = dict(
+                checked.get("active_generation_compiled_runtime_inputs")
+                or checked.get("compiled_runtime_inputs")
+                or existing_prepare_evidence.get("compiled_runtime_inputs")
+                or {}
             )
             return {
                 **checked,
+                "active_generation_compiled_runtime_inputs": active_compiled_inputs,
+                "compiled_runtime_inputs": dict(
+                    checked.get("compiled_runtime_inputs")
+                    or active_compiled_inputs
+                    or {}
+                ),
                 "prepare_steps": prepare_steps,
             }
         previous_readiness_mismatch_reason = str(
@@ -6043,17 +7258,6 @@ def _prepare_bpf_owned_readiness(
         topology_path=topology_path,
         contexts=tuple(contexts),
     )
-    if not host_interfaces:
-        return {
-            **proof,
-            "ready": False,
-            "ok": False,
-            "reason": "bpf_owned_no_host_attach_interfaces",
-            "fallback_reason": "bpf_owned_no_host_attach_interfaces",
-            "fallback_to_linux": True,
-            "attached_interfaces": [],
-            "logical_attached_interfaces": list(proof.get("attached_interfaces") or []),
-        }
     prepare = _bpf_owned_prepare_mpls_backend(
         proof=proof,
         contexts=contexts,
@@ -6063,6 +7267,7 @@ def _prepare_bpf_owned_readiness(
         fail_closed_on_reuse_miss=fail_closed_on_reuse_miss,
         retain_inactive_generations=retain_inactive_generations,
         prepared_generation_window_count=prepared_generation_window_count,
+        progress_callback=progress_callback,
     )
     mpls_counts = dict(prepare.get("compiled_mpls_map_counts") or {})
     prepared = {
@@ -6072,7 +7277,7 @@ def _prepare_bpf_owned_readiness(
         "reason": str(prepare.get("reason") or ""),
         "fallback_reason": "" if prepare.get("ok") else str(prepare.get("reason") or "bpf_prepare_failed"),
         "fallback_to_linux": prepare.get("ok") is not True,
-        "attached_interfaces": list(prepare.get("attached_interfaces") or host_interfaces),
+        "attached_interfaces": list(prepare.get("attached_interfaces") or []),
         "logical_attached_interfaces": list(proof.get("attached_interfaces") or []),
         "missing_interface_ref": str(prepare.get("missing_interface_ref") or ""),
         "missing_binding_context": dict(prepare.get("missing_binding_context") or {}),
@@ -6098,6 +7303,12 @@ def _prepare_bpf_owned_readiness(
         "mpls_label_allocation": dict(prepare.get("label_allocation") or {}),
         "resolved_mpls_flow_entries": list(
             prepare.get("resolved_mpls_flow_entries") or []
+        ),
+        "compiled_runtime_inputs": dict(prepare.get("compiled_runtime_inputs") or {}),
+        "active_generation_compiled_runtime_inputs": dict(
+            prepare.get("active_generation_compiled_runtime_inputs")
+            or prepare.get("compiled_runtime_inputs")
+            or {}
         ),
         "intermediate_core_lookup_uses_dst_ip": False,
         "attached_interface_details": list(
@@ -6138,7 +7349,9 @@ def _prepare_bpf_owned_readiness(
             "attach": {
                 "ok": bool(prepare.get("ok")),
                 "attached_interfaces": list(
-                    prepare.get("attached_interfaces") or host_interfaces
+                    prepare.get("attached_interfaces")
+                    or proof.get("attached_interfaces")
+                    or []
                 ),
                 "results": list(prepare.get("steps", {}).get("attach") or []),
             },
@@ -6177,6 +7390,13 @@ def _prepare_bpf_owned_preactivation_preload(
     bpf_owned_readiness: Optional[Dict[str, Any]],
     retain_inactive_generations: Optional[Sequence[int]] = None,
     prepared_generation_window_count: int = 1,
+    base_generation_compiled_inputs: Optional[Mapping[str, Any]] = None,
+    frozen_compiled_runtime_inputs: Optional[Mapping[str, Any]] = None,
+    require_frozen_compiled_runtime_inputs: bool = False,
+    interface_ifindex_cache: Optional[MutableMapping[str, int]] = None,
+    interface_mac_cache: Optional[MutableMapping[str, str]] = None,
+    require_prepared_attach_capability: bool = False,
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
     proof = _derive_bpf_owned_readiness_proof(
         runtime_update_plan=runtime_update_plan,
@@ -6194,35 +7414,15 @@ def _prepare_bpf_owned_preactivation_preload(
             "fail_closed": True,
             "blocked_stage": "bpf_lookahead_preactivation_preload_intent",
         }
-    host_interfaces = _bpf_owned_host_interfaces_for_contexts(
-        topology_path=topology_path,
-        contexts=tuple(contexts),
+    frozen_inputs = dict(frozen_compiled_runtime_inputs or {})
+    host_interfaces = (
+        list(frozen_inputs.get("attached_interfaces") or [])
+        if frozen_inputs
+        else _bpf_owned_host_interfaces_for_contexts(
+            topology_path=topology_path,
+            contexts=tuple(contexts),
+        )
     )
-    if not host_interfaces:
-        return {
-            **proof,
-            "ready": False,
-            "ok": False,
-            "reason": "bpf_lookahead_preload_no_host_attach_interfaces",
-            "fallback_reason": "bpf_lookahead_preload_no_host_attach_interfaces",
-            "fallback_to_linux": False,
-            "fail_closed": True,
-            "blocked_stage": "bpf_lookahead_preactivation_preload_host_interfaces",
-            "preactivation_preload_only": True,
-            "inactive_generation_written": False,
-            "active_generation_flip_skipped": True,
-            "runtime_apply_skipped": True,
-            "attached_interfaces": [],
-            "logical_attached_interfaces": list(proof.get("attached_interfaces") or []),
-            "prepare_steps": {
-                **dict(proof.get("prepare_steps") or {}),
-                "real_backend_prepare": {
-                    "ok": False,
-                    "reason": "bpf_lookahead_preload_no_host_attach_interfaces",
-                    "preactivation_preload_only": True,
-                },
-            },
-        }
     prepare = _bpf_owned_prepare_mpls_backend(
         proof=proof,
         contexts=contexts,
@@ -6232,6 +7432,15 @@ def _prepare_bpf_owned_preactivation_preload(
         preactivation_preload_only=True,
         retain_inactive_generations=retain_inactive_generations,
         prepared_generation_window_count=prepared_generation_window_count,
+        base_generation_compiled_inputs=base_generation_compiled_inputs,
+        frozen_compiled_runtime_inputs=frozen_inputs or None,
+        require_frozen_compiled_runtime_inputs=require_frozen_compiled_runtime_inputs,
+        interface_ifindex_cache=interface_ifindex_cache,
+        interface_mac_cache=interface_mac_cache,
+        require_prepared_attach_capability_for_preactivation_preload=(
+            require_prepared_attach_capability
+        ),
+        progress_callback=progress_callback,
     )
     preactivation_preload = dict(prepare.get("preactivation_preload") or {})
     attach_reuse = dict(prepare.get("attach_reuse") or {})
@@ -6293,6 +7502,15 @@ def _prepare_bpf_owned_preactivation_preload(
         ),
         "mpls_map_entry_counts": dict(prepare.get("compiled_mpls_map_counts") or {}),
         "preactivation_preload": preactivation_preload,
+        "preactivation_preload_attach_capability_contract": dict(
+            prepare.get("preactivation_preload_attach_capability_contract") or {}
+        ),
+        "frozen_compiled_runtime_inputs_check": dict(
+            prepare.get("frozen_compiled_runtime_inputs_check") or {}
+        ),
+        "compiled_runtime_inputs_source": str(
+            prepare.get("compiled_runtime_inputs_source") or ""
+        ),
         "compiled_runtime_inputs": dict(
             prepare.get("compiled_runtime_inputs") or {}
         ),
@@ -6307,6 +7525,256 @@ def _prepare_bpf_owned_preactivation_preload(
         "runtime_generation_loaded": False,
         "active_generation_set": False,
         "map_ready": False,
+        "real_backend_prepared": bool(prepare.get("ok")),
+        "linux_gz_fallback_enabled": False,
+        "eligible_core_fallback_to_linux": 0,
+        "outcome_labels": list(prepare.get("outcome_labels") or []),
+    }
+
+
+def _audit_bpf_owned_preactivation_preload_attach_reuse(
+    *,
+    runtime_update_plan: RuntimeUpdatePlan,
+    topology_path: Path,
+    contexts: Sequence[DirectGatewayExperimentContext],
+    bpf_owned_readiness: Optional[Dict[str, Any]],
+    base_generation_compiled_inputs: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    proof = _derive_bpf_owned_readiness_proof(
+        runtime_update_plan=runtime_update_plan,
+    )
+    if proof.get("logical_intent_ready") is not True:
+        return {
+            **proof,
+            "ok": False,
+            "reason": str(proof.get("reason") or "bpf_owned_intent_not_ready"),
+            "fail_closed": True,
+            "blocked_stage": "bpf_lookahead_preactivation_preload_intent",
+            "preactivation_preload_attach_reuse_audit_only": True,
+            "runtime_apply_skipped": True,
+            "runtime_attach_allowed": False,
+            "active_generation_set": False,
+            "map_ready": False,
+        }
+    generation_id = int(proof.get("generation_id") or 0)
+    try:
+        compiled = _bpf_owned_compile_mpls_maps_for_contexts(
+            contexts=contexts,
+            generation_id=generation_id,
+        )
+        if base_generation_compiled_inputs:
+            base_inputs = dict(base_generation_compiled_inputs or {})
+            base_generation_id = int(
+                dict(base_inputs.get("active_generation") or {}).get("value")
+                if dict(base_inputs.get("active_generation") or {}).get("value")
+                not in (None, "", "None")
+                else base_inputs.get("generation_id")
+                if base_inputs.get("generation_id") not in (None, "", "None")
+                else generation_id
+            )
+            compiled = _bpf_owned_planned_overlay_compiled_maps(
+                target_compiled=compiled,
+                base_compiled=base_inputs,
+                target_generation_id=generation_id,
+                base_generation_id=base_generation_id,
+            )
+    except Exception as exc:
+        return {
+            **proof,
+            "ok": False,
+            "reason": "bpf_mpls_compile_plan_failed",
+            "error": str(exc),
+            "fail_closed": True,
+            "blocked_stage": "bpf_lookahead_preactivation_preload_compile",
+            "preactivation_preload_attach_reuse_audit_only": True,
+            "runtime_apply_skipped": True,
+            "runtime_attach_allowed": False,
+            "active_generation_set": False,
+            "map_ready": False,
+        }
+    attach_reuse = _bpf_owned_attach_reuse_plan(
+        compiled=compiled,
+        previous_readiness=bpf_owned_readiness,
+    )
+    if attach_reuse.get("reuse_eligible") is not True:
+        reason = (
+            "operational_clean_bpf_attach_reuse_not_eligible:"
+            + str(
+                attach_reuse.get("reuse_rejected_reason")
+                or attach_reuse.get("reason")
+                or "unknown"
+            )
+        )
+        return {
+            **proof,
+            "ok": False,
+            "reason": reason,
+            "fail_closed": True,
+            "blocked_stage": "bpf_lookahead_preactivation_preload_attach_reuse_audit",
+            "preactivation_preload_attach_reuse_audit_only": True,
+            "runtime_apply_skipped": True,
+            "runtime_attach_allowed": False,
+            "active_generation_set": False,
+            "map_ready": False,
+            "attach_reuse": attach_reuse,
+            "delta_attach_count": 0,
+            "full_attach_count": 0,
+            "runtime_full_generation_reload_count": 0,
+        }
+    delta_attach_plan = dict(attach_reuse.get("delta_attach_plan") or {})
+    if delta_attach_plan:
+        return {
+            **proof,
+            "ok": False,
+            "reason": "bpf_lookahead_preload_delta_attach_required",
+            "fail_closed": True,
+            "blocked_stage": "bpf_lookahead_preactivation_preload_delta_attach_audit",
+            "preactivation_preload_attach_reuse_audit_only": True,
+            "runtime_apply_skipped": True,
+            "runtime_attach_allowed": False,
+            "active_generation_set": False,
+            "map_ready": False,
+            "attach_reuse": attach_reuse,
+            "delta_attach_count": 0,
+            "full_attach_count": 0,
+            "runtime_full_generation_reload_count": 0,
+        }
+    return {
+        **proof,
+        "ok": True,
+        "reason": "",
+        "fail_closed": False,
+        "blocked_stage": "",
+        "preactivation_preload_attach_reuse_audit_only": True,
+        "runtime_apply_skipped": True,
+        "runtime_attach_allowed": False,
+        "active_generation_set": False,
+        "map_ready": False,
+        "attach_reuse": attach_reuse,
+        "delta_attach_count": 0,
+        "full_attach_count": 0,
+        "runtime_full_generation_reload_count": 0,
+        "compiled_mpls_map_counts": dict(compiled.get("compiled_mpls_map_counts") or {}),
+    }
+
+
+def _prepare_bpf_owned_preactivation_attach_capability(
+    *,
+    runtime_update_plan: RuntimeUpdatePlan,
+    topology_path: Path,
+    contexts: Sequence[DirectGatewayExperimentContext],
+    resident_attach_contexts: Sequence[DirectGatewayExperimentContext],
+    bpf_owned_readiness: Optional[Dict[str, Any]],
+    retain_inactive_generations: Optional[Sequence[int]] = None,
+    prepared_generation_window_count: int = 1,
+) -> Dict[str, Any]:
+    proof = _derive_bpf_owned_readiness_proof(
+        runtime_update_plan=runtime_update_plan,
+    )
+    if proof.get("logical_intent_ready") is not True:
+        return {
+            **proof,
+            "ready": False,
+            "ok": False,
+            "reason": str(proof.get("reason") or "bpf_owned_intent_not_ready"),
+            "preactivation_attach_prepare_only": True,
+        }
+    host_interfaces = _bpf_owned_host_interfaces_for_contexts(
+        topology_path=topology_path,
+        contexts=tuple(contexts),
+    )
+    if not host_interfaces:
+        return {
+            **proof,
+            "ready": False,
+            "ok": False,
+            "reason": "bpf_preactivation_attach_prepare_no_host_interfaces",
+            "preactivation_attach_prepare_only": True,
+        }
+    prepare = _bpf_owned_prepare_mpls_backend(
+        proof=proof,
+        contexts=contexts,
+        topology_path=topology_path,
+        resident_attach_contexts=resident_attach_contexts,
+        reuse_attached_readiness=bpf_owned_readiness,
+        fail_closed_on_reuse_miss=True,
+        preactivation_attach_prepare_only=True,
+        allow_role_capability_expansion=True,
+        retain_inactive_generations=retain_inactive_generations,
+        prepared_generation_window_count=prepared_generation_window_count,
+    )
+    attach_reuse = dict(prepare.get("attach_reuse") or {})
+    guard_source = str(
+        dict(dict(prepare.get("steps") or {}).get("reused_attach_clsact_guard") or {}).get(
+            "source"
+        )
+        or ""
+    )
+    return {
+        **proof,
+        "ready": False,
+        "ok": bool(prepare.get("ok")),
+        "reason": str(prepare.get("reason") or ""),
+        "fallback_reason": (
+            ""
+            if prepare.get("ok")
+            else str(prepare.get("reason") or "bpf_preactivation_attach_prepare_failed")
+        ),
+        "fallback_to_linux": False,
+        "fail_closed": prepare.get("ok") is not True or bool(prepare.get("fail_closed")),
+        "blocked_stage": str(prepare.get("blocked_stage") or ""),
+        "preactivation_attach_prepare_only": True,
+        "preactivation_attach_prepare_scheduled": bool(
+            prepare.get("preactivation_attach_prepare_scheduled")
+        ),
+        "runtime_apply_skipped": True,
+        "inactive_generation_written": False,
+        "active_generation_flip_skipped": True,
+        "runtime_generation_loaded": False,
+        "active_generation_set": False,
+        "map_ready": False,
+        "attach_capability_prepare_inputs_source": (
+            "maintenance_prepared_horizon_runtime_contexts"
+        ),
+        "attach_capability_prepare_physical_check_source": (
+            guard_source or "live_clsact_guard"
+        ),
+        "preload_compiled_runtime_inputs_source_required": (
+            "queued_horizon_maintenance_frozen_manifest"
+        ),
+        "delta_attach_count": int(prepare.get("delta_attach_count") or 0),
+        "full_attach_count": int(prepare.get("full_attach_count") or 0),
+        "runtime_full_generation_reload_count": int(
+            prepare.get("runtime_full_generation_reload_count") or 0
+        ),
+        "attach_reuse": attach_reuse,
+        "required_interface_role_union_count": int(
+            attach_reuse.get("required_interface_role_union_count") or 0
+        ),
+        "prepared_bpf_attach_capability_count": int(
+            attach_reuse.get("prepared_bpf_attach_capability_count") or 0
+        ),
+        "attach_reuse_eligible_count": int(
+            attach_reuse.get("attach_reuse_eligible_count") or 0
+        ),
+        "attach_reuse_ineligible_count": int(
+            attach_reuse.get("attach_reuse_ineligible_count") or 0
+        ),
+        "runtime_attach_allowed": False,
+        "attached_interfaces": list(prepare.get("attached_interfaces") or host_interfaces),
+        "logical_attached_interfaces": list(proof.get("attached_interfaces") or []),
+        "attached_interface_details": list(
+            prepare.get("attached_interface_details") or []
+        ),
+        "attach_plan": dict(prepare.get("attach_plan") or {}),
+        "compiled_runtime_inputs": dict(
+            prepare.get("compiled_runtime_inputs") or {}
+        ),
+        "retain_inactive_generations": list(retain_inactive_generations or []),
+        "prepare_steps": {
+            **dict(proof.get("prepare_steps") or {}),
+            "preactivation_attach_prepare": prepare,
+        },
         "real_backend_prepared": bool(prepare.get("ok")),
         "linux_gz_fallback_enabled": False,
         "eligible_core_fallback_to_linux": 0,
@@ -7660,6 +9128,17 @@ def _derive_bpf_owned_readiness_proof(
 ) -> Dict[str, Any]:
     intent = _bpf_owned_intent_payload(runtime_update_plan)
     gz_intent = intent["gz_fec_intent"]
+    target_snapshot = dict(runtime_update_plan.target_snapshot or {})
+    planner = dict(runtime_update_plan.planner or {})
+    resident_attach_budget = dict(
+        target_snapshot.get("resident_attach_coverage_budget")
+        or target_snapshot.get("bpf_resident_attach_coverage_budget")
+        or target_snapshot.get("bpf_attach_budget")
+        or planner.get("bpf_resident_attach_coverage_budget")
+        or planner.get("resident_attach_coverage_budget")
+        or planner.get("bpf_attach_budget")
+        or {}
+    )
     generation_id, generation_source = _bpf_owned_runtime_generation_id(
         runtime_update_plan
     )
@@ -7768,6 +9247,8 @@ def _derive_bpf_owned_readiness_proof(
         "generation_id": generation_id,
         "generation_source": generation_source,
         "active_generation": generation_id,
+        "resident_attach_coverage_budget": resident_attach_budget,
+        "bpf_attach_budget": resident_attach_budget,
         "runtime_generation_loaded": False,
         "active_generation_set": False,
         "map_ready": False,
@@ -8291,10 +9772,16 @@ def _select_incremental_runtime_contexts(
     *,
     all_contexts: Sequence[DirectGatewayExperimentContext],
     existing_session: Optional[ActiveRuntimeSession],
+    bpf_owned_host_required_only: bool = False,
 ) -> Dict[str, Any]:
     unchanged_flow_ids: set[str] = set()
     incremental_cleanup_flow_ids: List[str] = []
     existing_preflights_by_flow_id: Dict[str, Dict[str, Any]] = {}
+    signature_source = (
+        _bpf_owned_host_required_context_signature
+        if bpf_owned_host_required_only
+        else _context_signature
+    )
     if existing_session is not None:
         existing_preflights_by_flow_id = {
             str(context.flow_id): dict(preflight)
@@ -8304,10 +9791,10 @@ def _select_incremental_runtime_contexts(
             )
         }
         desired_signatures = {
-            str(context.flow_id): _context_signature(context) for context in all_contexts
+            str(context.flow_id): signature_source(context) for context in all_contexts
         }
         existing_signatures = {
-            str(context.flow_id): _context_signature(context)
+            str(context.flow_id): signature_source(context)
             for context in existing_session.contexts
         }
         unchanged_flow_ids = {
@@ -8331,6 +9818,11 @@ def _select_incremental_runtime_contexts(
         "unchanged_flow_ids": unchanged_flow_ids,
         "incremental_cleanup_flow_ids": incremental_cleanup_flow_ids,
         "existing_preflights_by_flow_id": existing_preflights_by_flow_id,
+        "signature_scope": (
+            "bpf_owned_host_required"
+            if bpf_owned_host_required_only
+            else "full_dataplane_context"
+        ),
     }
 
 
@@ -11091,9 +12583,14 @@ class MinimalRealLinuxMplsInstaller:
             "wall_seconds": 0.0,
         }
         all_zone_return_install_intents = _zone_return_install_intents(all_contexts)
+        bpf_owned_host_required_incremental_scope = (
+            backend_config["backend_mode"] == "bpf_owned"
+            and str(runtime_mode) == "operational_clean"
+        )
         incremental_selection = _select_incremental_runtime_contexts(
             all_contexts=all_contexts,
             existing_session=existing_session,
+            bpf_owned_host_required_only=bpf_owned_host_required_incremental_scope,
         )
         existing_preflights_by_flow_id = dict(
             incremental_selection["existing_preflights_by_flow_id"]
@@ -11198,6 +12695,9 @@ class MinimalRealLinuxMplsInstaller:
             "reapplied_flow_ids": [context.flow_id for context in contexts],
             "held_flow_ids": sorted(unchanged_flow_ids),
             "incremental_cleanup_flow_ids": list(incremental_cleanup_flow_ids),
+            "incremental_selection_signature_scope": str(
+                incremental_selection.get("signature_scope") or ""
+            ),
             "active_flow_count": len(all_contexts),
             "reapplied_flow_count": len(contexts),
             "held_flow_count": len(unchanged_flow_ids),

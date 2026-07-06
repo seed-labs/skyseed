@@ -2,6 +2,7 @@
 # encoding: utf-8
 
 import inspect
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -18,12 +19,15 @@ from linux_mpls_runtime import (
     DEFAULT_RUNTIME_EPOCH_VALIDATION_SCOPE,
     MinimalRealLinuxMplsInstaller,
     _bpf_mpls_generation_map_capacities,
+    _audit_bpf_owned_preactivation_preload_attach_reuse,
     _bpf_owned_attach_reuse_plan,
     _bpf_owned_prepare_mpls_backend,
     _bpf_clsact_lifecycle_metrics,
     _bpf_owned_interface_role_completeness,
     _bpf_owned_merge_resident_attach_coverage,
+    _prepare_bpf_owned_preactivation_attach_capability,
     _prepare_bpf_owned_preactivation_preload,
+    _derive_bpf_owned_readiness_proof,
     _bpf_owned_reused_attach_clsact_guard,
     _bpf_owned_runtime_readiness_failure_message,
     _copy_bpf_prepare_timing_to_phase_timing,
@@ -35,9 +39,12 @@ from network_runtime import DirectNetnsVethSlotLinkNamespaceQdiscInstaller
 from run_starlink_shell_experiment import parse_args
 from run_starlink_shell_experiment import (
     _await_initial_runtime_readiness_for_args,
+    _bpf_preload_manifest_only_map_write_used,
     _bpf_attach_reuse_epoch_summary,
     _bpf_hotpath_reuse_audit,
+    _bpf_hotpath_latest_runtime_epoch_audit,
     _cleanup_bpf_mpls_pins_after_runtime,
+    _compose_force_remove_project_residue,
     _annotate_epoch_queue_runtime_update_counts,
     _compact_bpf_real_backend_prepare,
     _compact_node_local_execution,
@@ -60,6 +67,8 @@ from run_starlink_shell_experiment import (
     _operational_clean_node_local_execution_summary,
     _operational_clean_heartbeat_summary,
     _operational_clean_bpf_owned_initial_readiness_attempt,
+    _is_operational_clean_bpf_owned_route,
+    _operational_clean_fallback_blocked_report,
     _operational_clean_runtime_attach_contract_violation,
     _operational_clean_bounded_cleanup_session,
     _operational_clean_pre_start_audit,
@@ -71,6 +80,7 @@ from run_starlink_shell_experiment import (
     _pre_runtime_bpf_owned_preflight_state,
     _prepared_bundle_runtime_manifest_summary,
     _prepared_owned_resource_index_from_scope,
+    _preflight_report_with_authoritative_direct_backend_scan,
     _pre_runtime_bpf_owned_session_preflight,
     _prepared_update_bundle_with_continuous_runtime_execution,
     _prewarm_selected_slice_ids_for_horizon,
@@ -78,6 +88,11 @@ from run_starlink_shell_experiment import (
     _run_invocation_metadata,
     _run_window_resource_coverage_plan,
     _runtime_failure_context_summary,
+    _runtime_context_with_bpf_generation_assignment,
+    _runtime_context_with_bpf_runtime_plan_overlays,
+    _runtime_contexts_with_bpf_generation_assignments,
+    _bpf_generation_assignment_context_audit,
+    _runtime_update_plan_with_bpf_generation_assignment,
     _should_prepare_host_mpls_for_args,
     _should_skip_host_rollback_for_args,
     _should_run_parameter_epoch_validation_for_args,
@@ -93,6 +108,7 @@ from run_starlink_shell_experiment import (
 from skyseed_preflight import (  # noqa: E402
     PREFLIGHT_PROFILE_OPERATIONAL_CLEAN_BPF_OWNED,
 )
+from contracts import RuntimeUpdatePlan  # noqa: E402
 
 
 class RuntimeValidationDefaultTests(unittest.TestCase):
@@ -374,6 +390,62 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
             "passed",
         )
 
+    def test_authoritative_direct_backend_scan_updates_lightweight_preflight(
+        self,
+    ) -> None:
+        preflight = {
+            "assessment": {
+                "blocking_reasons": [],
+                "clean_environment_required": True,
+                "clean_residue_reasons": [],
+                "cleanliness_counts": {
+                    "compose_project_containers": 0,
+                    "compose_project_networks": 0,
+                    "direct_backend_host_interfaces": 0,
+                },
+                "environment_clean": True,
+                "ready": True,
+                "warning_reasons": ["host_mpls_preflight_skipped"],
+            },
+            "checks": {
+                "direct_backend_host_artifacts": {
+                    "diagnostic_only": True,
+                    "interfaces": [],
+                    "skipped": True,
+                }
+            },
+        }
+
+        patched = _preflight_report_with_authoritative_direct_backend_scan(
+            preflight,
+            direct_backend_scan={
+                "ok": True,
+                "interfaces": ["sbr-old", "vhs-old"],
+            },
+            scan_source="unit_test_scan",
+        )
+
+        direct = patched["checks"]["direct_backend_host_artifacts"]
+        assessment = patched["assessment"]
+        self.assertFalse(direct["skipped"])
+        self.assertFalse(direct["diagnostic_only"])
+        self.assertEqual(direct["scan_source"], "unit_test_scan")
+        self.assertEqual(
+            assessment["cleanliness_counts"]["direct_backend_host_interfaces"],
+            2,
+        )
+        self.assertIn(
+            "direct_backend_host_interfaces",
+            assessment["clean_residue_reasons"],
+        )
+        self.assertIn(
+            "direct_backend_host_interfaces_present",
+            assessment["warning_reasons"],
+        )
+        self.assertIn("skyseed_environment_not_clean", assessment["blocking_reasons"])
+        self.assertFalse(assessment["environment_clean"])
+        self.assertFalse(assessment["ready"])
+
     def test_operational_clean_bpf_owned_initial_readiness_uses_profile_gate(
         self,
     ) -> None:
@@ -435,6 +507,96 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
                 ),
                 {"resource-b": resources["resource-b"]},
             )
+
+    def test_bounded_prepare_runtime_uses_prepared_scope_only(self) -> None:
+        installer = DirectNetnsVethSlotLinkNamespaceQdiscInstaller()
+        created: list[tuple[str, str]] = []
+        topology = {
+            "slot_inventory": {
+                "same_plane_isl": [
+                    {"slot_name": "slot-a", "slot_type": "same_plane_isl"},
+                    {"slot_name": "slot-b", "slot_type": "same_plane_isl"},
+                ]
+            }
+        }
+
+        def candidate_resources(slot):
+            slot_name = str(slot.get("slot_name"))
+            if slot_name == "slot-a":
+                return {
+                    "resource-a": {
+                        "resource_key": "resource-a",
+                        "endpoints": [
+                            {
+                                "host_interface_name": "vhs-a",
+                                "temp_interface_name": "vtm-a",
+                                "node_id": "node-a",
+                                "interface_name": "if-a",
+                                "ip_address": "10.0.0.2/30",
+                            }
+                        ],
+                    },
+                    "resource-b": {
+                        "resource_key": "resource-b",
+                        "endpoints": [
+                            {
+                                "host_interface_name": "vhs-b",
+                                "temp_interface_name": "vtm-b",
+                                "node_id": "node-b",
+                                "interface_name": "if-b",
+                                "ip_address": "10.0.0.6/30",
+                            }
+                        ],
+                    },
+                }
+            return {
+                "resource-c": {
+                    "resource_key": "resource-c",
+                    "endpoints": [
+                        {
+                            "host_interface_name": "vhs-c",
+                            "temp_interface_name": "vtm-c",
+                            "node_id": "node-c",
+                            "interface_name": "if-c",
+                            "ip_address": "10.0.0.10/30",
+                        }
+                    ],
+                }
+            }
+
+        installer._candidate_resources = candidate_resources  # type: ignore[method-assign]
+        installer._prepare_bridge_netfilter_passthrough = lambda: None  # type: ignore[method-assign]
+        installer._host_interface_name_set = lambda: set()  # type: ignore[method-assign]
+        installer._docker_network_name_set = lambda: set()  # type: ignore[method-assign]
+        installer._container_interface_name_set = lambda *, node_id: set()  # type: ignore[method-assign]
+        installer._delete_host_interface_if_present = lambda *args, **kwargs: None  # type: ignore[method-assign]
+        installer._delete_container_interface_if_present = lambda *args, **kwargs: None  # type: ignore[method-assign]
+        installer._bridge_exists = lambda *args, **kwargs: False  # type: ignore[method-assign]
+        installer._set_bridge_ready = lambda **kwargs: None  # type: ignore[method-assign]
+        installer._mark_link_state_prepared = lambda **kwargs: None  # type: ignore[method-assign]
+
+        def create_prepared_veth(**kwargs):
+            created.append(
+                (
+                    str(kwargs.get("slot_name")),
+                    str(dict(kwargs.get("endpoint") or {}).get("host_interface_name")),
+                )
+            )
+
+        installer._create_prepared_veth = create_prepared_veth  # type: ignore[method-assign]
+
+        summary = installer._prepare_runtime(
+            topology=topology,
+            topology_path=Path("topology.json"),
+            link_state_path=Path("link_state.json"),
+            prepared_resource_scope_by_slot={"slot-a": {"resource-a"}},
+        )
+
+        self.assertEqual(summary["scope"], "bounded_prepare")
+        self.assertFalse(summary["full_sweep"])
+        self.assertEqual(summary["prepared_scope_source"], "prepared_owned_resource_index")
+        self.assertEqual(summary["prepared_resource_counts"]["candidate_resource_count"], 1)
+        self.assertEqual(created, [("slot-a", "vhs-a")])
 
     def test_cli_and_installer_share_runtime_validation_scope_default(self) -> None:
         with patch.object(sys, "argv", ["run_starlink_shell_experiment.py"]):
@@ -1349,7 +1511,7 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
         )
         self.assertEqual(
             boundary["allowed_activation_outcomes_at_future_boundary"],
-            ["flip_only", "necessary_delta", "no_op_reuse"],
+            ["flip_only", "no_op_reuse"],
         )
         self.assertIn(
             "HORIZON_PRELOAD_BOUNDARY_LOW_COST_PROOF_READY",
@@ -1858,6 +2020,60 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
                             "reapplied_shared_apply_specs": [
                                 {"command": ["ip", "route", "replace", "large"]}
                             ],
+                            "prepare_steps": {
+                                "real_backend_prepare": {
+                                    "ok": True,
+                                    "generation_write_cost_audit": {
+                                        "schema_version": (
+                                            "skyseed-bpf-generation-write-cost-audit-v1"
+                                        ),
+                                        "scheduled_data_write_count": 123,
+                                        "current_schema_skipped_now_count": 45,
+                                        "contains_full_entry_payloads": False,
+                                    },
+                                    "steps": {
+                                        "map_load": {
+                                            "ok": True,
+                                            "map_write_update_count": 123,
+                                            "generation_write_cost_audit": {
+                                                "schema_version": (
+                                                    "skyseed-bpf-generation-write-cost-audit-v1"
+                                                ),
+                                                "scheduled_data_write_count": 123,
+                                                "current_schema_skipped_now_count": 45,
+                                                "contains_full_entry_payloads": False,
+                                            },
+                                            "updates": [
+                                                {
+                                                    "map_update": {
+                                                        "map_name": "core_lfib_map",
+                                                        "value_bytes": [
+                                                            "heavy-bpf-update-payload"
+                                                        ],
+                                                    }
+                                                }
+                                            ],
+                                            "runtime_reload_attribution": {
+                                                "reload_strategy": "map_diff_update",
+                                                "actual_data_write_count": 123,
+                                                "generation_write_cost_audit": {
+                                                    "scheduled_data_write_count": 123,
+                                                    "current_schema_skipped_now_count": 45,
+                                                },
+                                                "map_diff_trace": {
+                                                    "core_lfib_map": {
+                                                        "desired_count": 123,
+                                                        "insert_count": 10,
+                                                        "desired_entries": [
+                                                            "heavy-bpf-diff-payload"
+                                                        ],
+                                                    }
+                                                },
+                                            },
+                                        }
+                                    },
+                                }
+                            },
                         }
                     },
                     "zone_return_install_boundary": {
@@ -1922,6 +2138,27 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
         self.assertEqual(backend["backend_switching"]["selected_mode"], "bpf_owned")
         compact_json = json.dumps(compact, sort_keys=True)
         self.assertNotIn("large bpftool dump", compact_json)
+        self.assertNotIn("heavy-bpf-update-payload", compact_json)
+        self.assertNotIn("heavy-bpf-diff-payload", compact_json)
+        readiness = compact["node_local_execution"]["timing"][
+            "backend_apply_contract"
+        ]["bpf_owned_readiness"]
+        map_load = readiness["prepare_steps"]["real_backend_prepare"]["steps"][
+            "map_load"
+        ]
+        self.assertEqual(
+            map_load["generation_write_cost_audit"][
+                "scheduled_data_write_count"
+            ],
+            123,
+        )
+        self.assertEqual(map_load["updates_summary"]["count"], 1)
+        self.assertEqual(
+            map_load["runtime_reload_attribution"]["map_diff_trace"][
+                "core_lfib_map"
+            ]["desired_count"],
+            123,
+        )
         self.assertNotIn("shared_zone_return_apply_specs", compact_json)
         self.assertIn(
             "backend_apply_contract",
@@ -2036,7 +2273,60 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
             'missing canary interface netns:stl-940080:xp22b: '
             'Device "xp22b" does not exist.',
         )
-        self.assertEqual(compact["attached_interfaces"], [])
+        self.assertEqual(compact["attached_interfaces_summary"]["count"], 0)
+
+    def test_bpf_readiness_compaction_summarizes_heavy_entry_lists(self) -> None:
+        node_local_execution = {
+            "timing": {
+                "backend_apply_contract": {
+                    "bpf_owned_readiness": {
+                        "ready": True,
+                        "packet_route_entries": [
+                            {"fec": "large-fec", "payload": "heavy"}
+                        ],
+                        "resolved_mpls_flow_entries": [
+                            {"flow": "heavy-flow", "payload": "heavy"}
+                        ],
+                        "attached_interfaces": ["veth-heavy"],
+                        "prepare_steps": {
+                            "real_backend_prepare": {
+                                "ok": True,
+                                "attached_interfaces": ["veth-heavy"],
+                                "resolved_mpls_flow_entries": [
+                                    {"flow": "heavy-flow", "payload": "heavy"}
+                                ],
+                            },
+                            "compile": {
+                                "compiled_runtime_inputs": {
+                                    "packet_routes": [{"payload": "heavy"}]
+                                }
+                            },
+                        },
+                    }
+                }
+            },
+            "backend": {},
+        }
+
+        compact = _compact_node_local_execution(node_local_execution)
+        readiness = compact["timing"]["backend_apply_contract"][
+            "bpf_owned_readiness"
+        ]
+
+        rendered = json.dumps(readiness, sort_keys=True)
+        self.assertNotIn("heavy-flow", rendered)
+        self.assertNotIn("veth-heavy", rendered)
+        self.assertEqual(readiness["packet_route_entries_summary"]["count"], 1)
+        self.assertEqual(
+            readiness["resolved_mpls_flow_entries_summary"]["count"],
+            1,
+        )
+        real_prepare = readiness["prepare_steps"]["real_backend_prepare"]
+        self.assertEqual(real_prepare["attached_interfaces_summary"]["count"], 1)
+        self.assertEqual(
+            real_prepare["resolved_mpls_flow_entries_summary"]["count"],
+            1,
+        )
 
     def test_operational_clean_compact_epoch_accepts_scalar_operation_counts(
         self,
@@ -2315,6 +2605,44 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
             )
         )
 
+    def test_operational_clean_bpf_owned_route_detects_clean_fallback_boundary(
+        self,
+    ) -> None:
+        self.assertTrue(
+            _is_operational_clean_bpf_owned_route(
+                operational_clean_mode=True,
+                forwarding_backend="bpf_owned",
+            )
+        )
+        self.assertFalse(
+            _is_operational_clean_bpf_owned_route(
+                operational_clean_mode=True,
+                forwarding_backend="linux_mpls",
+            )
+        )
+        self.assertFalse(
+            _is_operational_clean_bpf_owned_route(
+                operational_clean_mode=False,
+                forwarding_backend="bpf_owned",
+            )
+        )
+
+    def test_operational_clean_fallback_blocked_report_is_not_cleanup_attempt(
+        self,
+    ) -> None:
+        report = _operational_clean_fallback_blocked_report(
+            reason="operational_clean_disables_direct_backend_fallback_cleanup",
+            remaining_interfaces=["skyseed-veth-a", "skyseed-veth-b"],
+        )
+
+        self.assertFalse(report["attempted"])
+        self.assertEqual(report["clean_route_status"], "fallback_blocked")
+        self.assertEqual(report["remaining_interface_count"], 2)
+        self.assertEqual(
+            report["reason"],
+            "operational_clean_disables_direct_backend_fallback_cleanup",
+        )
+
     def test_bpf_attach_reuse_epoch_summary_exposes_counts_and_reason(self) -> None:
         summary = _bpf_attach_reuse_epoch_summary(
             {
@@ -2544,6 +2872,125 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
         self.assertEqual(attach_reuse["full_attach_count"], 0)
         self.assertEqual(attach_reuse["reused_attach_count"], 2)
 
+    def test_prepare_bpf_owned_readiness_preserves_compiled_runtime_inputs(self) -> None:
+        compiled_runtime_inputs = {
+            "schema_version": "skyseed-bpf-owned-compiled-runtime-inputs-v1",
+            "active_generation": {"value": 0},
+            "ingress_classifier_map": [],
+            "core_lfib_map": [],
+            "egress_handoff_map": [],
+            "generation_base_map": [{"key": {"generation": 0}, "value": {}}],
+        }
+        proof = {
+            "logical_intent_ready": True,
+            "generation_id": 0,
+            "attached_interfaces": ["logical:gw1:ix0"],
+            "map_entry_count": 1,
+        }
+        prepare_report = {
+            "ok": True,
+            "reason": "",
+            "attached_interfaces": ["netns:gw1:ix0"],
+            "attached_interface_details": [],
+            "resolved_mpls_flow_entries": [],
+            "compiled_mpls_map_counts": {"core_lfib_map": 1},
+            "compiled_runtime_inputs": compiled_runtime_inputs,
+            "steps": {},
+            "loaded_gz_fec_count": 1,
+            "active_generation": 0,
+        }
+
+        with (
+            patch(
+                "linux_mpls_runtime._derive_bpf_owned_readiness_proof",
+                return_value=proof,
+            ),
+            patch(
+                "linux_mpls_runtime._bpf_owned_host_interfaces_for_contexts",
+                return_value=["netns:gw1:ix0"],
+            ),
+            patch(
+                "linux_mpls_runtime._bpf_owned_prepare_mpls_backend",
+                return_value=prepare_report,
+            ),
+            patch(
+                "linux_mpls_runtime._bpf_owned_readiness_mismatch_reason",
+                return_value="",
+            ),
+        ):
+            prepared = _prepare_bpf_owned_readiness(
+                runtime_update_plan=SimpleNamespace(),
+                topology_path=Path("topology.json"),
+                contexts=(SimpleNamespace(flow_id="flow-a"),),
+                bpf_owned_readiness=None,
+            )
+
+        self.assertTrue(prepared["ready"])
+        self.assertEqual(prepared["compiled_runtime_inputs"], compiled_runtime_inputs)
+        self.assertEqual(
+            prepared["active_generation_compiled_runtime_inputs"],
+            compiled_runtime_inputs,
+        )
+        self.assertEqual(
+            prepared["prepare_steps"]["real_backend_prepare"][
+                "compiled_runtime_inputs"
+            ],
+            compiled_runtime_inputs,
+        )
+
+    def test_existing_bpf_readiness_preserves_active_generation_manifest(self) -> None:
+        compiled_runtime_inputs = {
+            "schema_version": "skyseed-bpf-owned-compiled-runtime-inputs-v1",
+            "active_generation": {"value": 42},
+            "ingress_classifier_map": [],
+            "core_lfib_map": [],
+            "egress_handoff_map": [],
+            "bpf_map_write_manifest_only": True,
+            "batch_map_write_required": True,
+        }
+        previous_readiness = {
+            "schema_version": "skyseed-bpf-owned-readiness-v1",
+            "ready": True,
+            "ok": True,
+            "generation_id": 42,
+            "active_generation": 42,
+            "runtime_generation_loaded": True,
+            "map_ready": True,
+            "active_generation_set": True,
+            "attached_interfaces": ["netns:gw1:ix0"],
+            "compiled_runtime_inputs": compiled_runtime_inputs,
+        }
+
+        with (
+            patch(
+                "linux_mpls_runtime._prove_bpf_owned_readiness",
+                return_value=previous_readiness,
+            ),
+            patch(
+                "linux_mpls_runtime._bpf_owned_readiness_mismatch_reason",
+                return_value="",
+            ),
+        ):
+            prepared = _prepare_bpf_owned_readiness(
+                runtime_update_plan=SimpleNamespace(),
+                topology_path=Path("topology.json"),
+                contexts=(SimpleNamespace(flow_id="flow-a"),),
+                bpf_owned_readiness=previous_readiness,
+            )
+
+        self.assertTrue(prepared["ready"])
+        self.assertEqual(
+            prepared["active_generation_compiled_runtime_inputs"],
+            compiled_runtime_inputs,
+        )
+        self.assertEqual(prepared["compiled_runtime_inputs"], compiled_runtime_inputs)
+        self.assertEqual(
+            prepared["prepare_steps"]["real_backend_prepare"][
+                "active_generation_compiled_runtime_inputs"
+            ],
+            compiled_runtime_inputs,
+        )
+
     def test_bpf_hotpath_audit_allows_initial_attach_and_map_only_steady(self) -> None:
         records = [
             {
@@ -2641,6 +3088,49 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
             {"first_epoch_runtime": 1},
         )
 
+    def test_bpf_hotpath_latest_audit_uses_incremental_window(self) -> None:
+        first = {
+            "epoch_type": "runtime_epoch",
+            "sequence_index": 1,
+            "timing": {
+                "bpf_attach_strategy": "delta_attach",
+                "bpf_full_attach_count": 0,
+                "bpf_delta_attach_count": 8,
+                "bpf_interface_set_changed": True,
+            },
+        }
+        latest = {
+            "epoch_type": "runtime_epoch",
+            "sequence_index": 99,
+            "segment_epoch_key": "segment:H2",
+            "timing": {
+                "bpf_attach_reuse_eligible": True,
+                "bpf_attach_strategy": "full_reuse",
+                "bpf_reused_attach_count": 8,
+                "bpf_delta_attach_count": 0,
+                "bpf_full_attach_count": 0,
+                "bpf_interface_set_changed": False,
+                "bpf_steady_epoch_map_only": True,
+                "bpf_clsact_reuse_warning_count": 0,
+                "bpf_attach_seconds": 0.0,
+            },
+        }
+
+        audit = _bpf_hotpath_latest_runtime_epoch_audit(
+            first_runtime_epoch_record=first,
+            latest_epoch_record=latest,
+            runtime_mode="operational_clean",
+            forwarding_backend="bpf_owned",
+        )
+
+        self.assertEqual(audit["audit_model"], "incremental_latest_runtime_epoch")
+        self.assertTrue(audit["full_history_rescan_skipped"])
+        self.assertEqual(audit["audited_epoch_record_count"], 2)
+        self.assertEqual(audit["latest_sequence_index"], 99)
+        self.assertTrue(audit["passed"])
+        self.assertEqual(audit["steady_runtime_epoch_count"], 1)
+        self.assertEqual(audit["steady_map_only_epoch_count"], 1)
+
     def test_operational_clean_runtime_attach_contract_blocks_first_epoch_attach(
         self,
     ) -> None:
@@ -2706,6 +3196,15 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
         self.assertEqual(gate["pre_runtime_attach_count"], 2)
         self.assertEqual(gate["pre_runtime_full_attach_count"], 2)
         self.assertEqual(gate["pre_runtime_delta_attach_count"], 0)
+        self.assertEqual(
+            gate["resident_attach_coverage_budget"]["budget_source"],
+            "official_precompose_bpf_role_union_gate",
+        )
+        self.assertEqual(
+            gate["resident_attach_coverage_budget"]["max_attach_interfaces"],
+            2,
+        )
+        self.assertEqual(gate["resident_attach_coverage_budget"]["slack_attach_interfaces"], 0)
         self.assertEqual(gate["dirty_recovery_reset_count"], 0)
         self.assertEqual(gate["runtime_dirty_recovery_reset_count"], 0)
         self.assertEqual(gate["first_epoch_runtime_full_attach_expected"], 0)
@@ -3728,6 +4227,97 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
             ],
         )
 
+    def test_compose_residue_cleanup_disconnects_stale_network_endpoints(self) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(command, **kwargs):
+            rendered = [str(part) for part in command]
+            calls.append(rendered)
+            if rendered[:4] == ["docker", "ps", "-aq", "--filter"]:
+                return subprocess.CompletedProcess(rendered, 0, stdout="", stderr="")
+            if rendered[:4] == ["docker", "network", "ls", "-q"]:
+                return subprocess.CompletedProcess(
+                    rendered,
+                    0,
+                    stdout="net123\n",
+                    stderr="",
+                )
+            if rendered == ["docker", "network", "rm", "net123"]:
+                rm_calls = sum(
+                    1 for call in calls if call == ["docker", "network", "rm", "net123"]
+                )
+                if rm_calls == 1:
+                    return subprocess.CompletedProcess(
+                        rendered,
+                        1,
+                        stdout="",
+                        stderr="error while removing network: active endpoints",
+                    )
+                return subprocess.CompletedProcess(rendered, 0, stdout="net123\n", stderr="")
+            if rendered == ["docker", "network", "inspect", "net123"]:
+                return subprocess.CompletedProcess(
+                    rendered,
+                    0,
+                    stdout=json.dumps(
+                        [
+                            {
+                                "Containers": {
+                                    "missing-container-id": {
+                                        "Name": "stl-940033",
+                                    }
+                                }
+                            }
+                        ]
+                    ),
+                    stderr="",
+                )
+            if rendered == [
+                "docker",
+                "network",
+                "disconnect",
+                "-f",
+                "net123",
+                "stl-940033",
+            ]:
+                return subprocess.CompletedProcess(rendered, 0, stdout="", stderr="")
+            raise AssertionError(f"unexpected command: {rendered}")
+
+        with patch("run_starlink_shell_experiment.subprocess.run", side_effect=fake_run):
+            cleanup = _compose_force_remove_project_residue(Path("/tmp/seed_output"))
+
+        self.assertTrue(cleanup["cleanup_completed"])
+        self.assertEqual(cleanup["removed_network_count"], 1)
+        self.assertTrue(cleanup["network_remove_retry"]["retry_after_stale_endpoint_disconnect"])
+        self.assertIn(
+            [
+                "docker",
+                "network",
+                "disconnect",
+                "-f",
+                "net123",
+                "stl-940033",
+            ],
+            calls,
+        )
+
+    def test_manifest_only_preload_report_treats_loader_as_map_write(self) -> None:
+        self.assertTrue(
+            _bpf_preload_manifest_only_map_write_used(
+                {
+                    "preactivation_preload": {
+                        "manifest_only_loader": True,
+                        "manifest_only_map_write_used": False,
+                    }
+                }
+            )
+        )
+        self.assertTrue(
+            _bpf_preload_manifest_only_map_write_used(
+                {"manifest_only_map_write_used": True}
+            )
+        )
+        self.assertFalse(_bpf_preload_manifest_only_map_write_used({}))
+
     def test_empty_validation_scope_falls_back_to_gateway_class_sample(self) -> None:
         selection = _select_runtime_ping_validation_contexts(
             all_contexts=(),
@@ -4425,6 +5015,112 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
             "active_plus_future_materialized_attach_eligible",
         )
 
+    def test_bpf_owned_full_attach_uses_map_load_roles_without_live_role_dump(
+        self,
+    ) -> None:
+        interface_ref = "netns:gw205:ix204"
+        progress_events: list[dict[str, object]] = []
+        compiled = {
+            "attach_plan": {interface_ref: ["ingress"]},
+            "attached_interfaces": [interface_ref],
+            "attached_interface_details": [
+                {
+                    "interface_ref": interface_ref,
+                    "attach_directions": ["ingress"],
+                    "expected_roles": ["z_to_g_classifier"],
+                    "ifindex": 205,
+                }
+            ],
+            "compiled_mpls_map_counts": {
+                "ingress_classifier_map": 1,
+                "core_lfib_map": 0,
+                "egress_handoff_map": 0,
+            },
+            "map_conflicts": [],
+            "map_conflict_summary": {"conflict_count": 0},
+            "label_allocation": {},
+            "resolved_mpls_flow_entries": [],
+        }
+
+        with (
+            patch(
+                "linux_mpls_runtime._bpf_owned_compile_mpls_maps_for_contexts",
+                return_value=compiled,
+            ),
+            patch(
+                "satellite.bpf_dataplane_canary.collect_environment",
+                return_value={},
+            ),
+            patch("satellite.bpf_dataplane_canary.attach_blockers", return_value=[]),
+            patch(
+                "satellite.bpf_mpls_live.compile_mpls_bpf",
+                return_value={"returncode": 0},
+            ),
+            patch("satellite.bpf_mpls_live.rollback_mpls", return_value={"ok": True}),
+            patch(
+                "satellite.bpf_mpls_live.attach_mpls",
+                return_value=[{"returncode": 0, "args": ["tc", "filter", "add"]}],
+            ),
+            patch(
+                "satellite.bpf_mpls_live.interface_ipv4_addresses",
+                return_value=["10.0.0.1"],
+            ),
+            patch(
+                "satellite.bpf_mpls_live.read_mpls_tc_filter_stats",
+                return_value={"ingress": {"returncode": 0}},
+            ),
+            patch(
+                "satellite.bpf_mpls_live.load_mpls_maps",
+                return_value={
+                    "ok": True,
+                    "active_generation": 42,
+                    "map_write_wall_seconds": 0.02,
+                    "map_write_update_count": 2,
+                    "active_generation_update_count": 1,
+                    "active_generation_switch_count": 1,
+                    "total_update_count": 2,
+                    "loaded_classifier_count": 1,
+                    "loaded_core_lfib_count": 0,
+                    "loaded_egress_handoff_count": 0,
+                    "loaded_interface_role_count": 1,
+                    "loaded_interface_roles": [
+                        {
+                            "ifindex": 205,
+                            "role": 1,
+                            "classifier": True,
+                            "mpls": False,
+                        }
+                    ],
+                },
+            ),
+            patch("linux_mpls_runtime._read_bpf_owned_interface_roles") as live_roles,
+        ):
+            report = _bpf_owned_prepare_mpls_backend(
+                proof={"generation_id": 42, "map_entry_count": 1},
+                contexts=(),
+                progress_callback=progress_events.append,
+            )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["prepare_mode"], "full_attach_and_map_load")
+        live_roles.assert_not_called()
+        self.assertEqual(
+            report["timing_breakdown"]["bpf_live_role_read_seconds"],
+            0.0,
+        )
+        self.assertTrue(
+            report["steps"]["live_interface_roles_after_map_load"]["skipped"]
+        )
+        self.assertEqual(
+            report["steps"]["interface_role_completeness_after_map_load"][
+                "role_source"
+            ],
+            "map_load_reported_roles",
+        )
+        stages = [str(event.get("stage")) for event in progress_events]
+        self.assertIn("interface_role_live_read_skipped", stages)
+        self.assertIn("interface_role_completeness_completed", stages)
+
     def test_bpf_owned_future_resident_interface_not_live_bound(self) -> None:
         active_contexts = (SimpleNamespace(flow_id="active-flow"),)
         resident_contexts = (SimpleNamespace(flow_id="future-flow"),)
@@ -4719,6 +5415,307 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
         )
         self.assertTrue(report["attach_cardinality_budget"]["budget_exceeded"])
 
+    def test_bpf_owned_readiness_proof_carries_resident_attach_budget(
+        self,
+    ) -> None:
+        budget = {
+            "schema_version": "skyseed-bpf-resident-attach-budget-v1",
+            "budget_source": "official_precompose_bpf_role_union_gate",
+            "max_attach_interfaces": 266,
+            "slack_attach_interfaces": 0,
+        }
+        plan = RuntimeUpdatePlan(
+            schema_version="satellite-iteration2-runtime-update-plan-v1alpha1",
+            plan_id="runtime-plan-with-bpf-budget",
+            target_snapshot={
+                "snapshot_id": "snapshot-1",
+                "slice_id": "slice-1",
+                "resident_attach_coverage_budget": budget,
+            },
+            planner={"planner_name": "test-planner"},
+            apply_model={
+                "state_model": "full_state_intent",
+                "action_model": "satellite-runtime-update-action-v1alpha1",
+            },
+            node_subplans={},
+            replacement_semantics={},
+            validation_expectations={},
+        )
+
+        proof = _derive_bpf_owned_readiness_proof(runtime_update_plan=plan)
+
+        self.assertEqual(proof["resident_attach_coverage_budget"], budget)
+        self.assertEqual(proof["bpf_attach_budget"], budget)
+
+    def test_bpf_generation_assignment_updates_runtime_plan_proof(self) -> None:
+        plan = RuntimeUpdatePlan(
+            schema_version="satellite-iteration2-runtime-update-plan-v1alpha1",
+            plan_id="runtime-plan-h0-slice-0003",
+            target_snapshot={
+                "snapshot_id": "snapshot-current",
+                "slice_id": "starlink-shell-slice-0001",
+            },
+            planner={"planner_name": "test-planner"},
+            apply_model={
+                "state_model": "full_state_intent",
+                "action_model": "satellite-runtime-update-action-v1alpha1",
+            },
+            node_subplans={},
+            replacement_semantics={},
+            validation_expectations={},
+        )
+        base_proof = _derive_bpf_owned_readiness_proof(runtime_update_plan=plan)
+        self.assertEqual(base_proof["generation_id"], 0)
+
+        patched_plan = _runtime_update_plan_with_bpf_generation_assignment(
+            plan,
+            {
+                "horizon_id": "H0",
+                "horizon_sequence_index": 0,
+                "buffer_index": 0,
+                "logical_generation_id": 2,
+                "physical_generation_id": 2,
+                "generation_slot_width": 32,
+                "horizon_generation_key": "H0:generation-2",
+                "physical_horizon_generation_key": "H0:generation-2",
+            },
+        )
+        patched_proof = _derive_bpf_owned_readiness_proof(
+            runtime_update_plan=patched_plan,
+        )
+
+        self.assertEqual(patched_proof["generation_id"], 2)
+        self.assertEqual(
+            patched_proof["generation_source"],
+            "target_snapshot.bpf_physical_generation_id",
+        )
+        self.assertEqual(
+            patched_plan.target_snapshot["bpf_physical_horizon_generation_key"],
+            "H0:generation-2",
+        )
+        self.assertEqual(
+            patched_plan.planner["bpf_generation_slot_allocator"][
+                "generation_slot_width"
+            ],
+            32,
+        )
+
+    def test_bpf_generation_assignment_context_audit_catches_unpatched_plan(
+        self,
+    ) -> None:
+        plan = RuntimeUpdatePlan(
+            schema_version="satellite-iteration2-runtime-update-plan-v1alpha1",
+            plan_id="runtime-plan-h0-slice-0003",
+            target_snapshot={
+                "snapshot_id": "snapshot-current",
+                "slice_id": "starlink-shell-slice-0001",
+            },
+            planner={"planner_name": "test-planner"},
+            apply_model={
+                "state_model": "full_state_intent",
+                "action_model": "satellite-runtime-update-action-v1alpha1",
+            },
+            node_subplans={},
+            replacement_semantics={},
+            validation_expectations={},
+        )
+        assignment = {
+            "segment_epoch_key": "H0:starlink-shell-slice-0003",
+            "horizon_id": "H0",
+            "horizon_sequence_index": 0,
+            "buffer_index": 0,
+            "logical_generation_id": 2,
+            "physical_generation_id": 2,
+            "generation_id": 2,
+            "generation_slot_width": 32,
+            "horizon_generation_key": "H0:generation-2",
+            "physical_horizon_generation_key": "H0:generation-2",
+        }
+
+        audit = _bpf_generation_assignment_context_audit(
+            contexts_by_key={
+                "H0:starlink-shell-slice-0003": {"runtime_update_plan": plan}
+            },
+            assignments_by_segment_epoch_key={
+                "H0:starlink-shell-slice-0003": assignment,
+            },
+        )
+
+        self.assertFalse(audit["ready"])
+        self.assertEqual(audit["blocker_count"], 1)
+        self.assertEqual(
+            audit["mismatch_records"][0]["segment_epoch_key"],
+            "H0:starlink-shell-slice-0003",
+        )
+        self.assertEqual(audit["mismatch_records"][0]["expected_generation_id"], 2)
+        self.assertEqual(audit["mismatch_records"][0]["actual_generation_id"], 0)
+
+    def test_bpf_generation_assignment_context_audit_passes_after_bulk_patch(
+        self,
+    ) -> None:
+        plan = RuntimeUpdatePlan(
+            schema_version="satellite-iteration2-runtime-update-plan-v1alpha1",
+            plan_id="runtime-plan-h0-slice-0003",
+            target_snapshot={
+                "snapshot_id": "snapshot-current",
+                "slice_id": "starlink-shell-slice-0001",
+            },
+            planner={"planner_name": "test-planner"},
+            apply_model={
+                "state_model": "full_state_intent",
+                "action_model": "satellite-runtime-update-action-v1alpha1",
+            },
+            node_subplans={},
+            replacement_semantics={},
+            validation_expectations={},
+        )
+        assignment = {
+            "segment_epoch_key": "H0:starlink-shell-slice-0003",
+            "horizon_id": "H0",
+            "horizon_sequence_index": 0,
+            "buffer_index": 0,
+            "logical_generation_id": 2,
+            "physical_generation_id": 2,
+            "generation_id": 2,
+            "generation_slot_width": 32,
+            "horizon_generation_key": "H0:generation-2",
+            "physical_horizon_generation_key": "H0:generation-2",
+        }
+        contexts = _runtime_contexts_with_bpf_generation_assignments(
+            {"H0:starlink-shell-slice-0003": {"runtime_update_plan": plan}},
+            {"H0:starlink-shell-slice-0003": assignment},
+        )
+
+        audit = _bpf_generation_assignment_context_audit(
+            contexts_by_key=contexts,
+            assignments_by_segment_epoch_key={
+                "H0:starlink-shell-slice-0003": assignment,
+            },
+        )
+
+        self.assertTrue(audit["ready"])
+        self.assertEqual(audit["blocker_count"], 0)
+        self.assertEqual(audit["checked_count"], 1)
+        patched_proof = _derive_bpf_owned_readiness_proof(
+            runtime_update_plan=contexts["H0:starlink-shell-slice-0003"][
+                "runtime_update_plan"
+            ],
+        )
+        self.assertEqual(patched_proof["generation_id"], 2)
+
+    def test_bpf_runtime_plan_overlays_keep_pre_runtime_and_apply_hash_aligned(
+        self,
+    ) -> None:
+        plan = RuntimeUpdatePlan(
+            schema_version="satellite-iteration2-runtime-update-plan-v1alpha1",
+            plan_id="runtime-plan-h0-slice-0001",
+            target_snapshot={
+                "snapshot_id": "snapshot-current",
+                "slice_id": "starlink-shell-slice-0001",
+            },
+            planner={"planner_name": "test-planner"},
+            apply_model={
+                "state_model": "full_state_intent",
+                "action_model": "satellite-runtime-update-action-v1alpha1",
+            },
+            node_subplans={},
+            replacement_semantics={},
+            validation_expectations={},
+        )
+        context = {"runtime_update_plan": plan}
+        assignment = {
+            "segment_epoch_key": "H0:starlink-shell-slice-0001",
+            "horizon_id": "H0",
+            "horizon_sequence_index": 0,
+            "buffer_index": 0,
+            "logical_generation_id": 0,
+            "physical_generation_id": 0,
+            "generation_id": 0,
+            "generation_slot_width": 32,
+            "horizon_generation_key": "H0:generation-0",
+            "physical_horizon_generation_key": "H0:generation-0",
+        }
+        resident_attach_budget = {
+            "schema_version": "skyseed-bpf-resident-attach-budget-v1",
+            "budget_source": "unit-test",
+            "max_attach_interfaces": 429,
+            "max_resident_attach_interfaces": 429,
+        }
+
+        pre_runtime_context = _runtime_context_with_bpf_runtime_plan_overlays(
+            context,
+            generation_assignment=assignment,
+            resident_attach_budget=resident_attach_budget,
+        )
+        runtime_apply_context = _runtime_context_with_bpf_runtime_plan_overlays(
+            pre_runtime_context,
+            generation_assignment=assignment,
+            resident_attach_budget=resident_attach_budget,
+        )
+        generation_only_context = _runtime_context_with_bpf_generation_assignment(
+            context,
+            assignment,
+        )
+
+        self.assertEqual(
+            pre_runtime_context["runtime_update_plan"].to_dict(),
+            runtime_apply_context["runtime_update_plan"].to_dict(),
+        )
+        self.assertEqual(
+            pre_runtime_context["runtime_update_plan"].planner[
+                "bpf_resident_attach_coverage_budget"
+            ],
+            resident_attach_budget,
+        )
+        runtime_apply_proof = _derive_bpf_owned_readiness_proof(
+            runtime_update_plan=runtime_apply_context["runtime_update_plan"],
+        )
+        self.assertEqual(runtime_apply_proof["generation_id"], 0)
+        self.assertEqual(
+            runtime_apply_proof["resident_attach_coverage_budget"],
+            resident_attach_budget,
+        )
+        self.assertNotEqual(
+            generation_only_context["runtime_update_plan"].to_dict(),
+            runtime_apply_context["runtime_update_plan"].to_dict(),
+        )
+
+    def test_bpf_generation_assignment_context_audit_ignores_consumed_contexts(
+        self,
+    ) -> None:
+        assignment = {
+            "segment_epoch_key": "H0:starlink-shell-slice-0001",
+            "horizon_id": "H0",
+            "logical_generation_id": 0,
+            "physical_generation_id": 0,
+            "generation_id": 0,
+            "generation_slot_width": 32,
+            "horizon_generation_key": "H0:generation-0",
+            "physical_horizon_generation_key": "H0:generation-0",
+        }
+
+        pending_audit = _bpf_generation_assignment_context_audit(
+            contexts_by_key={},
+            assignments_by_segment_epoch_key={
+                "H0:starlink-shell-slice-0001": assignment,
+            },
+        )
+        full_audit = _bpf_generation_assignment_context_audit(
+            contexts_by_key={},
+            assignments_by_segment_epoch_key={
+                "H0:starlink-shell-slice-0001": assignment,
+            },
+            require_all_assignments_present=True,
+        )
+
+        self.assertTrue(pending_audit["ready"])
+        self.assertEqual(pending_audit["blocker_count"], 0)
+        self.assertFalse(full_audit["ready"])
+        self.assertEqual(
+            full_audit["missing_context_keys"],
+            ["H0:starlink-shell-slice-0001"],
+        )
+
     def test_bpf_owned_active_logical_interfaces_bind_successfully(self) -> None:
         active_interface = "netns:gw205:ix204"
         compiled = {
@@ -4805,7 +5802,7 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
                 {
                     "interface_ref": active_interface,
                     "attach_directions": ["ingress"],
-                    "expected_roles": ["z_to_g_classifier"],
+                    "expected_roles": ["z_to_g_core_lfib"],
                     "ifindex": 8,
                 }
             ],
@@ -5041,7 +6038,7 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
                     "netns": "gw1",
                     "ifindex": 10,
                     "attach_directions": ["ingress"],
-                    "expected_roles": ["z_to_g_classifier"],
+                    "expected_roles": ["z_to_g_core_lfib"],
                 }
             ],
             "compiled_mpls_map_counts": {"ingress_classifier_map": 1},
@@ -5125,7 +6122,7 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
                 {
                     "interface_ref": "netns:gw205:ix204",
                     "ifindex": 8,
-                    "expected_roles": ["z_to_g_classifier"],
+                    "expected_roles": ["z_to_g_core_lfib"],
                 }
             ],
         }
@@ -5159,7 +6156,7 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
                 {
                     "interface_ref": "netns:gw205:ix204",
                     "attach_directions": ["ingress"],
-                    "expected_roles": ["z_to_g_classifier"],
+                    "expected_roles": ["z_to_g_core_lfib"],
                 }
             ],
             "compiled_mpls_map_counts": {
@@ -5187,7 +6184,7 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
                 {
                     "interface_ref": "netns:gw205:ix204",
                     "attach_directions": ["ingress"],
-                    "expected_roles": ["z_to_g_classifier"],
+                    "expected_roles": ["z_to_g_core_lfib"],
                 }
             ],
         }
@@ -5221,6 +6218,7 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
                         "target_generation": 42,
                         "map_write_wall_seconds": 0.03,
                         "map_write_update_count": 3,
+                        "expected_data_map_write_update_count": 3,
                         "active_generation_flip_wall_seconds": 0.0,
                         "active_generation_update_count": 0,
                         "active_generation_switch_count": 0,
@@ -5229,11 +6227,28 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
                         "loaded_core_lfib_count": 1,
                         "loaded_egress_handoff_count": 1,
                         "loaded_interface_role_count": 1,
+                        "interface_role_map_updates_skipped": True,
+                        "interface_role_map_skipped_update_count": 1,
+                        "interface_role_map_update_skip_reason": (
+                            "roles_prepared_by_attach_capability"
+                        ),
+                        "parallel_map_write_enabled": True,
+                        "parallel_map_write_worker_count": 8,
+                        "parallel_map_write_scheduled_update_count": 3,
                         "outcome_labels": ["RUNTIME_MAP_DIFF_UPDATE_USED"],
                         "runtime_reload_attribution": {
                             "runtime_update_phase": "preactivation_preload",
                             "preactivation_preload": True,
+                            "preactivation_preload_data_write_used": True,
                             "defer_active_generation_flip": True,
+                            "interface_role_map_updates_skipped": True,
+                            "interface_role_map_skipped_update_count": 1,
+                            "interface_role_map_update_skip_reason": (
+                                "roles_prepared_by_attach_capability"
+                            ),
+                            "parallel_map_write_enabled": True,
+                            "parallel_map_write_worker_count": 8,
+                            "parallel_map_write_scheduled_update_count": 3,
                             "target_generation": 42,
                             "active_generation_before": 41,
                             "active_generation_after": 41,
@@ -5355,6 +6370,7 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
             "preactivation_preload",
         )
         self.assertTrue(load_maps.call_args_list[0].args[0]["defer_active_generation_flip"])
+        self.assertTrue(load_maps.call_args_list[0].args[0]["skip_interface_role_map_updates"])
         self.assertEqual(
             load_maps.call_args_list[1].args[0]["bpf_runtime_update_phase"],
             "steady_map_only",
@@ -5368,9 +6384,18 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
         preload = report["steps"]["preactivation_preload"]
         preload_attr = preload["runtime_reload_attribution"]
         self.assertEqual(preload["map_write_update_count"], 3)
+        self.assertEqual(preload["expected_data_map_write_update_count"], 3)
         self.assertEqual(preload["active_generation_update_count"], 0)
+        self.assertTrue(preload["interface_role_map_updates_skipped"])
+        self.assertEqual(preload["interface_role_map_skipped_update_count"], 1)
+        self.assertTrue(preload["parallel_map_write_enabled"])
+        self.assertEqual(preload["parallel_map_write_worker_count"], 8)
+        self.assertEqual(preload["parallel_map_write_scheduled_update_count"], 3)
         self.assertTrue(preload_attr["preactivation_preload"])
+        self.assertTrue(preload_attr["preactivation_preload_data_write_used"])
         self.assertTrue(preload_attr["defer_active_generation_flip"])
+        self.assertTrue(preload_attr["interface_role_map_updates_skipped"])
+        self.assertTrue(preload_attr["parallel_map_write_enabled"])
         self.assertEqual(preload_attr["target_generation"], 42)
         self.assertEqual(preload_attr["actual_data_write_count"], 3)
         self.assertEqual(preload_attr["active_generation_before"], 41)
@@ -5520,6 +6545,320 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
         attach_mpls.assert_not_called()
         live_roles.assert_not_called()
 
+    def test_bpf_owned_worker_preload_reuses_prepared_attach_capability_guard(
+        self,
+    ) -> None:
+        compiled = {
+            "attach_plan": {"netns:gw205:ix204": ["ingress"]},
+            "attached_interfaces": ["netns:gw205:ix204"],
+            "attached_interface_details": [
+                {
+                    "interface_ref": "netns:gw205:ix204",
+                    "attach_directions": ["ingress"],
+                    "expected_roles": ["z_to_g_classifier"],
+                }
+            ],
+            "compiled_mpls_map_counts": {"ingress_classifier_map": 1},
+            "map_conflicts": [],
+            "map_conflict_summary": {"conflict_count": 0},
+            "label_allocation": {},
+            "resolved_mpls_flow_entries": [],
+        }
+        previous_readiness = {
+            "prepare_steps": {
+                "real_backend_prepare": {
+                    "attach_plan": {"netns:gw205:ix204": ["ingress"]},
+                }
+            },
+            "attached_interface_details": [
+                {
+                    "interface_ref": "netns:gw205:ix204",
+                    "attach_directions": ["ingress"],
+                    "expected_roles": ["z_to_g_classifier"],
+                }
+            ],
+            "preactivation_attach_prepare": {
+                "ok": True,
+                "runtime_apply_skipped": True,
+                "active_generation_set": False,
+                "map_ready": False,
+                "runtime_full_generation_reload_count": 0,
+                "full_attach_count": 0,
+                "delta_attach_count": 1,
+                "attached_interfaces": ["netns:gw205:ix204"],
+                "attached_interface_details": [
+                    {"interface_ref": "netns:gw205:ix204"}
+                ],
+            },
+            "preactivation_attach_prepare_records": [
+                {"ok": True, "artifact_path": "/tmp/attach.json"}
+            ],
+            "prepared_bpf_attach_interface_count": 1,
+            "prepared_bpf_attach_capability_count": 1,
+        }
+
+        with (
+            patch(
+                "linux_mpls_runtime._bpf_owned_compile_mpls_maps_for_contexts",
+                return_value=compiled,
+            ),
+            patch(
+                "satellite.bpf_dataplane_canary.collect_environment",
+                return_value={},
+            ),
+            patch("satellite.bpf_dataplane_canary.attach_blockers", return_value=[]),
+            patch("satellite.bpf_mpls_live.verify_mpls_clsact") as verify_clsact,
+            patch(
+                "satellite.bpf_mpls_live.load_mpls_maps",
+                return_value={
+                    "ok": True,
+                    "active_generation": 41,
+                    "target_generation": 42,
+                    "map_write_update_count": 1,
+                    "batch_map_write_update_count": 1,
+                    "actual_data_write_count": 1,
+                    "active_generation_update_count": 0,
+                    "active_generation_switch_count": 0,
+                },
+            ) as load_maps,
+            patch("satellite.bpf_mpls_live.attach_mpls") as attach_mpls,
+        ):
+            report = _bpf_owned_prepare_mpls_backend(
+                proof={"generation_id": 42, "map_entry_count": 1},
+                contexts=(),
+                reuse_attached_readiness=previous_readiness,
+                fail_closed_on_reuse_miss=True,
+                preactivation_preload_only=True,
+                require_prepared_attach_capability_for_preactivation_preload=True,
+            )
+
+        self.assertTrue(report["ok"])
+        self.assertTrue(report["inactive_generation_written"])
+        guard = report["steps"]["reused_attach_clsact_guard"]
+        self.assertTrue(guard["ok"])
+        self.assertTrue(guard["skipped"])
+        self.assertEqual(
+            guard["reason"],
+            "prepared_attach_capability_contract_reused",
+        )
+        self.assertEqual(guard["checked_interfaces"], [])
+        self.assertTrue(
+            report["preactivation_preload_attach_capability_contract"]["ok"]
+        )
+        self.assertEqual(
+            report["preactivation_preload_attach_capability_contract"][
+                "prepared_interface_count"
+            ],
+            1,
+        )
+        self.assertIn(
+            "bpf_reused_attach_clsact_guard_seconds",
+            report["timing_breakdown"],
+        )
+        verify_clsact.assert_not_called()
+        attach_mpls.assert_not_called()
+        self.assertEqual(load_maps.call_count, 1)
+
+    def test_bpf_owned_worker_preload_requires_prepared_attach_capability(
+        self,
+    ) -> None:
+        compiled = {
+            "attach_plan": {"netns:gw205:ix204": ["ingress"]},
+            "attached_interfaces": ["netns:gw205:ix204"],
+            "attached_interface_details": [
+                {
+                    "interface_ref": "netns:gw205:ix204",
+                    "attach_directions": ["ingress"],
+                    "expected_roles": ["z_to_g_classifier"],
+                }
+            ],
+            "compiled_mpls_map_counts": {"ingress_classifier_map": 1},
+            "map_conflicts": [],
+            "map_conflict_summary": {"conflict_count": 0},
+            "label_allocation": {},
+            "resolved_mpls_flow_entries": [],
+        }
+        previous_readiness = {
+            "prepare_steps": {
+                "real_backend_prepare": {
+                    "attach_plan": {"netns:gw205:ix204": ["ingress"]},
+                }
+            },
+            "attached_interface_details": [
+                {
+                    "interface_ref": "netns:gw205:ix204",
+                    "attach_directions": ["ingress"],
+                    "expected_roles": ["z_to_g_classifier"],
+                }
+            ],
+        }
+
+        with (
+            patch(
+                "linux_mpls_runtime._bpf_owned_compile_mpls_maps_for_contexts",
+                return_value=compiled,
+            ),
+            patch(
+                "satellite.bpf_dataplane_canary.collect_environment",
+                return_value={},
+            ),
+            patch("satellite.bpf_dataplane_canary.attach_blockers", return_value=[]),
+            patch("satellite.bpf_mpls_live.verify_mpls_clsact") as verify_clsact,
+            patch("satellite.bpf_mpls_live.load_mpls_maps") as load_maps,
+            patch("satellite.bpf_mpls_live.attach_mpls") as attach_mpls,
+        ):
+            report = _bpf_owned_prepare_mpls_backend(
+                proof={"generation_id": 42, "map_entry_count": 1},
+                contexts=(),
+                reuse_attached_readiness=previous_readiness,
+                fail_closed_on_reuse_miss=True,
+                preactivation_preload_only=True,
+                require_prepared_attach_capability_for_preactivation_preload=True,
+            )
+
+        self.assertFalse(report["ok"])
+        self.assertTrue(report["fail_closed"])
+        self.assertEqual(
+            report["blocked_stage"],
+            "bpf_lookahead_preactivation_preload_attach_capability",
+        )
+        self.assertIn(
+            "prepared_attach_capability_report_missing",
+            report["reason"],
+        )
+        verify_clsact.assert_not_called()
+        load_maps.assert_not_called()
+        attach_mpls.assert_not_called()
+
+    def test_bpf_owned_worker_preload_uses_frozen_compiled_inputs_without_compile(
+        self,
+    ) -> None:
+        frozen_inputs = {
+            "schema_version": "skyseed-bpf-owned-compiled-runtime-inputs-v1",
+            "active_generation": {"value": 42},
+            "ingress_classifier_map": [
+                {"key": {"generation": 42}, "value": {"active": True}}
+            ],
+            "core_lfib_map": [],
+            "egress_handoff_map": [],
+            "generation_base_map": [
+                {"key": {"generation": 42}, "value": {"base_generation": 0}}
+            ],
+            "attach_plan": {"netns:gw205:ix204": ["ingress"]},
+            "attached_interfaces": ["netns:gw205:ix204"],
+            "attached_interface_details": [
+                {
+                    "interface_ref": "netns:gw205:ix204",
+                    "attach_directions": ["ingress"],
+                    "expected_roles": ["z_to_g_classifier"],
+                }
+            ],
+            "compiled_mpls_map_counts": {
+                "ingress_classifier_map": 1,
+                "core_lfib_map": 0,
+                "egress_handoff_map": 0,
+                "generation_base_map": 1,
+            },
+            "map_conflicts": [],
+            "map_conflict_summary": {"conflict_count": 0},
+        }
+        previous_readiness = {
+            "prepare_steps": {
+                "real_backend_prepare": {
+                    "attach_plan": {"netns:gw205:ix204": ["ingress"]},
+                }
+            },
+            "attached_interface_details": [
+                {
+                    "interface_ref": "netns:gw205:ix204",
+                    "attach_directions": ["ingress"],
+                    "expected_roles": ["z_to_g_classifier"],
+                }
+            ],
+            "preactivation_attach_prepare": {
+                "ok": True,
+                "runtime_apply_skipped": True,
+                "active_generation_set": False,
+                "map_ready": False,
+                "runtime_full_generation_reload_count": 0,
+                "full_attach_count": 0,
+                "attached_interfaces": ["netns:gw205:ix204"],
+            },
+            "prepared_bpf_attach_interface_count": 1,
+            "prepared_bpf_attach_capability_count": 1,
+        }
+
+        with (
+            patch("linux_mpls_runtime._bpf_owned_compile_mpls_maps_for_contexts") as compile_maps,
+            patch(
+                "satellite.bpf_mpls_live.load_mpls_maps",
+                return_value={
+                    "ok": True,
+                    "active_generation": 42,
+                    "map_write_update_count": 1,
+                    "batch_map_write_update_count": 1,
+                    "actual_data_write_count": 1,
+                    "active_generation_update_count": 0,
+                    "active_generation_switch_count": 0,
+                },
+            ) as load_maps,
+            patch("satellite.bpf_mpls_live.verify_mpls_clsact") as verify_clsact,
+        ):
+            report = _bpf_owned_prepare_mpls_backend(
+                proof={"generation_id": 42, "map_entry_count": 1},
+                contexts=(),
+                reuse_attached_readiness=previous_readiness,
+                fail_closed_on_reuse_miss=True,
+                preactivation_preload_only=True,
+                frozen_compiled_runtime_inputs=frozen_inputs,
+                require_frozen_compiled_runtime_inputs=True,
+                require_prepared_attach_capability_for_preactivation_preload=True,
+            )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(
+            report["compiled_runtime_inputs_source"],
+            "queued_horizon_maintenance_frozen_manifest",
+        )
+        self.assertTrue(report["frozen_compiled_runtime_inputs_check"]["ready"])
+        self.assertEqual(
+            report["timing_breakdown"][
+                "interface_discovery_logical_binding_wall_seconds"
+            ],
+            0.0,
+        )
+        compile_maps.assert_not_called()
+        verify_clsact.assert_not_called()
+        self.assertEqual(load_maps.call_count, 1)
+
+    def test_bpf_owned_worker_preload_requires_frozen_compiled_inputs(
+        self,
+    ) -> None:
+        with (
+            patch("linux_mpls_runtime._bpf_owned_compile_mpls_maps_for_contexts") as compile_maps,
+            patch("satellite.bpf_mpls_live.load_mpls_maps") as load_maps,
+            patch("satellite.bpf_mpls_live.verify_mpls_clsact") as verify_clsact,
+        ):
+            report = _bpf_owned_prepare_mpls_backend(
+                proof={"generation_id": 42, "map_entry_count": 1},
+                contexts=(),
+                reuse_attached_readiness={"ready": True},
+                fail_closed_on_reuse_miss=True,
+                preactivation_preload_only=True,
+                require_frozen_compiled_runtime_inputs=True,
+            )
+
+        self.assertFalse(report["ok"])
+        self.assertTrue(report["fail_closed"])
+        self.assertEqual(
+            report["blocked_stage"],
+            "bpf_lookahead_preactivation_preload_frozen_compiled_inputs",
+        )
+        self.assertIn("frozen_compiled_runtime_inputs_missing", report["reason"])
+        compile_maps.assert_not_called()
+        load_maps.assert_not_called()
+        verify_clsact.assert_not_called()
+
     def test_bpf_owned_lookahead_preload_only_fails_closed_before_delta_attach(
         self,
     ) -> None:
@@ -5606,6 +6945,277 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
         self.assertTrue(report["steps"]["attach"]["skipped"])
         load_maps.assert_not_called()
         attach_mpls.assert_not_called()
+
+    def test_bpf_owned_preactivation_attach_prepare_skips_maps_and_activation(
+        self,
+    ) -> None:
+        prepare_report = {
+            "ok": True,
+            "reason": "",
+            "preactivation_attach_prepare_scheduled": True,
+            "runtime_apply_skipped": True,
+            "runtime_generation_loaded": False,
+            "active_generation_set": False,
+            "map_ready": False,
+            "delta_attach_count": 2,
+            "full_attach_count": 0,
+            "runtime_full_generation_reload_count": 0,
+            "attached_interfaces": [
+                "netns:gw205:ix204",
+                "netns:stl-940001:ga-g207s0",
+            ],
+            "attached_interface_details": [
+                {
+                    "interface_ref": "netns:gw205:ix204",
+                    "attach_directions": ["ingress"],
+                    "expected_roles": ["z_to_g_classifier"],
+                },
+                {
+                    "interface_ref": "netns:stl-940001:ga-g207s0",
+                    "attach_directions": ["ingress"],
+                    "expected_roles": ["g_to_z_egress_handoff"],
+                },
+            ],
+            "attach_plan": {
+                "netns:gw205:ix204": ["ingress"],
+                "netns:stl-940001:ga-g207s0": ["ingress"],
+            },
+            "compiled_runtime_inputs": {
+                "attach_plan": {
+                    "netns:gw205:ix204": ["ingress"],
+                    "netns:stl-940001:ga-g207s0": ["ingress"],
+                }
+            },
+            "attach_reuse": {
+                "required_interface_role_union_count": 2,
+                "prepared_bpf_attach_capability_count": 1,
+                "attach_reuse_eligible_count": 1,
+                "attach_reuse_ineligible_count": 0,
+            },
+            "outcome_labels": [
+                "LOOKAHEAD_PREACTIVATION_ATTACH_CAPABILITY_PREPARED",
+                "NO_FUTURE_MAP_WRITE_OR_ACTIVE_GENERATION_FLIP",
+            ],
+        }
+
+        with (
+            patch(
+                "linux_mpls_runtime._derive_bpf_owned_readiness_proof",
+                return_value={
+                    "logical_intent_ready": True,
+                    "generation_id": 42,
+                    "attached_interfaces": ["netns:gw205:ix204"],
+                    "prepare_steps": {},
+                },
+            ),
+            patch(
+                "linux_mpls_runtime._bpf_owned_host_interfaces_for_contexts",
+                return_value=["netns:gw205:ix204"],
+            ),
+            patch(
+                "linux_mpls_runtime._bpf_owned_prepare_mpls_backend",
+                return_value=prepare_report,
+            ) as prepare_backend,
+        ):
+            report = _prepare_bpf_owned_preactivation_attach_capability(
+                runtime_update_plan=SimpleNamespace(),
+                topology_path=Path("/tmp/topology.json"),
+                contexts=(SimpleNamespace(flow_id="active-flow"),),
+                resident_attach_contexts=(
+                    SimpleNamespace(flow_id="active-flow"),
+                    SimpleNamespace(flow_id="future-flow"),
+                ),
+                bpf_owned_readiness={
+                    "attached_interfaces": ["netns:gw205:ix204"],
+                },
+                retain_inactive_generations=[0, 1],
+                prepared_generation_window_count=2,
+            )
+
+        kwargs = prepare_backend.call_args.kwargs
+        self.assertTrue(kwargs["preactivation_attach_prepare_only"])
+        self.assertTrue(kwargs["fail_closed_on_reuse_miss"])
+        self.assertTrue(kwargs["allow_role_capability_expansion"])
+        self.assertEqual(kwargs["retain_inactive_generations"], [0, 1])
+        self.assertEqual(kwargs["prepared_generation_window_count"], 2)
+        self.assertTrue(report["ok"])
+        self.assertFalse(report["ready"])
+        self.assertTrue(report["runtime_apply_skipped"])
+        self.assertFalse(report["inactive_generation_written"])
+        self.assertFalse(report["active_generation_set"])
+        self.assertFalse(report["map_ready"])
+        self.assertEqual(report["delta_attach_count"], 2)
+        self.assertEqual(report["full_attach_count"], 0)
+        self.assertEqual(report["runtime_full_generation_reload_count"], 0)
+        self.assertFalse(report["runtime_attach_allowed"])
+        self.assertEqual(
+            report["attach_capability_prepare_inputs_source"],
+            "maintenance_prepared_horizon_runtime_contexts",
+        )
+        self.assertEqual(
+            report["attach_capability_prepare_physical_check_source"],
+            "live_clsact_guard",
+        )
+        self.assertEqual(
+            report["preload_compiled_runtime_inputs_source_required"],
+            "queued_horizon_maintenance_frozen_manifest",
+        )
+        self.assertIn(
+            "LOOKAHEAD_PREACTIVATION_ATTACH_CAPABILITY_PREPARED",
+            report["outcome_labels"],
+        )
+
+    def test_bpf_owned_preactivation_preload_uses_host_interface_fallback(
+        self,
+    ) -> None:
+        prepare_report = {
+            "ok": True,
+            "reason": "",
+            "preactivation_preload_scheduled": True,
+            "inactive_generation_written": True,
+            "active_generation_flip_skipped": True,
+            "runtime_apply_skipped": True,
+            "delta_attach_count": 0,
+            "full_attach_count": 0,
+            "runtime_full_generation_reload_count": 0,
+            "attach_reuse": {},
+            "preactivation_preload": {"batch_map_write_used": True},
+            "compiled_runtime_inputs": {"active_generation": {"value": 42}},
+            "compiled_mpls_map_counts": {"ingress_classifier_map": 1},
+        }
+        interface_ifindex_cache = {"netns:gw205:ix204": 205}
+        interface_mac_cache = {"netns:gw205:ix204": "02:00:00:00:02:05"}
+
+        with (
+            patch(
+                "linux_mpls_runtime._derive_bpf_owned_readiness_proof",
+                return_value={
+                    "logical_intent_ready": True,
+                    "generation_id": 42,
+                    "attached_interfaces": ["logical:gw205:ix204"],
+                    "prepare_steps": {},
+                },
+            ),
+            patch(
+                "linux_mpls_runtime._bpf_owned_host_interfaces_for_contexts",
+                return_value=["netns:gw205:ix204"],
+            ),
+            patch(
+                "linux_mpls_runtime._bpf_owned_prepare_mpls_backend",
+                return_value=prepare_report,
+            ) as prepare_backend,
+        ):
+            report = _prepare_bpf_owned_preactivation_preload(
+                runtime_update_plan=SimpleNamespace(),
+                topology_path=Path("/tmp/topology.json"),
+                contexts=(SimpleNamespace(flow_id="future-flow"),),
+                bpf_owned_readiness={
+                    "attached_interfaces": ["netns:gw205:ix204"],
+                },
+                retain_inactive_generations=[0],
+                prepared_generation_window_count=1,
+                base_generation_compiled_inputs={
+                    "active_generation": {"value": 0},
+                },
+                interface_ifindex_cache=interface_ifindex_cache,
+                interface_mac_cache=interface_mac_cache,
+            )
+
+        backend_kwargs = prepare_backend.call_args.kwargs
+        self.assertIs(
+            backend_kwargs["interface_ifindex_cache"],
+            interface_ifindex_cache,
+        )
+        self.assertIs(backend_kwargs["interface_mac_cache"], interface_mac_cache)
+        self.assertFalse(
+            backend_kwargs[
+                "require_prepared_attach_capability_for_preactivation_preload"
+            ]
+        )
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["attached_interfaces"], ["netns:gw205:ix204"])
+        self.assertEqual(
+            report["logical_attached_interfaces"],
+            ["logical:gw205:ix204"],
+        )
+        self.assertTrue(report["inactive_generation_written"])
+        self.assertTrue(report["active_generation_flip_skipped"])
+        self.assertFalse(report["runtime_attach_allowed"])
+
+    def test_bpf_owned_preactivation_preload_with_frozen_inputs_skips_host_lookup(
+        self,
+    ) -> None:
+        frozen_inputs = {
+            "schema_version": "skyseed-bpf-owned-compiled-runtime-inputs-v1",
+            "active_generation": {"value": 42},
+            "ingress_classifier_map": [],
+            "core_lfib_map": [],
+            "egress_handoff_map": [],
+            "generation_base_map": [
+                {"key": {"generation": 42}, "value": {"base_generation": 0}}
+            ],
+            "attached_interfaces": ["netns:gw205:ix204"],
+        }
+        prepare_report = {
+            "ok": True,
+            "reason": "",
+            "preactivation_preload_scheduled": True,
+            "inactive_generation_written": True,
+            "active_generation_flip_skipped": True,
+            "runtime_apply_skipped": True,
+            "delta_attach_count": 0,
+            "full_attach_count": 0,
+            "runtime_full_generation_reload_count": 0,
+            "attach_reuse": {},
+            "preactivation_preload": {"batch_map_write_used": True},
+            "compiled_runtime_inputs": frozen_inputs,
+            "compiled_runtime_inputs_source": (
+                "queued_horizon_maintenance_frozen_manifest"
+            ),
+            "frozen_compiled_runtime_inputs_check": {"ready": True},
+        }
+
+        with (
+            patch(
+                "linux_mpls_runtime._derive_bpf_owned_readiness_proof",
+                return_value={
+                    "logical_intent_ready": True,
+                    "generation_id": 42,
+                    "attached_interfaces": ["logical:gw205:ix204"],
+                    "prepare_steps": {},
+                },
+            ),
+            patch(
+                "linux_mpls_runtime._bpf_owned_host_interfaces_for_contexts"
+            ) as host_interfaces,
+            patch(
+                "linux_mpls_runtime._bpf_owned_prepare_mpls_backend",
+                return_value=prepare_report,
+            ) as prepare_backend,
+        ):
+            report = _prepare_bpf_owned_preactivation_preload(
+                runtime_update_plan=SimpleNamespace(),
+                topology_path=Path("/tmp/topology.json"),
+                contexts=(SimpleNamespace(flow_id="future-flow"),),
+                bpf_owned_readiness={"ready": True},
+                frozen_compiled_runtime_inputs=frozen_inputs,
+                require_frozen_compiled_runtime_inputs=True,
+            )
+
+        host_interfaces.assert_not_called()
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["attached_interfaces"], ["netns:gw205:ix204"])
+        self.assertEqual(
+            report["compiled_runtime_inputs_source"],
+            "queued_horizon_maintenance_frozen_manifest",
+        )
+        self.assertTrue(
+            prepare_backend.call_args.kwargs["require_frozen_compiled_runtime_inputs"]
+        )
+        self.assertEqual(
+            prepare_backend.call_args.kwargs["frozen_compiled_runtime_inputs"],
+            frozen_inputs,
+        )
 
     def test_bpf_owned_lookahead_preload_fails_closed_on_role_capability_gap(
         self,
@@ -5706,6 +7316,368 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
         self.assertFalse(report.get("active_generation_set", False))
         load_maps.assert_not_called()
         attach_mpls.assert_not_called()
+
+    def test_bpf_owned_attach_prepare_allows_safe_role_capability_expansion(
+        self,
+    ) -> None:
+        interface_ref = "netns:stl-940001:ga-g207s0"
+        compiled = {
+            "attach_plan": {interface_ref: ["egress", "ingress"]},
+            "attached_interfaces": [interface_ref],
+            "attached_interface_details": [
+                {
+                    "interface_ref": interface_ref,
+                    "interface_name": interface_ref,
+                    "container_interface_name": "ga-g207s0",
+                    "netns": "stl-940001",
+                    "ifindex": 6590,
+                    "attach_directions": ["egress", "ingress"],
+                    "expected_roles": [
+                        "g_to_z_egress_handoff",
+                        "z_to_g_core_lfib",
+                        "z_to_g_zone_handoff",
+                    ],
+                }
+            ],
+            "compiled_mpls_map_counts": {"ingress_classifier_map": 1},
+            "map_conflicts": [],
+            "map_conflict_summary": {"conflict_count": 0},
+            "label_allocation": {},
+            "resolved_mpls_flow_entries": [],
+        }
+        previous_readiness = {
+            "prepare_steps": {
+                "real_backend_prepare": {
+                    "attach_plan": {interface_ref: ["egress", "ingress"]},
+                    "map_capacities": {
+                        "classifiers": 128,
+                        "lfib": 256,
+                        "handoffs": 128,
+                    },
+                    "compiled_mpls_map_counts": {"ingress_classifier_map": 1},
+                }
+            },
+            "attached_interface_details": [
+                {
+                    "interface_ref": interface_ref,
+                    "interface_name": interface_ref,
+                    "container_interface_name": "ga-g207s0",
+                    "netns": "stl-940001",
+                    "ifindex": 6590,
+                    "attach_directions": ["egress", "ingress"],
+                    "expected_roles": [
+                        "g_to_z_egress_handoff",
+                        "z_to_g_core_lfib",
+                    ],
+                }
+            ],
+        }
+
+        with (
+            patch(
+                "linux_mpls_runtime._bpf_owned_compile_mpls_maps_for_contexts",
+                return_value=compiled,
+            ),
+            patch(
+                "satellite.bpf_dataplane_canary.collect_environment",
+                return_value={},
+            ),
+            patch("satellite.bpf_dataplane_canary.attach_blockers", return_value=[]),
+            patch("satellite.bpf_mpls_live.verify_mpls_clsact", return_value=[]),
+            patch("satellite.bpf_mpls_live.load_mpls_maps") as load_maps,
+            patch("satellite.bpf_mpls_live.attach_mpls") as attach_mpls,
+        ):
+            report = _bpf_owned_prepare_mpls_backend(
+                proof={"generation_id": 42, "map_entry_count": 1},
+                contexts=(),
+                reuse_attached_readiness=previous_readiness,
+                fail_closed_on_reuse_miss=True,
+                preactivation_attach_prepare_only=True,
+                allow_role_capability_expansion=True,
+            )
+
+        self.assertTrue(report["ok"])
+        self.assertTrue(report["runtime_apply_skipped"])
+        self.assertFalse(report["active_generation_set"])
+        self.assertFalse(report["map_ready"])
+        self.assertEqual(int(report.get("delta_attach_count") or 0), 0)
+        self.assertEqual(int(report.get("full_attach_count") or 0), 0)
+        self.assertEqual(
+            report["attach_reuse"]["attach_strategy"],
+            "full_reuse_with_role_capability_expansion",
+        )
+        self.assertTrue(report["attach_reuse"]["role_capability_expansion_allowed"])
+        self.assertEqual(report["attach_reuse"]["role_capability_expansion_count"], 1)
+        self.assertEqual(
+            report["attach_reuse"]["prepared_bpf_attach_capability_count"],
+            report["attach_reuse"]["required_interface_role_union_count"],
+        )
+        self.assertIn(
+            "INTERFACE_ROLE_CAPABILITY_EXPANSION_PREPARED_IN_MAINTENANCE",
+            report["outcome_labels"],
+        )
+        load_maps.assert_not_called()
+        attach_mpls.assert_not_called()
+
+    def test_bpf_owned_preload_attach_reuse_audit_fails_on_role_mismatch(
+        self,
+    ) -> None:
+        interface_ref = "netns:stl-940001:ga-g207s0"
+        compiled = {
+            "attach_plan": {interface_ref: ["egress", "ingress"]},
+            "attached_interfaces": [interface_ref],
+            "attached_interface_details": [
+                {
+                    "interface_ref": interface_ref,
+                    "attach_directions": ["egress", "ingress"],
+                    "expected_roles": [
+                        "g_to_z_egress_handoff",
+                        "z_to_g_zone_handoff",
+                    ],
+                }
+            ],
+            "compiled_mpls_map_counts": {"egress_handoff_map": 1},
+        }
+        previous_readiness = {
+            "prepare_steps": {
+                "real_backend_prepare": {
+                    "attach_plan": {interface_ref: ["egress", "ingress"]},
+                    "map_capacities": {
+                        "classifiers": 128,
+                        "lfib": 256,
+                        "handoffs": 128,
+                    },
+                    "compiled_mpls_map_counts": {"egress_handoff_map": 1},
+                }
+            },
+            "attached_interface_details": [
+                {
+                    "interface_ref": interface_ref,
+                    "attach_directions": ["egress", "ingress"],
+                    "expected_roles": ["g_to_z_egress_handoff"],
+                }
+            ],
+        }
+
+        with (
+            patch(
+                "linux_mpls_runtime._derive_bpf_owned_readiness_proof",
+                return_value={"logical_intent_ready": True, "generation_id": 42},
+            ),
+            patch(
+                "linux_mpls_runtime._bpf_owned_compile_mpls_maps_for_contexts",
+                return_value=compiled,
+            ),
+        ):
+            report = _audit_bpf_owned_preactivation_preload_attach_reuse(
+                runtime_update_plan=SimpleNamespace(),
+                topology_path=Path("topology.json"),
+                contexts=(SimpleNamespace(flow_id="future-flow"),),
+                bpf_owned_readiness=previous_readiness,
+            )
+
+        self.assertFalse(report["ok"])
+        self.assertTrue(report["fail_closed"])
+        self.assertIn("interface_role_set_mismatch", report["reason"])
+        self.assertEqual(
+            report["blocked_stage"],
+            "bpf_lookahead_preactivation_preload_attach_reuse_audit",
+        )
+        self.assertEqual(
+            report["attach_reuse"]["interface_role_mismatch_count"],
+            1,
+        )
+
+    def test_bpf_owned_preload_attach_reuse_audit_accepts_prepared_role_superset(
+        self,
+    ) -> None:
+        interface_ref = "netns:stl-940001:ga-g207s0"
+        compiled = {
+            "attach_plan": {interface_ref: ["egress", "ingress"]},
+            "attached_interfaces": [interface_ref],
+            "attached_interface_details": [
+                {
+                    "interface_ref": interface_ref,
+                    "attach_directions": ["egress", "ingress"],
+                    "expected_roles": ["g_to_z_egress_handoff"],
+                }
+            ],
+            "compiled_mpls_map_counts": {"egress_handoff_map": 1},
+        }
+        previous_readiness = {
+            "prepare_steps": {
+                "real_backend_prepare": {
+                    "attach_plan": {interface_ref: ["egress", "ingress"]},
+                    "map_capacities": {
+                        "classifiers": 128,
+                        "lfib": 256,
+                        "handoffs": 128,
+                    },
+                    "compiled_mpls_map_counts": {"egress_handoff_map": 1},
+                }
+            },
+            "attached_interface_details": [
+                {
+                    "interface_ref": interface_ref,
+                    "attach_directions": ["egress", "ingress"],
+                    "expected_roles": [
+                        "g_to_z_egress_handoff",
+                        "z_to_g_zone_handoff",
+                    ],
+                }
+            ],
+        }
+
+        with (
+            patch(
+                "linux_mpls_runtime._derive_bpf_owned_readiness_proof",
+                return_value={"logical_intent_ready": True, "generation_id": 42},
+            ),
+            patch(
+                "linux_mpls_runtime._bpf_owned_compile_mpls_maps_for_contexts",
+                return_value=compiled,
+            ),
+        ):
+            report = _audit_bpf_owned_preactivation_preload_attach_reuse(
+                runtime_update_plan=SimpleNamespace(),
+                topology_path=Path("topology.json"),
+                contexts=(SimpleNamespace(flow_id="future-flow"),),
+                bpf_owned_readiness=previous_readiness,
+            )
+
+        self.assertTrue(report["ok"])
+        self.assertFalse(report["fail_closed"])
+        self.assertEqual(report["delta_attach_count"], 0)
+        self.assertEqual(report["full_attach_count"], 0)
+        self.assertEqual(
+            report["attach_reuse"]["attach_strategy"],
+            "full_reuse",
+        )
+
+    def test_bpf_owned_delta_attach_prepare_reuses_existing_pinned_map_capacities(
+        self,
+    ) -> None:
+        existing_interface = "netns:gw205:ix204"
+        new_interface = "netns:gw204:ix203"
+        previous_capacities = {
+            "classifiers": 2592,
+            "lfib": 4096,
+            "handoffs": 2048,
+            "interface_counter_entries": 8192,
+        }
+        compiled = {
+            "attach_plan": {
+                existing_interface: ["ingress"],
+                new_interface: ["ingress"],
+            },
+            "attached_interfaces": [existing_interface, new_interface],
+            "attached_interface_details": [
+                {
+                    "interface_ref": existing_interface,
+                    "interface_name": existing_interface,
+                    "attach_directions": ["ingress"],
+                    "expected_roles": ["z_to_g_core_lfib"],
+                    "ifindex": 205,
+                },
+                {
+                    "interface_ref": new_interface,
+                    "interface_name": new_interface,
+                    "attach_directions": ["ingress"],
+                    "expected_roles": ["z_to_g_core_lfib"],
+                    "ifindex": 204,
+                },
+            ],
+            "compiled_mpls_map_counts": {
+                "ingress_classifier_map": 10,
+                "core_lfib_map": 10,
+                "egress_handoff_map": 10,
+            },
+            "map_conflicts": [],
+            "map_conflict_summary": {"conflict_count": 0},
+            "label_allocation": {},
+            "resolved_mpls_flow_entries": [],
+        }
+        previous_readiness = {
+            "prepare_steps": {
+                "real_backend_prepare": {
+                    "attach_plan": {existing_interface: ["ingress"]},
+                    "map_capacities": previous_capacities,
+                    "compiled_mpls_map_counts": {
+                        "ingress_classifier_map": 20,
+                        "core_lfib_map": 20,
+                        "egress_handoff_map": 20,
+                    },
+                    "attached_interface_details": [
+                        {
+                            "interface_ref": existing_interface,
+                            "interface_name": existing_interface,
+                            "attach_directions": ["ingress"],
+                            "expected_roles": ["z_to_g_core_lfib"],
+                            "ifindex": 205,
+                        }
+                    ],
+                }
+            },
+            "attached_interface_details": [
+                {
+                    "interface_ref": existing_interface,
+                    "interface_name": existing_interface,
+                    "attach_directions": ["ingress"],
+                    "expected_roles": ["z_to_g_core_lfib"],
+                    "ifindex": 205,
+                }
+            ],
+        }
+        compile_capacities = []
+
+        def compile_bpf(*args, **kwargs):
+            compile_capacities.append(dict(kwargs.get("capacities") or {}))
+            return {"returncode": 0}
+
+        with (
+            patch(
+                "linux_mpls_runtime._bpf_owned_compile_mpls_maps_for_contexts",
+                return_value=compiled,
+            ),
+            patch(
+                "satellite.bpf_dataplane_canary.collect_environment",
+                return_value={},
+            ),
+            patch("satellite.bpf_dataplane_canary.attach_blockers", return_value=[]),
+            patch("satellite.bpf_mpls_live.compile_mpls_bpf", side_effect=compile_bpf),
+            patch(
+                "satellite.bpf_mpls_live.verify_mpls_clsact",
+                return_value=[{"returncode": 0}],
+            ),
+            patch(
+                "satellite.bpf_mpls_live.attach_mpls",
+                return_value=[{"returncode": 0, "args": ["tc", "filter", "add"]}],
+            ) as attach_mpls,
+            patch("satellite.bpf_mpls_live.load_mpls_maps") as load_maps,
+        ):
+            report = _bpf_owned_prepare_mpls_backend(
+                proof={"generation_id": 42, "map_entry_count": 1},
+                contexts=(),
+                reuse_attached_readiness=previous_readiness,
+                fail_closed_on_reuse_miss=True,
+                preactivation_attach_prepare_only=True,
+                prepared_generation_window_count=3,
+            )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(report["delta_attach_count"], 1)
+        self.assertEqual(compile_capacities, [previous_capacities])
+        self.assertEqual(report["map_capacities"], previous_capacities)
+        self.assertEqual(
+            report["map_capacity_contract"]["capacity_source"],
+            "existing_pinned_bpf_map_schema",
+        )
+        self.assertTrue(
+            report["map_capacity_contract"]["reuse_existing_pinned_map_schema"]
+        )
+        attach_mpls.assert_called_once()
+        self.assertEqual(attach_mpls.call_args.args[0], new_interface)
+        load_maps.assert_not_called()
 
     def test_bpf_owned_lookahead_preload_missing_binding_fails_closed_without_attach(
         self,
@@ -5840,6 +7812,11 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
         prepare.assert_called_once()
         self.assertTrue(prepare.call_args.kwargs["preactivation_preload_only"])
         self.assertTrue(prepare.call_args.kwargs["fail_closed_on_reuse_miss"])
+        self.assertFalse(
+            prepare.call_args.kwargs[
+                "require_prepared_attach_capability_for_preactivation_preload"
+            ]
+        )
         self.assertTrue(report["ok"])
         self.assertFalse(report["ready"])
         self.assertTrue(report["preactivation_preload_only"])
@@ -6191,6 +8168,9 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
         self.assertEqual(accounting["metadata_only_count"], 1)
         self.assertEqual(accounting["qdisc_required_count"], 2)
         self.assertEqual(accounting["applied_qdisc_required_count"], 2)
+        self.assertEqual(accounting["qdisc_required_skipped_count"], 0)
+        self.assertEqual(accounting["qdisc_required_skipped_forbidden_count"], 0)
+        self.assertEqual(accounting["qdisc_apply_status"], "qdisc_required_applied")
         self.assertEqual(accounting["bpf_parameter_map_update_count"], 1)
         self.assertEqual(accounting["topology_rebind_required_count"], 1)
         self.assertEqual(accounting["applied_topology_rebind_required_count"], 1)
@@ -6247,6 +8227,17 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
         self.assertAlmostEqual(parallel_accounting["qdisc_cumulative_seconds"], 1.5)
         self.assertAlmostEqual(parallel_accounting["qdisc_wall_seconds"], 0.9)
 
+        skipped_accounting = _parameter_update_batch_accounting(
+            planned_operations=operations[1:2],
+            apply_results=[],
+            host_apply_wall_seconds=0.0,
+        )
+        self.assertEqual(
+            skipped_accounting["qdisc_apply_status"],
+            "qdisc_required_skipped_forbidden",
+        )
+        self.assertEqual(skipped_accounting["qdisc_required_skipped_count"], 1)
+
     def test_runtime_epoch_parameter_updates_require_qdisc_accounting(self) -> None:
         planned_operations = [
             {
@@ -6285,6 +8276,36 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
         self.assertEqual(accounting["qdisc_command_count"], 1)
         self.assertAlmostEqual(accounting["qdisc_cumulative_seconds"], 0.25)
         self.assertAlmostEqual(accounting["qdisc_wall_seconds"], 0.25)
+
+    def test_parameter_update_batch_accounting_excludes_unchanged_qdisc_skip(
+        self,
+    ) -> None:
+        operation = {
+            "operation": "update_slot_parameters",
+            "slot_type": "ut_access",
+            "slot_name": "ut1",
+            "source_runtime_parameters": {"delay_ms": 5.0},
+            "target_runtime_parameters": {"delay_ms": 6.0},
+        }
+        accounting = _parameter_update_batch_accounting(
+            planned_operations=[operation],
+            apply_results=[
+                {
+                    **operation,
+                    "qdisc_required": True,
+                    "qdisc_apply_wall_seconds": 0.01,
+                    "qdisc_apply_attempt_count": 0,
+                    "qdisc_apply_skipped_unchanged_count": 1,
+                }
+            ],
+            host_apply_wall_seconds=0.02,
+        )
+
+        self.assertEqual(accounting["qdisc_command_count"], 0)
+        self.assertEqual(accounting["qdisc_timed_command_count"], 0)
+        self.assertEqual(accounting["qdisc_apply_skipped_unchanged_count"], 1)
+        self.assertEqual(accounting["qdisc_cumulative_seconds"], 0.0)
+        self.assertEqual(accounting["qdisc_wall_seconds"], 0.0)
 
     def test_slot_capacity_audit_blocks_under_provisioned_inventory(self) -> None:
         audit = _slot_capacity_audit(
@@ -6594,6 +8615,9 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
             runtime["prepared_resource_scope_by_slot"],
             {"cross-slot": ["resource-a"]},
         )
+        self.assertNotIn("epoch_execution_queue", runtime)
+        self.assertTrue(runtime["epoch_execution_queue_elided"])
+        self.assertEqual(runtime["epoch_execution_queue_count"], 0)
 
     def test_inactive_materialized_cross_plane_slot_remains_invisible_without_fallback(self) -> None:
         topology = {
@@ -7186,7 +9210,10 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
                     "ok": True,
                     "horizon_id": "H0",
                     "generation_id": 42,
-                    "horizon_generation_key": "H0:generation-42",
+                    "logical_generation_id": 0,
+                    "physical_generation_id": 42,
+                    "horizon_generation_key": "H0:generation-0",
+                    "physical_horizon_generation_key": "H0:generation-42",
                     "intent_hash": "intent-42",
                     "source_state_id": "live_state:old:epoch-41",
                     "target_state_id": "live_state:new:epoch-42",
@@ -7278,6 +9305,14 @@ class RuntimeValidationDefaultTests(unittest.TestCase):
         self.assertEqual(result["current_source_state_id"], "live_state:new:epoch-42")
         self.assertEqual(result["consumed_source_state_id"], "live_state:old:epoch-41")
         self.assertEqual(result["active_horizon_generation_key"], "H0:generation-42")
+        self.assertEqual(
+            result["active_logical_horizon_generation_key"],
+            "H0:generation-0",
+        )
+        self.assertEqual(
+            result["active_physical_horizon_generation_key"],
+            "H0:generation-42",
+        )
         self.assertEqual(result["preloaded_generation_records"], [])
         self.assertEqual(
             result["prepare_steps"]["real_backend_prepare"]["prepare_mode"],

@@ -15,7 +15,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "apps"))
 
 import linux_mpls_runtime
-from run_starlink_shell_experiment import _aggregate_node_local_cleanup_reports
+import satellite.skyseed_preflight as skyseed_preflight
+from run_starlink_shell_experiment import (
+    _aggregate_node_local_cleanup_reports,
+    _compose_force_remove_project_residue,
+    _compose_force_remove_stale_networks,
+)
 from linux_mpls_runtime import (
     ActiveRuntimeSession,
     BPF_OWNED_PROOF_SCHEMA_VERSION,
@@ -179,6 +184,8 @@ class _FakeCleanupInstaller(DirectNetnsVethSlotLinkNamespaceQdiscInstaller):
         super().__init__()
         self.host_interfaces = {"vh1", "vt1", "br1"}
         self.container_interfaces = {"node-a": {"eth9"}}
+        self.host_interface_scan_count = 0
+        self.container_interface_scan_count = 0
 
     def _load_topology(self, topology_path: Path) -> dict[str, Any]:
         return {}
@@ -218,9 +225,11 @@ class _FakeCleanupInstaller(DirectNetnsVethSlotLinkNamespaceQdiscInstaller):
         }
 
     def _host_interface_name_set(self) -> set[str]:
+        self.host_interface_scan_count += 1
         return set(self.host_interfaces)
 
     def _container_interface_name_set(self, *, node_id: str) -> set[str]:
+        self.container_interface_scan_count += 1
         return set(self.container_interfaces.get(node_id, set()))
 
     def _host_interface_exists(
@@ -262,6 +271,15 @@ class _FakeCleanupInstaller(DirectNetnsVethSlotLinkNamespaceQdiscInstaller):
         if known_interfaces is not None:
             known_interfaces.discard(interface_name)
 
+    def _delete_host_interface_best_effort(self, interface_name: str) -> str:
+        if interface_name in self.host_interfaces:
+            self.host_interfaces.discard(interface_name)
+            return "deleted"
+        return "absent"
+
+    def _delete_bridge_best_effort(self, bridge_name: str) -> str:
+        return self._delete_host_interface_best_effort(bridge_name)
+
     def _delete_container_interface_if_present(
         self,
         *,
@@ -272,6 +290,18 @@ class _FakeCleanupInstaller(DirectNetnsVethSlotLinkNamespaceQdiscInstaller):
         self.container_interfaces.setdefault(node_id, set()).discard(interface_name)
         if known_interfaces is not None:
             known_interfaces.discard(interface_name)
+
+    def _delete_container_interface_best_effort(
+        self,
+        *,
+        node_id: str,
+        interface_name: str,
+    ) -> str:
+        interfaces = self.container_interfaces.setdefault(node_id, set())
+        if interface_name in interfaces:
+            interfaces.discard(interface_name)
+            return "deleted"
+        return "absent"
 
     def _run_command(
         self,
@@ -285,6 +315,258 @@ class _FakeCleanupInstaller(DirectNetnsVethSlotLinkNamespaceQdiscInstaller):
 
 
 class RollbackCleanupOptimizationTests(unittest.TestCase):
+    def test_scoped_cleanup_disconnects_stale_network_endpoint_names_before_retry(self) -> None:
+        cleanup_calls: list[list[str]] = []
+        run_calls: list[list[str]] = []
+
+        def fake_cleanup_command_result(*, command, apply):
+            cleanup_calls.append([str(part) for part in command])
+            if len(cleanup_calls) == 1:
+                return {
+                    "command": list(command),
+                    "executed": True,
+                    "ok": False,
+                    "returncode": 1,
+                    "stderr": "network has active endpoints",
+                }
+            return {
+                "command": list(command),
+                "executed": True,
+                "ok": True,
+                "returncode": 0,
+                "stderr": "",
+            }
+
+        def fake_run(command):
+            run_calls.append([str(part) for part in command])
+            if command[:3] == ["docker", "network", "inspect"]:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=json.dumps(
+                        [
+                            {
+                                "Containers": {
+                                    "missing-container-id": {
+                                        "Name": "starlinkexp-as154-router0"
+                                    }
+                                }
+                            }
+                        ]
+                    ),
+                    stderr="",
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with patch.object(
+            skyseed_preflight,
+            "_cleanup_command_result",
+            side_effect=fake_cleanup_command_result,
+        ), patch.object(skyseed_preflight, "_run", side_effect=fake_run):
+            results = skyseed_preflight._cleanup_compose_networks_with_stale_endpoints(
+                ["seed_output_net_154_net0"],
+                apply=True,
+            )
+
+        self.assertEqual(
+            cleanup_calls,
+            [
+                ["docker", "network", "rm", "seed_output_net_154_net0"],
+                ["docker", "network", "rm", "seed_output_net_154_net0"],
+            ],
+        )
+        self.assertIn(
+            [
+                "docker",
+                "network",
+                "disconnect",
+                "-f",
+                "seed_output_net_154_net0",
+                "starlinkexp-as154-router0",
+            ],
+            run_calls,
+        )
+        self.assertTrue(results[-1]["ok"])
+
+    def test_preflight_cleanup_success_ignores_network_retry_superseded_failure(
+        self,
+    ) -> None:
+        report = {
+            "checks": {
+                "docker_state": {
+                    "containers": {},
+                    "networks": {
+                        "compose_project_networks": [
+                            {"name": "seed_output_net_154_net0"}
+                        ],
+                        "named_skyseed_networks": [],
+                    },
+                },
+                "compose_processes": {"processes": []},
+                "direct_backend_host_artifacts": {"interfaces": []},
+                "runtime_lock_files": {"files": []},
+                "bpf_pinned_map_artifacts": {"map_names": []},
+            }
+        }
+        cleanup_calls: list[list[str]] = []
+        run_calls: list[list[str]] = []
+
+        def fake_cleanup_command_result(*, command, apply):
+            cleanup_calls.append([str(part) for part in command])
+            return {
+                "command": list(command),
+                "executed": bool(apply),
+                "ok": len(cleanup_calls) > 1,
+                "returncode": 0 if len(cleanup_calls) > 1 else 1,
+                "stderr": ""
+                if len(cleanup_calls) > 1
+                else "network has active endpoints",
+            }
+
+        def fake_run(command):
+            run_calls.append([str(part) for part in command])
+            if command[:3] == ["docker", "network", "inspect"]:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=json.dumps(
+                        [
+                            {
+                                "Containers": {
+                                    "missing-container-id": {
+                                        "Name": "starlinkexp-as154-router0"
+                                    }
+                                }
+                            }
+                        ]
+                    ),
+                    stderr="",
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with patch.object(
+            skyseed_preflight,
+            "_cleanup_command_result",
+            side_effect=fake_cleanup_command_result,
+        ), patch.object(skyseed_preflight, "_run", side_effect=fake_run):
+            result = skyseed_preflight.cleanup_skyseed_environment_residue(
+                preflight_report=report,
+                apply=True,
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(
+            cleanup_calls,
+            [
+                ["docker", "network", "rm", "seed_output_net_154_net0"],
+                ["docker", "network", "rm", "seed_output_net_154_net0"],
+            ],
+        )
+
+    def test_preflight_cleanup_counts_and_removes_bpf_pinned_maps(self) -> None:
+        report = {
+            "checks": {
+                "docker_state": {"containers": {}, "networks": {}},
+                "compose_processes": {"processes": []},
+                "direct_backend_host_artifacts": {"interfaces": []},
+                "runtime_lock_files": {"files": []},
+                "bpf_pinned_map_artifacts": {
+                    "map_names": ["active_generation", "interface_role_map"]
+                },
+            }
+        }
+        counts = skyseed_preflight._skyseed_cleanliness_counts(report["checks"])
+        self.assertEqual(counts["bpf_pinned_maps"], 2)
+
+        cleanup_calls: list[list[str]] = []
+
+        def fake_cleanup_command_result(*, command, apply):
+            cleanup_calls.append([str(part) for part in command])
+            return {
+                "command": list(command),
+                "executed": bool(apply),
+                "ok": True,
+                "returncode": 0,
+                "stderr": "",
+            }
+
+        with patch.object(
+            skyseed_preflight,
+            "_cleanup_command_result",
+            side_effect=fake_cleanup_command_result,
+        ):
+            result = skyseed_preflight.cleanup_skyseed_environment_residue(
+                preflight_report=report,
+                apply=True,
+            )
+
+        self.assertEqual(result["resource_counts"]["bpf_pinned_maps"], 2)
+        self.assertEqual(
+            cleanup_calls,
+            [
+                [
+                    "sudo",
+                    "-n",
+                    "rm",
+                    "-f",
+                    "/sys/fs/bpf/tc/globals/active_generation",
+                    "/sys/fs/bpf/tc/globals/interface_role_map",
+                ]
+            ],
+        )
+
+    def test_rolling_topology_switch_requires_explicit_reconcile_without_full_prepare(
+        self,
+    ) -> None:
+        installer = DirectNetnsVethSlotLinkNamespaceQdiscInstaller()
+        installer._runtime_prepared = True
+        installer._prepared_topology_path = "/old/topology.json"
+        installer._prepared_link_state_path = "/old/link_state.json"
+
+        with (
+            patch.object(
+                installer,
+                "_load_topology",
+                return_value={"slot_inventory": {}},
+            ),
+            patch.object(
+                installer,
+                "_prepare_runtime",
+                side_effect=AssertionError("full prepare must not run"),
+            ),
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "direct_backend_rolling_topology_switch_requires_explicit_reconcile_scope",
+            ):
+                installer.controller(
+                    topology_path=Path("/new/topology.json"),
+                    link_state_path=Path("/new/link_state.json"),
+                    reconcile_slot_names=None,
+                )
+
+            controller = installer.controller(
+                topology_path=Path("/new/topology.json"),
+                link_state_path=Path("/new/link_state.json"),
+                reconcile_slot_names=["slot-a"],
+                reconcile_mode="trusted_skip",
+            )
+
+        self.assertEqual(controller.topology_path, "/new/topology.json")
+
+    def test_runtime_activation_cannot_materialize_unprepared_resource(self) -> None:
+        installer = DirectNetnsVethSlotLinkNamespaceQdiscInstaller()
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "runtime_resource_materialization_forbidden_missing_prepared_resource",
+        ):
+            installer._ensure_resource_prepared(
+                slot={"slot_name": "ut2001-access-slot0"},
+                resource={
+                    "resource_key": "ut_access:satellite_id=stl-940335",
+                    "endpoints": [],
+                },
+            )
+
     def test_node_local_duplicate_cleanup_is_grouped_and_reported(self) -> None:
         specs = [
             RuntimeCommandSpec(
@@ -1992,7 +2274,7 @@ class RollbackCleanupOptimizationTests(unittest.TestCase):
         self.assertTrue(summary["cleanup_completed"])
         self.assertEqual(metrics["duplicate_cleanup_skipped_count"], 4)
         self.assertEqual(metrics["skipped_noop_count"], 4)
-        self.assertEqual(metrics["cleanup_resource_attempted_count"], 4)
+        self.assertEqual(metrics["cleanup_resource_attempted_count"], 8)
         self.assertEqual(metrics["cleanup_resource_succeeded_count"], 4)
         self.assertEqual(summary["removed_host_interface_count"], 1)
         self.assertEqual(summary["removed_temp_host_interface_count"], 1)
@@ -2004,7 +2286,11 @@ class RollbackCleanupOptimizationTests(unittest.TestCase):
         )
         self.assertTrue(metrics["bounded_owned_scope"])
         self.assertIn("CLEANUP_BOUNDED_OWNED_SCOPE_USED", metrics["outcome_labels"])
-        self.assertIn("GLOBAL_SCAN_DIAGNOSTIC_ONLY", metrics["outcome_labels"])
+        self.assertIn("CLEANUP_NO_GLOBAL_EXISTENCE_SCAN", metrics["outcome_labels"])
+        self.assertEqual(metrics["cleanup_existence_probe_count"], 0)
+        self.assertFalse(metrics["global_scan_diagnostic_only"])
+        self.assertEqual(installer.host_interface_scan_count, 0)
+        self.assertEqual(installer.container_interface_scan_count, 0)
 
     def test_host_artifact_cleanup_missing_owned_index_blocks_global_fallback(self) -> None:
         installer = _FakeCleanupInstaller()
@@ -2024,7 +2310,67 @@ class RollbackCleanupOptimizationTests(unittest.TestCase):
         self.assertFalse(metrics["full_topology_candidate_inventory_fallback"])
         self.assertIn("OWNED_RESOURCE_INDEX_MISSING_BLOCKER", metrics["outcome_labels"])
         self.assertNotIn("NORMAL_PATH_OWNED_SCOPE_ONLY", metrics["outcome_labels"])
-        self.assertIn("GLOBAL_SCAN_DIAGNOSTIC_ONLY", metrics["outcome_labels"])
+        self.assertIn("CLEANUP_NO_GLOBAL_EXISTENCE_SCAN", metrics["outcome_labels"])
+        self.assertEqual(metrics["cleanup_execution_model"], "blocked_missing_owned_resource_index")
+        self.assertFalse(metrics["global_scan_diagnostic_only"])
+
+    def test_additive_prepare_success_schema_is_explicit_for_non_empty_delta(
+        self,
+    ) -> None:
+        installer = DirectNetnsVethSlotLinkNamespaceQdiscInstaller()
+        installer._runtime_prepared = True
+        resource_key = installer._resource_key(
+            "ut_access",
+            {"satellite_id": "sat-a"},
+        )
+        topology = {
+            "slot_inventory": {
+                "ut_access": [
+                    {
+                        "slot_name": "ut2001-access-slot0",
+                        "slot_type": "ut_access",
+                        "subnet": "10.0.0.0/30",
+                        "candidate_satellite_ids": ["sat-a"],
+                        "dynamic_endpoint_template": {
+                            "node_type": "satellite",
+                            "interface_name": "ut2001",
+                            "ip_address": "10.0.0.2/30",
+                        },
+                    }
+                ]
+            }
+        }
+
+        with (
+            patch.object(installer, "_load_topology", return_value=topology),
+            patch.object(installer, "_prepare_bridge_netfilter_passthrough"),
+            patch.object(installer, "_host_interface_name_set", return_value=set()),
+            patch.object(
+                installer,
+                "_container_interface_name_set",
+                return_value=set(),
+            ),
+            patch.object(installer, "_bridge_exists", return_value=False),
+            patch.object(installer, "_set_bridge_ready"),
+            patch.object(installer, "_create_prepared_veth"),
+        ):
+            summary = installer.prepare_additive_resources(
+                topology_path=Path("topology.json"),
+                link_state_path=Path("link_state.json"),
+                prepared_resource_scope_by_slot={
+                    "ut2001-access-slot0": {resource_key},
+                },
+            )
+
+        self.assertIs(summary["ok"], True)
+        self.assertIs(summary["additive_prepare_completed"], True)
+        self.assertFalse(summary["full_sweep"])
+        self.assertEqual(summary["slot_count"], 1)
+        self.assertEqual(summary["candidate_resource_count"], 1)
+        self.assertEqual(
+            summary["prepared_resource_scope_by_slot"],
+            {"ut2001-access-slot0": [resource_key]},
+        )
 
     def test_normal_runtime_apply_requires_explicit_owned_scope(self) -> None:
         manager = InProcessHostRuntimeManager()
@@ -2039,6 +2385,160 @@ class RollbackCleanupOptimizationTests(unittest.TestCase):
                 network_mutation_plan=_network_mutation_plan(),
                 reconcile_slot_names=None,
             )
+
+    def test_normal_runtime_apply_uses_trusted_fast_path_without_state_rescan(
+        self,
+    ) -> None:
+        manager = InProcessHostRuntimeManager()
+        operation = {
+            "operation": "update_slot_parameters",
+            "slot_name": "slot-a",
+            "slot_type": "ut_access",
+            "execution_domain": "host_network_runtime",
+            "source_occupied": True,
+            "target_occupied": True,
+            "source_binding": {"satellite_id": "sat-a"},
+            "target_binding": {"satellite_id": "sat-b"},
+        }
+        envelope = SimpleNamespace(
+            observed_state={"slot-a": {"slot_name": "slot-a"}},
+            operations=[operation],
+            parallelism={
+                "requested_workers": 1,
+                "effective_workers": 1,
+                "parallel_execution_used": False,
+            },
+            managed_slot_names=["slot-a"],
+            envelope_id="env-1",
+        )
+        trusted_apply_verification = manager._trusted_plan_state_verification(
+            operations=[operation],
+            source=False,
+            reason="test_trusted_apply",
+        )
+
+        with (
+            patch.object(
+                manager._installer,
+                "controller",
+                return_value=SimpleNamespace(
+                    topology_path="topology.json",
+                    link_state_path="link_state.json",
+                ),
+            ),
+            patch.object(manager, "_prepare_envelope", return_value=(envelope, {})),
+            patch.object(
+                manager,
+                "_verify_plan_state",
+                side_effect=AssertionError("hot path state rescan must not run"),
+            ) as verify_plan_state,
+            patch.object(
+                manager,
+                "_apply_operations",
+                return_value=(
+                    [{"operation": "update_slot_parameters", "ok": True}],
+                    [operation],
+                    trusted_apply_verification,
+                    {
+                        "operation_apply_wall_seconds": 0.01,
+                        "post_apply_state_refresh_wall_seconds": 0.0,
+                        "post_apply_verification_wall_seconds": 0.0,
+                    },
+                    {
+                        "requested_workers": 1,
+                        "effective_workers": 1,
+                        "parallel_execution_used": False,
+                    },
+                ),
+            ),
+        ):
+            result = manager.apply(
+                topology_path=Path("topology.json"),
+                link_state_path=Path("link_state.json"),
+                network_mutation_plan=_network_mutation_plan(),
+                reconcile_slot_names=["slot-a"],
+            )
+
+        payload = result.to_dict()
+        verify_plan_state.assert_not_called()
+        self.assertTrue(payload["preflight"]["verification_skipped"])
+        self.assertTrue(payload["apply_verification"]["verification_skipped"])
+        timing = payload["outcome"]["manager_timing_breakdown"]
+        self.assertEqual(timing["preflight_verification_wall_seconds"], 0.0)
+        self.assertEqual(timing["post_apply_verification_wall_seconds"], 0.0)
+        self.assertEqual(timing["manager_resync_reconciliation_wall_seconds"], 0.0)
+        self.assertTrue(payload["outcome"]["apply_success"])
+
+    def test_apply_operations_success_uses_cached_state_without_post_rescan(
+        self,
+    ) -> None:
+        manager = InProcessHostRuntimeManager()
+        operation = {
+            "operation": "update_slot_parameters",
+            "slot_name": "slot-a",
+            "slot_type": "ut_access",
+            "execution_domain": "host_network_runtime",
+            "source_occupied": True,
+            "target_occupied": True,
+            "source_binding": {"satellite_id": "sat-a"},
+            "target_binding": {"satellite_id": "sat-b"},
+        }
+        working_state = {
+            "slot-a": {
+                "slot_name": "slot-a",
+                "slot_type": "ut_access",
+                "occupied": True,
+                "binding": {"satellite_id": "sat-a"},
+                "endpoints": [],
+                "runtime_parameters": {},
+            }
+        }
+
+        with (
+            patch.object(
+                manager._installer,
+                "apply_operation",
+                return_value={"operation": "update_slot_parameters", "ok": True},
+            ),
+            patch.object(manager._installer, "persist_runtime_state"),
+            patch.object(
+                manager,
+                "_verify_plan_state",
+                side_effect=AssertionError("post-apply state rescan must not run"),
+            ) as verify_plan_state,
+        ):
+            (
+                apply_results,
+                applied_operations,
+                apply_verification,
+                timing,
+                _parallel,
+            ) = manager._apply_operations(
+                controller=SimpleNamespace(),
+                link_state_path=Path("link_state.json"),
+                operations=[operation],
+                working_state=working_state,
+                parallelism={
+                    "requested_workers": 1,
+                    "effective_workers": 1,
+                    "parallel_execution_used": False,
+                    "execution_groups": [
+                        {
+                            "group_index": 0,
+                            "operation_indexes": [0],
+                            "operation_count": 1,
+                            "parallelized": False,
+                        }
+                    ],
+                },
+            )
+
+        verify_plan_state.assert_not_called()
+        self.assertEqual(len(apply_results), 1)
+        self.assertEqual(len(applied_operations), 1)
+        self.assertTrue(apply_verification["all_valid"])
+        self.assertTrue(apply_verification["verification_skipped"])
+        self.assertEqual(timing["post_apply_verification_wall_seconds"], 0.0)
 
     def test_normal_runtime_apply_blocks_hidden_reconcile_repair(self) -> None:
         manager = InProcessHostRuntimeManager()
@@ -2181,6 +2681,11 @@ class RollbackCleanupOptimizationTests(unittest.TestCase):
             "prepared_owned_resource_index",
         )
         self.assertEqual(inventory["prepared_slot_scope_count"], 1)
+        self.assertEqual(
+            inventory["inventory_scope"],
+            "prepared_owned_resource_index_slots",
+        )
+        self.assertEqual(inventory["missing_slot_names"], [])
         self.assertEqual(len(inventory["bridge_names"]), 1)
         self.assertEqual(len(inventory["host_interface_names"]), 2)
         self.assertEqual(len(inventory["temp_host_interface_names"]), 2)
@@ -2228,6 +2733,112 @@ class RollbackCleanupOptimizationTests(unittest.TestCase):
             ],
         )
         self.assertEqual(run.call_args.kwargs["cwd"], str(output_dir.parent))
+
+    def test_compose_project_residue_cleanup_is_project_label_bounded(self) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(command, **kwargs):
+            rendered = [str(part) for part in command]
+            calls.append(rendered)
+            if rendered[:3] == ["docker", "ps", "-aq"]:
+                return linux_mpls_runtime.subprocess.CompletedProcess(
+                    args=rendered,
+                    returncode=0,
+                    stdout="container-a\ncontainer-b\n",
+                    stderr="",
+                )
+            if rendered[:3] == ["docker", "rm", "-f"]:
+                return linux_mpls_runtime.subprocess.CompletedProcess(
+                    args=rendered,
+                    returncode=0,
+                    stdout="\n".join(rendered[3:]) + "\n",
+                    stderr="",
+                )
+            if rendered[:4] == ["docker", "network", "ls", "-q"]:
+                return linux_mpls_runtime.subprocess.CompletedProcess(
+                    args=rendered,
+                    returncode=0,
+                    stdout="network-a\n",
+                    stderr="",
+                )
+            if rendered[:3] == ["docker", "network", "rm"]:
+                return linux_mpls_runtime.subprocess.CompletedProcess(
+                    args=rendered,
+                    returncode=0,
+                    stdout="network-a\n",
+                    stderr="",
+                )
+            raise AssertionError(f"unexpected command: {rendered}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "seed_output"
+            output_dir.mkdir()
+            (output_dir / ".env").write_text(
+                "COMPOSE_PROJECT_NAME=seed_output\n",
+                encoding="utf-8",
+            )
+            with patch("run_starlink_shell_experiment.subprocess.run", side_effect=fake_run):
+                cleanup = _compose_force_remove_project_residue(output_dir)
+
+        self.assertTrue(cleanup["bounded_by_compose_project_label"])
+        self.assertTrue(cleanup["cleanup_completed"])
+        self.assertEqual(cleanup["removed_container_count"], 2)
+        self.assertEqual(cleanup["removed_network_count"], 1)
+        self.assertIn(
+            "label=com.docker.compose.project=seed_output",
+            calls[0],
+        )
+        self.assertEqual(calls[1], ["docker", "rm", "-f", "container-a", "container-b"])
+        self.assertIn(
+            "label=com.docker.compose.project=seed_output",
+            calls[2],
+        )
+        self.assertEqual(calls[3], ["docker", "network", "rm", "network-a"])
+
+    def test_stale_network_scrub_uses_compose_project_label_filter(self) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(command, **kwargs):
+            rendered = [str(part) for part in command]
+            calls.append(rendered)
+            if rendered[:3] == ["docker", "network", "ls"]:
+                return linux_mpls_runtime.subprocess.CompletedProcess(
+                    args=rendered,
+                    returncode=0,
+                    stdout="seed_output_net\tseed_output\n",
+                    stderr="",
+                )
+            if rendered[:3] == ["docker", "network", "inspect"]:
+                return linux_mpls_runtime.subprocess.CompletedProcess(
+                    args=rendered,
+                    returncode=0,
+                    stdout=json.dumps([{"Containers": {}}]),
+                    stderr="",
+                )
+            if rendered[:3] == ["docker", "network", "rm"]:
+                return linux_mpls_runtime.subprocess.CompletedProcess(
+                    args=rendered,
+                    returncode=0,
+                    stdout="seed_output_net\n",
+                    stderr="",
+                )
+            raise AssertionError(f"unexpected command: {rendered}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "seed_output"
+            output_dir.mkdir()
+            (output_dir / ".env").write_text(
+                "COMPOSE_PROJECT_NAME=seed_output\n",
+                encoding="utf-8",
+            )
+            with patch("run_starlink_shell_experiment.subprocess.run", side_effect=fake_run):
+                result = _compose_force_remove_stale_networks(output_dir)
+
+        self.assertTrue(result["bounded_by_compose_project_label"])
+        self.assertFalse(result["full_docker_network_scan"])
+        self.assertIn("--filter", calls[0])
+        self.assertIn("label=com.docker.compose.project=seed_output", calls[0])
+        self.assertEqual(result["removed_networks"], ["seed_output_net"])
 
 
 if __name__ == "__main__":

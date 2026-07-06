@@ -44,6 +44,9 @@ def _bool_or_none(value: Any) -> bool | None:
 def _compact_distance_run(run: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "run_id": run.get("run_id"),
+        "artifact_ready": run.get("artifact_ready", True),
+        "artifact_error": run.get("artifact_error"),
+        "artifact_path": run.get("artifact_path"),
         "runtime_snapshot_count": run.get("runtime_snapshot_count"),
         "selected_ut_count": run.get("selected_ut_count"),
         "covered_runtime_ut_count": run.get("covered_runtime_ut_count"),
@@ -62,15 +65,40 @@ def _compact_distance_run(run: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _summarize_distance_matrix_run_fail_closed(run_path: Path) -> Dict[str, Any]:
+    try:
+        run = summarize_distance_matrix_run(run_path)
+    except (FileNotFoundError, json.JSONDecodeError) as exc:
+        return {
+            "run_id": Path(run_path).name,
+            "artifact_ready": False,
+            "artifact_error": f"{exc.__class__.__name__}:{exc}",
+            "artifact_path": str(Path(run_path).expanduser()),
+            "runtime_snapshot_count": 0,
+            "covered_runtime_ut_count": 0,
+            "isl_hop_count_avg": 0.0,
+            "isl_hop_count_max": 0,
+            "runtime_update_action_count_avg": 0.0,
+            "node_subplan_count_avg": 0.0,
+        }
+    return {**dict(run), "artifact_ready": True, "artifact_error": ""}
+
+
 def _distance_diversity_summary(
     *,
     near_run: Path,
     varied_runs: Sequence[Path],
 ) -> Dict[str, Any]:
-    near = summarize_distance_matrix_run(near_run)
-    varied = [summarize_distance_matrix_run(path) for path in list(varied_runs)]
+    near = _summarize_distance_matrix_run_fail_closed(near_run)
+    varied = [
+        _summarize_distance_matrix_run_fail_closed(path)
+        for path in list(varied_runs)
+    ]
     all_runs = [near] + varied
+    artifact_ready = all(bool(run.get("artifact_ready", True)) for run in all_runs)
     coverage_ready = all(
+        bool(run.get("artifact_ready", True))
+        and
         int(run.get("runtime_snapshot_count", 0) or 0) > 0
         and int(run.get("covered_runtime_ut_count", 0) or 0) > 0
         for run in all_runs
@@ -92,13 +120,22 @@ def _distance_diversity_summary(
         for run in all_runs
     )
     ready = (
+        artifact_ready
+        and
         coverage_ready
         and near_one_hop
         and varied_multihop_count >= 1
         and update_size_metrics_present
     )
+    blockers = [
+        "distance_diversity_artifact_missing_or_unreadable"
+        for run in all_runs
+        if not bool(run.get("artifact_ready", True))
+    ]
     return {
         "ready": ready,
+        "artifact_ready": artifact_ready,
+        "blockers": sorted(set(blockers)),
         "coverage_ready": coverage_ready,
         "near_one_hop": near_one_hop,
         "varied_multihop_run_count": varied_multihop_count,

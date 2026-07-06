@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 SATELLITE_DIR = Path(__file__).resolve().parent
@@ -13,10 +14,16 @@ if str(SATELLITE_DIR) not in sys.path:
     sys.path.insert(0, str(SATELLITE_DIR))
 
 from apps.visualization.export_ground_links import (
+    DEFAULT_GATEWAY_CATALOG_PATH,
+    DEFAULT_MAX_GROUND_LINK_DISTANCE_KM,
+    PLANNED_STARLINK_PHASE1_SHELL_PRESETS,
     VisibleGroundLinkCandidate,
     _earth_clearance_km,
+    _normalize_post_url,
     _select_per_satellite_best_links,
     build_ground_links_payload,
+    generate_planned_shell_records,
+    load_ground_station_catalog,
     NodePosition,
 )
 
@@ -34,6 +41,10 @@ def candidate(
         distance_km,
         earth_clearance_km=100.0,
     )
+
+
+def datetime_from_millis(value: str) -> datetime:
+    return datetime.fromtimestamp(int(value) / 1000.0, tz=timezone.utc)
 
 
 def select_per_satellite(
@@ -61,6 +72,60 @@ def select_per_satellite(
 
 
 class ExportGroundLinksTests(unittest.TestCase):
+    def test_default_ground_station_catalog_uses_starlink_gateways_file(self) -> None:
+        stations = load_ground_station_catalog()
+
+        self.assertTrue(DEFAULT_GATEWAY_CATALOG_PATH.exists())
+        self.assertEqual(len(stations), 250)
+        self.assertEqual(stations[0].ground_station_id, "starlink-gs-0001-aerzen-germany")
+        self.assertEqual(stations[-1].ground_station_id, "starlink-gs-0250-yamaguchi-japan")
+
+    def test_all_planned_shells_generate_s1_through_s5_records(self) -> None:
+        records = generate_planned_shell_records(
+            shell_id="ALL",
+            epoch_utc=datetime_from_millis("1782439276134"),
+        )
+
+        expected_count = sum(
+            preset.satellite_count
+            for preset in PLANNED_STARLINK_PHASE1_SHELL_PRESETS.values()
+        )
+        self.assertEqual(len(records), expected_count)
+        self.assertEqual(records[0].norad_id, 910001)
+        self.assertEqual(records[-1].norad_id, 950172)
+
+    def test_markdown_post_url_is_normalized(self) -> None:
+        self.assertEqual(
+            _normalize_post_url("[http://localhost:9091/api](http://localhost:9091/api)"),
+            "http://localhost:9091/api",
+        )
+
+    def test_default_distance_cap_is_explicit(self) -> None:
+        self.assertEqual(DEFAULT_MAX_GROUND_LINK_DISTANCE_KM, 2500.0)
+
+    def test_zero_distance_cap_disables_distance_filter(self) -> None:
+        capped = build_ground_links_payload(
+            planned_shell="S4",
+            start_timestamp="1782439276134",
+            interval="1s",
+            steps=1,
+            max_satellites=24,
+            max_ground_stations=5,
+            max_distance_km=1.0,
+        )
+        disabled = build_ground_links_payload(
+            planned_shell="S4",
+            start_timestamp="1782439276134",
+            interval="1s",
+            steps=1,
+            max_satellites=24,
+            max_ground_stations=5,
+            max_distance_km=0.0,
+        )
+
+        self.assertEqual(len(capped["links"][0]["groundLinks"]), 0)
+        self.assertGreater(len(disabled["links"][0]["groundLinks"]), 0)
+
     def test_planned_shell_payload_matches_external_schema(self) -> None:
         payload = build_ground_links_payload(
             planned_shell="S5",
@@ -73,8 +138,11 @@ class ExportGroundLinksTests(unittest.TestCase):
 
         self.assertEqual(payload["timestamp"], "1782439276134")
         self.assertEqual(payload["interval"], "1s")
-        self.assertEqual(len(payload["groundLinks"]), 3)
-        for sample_links in payload["groundLinks"]:
+        self.assertEqual(len(payload["links"]), 3)
+        for sample in payload["links"]:
+            self.assertEqual(set(sample), {"groundLinks", "satelliteLinks"})
+            self.assertEqual(sample["satelliteLinks"], [])
+            sample_links = sample["groundLinks"]
             self.assertIsInstance(sample_links, list)
             for link in sample_links:
                 self.assertEqual(set(link), {"satelliteId", "groundStationId"})
@@ -107,10 +175,10 @@ class ExportGroundLinksTests(unittest.TestCase):
         payload = json.loads(result.stdout)
         self.assertEqual(payload["timestamp"], "1782439276134")
         self.assertEqual(payload["interval"], "1s")
-        self.assertEqual(len(payload["groundLinks"]), 3)
-        self.assertTrue(result.stdout.startswith('{\n  "timestamp": "1782439276134",\n  "interval": "1s",\n  "groundLinks": ['))
+        self.assertEqual(len(payload["links"]), 3)
+        self.assertTrue(result.stdout.startswith('{"timestamp":"1782439276134","interval":"1s","links":['))
         first_non_empty_sample = next(
-            (sample_links for sample_links in payload["groundLinks"] if sample_links),
+            (sample["groundLinks"] for sample in payload["links"] if sample["groundLinks"]),
             None,
         )
         if first_non_empty_sample is not None:
@@ -144,7 +212,8 @@ class ExportGroundLinksTests(unittest.TestCase):
 
         emitted_station_ids = {
             link["groundStationId"]
-            for sample_links in payload["groundLinks"]
+            for sample in payload["links"]
+            for sample_links in [sample["groundLinks"]]
             for link in sample_links
         }
         self.assertEqual(emitted_station_ids, {station_id})
@@ -180,7 +249,9 @@ class ExportGroundLinksTests(unittest.TestCase):
         payload = json.loads(result.stdout)
         self.assertEqual(payload["timestamp"], "1782439276134")
         self.assertEqual(payload["interval"], "1s")
-        self.assertEqual(len(payload["groundLinks"]), 2)
+        self.assertEqual(len(payload["links"]), 2)
+        for sample in payload["links"]:
+            self.assertEqual(set(sample), {"groundLinks", "satelliteLinks"})
 
     def test_per_satellite_selection_allows_one_gateway_to_serve_many_satellites(self) -> None:
         selected = select_per_satellite(

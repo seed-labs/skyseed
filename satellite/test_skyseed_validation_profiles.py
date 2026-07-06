@@ -3092,11 +3092,27 @@ class SkyseedValidationProfileTests(unittest.TestCase):
                     "steps": {
                         "preactivation_preload": {
                             "map_write_update_count": 180,
+                            "interface_role_map_updates_skipped": True,
+                            "interface_role_map_skipped_update_count": 98,
+                            "interface_role_map_update_skip_reason": (
+                                "roles_prepared_by_attach_capability"
+                            ),
+                            "parallel_map_write_enabled": True,
+                            "parallel_map_write_worker_count": 8,
+                            "parallel_map_write_scheduled_update_count": 180,
                             "runtime_reload_attribution": {
                                 "runtime_update_phase": "preactivation_preload",
                                 "preactivation_preload": True,
                                 "map_diff_update_used": True,
-                                "noop_skipped_count": 98,
+                                "noop_skipped_count": 0,
+                                "interface_role_map_updates_skipped": True,
+                                "interface_role_map_skipped_update_count": 98,
+                                "interface_role_map_update_skip_reason": (
+                                    "roles_prepared_by_attach_capability"
+                                ),
+                                "parallel_map_write_enabled": True,
+                                "parallel_map_write_worker_count": 8,
+                                "parallel_map_write_scheduled_update_count": 180,
                                 "map_diff_trace": {
                                     "ingress_classifier_map": {
                                         "desired_count": 120,
@@ -3214,11 +3230,27 @@ class SkyseedValidationProfileTests(unittest.TestCase):
                     "steps": {
                         "preactivation_preload": {
                             "map_write_update_count": 180,
+                            "interface_role_map_updates_skipped": True,
+                            "interface_role_map_skipped_update_count": 98,
+                            "interface_role_map_update_skip_reason": (
+                                "roles_prepared_by_attach_capability"
+                            ),
+                            "parallel_map_write_enabled": True,
+                            "parallel_map_write_worker_count": 8,
+                            "parallel_map_write_scheduled_update_count": 180,
                             "runtime_reload_attribution": {
                                 "runtime_update_phase": "preactivation_preload",
                                 "preactivation_preload": True,
                                 "map_diff_update_used": True,
-                                "noop_skipped_count": 98,
+                                "noop_skipped_count": 0,
+                                "interface_role_map_updates_skipped": True,
+                                "interface_role_map_skipped_update_count": 98,
+                                "interface_role_map_update_skip_reason": (
+                                    "roles_prepared_by_attach_capability"
+                                ),
+                                "parallel_map_write_enabled": True,
+                                "parallel_map_write_worker_count": 8,
+                                "parallel_map_write_scheduled_update_count": 180,
                                 "map_diff_trace": {
                                     "ingress_classifier_map": {
                                         "desired_count": 120,
@@ -3227,15 +3259,6 @@ class SkyseedValidationProfileTests(unittest.TestCase):
                                         "update_count": 0,
                                         "delete_count": 0,
                                         "noop_skipped_count": 0,
-                                        "wall_seconds": 0.1,
-                                    },
-                                    "interface_role_map": {
-                                        "desired_count": 98,
-                                        "existing_count": 98,
-                                        "insert_count": 0,
-                                        "update_count": 0,
-                                        "delete_count": 0,
-                                        "noop_skipped_count": 98,
                                         "wall_seconds": 0.1,
                                     },
                                 },
@@ -3282,17 +3305,45 @@ class SkyseedValidationProfileTests(unittest.TestCase):
 
             self.assertIn("RUNTIME_PRELOAD_SCHEDULED", audit["outcome_labels"])
             self.assertIn("RUNTIME_MAP_DIFF_UPDATE_USED", audit["outcome_labels"])
-            self.assertIn("RUNTIME_NOOP_MAP_WRITES_SKIPPED", audit["outcome_labels"])
+            self.assertIn(
+                "RUNTIME_INTERFACE_ROLE_MAP_UPDATES_SKIPPED",
+                audit["outcome_labels"],
+            )
+            self.assertIn(
+                "RUNTIME_PREACTIVATION_PRELOAD_PARALLEL_MAP_WRITE_USED",
+                audit["outcome_labels"],
+            )
             self.assertIn("RUNTIME_PRELOAD_NOT_EXERCISED", audit["outcome_labels"])
             self.assertFalse(audit["preload_contract_exercised"])
             report = audit["epoch_reports"][0]
             self.assertTrue(report["preactivation_preload_map_diff_update_used"])
-            self.assertEqual(report["preactivation_preload_noop_skipped_count"], 98)
+            self.assertEqual(report["preactivation_preload_noop_skipped_count"], 0)
+            self.assertTrue(
+                report["preactivation_preload_interface_role_map_updates_skipped"]
+            )
             self.assertEqual(
-                report["preactivation_preload_map_diff_trace"]["interface_role_map"][
-                    "noop_skipped_count"
+                report[
+                    "preactivation_preload_interface_role_map_skipped_update_count"
                 ],
                 98,
+            )
+            self.assertNotIn(
+                "interface_role_map",
+                report["preactivation_preload_map_diff_trace"],
+            )
+            self.assertEqual(
+                audit["preactivation_preload_interface_role_map_skip_count"],
+                98,
+            )
+            self.assertEqual(
+                audit["preactivation_preload_parallel_map_write_epoch_count"],
+                1,
+            )
+            self.assertEqual(
+                audit[
+                    "preactivation_preload_parallel_map_write_scheduled_update_count"
+                ],
+                180,
             )
 
     def test_stale_runtime_lock_removed_only_after_pid_not_found_check(self) -> None:

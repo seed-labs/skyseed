@@ -5,8 +5,8 @@
 
 Package this script together with export_ground_links.py. It reuses the
 standalone planned-shell/TLE propagation helpers from that sibling file and
-emits only the external payload:
-{"timestamp": "...", "interval": "...", "satelliteLinks": [[...]]}.
+emits the external links payload:
+{"timestamp": "...", "interval": "1s", "links": [{"groundLinks": [], "satelliteLinks": [...]}]}.
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ from urllib import error, request
 try:
     from export_ground_links import (
         DEFAULT_START_TIMESTAMP_MS,
+        PLANNED_SHELL_CHOICES,
         PLANNED_STARLINK_PHASE1_SHELL_PRESETS,
         NodePosition,
         OrbitRecord,
@@ -29,6 +30,7 @@ try:
         _derive_steps,
         _distance_km,
         _load_orbit_records,
+        _normalize_post_url,
         _parse_interval_seconds,
         _parse_start_timestamp_ms,
         _propagate_records,
@@ -38,6 +40,7 @@ try:
 except ModuleNotFoundError:
     from apps.visualization.export_ground_links import (
         DEFAULT_START_TIMESTAMP_MS,
+        PLANNED_SHELL_CHOICES,
         PLANNED_STARLINK_PHASE1_SHELL_PRESETS,
         NodePosition,
         OrbitRecord,
@@ -45,6 +48,7 @@ except ModuleNotFoundError:
         _derive_steps,
         _distance_km,
         _load_orbit_records,
+        _normalize_post_url,
         _parse_interval_seconds,
         _parse_start_timestamp_ms,
         _propagate_records,
@@ -120,6 +124,8 @@ def _cross_plane_candidates(records: Sequence[OrbitRecord]) -> List[SatelliteLin
     plane_ids = sorted(planes)
     candidates: List[SatelliteLinkCandidate] = []
     for left_plane, right_plane in zip(plane_ids, plane_ids[1:]):
+        if right_plane != left_plane + 1:
+            continue
         left_records = planes[left_plane]
         right_records = planes[right_plane]
         pair_count = min(len(left_records), len(right_records))
@@ -161,6 +167,8 @@ def _nearest_cross_plane_candidates(
     active: List[SatelliteLinkCandidate] = []
     window = max(0, int(candidate_window))
     for left_plane, right_plane in zip(plane_ids, plane_ids[1:]):
+        if right_plane != left_plane + 1:
+            continue
         left_records = planes[left_plane]
         right_records = planes[right_plane]
         pair_key = (left_plane, right_plane)
@@ -316,11 +324,12 @@ def build_satellite_links_result(
     *,
     planned_shell: str | None = "S5",
     tle_path: Path | None = None,
+    planned_orbit_data: Path | None = None,
     start_timestamp: str | None = DEFAULT_START_TIMESTAMP_MS,
     interval: str = "1s",
     steps: int | None = 3,
     duration: str | None = None,
-    max_satellites: int = 24,
+    max_satellites: int = 0,
     satellite_id_format: str = "norad",
     include_same_plane: bool = True,
     include_cross_plane: bool = True,
@@ -343,6 +352,7 @@ def build_satellite_links_result(
         tle_path=tle_path,
         max_satellites=max_satellites,
         start_time=start_time,
+        planned_orbit_data_path=planned_orbit_data,
     )
     propagated_slices = _propagate_records(
         orbit_kind=orbit_kind,
@@ -388,7 +398,13 @@ def build_satellite_links_result(
         "payload": {
             "timestamp": timestamp_ms,
             "interval": str(interval),
-            "satelliteLinks": satellite_links,
+            "links": [
+                {
+                    "groundLinks": [],
+                    "satelliteLinks": sample_links,
+                }
+                for sample_links in satellite_links
+            ],
         }
     }
 
@@ -400,7 +416,7 @@ def build_satellite_links_payload(**kwargs: Any) -> Dict[str, Any]:
 def post_payload(url: str, payload: Dict[str, Any], *, timeout_seconds: float = 15.0) -> int:
     body = json.dumps(payload).encode("utf-8")
     req = request.Request(
-        url,
+        _normalize_post_url(url),
         data=body,
         headers={"Content-Type": "application/json"},
         method="POST",
@@ -422,6 +438,10 @@ def post_payload(url: str, payload: Dict[str, Any], *, timeout_seconds: float = 
         return 1
 
 
+def post_trigger(url: str, *, timeout_seconds: float = 15.0) -> int:
+    return post_payload(url, {}, timeout_seconds=timeout_seconds)
+
+
 def _write_json(path: Path, payload: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -437,23 +457,33 @@ def parse_args() -> argparse.Namespace:
             "Minimal dry run:\n"
             "  export_satellite_links.py --planned-shell S4 --steps 3 --interval 1s\n\n"
             "Payload contract:\n"
-            "  {\"timestamp\":\"...\",\"interval\":\"1s\",\"satelliteLinks\":[[{\"satelliteAId\":\"...\",\"satelliteBId\":\"...\"}]]}\n"
+            "  {\"timestamp\":\"...\",\"interval\":\"1s\",\"links\":[{\"groundLinks\":[],\"satelliteLinks\":[{\"satelliteAId\":\"...\",\"satelliteBId\":\"...\"}]}]}\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     orbit = parser.add_mutually_exclusive_group()
     orbit.add_argument(
         "--planned-shell",
-        choices=tuple(sorted(PLANNED_STARLINK_PHASE1_SHELL_PRESETS)),
+        choices=PLANNED_SHELL_CHOICES,
         default=None,
-        help="Use a deterministic planned shell preset. Default: S5.",
+        help='Use a deterministic planned shell preset. Use "ALL" or "S1-S5" for all shells. Default: S5.',
     )
     orbit.add_argument("--tle", type=Path, default=None, help="Path to a three-line TLE catalog.")
-    parser.add_argument("--start-timestamp", default=DEFAULT_START_TIMESTAMP_MS, help="Start timestamp, epoch milliseconds or ISO-8601.")
+    parser.add_argument(
+        "--planned-orbit-data",
+        type=Path,
+        default=None,
+        help=(
+            "Optional fixed planned-shell orbit data JSON. When omitted, "
+            "planned-shell mode uses planned_shell_orbit_data_s1_s5.json beside "
+            "export_ground_links.py if it exists."
+        ),
+    )
+    parser.add_argument("--start-timestamp", default=DEFAULT_START_TIMESTAMP_MS, help="Start timestamp, epoch milliseconds or ISO-8601. Default: current UTC time.")
     parser.add_argument("--interval", default="1s", help='Sampling interval such as "1s" or "30s".')
     parser.add_argument("--steps", type=int, default=None, help="Number of samples. Defaults to 3 unless --duration is set.")
     parser.add_argument("--duration", default=None, help="Optional duration; derives steps from interval.")
-    parser.add_argument("--max-satellites", type=int, default=24, help="Prototype satellite sample cap.")
+    parser.add_argument("--max-satellites", type=int, default=0, help="Optional satellite cap. Default 0 means no cap.")
     parser.add_argument("--satellite-id-format", choices=("norad", "node-id"), default="norad", help="Payload satellite id format.")
     parser.add_argument("--no-same-plane", action="store_true", help="Do not emit same-plane ring links.")
     parser.add_argument("--no-cross-plane", action="store_true", help="Do not emit cross-plane dynamic links.")
@@ -488,7 +518,7 @@ def parse_args() -> argparse.Namespace:
         default="-",
         help="Print JSON to stdout or write it to the optional path. This is the default mode.",
     )
-    parser.add_argument("--post-url", default=None, help="POST payload URL. Omit for dry-run.")
+    parser.add_argument("--post-url", default=None, help="POST trigger URL. Body is {}. Omit for dry-run.")
     parser.add_argument("--post-timeout-seconds", type=float, default=15.0)
     return parser.parse_args()
 
@@ -498,6 +528,7 @@ def main() -> int:
     result = build_satellite_links_result(
         planned_shell=(None if args.tle is not None else (args.planned_shell or "S5")),
         tle_path=args.tle,
+        planned_orbit_data=args.planned_orbit_data,
         start_timestamp=args.start_timestamp,
         interval=args.interval,
         steps=args.steps,
@@ -513,11 +544,9 @@ def main() -> int:
     )
     payload = result["payload"]
     if args.post_url:
-        return post_payload(
-            str(args.post_url),
-            payload,
-            timeout_seconds=float(args.post_timeout_seconds),
-        )
+        if args.dry_run_json != "-":
+            _write_json(Path(args.dry_run_json), payload)
+        return post_trigger(str(args.post_url), timeout_seconds=float(args.post_timeout_seconds))
     if args.dry_run_json == "-":
         print(json.dumps(payload, indent=2))
     else:

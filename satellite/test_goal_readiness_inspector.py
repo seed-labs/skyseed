@@ -301,6 +301,35 @@ def _write_baseline_real_run(run_dir: Path) -> Path:
 
 
 class GoalReadinessInspectorTests(unittest.TestCase):
+    def test_missing_distance_artifact_fails_closed_without_traceback(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            missing_near = root / "missing-near"
+            far = _write_distance_run(
+                root,
+                run_name="far",
+                satellite_paths=[["s1", "s2"], ["s3", "s4", "s5"]],
+            )
+            return_audit = _write_return_audit_run(root)
+            baseline = _write_baseline_real_run(root)
+
+            report = summarize_goal_readiness(
+                near_run=missing_near,
+                varied_runs=[far],
+                return_audit_run=return_audit,
+                baseline_real_run=baseline,
+                protection_run=baseline,
+            )
+
+        self.assertFalse(report["static_evidence_ready"])
+        self.assertFalse(report["distance_diversity"]["ready"])
+        self.assertFalse(report["distance_diversity"]["artifact_ready"])
+        self.assertIn(
+            "distance_diversity_artifact_missing_or_unreadable",
+            report["distance_diversity"]["blockers"],
+        )
+        self.assertFalse(report["distance_diversity"]["near_run"]["artifact_ready"])
+
     def test_summarizes_static_gate_without_live_preflight(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

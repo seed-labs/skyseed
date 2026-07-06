@@ -162,6 +162,31 @@ class QdiscLifecycleTests(unittest.TestCase):
         metrics = installer.consume_operation_metrics()["qdisc_lifecycle_metrics"]
         self.assertEqual(metrics["qdisc_replace_count"], 1)
 
+    def test_unchanged_parameter_qdisc_replace_is_skipped(self) -> None:
+        installer, commands = self._installer_with_recorded_commands()
+
+        installer._apply_qdisc(
+            interface_name="vhs-ut1",
+            runtime_parameters={"delay_ms": 12.5, "bandwidth_mbps": 100.0},
+            lifecycle_mode="parameter_only_update",
+        )
+        installer._apply_qdisc(
+            interface_name="vhs-ut1",
+            runtime_parameters={"delay_ms": 12.5, "bandwidth_mbps": 100.0},
+            lifecycle_mode="parameter_only_update",
+        )
+
+        replace_commands = [
+            command
+            for command in commands
+            if command[:5] == ["sudo", "-n", "tc", "qdisc", "replace"]
+        ]
+        self.assertEqual(len(replace_commands), 1)
+        metrics = installer.consume_operation_metrics()["qdisc_lifecycle_metrics"]
+        self.assertEqual(metrics["qdisc_replace_count"], 1)
+        self.assertEqual(metrics["qdisc_replace_skipped_unchanged"], 1)
+        self.assertEqual(metrics["qdisc_replace_skip_mode:parameter_only_update"], 1)
+
     def test_metadata_only_parameter_update_skips_qdisc_apply(self) -> None:
         installer, _commands = self._installer_with_recorded_commands()
         qdisc_calls: list[dict] = []
@@ -214,6 +239,57 @@ class QdiscLifecycleTests(unittest.TestCase):
         self.assertFalse(qdisc_calls)
         self.assertFalse(result["qdisc_required"])
         self.assertEqual(result["qdisc_apply_wall_seconds"], 0.0)
+
+    def test_bpf_owned_qdisc_override_excludes_bpf_owned_loss(self) -> None:
+        installer, _commands = self._installer_with_recorded_commands()
+        qdisc_calls: list[dict] = []
+
+        installer._inventory = lambda topology, topology_path: {  # type: ignore[method-assign]
+            "ut1-access-slot0": {
+                "slot_name": "ut1-access-slot0",
+                "slot_type": "ut_access",
+            }
+        }
+        installer._resource_for_binding = lambda *, slot, binding: {  # type: ignore[method-assign]
+            "endpoints": [
+                {
+                    "host_interface_name": "vhs-ut1",
+                    "node_id": "ut1",
+                    "interface_name": "ua0",
+                }
+            ]
+        }
+        installer._participant_host_interfaces = (  # type: ignore[method-assign]
+            lambda *, slot, resource: ["vhs-ut1"]
+        )
+        installer._apply_qdisc = lambda **kwargs: qdisc_calls.append(kwargs)  # type: ignore[method-assign]
+        installer._persist_operation_state = lambda **kwargs: None  # type: ignore[method-assign]
+
+        result = installer.apply_operation(
+            controller=SimpleNamespace(topology={}, topology_path="topology.json"),
+            link_state_path=Path("link_state.json"),
+            operation={
+                "operation": "update_slot_parameters",
+                "slot_name": "ut1-access-slot0",
+                "target_binding": {"ut_id": "ut1", "satellite_id": "sat-a"},
+                "target_occupied": True,
+                "source_runtime_parameters": {
+                    "delay_ms": 8.0,
+                    "loss_percent": 0.0,
+                },
+                "target_runtime_parameters": {
+                    "delay_ms": 9.0,
+                    "loss_percent": 1.5,
+                },
+                "changed_runtime_parameter_fields": ["delay_ms", "loss_percent"],
+                "bpf_owned_host_qdisc_runtime_parameters": {"delay_ms": 9.0},
+            },
+            persist_link_state=False,
+        )
+
+        self.assertTrue(result["qdisc_required"])
+        self.assertEqual(len(qdisc_calls), 1)
+        self.assertEqual(qdisc_calls[0]["runtime_parameters"], {"delay_ms": 9.0})
 
     def test_qdisc_requirement_uses_changed_parameter_fields(self) -> None:
         self.assertFalse(

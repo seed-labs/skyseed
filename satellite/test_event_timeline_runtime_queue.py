@@ -2,6 +2,7 @@
 # encoding: utf-8
 
 import sys
+import copy
 import json
 import tempfile
 import unittest
@@ -19,20 +20,45 @@ if str(APPS_DIR) not in sys.path:
 
 from apps.run_starlink_shell_experiment import (  # noqa: E402
     _append_forwarding_relevant_lookahead_boundary,
+    _assert_operational_clean_host_apply_route,
     _bpf_backend_opted_in,
+    _bpf_active_base_generation_record_for_preload,
+    _bpf_map_capacity_generation_window_count,
+    _bpf_generation_slot_width_for_horizon_budget,
+    _bpf_triple_buffer_generation_slot_width,
+    _bpf_triple_buffer_physical_generation_id,
+    _advance_link_state_for_bpf_owned_parameter_skip,
+    _merge_horizon_maintenance_handoff_preloaded_records,
+    _bpf_owned_host_plan_without_parameter_updates,
     _compact_epoch_execution_record,
+    _compact_preloaded_generation_record,
+    _rolling_horizon_bpf_preload_work_item,
+    _rolling_horizon_deferred_bpf_generation_record,
+    _rolling_horizon_queued_bpf_generation_record,
     _compose_service_metadata,
+    _compose_startup_wall_time_attribution,
     _compose_startup_progress_contract,
     _compose_startup_stages,
     _compose_stage_recovery_timeout_seconds,
     _compose_stage_retry_batches,
     _compose_stage_timeout_seconds,
     _continuous_operation_summary,
+    _continuous_total_horizon_seconds,
+    _delta_scoped_network_mutation_plan,
     _experiment_summary_payload,
     _finalize_runtime_status_fields,
     _freeze_prepared_update_bundle,
     _ground_endpoint_startup_summary,
+    _horizon_id_for_queue_entry_from_plan,
+    _materialized_lookahead_attach_budget_expansion,
     _horizon_lifecycle_queue_contract,
+    _prepare_replenished_host_plan_payloads,
+    _prepare_frozen_rolling_horizon_segments,
+    _preview_summary_to_segment,
+    _run_replenishment_preview,
+    _normal_runtime_inputs_with_bpf_generation_slots,
+    _normal_runtime_inputs_with_bpf_resident_attach_budget,
+    _thaw_normal_runtime_initial_segment,
     _bundle_backed_live_execution_source_gate,
     _bundle_backed_compose_pre_runtime_prepare_proof,
     _bundle_backed_minimal_helper_consumption_proof,
@@ -43,13 +69,17 @@ from apps.run_starlink_shell_experiment import (  # noqa: E402
     _load_frozen_prepared_bundle_gate,
     _precompose_bpf_role_union_gate_from_reports,
     _precompose_horizon_queue_gate,
+    _prepared_attach_capability_readiness_for_preload,
+    _resource_scope_delta_by_slot,
     _verify_frozen_prepared_bundle,
+    _write_json_breaking_hardlink,
     _live_timing_summary,
     _runtime_failure_context_summary,
     _stage_ready_service_names,
     _temporal_execution_queue,
     _wait_for_compose_containers,
 )
+from contracts import NetworkMutationPlan  # noqa: E402
 
 
 def _temporal_plan() -> dict:
@@ -269,6 +299,993 @@ def _summary_payload_for_test(
 
 
 class EventTimelineRuntimeQueueTests(unittest.TestCase):
+    def test_bpf_triple_buffer_physical_generation_uses_local_horizon_slots(self) -> None:
+        slot_width = _bpf_triple_buffer_generation_slot_width(7)
+
+        self.assertEqual(slot_width, 9)
+        self.assertEqual(
+            _bpf_triple_buffer_physical_generation_id(
+                horizon_sequence_index=0,
+                local_generation_id=6,
+                generation_slot_width=slot_width,
+            ),
+            6,
+        )
+        self.assertEqual(
+            _bpf_triple_buffer_physical_generation_id(
+                horizon_sequence_index=1,
+                local_generation_id=6,
+                generation_slot_width=slot_width,
+            ),
+            15,
+        )
+        self.assertEqual(
+            _bpf_triple_buffer_physical_generation_id(
+                horizon_sequence_index=3,
+                local_generation_id=6,
+                generation_slot_width=slot_width,
+            ),
+            6,
+        )
+
+    def test_bpf_triple_buffer_slot_capacity_fails_closed(self) -> None:
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "bpf_rolling_generation_slot_capacity_exceeded",
+        ):
+            _bpf_triple_buffer_physical_generation_id(
+                horizon_sequence_index=1,
+                local_generation_id=9,
+                generation_slot_width=9,
+            )
+
+    def test_bpf_generation_slot_width_uses_horizon_budget(self) -> None:
+        self.assertEqual(
+            _bpf_generation_slot_width_for_horizon_budget(
+                horizon_seconds=720.0,
+                sample_interval_seconds=120.0,
+                observed_generation_count=3,
+            ),
+            9,
+        )
+
+    def test_bpf_map_capacity_reserves_previous_current_next_slots(self) -> None:
+        slot_width = _bpf_triple_buffer_generation_slot_width(25)
+
+        self.assertEqual(slot_width, 32)
+        self.assertEqual(
+            _bpf_generation_slot_width_for_horizon_budget(
+                horizon_seconds=240.0,
+                sample_interval_seconds=10.0,
+                observed_generation_count=25,
+            ),
+            32,
+        )
+        self.assertEqual(
+            _bpf_map_capacity_generation_window_count(
+                generation_slot_width=slot_width,
+                observed_generation_count=25,
+            ),
+            96,
+        )
+
+    def test_horizon_maintenance_handoff_merges_full_preloaded_records(self) -> None:
+        compiled_inputs = {
+            "schema_version": "skyseed-bpf-owned-compiled-runtime-inputs-v1",
+            "active_generation": {"value": 32},
+            "ingress_classifier_map": [],
+            "core_lfib_map": [],
+            "egress_handoff_map": [],
+        }
+        result = _merge_horizon_maintenance_handoff_preloaded_records(
+            readiness={
+                "preloaded_generation_records": [
+                    {
+                        "record_id": "h0-gen",
+                        "ok": True,
+                        "horizon_id": "H0",
+                        "generation_id": 24,
+                        "physical_horizon_generation_key": "H0:generation-24",
+                        "inactive_generation_written": True,
+                        "compiled_runtime_inputs": compiled_inputs,
+                    }
+                ],
+                "prepared_generation_ids": [24],
+            },
+            target_horizon_id="H1",
+            handoff_records=[
+                {
+                    "record_id": "h1-gen",
+                    "ok": True,
+                    "horizon_id": "H1",
+                    "generation_id": 32,
+                    "physical_horizon_generation_key": "H1:generation-32",
+                    "inactive_generation_written": True,
+                    "retain_inactive_generations": [24, 32],
+                    "compiled_runtime_inputs": compiled_inputs,
+                }
+            ],
+            expected_record_count=1,
+        )
+
+        readiness = result["readiness"]
+        self.assertEqual(result["handoff_preloaded_generation_record_count"], 1)
+        self.assertEqual(result["merged_preloaded_generation_record_count"], 2)
+        self.assertEqual(readiness["prepared_generation_ids"], [24, 32])
+        self.assertTrue(readiness["horizon_maintenance_handoff_consumed"])
+        self.assertEqual(
+            readiness["preloaded_generation_records"][1]["compiled_runtime_inputs"],
+            compiled_inputs,
+        )
+
+    def test_horizon_maintenance_handoff_requires_full_compiled_inputs(self) -> None:
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "horizon_maintenance_handoff_preloaded_records_missing",
+        ):
+            _merge_horizon_maintenance_handoff_preloaded_records(
+                readiness={},
+                target_horizon_id="H1",
+                handoff_records=[
+                    {
+                        "record_id": "compact-h1-gen",
+                        "ok": True,
+                        "horizon_id": "H1",
+                        "generation_id": 32,
+                        "physical_horizon_generation_key": "H1:generation-32",
+                        "inactive_generation_written": True,
+                        "compiled_runtime_inputs_summary": {"present": True},
+                    }
+                ],
+                expected_record_count=1,
+            )
+
+    def test_continuous_total_horizon_uses_loop_count(self) -> None:
+        args = SimpleNamespace(
+            continuous=True,
+            horizon_seconds=240.0,
+            step_seconds=10.0,
+            sample_interval=10.0,
+            slice_count=0,
+            loop_count=3,
+        )
+
+        self.assertEqual(_continuous_total_horizon_seconds(args=args), 720.0)
+
+    def test_frozen_rolling_horizon_segments_prepare_loop_window(self) -> None:
+        args = SimpleNamespace(
+            continuous=True,
+            horizon_seconds=240.0,
+            step_seconds=10.0,
+            sample_interval=10.0,
+            slice_count=0,
+            loop_count=3,
+            replenish_threshold_seconds=120.0,
+        )
+        initial_segment = {
+            "segment_id": "initial",
+            "start_time_utc": "2026-07-04T00:00:00Z",
+            "end_time_utc": "2026-07-04T00:03:50Z",
+            "current_execution_queue": [],
+            "lookahead_preload_queue": [],
+            "selected_epoch_queue": [],
+        }
+
+        def replenishment(*, segment_index, start_time_utc, horizon_seconds, **_):
+            end_seconds = 240 * (segment_index + 1) - 10
+            return {
+                "segment_id": f"replenished-{segment_index:03d}",
+                "start_time_utc": start_time_utc,
+                "end_time_utc": (
+                    f"2026-07-04T00:{end_seconds // 60:02d}:"
+                    f"{end_seconds % 60:02d}Z"
+                ),
+                "horizon_seconds": horizon_seconds,
+                "current_execution_queue": [],
+                "lookahead_preload_queue": [],
+                "selected_epoch_queue": [],
+            }
+
+        with patch(
+            "apps.run_starlink_shell_experiment._run_replenishment_preview",
+            side_effect=replenishment,
+        ) as preview:
+            segments = _prepare_frozen_rolling_horizon_segments(
+                args=args,
+                run_dir=Path("run"),
+                initial_segment=initial_segment,
+                topology_path=Path("topology.json"),
+                link_state_path=Path("link_state.json"),
+                run_start_time_utc="2026-07-04T00:00:00Z",
+            )
+
+        self.assertEqual([segment["segment_id"] for segment in segments], ["H0", "H1", "H2"])
+        self.assertEqual(preview.call_count, 2)
+        self.assertEqual(
+            [call.kwargs["horizon_seconds"] for call in preview.call_args_list],
+            [240.0, 240.0],
+        )
+
+    def test_normal_runtime_inputs_carry_bpf_physical_generation_slots(self) -> None:
+        def plan_payload(plan_id: str, snapshot_id: str) -> dict:
+            return {
+                "schema_version": "satellite-runtime-update-plan-v1alpha1",
+                "plan_id": plan_id,
+                "target_snapshot": {"snapshot_id": snapshot_id},
+                "planner": {"planner_name": "test"},
+                "apply_model": {
+                    "state_model": "full_state_intent",
+                    "action_model": "node_local_installer_action_v1",
+                },
+                "node_subplans": {},
+                "replacement_semantics": {},
+                "validation_expectations": {},
+            }
+
+        normal_inputs = {
+            "initial_segment": {
+                "segment_id": "current-horizon",
+                "current_execution_queue": [
+                    {
+                        "segment_epoch_key": "current-horizon:slice-1",
+                        "horizon_id": "current-horizon",
+                        "slice_id": "slice-1",
+                        "classification": "runtime_epoch",
+                    },
+                    {
+                        "segment_epoch_key": "current-horizon:slice-2",
+                        "horizon_id": "current-horizon",
+                        "slice_id": "slice-2",
+                        "classification": "parameter_epoch",
+                    },
+                    {
+                        "segment_epoch_key": "replenished-001:slice-3",
+                        "horizon_id": "replenished-001",
+                        "slice_id": "slice-3",
+                        "classification": "runtime_epoch",
+                    },
+                ],
+            },
+            "context_by_slice": {
+                "slice-1": {"runtime_update_plan": plan_payload("plan-1", "snap-1")},
+                "slice-2": {"runtime_update_plan": plan_payload("plan-2", "snap-2")},
+                "slice-3": {"runtime_update_plan": plan_payload("plan-3", "snap-3")},
+            },
+            "context_by_segment_key": {
+                "current-horizon:slice-1": {
+                    "runtime_update_plan": plan_payload("plan-1", "snap-1")
+                },
+                "current-horizon:slice-2": {
+                    "runtime_update_plan": plan_payload("plan-2", "snap-2")
+                },
+                "replenished-001:slice-3": {
+                    "runtime_update_plan": plan_payload("plan-3", "snap-3")
+                },
+            },
+            "runtime_update_plan_by_segment_key": {
+                "current-horizon:slice-1": plan_payload("plan-1", "snap-1"),
+                "current-horizon:slice-2": plan_payload("plan-2", "snap-2"),
+                "replenished-001:slice-3": plan_payload("plan-3", "snap-3"),
+            },
+        }
+        args = SimpleNamespace(
+            runtime_mode="operational_clean",
+            forwarding_backend="bpf_owned",
+            continuous=True,
+            sample_interval=10.0,
+            step_seconds=120.0,
+            horizon_seconds=240.0,
+            replenish_threshold_seconds=120.0,
+        )
+
+        patched = _normal_runtime_inputs_with_bpf_generation_slots(
+            normal_runtime_inputs=normal_inputs,
+            args=args,
+        )
+
+        slot_width = _bpf_generation_slot_width_for_horizon_budget(
+            horizon_seconds=240.0,
+            sample_interval_seconds=10.0,
+            observed_generation_count=3,
+        )
+        plans = patched["runtime_update_plan_by_segment_key"]
+        self.assertEqual(
+            plans["current-horizon:slice-1"]["target_snapshot"][
+                "bpf_physical_generation_id"
+            ],
+            0,
+        )
+        self.assertEqual(
+            plans["current-horizon:slice-2"]["target_snapshot"][
+                "bpf_physical_generation_id"
+            ],
+            1,
+        )
+        self.assertEqual(
+            plans["replenished-001:slice-3"]["target_snapshot"][
+                "bpf_physical_generation_id"
+            ],
+            slot_width,
+        )
+        self.assertEqual(
+            patched["context_by_slice"]["slice-3"]["runtime_update_plan"][
+                "target_snapshot"
+            ]["bpf_generation_buffer_index"],
+            1,
+        )
+        self.assertEqual(
+            patched["bpf_generation_slot_allocator"]["assignment_count"],
+            3,
+        )
+
+    def test_queue_entry_horizon_id_prefers_declared_horizon_before_plan_ids(
+        self,
+    ) -> None:
+        entry = {
+            "event_id": "reused-runtime-event",
+            "epoch_id": "reused-runtime-event",
+            "segment_epoch_key": "H1:slice-001",
+            "horizon_id": "H1",
+            "slice_id": "slice-001",
+        }
+        horizon_plan_entries = [
+            {
+                "horizon_id": "H0",
+                "current_event_ids": ["reused-runtime-event"],
+            },
+            {
+                "horizon_id": "H1",
+                "current_event_ids": ["reused-runtime-event"],
+            },
+        ]
+
+        horizon_id = _horizon_id_for_queue_entry_from_plan(
+            entry,
+            horizon_plan_entries=horizon_plan_entries,
+            segment_queue=[entry],
+        )
+
+        self.assertEqual(horizon_id, "H1")
+
+    def test_write_json_breaking_hardlink_preserves_source_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source_path = Path(tmpdir) / "frozen_prepared_update_bundle.json"
+            alias_path = Path(tmpdir) / "prepared_update_bundle.json"
+            _write_json_breaking_hardlink(source_path, {"bundle_id": "frozen"})
+            alias_path.hardlink_to(source_path)
+
+            _write_json_breaking_hardlink(alias_path, {"bundle_id": "runtime"})
+
+            self.assertEqual(json.loads(source_path.read_text())["bundle_id"], "frozen")
+            self.assertEqual(json.loads(alias_path.read_text())["bundle_id"], "runtime")
+            self.assertNotEqual(source_path.stat().st_ino, alias_path.stat().st_ino)
+
+    def test_materialized_lookahead_attach_budget_expands_only_safe_scope(
+        self,
+    ) -> None:
+        expansion = _materialized_lookahead_attach_budget_expansion(
+            attach_prepare_report={
+                "reason": "bpf_resident_attach_coverage_budget_exceeded",
+                "future_map_write_allowed": False,
+                "active_generation_flip_allowed": False,
+                "resident_attach_coverage_budget": {
+                    "schema_version": "skyseed-bpf-resident-attach-budget-v1",
+                    "budget_source": "official_precompose_bpf_role_union_gate",
+                    "max_attach_interfaces": 2,
+                    "max_resident_attach_interfaces": 2,
+                    "prepared_bpf_attach_capability_count": 4,
+                },
+                "prepare_steps": {
+                    "preactivation_attach_prepare": {
+                        "future_non_materialized_capacity_only_interfaces": [],
+                        "attach_cardinality_budget": {
+                            "attach_eligible_count": 3,
+                            "attached_count": 3,
+                            "max_attach_interfaces": 2,
+                        },
+                    }
+                },
+                "attach_plan": {
+                    "netns:sat-a:if0": {},
+                    "netns:sat-b:if0": {},
+                    "netns:sat-c:if0": {},
+                },
+            },
+            rolling_host_additive_prepare={
+                "ok": True,
+                "bridge_created_count": 0,
+                "preconnected_endpoint_created_count": 0,
+                "future_host_link_state_apply_allowed": False,
+                "preapply_qdisc_parameter_updates_allowed": False,
+            },
+        )
+
+        self.assertTrue(expansion["allowed"])
+        self.assertEqual(expansion["observed_attach_scope_count"], 3)
+        self.assertEqual(expansion["budget"]["max_attach_interfaces"], 4)
+        self.assertIn(
+            "materialized_lookahead_attach_scope",
+            expansion["budget"]["budget_source"],
+        )
+
+    def test_bpf_owned_host_plan_splits_parameter_updates_by_owner(
+        self,
+    ) -> None:
+        plan = NetworkMutationPlan(
+            schema_version="network-mutation-plan-v1",
+            mutation_id="plan-parameter-heavy",
+            source_snapshot={"source_state_id": "state-0"},
+            target_scope={"managed_slot_names": ["slot-a", "slot-b"]},
+            execution_boundary={},
+            operations=[
+                {
+                    "operation": "update_slot_parameters",
+                    "slot_name": "slot-a",
+                    "slot_type": "ut_access",
+                    "source_runtime_parameters": {"delay_ms": 1.0},
+                    "target_runtime_parameters": {"delay_ms": 5.0},
+                },
+                {
+                    "operation": "update_slot_parameters",
+                    "slot_name": "slot-loss",
+                    "slot_type": "ut_access",
+                    "source_runtime_parameters": {"loss_percent": 0.0},
+                    "target_runtime_parameters": {"loss_percent": 1.0},
+                    "changed_runtime_parameter_fields": ["loss_percent"],
+                },
+                {
+                    "operation": "rebind_slot_attachment",
+                    "slot_name": "slot-b",
+                    "slot_type": "ut_access",
+                    "target_binding": {"satellite_id": "sat-1"},
+                },
+            ],
+            validation_expectations={},
+        )
+
+        filtered, summary = _bpf_owned_host_plan_without_parameter_updates(plan)
+
+        self.assertTrue(summary["enabled"])
+        self.assertEqual(summary["skipped_parameter_update_count"], 1)
+        self.assertEqual(summary["retained_qdisc_required_update_count"], 1)
+        self.assertEqual(summary["skipped_qdisc_required_count"], 0)
+        self.assertEqual(
+            [op["operation"] for op in filtered.operations],
+            ["update_slot_parameters", "rebind_slot_attachment"],
+        )
+        self.assertEqual(
+            filtered.operations[0]["bpf_owned_host_qdisc_runtime_parameters"],
+            {"delay_ms": 5.0},
+        )
+        self.assertTrue(
+            filtered.execution_boundary["bpf_owned_host_parameter_updates_skipped"]
+        )
+        self.assertEqual(
+            filtered.target_scope["managed_slot_names"],
+            ["slot-a", "slot-b"],
+        )
+        self.assertTrue(filtered.target_scope["delta_first_target_scope"])
+
+    def test_delta_scoped_network_mutation_plan_removes_full_managed_scope(self) -> None:
+        plan = NetworkMutationPlan(
+            schema_version="network-mutation-plan-v1",
+            mutation_id="plan-full-scope",
+            source_snapshot={"source_state_id": "state-0"},
+            target_scope={"managed_slot_names": ["slot-a", "slot-b", "slot-c"]},
+            execution_boundary={},
+            operations=[
+                {
+                    "operation": "rebind_slot_attachment",
+                    "slot_name": "slot-b",
+                    "slot_type": "ut_access",
+                }
+            ],
+            validation_expectations={},
+        )
+
+        scoped = _delta_scoped_network_mutation_plan(plan)
+
+        self.assertEqual(scoped.target_scope["managed_slot_names"], ["slot-b"])
+        self.assertEqual(scoped.target_scope["original_managed_slot_count"], 3)
+        self.assertEqual(scoped.target_scope["delta_managed_slot_count"], 1)
+        self.assertFalse(
+            scoped.execution_boundary["hot_path_full_scope_compare_allowed"]
+        )
+
+    def test_bpf_owned_parameter_skip_advances_link_state_metadata_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            link_state_path = Path(tmpdir) / "link_state.json"
+            link_state_path.write_text(
+                json.dumps(
+                    {
+                        "runtime_initialized": True,
+                        "slots": [
+                            {
+                                "slot_name": "slot-a",
+                                "occupied": True,
+                                "binding": {"satellite_id": "sat-1"},
+                                "runtime_parameters": {"delay_ms": 1.0},
+                                "dynamic_endpoints": [{"interface_name": "if0"}],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            summary = _advance_link_state_for_bpf_owned_parameter_skip(
+                link_state_path=link_state_path,
+                skipped_operations=[
+                    {
+                        "operation": "update_slot_parameters",
+                        "slot_name": "slot-a",
+                        "target_runtime_parameters": {"delay_ms": 5.0},
+                    }
+                ],
+            )
+
+            updated = json.loads(link_state_path.read_text(encoding="utf-8"))
+            slot = updated["slots"][0]
+            self.assertTrue(summary["enabled"])
+            self.assertEqual(summary["advanced_slot_count"], 1)
+            self.assertEqual(slot["runtime_parameters"], {"delay_ms": 5.0})
+            self.assertEqual(slot["binding"], {"satellite_id": "sat-1"})
+            self.assertEqual(slot["dynamic_endpoints"], [{"interface_name": "if0"}])
+            self.assertTrue(updated["bpf_owned_parameter_metadata_advanced"])
+
+    def test_operational_clean_host_route_blocks_full_sweep_reconcile(self) -> None:
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "OPERATIONAL_CLEAN_HOST_ROUTE_FALLBACK_BLOCKER",
+        ):
+            _assert_operational_clean_host_apply_route(
+                segment_key="H1:starlink-shell-slice-0001",
+                host_apply={
+                    "outcome": {
+                        "preparation_summary": {
+                            "reconcile_summary": {
+                                "full_sweep": True,
+                                "scope": "full_sweep",
+                                "reconciled_slot_count": 200,
+                            }
+                        }
+                    }
+                },
+            )
+
+    def test_operational_clean_host_route_allows_dirty_scope(self) -> None:
+        _assert_operational_clean_host_apply_route(
+            segment_key="H1:starlink-shell-slice-0001",
+            host_apply={
+                "outcome": {
+                    "preparation_summary": {
+                        "reconcile_summary": {
+                            "full_sweep": False,
+                            "scope": "trusted_cached_state_skip",
+                            "reconciled_slot_count": 2,
+                        }
+                    },
+                    "normal_path_scope_contract": {
+                        "hidden_repair_blocked": False,
+                    },
+                }
+            },
+        )
+
+    def test_rolling_horizon_deferred_generation_record_is_compact_and_not_written(
+        self,
+    ) -> None:
+        record = _rolling_horizon_deferred_bpf_generation_record(
+            generation_item={
+                "segment_epoch_key": "H1:slice-0001",
+                "generation_id": 32,
+                "logical_generation_id": 0,
+                "physical_generation_id": 32,
+                "generation_slot_width": 25,
+                "horizon_sequence_index": 1,
+                "intent_hash": "intent-hash",
+            },
+            entry={
+                "epoch_id": "epoch-1",
+                "slice_id": "slice-0001",
+                "segment_id": "H1",
+            },
+            state_contract={
+                "source_state_id": "live_state:snap-0:epoch-0",
+                "target_state_id": "live_state:snap-1:epoch-1",
+                "host_plan_mutation_id": "netmut-1",
+            },
+            bpf_generation_slot_width=25,
+            retain_generation_ids=[0, 1, 32],
+        )
+
+        self.assertTrue(record["preload_deferred"])
+        self.assertFalse(record["inactive_generation_written"])
+        self.assertTrue(record["active_generation_flip_skipped"])
+        self.assertTrue(record["runtime_apply_skipped"])
+        self.assertEqual(record["delta_attach_count"], 0)
+        self.assertEqual(record["runtime_full_generation_reload_count"], 0)
+        self.assertNotIn("compiled_runtime_inputs", record)
+        self.assertNotIn("preload_report", record)
+        self.assertEqual(record["compiled_runtime_inputs_summary"]["kind"], "deferred")
+
+    def test_compact_preloaded_generation_record_preserves_parallel_preload_summary(
+        self,
+    ) -> None:
+        compact = _compact_preloaded_generation_record(
+            {
+                "record_id": "record-1",
+                "generation_id": 32,
+                "inactive_generation_written": True,
+                "compiled_runtime_inputs": {"large": ["payload"] * 4},
+                "preload_report": {
+                    "ok": True,
+                    "inactive_generation_written": True,
+                    "runtime_apply_skipped": True,
+                    "interface_role_map_updates_skipped": True,
+                    "interface_role_map_skipped_update_count": 52,
+                    "interface_role_map_update_skip_reason": (
+                        "roles_prepared_by_attach_capability"
+                    ),
+                    "parallel_map_write_enabled": True,
+                    "parallel_map_write_worker_count": 8,
+                    "parallel_map_write_scheduled_update_count": 180,
+                    "prepare_steps": {
+                        "real_backend_prepare": {
+                            "ok": True,
+                            "parallel_map_write_enabled": True,
+                            "parallel_map_write_worker_count": 8,
+                            "parallel_map_write_scheduled_update_count": 180,
+                        }
+                    },
+                },
+            }
+        )
+
+        self.assertNotIn("compiled_runtime_inputs", compact)
+        self.assertNotIn("preload_report", compact)
+        self.assertEqual(compact["compiled_runtime_inputs_summary"]["kind"], "mapping")
+        summary = compact["preload_report_summary"]
+        self.assertTrue(summary["parallel_map_write_enabled"])
+        self.assertEqual(summary["parallel_map_write_worker_count"], 8)
+        self.assertEqual(summary["parallel_map_write_scheduled_update_count"], 180)
+        self.assertTrue(summary["interface_role_map_updates_skipped"])
+        nested = summary["real_backend_prepare_summary"]
+        self.assertTrue(nested["parallel_map_write_enabled"])
+
+    def test_bpf_preload_base_resolver_rejects_compact_summary(self) -> None:
+        record = _bpf_active_base_generation_record_for_preload(
+            {
+                "active_generation": 42,
+                "active_physical_horizon_generation_key": "H0:generation-42",
+                "compiled_runtime_inputs_summary": {
+                    "kind": "mapping",
+                    "present": True,
+                },
+                "prepare_steps": {
+                    "real_backend_prepare": {
+                        "compiled_runtime_inputs_summary": {
+                            "kind": "mapping",
+                            "present": True,
+                        }
+                    }
+                },
+            }
+        )
+
+        self.assertFalse(record["ok"])
+        self.assertEqual(record["reason"], "base_compiled_runtime_inputs_missing")
+        self.assertEqual(record["compiled_runtime_inputs"], {})
+        self.assertTrue(
+            all(
+                checked["manifest_ready"] is False
+                for checked in record["checked_sources"]
+            )
+        )
+
+    def test_bpf_preload_base_resolver_builds_manifest_only_batch_work_item(
+        self,
+    ) -> None:
+        compiled_inputs = {
+            "schema_version": "skyseed-bpf-owned-compiled-runtime-inputs-v1",
+            "active_generation": {"value": 42},
+            "ingress_classifier_map": [],
+            "core_lfib_map": [],
+            "egress_handoff_map": [],
+            "bpf_generation_overlay_manifest": {
+                "manifest_only_loader_required": True,
+                "batch_map_write_required": True,
+            },
+            "bpf_map_write_manifest_only": True,
+            "batch_map_write_required": True,
+        }
+        base_record = _bpf_active_base_generation_record_for_preload(
+            {
+                "active_generation": 42,
+                "active_physical_horizon_generation_key": "H0:generation-42",
+                "active_generation_compiled_runtime_inputs": compiled_inputs,
+            }
+        )
+        generation_item = {
+            "segment_epoch_key": "H1:slice-0001",
+            "generation_id": 67,
+            "logical_generation_id": 0,
+            "physical_generation_id": 67,
+            "intent_hash": "intent-67",
+        }
+
+        self.assertTrue(base_record["ok"])
+        self.assertEqual(
+            base_record["source"],
+            "readiness.active_generation_compiled_runtime_inputs",
+        )
+        work_item = _rolling_horizon_bpf_preload_work_item(
+            segment_index=1,
+            segment_id="H1",
+            horizon_id="H1",
+            generation_item=generation_item,
+            retain_generation_ids=[42, 67],
+            prepared_generation_window_count=2,
+            base_generation_record=base_record,
+        )
+        queued_record = _rolling_horizon_queued_bpf_generation_record(
+            generation_item=generation_item,
+            entry={"epoch_id": "epoch-1", "slice_id": "slice-0001", "segment_id": "H1"},
+            state_contract={
+                "source_state_id": "live_state:h0",
+                "target_state_id": "live_state:h1",
+            },
+            bpf_generation_slot_width=25,
+            retain_generation_ids=[42, 67],
+        )
+
+        self.assertEqual(work_item["base_generation_id"], 42)
+        self.assertEqual(work_item["base_generation_compiled_inputs"], compiled_inputs)
+        self.assertTrue(work_item["bpf_map_write_manifest_only"])
+        self.assertTrue(work_item["manifest_only_loader_required"])
+        self.assertTrue(work_item["batch_map_write_required"])
+        self.assertTrue(work_item["prepared_attach_capability_readiness_required"])
+        self.assertFalse(work_item["prepared_attach_capability_readiness_ready"])
+        self.assertTrue(queued_record["preload_queued"])
+        self.assertTrue(queued_record["queued_preload_audit"]["batch_map_write_required"])
+        self.assertTrue(
+            queued_record["queued_preload_audit"]["manifest_only_loader_required"]
+        )
+
+        compact_completed = _compact_preloaded_generation_record(
+            {
+                "record_id": "queuepregeneration-1",
+                "generation_id": 67,
+                "inactive_generation_written": True,
+                "compiled_runtime_inputs": compiled_inputs,
+                "manifest_only_loader": True,
+                "manifest_only_map_write_used": True,
+                "batch_map_write_required": True,
+                "batch_map_write_used": True,
+                "batch_map_write_update_count": 3,
+                "actual_data_write_count": 3,
+            }
+        )
+        self.assertTrue(compact_completed["manifest_only_loader"])
+        self.assertTrue(compact_completed["manifest_only_map_write_used"])
+        self.assertTrue(compact_completed["batch_map_write_used"])
+        self.assertEqual(compact_completed["batch_map_write_update_count"], 3)
+
+    def test_bpf_preload_work_item_carries_frozen_attach_capability_readiness(
+        self,
+    ) -> None:
+        readiness = {
+            "ok": True,
+            "attach_plan": {
+                "netns:r1:eth0": ["ingress"],
+                "netns:r2:eth0": ["egress"],
+            },
+            "attached_interfaces": ["netns:r1:eth0", "netns:r2:eth0"],
+            "attached_interface_details": [
+                {
+                    "interface_ref": "netns:r1:eth0",
+                    "attach_directions": ["ingress"],
+                    "expected_roles": ["g_to_z_classifier"],
+                },
+                {
+                    "interface_ref": "netns:r2:eth0",
+                    "attach_directions": ["egress"],
+                    "expected_roles": ["egress_handoff"],
+                },
+            ],
+            "mpls_map_entry_counts": {"ingress_classifier_map": 3},
+            "map_capacities": {"classifiers": 128},
+            "preactivation_attach_prepare": {
+                "ok": True,
+                "runtime_apply_skipped": True,
+                "active_generation_set": False,
+                "map_ready": False,
+                "runtime_full_generation_reload_count": 0,
+                "full_attach_count": 0,
+                "delta_attach_count": 0,
+            },
+            "preactivation_attach_prepare_records": [
+                {"ok": True, "artifact_path": "/tmp/h1-attach.json"}
+            ],
+        }
+        proof = _prepared_attach_capability_readiness_for_preload(readiness)
+        work_item = _rolling_horizon_bpf_preload_work_item(
+            segment_index=1,
+            segment_id="H1",
+            horizon_id="H1",
+            generation_item={
+                "segment_epoch_key": "H1:slice-0001",
+                "generation_id": 2,
+                "physical_generation_id": 2,
+            },
+            retain_generation_ids=[1, 2],
+            prepared_generation_window_count=2,
+            base_generation_record={
+                "ok": True,
+                "record_id": "base-1",
+                "source": "readiness.active_generation_compiled_runtime_inputs",
+                "generation_id": 1,
+                "physical_generation_id": 1,
+                "compiled_runtime_inputs": {"active_generation": {"value": 1}},
+            },
+            prepared_attach_capability_readiness=proof,
+        )
+
+        self.assertTrue(work_item["prepared_attach_capability_readiness_ready"])
+        frozen_proof = work_item["prepared_attach_capability_readiness"]
+        self.assertEqual(
+            frozen_proof["preactivation_attach_prepare_records"][0]["artifact_path"],
+            "/tmp/h1-attach.json",
+        )
+        self.assertEqual(
+            frozen_proof["attach_plan"],
+            {
+                "netns:r1:eth0": ["ingress"],
+                "netns:r2:eth0": ["egress"],
+            },
+        )
+        self.assertEqual(frozen_proof["prepared_bpf_attach_capability_count"], 2)
+
+    def test_normal_runtime_inputs_carry_resident_attach_budget(self) -> None:
+        plan = {
+            "schema_version": "satellite-runtime-update-plan-v1alpha1",
+            "plan_id": "plan-1",
+            "target_snapshot": {"snapshot_id": "snap-1"},
+            "planner": {"planner_name": "test"},
+            "apply_model": {
+                "state_model": "full_state_intent",
+                "action_model": "node_local_installer_action_v1",
+            },
+            "node_subplans": {},
+            "replacement_semantics": {},
+            "validation_expectations": {},
+        }
+        normal_inputs = {
+            "initial_segment": {
+                "segment_id": "initial",
+                "current_execution_queue": [],
+            },
+            "context_by_slice": {"slice-1": {"runtime_update_plan": dict(plan)}},
+            "context_by_segment_key": {
+                "initial:slice-1": {"runtime_update_plan": dict(plan)}
+            },
+            "context_by_slice_by_segment": {
+                "initial": {"slice-1": {"runtime_update_plan": dict(plan)}}
+            },
+            "runtime_update_plan_by_segment_key": {
+                "initial:slice-1": dict(plan),
+            },
+        }
+
+        patched = _normal_runtime_inputs_with_bpf_resident_attach_budget(
+            normal_runtime_inputs=normal_inputs,
+            precompose_bpf_role_union_gate={
+                "required_bpf_interface_ref_count": 266,
+                "bootstrap_pre_runtime_full_attach_count": 266,
+                "prepared_bpf_attach_capability": {
+                    f"netns:sat-{index}:if0": ["ingress"]
+                    for index in range(266)
+                },
+                "prepared_bpf_attach_capability_count": 266,
+            },
+        )
+
+        budget = patched["resident_attach_coverage_budget"]
+        self.assertEqual(
+            budget["budget_source"],
+            "official_precompose_bpf_role_union_gate",
+        )
+        self.assertEqual(budget["max_attach_interfaces"], 266)
+        self.assertEqual(budget["slack_attach_interfaces"], 0)
+        self.assertNotIn(
+            "resident_attach_coverage_budget",
+            patched["runtime_update_plan_by_segment_key"]["initial:slice-1"][
+                "target_snapshot"
+            ],
+        )
+        self.assertNotIn(
+            "resident_attach_coverage_budget",
+            patched["context_by_slice_by_segment"]["initial"]["slice-1"][
+                "runtime_update_plan"
+            ]["target_snapshot"],
+        )
+        self.assertIn("resident_attach_coverage_budget_hash", patched["hashes"])
+
+        thawed = _thaw_normal_runtime_initial_segment(
+            {
+                "bundle_id": "bundle-budget-test",
+                "executable_runtime_inputs": {
+                    "normal_runtime_inputs": patched,
+                    "normal_runtime_thaw_adapter": {
+                        "adapter": "canonical_normal_runtime_inputs_v1",
+                    },
+                },
+            }
+        )
+        self.assertEqual(
+            thawed["context_by_slice"]["slice-1"]["runtime_update_plan"].target_snapshot[
+                "resident_attach_coverage_budget"
+            ],
+            budget,
+        )
+
+    def test_normal_runtime_inputs_accept_explicit_rolling_attach_budget(self) -> None:
+        rolling_budget = {
+            "schema_version": "skyseed-bpf-resident-attach-budget-v1",
+            "budget_source": "official_precompose+prepared_horizon_offline_role_union",
+            "max_attach_interfaces": 512,
+            "max_resident_attach_interfaces": 512,
+            "slack_attach_interfaces": 0,
+        }
+
+        patched = _normal_runtime_inputs_with_bpf_resident_attach_budget(
+            normal_runtime_inputs={
+                "initial_segment": {
+                    "segment_id": "initial",
+                    "current_execution_queue": [],
+                },
+                "hashes": {},
+            },
+            precompose_bpf_role_union_gate={
+                "required_bpf_interface_ref_count": 12,
+                "prepared_bpf_attach_capability": {
+                    "netns:sat-a:if0": ["ingress"]
+                },
+            },
+            resident_attach_budget=rolling_budget,
+        )
+
+        self.assertEqual(
+            patched["resident_attach_coverage_budget"]["max_attach_interfaces"],
+            512,
+        )
+        self.assertIn("resident_attach_coverage_budget_hash", patched["hashes"])
+
+    def test_resource_scope_delta_only_includes_unprepared_required_resources(self) -> None:
+        required_scope = {
+            "slot-a": ["netns:a:if0", "netns:b:if0"],
+            "slot-b": ["netns:c:if0"],
+            "slot-c": ["netns:d:if0"],
+        }
+        prepared_scope = {
+            "slot-a": ["netns:a:if0"],
+            "slot-b": ["netns:c:if0"],
+            "slot-extra": ["netns:z:if0"],
+        }
+
+        delta = _resource_scope_delta_by_slot(
+            required_resource_scope_by_slot=required_scope,
+            prepared_resource_scope_by_slot=prepared_scope,
+        )
+
+        self.assertEqual(
+            delta,
+            {
+                "slot-a": ["netns:b:if0"],
+                "slot-c": ["netns:d:if0"],
+            },
+        )
+
     def test_lifecycle_queue_keeps_forwarding_boundary_as_lookahead_preload(self) -> None:
         temporal_plan = {
             "orbit_samples": [
@@ -424,6 +1441,359 @@ class EventTimelineRuntimeQueueTests(unittest.TestCase):
             "not_selected_for_current_execution",
         )
 
+    def test_lifecycle_queue_exposes_rolling_sliding_window_contract(self) -> None:
+        selected_epoch_queue = [
+            {
+                "epoch_id": "runtime-1",
+                "slice_id": "slice-1",
+                "classification": "runtime_epoch",
+                "segment_id": "segment-0",
+                "segment_epoch_key": "segment-0:slice-1",
+                "trigger_reasons": ["initial_runtime_epoch"],
+            },
+            {
+                "epoch_id": "runtime-2",
+                "slice_id": "slice-2",
+                "classification": "runtime_epoch",
+                "segment_id": "segment-0",
+                "segment_epoch_key": "segment-0:slice-2",
+                "trigger_reasons": ["structural_link_change"],
+            },
+            {
+                "epoch_id": "runtime-3",
+                "slice_id": "slice-3",
+                "classification": "runtime_epoch",
+                "segment_id": "segment-1",
+                "segment_epoch_key": "segment-1:slice-3",
+                "trigger_reasons": ["structural_link_change"],
+            },
+            {
+                "epoch_id": "runtime-4",
+                "slice_id": "slice-4",
+                "classification": "runtime_epoch",
+                "segment_id": "segment-2",
+                "segment_epoch_key": "segment-2:slice-4",
+                "trigger_reasons": ["structural_link_change"],
+            },
+        ]
+
+        contract = _horizon_lifecycle_queue_contract(
+            selected_epoch_queue=selected_epoch_queue,
+            max_runtime_epochs=2,
+            max_parameter_epochs=0,
+        )
+        sliding = contract["sliding_window_contract"]
+
+        self.assertEqual(
+            sliding["schema_version"],
+            "skyseed-sliding-horizon-window-contract-v1",
+        )
+        self.assertEqual(sliding["window_model"], "rolling_horizon_window")
+        self.assertFalse(sliding["test_horizon_count_hardcoded"])
+        self.assertEqual(sliding["startup_prepare_policy"], "current_window_only")
+        self.assertEqual(sliding["windows"]["current"]["horizon_id"], "segment-0")
+        self.assertEqual(sliding["windows"]["next"]["horizon_id"], "segment-1")
+        self.assertEqual(
+            sliding["windows"]["next"]["status"],
+            "boundary_preload_pending",
+        )
+        self.assertIn(
+            "cleanup_previous_horizon_after_boundary",
+            sliding["maintenance_allowed_operations"],
+        )
+        self.assertIn(
+            "preapply_qdisc_parameter_updates",
+            sliding["maintenance_forbidden_operations"],
+        )
+        self.assertIn(
+            "runtime_recompute_network_mutation_plan",
+            sliding["runtime_forbidden_operations"],
+        )
+
+    def test_replenished_host_plan_preparation_chains_from_remaining_window(
+        self,
+    ) -> None:
+        def snapshot(snapshot_id: str, slice_id: str) -> SimpleNamespace:
+            return SimpleNamespace(
+                snapshot_id=snapshot_id,
+                time_slice={"slice_id": slice_id},
+            )
+
+        def plan(
+            mutation_id: str,
+            source_state_id: str,
+            slot_name: str,
+        ) -> NetworkMutationPlan:
+            return NetworkMutationPlan(
+                schema_version="test-plan-v1",
+                mutation_id=mutation_id,
+                source_snapshot={"source_state_id": source_state_id},
+                target_scope={},
+                execution_boundary={},
+                operations=[
+                    {
+                        "operation": "activate_slot_attachment",
+                        "slot_name": slot_name,
+                        "slot_type": "same_plane_isl",
+                        "target_occupied": True,
+                        "target_binding": {"link": slot_name},
+                        "target_endpoints": [],
+                        "target_runtime_parameters": {"delay_ms": 1.0},
+                    }
+                ],
+                validation_expectations={},
+            )
+
+        remaining_entry = {
+            "segment_epoch_key": "initial:slice-002",
+            "segment_id": "initial",
+            "horizon_id": "initial",
+            "slice_id": "slice-002",
+            "epoch_id": "epoch-h0-002",
+        }
+        accepted_entry = {
+            "segment_epoch_key": "replenished-001:slice-001",
+            "segment_id": "replenished-001",
+            "horizon_id": "replenished-001",
+            "slice_id": "slice-001",
+            "epoch_id": "epoch-h1-001",
+            "classification": "runtime_epoch",
+        }
+        current_state_id = "live_state:snap-h0-001:epoch-h0-001"
+        existing_plan = plan("mut-h0-002", current_state_id, "slot-h0-002")
+
+        prepared = _prepare_replenished_host_plan_payloads(
+            remaining_queue=[remaining_entry],
+            accepted_entries=[accepted_entry],
+            context_by_key={
+                "initial:slice-002": {
+                    "snapshot": snapshot("snap-h0-002", "slice-002")
+                }
+            },
+            replenished_context_by_key={
+                "replenished-001:slice-001": {
+                    "snapshot": snapshot("snap-h1-001", "slice-001")
+                }
+            },
+            current_dynamic_state={},
+            current_state_id=current_state_id,
+            resolve_existing_host_plan=(
+                lambda _entry, _context, _state, _state_id: existing_plan
+            ),
+            build_host_plan=lambda _entry, _context, _state, state_id: plan(
+                "mut-h1-001",
+                state_id,
+                "slot-h1-001",
+            ),
+        )
+
+        self.assertEqual(prepared["prepared_host_plan_count"], 1)
+        h1_plan = prepared["prepared_host_plan_by_segment_key"][
+            "replenished-001:slice-001"
+        ]
+        self.assertEqual(
+            h1_plan["source_snapshot"]["source_state_id"],
+            "live_state:snap-h0-002:epoch-h0-002",
+        )
+        self.assertEqual(
+            prepared["source_state_chain"][-1]["source_state_id"],
+            "live_state:snap-h0-002:epoch-h0-002",
+        )
+
+    def test_replenished_host_plan_preparation_fails_without_remaining_context(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "rolling_horizon_existing_queue_missing_context:initial:slice-002",
+        ):
+            _prepare_replenished_host_plan_payloads(
+                remaining_queue=[
+                    {
+                        "segment_epoch_key": "initial:slice-002",
+                        "slice_id": "slice-002",
+                        "epoch_id": "epoch-h0-002",
+                    }
+                ],
+                accepted_entries=[],
+                context_by_key={},
+                replenished_context_by_key={},
+                current_dynamic_state={},
+                current_state_id="live_state:snap-h0-001:epoch-h0-001",
+                resolve_existing_host_plan=lambda *_args: None,  # type: ignore[arg-type,return-value]
+                build_host_plan=lambda *_args: None,  # type: ignore[arg-type,return-value]
+            )
+
+    def test_replenishment_preview_uses_replenished_artifact_source_paths(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            run_dir = tmp_path / "run"
+            run_dir.mkdir()
+            segment_topology = tmp_path / "segment-topology.json"
+            segment_link_state = tmp_path / "segment-link-state.json"
+            segment_topology.write_text("{}", encoding="utf-8")
+            segment_link_state.write_text("{}", encoding="utf-8")
+            args = SimpleNamespace(sample_interval=10)
+
+            with (
+                patch(
+                    "apps.run_starlink_shell_experiment._preview_command",
+                    return_value=["preview"],
+                ),
+                patch(
+                    "apps.run_starlink_shell_experiment.subprocess.run",
+                    return_value=CompletedProcess(
+                        args=["preview"],
+                        returncode=0,
+                        stdout="{}",
+                        stderr="",
+                    ),
+                ),
+                patch(
+                    "apps.run_starlink_shell_experiment._load_temporal_artifacts",
+                    return_value={
+                        "artifacts": {
+                            "topology_json": str(segment_topology),
+                            "link_state_json": str(segment_link_state),
+                        },
+                        "temporal_plan": {},
+                        "planner_preview": {},
+                        "snapshot_preview": {},
+                        "shell_manifest": {},
+                    },
+                ),
+                patch(
+                    "apps.run_starlink_shell_experiment._preview_summary_to_segment",
+                    return_value={
+                        "segment_id": "replenished-001",
+                        "summary": {},
+                    },
+                ) as preview_to_segment,
+            ):
+                _run_replenishment_preview(
+                    args=args,
+                    run_dir=run_dir,
+                    segment_index=1,
+                    start_time_utc="2026-06-21T00:00:00Z",
+                    horizon_seconds=120.0,
+                    topology_path=tmp_path / "initial-topology.json",
+                    link_state_path=tmp_path / "initial-link-state.json",
+                    run_start_time_utc="2026-06-21T00:00:00Z",
+                )
+
+            kwargs = preview_to_segment.call_args.kwargs
+            self.assertEqual(kwargs["topology_path"], segment_topology.resolve())
+            self.assertEqual(kwargs["link_state_path"], segment_link_state.resolve())
+
+    def test_preview_segment_contexts_record_their_source_artifact_paths(self) -> None:
+        topology_path = Path("/tmp/segment-topology.json")
+        link_state_path = Path("/tmp/segment-link-state.json")
+        snapshot = SimpleNamespace(time_slice={"slice_id": "slice-001"})
+        queue = [
+            {
+                "slice_id": "slice-001",
+                "epoch_id": "runtime-001",
+                "classification": "runtime_epoch",
+                "activation_time_utc": "2026-06-21T00:00:00Z",
+            }
+        ]
+
+        with (
+            patch(
+                "apps.run_starlink_shell_experiment._temporal_execution_queue",
+                return_value=([], list(queue), ["slice-001"], []),
+            ),
+            patch(
+                "apps.run_starlink_shell_experiment._annotate_epoch_queue_runtime_update_counts",
+                side_effect=lambda selected_epoch_queue, planner_preview: list(
+                    selected_epoch_queue
+                ),
+            ),
+            patch(
+                "apps.run_starlink_shell_experiment._append_forwarding_relevant_lookahead_boundary",
+                side_effect=lambda selected_epoch_queue, **_kwargs: list(
+                    selected_epoch_queue
+                ),
+            ),
+            patch("apps.run_starlink_shell_experiment._load_snapshots", return_value=[]),
+            patch(
+                "apps.run_starlink_shell_experiment._filter_snapshots_by_slice_ids",
+                return_value=[snapshot],
+            ),
+            patch(
+                "apps.run_starlink_shell_experiment._build_slice_contexts",
+                return_value=[
+                    {
+                        "snapshot": snapshot,
+                        "runtime_update_plan": SimpleNamespace(),
+                    }
+                ],
+            ),
+            patch(
+                "apps.run_starlink_shell_experiment._read_json",
+                return_value={"slot_inventory": {}},
+            ),
+            patch(
+                "apps.run_starlink_shell_experiment._selected_access_prewarm_resource_scope_by_slot",
+                return_value={"ut2001-access-slot0": ["ut-access-resource"]},
+            ),
+            patch(
+                "apps.run_starlink_shell_experiment._static_inventory_materialization_resource_scope_by_slot",
+                return_value={"cross-slot0": ["cross-resource"]},
+            ),
+            patch(
+                "apps.run_starlink_shell_experiment._run_window_resource_coverage_plan",
+                return_value={
+                    "schema_version": "skyseed-run-window-resource-coverage-plan-v1",
+                    "unresolved_count": 0,
+                    "prepared_resource_scope_by_slot": {
+                        "ut2001-access-slot0": ["ut-access-resource"],
+                        "cross-slot0": ["cross-resource"],
+                    },
+                },
+            ),
+        ):
+            segment = _preview_summary_to_segment(
+                segment_id="replenished-001",
+                preview_summary={"temporal_plan": {"horizon_seconds": 120.0}},
+                temporal_artifacts={
+                    "temporal_plan": {
+                        "orbit_samples": [
+                            {
+                                "absolute_time_utc": "2026-06-21T00:00:00Z",
+                                "slice_id": "slice-001",
+                            }
+                        ],
+                    },
+                    "artifacts": {
+                        "snapshot_preview_json": "/tmp/snapshot-preview.json",
+                    },
+                    "planner_preview": {},
+                },
+                topology_path=topology_path,
+                link_state_path=link_state_path,
+                run_start_time_utc="2026-06-21T00:00:00Z",
+                max_epochs=None,
+                max_runtime_epochs=None,
+                max_parameter_epochs=None,
+            )
+
+        context = segment["context_by_slice"]["slice-001"]
+        self.assertEqual(context["topology_path"], str(topology_path))
+        self.assertEqual(context["link_state_path"], str(link_state_path))
+        self.assertEqual(segment["topology_path"], str(topology_path))
+        self.assertEqual(segment["link_state_path"], str(link_state_path))
+        self.assertEqual(
+            segment["prepared_resource_scope_by_slot"]["ut2001-access-slot0"],
+            ["ut-access-resource"],
+        )
+        self.assertEqual(
+            segment["run_window_resource_coverage_plan"]["unresolved_count"],
+            0,
+        )
+
     def test_precompose_horizon_gate_blocks_exactly_one_lookahead_violation(
         self,
     ) -> None:
@@ -495,6 +1865,58 @@ class EventTimelineRuntimeQueueTests(unittest.TestCase):
         self.assertIn("exactly_one_lookahead_preload_event_required", blockers)
         self.assertIn("exactly_one_preload_required_event_required", blockers)
 
+    def test_precompose_horizon_gate_accepts_full_current_horizon_without_boundary(
+        self,
+    ) -> None:
+        current_queue = [
+            {
+                "epoch_id": "runtime-1",
+                "horizon_execution_role": "current_execution",
+                "runtime_apply_allowed": True,
+                "classification": "runtime_epoch",
+                "trigger_reasons": ["initial_runtime_epoch"],
+            },
+            {
+                "epoch_id": "parameter-1",
+                "horizon_execution_role": "current_execution",
+                "runtime_apply_allowed": True,
+                "classification": "parameter_epoch",
+                "trigger_reasons": ["delay_threshold_exceeded"],
+            },
+        ]
+        contract = {
+            "selected_event_count": 2,
+            "current_execution_event_count": 2,
+            "current_runtime_applicable_event_count": 2,
+            "lookahead_preload_event_count": 0,
+            "preload_required_event_count": 0,
+            "preload_only_boundary_event_count": 0,
+            "not_selected_event_count": 0,
+            "duplicate_event_keys": [],
+            "current_execution_queue": current_queue,
+            "lookahead_preload_queue": [],
+            "event_reports": [
+                {"epoch_id": "runtime-1"},
+                {"epoch_id": "parameter-1"},
+            ],
+        }
+
+        gate = _precompose_horizon_queue_gate(
+            requested_lifecycle_aware_1p1=True,
+            candidate_epoch_queue=current_queue,
+            horizon_lifecycle_queue_contract=contract,
+            prepared_update_bundle={
+                "selected_epoch_queue": current_queue,
+                "current_execution_queue": current_queue,
+                "lookahead_preload_queue": [],
+            },
+        )
+
+        self.assertTrue(gate["passed"])
+        self.assertTrue(gate["compose_up_allowed"])
+        self.assertEqual(gate["queue_gate_mode"], "full_current_horizon")
+        self.assertFalse(gate["one_plus_one_boundary_required"])
+
     def test_precompose_bpf_role_union_gate_covers_lookahead_roles(self) -> None:
         gate = _precompose_bpf_role_union_gate_from_reports(
             current_event_role_reports=[
@@ -552,6 +1974,15 @@ class EventTimelineRuntimeQueueTests(unittest.TestCase):
         self.assertEqual(gate["full_attach_count"], 0)
         self.assertTrue(gate["preload_report_written"])
         self.assertIn("skyseed_details", gate)
+        self.assertEqual(
+            gate["resident_attach_coverage_budget"]["budget_source"],
+            "official_precompose_bpf_role_union_gate",
+        )
+        self.assertEqual(
+            gate["resident_attach_coverage_budget"]["max_attach_interfaces"],
+            1,
+        )
+        self.assertEqual(gate["resident_attach_coverage_budget"]["slack_attach_interfaces"], 0)
         self.assertEqual(
             gate["required_interface_role_union_by_role"],
             {"g_to_z_classifier": 1, "z_to_g_core_lfib": 1},
@@ -699,6 +2130,40 @@ class EventTimelineRuntimeQueueTests(unittest.TestCase):
         self.assertEqual(contract["outcome_label"], "SLOW_BUT_PROGRESSING_CONTINUE")
         self.assertTrue(contract["base_budget_pressure"])
         self.assertGreater(contract["remaining_contract_seconds"], 0.0)
+
+    def test_compose_startup_wall_time_attribution_splits_known_costs(self) -> None:
+        attribution = _compose_startup_wall_time_attribution(
+            stage_results=[
+                {
+                    "stage_id": "helpers",
+                    "wall_seconds": 10.0,
+                    "inter_stage_backoff_seconds": 3.0,
+                },
+                {
+                    "stage_id": "satellites",
+                    "wall_seconds": 20.0,
+                    "retry_after_timeout": {
+                        "retry_results": [
+                            {"wall_seconds": 4.0},
+                            {"wall_seconds": 5.0},
+                        ]
+                    },
+                },
+            ],
+            total_wall_seconds=45.0,
+        )
+
+        self.assertEqual(attribution["compose_up_command_wall_seconds"], 30.0)
+        self.assertEqual(attribution["compose_up_retry_command_wall_seconds"], 9.0)
+        self.assertEqual(
+            attribution["compose_up_inter_stage_backoff_wall_seconds"],
+            3.0,
+        )
+        self.assertEqual(
+            attribution["compose_up_orchestration_overhead_wall_seconds"],
+            3.0,
+        )
+        self.assertEqual(attribution["retry_command_count"], 2)
 
     def test_progress_contract_blocks_no_progress_startup_stall(self) -> None:
         contract = _compose_startup_progress_contract(
@@ -1819,6 +3284,14 @@ class FrozenPreparedBundleContractTests(unittest.TestCase):
             "runtime_mode": "operational_clean",
             "forwarding_backend": "bpf_owned",
             "horizon_seconds": 120,
+            "sample_interval": 10,
+            "step_seconds": 120,
+            "slice_count": 13,
+            "continuous": False,
+            "replenish_threshold_seconds": 60,
+            "loop_count": 1,
+            "interval": 0,
+            "strict_activation_deadlines": False,
             "max_runtime_epochs": 4,
             "max_parameter_epochs": 1,
             "run_id": "ignored",
@@ -1877,6 +3350,126 @@ class FrozenPreparedBundleContractTests(unittest.TestCase):
             },
         )
 
+    def _rolling_normal_runtime_inputs(self) -> dict:
+        def _entry(segment_id: str, index: int) -> dict:
+            return {
+                "event_id": f"runtime-{index}",
+                "epoch_id": f"epoch-{index}",
+                "slice_id": f"slice-{index}",
+                "segment_id": segment_id,
+                "segment_epoch_key": f"{segment_id}:slice-{index}",
+                "horizon_id": segment_id,
+                "classification": "runtime_epoch",
+                "runtime_apply_allowed": True,
+                "activation_time_utc": f"2026-06-21T00:0{index}:00Z",
+                "activation_relative_time_seconds": float(index * 60),
+            }
+
+        def _context(index: int) -> dict:
+            snapshot = {
+                "schema_version": "satellite-topology-snapshot-v1alpha1",
+                "snapshot_id": f"snap-{index}",
+                "time_slice": {"slice_id": f"slice-{index}", "state_model": "full_state"},
+                "provenance": {"source": "test"},
+                "nodes": {},
+                "active_links": [],
+                "zones": {},
+                "ut_zone_membership": {},
+                "planner_hints": {},
+            }
+            runtime_plan = {
+                "schema_version": "satellite-runtime-update-plan-v1alpha1",
+                "plan_id": f"plan-{index}",
+                "target_snapshot": {"snapshot_id": f"snap-{index}"},
+                "planner": {"planner_name": "test"},
+                "apply_model": {
+                    "state_model": "full_state_intent",
+                    "action_model": "node_local_installer_action_v1",
+                },
+                "node_subplans": {},
+                "replacement_semantics": {},
+                "validation_expectations": {},
+            }
+            distribution = {
+                "schema_version": "satellite-runtime-distribution-store-v1alpha1",
+                "distribution_id": f"dist-{index}",
+                "source_envelope_batch": {
+                    "schema_version": "satellite-agent-envelope-batch-v1alpha1",
+                    "envelope_batch_id": f"batch-{index}",
+                },
+                "distributor": {"distributor_name": "test"},
+                "store_contract": {
+                    "transport_binding": "transport_agnostic",
+                    "dry_run_mode": True,
+                },
+                "node_delivery_views": {},
+                "validation_expectations": {},
+            }
+            return {
+                "snapshot": snapshot,
+                "runtime_update_plan": runtime_plan,
+                "distribution_batch": distribution,
+                "slice_report": {},
+            }
+
+        segments = []
+        context_by_slice_by_segment = {}
+        context_by_segment_key = {}
+        runtime_update_plan_by_key = {}
+        distribution_by_key = {}
+        snapshot_by_key = {}
+        host_plan_by_key = {}
+        for index, segment_id in enumerate(("H0", "H1", "H2")):
+            entry = _entry(segment_id, index)
+            ctx = _context(index)
+            segment = {
+                "segment_id": segment_id,
+                "horizon_id": segment_id,
+                "current_execution_queue": [entry],
+                "lookahead_preload_queue": [],
+                "selected_epoch_queue": [entry],
+                "summary": {"source": "event_timeline", "runtime_epoch_count": 1},
+                "prepared_resource_scope_by_slot": {
+                    "slot-a": ["netns:node-a:if-a", "link:isl-a"]
+                },
+                "run_window_resource_coverage_plan": {
+                    "unresolved_count": 0,
+                    "required_resource_union_count": 2,
+                },
+            }
+            segments.append(segment)
+            context_by_slice_by_segment[segment_id] = {f"slice-{index}": ctx}
+            key = entry["segment_epoch_key"]
+            context_by_segment_key[key] = ctx
+            runtime_update_plan_by_key[key] = ctx["runtime_update_plan"]
+            distribution_by_key[key] = ctx["distribution_batch"]
+            snapshot_by_key[key] = ctx["snapshot"]
+            host_plan_by_key[key] = {
+                "schema_version": "skyseed-network-mutation-plan-v1",
+                "mutation_id": f"mutation-{index}",
+                "source_state_id": f"state-{index}",
+                "operations": [],
+            }
+        return {
+            "schema_version": "skyseed-normal-runtime-inputs-v1",
+            "source": "prepared_update_bundle",
+            "normal_runtime_thaw_adapter": {
+                "adapter": "canonical_normal_runtime_inputs_v1"
+            },
+            "initial_segment": segments[0],
+            "prepared_horizon_segments": segments,
+            "prepared_horizon_segment_count": len(segments),
+            "context_by_slice": context_by_slice_by_segment["H0"],
+            "context_by_slice_by_segment": context_by_slice_by_segment,
+            "context_by_segment_key": context_by_segment_key,
+            "runtime_update_plan_by_segment_key": runtime_update_plan_by_key,
+            "distribution_batch_by_segment_key": distribution_by_key,
+            "topology_snapshot_by_segment_key": snapshot_by_key,
+            "host_network_mutation_plan_by_segment_key": host_plan_by_key,
+            "topology_path": "/tmp/topology.json",
+            "link_state_path": "/tmp/link_state.json",
+        }
+
     def test_prepare_only_frozen_bundle_verifies_id_hash_and_ids(self) -> None:
         bundle = self._frozen_bundle()
 
@@ -1894,9 +3487,220 @@ class FrozenPreparedBundleContractTests(unittest.TestCase):
         self.assertEqual(gate["queue_accounting"]["current_runtime_applicable"], 2)
         self.assertEqual(gate["queue_accounting"]["lookahead_preload_required"], 1)
         self.assertIn("executable_runtime_inputs", bundle)
+        self.assertNotIn("executable_runtime_inputs", bundle["bundle_hash_payload"])
+        self.assertIn(
+            "executable_runtime_inputs_manifest",
+            bundle["bundle_hash_payload"],
+        )
+        self.assertEqual(
+            bundle["bundle_hash_payload"]["executable_runtime_inputs_manifest"][
+                "executable_runtime_inputs_hash"
+            ],
+            bundle["executable_runtime_inputs"]["hashes"][
+                "executable_runtime_inputs_hash"
+            ],
+        )
         self.assertIn(
             "executable_runtime_inputs_hash",
             bundle["executable_runtime_inputs"]["hashes"],
+        )
+        sliding = bundle["executable_runtime_inputs"]["sliding_window_contract"]
+        self.assertEqual(sliding["window_model"], "rolling_horizon_window")
+        self.assertFalse(sliding["test_horizon_count_hardcoded"])
+        self.assertEqual(
+            sliding["windows"]["current"]["horizon_id"],
+            "prepared-bundle-current-horizon-0",
+        )
+        self.assertEqual(
+            sliding["windows"]["next"]["horizon_id"],
+            "prepared-bundle-current-horizon-0:next",
+        )
+        self.assertIn(
+            "sliding_window_contract_hash",
+            bundle["executable_runtime_inputs"]["hashes"],
+        )
+
+    def test_frozen_bundle_horizon_plan_uses_prepared_rolling_segments(self) -> None:
+        normal_inputs = self._rolling_normal_runtime_inputs()
+        prepared = {
+            "selected_epoch_queue": [
+                entry
+                for segment in normal_inputs["prepared_horizon_segments"]
+                for entry in segment["current_execution_queue"]
+            ],
+            "current_execution_queue": normal_inputs["prepared_horizon_segments"][0][
+                "current_execution_queue"
+            ],
+            "lookahead_preload_queue": [],
+            "precompose_horizon_queue_gate": {
+                "preload_required_event_count": 0,
+            },
+            "prepared_artifacts": {},
+        }
+        bundle = _freeze_prepared_update_bundle(
+            prepared_update_bundle=prepared,
+            args=self._args(
+                continuous=True,
+                horizon_seconds=720,
+                sample_interval=10,
+                replenish_threshold_seconds=120,
+            ),
+            prepared_resource_scope_by_slot={
+                "slot-a": {"netns:node-a:if-a", "link:isl-a"}
+            },
+            precompose_bpf_role_union_gate={
+                "required_interface_role_union": {
+                    "netns:node-a:if-a": ["ingress_classifier"]
+                },
+            },
+            normal_runtime_inputs=normal_inputs,
+        )
+
+        plan = bundle["executable_runtime_inputs"]["horizon_execution_plan"]
+        self.assertEqual(plan["prepared_horizon_count"], 3)
+        self.assertEqual(
+            [horizon["horizon_id"] for horizon in plan["horizons"]],
+            ["H0", "H1", "H2"],
+        )
+        self.assertFalse(plan["runtime_replenishment_preview_allowed"])
+        self.assertFalse(plan["runtime_build_network_mutation_plan_allowed"])
+        gate = _verify_frozen_prepared_bundle(
+            bundle,
+            args=self._args(
+                continuous=True,
+                horizon_seconds=720,
+                sample_interval=10,
+                replenish_threshold_seconds=120,
+            ),
+        )
+        self.assertTrue(gate["passed"])
+        thawed = _thaw_normal_runtime_initial_segment(bundle)
+        self.assertEqual(thawed["prepared_horizon_segment_count"], 3)
+        self.assertEqual(
+            [
+                segment["current_execution_queue"][0]["segment_epoch_key"]
+                for segment in thawed["prepared_horizon_segments"]
+            ],
+            ["H0:slice-0", "H1:slice-1", "H2:slice-2"],
+        )
+
+    def test_thaw_uses_initial_segment_scoped_contexts_for_repeated_slice_ids(
+        self,
+    ) -> None:
+        normal_inputs = self._rolling_normal_runtime_inputs()
+        h2_context = copy.deepcopy(
+            normal_inputs["context_by_slice_by_segment"]["H2"]["slice-2"]
+        )
+        h2_context["snapshot"]["snapshot_id"] = "wrong-h2-context"
+        normal_inputs["context_by_slice"] = {"slice-0": h2_context}
+        prepared = {
+            "selected_epoch_queue": [
+                entry
+                for segment in normal_inputs["prepared_horizon_segments"]
+                for entry in segment["current_execution_queue"]
+            ],
+            "current_execution_queue": normal_inputs["prepared_horizon_segments"][0][
+                "current_execution_queue"
+            ],
+            "lookahead_preload_queue": [],
+            "precompose_horizon_queue_gate": {
+                "preload_required_event_count": 0,
+            },
+            "prepared_artifacts": {},
+        }
+        bundle = _freeze_prepared_update_bundle(
+            prepared_update_bundle=prepared,
+            args=self._args(
+                continuous=True,
+                horizon_seconds=720,
+                sample_interval=10,
+                replenish_threshold_seconds=120,
+            ),
+            prepared_resource_scope_by_slot={
+                "slot-a": {"netns:node-a:if-a", "link:isl-a"}
+            },
+            precompose_bpf_role_union_gate={
+                "required_interface_role_union": {
+                    "netns:node-a:if-a": ["ingress_classifier"]
+                },
+            },
+            normal_runtime_inputs=normal_inputs,
+        )
+
+        thawed = _thaw_normal_runtime_initial_segment(bundle)
+
+        self.assertEqual(
+            thawed["context_by_slice"]["slice-0"]["snapshot"].snapshot_id,
+            "snap-0",
+        )
+
+    def test_thaw_fails_closed_when_scoped_initial_contexts_missing(self) -> None:
+        normal_inputs = self._rolling_normal_runtime_inputs()
+        del normal_inputs["context_by_slice_by_segment"]["H0"]
+        prepared = {
+            "selected_epoch_queue": [
+                entry
+                for segment in normal_inputs["prepared_horizon_segments"]
+                for entry in segment["current_execution_queue"]
+            ],
+            "current_execution_queue": normal_inputs["prepared_horizon_segments"][0][
+                "current_execution_queue"
+            ],
+            "lookahead_preload_queue": [],
+            "precompose_horizon_queue_gate": {
+                "preload_required_event_count": 0,
+            },
+            "prepared_artifacts": {},
+        }
+        bundle = _freeze_prepared_update_bundle(
+            prepared_update_bundle=prepared,
+            args=self._args(
+                continuous=True,
+                horizon_seconds=720,
+                sample_interval=10,
+                replenish_threshold_seconds=120,
+            ),
+            prepared_resource_scope_by_slot={
+                "slot-a": {"netns:node-a:if-a", "link:isl-a"}
+            },
+            precompose_bpf_role_union_gate={
+                "required_interface_role_union": {
+                    "netns:node-a:if-a": ["ingress_classifier"]
+                },
+            },
+            normal_runtime_inputs=normal_inputs,
+        )
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "frozen_bundle_missing_initial_segment_scoped_contexts:H0",
+        ):
+            _thaw_normal_runtime_initial_segment(bundle)
+
+    def test_continuous_frozen_bundle_fails_when_prepared_horizons_missing(
+        self,
+    ) -> None:
+        bundle = self._frozen_bundle()
+
+        gate = _verify_frozen_prepared_bundle(
+            bundle,
+            args=self._args(
+                continuous=True,
+                horizon_seconds=720,
+                sample_interval=10,
+                replenish_threshold_seconds=120,
+            ),
+        )
+
+        blockers = {blocker["blocker"] for blocker in gate["blockers"]}
+        self.assertFalse(gate["passed"])
+        self.assertIn(
+            "frozen_prepared_bundle_missing_prepared_rolling_horizons",
+            blockers,
+        )
+        self.assertIn(
+            "frozen_prepared_bundle_horizon_execution_plan_incomplete",
+            blockers,
         )
 
     def test_bundle_backed_live_execution_source_gate_passes_without_compose(self) -> None:
@@ -2449,6 +4253,44 @@ class FrozenPreparedBundleContractTests(unittest.TestCase):
             {blocker["blocker"] for blocker in gate["blockers"]},
         )
 
+    def test_frozen_bundle_allows_continuous_runtime_orchestration_window(self) -> None:
+        bundle = self._frozen_bundle()
+
+        gate = _verify_frozen_prepared_bundle(
+            bundle,
+            args=self._args(
+                horizon_seconds=360,
+                continuous=True,
+                replenish_threshold_seconds=60,
+                loop_count=1,
+            ),
+        )
+
+        self.assertFalse(gate["passed"])
+        self.assertIn(
+            "frozen_prepared_bundle_missing_prepared_rolling_horizons",
+            {blocker["blocker"] for blocker in gate["blockers"]},
+        )
+
+    def test_frozen_bundle_continuous_runtime_still_fails_source_input_drift(self) -> None:
+        bundle = self._frozen_bundle()
+
+        gate = _verify_frozen_prepared_bundle(
+            bundle,
+            args=self._args(
+                horizon_seconds=360,
+                continuous=True,
+                replenish_threshold_seconds=60,
+                max_satellites=48,
+            ),
+        )
+
+        self.assertFalse(gate["passed"])
+        self.assertIn(
+            "frozen_prepared_bundle_input_profile_config_hash_mismatch",
+            {blocker["blocker"] for blocker in gate["blockers"]},
+        )
+
     def test_frozen_bundle_unresolved_resource_refs_fail_before_compose(self) -> None:
         bundle = self._frozen_bundle()
         bundle["precompose_run_window_resource_coverage_plan"] = {
@@ -2493,6 +4335,55 @@ class FrozenPreparedBundleContractTests(unittest.TestCase):
             blockers,
         )
         self.assertIn("frozen_prepared_bundle_cleanup_owned_scope_missing", blockers)
+
+    def test_frozen_bundle_full_current_horizon_allows_empty_lookahead_preload_plan(
+        self,
+    ) -> None:
+        bundle = self._frozen_bundle()
+        bundle["generation_preload_plan"] = {
+            "lookahead_preload_ids": [],
+            "preload_required_event_count": 0,
+            "preload_reports": [],
+            "preload_report_summary": {"success_count": 0},
+        }
+
+        gate = _verify_frozen_prepared_bundle(bundle)
+
+        blockers = {blocker["blocker"] for blocker in gate["blockers"]}
+        self.assertTrue(gate["passed"])
+        self.assertNotIn(
+            "frozen_prepared_bundle_generation_preload_plan_missing",
+            blockers,
+        )
+
+    def test_runtime_source_binding_accepts_full_current_horizon_without_lookahead(
+        self,
+    ) -> None:
+        bundle = self._frozen_bundle()
+        bundle["lookahead_preload_queue"] = []
+        bundle["generation_preload_plan"] = {
+            "lookahead_preload_ids": [],
+            "preload_required_event_count": 0,
+        }
+        bundle["precompose_horizon_queue_gate"] = {
+            "passed": True,
+            "queue_gate_mode": "full_current_horizon",
+            "full_current_horizon_mode": True,
+        }
+
+        gate = _bundle_backed_runtime_source_binding_gate(
+            prepared_update_bundle=bundle,
+            source_gate={
+                "passed": True,
+                "blockers": [],
+                "loaded_bundle_id": bundle["bundle_id"],
+                "loaded_bundle_hash": bundle["bundle_hash"],
+            },
+        )
+
+        blockers = {blocker["blocker"] for blocker in gate["blockers"]}
+        self.assertTrue(gate["passed"])
+        self.assertNotIn("bundle_runtime_lookahead_preload_queue_missing", blockers)
 
     def test_missing_frozen_bundle_fails_before_compose(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2668,6 +4559,23 @@ class FrozenPreparedBundleContractTests(unittest.TestCase):
         self.assertEqual(gate["loaded_bundle_id"], bundle["bundle_id"])
         self.assertEqual(gate["loaded_bundle_hash"], bundle["bundle_hash"])
         self.assertFalse(gate["planner_recomputed"])
+
+    def test_no_compose_load_path_blocks_contaminated_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "frozen_prepared_update_bundle.json"
+            path.write_text("{}", encoding="utf-8")
+            (Path(tmpdir) / "CONTAMINATED_DO_NOT_REUSE.json").write_text(
+                json.dumps({"reason": "hardlink_pollution"}),
+                encoding="utf-8",
+            )
+
+            gate = _load_frozen_prepared_bundle_gate(bundle_path=path)
+
+        self.assertFalse(gate["passed"])
+        self.assertEqual(
+            gate["blockers"][0]["blocker"],
+            "frozen_prepared_bundle_marked_contaminated",
+        )
 
     def test_variant_start_time_profile_like_fixture_passes_same_contract(self) -> None:
         bundle = self._frozen_bundle(
