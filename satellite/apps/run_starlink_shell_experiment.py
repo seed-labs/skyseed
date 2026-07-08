@@ -116,6 +116,71 @@ from temporal_planning import enrich_snapshot_runtime_parameters
 
 DEFAULT_RUN_ROOT = SATELLITE_DIR / "output" / "starlink_shell_experiments"
 DEFAULT_BUILD_CACHE_DIR = DEFAULT_RUN_ROOT / ".compose_build_cache"
+OPERATIONAL_CLEAN_PROFILE_S4_H3_240S_BPF_OWNED = (
+    "s4_h3_240s_bpf_owned_clean"
+)
+OPERATIONAL_CLEAN_PROFILE_DEFAULTS: Dict[str, Any] = {
+    "run_mode": "real-runtime",
+    "orbit_input_mode": "planned-shell",
+    "planned_shell_id": "S4",
+    "max_satellites": 348,
+    "ut_catalog": (
+        "satellite/configs/starlink_shell_ground/"
+        "s4_gz_rich_validation_ut_catalog_32.json"
+    ),
+    "gateway_catalog": (
+        "satellite/configs/starlink_shell_ground/"
+        "realistic_preview_gateway_catalog_12.json"
+    ),
+    "zone_catalog": (
+        "satellite/configs/starlink_shell_ground/"
+        "s4_gz_rich_validation_zone_catalog_16.json"
+    ),
+    "ut_ids": (
+        "ut2001,ut2002,ut2003,ut2004,ut2005,ut2006,ut2007,ut2008,"
+        "ut2009,ut2010,ut2011,ut2012,ut2013,ut2014,ut2015,ut2016,"
+        "ut2017,ut2018,ut2019,ut2020,ut2021,ut2022,ut2023,ut2024,"
+        "ut2025,ut2026,ut2027,ut2028,ut2029,ut2030,ut2031,ut2032"
+    ),
+    "gateway_ids": (
+        "gw201,gw202,gw203,gw204,gw205,gw206,gw207,gw208,gw209,gw210,"
+        "gw211,gw212"
+    ),
+    "max_uts": 32,
+    "max_gateways": 12,
+    "ground_placement": "shell-aware",
+    "sample_interval": 10.0,
+    "event_evaluation_interval": 10.0,
+    "horizon_seconds": 240.0,
+    "continuous": True,
+    "runtime_mode": "operational_clean",
+    "loop_count": 3,
+    "interval": 0.0,
+    "pre_transition_probe_interval": 0,
+    "runtime_epoch_validation_interval": 0,
+    "runtime_epoch_validation_scope": DEFAULT_RUNTIME_EPOCH_VALIDATION_SCOPE,
+    "parameter_epoch_validation_interval": 0,
+    "preflight_policy": "require-clean",
+    "host_prepare_policy": "auto",
+    "forwarding_backend": "bpf_owned",
+    "bpf_backend": "off",
+    "compose_build_policy": "if-needed",
+    "compose_up_timeout_seconds": 900.0,
+    "startup_high_progress_grace_ratio": 0.95,
+    "startup_high_progress_grace_seconds": 420.0,
+    "startup_slow_progress_grace_seconds": 180.0,
+    "startup_absolute_max_seconds": 1500.0,
+    "compose_build_timeout_seconds": 900.0,
+    "container_readiness_timeout_seconds": 600.0,
+    "initial_runtime_readiness_timeout_seconds": 300.0,
+    "progress_heartbeat_seconds": 15.0,
+    "runtime_ping_observer_seconds": 30.0,
+    "startup_stall_warning_seconds": 900.0,
+    "epoch_stall_warning_seconds": 300.0,
+    "docker_dummy_network_pool": "10.128.0.0/9",
+    "docker_dummy_network_mask": 19,
+    "format": "json",
+}
 DEADLINE_MISS_THRESHOLD_SECONDS = 0.05
 
 
@@ -697,6 +762,10 @@ def _run_invocation_metadata(
         "git": _git_provenance(),
         "run_wall_start_utc": run_wall_start_utc,
         "run_wall_end_utc": run_wall_end_utc,
+        "operational_profile": str(getattr(args, "operational_profile", "") or ""),
+        "operational_profile_contract": dict(
+            getattr(args, "operational_profile_contract", {}) or {}
+        ),
         "runtime_mode": str(args.runtime_mode),
         "forwarding_backend": str(args.forwarding_backend),
         "planned_shell_id": str(args.planned_shell_id),
@@ -823,6 +892,10 @@ def _is_operational_clean_bpf_owned_args(args: argparse.Namespace) -> bool:
     )
 
 
+def _should_run_live_timing_checkpoints(args: argparse.Namespace) -> bool:
+    return not _is_operational_clean_bpf_owned_args(args)
+
+
 def _preflight_profile_for_args(args: argparse.Namespace) -> str:
     if _is_operational_clean_bpf_owned_args(args):
         return PREFLIGHT_PROFILE_OPERATIONAL_CLEAN_BPF_OWNED
@@ -888,6 +961,7 @@ def _assert_operational_clean_host_apply_route(
     host_apply: Mapping[str, Any],
     segment_key: str,
 ) -> None:
+    boundary = dict(dict(host_apply).get("boundary") or {})
     outcome = dict(dict(host_apply).get("outcome") or {})
     preparation_summary = dict(outcome.get("preparation_summary") or {})
     reconcile_summary = dict(preparation_summary.get("reconcile_summary") or {})
@@ -923,6 +997,19 @@ def _assert_operational_clean_host_apply_route(
             {
                 "type": "hidden_repair_blocked",
                 "normal_path_scope_contract": _json_safe(normal_path_scope),
+            }
+        )
+    if (
+        str(boundary.get("envelope_kind") or "") == "host_runtime_envelope"
+        and str(boundary.get("execution_transport") or "")
+        != "direct_linux_netns_veth_qdisc"
+    ):
+        violations.append(
+            {
+                "type": "legacy_host_runtime_transport_forbidden",
+                "execution_transport": str(
+                    boundary.get("execution_transport") or ""
+                ),
             }
         )
     if violations:
@@ -7275,6 +7362,62 @@ def _frozen_bundle_normal_runtime_inputs_gate(
         "source_gate": source_gate,
     }
 
+
+def _argv_has_option(argv: Sequence[str], option: str) -> bool:
+    return any(arg == option or arg.startswith(f"{option}=") for arg in argv)
+
+
+def _option_name_for_dest(dest: str) -> str:
+    return "--" + dest.replace("_", "-")
+
+
+def _apply_operational_profile_defaults(
+    args: argparse.Namespace,
+    *,
+    argv: Sequence[str],
+) -> argparse.Namespace:
+    profile = str(getattr(args, "operational_profile", "") or "")
+    if not profile:
+        args.operational_profile_contract = {
+            "enabled": False,
+            "profile_id": "",
+        }
+        return args
+    if profile != OPERATIONAL_CLEAN_PROFILE_S4_H3_240S_BPF_OWNED:
+        raise ValueError(f"unsupported operational profile: {profile}")
+
+    applied: Dict[str, Any] = {}
+    preserved: Dict[str, Any] = {}
+    for dest, value in OPERATIONAL_CLEAN_PROFILE_DEFAULTS.items():
+        option = _option_name_for_dest(dest)
+        if _argv_has_option(argv, option):
+            preserved[dest] = getattr(args, dest)
+            continue
+        setattr(args, dest, value)
+        applied[dest] = value
+
+    args.operational_profile_contract = {
+        "enabled": True,
+        "profile_id": profile,
+        "runtime_contract": "operational_clean_bpf_owned_current_epoch_only",
+        "critical_path_model": (
+            "host_physical_qdisc_batch + node_local_edge_batch + "
+            "bpf_generation_flip + fail_closed_proof"
+        ),
+        "forbidden_runtime_work": [
+            "future_horizon_qdisc_preapply",
+            "legacy_linux_core_forwarding_fallback",
+            "controller_backed_runtime_fallback",
+            "full_scan",
+            "live_dump_diff",
+            "sync_heavy_summary_analysis",
+        ],
+        "profile_defaults_applied": dict(applied),
+        "explicit_overrides_preserved": dict(preserved),
+    }
+    return args
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -7296,6 +7439,15 @@ def parse_args() -> argparse.Namespace:
         "--run-root",
         default=str(DEFAULT_RUN_ROOT),
         help="Directory where run-specific artifacts and logs are written.",
+    )
+    parser.add_argument(
+        "--operational-profile",
+        choices=(OPERATIONAL_CLEAN_PROFILE_S4_H3_240S_BPF_OWNED,),
+        default="",
+        help=(
+            "Apply the canonical operational-clean runtime contract defaults. "
+            "Explicit command-line options still override instance-specific values."
+        ),
     )
     parser.add_argument(
         "--replay-prepared-runtime",
@@ -7559,13 +7711,13 @@ def parse_args() -> argparse.Namespace:
         "--observe-flow",
         action="append",
         default=[],
-        help="Optional packet observation selector ut_id:target_host_node_id or ut_id:target_ip.",
+        help="Optional packet observation selector ut_id:selected_gateway_id or ut_id:gateway_access_ip.",
     )
     parser.add_argument(
         "--ping-watch",
         action="append",
         default=[],
-        help="Optional watcher selector ut_id:target_ip or ut_id:target_host_node_id.",
+        help="Optional watcher selector ut_id:gateway_access_ip or ut_id:selected_gateway_id.",
     )
     parser.add_argument(
         "--stream-progress",
@@ -7579,6 +7731,15 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Low-frequency runtime heartbeat interval for progress files and stall diagnostics. "
             "This is observational only and does not interrupt the run."
+        ),
+    )
+    parser.add_argument(
+        "--runtime-ping-observer-seconds",
+        type=float,
+        default=0.0,
+        help=(
+            "Low-frequency nonblocking UT-to-selected-GW ping observation interval. "
+            "Use 0 to disable; observations never gate runtime success."
         ),
     )
     parser.add_argument(
@@ -7944,7 +8105,10 @@ def parse_args() -> argparse.Namespace:
         default="text",
         help="Render the runner summary as text or JSON.",
     )
-    return parser.parse_args()
+    return _apply_operational_profile_defaults(
+        parser.parse_args(),
+        argv=sys.argv[1:],
+    )
 
 
 def _generated_run_id(args: argparse.Namespace) -> str:
@@ -10068,6 +10232,11 @@ def _parameter_update_batch_accounting(
     qdisc_cumulative_seconds = 0.0
     qdisc_wall_candidates: List[float] = []
     qdisc_command_count = 0
+    qdisc_sub_update_count = 0
+    qdisc_batch_command_count = 0
+    qdisc_batch_sub_update_count = 0
+    qdisc_replace_sub_update_count = 0
+    qdisc_delete_sub_update_count = 0
     qdisc_apply_skipped_unchanged_count = 0
     qdisc_timed_command_count = 0
     qdisc_target_keys: set[str] = set()
@@ -10110,10 +10279,33 @@ def _parameter_update_batch_accounting(
             metadata_wall_candidates.append(metadata_seconds)
         if category == "qdisc_required":
             applied_qdisc_slot_type_counts[slot_type] += 1
-            qdisc_command_count += int(
-                result.get("qdisc_apply_attempt_count")
+            shell_command_count = int(
+                result.get("qdisc_shell_command_count")
+                if result.get("qdisc_shell_command_count") is not None
+                else result.get("qdisc_apply_attempt_count")
                 if result.get("qdisc_apply_attempt_count") is not None
                 else 1
+            )
+            sub_update_count = int(
+                result.get("qdisc_sub_update_count")
+                if result.get("qdisc_sub_update_count") is not None
+                else result.get("qdisc_apply_attempt_count")
+                if result.get("qdisc_apply_attempt_count") is not None
+                else shell_command_count
+            )
+            qdisc_command_count += shell_command_count
+            qdisc_sub_update_count += sub_update_count
+            qdisc_batch_command_count += int(
+                result.get("qdisc_batch_command_count") or 0
+            )
+            qdisc_batch_sub_update_count += int(
+                result.get("qdisc_batch_sub_update_count") or 0
+            )
+            qdisc_replace_sub_update_count += int(
+                result.get("qdisc_replace_sub_update_count") or 0
+            )
+            qdisc_delete_sub_update_count += int(
+                result.get("qdisc_delete_sub_update_count") or 0
             )
             qdisc_apply_skipped_unchanged_count += int(
                 result.get("qdisc_apply_skipped_unchanged_count") or 0
@@ -10123,14 +10315,16 @@ def _parameter_update_batch_accounting(
             qdisc_target_key_sources[target_source] += 1
         qdisc_seconds = float(result.get("qdisc_apply_wall_seconds") or 0.0)
         qdisc_attempt_count = int(
-            result.get("qdisc_apply_attempt_count")
+            result.get("qdisc_shell_command_count")
+            if result.get("qdisc_shell_command_count") is not None
+            else result.get("qdisc_apply_attempt_count")
             if result.get("qdisc_apply_attempt_count") is not None
             else 1
             if category == "qdisc_required"
             else 0
         )
         if qdisc_seconds > 0.0 and qdisc_attempt_count > 0:
-            qdisc_timed_command_count += 1
+            qdisc_timed_command_count += max(1, qdisc_attempt_count)
             qdisc_cumulative_seconds += qdisc_seconds
             qdisc_wall_candidates.append(qdisc_seconds)
     host_apply_wall = max(0.0, float(host_apply_wall_seconds))
@@ -10209,6 +10403,12 @@ def _parameter_update_batch_accounting(
             6,
         ),
         "qdisc_command_count": qdisc_command_count,
+        "qdisc_sub_update_count": qdisc_sub_update_count,
+        "qdisc_batch_command_count": qdisc_batch_command_count,
+        "qdisc_batch_sub_update_count": qdisc_batch_sub_update_count,
+        "qdisc_batch_used": qdisc_batch_command_count > 0,
+        "qdisc_replace_sub_update_count": qdisc_replace_sub_update_count,
+        "qdisc_delete_sub_update_count": qdisc_delete_sub_update_count,
         "qdisc_apply_skipped_unchanged_count": qdisc_apply_skipped_unchanged_count,
         "qdisc_timed_command_count": qdisc_timed_command_count,
         "qdisc_target_group_count": len(qdisc_target_keys),
@@ -14744,7 +14944,10 @@ TIMING_BREAKDOWN_DEFINITIONS = {
         "remaining wall time spent outside direct forwarding/data-plane mutation"
     ),
     "scheduler_blocking_after_data_plane_ready_seconds": (
-        "synchronous runner work after data_plane_ready that delays the next epoch"
+        "legacy field; scheduler wait after data_plane_ready is no longer inferred from reporting time"
+    ),
+    "post_data_plane_ready_recording_seconds": (
+        "wall time from data_plane_ready until the epoch record is complete"
     ),
     "event_wait_seconds": (
         "intentional EventTimeline pacing wait before the epoch activation; expected and not a bottleneck"
@@ -14806,6 +15009,7 @@ EPOCH_TIMING_DERIVED_FIELDS = (
     "total_epoch_wall_time_seconds",
     "data_plane_ready_lag_seconds",
     "scheduler_blocking_after_data_plane_ready_seconds",
+    "post_data_plane_ready_recording_seconds",
     "event_wait_seconds",
     "network_update_seconds",
     "post_apply_overhead_seconds",
@@ -14839,6 +15043,12 @@ OPERATIONAL_CLEAN_REQUIRED_TIMING_FIELDS = (
     "node_local_incremental_cleanup_wall_seconds",
     "runtime_rebind_operation_count",
     "runtime_rebind_wall_seconds",
+    "runtime_qdisc_wall_seconds",
+    "runtime_qdisc_command_count",
+    "runtime_qdisc_sub_update_count",
+    "runtime_qdisc_batch_command_count",
+    "runtime_qdisc_batch_sub_update_count",
+    "runtime_qdisc_batch_used",
     "bpf_prepare_after_incremental_cleanup_wall_seconds",
     "bpf_reuse_audit_seconds",
     "bpf_map_compile_seconds",
@@ -14874,6 +15084,12 @@ OPERATIONAL_CLEAN_REQUIRED_TIMING_FIELDS = (
     "parameter_qdisc_required_update_count",
     "parameter_applied_qdisc_required_update_count",
     "parameter_qdisc_command_count",
+    "parameter_qdisc_sub_update_count",
+    "parameter_qdisc_batch_command_count",
+    "parameter_qdisc_batch_sub_update_count",
+    "parameter_qdisc_batch_used",
+    "parameter_qdisc_replace_sub_update_count",
+    "parameter_qdisc_delete_sub_update_count",
     "parameter_qdisc_target_group_count",
     "parameter_qdisc_wall_to_cumulative_ratio",
     "parameter_metadata_only_update_count",
@@ -14971,9 +15187,13 @@ POST_DATA_PLANE_PHASE_CLASSIFICATION = {
         "blocks_next_epoch": False,
         "required_before_next_epoch": False,
         "observation_or_reporting_only": True,
-        "async_deferred": True,
+        "async_deferred": "legacy_non_clean_only",
         "timing_field": "non_blocking_post_apply_seconds",
-        "notes": "Per-epoch live timing checkpoint generation is queued to a deferred writer.",
+        "notes": (
+            "Clean operational profile derives timing rows at run end/offline; "
+            "legacy non-clean live timing checkpoint generation is queued to a "
+            "deferred writer."
+        ),
     },
     "artifact_report_writing": {
         "blocks_next_epoch": "partial",
@@ -14998,17 +15218,24 @@ POST_DATA_PLANE_PHASE_CLASSIFICATION = {
         "blocks_next_epoch": False,
         "required_before_next_epoch": False,
         "observation_or_reporting_only": True,
-        "async_deferred": True,
+        "async_deferred": "legacy_non_clean_only",
         "timing_field": "non_blocking_post_apply_seconds",
-        "notes": "Live timing.json/csv checkpoint writes are deferred and flushed at shutdown.",
+        "notes": (
+            "Clean operational profile writes final timing artifacts at run end; "
+            "legacy non-clean live timing.json/csv checkpoints are deferred and "
+            "flushed at shutdown."
+        ),
     },
     "temporal_audit_update": {
         "blocks_next_epoch": False,
         "required_before_next_epoch": False,
         "observation_or_reporting_only": True,
-        "async_deferred": True,
+        "async_deferred": "legacy_non_clean_only",
         "timing_field": "non_blocking_post_apply_seconds",
-        "notes": "Live temporal_audit checkpoint refresh is deferred; final audit is synchronous.",
+        "notes": (
+            "Clean operational profile writes final temporal audit at run end; "
+            "legacy non-clean live temporal_audit checkpoint refresh is deferred."
+        ),
     },
     "post_apply_cleanup_verification": {
         "blocks_next_epoch": True,
@@ -15167,7 +15394,7 @@ def _build_epoch_timing_marks(
         "data_plane_apply_start_utc",
         "data_plane_ready_time_utc",
     )
-    scheduler_after_ready = _duration_between_elapsed(
+    post_data_plane_ready_recording = _duration_between_elapsed(
         elapsed,
         "data_plane_ready_time_utc",
         "epoch_end_time_utc",
@@ -15193,7 +15420,7 @@ def _build_epoch_timing_marks(
         0.0,
         total_epoch_wall
         - actual_network_mutation
-        - scheduler_after_ready
+        - post_data_plane_ready_recording
         - blocking_cleanup_verification,
     )
     derived = {
@@ -15209,10 +15436,11 @@ def _build_epoch_timing_marks(
             "scheduled_activation_time_utc",
             "data_plane_ready_time_utc",
         ),
-        "scheduler_blocking_after_data_plane_ready_seconds": scheduler_after_ready,
+        "scheduler_blocking_after_data_plane_ready_seconds": 0.0,
+        "post_data_plane_ready_recording_seconds": post_data_plane_ready_recording,
         "event_wait_seconds": max(0.0, float(event_wait_seconds)),
         "network_update_seconds": actual_network_mutation,
-        "post_apply_overhead_seconds": scheduler_after_ready,
+        "post_apply_overhead_seconds": post_data_plane_ready_recording,
         "unknown_blocking_seconds": unknown_blocking,
         "required_safety_gate_seconds": post_apply_cleanup_verification,
         "artifact_write_blocking_seconds": artifact_reporting,
@@ -15591,6 +15819,57 @@ def _epoch_timing_semantic_breakdown(record: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _epoch_timing_offline_placeholder(record: Dict[str, Any]) -> Dict[str, Any]:
+    timing_marks = _epoch_timing_marks(record)
+    derived = dict(timing_marks.get("derived_seconds") or {})
+    timing = dict(record.get("timing") or {})
+
+    def _derived_seconds(key: str, fallback: Any = 0.0) -> float:
+        value = derived.get(key)
+        if value is None:
+            value = fallback
+        return _round_seconds(_seconds(value))
+
+    network_update = _derived_seconds(
+        "network_update_seconds",
+        timing.get("network_mutation_plan_wall_seconds", 0.0),
+    )
+    post_apply = _derived_seconds("post_apply_overhead_seconds", 0.0)
+    unknown = _derived_seconds("unknown_blocking_seconds", 0.0)
+    event_wait = _derived_seconds(
+        "event_wait_seconds",
+        timing.get("event_wait_seconds", 0.0),
+    )
+    return {
+        "epoch_type": str(record.get("epoch_type") or ""),
+        "classification": "offline_derived_from_raw_timing_marks",
+        "offline_derived": True,
+        "source": "raw_epoch_timing_marks_and_operation_log",
+        "event_wait_seconds": event_wait,
+        "network_update_seconds": network_update,
+        "post_apply_overhead_seconds": post_apply,
+        "unknown_blocking_seconds": unknown,
+        "runtime_timing_classification": _runtime_timing_classification(
+            event_wait_seconds=event_wait,
+            network_update_seconds=network_update,
+            post_apply_overhead_seconds=post_apply,
+            unknown_blocking_seconds=unknown,
+        ),
+        "required_safety_gate_seconds": _derived_seconds(
+            "required_safety_gate_seconds",
+            0.0,
+        ),
+        "artifact_write_blocking_seconds": _derived_seconds(
+            "artifact_write_blocking_seconds",
+            0.0,
+        ),
+        "non_blocking_post_apply_seconds": _derived_seconds(
+            "non_blocking_post_apply_seconds",
+            0.0,
+        ),
+    }
+
+
 def _live_timing_summary(
     epoch_records: Sequence[Dict[str, Any]],
     *,
@@ -15926,6 +16205,11 @@ def _live_timing_summary(
             "topology_rebind_required_count": 0,
             "applied_topology_rebind_required_count": 0,
             "qdisc_command_count": 0,
+            "qdisc_sub_update_count": 0,
+            "qdisc_batch_command_count": 0,
+            "qdisc_batch_sub_update_count": 0,
+            "qdisc_replace_sub_update_count": 0,
+            "qdisc_delete_sub_update_count": 0,
             "qdisc_target_group_count": 0,
             "qdisc_timed_command_count": 0,
             "qdisc_cumulative_seconds": 0.0,
@@ -16023,6 +16307,7 @@ def _live_timing_summary(
                 if totals["topology_rebind_cumulative_seconds"] > 0.0
                 else 0.0
             ),
+            "qdisc_batch_used": int(totals["qdisc_batch_command_count"]) > 0,
         }
 
     def _first_failure_diagnostics(
@@ -16608,6 +16893,26 @@ def _live_timing_summary(
                 steady_runtime_epochs,
                 "scheduler_blocking_after_data_plane_ready_seconds",
             ),
+            "runtime_qdisc_wall_seconds": _record_distribution(
+                steady_runtime_epochs,
+                "runtime_qdisc_wall_seconds",
+            ),
+            "runtime_qdisc_command_count": _record_distribution(
+                steady_runtime_epochs,
+                "runtime_qdisc_command_count",
+            ),
+            "runtime_qdisc_sub_update_count": _record_distribution(
+                steady_runtime_epochs,
+                "runtime_qdisc_sub_update_count",
+            ),
+            "runtime_qdisc_batch_command_count": _record_distribution(
+                steady_runtime_epochs,
+                "runtime_qdisc_batch_command_count",
+            ),
+            "runtime_qdisc_batch_sub_update_count": _record_distribution(
+                steady_runtime_epochs,
+                "runtime_qdisc_batch_sub_update_count",
+            ),
             "semantic_timing_breakdown": _semantic_summary(
                 steady_runtime_epochs,
                 extra_keys=(
@@ -16655,6 +16960,21 @@ def _live_timing_summary(
             ),
             "parameter_qdisc_command_count": _record_distribution(
                 parameter_epochs, "parameter_qdisc_command_count"
+            ),
+            "parameter_qdisc_sub_update_count": _record_distribution(
+                parameter_epochs, "parameter_qdisc_sub_update_count"
+            ),
+            "parameter_qdisc_batch_command_count": _record_distribution(
+                parameter_epochs, "parameter_qdisc_batch_command_count"
+            ),
+            "parameter_qdisc_batch_sub_update_count": _record_distribution(
+                parameter_epochs, "parameter_qdisc_batch_sub_update_count"
+            ),
+            "parameter_qdisc_replace_sub_update_count": _record_distribution(
+                parameter_epochs, "parameter_qdisc_replace_sub_update_count"
+            ),
+            "parameter_qdisc_delete_sub_update_count": _record_distribution(
+                parameter_epochs, "parameter_qdisc_delete_sub_update_count"
             ),
             "parameter_qdisc_required_update_count": _record_distribution(
                 parameter_epochs, "parameter_qdisc_required_update_count"
@@ -18786,6 +19106,7 @@ def _run_live_temporal_runtime(
     deferred_checkpoint_errors: List[str] = []
     checkpoint_queue: "queue.Queue[Sequence[Dict[str, Any]] | None]" = queue.Queue()
     checkpoint_stop = threading.Event()
+    live_timing_checkpoints_enabled = _should_run_live_timing_checkpoints(args)
 
     def _checkpoint_worker() -> None:
         while True:
@@ -18815,9 +19136,22 @@ def _run_live_temporal_runtime(
     )
 
     def _queue_live_timing_checkpoint(epoch_records: Sequence[Dict[str, Any]]) -> None:
+        if not live_timing_checkpoints_enabled:
+            if phase_timing is not None:
+                phase_timing[
+                    "live_timing_checkpoint_deferred_to_run_end_count"
+                ] = int(
+                    phase_timing.get(
+                        "live_timing_checkpoint_deferred_to_run_end_count",
+                        0,
+                    )
+                ) + 1
+            return
         checkpoint_queue.put(list(epoch_records))
 
     def _flush_live_timing_checkpoints() -> None:
+        if not live_timing_checkpoints_enabled:
+            return
         checkpoint_queue.join()
         if not checkpoint_stop.is_set():
             checkpoint_stop.set()
@@ -19655,6 +19989,70 @@ def _run_live_temporal_runtime(
     epoch_execution_records: List[Dict[str, Any]] = []
     epoch_execution_details_jsonl = run_dir / "epoch_execution_details.jsonl"
     epoch_execution_details_jsonl.write_text("", encoding="utf-8")
+    async_artifact_writer_enabled = _is_operational_clean_bpf_owned_args(args)
+    async_artifact_writer_errors: List[str] = []
+    async_artifact_queue: "queue.Queue[Tuple[Path, Dict[str, Any]] | None]" = queue.Queue()
+    async_artifact_stop = threading.Event()
+
+    def _async_artifact_worker() -> None:
+        while True:
+            item = async_artifact_queue.get()
+            try:
+                if item is None:
+                    return
+                path, payload = item
+                _append_jsonl(path, payload)
+            except Exception as exc:  # noqa: BLE001
+                async_artifact_writer_errors.append(str(exc))
+            finally:
+                async_artifact_queue.task_done()
+
+    async_artifact_thread = threading.Thread(
+        target=_async_artifact_worker,
+        name="clean-runtime-async-artifact-writer",
+        daemon=True,
+    )
+    if async_artifact_writer_enabled:
+        async_artifact_thread.start()
+
+    def _enqueue_artifact_jsonl(path: Path, payload: Dict[str, Any]) -> None:
+        if async_artifact_writer_enabled:
+            async_artifact_queue.put((path, dict(payload)))
+            return
+        _append_jsonl(path, payload)
+
+    def _flush_async_artifact_writer() -> None:
+        if not async_artifact_writer_enabled:
+            return
+        async_artifact_queue.join()
+        if not async_artifact_stop.is_set():
+            async_artifact_stop.set()
+            async_artifact_queue.put(None)
+            async_artifact_thread.join(timeout=30.0)
+
+    class _AsyncEventList(list):
+        def __init__(
+            self,
+            backing: List[Dict[str, Any]],
+            on_append: Callable[[Dict[str, Any]], None],
+        ) -> None:
+            super().__init__(backing)
+            self._backing = backing
+            self._on_append = on_append
+
+        def append(self, item: Dict[str, Any]) -> None:  # type: ignore[override]
+            event = dict(item)
+            self._backing.append(event)
+            super().append(event)
+            self._on_append(event)
+
+    raw_events_jsonl = run_dir / "events.raw.jsonl"
+    if async_artifact_writer_enabled:
+        raw_events_jsonl.write_text("", encoding="utf-8")
+        events = _AsyncEventList(
+            events,
+            lambda event: _enqueue_artifact_jsonl(raw_events_jsonl, event),
+        )
     replenishment_events: List[Dict[str, Any]] = []
     prepared_owned_resource_index = _prepared_owned_resource_index_from_scope({})
     run_window_resource_coverage_plan: Dict[str, Any] = {
@@ -19681,6 +20079,107 @@ def _run_live_temporal_runtime(
     }
     applied_sessions: List[Any] = []
     active_session: ActiveRuntimeSession | None = None
+    active_session_lock = threading.Lock()
+    runtime_ping_observation_jsonl = run_dir / "runtime_ping_observation.jsonl"
+    runtime_ping_observation_jsonl.write_text("", encoding="utf-8")
+    runtime_ping_observer_stop = threading.Event()
+    runtime_ping_observer_errors: List[str] = []
+    runtime_ping_observer_interval = float(
+        getattr(args, "runtime_ping_observer_seconds", 0.0) or 0.0
+    )
+
+    def _publish_active_session(
+        session: ActiveRuntimeSession | None,
+    ) -> ActiveRuntimeSession | None:
+        nonlocal active_session
+        with active_session_lock:
+            active_session = session
+        return session
+
+    def _active_session_snapshot() -> ActiveRuntimeSession | None:
+        with active_session_lock:
+            return active_session
+
+    def _runtime_ping_observer_worker() -> None:
+        while not runtime_ping_observer_stop.wait(runtime_ping_observer_interval):
+            session = _active_session_snapshot()
+            if session is None:
+                continue
+            selected_by_gateway_class: Dict[str, Any] = {}
+            for context in getattr(session, "contexts", ()) or ():
+                gateway_class_key = str(
+                    getattr(context, "gateway_class_id", "")
+                    or getattr(context, "selected_gateway_id", "")
+                )
+                if gateway_class_key and gateway_class_key in selected_by_gateway_class:
+                    continue
+                selected_by_gateway_class[gateway_class_key] = context
+            for context in selected_by_gateway_class.values():
+                started_at = time.perf_counter()
+                target_ip = str(getattr(context, "gateway_access_ip", "") or "")
+                if not target_ip:
+                    continue
+                command = [
+                    "docker",
+                    "exec",
+                    str(getattr(context, "ut_id")),
+                    "ping",
+                    "-n",
+                    "-c",
+                    "1",
+                    "-W",
+                    "2",
+                    target_ip,
+                ]
+                try:
+                    completed = subprocess.run(
+                        command,
+                        text=True,
+                        capture_output=True,
+                        check=False,
+                        timeout=4.0,
+                    )
+                    returncode = int(completed.returncode)
+                    stdout = str(completed.stdout or "")
+                    stderr = str(completed.stderr or "")
+                except subprocess.TimeoutExpired as exc:
+                    returncode = 124
+                    stdout = str(exc.stdout or "")
+                    stderr = (str(exc.stderr or "") + "\nping observer timed out").strip()
+                except Exception as exc:  # noqa: BLE001
+                    runtime_ping_observer_errors.append(str(exc))
+                    returncode = 1
+                    stdout = ""
+                    stderr = str(exc)
+                _enqueue_artifact_jsonl(
+                    runtime_ping_observation_jsonl,
+                    {
+                        "timestamp_utc": _timestamp_utc(),
+                        "monotonic_seconds": time.perf_counter(),
+                        "epoch_context": dict(current_epoch_context or {}),
+                        "ut_id": str(getattr(context, "ut_id")),
+                        "selected_gateway_id": str(
+                            getattr(context, "selected_gateway_id")
+                        ),
+                        "target_ip": target_ip,
+                        "target_role": "selected_gateway_access",
+                        "returncode": returncode,
+                        "wall_seconds": round(time.perf_counter() - started_at, 6),
+                        "success": returncode == 0,
+                        "stdout": stdout,
+                        "stderr": stderr,
+                    },
+                )
+
+    runtime_ping_observer_thread = threading.Thread(
+        target=_runtime_ping_observer_worker,
+        name="clean-runtime-ut-gw-ping-observer",
+        daemon=True,
+    )
+    runtime_ping_observer_enabled = (
+        _is_operational_clean_bpf_owned_args(args)
+        and runtime_ping_observer_interval > 0.0
+    )
     pre_runtime_bpf_owned_readiness: Dict[str, Any] | None = None
     pre_runtime_bpf_owned_prepare_report: Dict[str, Any] | None = None
     current_horizon_host_install: Dict[str, Any] | None = None
@@ -20714,6 +21213,7 @@ def _run_live_temporal_runtime(
         preload_attach_reuse_audit_artifact: Path | None = None
         frozen_compile_artifact: Path | None = None
         frozen_compile_payload: Dict[str, Any] = {}
+        frozen_compile_by_segment_key: Dict[str, Dict[str, Any]] = {}
         if _is_operational_clean_bpf_owned_args(args) and accepted_entries:
             if active_session is None:
                 raise RuntimeError(
@@ -20975,7 +21475,372 @@ def _run_live_temporal_runtime(
                     ),
                 }
 
+            def _freeze_generation_inputs_for_maintenance(
+                *,
+                base_generation_record: Mapping[str, Any],
+                base_generation_compiled_inputs: Mapping[str, Any],
+                generation_items: Sequence[Mapping[str, Any]],
+            ) -> Tuple[Dict[str, Any], Path, Dict[str, Dict[str, Any]]]:
+                frozen_compile_started = time.perf_counter()
+                frozen_compile_records: List[Dict[str, Any]] = []
+                frozen_records_by_segment_key: Dict[str, Dict[str, Any]] = {}
+                frozen_interface_ifindex_cache: Dict[str, int] = {}
+                frozen_interface_mac_cache: Dict[str, str] = {}
+                for generation_item in generation_items:
+                    generation_entry = dict(generation_item.get("entry") or {})
+                    generation_context = dict(generation_item.get("context") or {})
+                    physical_generation_id = int(
+                        generation_item.get("physical_generation_id")
+                        if generation_item.get("physical_generation_id")
+                        not in (None, "", "None")
+                        else generation_item.get("generation_id") or 0
+                    )
+                    segment_epoch_key = str(
+                        generation_item.get("segment_epoch_key") or ""
+                    )
+                    try:
+                        freeze_contexts = tuple(
+                            _realization_contexts(
+                                topology_path=_context_topology_path(
+                                    generation_context
+                                ),
+                                topology_snapshot=generation_context["snapshot"],
+                                runtime_update_plan=generation_context[
+                                    "runtime_update_plan"
+                                ],
+                            )
+                        )
+                        target_compiled = _bpf_owned_compile_mpls_maps_for_contexts(
+                            contexts=freeze_contexts,
+                            generation_id=physical_generation_id,
+                            interface_ifindex_cache=frozen_interface_ifindex_cache,
+                            interface_mac_cache=frozen_interface_mac_cache,
+                        )
+                        overlay_compiled = _bpf_owned_planned_overlay_compiled_maps(
+                            target_compiled=target_compiled,
+                            base_compiled=base_generation_compiled_inputs,
+                            target_generation_id=physical_generation_id,
+                            base_generation_id=int(
+                                base_generation_record.get(
+                                    "physical_generation_id"
+                                )
+                                or base_generation_record.get("generation_id")
+                                or 0
+                            ),
+                        )
+                        frozen_inputs = _bpf_owned_compiled_runtime_inputs(
+                            overlay_compiled
+                        )
+                        ready = _compiled_runtime_inputs_manifest_ready(
+                            frozen_inputs
+                        ) and not list(frozen_inputs.get("map_conflicts") or [])
+                        reason = (
+                            ""
+                            if ready
+                            else "frozen_compiled_runtime_inputs_invalid_or_conflicted"
+                        )
+                    except Exception as exc:
+                        frozen_inputs = {}
+                        ready = False
+                        reason = str(exc) or exc.__class__.__name__
+                    record = {
+                        "schema_version": (
+                            "skyseed-rolling-horizon-frozen-compiled-runtime-"
+                            "inputs-record-v1"
+                        ),
+                        "segment_epoch_key": segment_epoch_key,
+                        "epoch_id": str(generation_entry.get("epoch_id") or ""),
+                        "slice_id": str(generation_entry.get("slice_id") or ""),
+                        "horizon_id": str(generation_item.get("horizon_id") or ""),
+                        "physical_generation_id": physical_generation_id,
+                        "ok": bool(ready),
+                        "reason": str(reason),
+                        "compiled_runtime_inputs": dict(frozen_inputs),
+                        "compiled_runtime_inputs_summary": (
+                            _frozen_compiled_runtime_inputs_summary(frozen_inputs)
+                        ),
+                    }
+                    frozen_compile_records.append(record)
+                    frozen_records_by_segment_key[segment_epoch_key] = record
+                artifact = (
+                    run_dir
+                    / "replenished_segments"
+                    / f"segment_{segment_index:03d}"
+                    / "rolling_horizon_frozen_compiled_runtime_inputs.json"
+                )
+                payload = {
+                    "schema_version": (
+                        "skyseed-rolling-horizon-frozen-compiled-runtime-inputs-v1"
+                    ),
+                    "segment_id": str(segment["segment_id"]),
+                    "horizon_id": str(
+                        segment.get("horizon_id") or segment["segment_id"]
+                    ),
+                    "record_count": len(frozen_compile_records),
+                    "ready_count": sum(
+                        1
+                        for record in frozen_compile_records
+                        if record.get("ok") is True
+                    ),
+                    "failed_count": sum(
+                        1
+                        for record in frozen_compile_records
+                        if record.get("ok") is not True
+                    ),
+                    "ok": all(
+                        record.get("ok") is True
+                        for record in frozen_compile_records
+                    ),
+                    "wall_seconds": round(
+                        time.perf_counter() - frozen_compile_started,
+                        6,
+                    ),
+                    "interface_cache_summary": {
+                        "scope": "rolling_horizon_freeze_compiled_inputs",
+                        "ifindex_cache_entry_count": len(
+                            frozen_interface_ifindex_cache
+                        ),
+                        "mac_cache_entry_count": len(frozen_interface_mac_cache),
+                    },
+                    "records": [
+                        {
+                            key: _json_safe(value)
+                            for key, value in record.items()
+                            if key != "compiled_runtime_inputs"
+                        }
+                        for record in frozen_compile_records
+                    ],
+                }
+                _write_json(artifact, payload)
+                if payload["ok"] is not True:
+                    _write_json(
+                        run_dir
+                        / "rolling_horizon_bpf_frozen_compiled_inputs_failure.json",
+                        _json_safe(payload),
+                    )
+                    raise RuntimeError(
+                        "rolling_horizon_bpf_frozen_compiled_inputs_missing:"
+                        f"{segment['segment_id']}"
+                    )
+                return payload, artifact, frozen_records_by_segment_key
+
+            def _attach_capability_frozen_inputs_from_records(
+                *,
+                seed_record: Mapping[str, Any],
+                frozen_records_by_segment_key: Mapping[str, Mapping[str, Any]],
+            ) -> Dict[str, Any]:
+                seed_inputs = dict(seed_record.get("compiled_runtime_inputs") or {})
+                if not seed_inputs:
+                    return {}
+                merged_plan_sets: Dict[str, set[str]] = {}
+                merged_details: Dict[str, Dict[str, Any]] = {}
+                merged_interfaces: set[str] = set()
+                merged_entries: Dict[str, Dict[str, Dict[str, Any]]] = {
+                    "ingress_classifier_map": {},
+                    "core_lfib_map": {},
+                    "egress_handoff_map": {},
+                    "generation_base_map": {},
+                }
+                map_conflicts: List[Dict[str, Any]] = []
+                for record in frozen_records_by_segment_key.values():
+                    inputs = dict(record.get("compiled_runtime_inputs") or {})
+                    if not inputs:
+                        continue
+                    for interface_ref, directions in dict(
+                        inputs.get("attach_plan") or {}
+                    ).items():
+                        key = str(interface_ref)
+                        if not key:
+                            continue
+                        merged_plan_sets.setdefault(key, set()).update(
+                            str(direction)
+                            for direction in list(directions or [])
+                            if str(direction)
+                        )
+                    merged_interfaces.update(
+                        str(interface_ref)
+                        for interface_ref in list(
+                            inputs.get("attached_interfaces") or []
+                        )
+                        if str(interface_ref)
+                    )
+                    for detail_any in list(
+                        inputs.get("attached_interface_details") or []
+                    ):
+                        detail = dict(detail_any or {})
+                        interface_ref = str(
+                            detail.get("interface_ref")
+                            or detail.get("interface_name")
+                            or ""
+                        )
+                        if not interface_ref:
+                            continue
+                        previous = dict(merged_details.get(interface_ref) or {})
+                        attach_directions = sorted(
+                            {
+                                *[
+                                    str(direction)
+                                    for direction in list(
+                                        previous.get("attach_directions") or []
+                                    )
+                                    if str(direction)
+                                ],
+                                *[
+                                    str(direction)
+                                    for direction in list(
+                                        detail.get("attach_directions") or []
+                                    )
+                                    if str(direction)
+                                ],
+                                *list(merged_plan_sets.get(interface_ref) or []),
+                            }
+                        )
+                        expected_roles = sorted(
+                            {
+                                *[
+                                    str(role)
+                                    for role in list(
+                                        previous.get("expected_roles") or []
+                                    )
+                                    if str(role)
+                                ],
+                                *[
+                                    str(role)
+                                    for role in list(
+                                        detail.get("expected_roles") or []
+                                    )
+                                    if str(role)
+                                ],
+                            }
+                        )
+                        merged = {**previous, **detail, "interface_ref": interface_ref}
+                        if attach_directions:
+                            merged["attach_directions"] = attach_directions
+                        if expected_roles:
+                            merged["expected_roles"] = expected_roles
+                        merged_details[interface_ref] = merged
+                    for map_name in merged_entries:
+                        for entry in list(inputs.get(map_name) or []):
+                            entry_dict = dict(entry or {})
+                            entry_key = json.dumps(
+                                _json_safe(entry_dict),
+                                sort_keys=True,
+                                separators=(",", ":"),
+                            )
+                            merged_entries[map_name][entry_key] = entry_dict
+                    map_conflicts.extend(
+                        dict(item)
+                        for item in list(inputs.get("map_conflicts") or [])
+                        if isinstance(item, Mapping)
+                    )
+                merged_plan = {
+                    interface_ref: sorted(directions)
+                    for interface_ref, directions in sorted(merged_plan_sets.items())
+                }
+                for interface_ref, directions in merged_plan.items():
+                    if interface_ref in merged_details:
+                        continue
+                    merged_details[interface_ref] = {
+                        "interface_ref": interface_ref,
+                        "interface_name": interface_ref,
+                        "attach_directions": list(directions),
+                    }
+                merged_interfaces.update(merged_plan)
+                merged_interfaces.update(merged_details)
+                merged_inputs = {
+                    **seed_inputs,
+                    "attach_plan": merged_plan,
+                    "attached_interfaces": sorted(merged_interfaces),
+                    "attached_interface_details": [
+                        merged_details[interface_ref]
+                        for interface_ref in sorted(merged_details)
+                    ],
+                    "ingress_classifier_map": list(
+                        merged_entries["ingress_classifier_map"].values()
+                    ),
+                    "core_lfib_map": list(
+                        merged_entries["core_lfib_map"].values()
+                    ),
+                    "egress_handoff_map": list(
+                        merged_entries["egress_handoff_map"].values()
+                    ),
+                    "generation_base_map": list(
+                        merged_entries["generation_base_map"].values()
+                    ),
+                    "map_conflicts": map_conflicts,
+                    "compiled_runtime_inputs_source": (
+                        "queued_horizon_maintenance_frozen_manifest_union"
+                    ),
+                }
+                merged_inputs["compiled_mpls_map_counts"] = {
+                    "ingress_classifier_map": len(
+                        list(merged_inputs.get("ingress_classifier_map") or [])
+                    ),
+                    "core_lfib_map": len(
+                        list(merged_inputs.get("core_lfib_map") or [])
+                    ),
+                    "egress_handoff_map": len(
+                        list(merged_inputs.get("egress_handoff_map") or [])
+                    ),
+                    "generation_base_map": len(
+                        list(merged_inputs.get("generation_base_map") or [])
+                    ),
+                    "active_generation": 1,
+                }
+                merged_inputs["compile_capacity_mpls_map_counts"] = dict(
+                    merged_inputs["compiled_mpls_map_counts"]
+                )
+                return merged_inputs
+
             if generation_items:
+                base_generation_record = (
+                    _bpf_active_base_generation_record_for_preload(readiness)
+                )
+                base_generation_compiled_inputs = dict(
+                    base_generation_record.get("compiled_runtime_inputs") or {}
+                )
+                if base_generation_record.get("ok") is not True:
+                    _write_json(
+                        run_dir
+                        / "rolling_horizon_bpf_preload_base_compiled_inputs_failure.json",
+                        _json_safe(
+                            {
+                                "schema_version": (
+                                    "skyseed-rolling-horizon-bpf-preload-base-"
+                                    "compiled-inputs-failure-v1"
+                                ),
+                                "segment_id": str(segment["segment_id"]),
+                                "horizon_id": str(
+                                    segment.get("horizon_id")
+                                    or segment["segment_id"]
+                                ),
+                                "reason": str(
+                                    base_generation_record.get("reason")
+                                    or "base_compiled_runtime_inputs_missing"
+                                ),
+                                "checked_sources": list(
+                                    base_generation_record.get("checked_sources")
+                                    or []
+                                ),
+                                "compact_summary_rejected": True,
+                            }
+                        ),
+                    )
+                    raise RuntimeError(
+                        "rolling_horizon_bpf_preload_base_compiled_inputs_missing:"
+                        f"{segment['segment_id']}"
+                    )
+                (
+                    frozen_compile_payload,
+                    frozen_compile_artifact,
+                    frozen_compile_by_segment_key,
+                ) = _freeze_generation_inputs_for_maintenance(
+                    base_generation_record=base_generation_record,
+                    base_generation_compiled_inputs=(
+                        base_generation_compiled_inputs
+                    ),
+                    generation_items=generation_items,
+                )
                 resident_attach_contexts: List[Any] = []
                 seen_resident_contexts: set[Tuple[str, str]] = set()
                 for item in generation_items:
@@ -21002,6 +21867,16 @@ def _run_live_temporal_runtime(
                         runtime_update_plan=seed_context["runtime_update_plan"],
                     )
                 )
+                seed_frozen_record = dict(
+                    frozen_compile_by_segment_key.get(
+                        str(seed_generation_item.get("segment_epoch_key") or "")
+                    )
+                    or {}
+                )
+                seed_frozen_inputs = _attach_capability_frozen_inputs_from_records(
+                    seed_record=seed_frozen_record,
+                    frozen_records_by_segment_key=frozen_compile_by_segment_key,
+                )
                 _progress(
                     phase="rolling_horizon_bpf_attach_capability_prepare",
                     event_type=(
@@ -21017,6 +21892,9 @@ def _run_live_temporal_runtime(
                         "runtime_apply_allowed": False,
                         "future_map_write_allowed": False,
                         "active_generation_flip_allowed": False,
+                        "inputs_source": (
+                            "queued_horizon_maintenance_frozen_manifest"
+                        ),
                     },
                     runtime_epochs_completed=runtime_count,
                     parameter_epochs_completed=parameter_count,
@@ -21033,6 +21911,7 @@ def _run_live_temporal_runtime(
                         prepared_generation_window_count=(
                             prepared_generation_window_count
                         ),
+                        frozen_compiled_runtime_inputs=seed_frozen_inputs,
                     )
                 )
                 attach_budget_expansion = (
@@ -21063,6 +21942,7 @@ def _run_live_temporal_runtime(
                             prepared_generation_window_count=(
                                 prepared_generation_window_count
                             ),
+                            frozen_compiled_runtime_inputs=seed_frozen_inputs,
                         )
                     )
                     attach_prepare_report = {
@@ -21177,6 +22057,26 @@ def _run_live_temporal_runtime(
                     "runtime_apply_skipped": True,
                     "active_generation_set": False,
                     "map_ready": False,
+                    "attach_capability_prepare_inputs_source": str(
+                        rolling_bpf_attach_capability_prepare.get(
+                            "attach_capability_prepare_inputs_source"
+                        )
+                        or ""
+                    ),
+                    "compiled_runtime_inputs_source": str(
+                        rolling_bpf_attach_capability_prepare.get(
+                            "compiled_runtime_inputs_source"
+                        )
+                        or ""
+                    ),
+                    "frozen_compiled_runtime_inputs_ready": bool(
+                        dict(
+                            rolling_bpf_attach_capability_prepare.get(
+                                "frozen_compiled_runtime_inputs_check"
+                            )
+                            or {}
+                        ).get("ready")
+                    ),
                     "artifact_path": str(attach_prepare_artifact),
                 }
                 events.append(
@@ -21236,164 +22136,6 @@ def _run_live_temporal_runtime(
                     readiness,
                     rolling_bpf_attach_capability_prepare,
                     record=attach_prepare_record,
-                )
-            base_generation_record = _bpf_active_base_generation_record_for_preload(
-                readiness
-            )
-            base_generation_compiled_inputs = dict(
-                base_generation_record.get("compiled_runtime_inputs") or {}
-            )
-            if base_generation_record.get("ok") is not True:
-                _write_json(
-                    run_dir
-                    / "rolling_horizon_bpf_preload_base_compiled_inputs_failure.json",
-                    _json_safe(
-                        {
-                            "schema_version": (
-                                "skyseed-rolling-horizon-bpf-preload-base-"
-                                "compiled-inputs-failure-v1"
-                            ),
-                            "segment_id": str(segment["segment_id"]),
-                            "horizon_id": str(
-                                segment.get("horizon_id") or segment["segment_id"]
-                            ),
-                            "reason": str(
-                                base_generation_record.get("reason")
-                                or "base_compiled_runtime_inputs_missing"
-                            ),
-                            "checked_sources": list(
-                                base_generation_record.get("checked_sources") or []
-                            ),
-                            "compact_summary_rejected": True,
-                        }
-                    ),
-                )
-                raise RuntimeError(
-                    "rolling_horizon_bpf_preload_base_compiled_inputs_missing:"
-                    f"{segment['segment_id']}"
-                )
-            frozen_compile_started = time.perf_counter()
-            frozen_compile_records: List[Dict[str, Any]] = []
-            frozen_compile_by_segment_key: Dict[str, Dict[str, Any]] = {}
-            frozen_interface_ifindex_cache: Dict[str, int] = {}
-            frozen_interface_mac_cache: Dict[str, str] = {}
-            for generation_item in generation_items:
-                generation_entry = dict(generation_item.get("entry") or {})
-                generation_context = dict(generation_item.get("context") or {})
-                physical_generation_id = int(
-                    generation_item.get("physical_generation_id")
-                    if generation_item.get("physical_generation_id")
-                    not in (None, "", "None")
-                    else generation_item.get("generation_id") or 0
-                )
-                segment_epoch_key = str(
-                    generation_item.get("segment_epoch_key") or ""
-                )
-                try:
-                    freeze_contexts = tuple(
-                        _realization_contexts(
-                            topology_path=_context_topology_path(generation_context),
-                            topology_snapshot=generation_context["snapshot"],
-                            runtime_update_plan=generation_context[
-                                "runtime_update_plan"
-                            ],
-                        )
-                    )
-                    target_compiled = _bpf_owned_compile_mpls_maps_for_contexts(
-                        contexts=freeze_contexts,
-                        generation_id=physical_generation_id,
-                        interface_ifindex_cache=frozen_interface_ifindex_cache,
-                        interface_mac_cache=frozen_interface_mac_cache,
-                    )
-                    overlay_compiled = _bpf_owned_planned_overlay_compiled_maps(
-                        target_compiled=target_compiled,
-                        base_compiled=base_generation_compiled_inputs,
-                        target_generation_id=physical_generation_id,
-                        base_generation_id=int(
-                            base_generation_record.get("physical_generation_id")
-                            or base_generation_record.get("generation_id")
-                            or 0
-                        ),
-                    )
-                    frozen_inputs = _bpf_owned_compiled_runtime_inputs(
-                        overlay_compiled
-                    )
-                    ready = _compiled_runtime_inputs_manifest_ready(
-                        frozen_inputs
-                    ) and not list(frozen_inputs.get("map_conflicts") or [])
-                    reason = (
-                        ""
-                        if ready
-                        else "frozen_compiled_runtime_inputs_invalid_or_conflicted"
-                    )
-                except Exception as exc:
-                    frozen_inputs = {}
-                    ready = False
-                    reason = str(exc) or exc.__class__.__name__
-                record = {
-                    "schema_version": (
-                        "skyseed-rolling-horizon-frozen-compiled-runtime-"
-                        "inputs-record-v1"
-                    ),
-                    "segment_epoch_key": segment_epoch_key,
-                    "epoch_id": str(generation_entry.get("epoch_id") or ""),
-                    "slice_id": str(generation_entry.get("slice_id") or ""),
-                    "horizon_id": str(generation_item.get("horizon_id") or ""),
-                    "physical_generation_id": physical_generation_id,
-                    "ok": bool(ready),
-                    "reason": str(reason),
-                    "compiled_runtime_inputs": dict(frozen_inputs),
-                    "compiled_runtime_inputs_summary": (
-                        _frozen_compiled_runtime_inputs_summary(frozen_inputs)
-                    ),
-                }
-                frozen_compile_records.append(record)
-                frozen_compile_by_segment_key[segment_epoch_key] = record
-            frozen_compile_artifact = (
-                run_dir
-                / "replenished_segments"
-                / f"segment_{segment_index:03d}"
-                / "rolling_horizon_frozen_compiled_runtime_inputs.json"
-            )
-            frozen_compile_payload = {
-                "schema_version": (
-                    "skyseed-rolling-horizon-frozen-compiled-runtime-inputs-v1"
-                ),
-                "segment_id": str(segment["segment_id"]),
-                "horizon_id": str(segment.get("horizon_id") or segment["segment_id"]),
-                "record_count": len(frozen_compile_records),
-                "ready_count": sum(
-                    1 for record in frozen_compile_records if record.get("ok") is True
-                ),
-                "failed_count": sum(
-                    1 for record in frozen_compile_records if record.get("ok") is not True
-                ),
-                "ok": all(record.get("ok") is True for record in frozen_compile_records),
-                "wall_seconds": round(time.perf_counter() - frozen_compile_started, 6),
-                "interface_cache_summary": {
-                    "scope": "rolling_horizon_freeze_compiled_inputs",
-                    "ifindex_cache_entry_count": len(frozen_interface_ifindex_cache),
-                    "mac_cache_entry_count": len(frozen_interface_mac_cache),
-                },
-                "records": [
-                    {
-                        key: _json_safe(value)
-                        for key, value in record.items()
-                        if key != "compiled_runtime_inputs"
-                    }
-                    for record in frozen_compile_records
-                ],
-            }
-            _write_json(frozen_compile_artifact, frozen_compile_payload)
-            if frozen_compile_payload["ok"] is not True:
-                _write_json(
-                    run_dir
-                    / "rolling_horizon_bpf_frozen_compiled_inputs_failure.json",
-                    _json_safe(frozen_compile_payload),
-                )
-                raise RuntimeError(
-                    "rolling_horizon_bpf_frozen_compiled_inputs_missing:"
-                    f"{segment['segment_id']}"
                 )
             audit_started = time.perf_counter()
             preload_attach_reuse_audit_artifact = (
@@ -21544,7 +22286,9 @@ def _run_live_temporal_runtime(
             }
             backend = dict(active_session.backend or {})
             backend["bpf_owned_readiness"] = readiness
-            active_session = replace(active_session, backend=backend)
+            active_session = _publish_active_session(
+                replace(active_session, backend=backend)
+            )
             segment_preload_artifact = (
                 run_dir
                 / "replenished_segments"
@@ -23369,7 +24113,7 @@ def _run_live_temporal_runtime(
                         ),
                     )
                 )
-                active_session = ActiveRuntimeSession(
+                active_session = _publish_active_session(ActiveRuntimeSession(
                     session_id=(
                         "pre-runtime-bpf-owned-"
                         + _canonical_json_hash(
@@ -23427,7 +24171,7 @@ def _run_live_temporal_runtime(
                     },
                     contexts=pre_runtime_contexts,
                     context_preflights=pre_runtime_context_preflights,
-                )
+                ))
                 _progress(
                     phase="pre_runtime_bpf_owned_prepare_completed",
                     event_type="pre_runtime_bpf_owned_prepare_completed",
@@ -23995,7 +24739,7 @@ def _run_live_temporal_runtime(
             ),
         }
         backend["bpf_owned_readiness"] = readiness
-        active_session = replace(active_session, backend=backend)
+        active_session = _publish_active_session(replace(active_session, backend=backend))
         bpf_preload_work_completed_records.append(preloaded_record)
         _progress(
             phase="bpf_preload_work",
@@ -24308,7 +25052,9 @@ def _run_live_temporal_runtime(
             )
             backend = dict(active_session.backend or {})
             backend["bpf_owned_readiness"] = dict(handoff_merge["readiness"])
-            active_session = replace(active_session, backend=backend)
+            active_session = _publish_active_session(
+                replace(active_session, backend=backend)
+            )
         with horizon_maintenance_state_lock:
             horizon_maintenance_consumed_horizons.add(target_horizon_id)
         events.append(
@@ -24334,7 +25080,10 @@ def _run_live_temporal_runtime(
         )
         return loaded
 
-    checkpoint_thread.start()
+    if live_timing_checkpoints_enabled:
+        checkpoint_thread.start()
+    if runtime_ping_observer_enabled:
+        runtime_ping_observer_thread.start()
     try:
         while segment_queue:
             next_entry = dict(segment_queue.pop(0))
@@ -24771,7 +25520,7 @@ def _run_live_temporal_runtime(
                         raise RuntimeError(
                             "node-local rollback failed before the next runtime epoch"
                         )
-                    active_session = None
+                    active_session = _publish_active_session(None)
                 elif (
                     str(args.runtime_mode) == "correctness"
                     and effective_epoch_type == "runtime_epoch"
@@ -25029,12 +25778,14 @@ def _run_live_temporal_runtime(
                     operational_clean_mode
                     and str(args.forwarding_backend) == "bpf_owned"
                 ):
-                    active_session = _stage_session_horizon_for_next_apply(
-                        active_session,
-                        horizon_id=_horizon_id_for_queue_entry(next_entry),
-                        source_state_id=current_state_id,
+                    active_session = _publish_active_session(
+                        _stage_session_horizon_for_next_apply(
+                            active_session,
+                            horizon_id=_horizon_id_for_queue_entry(next_entry),
+                            source_state_id=current_state_id,
+                        )
                     )
-                active_session = real_installer.apply_and_validate(
+                active_session = _publish_active_session(real_installer.apply_and_validate(
                     topology_path=topology_path,
                     topology_snapshot=snapshot,
                     runtime_update_plan=context["runtime_update_plan"],
@@ -25069,7 +25820,7 @@ def _run_live_temporal_runtime(
                             current_entry=next_entry,
                         )
                     ),
-                )
+                ))
                 for preload_item in list(
                     dict(active_session.backend or {})
                     .get("bpf_lookahead_preactivation_preload", {})
@@ -25430,7 +26181,7 @@ def _run_live_temporal_runtime(
                             applied_sessions[:] = [refreshed_session]
                         else:
                             applied_sessions.append(refreshed_session)
-                        active_session = refreshed_session
+                        active_session = _publish_active_session(refreshed_session)
                         post_transition_connectivity = _connectivity_summary(
                             refreshed_session.ping_results
                         )
@@ -25543,10 +26294,12 @@ def _run_live_temporal_runtime(
             current_state_id = (
                 f"live_state:{snapshot.snapshot_id}:{next_entry.get('epoch_id')}"
             )
-            active_session = _advance_session_horizon_state(
-                active_session,
-                horizon_id=_horizon_id_for_queue_entry(next_entry),
-                target_state_id=current_state_id,
+            active_session = _publish_active_session(
+                _advance_session_horizon_state(
+                    active_session,
+                    horizon_id=_horizon_id_for_queue_entry(next_entry),
+                    target_state_id=current_state_id,
+                )
             )
             if (
                 _is_operational_clean_bpf_owned_args(args)
@@ -25970,6 +26723,46 @@ def _run_live_temporal_runtime(
                         ),
                         6,
                     ),
+                    "runtime_qdisc_wall_seconds": round(
+                        float(
+                            _safe_dict(
+                                host_apply["outcome"].get(
+                                    "operation_timing_summary"
+                                )
+                            ).get("qdisc_wall_seconds")
+                            or 0.0
+                        ),
+                        6,
+                    ),
+                    "runtime_qdisc_command_count": int(
+                        _safe_dict(
+                            host_apply["outcome"].get("operation_timing_summary")
+                        ).get("qdisc_command_count")
+                        or 0
+                    ),
+                    "runtime_qdisc_sub_update_count": int(
+                        _safe_dict(
+                            host_apply["outcome"].get("operation_timing_summary")
+                        ).get("qdisc_sub_update_count")
+                        or 0
+                    ),
+                    "runtime_qdisc_batch_command_count": int(
+                        _safe_dict(
+                            host_apply["outcome"].get("operation_timing_summary")
+                        ).get("qdisc_batch_command_count")
+                        or 0
+                    ),
+                    "runtime_qdisc_batch_sub_update_count": int(
+                        _safe_dict(
+                            host_apply["outcome"].get("operation_timing_summary")
+                        ).get("qdisc_batch_sub_update_count")
+                        or 0
+                    ),
+                    "runtime_qdisc_batch_used": bool(
+                        _safe_dict(
+                            host_apply["outcome"].get("operation_timing_summary")
+                        ).get("qdisc_batch_used")
+                    ),
                     "pre_transition_connectivity_probe_wall_seconds": round(
                         float(pre_transition_probe_wall_seconds),
                         6,
@@ -26192,6 +26985,31 @@ def _run_live_temporal_runtime(
                     "parameter_qdisc_command_count": int(
                         parameter_batch_accounting.get("qdisc_command_count") or 0
                     ),
+                    "parameter_qdisc_sub_update_count": int(
+                        parameter_batch_accounting.get("qdisc_sub_update_count") or 0
+                    ),
+                    "parameter_qdisc_batch_command_count": int(
+                        parameter_batch_accounting.get("qdisc_batch_command_count") or 0
+                    ),
+                    "parameter_qdisc_batch_sub_update_count": int(
+                        parameter_batch_accounting.get("qdisc_batch_sub_update_count")
+                        or 0
+                    ),
+                    "parameter_qdisc_batch_used": bool(
+                        parameter_batch_accounting.get("qdisc_batch_used")
+                    ),
+                    "parameter_qdisc_replace_sub_update_count": int(
+                        parameter_batch_accounting.get(
+                            "qdisc_replace_sub_update_count"
+                        )
+                        or 0
+                    ),
+                    "parameter_qdisc_delete_sub_update_count": int(
+                        parameter_batch_accounting.get(
+                            "qdisc_delete_sub_update_count"
+                        )
+                        or 0
+                    ),
                     "parameter_qdisc_target_group_count": int(
                         parameter_batch_accounting.get("qdisc_target_group_count") or 0
                     ),
@@ -26308,6 +27126,7 @@ def _run_live_temporal_runtime(
             )
             for timing_key in (
                 "scheduler_blocking_after_data_plane_ready_seconds",
+                "post_data_plane_ready_recording_seconds",
                 "event_wait_seconds",
                 "network_update_seconds",
                 "post_apply_overhead_seconds",
@@ -26323,7 +27142,11 @@ def _run_live_temporal_runtime(
                 artifact_reporting_completed_at - artifact_reporting_started_at,
                 6,
             )
-            semantic_breakdown = _epoch_timing_semantic_breakdown(epoch_record)
+            semantic_breakdown = (
+                _epoch_timing_offline_placeholder(epoch_record)
+                if operational_clean_mode
+                else _epoch_timing_semantic_breakdown(epoch_record)
+            )
             epoch_record["timing"]["semantic_breakdown"] = semantic_breakdown
             for timing_key in (
                 "event_wait_seconds",
@@ -26344,7 +27167,7 @@ def _run_live_temporal_runtime(
                 detail_jsonl=epoch_execution_details_jsonl,
                 operational_clean_mode=operational_clean_mode,
             )
-            _append_jsonl(
+            _enqueue_artifact_jsonl(
                 epoch_execution_details_jsonl,
                 _epoch_execution_detail_jsonl_record(
                     epoch_record,
@@ -27042,7 +27865,11 @@ def _run_live_temporal_runtime(
             runtime_epochs_completed=runtime_count,
             parameter_epochs_completed=parameter_count,
         )
+        if runtime_ping_observer_enabled:
+            runtime_ping_observer_stop.set()
+            runtime_ping_observer_thread.join(timeout=10.0)
         _flush_live_timing_checkpoints()
+        _flush_async_artifact_writer()
         if deferred_checkpoint_errors:
             if failure_reason is None:
                 failure_reason = (
@@ -27056,9 +27883,39 @@ def _run_live_temporal_runtime(
                     "errors": list(deferred_checkpoint_errors),
                 }
             )
+        if async_artifact_writer_errors:
+            if failure_reason is None:
+                failure_reason = (
+                    "async_artifact_writer_failed:"
+                    + ";".join(async_artifact_writer_errors[:3])
+                )
+            events.append(
+                {
+                    "timestamp_utc": _timestamp_utc(),
+                    "event_type": "async_artifact_writer_failed",
+                    "errors": list(async_artifact_writer_errors),
+                }
+            )
+        if runtime_ping_observer_errors:
+            events.append(
+                {
+                    "timestamp_utc": _timestamp_utc(),
+                    "event_type": "runtime_ping_observer_errors",
+                    "errors": list(runtime_ping_observer_errors),
+                }
+            )
 
     return {
         **_current_runtime_report_payload(finalized=True),
+        "artifact_recording": {
+            "async_writer_enabled": bool(async_artifact_writer_enabled),
+            "artifact_recording_success": not bool(async_artifact_writer_errors),
+            "async_writer_error_count": len(async_artifact_writer_errors),
+            "runtime_ping_observer_enabled": bool(runtime_ping_observer_enabled),
+            "runtime_ping_observation_jsonl": str(runtime_ping_observation_jsonl),
+            "runtime_ping_observer_error_count": len(runtime_ping_observer_errors),
+            "raw_events_jsonl": str(raw_events_jsonl),
+        },
         "prepared_bundle_runtime": {
             **_current_runtime_report_payload(finalized=True)["prepared_bundle_runtime"],
             "pre_epoch_host_prewarm": _pre_epoch_host_prewarm_artifact_summary(
@@ -27507,47 +28364,10 @@ def _docker_exec_readiness_probe(
         }
 
 
-def _validation_target_container_candidates(
-    target: Dict[str, Any],
-    *,
-    mini_internet_node_prefix: str,
-) -> List[str]:
-    node_id = str(target.get("node_id") or "").strip()
-    if not node_id:
-        return []
-    candidates: List[str] = []
-    prefix = str(mini_internet_node_prefix or "")
-    if prefix and not node_id.startswith(prefix):
-        candidates.append(f"{prefix}{node_id}")
-    candidates.append(node_id)
-    return list(dict.fromkeys(candidates))
-
-
-def _probe_first_available_container(
-    candidates: Sequence[str],
-) -> Dict[str, Any]:
-    attempts: List[Dict[str, Any]] = []
-    for candidate in candidates:
-        probe = _docker_exec_readiness_probe(str(candidate))
-        attempts.append(probe)
-        if probe.get("ok") is True:
-            return {
-                "ok": True,
-                "selected_container": str(candidate),
-                "attempts": attempts,
-            }
-    return {
-        "ok": False,
-        "selected_container": "",
-        "attempts": attempts,
-    }
-
-
 def _operational_clean_bpf_owned_initial_readiness_attempt(
     *,
     gateway_ids: Sequence[str],
     validation_targets: Sequence[Dict[str, Any]],
-    mini_internet_node_prefix: str,
 ) -> Dict[str, Any]:
     timestamp = _timestamp_utc()
     subchecks: List[Dict[str, Any]] = []
@@ -27581,39 +28401,22 @@ def _operational_clean_bpf_owned_initial_readiness_attempt(
         )
     )
 
-    target_records: List[Dict[str, Any]] = []
-    missing_targets: List[str] = []
-    for target in validation_targets:
-        candidates = _validation_target_container_candidates(
-            dict(target),
-            mini_internet_node_prefix=mini_internet_node_prefix,
-        )
-        result = _probe_first_available_container(candidates)
-        record = {
-            "target": dict(target),
-            "container_candidates": candidates,
-            **result,
-        }
-        target_records.append(record)
-        if result.get("ok") is not True:
-            missing_targets.append(str(target.get("node_id") or target.get("ip_address")))
-    ready_targets = [
-        record for record in target_records if record.get("ok") is True
-    ]
     subchecks.append(
         _initial_readiness_subcheck(
             name="validation_target_container_command_channels",
-            status="passed" if len(ready_targets) == len(target_records) else "failed",
-            expected_count=len(target_records),
-            observed_count=len(ready_targets),
+            status="skipped",
+            expected_count=0,
+            observed_count=0,
             last_progress_timestamp_utc=timestamp,
-            blocking_error=(
-                ""
-                if len(ready_targets) == len(target_records)
-                else "validation_target_docker_exec_failed"
-            ),
-            missing_items=missing_targets,
-            details={"targets": target_records},
+            blocks_runtime=False,
+            details={
+                "target_count": len(validation_targets),
+                "reason": (
+                    "operational_clean validation target is the selected gateway "
+                    "access IP; Mini Internet host command channels are not a "
+                    "runtime readiness dependency"
+                ),
+            },
         )
     )
 
@@ -27667,22 +28470,20 @@ def _operational_clean_bpf_owned_initial_readiness_attempt(
             ),
             _initial_readiness_subcheck(
                 name="node_local_agents_or_command_channels",
-                status="passed",
-                expected_count=len(gateway_probes) + len(target_records),
-                observed_count=len(ready_gateways) + len(ready_targets),
+                status="passed" if len(ready_gateways) == len(gateway_probes) else "failed",
+                expected_count=len(gateway_probes),
+                observed_count=len(ready_gateways),
                 last_progress_timestamp_utc=timestamp,
                 blocking_error=(
                     ""
-                    if (
-                        len(ready_gateways) == len(gateway_probes)
-                        and len(ready_targets) == len(target_records)
-                    )
+                    if len(ready_gateways) == len(gateway_probes)
                     else "container_command_channel_failed"
                 ),
-                missing_items=[*missing_gateways, *missing_targets],
+                missing_items=missing_gateways,
                 details={
                     "provider": "docker_exec",
                     "node_local_agent_process_required": False,
+                    "validation_target_container_probe_required": False,
                 },
             ),
             _initial_readiness_subcheck(
@@ -27759,14 +28560,15 @@ def _operational_clean_bpf_owned_initial_readiness_attempt(
             _initial_readiness_subcheck(
                 name="legacy_gateway_linux_route_to_validation_targets",
                 status="skipped",
-                expected_count=len(gateway_probes) * len(target_records),
+                expected_count=0,
                 observed_count=0,
                 last_progress_timestamp_utc=timestamp,
                 blocks_runtime=False,
                 details={
                     "reason": (
-                        "operational_clean bpf_owned does not require Linux gateway "
-                        "routes to validation targets before the first RuntimeTransaction"
+                        "operational_clean bpf_owned validates UT-to-selected-GW "
+                        "access reachability; Mini Internet host routes are not "
+                        "installed or probed"
                     )
                 },
             ),
@@ -27790,7 +28592,6 @@ def _await_operational_clean_bpf_owned_initial_readiness(
     *,
     gateway_ids: Sequence[str],
     validation_targets: Sequence[Dict[str, Any]],
-    mini_internet_node_prefix: str,
     timeout_seconds: float,
     probe_interval_seconds: float = 2.0,
 ) -> Dict[str, Any]:
@@ -27801,7 +28602,6 @@ def _await_operational_clean_bpf_owned_initial_readiness(
         attempt = _operational_clean_bpf_owned_initial_readiness_attempt(
             gateway_ids=gateway_ids,
             validation_targets=validation_targets,
-            mini_internet_node_prefix=mini_internet_node_prefix,
         )
         attempt["attempt_index"] = len(attempts) + 1
         attempt["wall_seconds"] = round(time.perf_counter() - attempt_started_at, 6)
@@ -27810,11 +28610,9 @@ def _await_operational_clean_bpf_owned_initial_readiness(
             return {
                 "attempt_count": len(attempts),
                 "gateway_ids": list(gateway_ids),
-                "target_ips": [
-                    str(target.get("ip_address"))
-                    for target in validation_targets
-                    if target.get("ip_address")
-                ],
+                "target_ips": [],
+                "validation_target_probe_skipped": True,
+                "validation_target_probe_skip_reason": "selected_gateway_access_target_not_container_gated",
                 "ready": True,
                 "wall_seconds": time.perf_counter() - started_at,
                 "attempts": attempts,
@@ -27828,11 +28626,9 @@ def _await_operational_clean_bpf_owned_initial_readiness(
             return {
                 "attempt_count": len(attempts),
                 "gateway_ids": list(gateway_ids),
-                "target_ips": [
-                    str(target.get("ip_address"))
-                    for target in validation_targets
-                    if target.get("ip_address")
-                ],
+                "target_ips": [],
+                "validation_target_probe_skipped": True,
+                "validation_target_probe_skip_reason": "selected_gateway_access_target_not_container_gated",
                 "ready": False,
                 "wall_seconds": elapsed,
                 "attempts": attempts,
@@ -27854,7 +28650,6 @@ def _await_initial_runtime_readiness_for_args(
         return _await_operational_clean_bpf_owned_initial_readiness(
             gateway_ids=gateway_ids,
             validation_targets=validation_targets,
-            mini_internet_node_prefix=str(args.mini_internet_node_prefix),
             timeout_seconds=float(args.initial_runtime_readiness_timeout_seconds),
         )
     return _await_initial_real_runtime_readiness(
@@ -28656,6 +29451,9 @@ def _operational_clean_heartbeat_summary(
     parameter_update_count = 0
     parameter_category_counts: Counter[str] = Counter()
     qdisc_update_count = 0
+    qdisc_command_count = 0
+    qdisc_sub_update_count = 0
+    qdisc_batch_command_count = 0
     qdisc_target_group_count = 0
     for record in parameter_records:
         if bool(record.get("noop_skipped")):
@@ -28668,6 +29466,11 @@ def _operational_clean_heartbeat_summary(
             ).items():
                 parameter_category_counts[str(category)] += int(count or 0)
             qdisc_update_count += int(accounting.get("applied_qdisc_required_count") or 0)
+            qdisc_command_count += int(accounting.get("qdisc_command_count") or 0)
+            qdisc_sub_update_count += int(accounting.get("qdisc_sub_update_count") or 0)
+            qdisc_batch_command_count += int(
+                accounting.get("qdisc_batch_command_count") or 0
+            )
             qdisc_target_group_count += int(accounting.get("qdisc_target_group_count") or 0)
             continue
         update_results = [
@@ -28683,6 +29486,30 @@ def _operational_clean_heartbeat_summary(
             for result in update_results
             if result.get("qdisc_required") is True
             or float(result.get("qdisc_apply_wall_seconds") or 0.0) > 0.0
+        )
+        qdisc_command_count += sum(
+            int(
+                result.get("qdisc_shell_command_count")
+                if result.get("qdisc_shell_command_count") is not None
+                else result.get("qdisc_apply_attempt_count")
+                if result.get("qdisc_apply_attempt_count") is not None
+                else 0
+            )
+            for result in update_results
+        )
+        qdisc_sub_update_count += sum(
+            int(
+                result.get("qdisc_sub_update_count")
+                if result.get("qdisc_sub_update_count") is not None
+                else result.get("qdisc_apply_attempt_count")
+                if result.get("qdisc_apply_attempt_count") is not None
+                else 0
+            )
+            for result in update_results
+        )
+        qdisc_batch_command_count += sum(
+            int(result.get("qdisc_batch_command_count") or 0)
+            for result in update_results
         )
     run_start_monotonic = float(
         progress_data.get("run_wall_start_monotonic", now_monotonic)
@@ -28731,6 +29558,9 @@ def _operational_clean_heartbeat_summary(
         "parameter_update_count": parameter_update_count,
         "parameter_category_counts": _counter_to_sorted_dict(parameter_category_counts),
         "qdisc_update_count": qdisc_update_count,
+        "qdisc_command_count": qdisc_command_count,
+        "qdisc_sub_update_count": qdisc_sub_update_count,
+        "qdisc_batch_command_count": qdisc_batch_command_count,
         "qdisc_target_group_count": qdisc_target_group_count,
         "attach_summary": {
             **attach_counts,
@@ -28740,6 +29570,38 @@ def _operational_clean_heartbeat_summary(
         "resource_signal": {
             "epoch_detail_record_count": len(records),
             "latest_phase": progress_data.get("current_phase"),
+        },
+    }
+
+
+def _operational_clean_progress_heartbeat_summary(
+    *,
+    progress_data: Mapping[str, Any],
+    now_monotonic: float,
+) -> Dict[str, Any]:
+    run_start_monotonic = float(
+        progress_data.get("run_wall_start_monotonic", now_monotonic)
+    )
+    return {
+        "schema_version": "skyseed-operational-clean-progress-heartbeat-v1",
+        "source": "in_memory_progress_state",
+        "elapsed_seconds": round(max(0.0, now_monotonic - run_start_monotonic), 6),
+        "event_timeline_time": _safe_dict(progress_data.get("current_epoch_context")),
+        "runtime_transaction_success_count": int(
+            progress_data.get("runtime_epochs_completed") or 0
+        ),
+        "runtime_transaction_failure_count": 0,
+        "parameter_update_batch_success_count": int(
+            progress_data.get("parameter_epochs_completed") or 0
+        ),
+        "parameter_update_batch_failure_count": 0,
+        "fallback_count": 0,
+        "linux_gz_fallback_command_count": 0,
+        "eligible_core_fallback_to_linux": 0,
+        "resource_signal": {
+            "epoch_detail_record_count": None,
+            "latest_phase": progress_data.get("current_phase"),
+            "detail_jsonl_rescan_skipped": True,
         },
     }
 
@@ -28764,11 +29626,21 @@ def _runtime_progress_snapshot(
     )
     seconds_in_phase = max(0.0, now_monotonic - phase_started_monotonic)
     seconds_since_progress = max(0.0, now_monotonic - last_progress_monotonic)
-    operational_heartbeat = _operational_clean_heartbeat_summary(
-        run_dir=run_dir,
-        progress_data=data,
-        now_monotonic=now_monotonic,
-    )
+    if _is_operational_clean_bpf_owned_args(args):
+        operational_heartbeat = _operational_clean_progress_heartbeat_summary(
+            progress_data=data,
+            now_monotonic=now_monotonic,
+        )
+        direct_backend_host_interface_count = None
+    else:
+        operational_heartbeat = _operational_clean_heartbeat_summary(
+            run_dir=run_dir,
+            progress_data=data,
+            now_monotonic=now_monotonic,
+        )
+        direct_backend_host_interface_count = len(
+            list(direct_backend_host_artifacts_report().get("interfaces", []))
+        )
     return {
         "run_id": data.get("run_id"),
         "run_mode": data.get("run_mode"),
@@ -28793,9 +29665,7 @@ def _runtime_progress_snapshot(
         "host_resources": _host_resource_snapshot(run_dir=run_dir),
         "child_processes": _child_process_snapshots(parent_pid=os.getpid()),
         "docker_runtime": _docker_runtime_snapshot(),
-        "direct_backend_host_interface_count": len(
-            list(direct_backend_host_artifacts_report().get("interfaces", []))
-        ),
+        "direct_backend_host_interface_count": direct_backend_host_interface_count,
         "heartbeat_utc": _timestamp_utc(),
     }
 

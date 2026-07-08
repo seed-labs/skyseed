@@ -6,12 +6,14 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import contextlib
 import hashlib
 import io
 import json
 import shlex
 import subprocess
+import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -336,6 +338,13 @@ def _summarize_operation_results(results: Sequence[Dict[str, Any]]) -> Dict[str,
     slot_type_counts: Dict[str, int] = {}
     per_slot_type_wall_seconds: Dict[str, float] = {}
     total_wall_seconds = 0.0
+    qdisc_wall_seconds = 0.0
+    qdisc_command_count = 0
+    qdisc_sub_update_count = 0
+    qdisc_batch_command_count = 0
+    qdisc_batch_sub_update_count = 0
+    qdisc_replace_sub_update_count = 0
+    qdisc_delete_sub_update_count = 0
     for result in results:
         operation_name = str(result.get("operation"))
         wall_seconds = float(result.get("wall_seconds", 0.0))
@@ -351,6 +360,31 @@ def _summarize_operation_results(results: Sequence[Dict[str, Any]]) -> Dict[str,
             per_slot_type_wall_seconds.get(slot_type_name, 0.0) + wall_seconds
         )
         total_wall_seconds += wall_seconds
+        result_qdisc_wall = float(result.get("qdisc_apply_wall_seconds") or 0.0)
+        legacy_attempt_count = int(result.get("qdisc_apply_attempt_count") or 0)
+        result_shell_count = int(
+            result.get("qdisc_shell_command_count")
+            if result.get("qdisc_shell_command_count") is not None
+            else legacy_attempt_count
+        )
+        result_sub_update_count = int(
+            result.get("qdisc_sub_update_count")
+            if result.get("qdisc_sub_update_count") is not None
+            else legacy_attempt_count
+        )
+        qdisc_wall_seconds += result_qdisc_wall
+        qdisc_command_count += result_shell_count
+        qdisc_sub_update_count += result_sub_update_count
+        qdisc_batch_command_count += int(result.get("qdisc_batch_command_count") or 0)
+        qdisc_batch_sub_update_count += int(
+            result.get("qdisc_batch_sub_update_count") or 0
+        )
+        qdisc_replace_sub_update_count += int(
+            result.get("qdisc_replace_sub_update_count") or 0
+        )
+        qdisc_delete_sub_update_count += int(
+            result.get("qdisc_delete_sub_update_count") or 0
+        )
     return {
         "operation_count": len(results),
         "operation_counts": operation_counts,
@@ -365,6 +399,14 @@ def _summarize_operation_results(results: Sequence[Dict[str, Any]]) -> Dict[str,
             for name, seconds in sorted(per_slot_type_wall_seconds.items())
         },
         "total_wall_seconds": round(total_wall_seconds, 3),
+        "qdisc_wall_seconds": round(qdisc_wall_seconds, 6),
+        "qdisc_command_count": qdisc_command_count,
+        "qdisc_sub_update_count": qdisc_sub_update_count,
+        "qdisc_batch_command_count": qdisc_batch_command_count,
+        "qdisc_batch_sub_update_count": qdisc_batch_sub_update_count,
+        "qdisc_batch_used": qdisc_batch_command_count > 0,
+        "qdisc_replace_sub_update_count": qdisc_replace_sub_update_count,
+        "qdisc_delete_sub_update_count": qdisc_delete_sub_update_count,
     }
 
 
@@ -692,6 +734,8 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
     execution_transport = "direct_linux_netns_veth_qdisc"
     supports_bounded_parallelism = True
     supports_batched_link_state_persist = True
+    supports_qdisc_parameter_batch = True
+    supports_qdisc_operation_group_batch = True
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
@@ -2730,6 +2774,250 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
         self._qdisc_runtime_args_by_interface.pop(interface_name, None)
         self._record_qdisc_lifecycle(f"qdisc_delete_mode:{lifecycle_mode}")
 
+    def _empty_qdisc_batch_summary(self, *, lifecycle_mode: str) -> Dict[str, Any]:
+        return {
+            "qdisc_batch_used": False,
+            "qdisc_shell_command_count": 0,
+            "qdisc_batch_command_count": 0,
+            "qdisc_sub_update_count": 0,
+            "qdisc_batch_sub_update_count": 0,
+            "qdisc_replace_sub_update_count": 0,
+            "qdisc_delete_sub_update_count": 0,
+            "qdisc_apply_skipped_unchanged_count": 0,
+            "qdisc_apply_wall_seconds": 0.0,
+            "qdisc_lifecycle_mode": str(lifecycle_mode),
+        }
+
+    def _merge_qdisc_batch_summaries(
+        self,
+        *summaries: Mapping[str, Any] | None,
+    ) -> Dict[str, Any]:
+        merged = self._empty_qdisc_batch_summary(lifecycle_mode="")
+        lifecycle_modes: List[str] = []
+        for summary_any in summaries:
+            if not summary_any:
+                continue
+            summary = dict(summary_any)
+            merged["qdisc_batch_used"] = bool(
+                merged["qdisc_batch_used"] or summary.get("qdisc_batch_used")
+            )
+            for key in (
+                "qdisc_shell_command_count",
+                "qdisc_batch_command_count",
+                "qdisc_sub_update_count",
+                "qdisc_batch_sub_update_count",
+                "qdisc_replace_sub_update_count",
+                "qdisc_delete_sub_update_count",
+                "qdisc_apply_skipped_unchanged_count",
+            ):
+                merged[key] = int(merged.get(key) or 0) + int(summary.get(key) or 0)
+            merged["qdisc_apply_wall_seconds"] = round(
+                float(merged.get("qdisc_apply_wall_seconds") or 0.0)
+                + float(summary.get("qdisc_apply_wall_seconds") or 0.0),
+                6,
+            )
+            lifecycle_mode = str(summary.get("qdisc_lifecycle_mode") or "").strip()
+            if lifecycle_mode:
+                lifecycle_modes.append(lifecycle_mode)
+        merged["qdisc_lifecycle_mode"] = "+".join(lifecycle_modes)
+        return merged
+
+    def _run_qdisc_batch(
+        self,
+        *,
+        sub_updates: Sequence[Dict[str, Any]],
+        lifecycle_mode: str,
+    ) -> Dict[str, Any]:
+        updates = [dict(update) for update in sub_updates]
+        if not updates:
+            return self._empty_qdisc_batch_summary(lifecycle_mode=lifecycle_mode)
+        batch_file_path: Path | None = None
+        started_at = time.perf_counter()
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                prefix="skyseed-qdisc-batch-",
+                suffix=".tc",
+                delete=False,
+            ) as batch_file:
+                batch_file_path = Path(batch_file.name)
+                for update in updates:
+                    parts = [str(part) for part in update.get("tc_args", [])]
+                    batch_file.write(shlex.join(parts))
+                    batch_file.write("\n")
+            self._run_command(
+                ["sudo", "-n", "tc", "-batch", str(batch_file_path)]
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._record_qdisc_lifecycle("qdisc_batch_failure_count")
+            failure_payload = {
+                "batch_file": str(batch_file_path or ""),
+                "sub_update_count": len(updates),
+                "lifecycle_mode": str(lifecycle_mode),
+                "error": str(exc),
+            }
+            raise NetworkMutationExecutionError(
+                "QDISC_BATCH_EXECUTION_FAILED:"
+                + json.dumps(failure_payload, sort_keys=True)
+            ) from exc
+        else:
+            if batch_file_path is not None:
+                try:
+                    batch_file_path.unlink()
+                except OSError:
+                    pass
+        wall_seconds = time.perf_counter() - started_at
+        replace_count = sum(1 for update in updates if update.get("action") == "replace")
+        delete_count = sum(1 for update in updates if update.get("action") == "delete")
+        self._record_qdisc_lifecycle("qdisc_batch_command_count")
+        self._record_qdisc_lifecycle("qdisc_batch_sub_update_count", len(updates))
+        if replace_count:
+            self._record_qdisc_lifecycle(
+                "qdisc_batch_replace_sub_update_count",
+                replace_count,
+            )
+        if delete_count:
+            self._record_qdisc_lifecycle(
+                "qdisc_batch_delete_sub_update_count",
+                delete_count,
+            )
+        return {
+            "qdisc_batch_used": True,
+            "qdisc_shell_command_count": 1,
+            "qdisc_batch_command_count": 1,
+            "qdisc_sub_update_count": len(updates),
+            "qdisc_batch_sub_update_count": len(updates),
+            "qdisc_replace_sub_update_count": replace_count,
+            "qdisc_delete_sub_update_count": delete_count,
+            "qdisc_apply_skipped_unchanged_count": 0,
+            "qdisc_apply_wall_seconds": round(wall_seconds, 6),
+            "qdisc_lifecycle_mode": str(lifecycle_mode),
+        }
+
+    def _qdisc_replace_sub_update(
+        self,
+        *,
+        interface_name: str,
+        runtime_parameters: Dict[str, Any],
+    ) -> tuple[Dict[str, Any] | None, tuple[str, ...] | None]:
+        netem_args = self._runtime_parameter_netem_args(runtime_parameters)
+        if not netem_args:
+            return {
+                "action": "delete",
+                "interface_name": str(interface_name),
+                "tc_args": ["qdisc", "del", "dev", str(interface_name), "root"],
+                "normalized_args": None,
+            }, None
+        normalized_args = tuple(str(arg) for arg in netem_args)
+        if self._qdisc_runtime_args_by_interface.get(interface_name) == normalized_args:
+            return None, normalized_args
+        return {
+            "action": "replace",
+            "interface_name": str(interface_name),
+            "tc_args": [
+                "qdisc",
+                "replace",
+                "dev",
+                str(interface_name),
+                "root",
+                "netem",
+                *netem_args,
+            ],
+            "normalized_args": normalized_args,
+        }, normalized_args
+
+    def _qdisc_delete_sub_update(self, *, interface_name: str) -> Dict[str, Any]:
+        return {
+            "action": "delete",
+            "interface_name": str(interface_name),
+            "tc_args": ["qdisc", "del", "dev", str(interface_name), "root"],
+            "normalized_args": None,
+        }
+
+    def _commit_qdisc_sub_updates(
+        self,
+        *,
+        sub_updates: Sequence[Dict[str, Any]],
+        lifecycle_mode: str,
+    ) -> Dict[str, Any]:
+        summary = self._run_qdisc_batch(
+            sub_updates=sub_updates,
+            lifecycle_mode=lifecycle_mode,
+        )
+        for update in sub_updates:
+            interface_name = str(update.get("interface_name"))
+            if update.get("action") == "delete":
+                self._qdisc_runtime_args_by_interface.pop(interface_name, None)
+                self._record_qdisc_lifecycle(f"qdisc_delete_mode:{lifecycle_mode}")
+                continue
+            normalized_args = update.get("normalized_args")
+            if normalized_args is not None:
+                self._qdisc_runtime_args_by_interface[interface_name] = tuple(
+                    str(arg) for arg in normalized_args
+                )
+        return summary
+
+    def _apply_qdisc_replacements_batch(
+        self,
+        *,
+        interface_names: Sequence[str],
+        runtime_parameters: Dict[str, Any],
+        lifecycle_mode: str,
+    ) -> Dict[str, Any]:
+        sub_updates: List[Dict[str, Any]] = []
+        skipped_unchanged = 0
+        for interface_name_any in interface_names:
+            interface_name = str(interface_name_any)
+            update, _normalized_args = self._qdisc_replace_sub_update(
+                interface_name=interface_name,
+                runtime_parameters=runtime_parameters,
+            )
+            if update is None:
+                skipped_unchanged += 1
+                self._record_qdisc_lifecycle("qdisc_replace_skipped_unchanged")
+                self._record_qdisc_lifecycle(
+                    f"qdisc_replace_skip_mode:{lifecycle_mode}"
+                )
+                continue
+            if update.get("action") == "delete":
+                self._record_qdisc_lifecycle("qdisc_delete_attempted")
+            else:
+                self._record_qdisc_lifecycle("qdisc_replace_count")
+            sub_updates.append(update)
+        summary = self._commit_qdisc_sub_updates(
+            sub_updates=sub_updates,
+            lifecycle_mode=lifecycle_mode,
+        )
+        summary["qdisc_apply_skipped_unchanged_count"] = skipped_unchanged
+        return summary
+
+    def _clear_qdiscs_batch(
+        self,
+        interface_names: Sequence[str],
+        *,
+        lifecycle_mode: str,
+        skip_no_residue: bool = False,
+    ) -> Dict[str, Any]:
+        if skip_no_residue:
+            skipped = len(list(interface_names))
+            self._record_qdisc_lifecycle("qdisc_delete_skipped_no_residue", skipped)
+            for interface_name in interface_names:
+                self._qdisc_runtime_args_by_interface.pop(str(interface_name), None)
+            summary = self._empty_qdisc_batch_summary(lifecycle_mode=lifecycle_mode)
+            summary["qdisc_delete_skipped_no_residue_count"] = skipped
+            return summary
+        sub_updates = []
+        for interface_name_any in interface_names:
+            interface_name = str(interface_name_any)
+            self._record_qdisc_lifecycle("qdisc_delete_attempted")
+            sub_updates.append(self._qdisc_delete_sub_update(interface_name=interface_name))
+        summary = self._commit_qdisc_sub_updates(
+            sub_updates=sub_updates,
+            lifecycle_mode=lifecycle_mode,
+        )
+        return summary
+
     def _apply_qdisc(
         self,
         *,
@@ -2808,7 +3096,8 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
         runtime_parameters: Dict[str, Any],
         lifecycle_mode: str = "normal_runtime_update",
         probe: bool = True,
-    ) -> None:
+        apply_qdisc: bool = True,
+    ) -> Dict[str, Any]:
         self._ensure_resource_prepared(slot=slot, resource=resource)
         bridge_name = self._bridge_name(str(slot.get("slot_name")))
         for endpoint in resource.get("endpoints", []):
@@ -2838,14 +3127,22 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
                     ),
                 ],
             )
-        for interface_name in self._participant_host_interfaces(slot=slot, resource=resource):
-            self._apply_qdisc(
-                interface_name=interface_name,
+        if apply_qdisc:
+            qdisc_summary = self._apply_qdisc_replacements_batch(
+                interface_names=self._participant_host_interfaces(
+                    slot=slot,
+                    resource=resource,
+                ),
                 runtime_parameters=runtime_parameters,
                 lifecycle_mode=lifecycle_mode,
             )
+        else:
+            qdisc_summary = self._empty_qdisc_batch_summary(
+                lifecycle_mode=lifecycle_mode
+            )
         if probe:
             self._probe_activated_resource(slot=slot, resource=resource)
+        return qdisc_summary
 
     def _probe_activated_resource(
         self,
@@ -2906,14 +3203,19 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
         lifecycle_mode: str = "normal_runtime_update",
         skip_qdisc_no_residue: bool = False,
         skip_link_no_residue: bool = False,
-    ) -> None:
+        apply_qdisc: bool = True,
+    ) -> Dict[str, Any]:
         host_interfaces = self._participant_host_interfaces(slot=slot, resource=resource)
         endpoints = list(resource.get("endpoints", []))
-        for interface_name in host_interfaces:
-            self._clear_qdisc(
-                interface_name,
+        if apply_qdisc:
+            qdisc_summary = self._clear_qdiscs_batch(
+                host_interfaces,
                 lifecycle_mode=lifecycle_mode,
                 skip_no_residue=skip_qdisc_no_residue,
+            )
+        else:
+            qdisc_summary = self._empty_qdisc_batch_summary(
+                lifecycle_mode=lifecycle_mode
             )
         if skip_link_no_residue:
             self._record_deactivate_lifecycle(
@@ -2922,7 +3224,7 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
                 endpoint_count=len(endpoints),
                 host_interface_count=len(host_interfaces),
             )
-            return
+            return qdisc_summary
         self._record_deactivate_lifecycle(
             lifecycle_mode,
             endpoint_count=len(endpoints),
@@ -2954,6 +3256,7 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
                 ],
                 allow_failure=True,
             )
+        return qdisc_summary
 
     def _deactivate_all_resources(
         self,
@@ -2962,15 +3265,19 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
         lifecycle_mode: str = "normal_runtime_update",
         skip_qdisc_no_residue: bool = False,
         skip_link_no_residue: bool = False,
-    ) -> None:
+    ) -> Dict[str, Any]:
+        summaries: List[Dict[str, Any]] = []
         for resource in self._candidate_resources(slot).values():
-            self._deactivate_resource(
-                slot=slot,
-                resource=resource,
-                lifecycle_mode=lifecycle_mode,
-                skip_qdisc_no_residue=skip_qdisc_no_residue,
-                skip_link_no_residue=skip_link_no_residue,
+            summaries.append(
+                self._deactivate_resource(
+                    slot=slot,
+                    resource=resource,
+                    lifecycle_mode=lifecycle_mode,
+                    skip_qdisc_no_residue=skip_qdisc_no_residue,
+                    skip_link_no_residue=skip_link_no_residue,
+                )
             )
+        return self._merge_qdisc_batch_summaries(*summaries)
 
     def _dynamic_endpoints_for_binding(
         self,
@@ -3085,45 +3392,65 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
         metadata_update_wall_seconds = 0.0
         qdisc_apply_attempt_count = 0
         qdisc_apply_skipped_unchanged_count = 0
+        qdisc_summary = self._empty_qdisc_batch_summary(lifecycle_mode="")
         qdisc_required = runtime_parameter_update_requires_qdisc(operation)
         if operation_name == "update_slot_parameters":
             if target_binding and qdisc_required:
                 target_resource = self._resource_for_binding(slot=slot, binding=target_binding)
-                qdisc_started_at = time.perf_counter()
-                for interface_name in self._participant_host_interfaces(
-                    slot=slot,
-                    resource=target_resource,
-                ):
-                    qdisc_changed = self._apply_qdisc(
-                        interface_name=interface_name,
-                        runtime_parameters=qdisc_runtime_parameters,
-                        lifecycle_mode="parameter_only_update",
-                    )
-                    if qdisc_changed:
-                        qdisc_apply_attempt_count += 1
-                    else:
-                        qdisc_apply_skipped_unchanged_count += 1
-                qdisc_apply_wall_seconds = time.perf_counter() - qdisc_started_at
+                qdisc_summary = self._apply_qdisc_replacements_batch(
+                    interface_names=self._participant_host_interfaces(
+                        slot=slot,
+                        resource=target_resource,
+                    ),
+                    runtime_parameters=qdisc_runtime_parameters,
+                    lifecycle_mode="parameter_only_update",
+                )
+                qdisc_apply_wall_seconds = float(
+                    qdisc_summary.get("qdisc_apply_wall_seconds") or 0.0
+                )
+                qdisc_apply_attempt_count = int(
+                    qdisc_summary.get("qdisc_sub_update_count") or 0
+                )
+                qdisc_apply_skipped_unchanged_count = int(
+                    qdisc_summary.get("qdisc_apply_skipped_unchanged_count") or 0
+                )
         else:
+            qdisc_summaries: List[Dict[str, Any]] = []
             if operation_name in {"deactivate_slot_attachment", "rebind_slot_attachment"}:
                 if source_binding:
                     source_resource = self._resource_for_binding(
                         slot=slot,
                         binding=source_binding,
                     )
-                    self._deactivate_resource(slot=slot, resource=source_resource)
+                    qdisc_summaries.append(
+                        self._deactivate_resource(
+                            slot=slot,
+                            resource=source_resource,
+                        )
+                    )
             if operation_name in {"activate_slot_attachment", "rebind_slot_attachment"}:
                 if target_binding:
                     target_resource = self._resource_for_binding(
                         slot=slot,
                         binding=target_binding,
                     )
-                    self._activate_resource(
-                        slot=slot,
-                        resource=target_resource,
-                        runtime_parameters=target_runtime_parameters,
+                    qdisc_summaries.append(
+                        self._activate_resource(
+                            slot=slot,
+                            resource=target_resource,
+                            runtime_parameters=target_runtime_parameters,
+                        )
                     )
-                qdisc_apply_wall_seconds = time.perf_counter() - started_at
+            qdisc_summary = self._merge_qdisc_batch_summaries(*qdisc_summaries)
+            qdisc_apply_wall_seconds = float(
+                qdisc_summary.get("qdisc_apply_wall_seconds") or 0.0
+            )
+            qdisc_apply_attempt_count = int(
+                qdisc_summary.get("qdisc_sub_update_count") or 0
+            )
+            qdisc_apply_skipped_unchanged_count = int(
+                qdisc_summary.get("qdisc_apply_skipped_unchanged_count") or 0
+            )
         metadata_started_at = time.perf_counter()
         if persist_link_state:
             self._persist_operation_state(
@@ -3148,9 +3475,457 @@ class DirectNetnsVethSlotLinkNamespaceQdiscInstaller:
             "qdisc_apply_wall_seconds": round(qdisc_apply_wall_seconds, 6),
             "qdisc_apply_attempt_count": qdisc_apply_attempt_count,
             "qdisc_apply_skipped_unchanged_count": qdisc_apply_skipped_unchanged_count,
+            "qdisc_shell_command_count": int(
+                qdisc_summary.get("qdisc_shell_command_count") or 0
+            ),
+            "qdisc_sub_update_count": int(
+                qdisc_summary.get("qdisc_sub_update_count") or 0
+            ),
+            "qdisc_batch_command_count": int(
+                qdisc_summary.get("qdisc_batch_command_count") or 0
+            ),
+            "qdisc_batch_sub_update_count": int(
+                qdisc_summary.get("qdisc_batch_sub_update_count") or 0
+            ),
+            "qdisc_batch_used": bool(qdisc_summary.get("qdisc_batch_used")),
+            "qdisc_replace_sub_update_count": int(
+                qdisc_summary.get("qdisc_replace_sub_update_count") or 0
+            ),
+            "qdisc_delete_sub_update_count": int(
+                qdisc_summary.get("qdisc_delete_sub_update_count") or 0
+            ),
             "metadata_update_wall_seconds": round(metadata_update_wall_seconds, 6),
             "controller_stdout": "",
         }
+
+    def apply_operation_group(
+        self,
+        *,
+        controller: DirectHostRuntimeContext,
+        link_state_path: Path,
+        operations: Sequence[Dict[str, Any]],
+        state_by_name: Dict[str, Dict[str, Any]] | None = None,
+        persist_link_state: bool = True,
+    ) -> List[Dict[str, Any]]:
+        topology = dict(controller.topology)
+        slot_inventory = self._inventory(topology, Path(controller.topology_path))
+        prepared_results: List[Dict[str, Any]] = []
+        metadata_updates: List[tuple[Dict[str, Any], Dict[str, Any]]] = []
+        delete_updates: List[Dict[str, Any]] = []
+        delete_result_indexes: List[int] = []
+        replace_updates: List[Dict[str, Any]] = []
+        replace_result_indexes: List[int] = []
+        physical_deactivations: List[tuple[Dict[str, Any], Dict[str, Any]]] = []
+        physical_activations: List[tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]] = []
+        activation_probes: List[tuple[Dict[str, Any], Dict[str, Any]]] = []
+        started_at = time.perf_counter()
+
+        def new_result(
+            *,
+            slot: Dict[str, Any],
+            operation: Dict[str, Any],
+            qdisc_required: bool,
+        ) -> Dict[str, Any]:
+            slot_name = str(operation.get("slot_name"))
+            slot_outcome = _slot_outcome_from_operation(slot_name, operation)
+            return {
+                "slot_name": slot_name,
+                "slot_type": str(slot.get("slot_type")),
+                "operation": str(operation.get("operation")),
+                "delta_category": slot_outcome["category"],
+                "change_class": slot_outcome["change_class"],
+                "reused_slot_runtime": slot_outcome["reused"],
+                "resulting_state": _slot_summary(
+                    _state_entry_from_operation(operation, source=False)
+                ),
+                "wall_seconds": 0.0,
+                "qdisc_required": bool(qdisc_required),
+                "qdisc_apply_wall_seconds": 0.0,
+                "qdisc_apply_attempt_count": 0,
+                "qdisc_apply_skipped_unchanged_count": 0,
+                "qdisc_shell_command_count": 0,
+                "qdisc_sub_update_count": 0,
+                "qdisc_batch_command_count": 0,
+                "qdisc_batch_sub_update_count": 0,
+                "qdisc_batch_used": False,
+                "qdisc_replace_sub_update_count": 0,
+                "qdisc_delete_sub_update_count": 0,
+                "metadata_update_wall_seconds": 0.0,
+                "controller_stdout": "",
+                "qdisc_group_batch_stage": "current_epoch_group",
+            }
+
+        def note_update(index: int, update: Dict[str, Any]) -> None:
+            result = prepared_results[index]
+            result["qdisc_sub_update_count"] += 1
+            result["qdisc_apply_attempt_count"] += 1
+            if update.get("action") == "delete":
+                result["qdisc_delete_sub_update_count"] += 1
+            else:
+                result["qdisc_replace_sub_update_count"] += 1
+
+        def assign_batch_summary(
+            *,
+            summary: Mapping[str, Any],
+            indexes: Sequence[int],
+        ) -> None:
+            index_counts = Counter(int(index) for index in indexes)
+            affected = sorted(index_counts)
+            if not affected or not bool(summary.get("qdisc_batch_used")):
+                return
+            first_index = affected[0]
+            prepared_results[first_index]["qdisc_shell_command_count"] += int(
+                summary.get("qdisc_shell_command_count") or 0
+            )
+            prepared_results[first_index]["qdisc_batch_command_count"] += int(
+                summary.get("qdisc_batch_command_count") or 0
+            )
+            prepared_results[first_index]["qdisc_apply_wall_seconds"] = round(
+                float(prepared_results[first_index].get("qdisc_apply_wall_seconds") or 0.0)
+                + float(summary.get("qdisc_apply_wall_seconds") or 0.0),
+                6,
+            )
+            for index in affected:
+                prepared_results[index]["qdisc_batch_used"] = True
+                prepared_results[index]["qdisc_batch_sub_update_count"] += int(
+                    index_counts[index]
+                )
+
+        for operation_any in operations:
+            operation = dict(operation_any)
+            operation_name = str(operation.get("operation"))
+            slot_name = str(operation.get("slot_name"))
+            slot = slot_inventory.get(slot_name)
+            if slot is None:
+                raise RuntimeError(f"missing slot inventory for {slot_name}")
+            source_binding = dict(operation.get("source_binding", {}) or {})
+            target_binding = dict(operation.get("target_binding", {}) or {})
+            target_runtime_parameters = dict(
+                operation.get("target_runtime_parameters", {}) or {}
+            )
+            qdisc_runtime_parameters = dict(
+                operation.get("bpf_owned_host_qdisc_runtime_parameters")
+                or operation.get("host_qdisc_runtime_parameters")
+                or target_runtime_parameters
+            )
+            qdisc_required = runtime_parameter_update_requires_qdisc(operation)
+            result_index = len(prepared_results)
+            prepared_results.append(
+                new_result(
+                    slot=slot,
+                    operation=operation,
+                    qdisc_required=qdisc_required,
+                )
+            )
+            metadata_updates.append((slot, operation))
+
+            if operation_name in {"deactivate_slot_attachment", "rebind_slot_attachment"}:
+                if source_binding:
+                    source_resource = self._resource_for_binding(
+                        slot=slot,
+                        binding=source_binding,
+                    )
+                    physical_deactivations.append((slot, source_resource))
+                    for interface_name_any in self._participant_host_interfaces(
+                        slot=slot,
+                        resource=source_resource,
+                    ):
+                        self._record_qdisc_lifecycle("qdisc_delete_attempted")
+                        update = self._qdisc_delete_sub_update(
+                            interface_name=str(interface_name_any)
+                        )
+                        delete_updates.append(update)
+                        delete_result_indexes.append(result_index)
+                        note_update(result_index, update)
+
+            if operation_name in {"activate_slot_attachment", "rebind_slot_attachment"}:
+                if target_binding:
+                    target_resource = self._resource_for_binding(
+                        slot=slot,
+                        binding=target_binding,
+                    )
+                    physical_activations.append(
+                        (slot, target_resource, target_runtime_parameters)
+                    )
+                    activation_probes.append((slot, target_resource))
+                    for interface_name_any in self._participant_host_interfaces(
+                        slot=slot,
+                        resource=target_resource,
+                    ):
+                        update, _normalized_args = self._qdisc_replace_sub_update(
+                            interface_name=str(interface_name_any),
+                            runtime_parameters=target_runtime_parameters,
+                        )
+                        if update is None:
+                            prepared_results[result_index][
+                                "qdisc_apply_skipped_unchanged_count"
+                            ] += 1
+                            self._record_qdisc_lifecycle("qdisc_replace_skipped_unchanged")
+                            self._record_qdisc_lifecycle(
+                                "qdisc_replace_skip_mode:epoch_structural_replace"
+                            )
+                            continue
+                        if update.get("action") == "delete":
+                            self._record_qdisc_lifecycle("qdisc_delete_attempted")
+                        else:
+                            self._record_qdisc_lifecycle("qdisc_replace_count")
+                        replace_updates.append(update)
+                        replace_result_indexes.append(result_index)
+                        note_update(result_index, update)
+
+            if operation_name == "update_slot_parameters":
+                if target_binding and qdisc_required:
+                    target_resource = self._resource_for_binding(
+                        slot=slot,
+                        binding=target_binding,
+                    )
+                    for interface_name_any in self._participant_host_interfaces(
+                        slot=slot,
+                        resource=target_resource,
+                    ):
+                        update, _normalized_args = self._qdisc_replace_sub_update(
+                            interface_name=str(interface_name_any),
+                            runtime_parameters=qdisc_runtime_parameters,
+                        )
+                        if update is None:
+                            prepared_results[result_index][
+                                "qdisc_apply_skipped_unchanged_count"
+                            ] += 1
+                            self._record_qdisc_lifecycle("qdisc_replace_skipped_unchanged")
+                            self._record_qdisc_lifecycle(
+                                "qdisc_replace_skip_mode:epoch_parameter_replace"
+                            )
+                            continue
+                        if update.get("action") == "delete":
+                            self._record_qdisc_lifecycle("qdisc_delete_attempted")
+                        else:
+                            self._record_qdisc_lifecycle("qdisc_replace_count")
+                        replace_updates.append(update)
+                        replace_result_indexes.append(result_index)
+                        note_update(result_index, update)
+
+        delete_summary = self._commit_qdisc_sub_updates(
+            sub_updates=delete_updates,
+            lifecycle_mode="epoch_structural_delete",
+        )
+        assign_batch_summary(summary=delete_summary, indexes=delete_result_indexes)
+
+        for slot, resource in physical_deactivations:
+            self._deactivate_resource(
+                slot=slot,
+                resource=resource,
+                lifecycle_mode="epoch_structural_physical",
+                apply_qdisc=False,
+            )
+        for slot, resource, runtime_parameters in physical_activations:
+            self._activate_resource(
+                slot=slot,
+                resource=resource,
+                runtime_parameters=runtime_parameters,
+                lifecycle_mode="epoch_structural_physical",
+                probe=False,
+                apply_qdisc=False,
+            )
+
+        replace_summary = self._commit_qdisc_sub_updates(
+            sub_updates=replace_updates,
+            lifecycle_mode="epoch_structural_replace",
+        )
+        assign_batch_summary(summary=replace_summary, indexes=replace_result_indexes)
+
+        for slot, resource in activation_probes:
+            self._probe_activated_resource(slot=slot, resource=resource)
+
+        metadata_started_at = time.perf_counter()
+        if persist_link_state:
+            for slot, operation in metadata_updates:
+                self._persist_operation_state(
+                    link_state_path=link_state_path,
+                    slot=slot,
+                    operation=operation,
+                )
+        metadata_wall = time.perf_counter() - metadata_started_at
+        metadata_wall_per_result = (
+            round(metadata_wall / len(prepared_results), 6)
+            if persist_link_state and prepared_results
+            else 0.0
+        )
+        for result, (_slot, operation) in zip(prepared_results, metadata_updates):
+            slot_name = str(operation.get("slot_name"))
+            if state_by_name is not None:
+                state_by_name[slot_name] = _state_entry_from_operation(
+                    operation,
+                    source=False,
+                )
+            result["metadata_update_wall_seconds"] = metadata_wall_per_result
+            result["wall_seconds"] = round(time.perf_counter() - started_at, 3)
+        return prepared_results
+
+    def apply_parameter_update_operations(
+        self,
+        *,
+        controller: DirectHostRuntimeContext,
+        link_state_path: Path,
+        operations: Sequence[Dict[str, Any]],
+        state_by_name: Dict[str, Dict[str, Any]] | None = None,
+        persist_link_state: bool = True,
+    ) -> List[Dict[str, Any]]:
+        topology = dict(controller.topology)
+        slot_inventory = self._inventory(topology, Path(controller.topology_path))
+        prepared_results: List[Dict[str, Any]] = []
+        sub_updates: List[Dict[str, Any]] = []
+        sub_update_result_indexes: List[int] = []
+        metadata_updates: List[tuple[Dict[str, Any], Dict[str, Any]]] = []
+        started_at = time.perf_counter()
+        for operation_any in operations:
+            operation = dict(operation_any)
+            operation_name = str(operation.get("operation"))
+            if operation_name != "update_slot_parameters":
+                raise NetworkMutationExecutionError(
+                    "qdisc_parameter_batch_requires_update_slot_parameters_only"
+                )
+            slot_name = str(operation.get("slot_name"))
+            slot = slot_inventory.get(slot_name)
+            if slot is None:
+                raise RuntimeError(f"missing slot inventory for {slot_name}")
+            slot_type = str(slot.get("slot_type"))
+            target_binding = dict(operation.get("target_binding", {}) or {})
+            target_runtime_parameters = dict(
+                operation.get("target_runtime_parameters", {}) or {}
+            )
+            qdisc_runtime_parameters = dict(
+                operation.get("bpf_owned_host_qdisc_runtime_parameters")
+                or operation.get("host_qdisc_runtime_parameters")
+                or target_runtime_parameters
+            )
+            qdisc_required = runtime_parameter_update_requires_qdisc(operation)
+            slot_outcome = _slot_outcome_from_operation(slot_name, operation)
+            result_index = len(prepared_results)
+            result = {
+                "slot_name": slot_name,
+                "slot_type": slot_type,
+                "operation": operation_name,
+                "delta_category": slot_outcome["category"],
+                "change_class": slot_outcome["change_class"],
+                "reused_slot_runtime": slot_outcome["reused"],
+                "resulting_state": _slot_summary(
+                    _state_entry_from_operation(operation, source=False)
+                ),
+                "wall_seconds": 0.0,
+                "qdisc_required": bool(qdisc_required),
+                "qdisc_apply_wall_seconds": 0.0,
+                "qdisc_apply_attempt_count": 0,
+                "qdisc_apply_skipped_unchanged_count": 0,
+                "qdisc_shell_command_count": 0,
+                "qdisc_sub_update_count": 0,
+                "qdisc_batch_command_count": 0,
+                "qdisc_batch_sub_update_count": 0,
+                "qdisc_batch_used": False,
+                "qdisc_replace_sub_update_count": 0,
+                "qdisc_delete_sub_update_count": 0,
+                "metadata_update_wall_seconds": 0.0,
+                "controller_stdout": "",
+            }
+            prepared_results.append(result)
+            metadata_updates.append((slot, operation))
+            if not target_binding or not qdisc_required:
+                continue
+            target_resource = self._resource_for_binding(slot=slot, binding=target_binding)
+            for interface_name_any in self._participant_host_interfaces(
+                slot=slot,
+                resource=target_resource,
+            ):
+                interface_name = str(interface_name_any)
+                update, _normalized_args = self._qdisc_replace_sub_update(
+                    interface_name=interface_name,
+                    runtime_parameters=qdisc_runtime_parameters,
+                )
+                if update is None:
+                    prepared_results[result_index][
+                        "qdisc_apply_skipped_unchanged_count"
+                    ] += 1
+                    self._record_qdisc_lifecycle("qdisc_replace_skipped_unchanged")
+                    self._record_qdisc_lifecycle(
+                        "qdisc_replace_skip_mode:parameter_only_update"
+                    )
+                    continue
+                if update.get("action") == "delete":
+                    self._record_qdisc_lifecycle("qdisc_delete_attempted")
+                else:
+                    self._record_qdisc_lifecycle("qdisc_replace_count")
+                sub_updates.append(update)
+                sub_update_result_indexes.append(result_index)
+                prepared_results[result_index]["qdisc_sub_update_count"] += 1
+                prepared_results[result_index]["qdisc_apply_attempt_count"] += 1
+                if update.get("action") == "delete":
+                    prepared_results[result_index][
+                        "qdisc_delete_sub_update_count"
+                    ] += 1
+                else:
+                    prepared_results[result_index][
+                        "qdisc_replace_sub_update_count"
+                    ] += 1
+
+        qdisc_summary = self._run_qdisc_batch(
+            sub_updates=sub_updates,
+            lifecycle_mode="parameter_only_update",
+        )
+        for update in sub_updates:
+            interface_name = str(update.get("interface_name"))
+            if update.get("action") == "delete":
+                self._qdisc_runtime_args_by_interface.pop(interface_name, None)
+                self._record_qdisc_lifecycle(
+                    "qdisc_delete_mode:parameter_only_update"
+                )
+            else:
+                normalized_args = update.get("normalized_args")
+                if normalized_args is not None:
+                    self._qdisc_runtime_args_by_interface[interface_name] = tuple(
+                        str(arg) for arg in normalized_args
+                    )
+        if sub_update_result_indexes:
+            first_index = sub_update_result_indexes[0]
+            prepared_results[first_index]["qdisc_shell_command_count"] = int(
+                qdisc_summary.get("qdisc_shell_command_count") or 0
+            )
+            prepared_results[first_index]["qdisc_batch_command_count"] = int(
+                qdisc_summary.get("qdisc_batch_command_count") or 0
+            )
+            prepared_results[first_index]["qdisc_apply_wall_seconds"] = round(
+                float(qdisc_summary.get("qdisc_apply_wall_seconds") or 0.0),
+                6,
+            )
+        if bool(qdisc_summary.get("qdisc_batch_used")):
+            for index in sorted(set(sub_update_result_indexes)):
+                prepared_results[index]["qdisc_batch_used"] = True
+                prepared_results[index]["qdisc_batch_sub_update_count"] = int(
+                    prepared_results[index].get("qdisc_sub_update_count") or 0
+                )
+
+        metadata_started_at = time.perf_counter()
+        if persist_link_state:
+            for slot, operation in metadata_updates:
+                self._persist_operation_state(
+                    link_state_path=link_state_path,
+                    slot=slot,
+                    operation=operation,
+                )
+        metadata_wall = time.perf_counter() - metadata_started_at
+        metadata_wall_per_result = (
+            round(metadata_wall / len(prepared_results), 6)
+            if persist_link_state and prepared_results
+            else 0.0
+        )
+        for result, (_slot, operation) in zip(prepared_results, metadata_updates):
+            slot_name = str(operation.get("slot_name"))
+            if state_by_name is not None:
+                state_by_name[slot_name] = _state_entry_from_operation(
+                    operation,
+                    source=False,
+                )
+            result["metadata_update_wall_seconds"] = metadata_wall_per_result
+            result["wall_seconds"] = round(time.perf_counter() - started_at, 3)
+        return prepared_results
 
     def persist_runtime_state(
         self,
@@ -3739,35 +4514,156 @@ class InProcessHostRuntimeManager:
         )
         execution_groups = list(parallelism.get("execution_groups", []))
         group_summaries: List[Dict[str, Any]] = []
+        supports_parameter_qdisc_batch = bool(
+            getattr(self._installer, "supports_qdisc_parameter_batch", False)
+            and hasattr(controller, "topology")
+            and hasattr(controller, "topology_path")
+        )
+        supports_operation_group_qdisc_batch = bool(
+            getattr(self._installer, "supports_qdisc_operation_group_batch", False)
+            and hasattr(self._installer, "apply_operation_group")
+            and hasattr(controller, "topology")
+            and hasattr(controller, "topology_path")
+        )
+
+        def _is_parameter_update_group(group_indexes: Sequence[int]) -> bool:
+            return bool(group_indexes) and all(
+                str(operations[index].get("operation") or "")
+                == "update_slot_parameters"
+                for index in group_indexes
+            )
+
+        def _is_parameter_update_index(index: int) -> bool:
+            return (
+                str(operations[index].get("operation") or "")
+                == "update_slot_parameters"
+            )
+
+        def _apply_parameter_batch_for_indexes(
+            *,
+            group_indexes: Sequence[int],
+            state_by_name: Dict[str, Dict[str, Any]] | None,
+        ) -> Dict[int, Dict[str, Any]]:
+            batch_results = self._installer.apply_parameter_update_operations(
+                controller=controller,
+                link_state_path=link_state_path,
+                operations=[operations[index] for index in group_indexes],
+                state_by_name=state_by_name,
+                persist_link_state=not defer_state_persist,
+            )
+            return {
+                index: result
+                for index, result in zip(group_indexes, batch_results)
+            }
+
+        def _apply_operation_group_for_indexes(
+            *,
+            group_indexes: Sequence[int],
+            state_by_name: Dict[str, Dict[str, Any]] | None,
+        ) -> Dict[int, Dict[str, Any]]:
+            group_results = self._installer.apply_operation_group(
+                controller=controller,
+                link_state_path=link_state_path,
+                operations=[operations[index] for index in group_indexes],
+                state_by_name=state_by_name,
+                persist_link_state=not defer_state_persist,
+            )
+            return {
+                index: result
+                for index, result in zip(group_indexes, group_results)
+            }
+
         if parallelism.get("parallel_execution_used"):
             for group in execution_groups:
                 group_indexes = list(group.get("operation_indexes", []))
                 group_started_at = time.perf_counter()
                 results_by_index: Dict[int, Dict[str, Any]] = {}
                 failures: List[tuple[int, Exception]] = []
-                with ThreadPoolExecutor(
-                    max_workers=min(
-                        int(parallelism.get("effective_workers", 1)),
-                        max(1, len(group_indexes)),
-                    )
-                ) as executor:
-                    future_to_index = {
-                        executor.submit(
-                            self._installer.apply_operation,
+                if supports_operation_group_qdisc_batch:
+                    try:
+                        results_by_index.update(
+                            _apply_operation_group_for_indexes(
+                                group_indexes=group_indexes,
+                                state_by_name=None,
+                            )
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        failure_index = group_indexes[0] if group_indexes else 0
+                        failures.append((failure_index, exc))
+                elif supports_parameter_qdisc_batch and _is_parameter_update_group(
+                    group_indexes
+                ):
+                    try:
+                        batch_results = self._installer.apply_parameter_update_operations(
                             controller=controller,
                             link_state_path=link_state_path,
-                            operation=operations[index],
+                            operations=[operations[index] for index in group_indexes],
                             state_by_name=None,
                             persist_link_state=not defer_state_persist,
-                        ): index
-                        for index in group_indexes
-                    }
-                    for future in as_completed(future_to_index):
-                        index = future_to_index[future]
-                        try:
-                            results_by_index[index] = future.result()
-                        except Exception as exc:  # noqa: BLE001
-                            failures.append((index, exc))
+                        )
+                        for index, result in zip(group_indexes, batch_results):
+                            results_by_index[index] = result
+                    except Exception as exc:  # noqa: BLE001
+                        failure_index = group_indexes[0] if group_indexes else 0
+                        failures.append((failure_index, exc))
+                else:
+                    batch_parameter_indexes: List[int] = []
+                    individual_indexes: List[int] = list(group_indexes)
+                    if supports_parameter_qdisc_batch:
+                        batch_parameter_indexes = [
+                            index
+                            for index in group_indexes
+                            if _is_parameter_update_index(index)
+                        ]
+                        individual_indexes = [
+                            index
+                            for index in group_indexes
+                            if not _is_parameter_update_index(index)
+                        ]
+                    task_count = len(individual_indexes) + (
+                        1 if batch_parameter_indexes else 0
+                    )
+                    with ThreadPoolExecutor(
+                        max_workers=min(
+                            int(parallelism.get("effective_workers", 1)),
+                            max(1, task_count),
+                        )
+                    ) as executor:
+                        batch_futures = {}
+                        if batch_parameter_indexes:
+                            future = executor.submit(
+                                _apply_parameter_batch_for_indexes,
+                                group_indexes=batch_parameter_indexes,
+                                state_by_name=None,
+                            )
+                            batch_futures[future] = list(batch_parameter_indexes)
+                        future_to_index = {
+                            executor.submit(
+                                self._installer.apply_operation,
+                                controller=controller,
+                                link_state_path=link_state_path,
+                                operation=operations[index],
+                                state_by_name=None,
+                                persist_link_state=not defer_state_persist,
+                            ): index
+                            for index in individual_indexes
+                        }
+                        for future in as_completed(
+                            [*future_to_index.keys(), *batch_futures.keys()]
+                        ):
+                            try:
+                                if future in batch_futures:
+                                    results_by_index.update(future.result())
+                                else:
+                                    index = future_to_index[future]
+                                    results_by_index[index] = future.result()
+                            except Exception as exc:  # noqa: BLE001
+                                index = (
+                                    batch_futures[future][0]
+                                    if future in batch_futures
+                                    else future_to_index[future]
+                                )
+                                failures.append((index, exc))
                 group_summaries.append(
                     _parallel_group_summary(
                         group_index=int(group.get("group_index", len(group_summaries))),
@@ -3824,24 +4720,72 @@ class InProcessHostRuntimeManager:
         else:
             group_started_at = time.perf_counter()
             try:
-                for operation in operations:
-                    apply_results.append(
-                        self._installer.apply_operation(
-                            controller=controller,
-                            link_state_path=link_state_path,
-                            operation=operation,
-                            state_by_name=working_state,
-                            persist_link_state=not defer_state_persist,
-                        )
+                if supports_operation_group_qdisc_batch:
+                    batch_results_by_index = _apply_operation_group_for_indexes(
+                        group_indexes=list(range(len(operations))),
+                        state_by_name=working_state,
                     )
-                    applied_operations.append(dict(operation))
+                    for index in range(len(operations)):
+                        apply_results.append(batch_results_by_index[index])
+                        applied_operations.append(dict(operations[index]))
+                elif supports_parameter_qdisc_batch and _is_parameter_update_group(
+                    list(range(len(operations)))
+                ):
+                    batch_results = self._installer.apply_parameter_update_operations(
+                        controller=controller,
+                        link_state_path=link_state_path,
+                        operations=operations,
+                        state_by_name=working_state,
+                        persist_link_state=not defer_state_persist,
+                    )
+                    apply_results.extend(batch_results)
+                    applied_operations.extend(dict(operation) for operation in operations)
+                else:
+                    index = 0
+                    while index < len(operations):
+                        if (
+                            supports_parameter_qdisc_batch
+                            and _is_parameter_update_index(index)
+                        ):
+                            batch_indexes: List[int] = []
+                            while index < len(operations) and _is_parameter_update_index(
+                                index
+                            ):
+                                batch_indexes.append(index)
+                                index += 1
+                            batch_results_by_index = _apply_parameter_batch_for_indexes(
+                                group_indexes=batch_indexes,
+                                state_by_name=working_state,
+                            )
+                            for batch_index in batch_indexes:
+                                apply_results.append(batch_results_by_index[batch_index])
+                                applied_operations.append(dict(operations[batch_index]))
+                            continue
+                        operation = operations[index]
+                        apply_results.append(
+                            self._installer.apply_operation(
+                                controller=controller,
+                                link_state_path=link_state_path,
+                                operation=operation,
+                                state_by_name=working_state,
+                                persist_link_state=not defer_state_persist,
+                            )
+                        )
+                        applied_operations.append(dict(operation))
+                        index += 1
             except Exception as exc:  # noqa: BLE001
+                failed_index = min(len(applied_operations), max(0, len(operations) - 1))
+                failed_operation = (
+                    operations[failed_index] if operations else {"operation": "unknown"}
+                )
                 failed_operations = [
                     {
-                        "operation_index": len(applied_operations),
-                        "slot_name": str(operation.get("slot_name")),
-                        "operation": str(operation.get("operation")),
-                        "slot_type": str(operation.get("slot_type", "unknown")),
+                        "operation_index": failed_index,
+                        "slot_name": str(failed_operation.get("slot_name")),
+                        "operation": str(failed_operation.get("operation")),
+                        "slot_type": str(
+                            failed_operation.get("slot_type", "unknown")
+                        ),
                         "error": str(exc),
                     }
                 ]

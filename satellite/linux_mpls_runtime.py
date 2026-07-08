@@ -3204,18 +3204,49 @@ def _bpf_owned_preloaded_generation_records(
     return records
 
 
+def _bpf_owned_runtime_epoch_identity_matches(
+    *,
+    record_intent: Mapping[str, Any],
+    target_intent: Mapping[str, Any],
+) -> bool:
+    record = dict(record_intent or {})
+    target = dict(target_intent or {})
+    identity_keys = ("plan_id", "slice_id", "snapshot_id")
+    compared = 0
+    for key in identity_keys:
+        record_value = str(record.get(key) or "")
+        target_value = str(target.get(key) or "")
+        if not record_value and not target_value:
+            continue
+        compared += 1
+        if record_value != target_value:
+            return False
+    return compared > 0
+
+
 def _bpf_owned_find_preloaded_generation_record(
     *,
     readiness: Mapping[str, Any],
     target_generation_id: int,
     target_intent_hash: str,
+    target_runtime_epoch_intent: Mapping[str, Any] | None = None,
     target_horizon_id: str = "",
     current_source_state_id: str = "",
 ) -> Dict[str, Any] | None:
     for record in _bpf_owned_preloaded_generation_records(readiness):
         if int(record.get("generation_id") or -1) != int(target_generation_id):
             continue
-        if str(record.get("intent_hash") or "") != str(target_intent_hash or ""):
+        record_intent_hash = str(record.get("intent_hash") or "")
+        intent_hash_matches = record_intent_hash == str(target_intent_hash or "")
+        record_runtime_intent = dict(
+            dict(record.get("preload_report") or {}).get("runtime_epoch_intent")
+            or {}
+        )
+        runtime_identity_matches = _bpf_owned_runtime_epoch_identity_matches(
+            record_intent=record_runtime_intent,
+            target_intent=dict(target_runtime_epoch_intent or {}),
+        )
+        if not intent_hash_matches and not runtime_identity_matches:
             continue
         record_horizon_id = str(record.get("horizon_id") or "")
         if (target_horizon_id or record_horizon_id) and record_horizon_id != str(
@@ -3234,7 +3265,17 @@ def _bpf_owned_find_preloaded_generation_record(
         compiled_inputs = dict(record.get("compiled_runtime_inputs") or {})
         if not compiled_inputs:
             continue
-        return record
+        result = dict(record)
+        if runtime_identity_matches and not intent_hash_matches:
+            result[
+                "frozen_preloaded_generation_intent_authoritative"
+            ] = True
+            result["live_runtime_intent_hash_mismatch"] = {
+                "record_intent_hash": record_intent_hash,
+                "live_intent_hash": str(target_intent_hash or ""),
+                "match_basis": "runtime_epoch_identity",
+            }
+        return result
     return None
 
 
@@ -3250,6 +3291,52 @@ def _bpf_owned_activate_preloaded_generation(
     proof = _derive_bpf_owned_readiness_proof(
         runtime_update_plan=runtime_update_plan,
     )
+    preload_report = dict(record.get("preload_report") or {})
+    record_runtime_intent = dict(preload_report.get("runtime_epoch_intent") or {})
+    frozen_intent_authoritative = bool(
+        record.get("frozen_preloaded_generation_intent_authoritative")
+    )
+    if frozen_intent_authoritative:
+        proof = {
+            **proof,
+            "runtime_epoch_intent": {
+                **dict(proof.get("runtime_epoch_intent") or {}),
+                **record_runtime_intent,
+            },
+            "intent_hash": str(
+                record.get("intent_hash") or preload_report.get("intent_hash") or ""
+            ),
+            "eligible_satellite_core_gz_scope": dict(
+                preload_report.get("eligible_satellite_core_gz_scope")
+                or proof.get("eligible_satellite_core_gz_scope")
+                or {}
+            ),
+            "g_to_z_entries": list(
+                preload_report.get("g_to_z_entries")
+                or proof.get("g_to_z_entries")
+                or []
+            ),
+            "z_to_g_entries": list(
+                preload_report.get("z_to_g_entries")
+                or proof.get("z_to_g_entries")
+                or []
+            ),
+            "map_entry_count": int(
+                preload_report.get("map_entry_count")
+                or proof.get("map_entry_count")
+                or 0
+            ),
+            "map_entry_hash": str(
+                preload_report.get("map_entry_hash")
+                or proof.get("map_entry_hash")
+                or ""
+            ),
+            "attached_interfaces": list(
+                preload_report.get("attached_interfaces")
+                or proof.get("attached_interfaces")
+                or []
+            ),
+        }
     horizon_id = str(record.get("horizon_id") or readiness.get("current_horizon_id") or "")
     logical_horizon_generation_key = str(
         record.get("horizon_generation_key")
@@ -3452,6 +3539,12 @@ def _bpf_owned_activate_preloaded_generation(
         "physical_horizon_generation_key": physical_horizon_generation_key,
         "source_state_id": str(record.get("source_state_id") or ""),
         "target_state_id": str(record.get("target_state_id") or ""),
+        "frozen_preloaded_generation_intent_authoritative": (
+            frozen_intent_authoritative
+        ),
+        "live_runtime_intent_hash_mismatch": dict(
+            record.get("live_runtime_intent_hash_mismatch") or {}
+        ),
     }
     prepared = {
         **proof,
@@ -3519,6 +3612,12 @@ def _bpf_owned_activate_preloaded_generation(
         ],
         "preloaded_generation_consumed": ok,
         "preloaded_generation_record_id": str(record.get("record_id") or ""),
+        "frozen_preloaded_generation_intent_authoritative": (
+            frozen_intent_authoritative
+        ),
+        "live_runtime_intent_hash_mismatch": dict(
+            record.get("live_runtime_intent_hash_mismatch") or {}
+        ),
         "current_horizon_id": horizon_id,
         "active_horizon_generation_key": horizon_generation_key,
         "active_logical_horizon_generation_key": logical_horizon_generation_key,
@@ -3531,10 +3630,20 @@ def _bpf_owned_activate_preloaded_generation(
     }
     if not ok:
         return prepared
-    mismatch = _bpf_owned_readiness_mismatch_reason(
-        runtime_update_plan=runtime_update_plan,
-        readiness=prepared,
-    )
+    mismatch = ""
+    if not frozen_intent_authoritative:
+        mismatch = _bpf_owned_readiness_mismatch_reason(
+            runtime_update_plan=runtime_update_plan,
+            readiness=prepared,
+        )
+    elif (
+        int(prepared.get("active_generation", -1))
+        != int(prepared.get("generation_id", -2))
+        or not prepared.get("runtime_generation_loaded")
+        or not prepared.get("map_ready")
+        or not prepared.get("active_generation_set")
+    ):
+        mismatch = "bpf_preloaded_generation_activation_incomplete"
     if mismatch:
         return {
             **prepared,
@@ -5597,11 +5706,16 @@ def _bpf_owned_prepare_mpls_backend(
                 source="queued_horizon_maintenance_frozen_manifest",
             )
         else:
+            compile_kwargs: Dict[str, Any] = {
+                "contexts": contexts,
+                "generation_id": generation_id,
+            }
+            if interface_ifindex_cache is not None:
+                compile_kwargs["interface_ifindex_cache"] = interface_ifindex_cache
+            if interface_mac_cache is not None:
+                compile_kwargs["interface_mac_cache"] = interface_mac_cache
             compiled = _bpf_owned_compile_mpls_maps_for_contexts(
-                contexts=contexts,
-                generation_id=generation_id,
-                interface_ifindex_cache=interface_ifindex_cache,
-                interface_mac_cache=interface_mac_cache,
+                **compile_kwargs,
             )
             emit_progress(
                 "logical_map_compile_completed",
@@ -7155,6 +7269,9 @@ def _prepare_bpf_owned_readiness(
                 readiness=bpf_owned_readiness,
                 target_generation_id=int(target_proof.get("generation_id") or 0),
                 target_intent_hash=str(target_proof.get("intent_hash") or ""),
+                target_runtime_epoch_intent=dict(
+                    target_proof.get("runtime_epoch_intent") or {}
+                ),
                 target_horizon_id=target_horizon_id,
                 current_source_state_id=current_source_state_id,
             )
@@ -7667,6 +7784,7 @@ def _prepare_bpf_owned_preactivation_attach_capability(
     bpf_owned_readiness: Optional[Dict[str, Any]],
     retain_inactive_generations: Optional[Sequence[int]] = None,
     prepared_generation_window_count: int = 1,
+    frozen_compiled_runtime_inputs: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     proof = _derive_bpf_owned_readiness_proof(
         runtime_update_plan=runtime_update_plan,
@@ -7679,9 +7797,18 @@ def _prepare_bpf_owned_preactivation_attach_capability(
             "reason": str(proof.get("reason") or "bpf_owned_intent_not_ready"),
             "preactivation_attach_prepare_only": True,
         }
-    host_interfaces = _bpf_owned_host_interfaces_for_contexts(
-        topology_path=topology_path,
-        contexts=tuple(contexts),
+    frozen_inputs = dict(frozen_compiled_runtime_inputs or {})
+    host_interfaces = (
+        [
+            str(interface_ref)
+            for interface_ref in list(frozen_inputs.get("attached_interfaces") or [])
+            if str(interface_ref)
+        ]
+        if frozen_inputs
+        else _bpf_owned_host_interfaces_for_contexts(
+            topology_path=topology_path,
+            contexts=tuple(contexts),
+        )
     )
     if not host_interfaces:
         return {
@@ -7702,6 +7829,7 @@ def _prepare_bpf_owned_preactivation_attach_capability(
         allow_role_capability_expansion=True,
         retain_inactive_generations=retain_inactive_generations,
         prepared_generation_window_count=prepared_generation_window_count,
+        frozen_compiled_runtime_inputs=frozen_inputs,
     )
     attach_reuse = dict(prepare.get("attach_reuse") or {})
     guard_source = str(
@@ -7734,7 +7862,9 @@ def _prepare_bpf_owned_preactivation_attach_capability(
         "active_generation_set": False,
         "map_ready": False,
         "attach_capability_prepare_inputs_source": (
-            "maintenance_prepared_horizon_runtime_contexts"
+            "queued_horizon_maintenance_frozen_manifest"
+            if frozen_inputs
+            else "maintenance_prepared_horizon_runtime_contexts"
         ),
         "attach_capability_prepare_physical_check_source": (
             guard_source or "live_clsact_guard"
@@ -7769,6 +7899,12 @@ def _prepare_bpf_owned_preactivation_attach_capability(
         "attach_plan": dict(prepare.get("attach_plan") or {}),
         "compiled_runtime_inputs": dict(
             prepare.get("compiled_runtime_inputs") or {}
+        ),
+        "compiled_runtime_inputs_source": str(
+            prepare.get("compiled_runtime_inputs_source") or ""
+        ),
+        "frozen_compiled_runtime_inputs_check": dict(
+            prepare.get("frozen_compiled_runtime_inputs_check") or {}
         ),
         "retain_inactive_generations": list(retain_inactive_generations or []),
         "prepare_steps": {
@@ -8000,27 +8136,23 @@ def _bpf_owned_validation_targets_for_context(
     *,
     primary_only: bool,
 ) -> List[Dict[str, str]]:
+    primary_target = {
+        "node_id": str(context.target_host_node_id),
+        "ip_address": str(context.ping_target_ip),
+        "target_role": "selected_gateway_access",
+    }
     if primary_only:
-        return [
-            {
-                "node_id": str(context.target_host_node_id),
-                "ip_address": str(context.ping_target_ip),
-            }
-        ]
+        return [primary_target]
     targets = [
         {
             "node_id": str(target.get("node_id")),
             "ip_address": str(target.get("ip_address")),
+            "target_role": str(target.get("target_role") or "selected_gateway_access"),
         }
         for target in context.validation_targets
         if target.get("node_id") and target.get("ip_address")
     ]
-    return targets or [
-        {
-            "node_id": str(context.target_host_node_id),
-            "ip_address": str(context.ping_target_ip),
-        }
-    ]
+    return targets or [primary_target]
 
 
 def _command_succeeded(command: Dict[str, Any]) -> bool:
@@ -10177,6 +10309,7 @@ def _run_node_local_batch(
     batch: NodeLocalBatchSpec,
     *,
     timeout_seconds: float = NODE_LOCAL_BATCH_TIMEOUT_SECONDS,
+    allow_transport_fallback: bool = True,
 ) -> NodeLocalBatchResult:
     started_at = time.perf_counter()
     script_lines = ["set -eu"]
@@ -10189,7 +10322,7 @@ def _run_node_local_batch(
         timeout_seconds=timeout_seconds,
         input_text=script,
     )
-    if completed.returncode == 127:
+    if completed.returncode == 127 and allow_transport_fallback:
         completed = _run_host_netns_batch(
             node_id=batch.node_id,
             script=script,
@@ -10243,6 +10376,7 @@ def _execute_node_local_batches(
     *,
     max_workers: int,
     timeout_seconds: float = NODE_LOCAL_BATCH_TIMEOUT_SECONDS,
+    allow_transport_fallback: bool = True,
     progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> List[NodeLocalBatchResult]:
     if not batches:
@@ -10255,6 +10389,7 @@ def _execute_node_local_batches(
                 _run_node_local_batch,
                 batch,
                 timeout_seconds=timeout_seconds,
+                allow_transport_fallback=allow_transport_fallback,
             ): (index, batch)
             for index, batch in enumerate(batches)
         }
@@ -10445,6 +10580,7 @@ def _context_observation_target(
     return {
         "node_id": context.target_host_node_id,
         "ip_address": context.ping_target_ip,
+        "target_role": "selected_gateway_access",
     }
 
 
@@ -10460,6 +10596,7 @@ def _ping_validation_targets(
             {
                 "node_id": context.target_host_node_id,
                 "ip_address": context.ping_target_ip,
+                "target_role": "selected_gateway_access",
             }
         ]
         if primary_only
@@ -10468,6 +10605,7 @@ def _ping_validation_targets(
         {
             "node_id": context.target_host_node_id,
             "ip_address": context.ping_target_ip,
+            "target_role": "selected_gateway_access",
         }
     ]
     ping_results: List[Dict[str, Any]] = []
@@ -10503,29 +10641,38 @@ def _ping_validation_targets(
             if attempt_index < 2:
                 time.sleep(0.2)
         assert ping is not None
+        target_node_id = str(validation_target["node_id"])
+        target_role = str(validation_target.get("target_role") or "")
+        if not target_role:
+            target_role = (
+                "selected_gateway_access"
+                if target_node_id == str(context.selected_gateway_id)
+                else "external_validation_target"
+            )
+        path_nodes = [
+            context.ut_id,
+            *context.satellite_path,
+            context.selected_gateway_id,
+        ]
+        if target_node_id != str(context.selected_gateway_id):
+            path_nodes.append(target_node_id)
         ping_results.append(
             {
                 "flow_id": context.flow_id,
                 "ut_id": context.ut_id,
                 "traffic_scope": (
                     "default_gateway_class"
-                    if str(validation_target["node_id"]) == str(context.target_host_node_id)
+                    if target_node_id == str(context.target_host_node_id)
                     else "special_prefix_override"
                 ),
                 "ping_target_ip": str(validation_target["ip_address"]),
-                "target_host_node_id": str(validation_target["node_id"]),
+                "target_host_node_id": target_node_id,
+                "target_role": target_role,
                 "selected_gateway_id": context.selected_gateway_id,
                 "serving_satellite_id": context.serving_satellite_id,
                 "satellite_path": list(context.satellite_path),
                 "path_hop_count": len(context.satellite_path),
-                "path_string": " -> ".join(
-                    [
-                        context.ut_id,
-                        *context.satellite_path,
-                        context.selected_gateway_id,
-                        str(validation_target["node_id"]),
-                    ]
-                ),
+                "path_string": " -> ".join(path_nodes),
                 "success": ping.returncode == 0,
                 "stdout": ping.stdout,
                 "stderr": ping.stderr,
@@ -10579,7 +10726,7 @@ def _ground_gateway_sanity_probe(
                 node_id=context.selected_gateway_id,
                 command=("ip", "route", "get", target_ip),
                 phase="ground_sanity",
-                description="probe selected gateway route to Mini Internet target",
+                description="probe selected gateway route to selected gateway access target",
                 allow_failure=True,
             )
             route_text = f"{route.stdout}\n{route.stderr}".lower()
@@ -10588,7 +10735,7 @@ def _ground_gateway_sanity_probe(
                 node_id=context.selected_gateway_id,
                 command=("ping", "-n", "-c", "1", "-W", "2", target_ip),
                 phase="ground_sanity",
-                description="probe selected gateway ping to Mini Internet target",
+                description="probe selected gateway ping to selected gateway access target",
                 allow_failure=True,
             )
             flow_results.append(
@@ -10970,84 +11117,17 @@ def _capture_preflight_state(context: DirectGatewayExperimentContext) -> Dict[st
 def _capture_bpf_owned_preflight_state(
     context: DirectGatewayExperimentContext,
 ) -> Dict[str, Any]:
-    ut_default_route = _run_docker_command(
-        node_id=context.ut_id,
-        command=_route_show_command("default"),
-        phase="preflight",
-        description="capture UT default route",
-        allow_failure=True,
-    )
-    forward_rule_args = (
-        "FORWARD",
-        "-i",
-        context.gateway_access_interface,
-        "-o",
-        context.gateway_nat_interface,
-        "-s",
-        f"{context.ut_access_ip}/32",
-        "-j",
-        "ACCEPT",
-    )
-    reverse_rule_args = (
-        "FORWARD",
-        "-i",
-        context.gateway_nat_interface,
-        "-o",
-        context.gateway_access_interface,
-        "-d",
-        f"{context.ut_access_ip}/32",
-        "-m",
-        "conntrack",
-        "--ctstate",
-        "ESTABLISHED,RELATED",
-        "-j",
-        "ACCEPT",
-    )
-    snat_rule_args = (
-        "POSTROUTING",
-        "-s",
-        f"{context.ut_access_ip}/32",
-        "-o",
-        context.gateway_nat_interface,
-        "-j",
-        "SNAT",
-        "--to-source",
-        context.gateway_nat_source_ip,
-    )
-    gw_forward_rule = _run_docker_command(
-        node_id=context.selected_gateway_id,
-        command=_iptables_probe_command(table_name=None, rule_args=forward_rule_args),
-        phase="preflight",
-        description="probe gateway forward filter rule",
-        allow_failure=True,
-    )
-    gw_reverse_rule = _run_docker_command(
-        node_id=context.selected_gateway_id,
-        command=_iptables_probe_command(table_name=None, rule_args=reverse_rule_args),
-        phase="preflight",
-        description="probe gateway reverse filter rule",
-        allow_failure=True,
-    )
-    gw_snat_rule = _run_docker_command(
-        node_id=context.selected_gateway_id,
-        command=_iptables_probe_command(table_name="nat", rule_args=snat_rule_args),
-        phase="preflight",
-        description="probe gateway SNAT rule",
-        allow_failure=True,
-    )
     return {
         **_default_preflight_state(context),
         "preflight_backend": "bpf_owned",
+        "preflight_source": "prepared_bpf_owned_edge_manifest",
+        "live_probe_used": False,
+        "edge_manifest_mode": "idempotent_apply_without_live_probe",
         "legacy_linux_mpls_debug_probe": {
             "enabled": False,
             "authoritative": False,
-            "reason": "strict_bpf_owned_uses_bpf_native_evidence",
+            "reason": "strict_bpf_owned_consumes_prepared_edge_manifest",
         },
-        "ut_default_route_present": bool(ut_default_route.stdout),
-        "ut_default_route_stdout": ut_default_route.stdout,
-        "gw_forward_rule_present": gw_forward_rule.returncode == 0,
-        "gw_reverse_rule_present": gw_reverse_rule.returncode == 0,
-        "gw_snat_rule_present": gw_snat_rule.returncode == 0,
     }
 
 
@@ -11208,6 +11288,12 @@ def _realization_contexts(
                 {gateway_nat_source_ip},
             ),
         )
+        gateway_access_ip = str(forward_segments[-1].destination_ip)
+        gateway_access_target = {
+            "node_id": selected_gateway_id,
+            "ip_address": gateway_access_ip,
+            "target_role": "selected_gateway_access",
+        }
         contexts.append(
             DirectGatewayExperimentContext(
                 flow_id=str(flow_context["flow_id"]),
@@ -11225,8 +11311,8 @@ def _realization_contexts(
                     for prefix in list(flow_context.get("zone_return_prefixes", []))
                     if str(prefix)
                 ),
-                ping_target_ip=str(flow_context["ping_target_ip"]),
-                target_host_node_id=str(flow_context["target_host_node_id"]),
+                ping_target_ip=gateway_access_ip,
+                target_host_node_id=selected_gateway_id,
                 policy_table_id=int(flow_context["policy_table_id"]),
                 policy_rule_priority=int(flow_context["policy_rule_priority"]),
                 satellite_path=tuple(satellite_path),
@@ -11236,20 +11322,13 @@ def _realization_contexts(
                 ut_access_ip=_strip_prefix(str(ut_endpoint["ip_address"])),
                 ut_access_peer_ip=_strip_prefix(str(sat_ut_endpoint["ip_address"])),
                 gateway_access_interface=str(forward_segments[-1].destination_interface),
-                gateway_access_ip=str(forward_segments[-1].destination_ip),
+                gateway_access_ip=gateway_access_ip,
                 gateway_access_peer_ip=str(reverse_segments[0].destination_ip),
                 gateway_nat_interface=str(internet_uplink.get("network_name")),
                 gateway_nat_source_ip=gateway_nat_source_ip,
                 forward_segments=tuple(forward_segments),
                 reverse_segments=tuple(reverse_segments),
-                validation_targets=tuple(
-                    {
-                        "node_id": str(target.get("node_id")),
-                        "ip_address": str(target.get("ip_address")),
-                    }
-                    for target in flow_context.get("validation_targets", [])
-                    if target.get("node_id") and target.get("ip_address")
-                ),
+                validation_targets=(gateway_access_target,),
                 gateway_class_id=gateway_class_id or None,
                 return_path_intent=dict(flow_context.get("return_path_intent", {})),
                 traffic_scope=str(flow_context.get("traffic_scope") or ""),
@@ -11380,7 +11459,8 @@ class MinimalRealLinuxMplsInstaller:
         for selector in normalized_selectors:
             if ":" not in selector:
                 raise RuntimeError(
-                    f"invalid observe selector {selector!r}; expected ut_id:target_host_node_id_or_ip"
+                    f"invalid observe selector {selector!r}; "
+                    "expected ut_id:selected_gateway_id_or_access_ip"
                 )
             ut_id, target_selector = selector.split(":", 1)
             ut_contexts = [
@@ -11759,76 +11839,6 @@ class MinimalRealLinuxMplsInstaller:
         preflight: Dict[str, Any],
     ) -> List[RuntimeCommandSpec]:
         specs: List[RuntimeCommandSpec] = []
-        if not preflight["gw_forward_rule_present"]:
-            specs.append(
-                RuntimeCommandSpec(
-                    node_id=context.selected_gateway_id,
-                    phase="apply",
-                    description="install gateway forward filter rule",
-                    command=(
-                        "sh",
-                        "-lc",
-                        (
-                            f"iptables -w {IPTABLES_WAIT_SECONDS} -C FORWARD "
-                            f"-i {context.gateway_access_interface} "
-                            f"-o {context.gateway_nat_interface} "
-                            f"-s {context.ut_access_ip}/32 -j ACCEPT 2>/dev/null || "
-                            f"iptables -w {IPTABLES_WAIT_SECONDS} -A FORWARD "
-                            f"-i {context.gateway_access_interface} "
-                            f"-o {context.gateway_nat_interface} "
-                            f"-s {context.ut_access_ip}/32 -j ACCEPT"
-                        ),
-                    ),
-                )
-            )
-        if not preflight["gw_reverse_rule_present"]:
-            specs.append(
-                RuntimeCommandSpec(
-                    node_id=context.selected_gateway_id,
-                    phase="apply",
-                    description="install gateway reverse filter rule",
-                    command=(
-                        "sh",
-                        "-lc",
-                        (
-                            f"iptables -w {IPTABLES_WAIT_SECONDS} -C FORWARD "
-                            f"-i {context.gateway_nat_interface} "
-                            f"-o {context.gateway_access_interface} "
-                            f"-d {context.ut_access_ip}/32 "
-                            "-m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT "
-                            "2>/dev/null || "
-                            f"iptables -w {IPTABLES_WAIT_SECONDS} -A FORWARD "
-                            f"-i {context.gateway_nat_interface} "
-                            f"-o {context.gateway_access_interface} "
-                            f"-d {context.ut_access_ip}/32 "
-                            "-m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT"
-                        ),
-                    ),
-                )
-            )
-        if not preflight["gw_snat_rule_present"]:
-            specs.append(
-                RuntimeCommandSpec(
-                    node_id=context.selected_gateway_id,
-                    phase="apply",
-                    description="install gateway SNAT rule",
-                    command=(
-                        "sh",
-                        "-lc",
-                        (
-                            f"iptables -w {IPTABLES_WAIT_SECONDS} -t nat -C POSTROUTING "
-                            f"-s {context.ut_access_ip}/32 "
-                            f"-o {context.gateway_nat_interface} "
-                            f"-j SNAT --to-source {context.gateway_nat_source_ip} "
-                            "2>/dev/null || "
-                            f"iptables -w {IPTABLES_WAIT_SECONDS} -t nat -A POSTROUTING "
-                            f"-s {context.ut_access_ip}/32 "
-                            f"-o {context.gateway_nat_interface} "
-                            f"-j SNAT --to-source {context.gateway_nat_source_ip}"
-                        ),
-                    ),
-                )
-            )
         if not preflight["ut_default_route_present"]:
             specs.append(
                 RuntimeCommandSpec(
@@ -12957,9 +12967,14 @@ class MinimalRealLinuxMplsInstaller:
             apply_batches = _group_node_local_batches(apply_specs)
             apply_batch_plan = [batch.to_dict() for batch in apply_batches]
             apply_started_at = time.perf_counter()
+            clean_bpf_owned_runtime = (
+                str(runtime_mode) == "operational_clean"
+                and backend_config["backend_mode"] == "bpf_owned"
+            )
             apply_batch_results = _execute_node_local_batches(
                 apply_batches,
                 max_workers=max_node_workers,
+                allow_transport_fallback=not clean_bpf_owned_runtime,
             )
             phase_timing["apply_wall_seconds"] = time.perf_counter() - apply_started_at
             phase_epoch_seconds["apply_completed_epoch_seconds"] = time.time()
@@ -13004,6 +13019,7 @@ class MinimalRealLinuxMplsInstaller:
                 verify_batch_results = _execute_node_local_batches(
                     verify_batches,
                     max_workers=max_node_workers,
+                    allow_transport_fallback=not clean_bpf_owned_runtime,
                 )
                 phase_timing["verify_wall_seconds"] = time.perf_counter() - verify_started_at
                 phase_epoch_seconds["verify_completed_epoch_seconds"] = time.time()
@@ -13068,7 +13084,7 @@ class MinimalRealLinuxMplsInstaller:
                     context_ping_results, ping_seconds = _ping_validation_targets(
                         context,
                         phase="verify",
-                        description="ping Mini Internet host from UT",
+                        description="ping selected gateway access IP from UT",
                         primary_only=backend_config["backend_mode"] == "bpf_owned",
                     )
                     phase_timing["ping_wall_seconds"] += ping_seconds
@@ -13605,7 +13621,7 @@ class MinimalRealLinuxMplsInstaller:
             context_ping_results, _ping_seconds = _ping_validation_targets(
                 context,
                 phase="observe",
-                description="probe Mini Internet host from UT before transition",
+                description="probe selected gateway access IP from UT before transition",
                 primary_only=primary_only,
             )
             flow_results.extend(context_ping_results)

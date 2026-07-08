@@ -18,6 +18,11 @@ SATELLITE_DIR = bootstrap_app_import_path()
 REPO_ROOT = SATELLITE_DIR.parent
 SEED310_PYTHON = "/home/seed/miniconda3/envs/seed310/bin/python"
 RUNBOOK_PATH = SATELLITE_DIR / "docs" / "known_issues_runbook.md"
+LEGACY_HOST_RUNTIME_WARNINGS = {
+    "host_mpls_not_ready",
+    "host_mpls_preflight_skipped",
+    "bridge_netfilter_passthrough_not_ready",
+}
 
 CANONICAL_FAST_LONG_RUN_ARGS = [
     "--run-mode",
@@ -103,85 +108,8 @@ OPERATIONAL_ITERATION_RUN_ARGS = [
     "<run_id>",
     "--run-root",
     "satellite/output/validation_profiles",
-    "--orbit-input-mode",
-    "planned-shell",
-    "--planned-shell-id",
-    "S4",
-    "--max-satellites",
-    "348",
-    "--ut-catalog",
-    "satellite/configs/starlink_shell_ground/s4_gz_rich_validation_ut_catalog_32.json",
-    "--gateway-catalog",
-    "satellite/configs/starlink_shell_ground/realistic_preview_gateway_catalog_12.json",
-    "--zone-catalog",
-    "satellite/configs/starlink_shell_ground/s4_gz_rich_validation_zone_catalog_16.json",
-    "--ut-ids",
-    "ut2001,ut2002,ut2003,ut2004,ut2005,ut2006,ut2007,ut2008,ut2009,ut2010,ut2011,ut2012,ut2013,ut2014,ut2015,ut2016,ut2017,ut2018,ut2019,ut2020,ut2021,ut2022,ut2023,ut2024,ut2025,ut2026,ut2027,ut2028,ut2029,ut2030,ut2031,ut2032",
-    "--gateway-ids",
-    "gw201,gw202,gw203,gw204,gw205,gw206,gw207,gw208,gw209,gw210,gw211,gw212",
-    "--max-uts",
-    "32",
-    "--max-gateways",
-    "12",
-    "--ground-placement",
-    "shell-aware",
-    "--sample-interval",
-    "10",
-    "--event-evaluation-interval",
-    "10",
-    "--horizon-seconds",
-    "240",
-    "--continuous",
-    "--runtime-mode",
-    "operational_clean",
-    "--loop-count",
-    "3",
-    "--interval",
-    "0",
-    "--pre-transition-probe-interval",
-    "0",
-    "--runtime-epoch-validation-interval",
-    "0",
-    "--runtime-epoch-validation-scope",
-    "reapplied_gateway_class_sample",
-    "--parameter-epoch-validation-interval",
-    "0",
-    "--preflight-policy",
-    "require-clean",
-    "--host-prepare-policy",
-    "auto",
-    "--forwarding-backend",
-    "bpf_owned",
-    "--bpf-backend",
-    "off",
-    "--compose-build-policy",
-    "if-needed",
-    "--compose-up-timeout-seconds",
-    "900",
-    "--startup-high-progress-grace-ratio",
-    "0.95",
-    "--startup-high-progress-grace-seconds",
-    "420",
-    "--startup-slow-progress-grace-seconds",
-    "180",
-    "--startup-absolute-max-seconds",
-    "1500",
-    "--compose-build-timeout-seconds",
-    "900",
-    "--container-readiness-timeout-seconds",
-    "600",
-    "--initial-runtime-readiness-timeout-seconds",
-    "300",
-    "--progress-heartbeat-seconds",
-    "15",
-    "--startup-stall-warning-seconds",
-    "900",
-    "--epoch-stall-warning-seconds",
-    "300",
-    "--docker-dummy-network-pool",
-    "10.128.0.0/9",
-    "--docker-dummy-network-mask",
-    "19",
+    "--operational-profile",
+    "s4_h3_240s_bpf_owned_clean",
     "--format",
     "json",
 ]
@@ -317,6 +245,28 @@ def operational_iteration_profile() -> Dict[str, Any]:
             "freeze fresh prepared inputs."
         ),
         "run_command": run_command,
+        "operational_profile": "s4_h3_240s_bpf_owned_clean",
+        "resolved_runtime_contract": {
+            "horizon_seconds": 240,
+            "sample_interval_seconds": 10,
+            "event_evaluation_interval_seconds": 10,
+            "loop_count": 3,
+            "runtime_mode": "operational_clean",
+            "forwarding_backend": "bpf_owned",
+            "preflight_policy": "require-clean",
+            "host_prepare_policy": "auto",
+            "runtime_epoch_validation_interval": 0,
+            "parameter_epoch_validation_interval": 0,
+            "runtime_epoch_validation_scope": "reapplied_gateway_class_sample",
+            "forbidden_runtime_work": [
+                "full_reload",
+                "full_scan",
+                "live_dump_diff",
+                "hidden_reconcile",
+                "legacy_controller_fallback",
+                "linux_core_forwarding_fallback",
+            ],
+        },
         "fresh_prepared_inputs_allowed": True,
         "load_frozen_prepared_bundle_required": False,
         "stale_static_goal_evidence_blocks_iteration": False,
@@ -346,13 +296,21 @@ def _operational_iteration_gate(
         str(item) for item in list(preflight.get("blocking_reasons") or [])
     ]
     blocking_warnings = sorted(
-        warning
-        for warning in warnings
-        if warning not in {"host_mpls_not_ready", "bridge_netfilter_passthrough_not_ready"}
+        warning for warning in warnings if warning not in LEGACY_HOST_RUNTIME_WARNINGS
     )
     command = list(profile.get("run_command") or [])
     command_text = " ".join(command)
-    command_shape_ready = all(
+    contract = dict(profile.get("resolved_runtime_contract") or {})
+    contract_shape_ready = (
+        int(contract.get("horizon_seconds") or 0) == 240
+        and int(contract.get("sample_interval_seconds") or 0) == 10
+        and int(contract.get("event_evaluation_interval_seconds") or 0) == 10
+        and int(contract.get("loop_count") or 0) == 3
+        and str(contract.get("runtime_mode") or "") == "operational_clean"
+        and str(contract.get("forwarding_backend") or "") == "bpf_owned"
+        and str(contract.get("host_prepare_policy") or "") == "auto"
+    )
+    explicit_command_shape_ready = all(
         required in command_text
         for required in (
             "--horizon-seconds 240",
@@ -364,6 +322,11 @@ def _operational_iteration_gate(
             "--host-prepare-policy auto",
         )
     )
+    profile_command_shape_ready = (
+        "--operational-profile s4_h3_240s_bpf_owned_clean" in command_text
+        and contract_shape_ready
+    )
+    command_shape_ready = explicit_command_shape_ready or profile_command_shape_ready
     preflight_present = bool(preflight.get("present"))
     scoped_hygiene_ready = bool(preflight.get("scoped_hygiene_ready"))
     preferred_python = bool(preflight.get("preferred_seed310_selected"))
@@ -390,11 +353,11 @@ def _operational_iteration_gate(
         "schema_version": "skyseed-operational-iteration-gate-v1",
         "ready": ready,
         "blockers": blockers,
-        "non_blocking_warnings": sorted(
-            warning
-            for warning in warnings
-            if warning in {"host_mpls_not_ready", "bridge_netfilter_passthrough_not_ready"}
+        "non_blocking_warnings": [],
+        "suppressed_legacy_host_runtime_warnings": sorted(
+            warning for warning in warnings if warning in LEGACY_HOST_RUNTIME_WARNINGS
         ),
+        "warning_scope": "operational_clean_bpf_owned",
         "stale_static_goal_evidence_blocks_iteration": False,
         "static_evidence_ready": bool(readiness.get("static_evidence_ready")),
         "command_shape_ready": command_shape_ready,
@@ -459,6 +422,24 @@ def summarize_session_check(
 def render_session_check_summary(report: Dict[str, Any]) -> str:
     git = dict(report.get("git_status", {}))
     readiness = dict(report.get("goal_readiness", {}))
+    display_readiness = dict(readiness)
+    display_preflight = dict(display_readiness.get("preflight") or {})
+    display_preflight["raw_warning_reasons"] = list(
+        display_preflight.get("warning_reasons") or []
+    )
+    display_preflight["warning_reasons"] = [
+        str(warning)
+        for warning in list(display_preflight.get("warning_reasons") or [])
+        if str(warning) not in LEGACY_HOST_RUNTIME_WARNINGS
+    ]
+    if any(
+        warning in LEGACY_HOST_RUNTIME_WARNINGS
+        for warning in display_preflight.get("raw_warning_reasons", [])
+    ):
+        display_preflight["host_runtime_ready"] = (
+            "legacy_not_applicable_for_bpf_owned_operational_iteration"
+        )
+    display_readiness["preflight"] = display_preflight
     iteration_gate = dict(report.get("operational_iteration_gate", {}))
     iteration_profile = dict(report.get("operational_iteration_profile", {}))
     profile = dict(report.get("canonical_fast_long_run_profile", {}))
@@ -491,7 +472,7 @@ def render_session_check_summary(report: Dict[str, Any]) -> str:
             f"scheduler_pressure={','.join(timing_policy.get('scheduler_pressure_headline', []))} "
             f"cleanup={','.join(timing_policy.get('cleanup_optimization_bucket', []))}"
         ),
-        render_goal_readiness_summary(readiness),
+        render_goal_readiness_summary(display_readiness),
     ]
     return "\n".join(lines)
 
@@ -500,7 +481,6 @@ def format_status_note(report: Dict[str, Any]) -> str:
     git = dict(report.get("git_status", {}))
     readiness = dict(report.get("goal_readiness", {}))
     iteration_gate = dict(report.get("operational_iteration_gate", {}))
-    preflight = dict(readiness.get("preflight", {}))
     return "\n".join(
         [
             "",
@@ -512,8 +492,8 @@ def format_status_note(report: Dict[str, Any]) -> str:
             f"long_real_run_ready `{readiness.get('long_real_run_ready')}`, "
             f"operational_iteration_ready `{iteration_gate.get('ready')}`, "
             f"next_action `{readiness.get('next_action')}`, "
-            f"preflight warnings "
-            f"`{','.join(preflight.get('warning_reasons', [])) or 'none'}`.",
+            f"operational warnings "
+            f"`{','.join(iteration_gate.get('non_blocking_warnings', [])) or 'none'}`.",
         ]
     )
 

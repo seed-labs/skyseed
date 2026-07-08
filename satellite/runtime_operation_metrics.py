@@ -66,6 +66,8 @@ def _classify_simple_command(command: Sequence[str]) -> tuple[str, str]:
         if len(inner) == 1:
             return _classify_simple_command(inner[0])
         return "shell_batch", "shell_batch"
+    if parts[:2] in (["tc", "-batch"], ["tc", "-b"]):
+        return "qdisc", "qdisc_batch"
     if parts[:3] == ["tc", "qdisc", "add"]:
         return "qdisc", "qdisc_add"
     if parts[:3] == ["tc", "qdisc", "change"]:

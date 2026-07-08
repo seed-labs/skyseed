@@ -92,10 +92,15 @@ Current reboot interpretation:
   preview-only analysis.
 - `host_mpls_not_ready` after reboot is expected until host MPLS preparation
   runs. It is a real-runtime blocker only if `--host-prepare-policy auto` or
-  manual `prepare_host_mpls.py` cannot repair it.
+  manual `prepare_host_mpls.py` cannot repair it. For the current
+  `operational_clean` / `bpf_owned` iteration, session check suppresses this
+  legacy host-runtime warning because the canonical command uses host prepare
+  auto and the BPF clean path should be judged by scoped hygiene plus BPF
+  contracts, not by pre-prepared MPLS state.
 - `bridge_netfilter_passthrough_not_ready` should be corrected before real
   runs by host preparation so Linux bridge filtering does not perturb direct
-  backend forwarding.
+  backend forwarding. It is likewise not shown as an operational-iteration
+  warning for the current BPF-owned clean loop.
 
 Write a JSON artifact when needed:
 
@@ -204,10 +209,95 @@ missing preloaded generation records, if active generation flips before all
 required inactive map writes succeed, or if a report/audit still interprets the
 new path using obsolete assumptions.
 
+Preloaded-generation handoff failures must block another expensive 3H rerun
+until the cheap gate covers the whole lifecycle, not only the failing horizon.
+At minimum, tests or a targeted replay must prove:
+
+- The first consumer after bootstrap/current-horizon activation consumes or
+  establishes the expected active generation without erasing remaining
+  current-horizon preloaded records.
+- The immediate successor epoch after any successful preloaded/active
+  generation transition consumes the next required preloaded generation rather
+  than reusing existing readiness as `existing_readiness_reused_no_prepare`.
+- Consumed-record removal advances `current_source_state_id` while preserving
+  later records whose source is the just-activated target state.
+- A frozen preloaded record is authoritative only when generation, horizon,
+  source state, and epoch identity match; source-state or epoch-identity
+  mismatches still fail closed.
+- Rolling-horizon ready artifacts are merged at the runtime boundary, and at
+  least one successor epoch after that boundary consumes segment-scoped records
+  without live intent recomputation, full reload, fallback, or broad discovery.
+
+Do not start a long run after a narrow BPF handoff patch until this bootstrap
+and rolling lifecycle gate passes alongside compile checks, focused runtime
+validation tests, qdisc/report contract tests, `git diff --check`, and
+`skyseed_session_check.py --format text`.
+
+Before launching any 3H operational rerun, write or update the active
+experiment-round note with a `Rerun Gate` section containing:
+
+- previous failed run id and exact failure stage
+- the cheap test, targeted replay, or artifact audit that would catch that
+  failure now
+- adjacent lifecycle states covered, including first consumer and immediate
+  successor after a consumed/prepared record
+- exact command source, normally
+  `operational_iteration_profile.run_command`, and the new run id
+- forbidden-work expectations and the artifact fields that will prove them
+- remaining risks; if a risk can plausibly fail late, the run remains blocked
+
 Keep exact field names, thresholds, and run-specific expectations in the active
 run note, session-check output, or tests. Update this runbook when a repeated
 failure reveals a durable category of risk; remove or generalize details that
 were only true for one implementation.
+
+## Operational Clean Runtime Doctrine
+
+The `operational_clean` runtime is a contract, not a temporary collection of
+flags. Treat it as the only valid runtime route for the current BPF-owned
+operational iteration.
+
+Clean runtime means the live epoch boundary performs only the network work that
+must become visible at that boundary:
+
+- direct host physical mutation for the current epoch
+- current-epoch qdisc batches
+- necessary UT edge route/IP work for the current epoch
+- BPF active generation flip after the required inactive data is ready
+- fail-closed proof for the operation being published
+
+Everything else must be prepared before the boundary, performed after the data
+plane is ready, or recorded asynchronously:
+
+- future-horizon host plans, attach capability, and inactive BPF generations
+  are prepared from frozen/prepared artifacts and consumed only at the boundary
+- reporting, timing summaries, diagnostics, and observations must not block the
+  data-plane update unless they are the fail-closed proof for the current
+  operation
+- ping or packet observers are diagnostic; failures are raw observations unless
+  the run objective explicitly promotes them to a gate
+
+Absolute isolation is part of the contract. Legacy controller-backed,
+Linux-MPLS, mini-host validation, full reload, full scan, live dump/diff, and
+hidden reconcile paths may remain in the repository while refactoring is
+pending, but they must not be reachable as fallback or "safety" routes from the
+clean profile. If the clean profile unexpectedly selects one of those routes,
+the run should fail closed with an explicit unsupported-path error rather than
+silently repair, reconcile, or continue through legacy behavior.
+
+The clean path should have one authoritative source of truth for each state:
+
+- prepared/frozen artifacts for future work
+- pending records for work not yet consumed
+- active state for the currently visible runtime
+- retired state for cleanup
+- historical evidence only for reporting and post-run analysis
+
+Do not add global live guards that compare consumed historical sets against
+mutable runtime queues. If a guard is needed, first classify which state class
+it reads and keep live checks scoped to the current operation or pending
+records. This avoids self-inflicted gates that pass only before normal
+consumption and then block the valid lifecycle later.
 
 ## Current Canonical Command Index
 
@@ -1133,7 +1223,9 @@ Use the preflight and look for:
 - `direct_backend_host_interfaces_present`
 - `skyseed_compose_or_runtime_processes_present`
 - `runtime_lock_files_present`
-- `host_mpls_not_ready`
+- `host_mpls_not_ready` only for legacy/MPLS runtime readiness; do not treat it
+  as a current BPF-owned operational-clean iteration blocker when the session
+  check reports `operational_iteration_ready=True`
 
 The preflight also records:
 
@@ -1569,12 +1661,12 @@ If a staged batch still blocks:
 - use reuse only when the runner reports
   `cache_digest_match_and_all_required_containers_running`
 
-## Known Issue: VM Reboot Resets Host MPLS / Bridge Netfilter Readiness
+## Known Issue: VM Reboot Resets Legacy Host MPLS / Bridge Netfilter Readiness
 
 ### Symptoms
 
 - after a VM reboot or IDE reconnect, scoped Skyseed residue may be clean but a
-  real MPLS runtime is not immediately safe to start
+  legacy real MPLS runtime is not immediately safe to start
 - `skyseed_preflight.py` reports `ready=true` with warnings such as
   `host_mpls_not_ready` and `bridge_netfilter_passthrough_not_ready`
 - Docker compose containers/networks and direct-backend interfaces are `0`, but
@@ -1607,15 +1699,19 @@ Interpretation rule:
 
 - residue fields answer whether a previous run left scoped compose or
   direct-backend artifacts behind
-- host readiness fields answer whether the VM is prepared for a future real
-  MPLS run
+- host readiness fields answer whether the VM is prepared for a future legacy
+  real MPLS run
 - `ready=true` with warning reasons is acceptable evidence of a clean machine
-  after a run, but it is not permission to start the next real MPLS run without
-  host preparation
+  after a run, but it is not permission to start the next legacy real MPLS run
+  without host preparation
+- for the current BPF-owned `operational_clean` iteration, use
+  `skyseed_session_check.py` and its `operational_iteration_ready` field; legacy
+  host MPLS/bridge warnings are intentionally suppressed in that operational
+  display so they do not distract from BPF contract readiness
 
 ### Supported Recovery
 
-- do not start another real MPLS runtime while these warnings are present
+- do not start another legacy real MPLS runtime while these warnings are present
 - rerun the existing host preparation helper before the next real run
 - rerun preflight afterward and require MPLS/bridge readiness to be green
 - keep `dynamic_satellite_link=0` and use the same SEED Mini Internet setup

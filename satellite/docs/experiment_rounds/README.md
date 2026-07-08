@@ -51,6 +51,15 @@ Status: <planned | running | stopped | fixed | validated>
 
 - ...
 
+## Rerun Gate
+
+- Previous failed run/stage:
+- Cheap check or targeted replay that now catches it:
+- Adjacent lifecycle states covered:
+- Command source and run id:
+- Forbidden-work expectations:
+- Remaining late-failure risks:
+
 ## Remaining
 
 - ...
@@ -66,6 +75,27 @@ over one-off details.
 
 ## Recent Entries
 
+- `2026-07-08_r93-clean-runtime-qdisc-success.md`: r93 completed the full
+  3H/240s `operational_clean` / `bpf_owned` validation after qdisc batching and
+  clean-runtime cleanup, with 75/75 runtime epochs, H1/H2 ready artifacts
+  consumed at runtime boundaries, fallback counters at 0, and qdisc process
+  churn reduced to 189 batch invocations for 17,908 sub-updates. UT-to-selected
+  GW ping observation is nonblocking but still failing and is the next semantic
+  item.
+- `2026-07-08_r91-r92-preloaded-generation-gate-gap.md`: r91 exposed
+  frozen/live BPF intent drift at H2 slice0003, and r92 exposed that the cheap
+  gate missed immediate successor consumption after a successful preloaded
+  generation transition. The blocker was resolved by lifecycle tests and r93,
+  but the entry remains the durable reminder that narrow handoff fixes need
+  first-consumer and immediate-successor coverage before another expensive run.
+- `2026-07-08_r90-qdisc-batch-executor.md`: direct netns qdisc batch executor
+  implemented for parameter update groups and structural activate/deactivate
+  lifecycle stages; r93 validated the executor in a full 3H operational run.
+- `2026-07-06_r89-attach-capability-freeze-inputs.md`: attach-capability
+  maintenance now consumes frozen compiled input manifests before preparing the
+  capability contract, avoiding broad live host-interface lookup in that stage;
+  focused runtime validation and BPF live tests pass, with operational
+  validation still pending.
 - `2026-07-06_r78-r88-3h-operational-clean-success.md`: r88 completed the
   fresh 3H/240s `operational_clean` run with H1/H2 ready artifacts consumed at
   runtime boundaries, fallback/full-reload/live-map forbidden work absent, and

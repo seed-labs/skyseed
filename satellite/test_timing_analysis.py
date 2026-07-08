@@ -389,6 +389,10 @@ class TimingAnalysisTests(unittest.TestCase):
             marks["derived_seconds"][
                 "scheduler_blocking_after_data_plane_ready_seconds"
             ],
+            0.0,
+        )
+        self.assertEqual(
+            marks["derived_seconds"]["post_data_plane_ready_recording_seconds"],
             0.7,
         )
         self.assertEqual(
@@ -490,6 +494,10 @@ class TimingAnalysisTests(unittest.TestCase):
         )
         self.assertEqual(
             rows[0]["derived_scheduler_blocking_after_data_plane_ready_seconds"],
+            0.0,
+        )
+        self.assertEqual(
+            rows[0]["derived_post_data_plane_ready_recording_seconds"],
             0.21,
         )
         self.assertIn(

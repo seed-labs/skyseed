@@ -31,7 +31,10 @@ class SkyseedSessionCheckTests(unittest.TestCase):
             },
             "operational_iteration_gate": {
                 "ready": True,
-                "non_blocking_warnings": ["host_mpls_not_ready"],
+                "non_blocking_warnings": [],
+                "suppressed_legacy_host_runtime_warnings": [
+                    "host_mpls_not_ready"
+                ],
             },
             "operational_iteration_profile": {
                 "profile_id": "s4_h3_240s_bpf_owned_operational_iteration",
@@ -72,7 +75,8 @@ class SkyseedSessionCheckTests(unittest.TestCase):
             "operational_iteration_profile=s4_h3_240s_bpf_owned_operational_iteration",
             rendered,
         )
-        self.assertIn("operational_iteration_warnings=host_mpls_not_ready", rendered)
+        self.assertIn("operational_iteration_warnings=none", rendered)
+        self.assertNotIn("warnings=host_mpls_not_ready", rendered)
         self.assertIn(
             "canonical_fast_profile=1shell_172_12ut6gw_gz_2h_fast_representative",
             rendered,
@@ -100,7 +104,11 @@ class SkyseedSessionCheckTests(unittest.TestCase):
             },
             "operational_iteration_gate": {
                 "ready": True,
-                "non_blocking_warnings": ["host_mpls_not_ready"],
+                "non_blocking_warnings": [],
+                "suppressed_legacy_host_runtime_warnings": [
+                    "host_mpls_not_ready",
+                    "bridge_netfilter_passthrough_not_ready",
+                ],
             },
         }
 
@@ -110,10 +118,7 @@ class SkyseedSessionCheckTests(unittest.TestCase):
         self.assertIn("dirty entries `3`", note)
         self.assertIn("long_real_run_ready `False`", note)
         self.assertIn("operational_iteration_ready `True`", note)
-        self.assertIn(
-            "host_mpls_not_ready,bridge_netfilter_passthrough_not_ready",
-            note,
-        )
+        self.assertIn("operational warnings `none`", note)
 
     def test_operational_iteration_profile_pins_current_240s_route(self) -> None:
         profile = operational_iteration_profile()
@@ -126,23 +131,19 @@ class SkyseedSessionCheckTests(unittest.TestCase):
         self.assertTrue(profile["fresh_prepared_inputs_allowed"])
         self.assertFalse(profile["load_frozen_prepared_bundle_required"])
         self.assertFalse(profile["stale_static_goal_evidence_blocks_iteration"])
-        self.assertIn("--horizon-seconds", command)
-        self.assertEqual("240", command[command.index("--horizon-seconds") + 1])
-        self.assertIn("--sample-interval", command)
-        self.assertEqual("10", command[command.index("--sample-interval") + 1])
-        self.assertIn("--event-evaluation-interval", command)
+        self.assertIn("--operational-profile", command)
         self.assertEqual(
-            "10",
-            command[command.index("--event-evaluation-interval") + 1],
+            "s4_h3_240s_bpf_owned_clean",
+            command[command.index("--operational-profile") + 1],
         )
-        self.assertIn("--loop-count", command)
-        self.assertEqual("3", command[command.index("--loop-count") + 1])
-        self.assertIn("--runtime-mode", command)
-        self.assertIn("operational_clean", command)
-        self.assertIn("--forwarding-backend", command)
-        self.assertIn("bpf_owned", command)
-        self.assertIn("--host-prepare-policy", command)
-        self.assertEqual("auto", command[command.index("--host-prepare-policy") + 1])
+        contract = dict(profile["resolved_runtime_contract"])
+        self.assertEqual(240, contract["horizon_seconds"])
+        self.assertEqual(10, contract["sample_interval_seconds"])
+        self.assertEqual(10, contract["event_evaluation_interval_seconds"])
+        self.assertEqual(3, contract["loop_count"])
+        self.assertEqual("operational_clean", contract["runtime_mode"])
+        self.assertEqual("bpf_owned", contract["forwarding_backend"])
+        self.assertEqual("auto", contract["host_prepare_policy"])
         self.assertNotIn("--load-frozen-prepared-bundle", command)
 
     def test_canonical_fast_profile_pins_representative_long_run_route(self) -> None:

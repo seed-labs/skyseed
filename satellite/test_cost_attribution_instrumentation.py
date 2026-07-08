@@ -8,11 +8,21 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "apps"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from analyze_skyseed_cost_attribution import build_cost_attribution
+from runtime_operation_metrics import classify_runtime_command
 
 
 class CostAttributionInstrumentationTests(unittest.TestCase):
+    def test_tc_batch_classifies_as_qdisc_batch(self) -> None:
+        self.assertEqual(
+            classify_runtime_command(
+                ["sudo", "-n", "tc", "-batch", "/tmp/skyseed-qdisc-batch.tc"]
+            ),
+            {"family": "qdisc", "operation": "qdisc_batch"},
+        )
+
     def _write_base_run(self, run_dir: Path, *, typed: bool) -> None:
         (run_dir / "run_manifest.json").write_text(
             json.dumps(
