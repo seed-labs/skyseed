@@ -45,11 +45,7 @@ python skyseed_v1/examples/s5_operational_clean/run.py
 python skyseed_v1/tests/run.py
 ```
 
-`unittest discover` 是等价的自动化接口。旧基线套件仍可运行：
-
-```bash
-/home/seed/miniconda3/envs/seed310/bin/python \
-  -m unittest discover -s satellite -p 'test_*.py'
-```
+`unittest discover` 是等价的自动化接口。v1 之前的回归套件保留在 Git 历史和
+全量备份仓库中，不再作为当前检出的第二套活跃测试或实现树。
 
 依赖规则见 `ARCHITECTURE_ZH.md`，分阶段切换计划见 `MIGRATION_ZH.md`。

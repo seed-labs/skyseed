@@ -1,16 +1,8 @@
-satellite/configs/*
-!satellite/configs/iteration2_small_scale/
-!satellite/configs/iteration2_small_scale/*.json
-!satellite/configs/starlink_shell_ground/
-!satellite/configs/starlink_shell_ground/*.json
-!satellite/configs/validation_profiles/
-!satellite/configs/validation_profiles/*.json
-satellite/configs/starlink_shell_preview/
-satellite/configs/starlink_shell_preview_matrix/
-satellite/configs/starlink_shell_runtime_attempt/
-satellite/output/
-satellite/test_bundle_current_network/logs/
-satellite/legacy_phase1/configs/
-satellite/legacy_phase1/output/
+# Local agent/editor state
+/.agents/
+/.codex/
+
+# Python
 **/__pycache__/
-*.pyc
+*.py[cod]
+.venv/

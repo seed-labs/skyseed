@@ -7,6 +7,16 @@ files are frozen records of the structural migration gates.
 
 Last updated: 2026-07-12.
 
+## Canonical repository surface
+
+The current repository tree contains only the standalone `skyseed_v1/`
+implementation plus the repository README and ignore policy. The pre-v1
+`satellite/` implementation, prototype `ai-code/`, and migration-era
+`WORKTREE_MAP.md` were removed in a normal follow-up commit after v1 cutover;
+their history remains available in Git and the archival backup remote. The
+69/69 v1 suite and both direct example inspections pass with those directories
+physically absent.
+
 ## Current cheap gates
 
 - latest completed full v1 suite: 69/69 pass;

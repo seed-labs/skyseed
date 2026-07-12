@@ -69,14 +69,9 @@ From the repository root:
 python skyseed_v1/tests/run.py
 ```
 
-`unittest discover` remains an equivalent automation interface.
-
-The legacy baseline suite remains:
-
-```bash
-/home/seed/miniconda3/envs/seed310/bin/python \
-  -m unittest discover -s satellite -p 'test_*.py'
-```
+`unittest discover` remains an equivalent automation interface. The pre-v1
+regression suite is retained in Git history and the archival backup repository;
+it is not a second active test or implementation tree in the current checkout.
 
 See `ARCHITECTURE_EN.md` for dependency rules and `MIGRATION_EN.md` for the staged
 cutover plan.
