@@ -21,7 +21,7 @@ satellite research platform.
 - `design_principle.md` is the Iteration 2 source of truth. New implementation
   work must align with it or update it first.
 - Large changes should start from boundaries, interfaces, schemas, and
-  invariants, not from direct edits in `controller.py` or `mpls_control.py`.
+  invariants, with tests that cover the current clean path.
 - If the current implementation and the desired architecture diverge, document
   the gap explicitly instead of silently hardening the current behavior.
 
@@ -77,7 +77,7 @@ satellite research platform.
   - `Risks`
   - `Next Recommended Action`
 - If validation commands are run, record them in `status.md` or in the session
-  reply with enough detail to reproduce them.
+  reply with enough detail to diagnose them.
 
 ## Validation And Evidence
 

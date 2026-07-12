@@ -3,6 +3,7 @@
 
 import sys
 import copy
+import inspect
 import json
 import tempfile
 import unittest
@@ -29,11 +30,17 @@ from apps.run_starlink_shell_experiment import (  # noqa: E402
     _bpf_triple_buffer_physical_generation_id,
     _advance_link_state_for_bpf_owned_parameter_skip,
     _merge_horizon_maintenance_handoff_preloaded_records,
+    _merge_bpf_owned_route_identity_evidence,
+    _merge_prepared_attach_capability_readiness,
+    _maintenance_horizon_ids,
+    _retired_bpf_generation_cleanup_candidate_horizon_status,
+    _retired_cleanup_candidate_lifecycle_transition,
+    _stage_bpf_owned_readiness_for_preloaded_apply,
     _bpf_owned_host_plan_without_parameter_updates,
     _compact_epoch_execution_record,
     _compact_preloaded_generation_record,
-    _rolling_horizon_bpf_preload_work_item,
     _rolling_horizon_deferred_bpf_generation_record,
+    _rolling_horizon_process_preload_work_item,
     _rolling_horizon_queued_bpf_generation_record,
     _compose_service_metadata,
     _compose_startup_wall_time_attribution,
@@ -42,6 +49,7 @@ from apps.run_starlink_shell_experiment import (  # noqa: E402
     _compose_stage_recovery_timeout_seconds,
     _compose_stage_retry_batches,
     _compose_stage_timeout_seconds,
+    _copy_artifact,
     _continuous_operation_summary,
     _continuous_total_horizon_seconds,
     _delta_scoped_network_mutation_plan,
@@ -52,34 +60,90 @@ from apps.run_starlink_shell_experiment import (  # noqa: E402
     _horizon_id_for_queue_entry_from_plan,
     _materialized_lookahead_attach_budget_expansion,
     _horizon_lifecycle_queue_contract,
+    _input_profile_config_hash,
     _prepare_replenished_host_plan_payloads,
+    _select_prepared_replenished_host_plan_payloads,
     _prepare_frozen_rolling_horizon_segments,
     _preview_summary_to_segment,
+    _retired_bpf_generation_cleanup_candidate_horizon_status,
     _run_replenishment_preview,
     _normal_runtime_inputs_with_bpf_generation_slots,
     _normal_runtime_inputs_with_bpf_resident_attach_budget,
     _thaw_normal_runtime_initial_segment,
     _bundle_backed_live_execution_source_gate,
-    _bundle_backed_compose_pre_runtime_prepare_proof,
     _bundle_backed_minimal_helper_consumption_proof,
-    _bundle_backed_1p1_horizon_runtime_proof,
-    _bundle_backed_one_horizon_runtime_proof,
     _bundle_backed_runtime_source_binding_gate,
     _frozen_bundle_normal_runtime_inputs_gate,
     _load_frozen_prepared_bundle_gate,
     _precompose_bpf_role_union_gate_from_reports,
     _precompose_horizon_queue_gate,
+    _prepared_bundle_with_externalized_executable_inputs,
     _prepared_attach_capability_readiness_for_preload,
     _resource_scope_delta_by_slot,
     _verify_frozen_prepared_bundle,
     _write_json_breaking_hardlink,
     _live_timing_summary,
     _runtime_failure_context_summary,
+    _run_live_temporal_runtime,
+    _runtime_queue_bpf_route_identity_contexts,
     _stage_ready_service_names,
     _temporal_execution_queue,
     _wait_for_compose_containers,
 )
-from contracts import NetworkMutationPlan  # noqa: E402
+from contracts import (  # noqa: E402
+    NetworkMutationPlan,
+    RuntimeUpdatePlan,
+    TopologySnapshot,
+    RUNTIME_UPDATE_PLAN_SCHEMA_VERSION,
+    TOPOLOGY_SNAPSHOT_SCHEMA_VERSION,
+)
+from linux_mpls_runtime import (  # noqa: E402
+    DirectGatewayExperimentContext,
+    MplsPathSegment,
+    _bpf_owned_prepared_attach_capability_contract,
+)
+
+
+def _direct_gateway_context(flow_id: str = "flow-a") -> DirectGatewayExperimentContext:
+    segment = MplsPathSegment(
+        link_id="link-a",
+        source_node_id="stl-a",
+        source_node_type="satellite",
+        source_interface="sat-a",
+        source_ip="10.0.0.1",
+        destination_node_id="gw-a",
+        destination_node_type="gateway",
+        destination_interface="gw-a",
+        destination_ip="10.0.0.2",
+        label=100,
+    )
+    return DirectGatewayExperimentContext(
+        flow_id=flow_id,
+        ut_id="ut-a",
+        zone_id="zone-a",
+        serving_satellite_id="stl-a",
+        selected_gateway_id="gw-a",
+        selected_gateway_satellite_id="stl-a",
+        zone_return_prefixes=("10.90.0.2/32",),
+        ping_target_ip="192.0.2.10",
+        target_host_node_id="target",
+        policy_table_id=101,
+        policy_rule_priority=101,
+        satellite_path=("stl-a",),
+        forward_labels=(100,),
+        reverse_labels=(200,),
+        ut_access_interface="ut-a",
+        ut_access_ip="10.90.0.2",
+        ut_access_peer_ip="10.90.0.1",
+        gateway_access_interface="gw-a",
+        gateway_access_ip="10.91.0.2",
+        gateway_access_peer_ip="10.91.0.1",
+        gateway_nat_interface="gw-nat",
+        gateway_nat_source_ip="198.51.100.2",
+        forward_segments=(segment,),
+        reverse_segments=(segment,),
+        validation_targets=(),
+    )
 
 
 def _temporal_plan() -> dict:
@@ -299,6 +363,239 @@ def _summary_payload_for_test(
 
 
 class EventTimelineRuntimeQueueTests(unittest.TestCase):
+    def test_attach_capability_handoff_preserves_resident_union(self) -> None:
+        existing = {
+            "attach_plan": {"netns:sat-a:if0": ["ingress"]},
+            "attached_interfaces": ["netns:sat-a:if0"],
+            "attached_interface_details": [
+                {
+                    "interface_ref": "netns:sat-a:if0",
+                    "ifindex": 101,
+                    "mac_address": "02:00:00:00:00:01",
+                    "expected_roles": ["g_to_z_classifier"],
+                    "attach_directions": ["ingress"],
+                    "control_plane_ipv4_addrs": [],
+                }
+            ],
+        }
+        handoff = {
+            "ok": True,
+            "attach_plan": {
+                "netns:sat-a:if0": ["egress"],
+                "netns:sat-b:if1": ["ingress"],
+            },
+            "attached_interfaces": [
+                "netns:sat-a:if0",
+                "netns:sat-b:if1",
+            ],
+            "attached_interface_details": [
+                {
+                    "interface_ref": "netns:sat-a:if0",
+                    "ifindex": 101,
+                    "mac_address": "02:00:00:00:00:01",
+                    "expected_roles": ["z_to_g_zone_handoff"],
+                    "attach_directions": ["egress"],
+                    "control_plane_ipv4_addrs": ["10.0.0.1"],
+                },
+                {
+                    "interface_ref": "netns:sat-b:if1",
+                    "ifindex": 202,
+                    "mac_address": "02:00:00:00:00:02",
+                    "expected_roles": ["g_to_z_classifier"],
+                    "attach_directions": ["ingress"],
+                    "control_plane_ipv4_addrs": [],
+                },
+            ],
+        }
+
+        merged = _merge_prepared_attach_capability_readiness(existing, handoff)
+
+        self.assertEqual(merged["prepared_bpf_attach_interface_count"], 2)
+        self.assertEqual(
+            merged["attach_plan"]["netns:sat-a:if0"],
+            ["egress", "ingress"],
+        )
+        self.assertEqual(
+            merged["attached_interface_details"][0]["expected_roles"],
+            ["g_to_z_classifier", "z_to_g_zone_handoff"],
+        )
+        self.assertTrue(merged["resident_attach_capability_union"])
+        self.assertFalse(
+            merged["frozen_interface_binding_cache"]["live_discovery_allowed"]
+        )
+
+    def test_attach_capability_handoff_binding_conflict_fails_closed(self) -> None:
+        detail = {
+            "interface_ref": "netns:sat-a:if0",
+            "ifindex": 101,
+            "mac_address": "02:00:00:00:00:01",
+        }
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "horizon_maintenance_attach_capability_ifindex_conflict",
+        ):
+            _merge_prepared_attach_capability_readiness(
+                {
+                    "attached_interfaces": [detail["interface_ref"]],
+                    "attached_interface_details": [detail],
+                },
+                {
+                    "attached_interfaces": [detail["interface_ref"]],
+                    "attached_interface_details": [{**detail, "ifindex": 202}],
+                },
+            )
+
+    def test_retired_cleanup_candidates_wait_then_promote_full_horizon(self) -> None:
+        pending: dict[str, dict[int, dict]] = {}
+        for generation_id in range(25):
+            transition = _retired_cleanup_candidate_lifecycle_transition(
+                pending_by_horizon=pending,
+                candidate={
+                    "generation_id": generation_id,
+                    "horizon_id": "H0",
+                    "compiled_runtime_inputs": {
+                        "schema_version": (
+                            "skyseed-bpf-owned-compiled-runtime-inputs-v2"
+                        ),
+                        "active_generation": {"value": generation_id},
+                        "ingress_classifier_map": [],
+                            "ut_gateway_policy_map": [],
+                            "gateway_selector_ingress_map": [],
+                        "core_lfib_map": [],
+                        "egress_handoff_map": [],
+                            "zone_edge_delivery_map": [],
+                        "generation_base_map": [],
+                    },
+                },
+                readiness={"current_horizon_id": "H0"},
+            )
+            self.assertTrue(transition["pending"])
+        promoted = _retired_cleanup_candidate_lifecycle_transition(
+            pending_by_horizon=pending,
+            candidate={
+                "generation_id": 24,
+                "horizon_id": "H0",
+                "compiled_runtime_inputs": {
+                    "schema_version": (
+                        "skyseed-bpf-owned-compiled-runtime-inputs-v2"
+                    ),
+                    "active_generation": {"value": 24},
+                    "ingress_classifier_map": [],
+                            "ut_gateway_policy_map": [],
+                            "gateway_selector_ingress_map": [],
+                    "core_lfib_map": [],
+                    "egress_handoff_map": [],
+                            "zone_edge_delivery_map": [],
+                    "generation_base_map": [],
+                },
+            },
+            readiness={"current_horizon_id": "H1"},
+        )
+
+        self.assertFalse(promoted["pending"])
+        self.assertEqual(promoted["promoted_candidate_count"], 25)
+        self.assertEqual(pending, {})
+
+    def test_staged_horizon_does_not_relabel_active_horizon(self) -> None:
+        staged = _stage_bpf_owned_readiness_for_preloaded_apply(
+            {"current_horizon_id": "H0", "current_source_state_id": "state-h0"},
+            target_horizon_id="H1",
+            source_state_id="state-h1-source",
+        )
+
+        self.assertEqual(staged["current_horizon_id"], "H0")
+        self.assertEqual(staged["current_source_state_id"], "state-h0")
+        self.assertEqual(staged["staged_target_horizon_id"], "H1")
+
+    def test_route_identity_handoff_merges_previous_and_worker_evidence(self) -> None:
+        merged = _merge_bpf_owned_route_identity_evidence(
+            {
+                "ut_default_routes": [
+                    {"key": ["ut1", "ua0", "10.0.0.1", "10.0.0.2"]}
+                ],
+                "gateway_local_return_routes": [],
+            },
+            {
+                "ut_default_routes": [],
+                "gateway_local_return_routes": [
+                    {
+                        "key": [
+                            "gw1",
+                            "ga0",
+                            "10.1.0.1",
+                            "10.1.0.2",
+                            "10.0.0.2",
+                        ]
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(merged["ut_default_route_count"], 1)
+        self.assertEqual(merged["gateway_local_return_route_count"], 1)
+        self.assertEqual(len(merged["ut_default_routes"]), 1)
+        self.assertEqual(len(merged["gateway_local_return_routes"]), 1)
+
+    def test_live_runtime_does_not_reach_back_to_normal_runtime_inputs(self) -> None:
+        source = inspect.getsource(_run_live_temporal_runtime)
+
+        self.assertNotIn("normal_runtime_inputs", source)
+
+    def test_pre_runtime_route_contexts_use_live_runtime_queue_contexts(self) -> None:
+        context = _direct_gateway_context("flow-a")
+        queue = [
+            {
+                "classification": "runtime_epoch",
+                "segment_epoch_key": "initial:slice-a",
+                "slice_id": "slice-a",
+                "epoch_id": "runtime-a",
+                "runtime_apply_allowed": True,
+            }
+        ]
+        context_by_key = {
+            "initial:slice-a": {
+                "snapshot": object(),
+                "runtime_update_plan": object(),
+                "topology_path": "/tmp/slice-a-topology.json",
+            }
+        }
+
+        with patch(
+            "apps.run_starlink_shell_experiment._realization_contexts",
+            return_value=(context,),
+        ) as realization_contexts:
+            result = _runtime_queue_bpf_route_identity_contexts(
+                entries=queue,
+                context_by_key=context_by_key,
+                default_topology_path=Path("/tmp/default-topology.json"),
+            )
+
+        self.assertEqual(result, (context,))
+        realization_contexts.assert_called_once()
+        self.assertEqual(
+            realization_contexts.call_args.kwargs["topology_path"],
+            Path("/tmp/slice-a-topology.json"),
+        )
+
+    def test_pre_runtime_route_contexts_fail_closed_on_missing_queue_context(self) -> None:
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "runtime queue route context missing",
+        ):
+            _runtime_queue_bpf_route_identity_contexts(
+                entries=[
+                    {
+                        "classification": "runtime_epoch",
+                        "segment_epoch_key": "initial:slice-a",
+                        "slice_id": "slice-a",
+                        "epoch_id": "runtime-a",
+                        "runtime_apply_allowed": True,
+                    }
+                ],
+                context_by_key={},
+                default_topology_path=Path("/tmp/default-topology.json"),
+            )
+
     def test_bpf_triple_buffer_physical_generation_uses_local_horizon_slots(self) -> None:
         slot_width = _bpf_triple_buffer_generation_slot_width(7)
 
@@ -339,6 +636,37 @@ class EventTimelineRuntimeQueueTests(unittest.TestCase):
                 generation_slot_width=9,
             )
 
+    def test_four_horizon_maintenance_cleanup_follows_retired_horizon(self) -> None:
+        records = []
+        expected = [
+            ("H0", ""),
+            ("H1", "H0"),
+            ("H2", "H1"),
+            ("H3", "H2"),
+        ]
+        observed = []
+        for index, horizon_id in enumerate(("H0", "H1", "H2", "H3")):
+            records.append({"horizon_id": horizon_id, "segment_index": index})
+            current, previous = _maintenance_horizon_ids(
+                current_horizon_id=horizon_id,
+                segment_records=records,
+            )
+            observed.append((current, previous))
+        self.assertEqual(observed, expected)
+
+        self.assertFalse(
+            _retired_bpf_generation_cleanup_candidate_horizon_status(
+                candidate={"horizon_id": "H1", "generation_id": 32},
+                readiness={"current_horizon_id": "H1"},
+            )["retired"]
+        )
+        self.assertTrue(
+            _retired_bpf_generation_cleanup_candidate_horizon_status(
+                candidate={"horizon_id": "H0", "generation_id": 0},
+                readiness={"current_horizon_id": "H1"},
+            )["retired"]
+        )
+
     def test_bpf_generation_slot_width_uses_horizon_budget(self) -> None:
         self.assertEqual(
             _bpf_generation_slot_width_for_horizon_budget(
@@ -371,11 +699,14 @@ class EventTimelineRuntimeQueueTests(unittest.TestCase):
 
     def test_horizon_maintenance_handoff_merges_full_preloaded_records(self) -> None:
         compiled_inputs = {
-            "schema_version": "skyseed-bpf-owned-compiled-runtime-inputs-v1",
+            "schema_version": "skyseed-bpf-owned-compiled-runtime-inputs-v2",
             "active_generation": {"value": 32},
             "ingress_classifier_map": [],
+                            "ut_gateway_policy_map": [],
+                            "gateway_selector_ingress_map": [],
             "core_lfib_map": [],
             "egress_handoff_map": [],
+                            "zone_edge_delivery_map": [],
         }
         result = _merge_horizon_maintenance_handoff_preloaded_records(
             readiness={
@@ -522,34 +853,54 @@ class EventTimelineRuntimeQueueTests(unittest.TestCase):
                 "validation_expectations": {},
             }
 
+        current_entries = [
+            {
+                "segment_epoch_key": "current-horizon:slice-1",
+                "horizon_id": "current-horizon",
+                "slice_id": "slice-1",
+                "classification": "runtime_epoch",
+            },
+            {
+                "segment_epoch_key": "current-horizon:slice-2",
+                "horizon_id": "current-horizon",
+                "slice_id": "slice-2",
+                "classification": "parameter_epoch",
+            },
+        ]
+        replenished_entries = [
+            {
+                "segment_epoch_key": "replenished-001:slice-3",
+                "horizon_id": "replenished-001",
+                "slice_id": "slice-3",
+                "classification": "runtime_epoch",
+            }
+        ]
+        current_contexts = {
+            "slice-1": {"runtime_update_plan": plan_payload("plan-1", "snap-1")},
+            "slice-2": {"runtime_update_plan": plan_payload("plan-2", "snap-2")},
+        }
+        replenished_contexts = {
+            "slice-3": {"runtime_update_plan": plan_payload("plan-3", "snap-3")}
+        }
         normal_inputs = {
             "initial_segment": {
                 "segment_id": "current-horizon",
-                "current_execution_queue": [
-                    {
-                        "segment_epoch_key": "current-horizon:slice-1",
-                        "horizon_id": "current-horizon",
-                        "slice_id": "slice-1",
-                        "classification": "runtime_epoch",
-                    },
-                    {
-                        "segment_epoch_key": "current-horizon:slice-2",
-                        "horizon_id": "current-horizon",
-                        "slice_id": "slice-2",
-                        "classification": "parameter_epoch",
-                    },
-                    {
-                        "segment_epoch_key": "replenished-001:slice-3",
-                        "horizon_id": "replenished-001",
-                        "slice_id": "slice-3",
-                        "classification": "runtime_epoch",
-                    },
-                ],
+                "current_execution_queue": current_entries,
             },
-            "context_by_slice": {
-                "slice-1": {"runtime_update_plan": plan_payload("plan-1", "snap-1")},
-                "slice-2": {"runtime_update_plan": plan_payload("plan-2", "snap-2")},
-                "slice-3": {"runtime_update_plan": plan_payload("plan-3", "snap-3")},
+            "prepared_horizon_segments": [
+                {
+                    "segment_id": "current-horizon",
+                    "current_execution_queue": current_entries,
+                },
+                {
+                    "segment_id": "replenished-001",
+                    "current_execution_queue": replenished_entries,
+                },
+            ],
+            "context_by_slice": dict(current_contexts),
+            "context_by_slice_by_segment": {
+                "current-horizon": dict(current_contexts),
+                "replenished-001": dict(replenished_contexts),
             },
             "context_by_segment_key": {
                 "current-horizon:slice-1": {
@@ -588,31 +939,34 @@ class EventTimelineRuntimeQueueTests(unittest.TestCase):
             sample_interval_seconds=10.0,
             observed_generation_count=3,
         )
-        plans = patched["runtime_update_plan_by_segment_key"]
         self.assertEqual(
-            plans["current-horizon:slice-1"]["target_snapshot"][
-                "bpf_physical_generation_id"
-            ],
+            patched["context_by_slice_by_segment"]["current-horizon"]["slice-1"][
+                "runtime_update_plan"
+            ]["target_snapshot"]["bpf_physical_generation_id"],
             0,
         )
         self.assertEqual(
-            plans["current-horizon:slice-2"]["target_snapshot"][
-                "bpf_physical_generation_id"
-            ],
+            patched["context_by_slice_by_segment"]["current-horizon"]["slice-2"][
+                "runtime_update_plan"
+            ]["target_snapshot"]["bpf_physical_generation_id"],
             1,
         )
         self.assertEqual(
-            plans["replenished-001:slice-3"]["target_snapshot"][
-                "bpf_physical_generation_id"
-            ],
+            patched["context_by_slice_by_segment"]["replenished-001"]["slice-3"][
+                "runtime_update_plan"
+            ]["target_snapshot"]["bpf_physical_generation_id"],
             slot_width,
         )
         self.assertEqual(
-            patched["context_by_slice"]["slice-3"]["runtime_update_plan"][
+            patched["context_by_slice_by_segment"]["replenished-001"]["slice-3"][
+                "runtime_update_plan"
+            ][
                 "target_snapshot"
             ]["bpf_generation_buffer_index"],
             1,
         )
+        self.assertNotIn("runtime_update_plan_by_segment_key", patched)
+        self.assertNotIn("context_by_segment_key", patched)
         self.assertEqual(
             patched["bpf_generation_slot_allocator"]["assignment_count"],
             3,
@@ -659,6 +1013,17 @@ class EventTimelineRuntimeQueueTests(unittest.TestCase):
             self.assertEqual(json.loads(source_path.read_text())["bundle_id"], "frozen")
             self.assertEqual(json.loads(alias_path.read_text())["bundle_id"], "runtime")
             self.assertNotEqual(source_path.stat().st_ino, alias_path.stat().st_ino)
+
+    def test_immutable_artifact_copy_is_a_hardlink_without_copy_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source_path = Path(tmpdir) / "source.json"
+            destination_path = Path(tmpdir) / "config" / "source.json"
+            source_path.write_text('{"payload":"frozen"}\n', encoding="utf-8")
+
+            _copy_artifact(source_path, destination_path)
+
+            self.assertEqual(source_path.stat().st_ino, destination_path.stat().st_ino)
+            self.assertEqual(source_path.stat().st_nlink, 2)
 
     def test_materialized_lookahead_attach_budget_expands_only_safe_scope(
         self,
@@ -983,15 +1348,18 @@ class EventTimelineRuntimeQueueTests(unittest.TestCase):
             )
         )
 
-    def test_bpf_preload_base_resolver_builds_manifest_only_batch_work_item(
+    def test_bpf_preload_base_resolver_builds_process_work_item(
         self,
     ) -> None:
         compiled_inputs = {
-            "schema_version": "skyseed-bpf-owned-compiled-runtime-inputs-v1",
+            "schema_version": "skyseed-bpf-owned-compiled-runtime-inputs-v2",
             "active_generation": {"value": 42},
             "ingress_classifier_map": [],
+                            "ut_gateway_policy_map": [],
+                            "gateway_selector_ingress_map": [],
             "core_lfib_map": [],
             "egress_handoff_map": [],
+                            "zone_edge_delivery_map": [],
             "bpf_generation_overlay_manifest": {
                 "manifest_only_loader_required": True,
                 "batch_map_write_required": True,
@@ -1013,19 +1381,20 @@ class EventTimelineRuntimeQueueTests(unittest.TestCase):
             "physical_generation_id": 67,
             "intent_hash": "intent-67",
         }
-
         self.assertTrue(base_record["ok"])
         self.assertEqual(
             base_record["source"],
             "readiness.active_generation_compiled_runtime_inputs",
         )
-        work_item = _rolling_horizon_bpf_preload_work_item(
-            segment_index=1,
-            segment_id="H1",
-            horizon_id="H1",
+        work_item = _rolling_horizon_process_preload_work_item(
             generation_item=generation_item,
+            entry={"epoch_id": "epoch-1", "slice_id": "slice-0001", "segment_id": "H1"},
+            state_contract={
+                "source_state_id": "live_state:h0",
+                "target_state_id": "live_state:h1",
+            },
+            bpf_generation_slot_width=25,
             retain_generation_ids=[42, 67],
-            prepared_generation_window_count=2,
             base_generation_record=base_record,
         )
         queued_record = _rolling_horizon_queued_bpf_generation_record(
@@ -1040,12 +1409,16 @@ class EventTimelineRuntimeQueueTests(unittest.TestCase):
         )
 
         self.assertEqual(work_item["base_generation_id"], 42)
-        self.assertEqual(work_item["base_generation_compiled_inputs"], compiled_inputs)
-        self.assertTrue(work_item["bpf_map_write_manifest_only"])
-        self.assertTrue(work_item["manifest_only_loader_required"])
-        self.assertTrue(work_item["batch_map_write_required"])
-        self.assertTrue(work_item["prepared_attach_capability_readiness_required"])
-        self.assertFalse(work_item["prepared_attach_capability_readiness_ready"])
+        self.assertEqual(
+            work_item["frozen_compile_owner"],
+            "horizon_maintenance_process_worker_after_additive_prepare",
+        )
+        self.assertEqual(
+            work_item["context_ref"]["segment_epoch_key"],
+            "H1:slice-0001",
+        )
+        self.assertNotIn("base_generation_compiled_inputs", work_item)
+        self.assertTrue(work_item["queued_record"]["preload_queued"])
         self.assertTrue(queued_record["preload_queued"])
         self.assertTrue(queued_record["queued_preload_audit"]["batch_map_write_required"])
         self.assertTrue(
@@ -1071,7 +1444,7 @@ class EventTimelineRuntimeQueueTests(unittest.TestCase):
         self.assertTrue(compact_completed["batch_map_write_used"])
         self.assertEqual(compact_completed["batch_map_write_update_count"], 3)
 
-    def test_bpf_preload_work_item_carries_frozen_attach_capability_readiness(
+    def test_prepared_attach_capability_readiness_compacts_attach_proof(
         self,
     ) -> None:
         readiness = {
@@ -1086,14 +1459,20 @@ class EventTimelineRuntimeQueueTests(unittest.TestCase):
                     "interface_ref": "netns:r1:eth0",
                     "attach_directions": ["ingress"],
                     "expected_roles": ["g_to_z_classifier"],
+                    "ifindex": 101,
+                    "mac_address": "02:00:00:00:00:01",
                 },
                 {
                     "interface_ref": "netns:r2:eth0",
                     "attach_directions": ["egress"],
                     "expected_roles": ["egress_handoff"],
+                    "ifindex": 102,
+                    "mac_address": "02:00:00:00:00:02",
                 },
             ],
             "mpls_map_entry_counts": {"ingress_classifier_map": 3},
+                            "ut_gateway_policy_map": [],
+                            "gateway_selector_ingress_map": [],
             "map_capacities": {"classifiers": 128},
             "preactivation_attach_prepare": {
                 "ok": True,
@@ -1109,42 +1488,239 @@ class EventTimelineRuntimeQueueTests(unittest.TestCase):
             ],
         }
         proof = _prepared_attach_capability_readiness_for_preload(readiness)
-        work_item = _rolling_horizon_bpf_preload_work_item(
-            segment_index=1,
-            segment_id="H1",
-            horizon_id="H1",
-            generation_item={
-                "segment_epoch_key": "H1:slice-0001",
-                "generation_id": 2,
-                "physical_generation_id": 2,
-            },
-            retain_generation_ids=[1, 2],
-            prepared_generation_window_count=2,
-            base_generation_record={
-                "ok": True,
-                "record_id": "base-1",
-                "source": "readiness.active_generation_compiled_runtime_inputs",
-                "generation_id": 1,
-                "physical_generation_id": 1,
-                "compiled_runtime_inputs": {"active_generation": {"value": 1}},
-            },
-            prepared_attach_capability_readiness=proof,
-        )
-
-        self.assertTrue(work_item["prepared_attach_capability_readiness_ready"])
-        frozen_proof = work_item["prepared_attach_capability_readiness"]
         self.assertEqual(
-            frozen_proof["preactivation_attach_prepare_records"][0]["artifact_path"],
+            proof["preactivation_attach_prepare_records"][0]["artifact_path"],
             "/tmp/h1-attach.json",
         )
         self.assertEqual(
-            frozen_proof["attach_plan"],
+            proof["attach_plan"],
             {
                 "netns:r1:eth0": ["ingress"],
                 "netns:r2:eth0": ["egress"],
             },
         )
-        self.assertEqual(frozen_proof["prepared_bpf_attach_capability_count"], 2)
+        self.assertEqual(proof["prepared_bpf_attach_capability_count"], 2)
+
+    def test_initial_full_attach_projects_frozen_capability_for_h0_preload(
+        self,
+    ) -> None:
+        detail = {
+            "interface_ref": "netns:r1:eth0",
+            "attach_directions": ["ingress"],
+            "expected_roles": ["g_to_z_classifier"],
+            "ifindex": 101,
+            "mac_address": "02:00:00:00:00:01",
+        }
+        readiness = {
+            "ready": True,
+            "ok": True,
+            "attach_plan": {"netns:r1:eth0": ["ingress"]},
+            "attached_interfaces": ["netns:r1:eth0"],
+            "attached_interface_details": [detail],
+            "prepare_steps": {
+                "real_backend_prepare": {
+                    "ok": True,
+                    "attach_plan": {"netns:r1:eth0": ["ingress"]},
+                    "attached_interfaces": ["netns:r1:eth0"],
+                    "attached_interface_details": [detail],
+                    "compiled_mpls_map_counts": {"ingress_classifier_map": 1},
+                            "ut_gateway_policy_map": [],
+                            "gateway_selector_ingress_map": [],
+                    "map_capacities": {"classifiers": 128},
+                }
+            },
+        }
+
+        proof = _prepared_attach_capability_readiness_for_preload(readiness)
+        contract = _bpf_owned_prepared_attach_capability_contract(proof)
+
+        self.assertTrue(contract["ok"])
+        self.assertEqual(
+            proof["preactivation_attach_prepare"]["source"],
+            "initial_full_attach_result_projection",
+        )
+        self.assertTrue(
+            proof["preactivation_attach_prepare"]["source_runtime_apply_occurred"]
+        )
+        self.assertTrue(
+            proof["preactivation_attach_prepare"]["runtime_apply_skipped"]
+        )
+        self.assertFalse(
+            proof["preactivation_attach_prepare"]["active_generation_set"]
+        )
+        self.assertEqual(proof["prepared_bpf_attach_capability_count"], 1)
+
+    def test_process_preload_work_item_uses_immutable_context_reference(
+        self,
+    ) -> None:
+        work_item = _rolling_horizon_process_preload_work_item(
+            generation_item={
+                "segment_epoch_key": "H1:slice-0001",
+                "generation_id": 67,
+                "logical_generation_id": 0,
+                "physical_generation_id": 67,
+                "intent_hash": "intent-67",
+            },
+            entry={"epoch_id": "epoch-1", "slice_id": "slice-0001"},
+            state_contract={
+                "source_state_id": "live_state:h0",
+                "target_state_id": "live_state:h1",
+            },
+            bpf_generation_slot_width=25,
+            retain_generation_ids=[42, 67],
+            base_generation_record={
+                "generation_id": 42,
+                "physical_generation_id": 42,
+                "compiled_runtime_inputs": {
+                    "schema_version": "skyseed-bpf-owned-compiled-runtime-inputs-v2",
+                    "active_generation": {"value": 42},
+                    "ingress_classifier_map": [],
+                            "ut_gateway_policy_map": [],
+                            "gateway_selector_ingress_map": [],
+                    "core_lfib_map": [],
+                    "egress_handoff_map": [],
+                            "zone_edge_delivery_map": [],
+                },
+            },
+        )
+
+        self.assertNotIn("frozen_compiled_runtime_inputs", work_item)
+        self.assertEqual(
+            work_item["frozen_compile_owner"],
+            "horizon_maintenance_process_worker_after_additive_prepare",
+        )
+        self.assertNotIn("context", work_item)
+        self.assertEqual(
+            work_item["context_ref"]["segment_epoch_key"],
+            "H1:slice-0001",
+        )
+        self.assertTrue(work_item["queued_record"]["preload_queued"])
+
+    def test_process_preload_work_item_does_not_copy_typed_contract_context(self) -> None:
+        snapshot = TopologySnapshot(
+            schema_version=TOPOLOGY_SNAPSHOT_SCHEMA_VERSION,
+            snapshot_id="slice-typed-0001",
+            time_slice={"slice_id": "slice-typed-0001", "state_model": "full_state"},
+            provenance={"source": "typed-r127-replay"},
+            nodes={},
+            active_links=[],
+            zones={},
+            ut_zone_membership={},
+        )
+        plan = RuntimeUpdatePlan(
+            schema_version=RUNTIME_UPDATE_PLAN_SCHEMA_VERSION,
+            plan_id="plan-typed-0001",
+            target_snapshot={"snapshot_id": snapshot.snapshot_id},
+            planner={"planner_name": "typed-r127-replay"},
+            apply_model={
+                "state_model": "full_state_intent",
+                "action_model": "runtime-action-v1",
+            },
+            node_subplans={},
+            replacement_semantics={},
+            validation_expectations={},
+        )
+        work_item = _rolling_horizon_process_preload_work_item(
+            generation_item={
+                "segment_epoch_key": "H1:slice-typed-0001",
+                "generation_id": 67,
+                "logical_generation_id": 0,
+                "physical_generation_id": 67,
+                "intent_hash": "intent-typed-67",
+            },
+            entry={"epoch_id": "epoch-typed-1", "slice_id": snapshot.snapshot_id},
+            state_contract={},
+            bpf_generation_slot_width=25,
+            retain_generation_ids=[42, 67],
+            base_generation_record={"generation_id": 42},
+        )
+
+        self.assertNotIn("context", work_item)
+        self.assertEqual(
+            work_item["context_ref"]["segment_epoch_key"],
+            "H1:slice-typed-0001",
+        )
+
+    def test_process_preload_work_item_rejects_missing_context_reference(self) -> None:
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "process_worker_preload_context_ref_missing",
+        ):
+            _rolling_horizon_process_preload_work_item(
+                generation_item={
+                    "segment_epoch_key": "",
+                    "generation_id": 67,
+                    "logical_generation_id": 0,
+                    "physical_generation_id": 67,
+                    "intent_hash": "intent-67",
+                },
+                entry={"epoch_id": "epoch-1", "slice_id": "slice-0001"},
+                state_contract={},
+                bpf_generation_slot_width=25,
+                retain_generation_ids=[42, 67],
+                base_generation_record={"generation_id": 42},
+            )
+
+    def test_process_preload_work_item_assigns_freeze_to_worker(self) -> None:
+        work_item = _rolling_horizon_process_preload_work_item(
+            generation_item={
+                "segment_epoch_key": "H1:slice-0001",
+                "generation_id": 67,
+                "logical_generation_id": 0,
+                "physical_generation_id": 67,
+                "intent_hash": "intent-67",
+            },
+            entry={"epoch_id": "epoch-1", "slice_id": "slice-0001"},
+            state_contract={
+                "source_state_id": "live_state:h0",
+                "target_state_id": "live_state:h1",
+            },
+            bpf_generation_slot_width=25,
+            retain_generation_ids=[42, 67],
+            base_generation_record={"generation_id": 42},
+        )
+
+        self.assertEqual(
+            work_item["frozen_compile_owner"],
+            "horizon_maintenance_process_worker_after_additive_prepare",
+        )
+        self.assertEqual(
+            work_item["context_ref"]["segment_epoch_key"],
+            "H1:slice-0001",
+        )
+        self.assertNotIn("frozen_compiled_runtime_inputs", work_item)
+        self.assertTrue(work_item["queued_record"]["preload_queued"])
+
+    def test_retired_cleanup_candidate_must_be_from_retired_horizon(self) -> None:
+        current_horizon = _retired_bpf_generation_cleanup_candidate_horizon_status(
+            candidate={
+                "generation_id": 1,
+                "horizon_id": "H0",
+                "horizon_generation_key": "H0:generation-1",
+            },
+            readiness={
+                "current_horizon_id": "H0",
+                "active_generation": 2,
+            },
+        )
+        retired_horizon = _retired_bpf_generation_cleanup_candidate_horizon_status(
+            candidate={
+                "generation_id": 24,
+                "horizon_id": "H0",
+                "horizon_generation_key": "H0:generation-24",
+            },
+            readiness={
+                "current_horizon_id": "H1",
+                "active_generation": 32,
+            },
+        )
+
+        self.assertFalse(current_horizon["retired"])
+        self.assertEqual(
+            current_horizon["reason"],
+            "candidate_horizon_is_current_active_horizon",
+        )
+        self.assertTrue(retired_horizon["retired"])
 
     def test_normal_runtime_inputs_carry_resident_attach_budget(self) -> None:
         plan = {
@@ -1622,6 +2198,69 @@ class EventTimelineRuntimeQueueTests(unittest.TestCase):
                 current_state_id="live_state:snap-h0-001:epoch-h0-001",
                 resolve_existing_host_plan=lambda *_args: None,  # type: ignore[arg-type,return-value]
                 build_host_plan=lambda *_args: None,  # type: ignore[arg-type,return-value]
+            )
+
+    def test_frozen_replenished_host_plan_selection_does_not_replay_state(self) -> None:
+        segment_key = "replenished-001:slice-001"
+        plan = NetworkMutationPlan(
+            schema_version="test-plan-v1",
+            mutation_id="mut-h1-001",
+            source_snapshot={"source_state_id": "prepared-source"},
+            target_scope={},
+            execution_boundary={},
+            operations=[],
+            validation_expectations={},
+        )
+
+        selected = _select_prepared_replenished_host_plan_payloads(
+            accepted_entries=[{"segment_epoch_key": segment_key}],
+            prepared_host_plan_by_segment_key={segment_key: plan.to_dict()},
+            prepared_source_state_chain=[
+                {
+                    "segment_epoch_key": segment_key,
+                    "source_state_id": "prepared-source",
+                    "target_state_id": "prepared-target",
+                    "host_plan_mutation_id": "mut-h1-001",
+                }
+            ],
+            current_state_id="live-current-state",
+        )
+
+        self.assertTrue(selected["selection_only"])
+        self.assertFalse(selected["live_future_state_chain_replay"])
+        self.assertEqual(selected["prepared_host_plan_count"], 1)
+        self.assertEqual(
+            selected["source_state_chain"][0]["selection_source"],
+            "frozen_reference",
+        )
+
+    def test_frozen_replenished_host_plan_selection_fails_on_identity_mismatch(
+        self,
+    ) -> None:
+        segment_key = "replenished-001:slice-001"
+        plan = NetworkMutationPlan(
+            schema_version="test-plan-v1",
+            mutation_id="mut-h1-001",
+            source_snapshot={"source_state_id": "prepared-source"},
+            target_scope={},
+            execution_boundary={},
+            operations=[],
+            validation_expectations={},
+        )
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "frozen_bundle_prepared_host_plan_reference_mismatch",
+        ):
+            _select_prepared_replenished_host_plan_payloads(
+                accepted_entries=[{"segment_epoch_key": segment_key}],
+                prepared_host_plan_by_segment_key={segment_key: plan.to_dict()},
+                prepared_source_state_chain=[
+                    {
+                        "segment_epoch_key": segment_key,
+                        "host_plan_mutation_id": "wrong-mutation",
+                    }
+                ],
+                current_state_id="live-current-state",
             )
 
     def test_replenishment_preview_uses_replenished_artifact_source_paths(
@@ -2219,7 +2858,7 @@ class EventTimelineRuntimeQueueTests(unittest.TestCase):
             90.0,
         )
 
-    def test_progress_contract_blocks_absolute_startup_cap(self) -> None:
+    def test_progress_contract_continues_past_absolute_cap_with_recent_progress(self) -> None:
         contract = _compose_startup_progress_contract(
             base_timeout_seconds=900.0,
             elapsed_seconds=1501.0,
@@ -2234,19 +2873,47 @@ class EventTimelineRuntimeQueueTests(unittest.TestCase):
             expected_stage_watchdog_seconds=90.0,
             container_count_increased=True,
             current_stage_changed=True,
+            docker_responsive=True,
+        )
+
+        self.assertTrue(contract["allow_continue"])
+        self.assertEqual(contract["classification"], "high_progress_continue")
+        self.assertEqual(
+            contract["outcome_label"],
+            "SLOW_BUT_PROGRESSING_CONTINUE",
+        )
+        self.assertTrue(contract["absolute_max_exceeded"])
+        self.assertFalse(contract["hard_cap_exceeded"])
+        self.assertTrue(contract["absolute_max_nonblocking_due_to_progress"])
+        self.assertTrue(contract["recent_progress_observed"])
+        self.assertIsNone(contract["kill_reason"])
+
+    def test_progress_contract_blocks_absolute_startup_cap_without_recent_progress(self) -> None:
+        contract = _compose_startup_progress_contract(
+            base_timeout_seconds=900.0,
+            elapsed_seconds=1501.0,
+            completed_batches=71,
+            total_batches=72,
+            seconds_since_progress=130.0,
+            no_progress_stall_seconds=120.0,
+            high_progress_grace_ratio=0.95,
+            high_progress_grace_seconds=420.0,
+            slow_progress_grace_seconds=180.0,
+            absolute_max_seconds=1500.0,
+            expected_stage_watchdog_seconds=90.0,
+            container_count_increased=False,
+            current_stage_changed=False,
+            docker_responsive=True,
         )
 
         self.assertFalse(contract["allow_continue"])
-        self.assertEqual(contract["classification"], "startup_hard_cap_exceeded")
-        self.assertEqual(
-            contract["outcome_label"],
-            "STARTUP_HARD_CAP_EXCEEDED",
-        )
+        self.assertEqual(contract["classification"], "no_progress_stall")
+        self.assertEqual(contract["outcome_label"], "NO_PROGRESS_STARTUP_STALL")
         self.assertTrue(contract["absolute_max_exceeded"])
         self.assertTrue(contract["hard_cap_exceeded"])
-        self.assertEqual(contract["kill_reason"], "startup_hard_cap_exceeded")
+        self.assertEqual(contract["kill_reason"], "no_progress_stall")
 
-    def test_soft_budget_exceeded_with_recent_progress_warns_without_kill(self) -> None:
+    def test_soft_budget_exceeded_with_recent_progress_records_observation_only(self) -> None:
         contract = _compose_startup_progress_contract(
             base_timeout_seconds=900.0,
             elapsed_seconds=930.0,
@@ -2264,9 +2931,32 @@ class EventTimelineRuntimeQueueTests(unittest.TestCase):
 
         self.assertTrue(contract["allow_continue"])
         self.assertTrue(contract["soft_budget_exceeded"])
+        self.assertFalse(contract["soft_budget_warning"])
         self.assertTrue(contract["progress_observed"])
         self.assertEqual(contract["classification"], "high_progress_continue")
         self.assertEqual(contract["outcome_label"], "SLOW_BUT_PROGRESSING_CONTINUE")
+        self.assertIsNone(contract["kill_reason"])
+
+    def test_elapsed_budget_without_progress_is_observation_not_warning_or_kill(self) -> None:
+        contract = _compose_startup_progress_contract(
+            base_timeout_seconds=900.0,
+            elapsed_seconds=930.0,
+            completed_batches=0,
+            total_batches=84,
+            seconds_since_progress=3.0,
+            no_progress_stall_seconds=120.0,
+            high_progress_grace_ratio=0.95,
+            high_progress_grace_seconds=0.0,
+            slow_progress_grace_seconds=0.0,
+            absolute_max_seconds=0.0,
+            expected_stage_watchdog_seconds=90.0,
+            container_count_increased=False,
+        )
+
+        self.assertTrue(contract["allow_continue"])
+        self.assertEqual(contract["classification"], "startup_elapsed_budget_observed")
+        self.assertIsNone(contract["outcome_label"])
+        self.assertFalse(contract["soft_budget_warning"])
         self.assertIsNone(contract["kill_reason"])
 
     def test_endpoint_stage_retry_uses_single_service_batches(self) -> None:
@@ -3297,16 +3987,26 @@ class FrozenPreparedBundleContractTests(unittest.TestCase):
             "run_id": "ignored",
             "run_root": "/tmp/ignored",
             "format": "json",
-            "prepare_only_no_compose": False,
-            "stop_after_pre_start_gates": False,
-            "bundle_backed_compose_pre_runtime_proof": False,
-            "bundle_backed_one_horizon_runtime_proof": False,
-            "bundle_backed_1p1_horizon_runtime_proof": False,
             "load_frozen_prepared_bundle": None,
             "prepared_bundle_diagnostic_recompute_attempted": False,
         }
         payload.update(overrides)
         return SimpleNamespace(**payload)
+
+    def test_frozen_source_hash_ignores_preview_to_real_runtime_transition(
+        self,
+    ) -> None:
+        preview_args = self._args(run_mode="preview")
+        real_args = self._args(run_mode="real-runtime")
+
+        self.assertEqual(
+            _input_profile_config_hash(preview_args),
+            _input_profile_config_hash(real_args),
+        )
+        self.assertNotEqual(
+            _input_profile_config_hash(preview_args, include_run_mode=True),
+            _input_profile_config_hash(real_args, include_run_mode=True),
+        )
 
     def _frozen_bundle(self, **arg_overrides: object) -> dict:
         start_time = str(
@@ -3470,7 +4170,7 @@ class FrozenPreparedBundleContractTests(unittest.TestCase):
             "link_state_path": "/tmp/link_state.json",
         }
 
-    def test_prepare_only_frozen_bundle_verifies_id_hash_and_ids(self) -> None:
+    def test_frozen_bundle_verifies_id_hash_and_queue_ids(self) -> None:
         bundle = self._frozen_bundle()
 
         gate = _verify_frozen_prepared_bundle(bundle)
@@ -3519,6 +4219,179 @@ class FrozenPreparedBundleContractTests(unittest.TestCase):
             "sliding_window_contract_hash",
             bundle["executable_runtime_inputs"]["hashes"],
         )
+
+    def test_externalized_executable_runtime_inputs_keep_bundle_verifiable(self) -> None:
+        normal_inputs = self._rolling_normal_runtime_inputs()
+        prepared = {
+            "selected_epoch_queue": [
+                entry
+                for segment in normal_inputs["prepared_horizon_segments"]
+                for entry in segment["current_execution_queue"]
+            ],
+            "current_execution_queue": normal_inputs["prepared_horizon_segments"][0][
+                "current_execution_queue"
+            ],
+            "lookahead_preload_queue": [],
+            "precompose_horizon_queue_gate": {
+                "preload_required_event_count": 0,
+            },
+            "prepared_artifacts": {},
+        }
+        bundle = _freeze_prepared_update_bundle(
+            prepared_update_bundle=prepared,
+            args=self._args(
+                continuous=True,
+                horizon_seconds=720,
+                sample_interval=10,
+                replenish_threshold_seconds=120,
+            ),
+            prepared_resource_scope_by_slot={
+                "slot-a": {"netns:node-a:if-a", "link:isl-a"}
+            },
+            precompose_bpf_role_union_gate={
+                "required_interface_role_union": {
+                    "netns:node-a:if-a": ["ingress_classifier"]
+                },
+            },
+            normal_runtime_inputs=normal_inputs,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            compact_bundle = _prepared_bundle_with_externalized_executable_inputs(
+                prepared_update_bundle=bundle,
+                artifact_path=Path(tmp) / "executable_runtime_inputs.json",
+            )
+
+            self.assertNotIn("executable_runtime_inputs", compact_bundle)
+            self.assertTrue(compact_bundle["executable_runtime_inputs_externalized"])
+            executable_path = Path(compact_bundle["executable_runtime_inputs_json"])
+            self.assertTrue(executable_path.exists())
+            executable_text = executable_path.read_text(encoding="utf-8")
+            self.assertTrue(executable_text.startswith('{"'))
+            self.assertNotIn('\n  "', executable_text)
+            self.assertNotIn('"normal_runtime_inputs":', executable_text)
+            normal_path = Path(
+                compact_bundle["prepared_artifacts"]["normal_runtime_inputs_json"]
+            )
+            self.assertTrue(normal_path.exists())
+            self.assertIn('"normal_runtime_inputs_ref":', executable_text)
+
+            gate = _verify_frozen_prepared_bundle(compact_bundle)
+            self.assertTrue(gate["passed"])
+            thawed = _thaw_normal_runtime_initial_segment(compact_bundle)
+            self.assertEqual(thawed["horizon_id"], "H0")
+
+    def test_normal_runtime_inputs_do_not_persist_derived_context_indexes(
+        self,
+    ) -> None:
+        normal_inputs = self._rolling_normal_runtime_inputs()
+
+        patched = _normal_runtime_inputs_with_bpf_generation_slots(
+            normal_runtime_inputs=normal_inputs,
+            args=self._args(
+                continuous=True,
+                horizon_seconds=720,
+                sample_interval=10,
+                replenish_threshold_seconds=120,
+            ),
+        )
+
+        for field in (
+            "context_by_slice",
+            "context_by_segment_key",
+            "runtime_update_plan_by_segment_key",
+            "distribution_batch_by_segment_key",
+            "topology_snapshot_by_segment_key",
+        ):
+            self.assertNotIn(field, patched)
+            self.assertNotIn(f"{field}_hash", patched.get("hashes", {}))
+        self.assertIn("context_by_slice_by_segment", patched)
+        self.assertIn("host_network_mutation_plan_by_segment_key", patched)
+        h1_context = patched["context_by_slice_by_segment"]["H1"]["slice-1"]
+        self.assertIn(
+            "bpf_physical_generation_id",
+            h1_context["runtime_update_plan"]["target_snapshot"],
+        )
+
+    def test_externalized_bundle_accepts_normal_inputs_without_derived_indexes(
+        self,
+    ) -> None:
+        normal_inputs = self._rolling_normal_runtime_inputs()
+        for field in (
+            "context_by_slice",
+            "context_by_segment_key",
+            "runtime_update_plan_by_segment_key",
+            "distribution_batch_by_segment_key",
+            "topology_snapshot_by_segment_key",
+        ):
+            normal_inputs.pop(field, None)
+        normal_inputs["hashes"] = {}
+        prepared = {
+            "selected_epoch_queue": [
+                entry
+                for segment in normal_inputs["prepared_horizon_segments"]
+                for entry in segment["current_execution_queue"]
+            ],
+            "current_execution_queue": normal_inputs["prepared_horizon_segments"][0][
+                "current_execution_queue"
+            ],
+            "lookahead_preload_queue": [],
+            "precompose_horizon_queue_gate": {
+                "preload_required_event_count": 0,
+            },
+            "prepared_artifacts": {},
+        }
+        bundle = _freeze_prepared_update_bundle(
+            prepared_update_bundle=prepared,
+            args=self._args(
+                continuous=True,
+                horizon_seconds=720,
+                sample_interval=10,
+                replenish_threshold_seconds=120,
+            ),
+            prepared_resource_scope_by_slot={
+                "slot-a": {"netns:node-a:if-a", "link:isl-a"}
+            },
+            precompose_bpf_role_union_gate={
+                "required_interface_role_union": {
+                    "netns:node-a:if-a": ["ingress_classifier"]
+                },
+            },
+            normal_runtime_inputs=normal_inputs,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            compact_bundle = _prepared_bundle_with_externalized_executable_inputs(
+                prepared_update_bundle=bundle,
+                artifact_path=Path(tmp) / "executable_runtime_inputs.json",
+            )
+            normal_path = Path(
+                compact_bundle["prepared_artifacts"]["normal_runtime_inputs_json"]
+            )
+            normal_text = normal_path.read_text(encoding="utf-8")
+
+            for field in (
+                "context_by_slice",
+                "context_by_segment_key",
+                "runtime_update_plan_by_segment_key",
+                "distribution_batch_by_segment_key",
+                "topology_snapshot_by_segment_key",
+            ):
+                self.assertNotIn(f'"{field}"', normal_text)
+            self.assertTrue(_verify_frozen_prepared_bundle(compact_bundle)["passed"])
+            thawed = _thaw_normal_runtime_initial_segment(compact_bundle)
+            self.assertEqual(thawed["prepared_horizon_segment_count"], 3)
+            source_gate = _bundle_backed_live_execution_source_gate(
+                load_gate={
+                    "passed": True,
+                    "loaded_bundle_id": compact_bundle["bundle_id"],
+                    "loaded_bundle_hash": compact_bundle["bundle_hash"],
+                },
+            )
+            normal_gate = _frozen_bundle_normal_runtime_inputs_gate(
+                prepared_update_bundle=compact_bundle,
+                runtime_source_gate=source_gate,
+            )
+            self.assertTrue(normal_gate["passed"])
+
 
     def test_frozen_bundle_horizon_plan_uses_prepared_rolling_segments(self) -> None:
         normal_inputs = self._rolling_normal_runtime_inputs()
@@ -3703,12 +4576,11 @@ class FrozenPreparedBundleContractTests(unittest.TestCase):
             blockers,
         )
 
-    def test_bundle_backed_live_execution_source_gate_passes_without_compose(self) -> None:
+    def test_bundle_backed_live_execution_source_gate_allows_normal_runtime(self) -> None:
         load_gate = _verify_frozen_prepared_bundle(self._frozen_bundle())
 
         source_gate = _bundle_backed_live_execution_source_gate(
             load_gate=load_gate,
-            no_compose_proof_mode=True,
         )
 
         self.assertTrue(source_gate["passed"])
@@ -3717,12 +4589,12 @@ class FrozenPreparedBundleContractTests(unittest.TestCase):
         self.assertFalse(source_gate["planner_recomputed"])
         self.assertFalse(source_gate["actual_s4_runtime_proof"])
         self.assertFalse(source_gate["compose_started"])
+        self.assertTrue(source_gate["compose_up_allowed"])
 
     def test_bundle_backed_runtime_source_binding_uses_bundle_for_all_sources(self) -> None:
         bundle = self._frozen_bundle()
         source_gate = _bundle_backed_live_execution_source_gate(
             load_gate=_verify_frozen_prepared_bundle(bundle),
-            no_compose_proof_mode=True,
         )
 
         runtime_gate = _bundle_backed_runtime_source_binding_gate(
@@ -3755,7 +4627,6 @@ class FrozenPreparedBundleContractTests(unittest.TestCase):
         bundle["cleanup_owned_scope"] = {"resource_count": 0}
         source_gate = _bundle_backed_live_execution_source_gate(
             load_gate=_verify_frozen_prepared_bundle(bundle),
-            no_compose_proof_mode=True,
         )
 
         runtime_gate = _bundle_backed_runtime_source_binding_gate(
@@ -3776,7 +4647,6 @@ class FrozenPreparedBundleContractTests(unittest.TestCase):
             prepared_update_bundle=bundle,
             source_gate=_bundle_backed_live_execution_source_gate(
                 load_gate=_verify_frozen_prepared_bundle(bundle),
-                no_compose_proof_mode=True,
             ),
         )
 
@@ -3801,7 +4671,6 @@ class FrozenPreparedBundleContractTests(unittest.TestCase):
             prepared_update_bundle=bundle,
             source_gate=_bundle_backed_live_execution_source_gate(
                 load_gate=_verify_frozen_prepared_bundle(bundle),
-                no_compose_proof_mode=True,
             ),
         )
 
@@ -3830,372 +4699,18 @@ class FrozenPreparedBundleContractTests(unittest.TestCase):
             blockers,
         )
 
-    def test_compose_pre_runtime_prepare_proof_uses_bundle_sources(self) -> None:
-        bundle = self._frozen_bundle()
-        helper_proof = _bundle_backed_minimal_helper_consumption_proof(
-            prepared_update_bundle=bundle,
-            runtime_source_gate=_bundle_backed_runtime_source_binding_gate(
-                prepared_update_bundle=bundle,
-                source_gate=_bundle_backed_live_execution_source_gate(
-                    load_gate=_verify_frozen_prepared_bundle(bundle),
-                    no_compose_proof_mode=True,
-                ),
-            ),
-        )
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_dir = Path(tmpdir) / "seed_output"
-            output_dir.mkdir()
-            (output_dir / "docker-compose.yml").write_text("version: '3'\n", encoding="utf-8")
-            bundle["prepared_compose_output"] = {
-                "seed_output_dir": str(output_dir),
-                "docker_compose_yml": str(output_dir / "docker-compose.yml"),
-            }
-            with patch(
-                "apps.run_starlink_shell_experiment._compose_service_metadata",
-                return_value={
-                    "container_names": ["seed_output_helper_1"],
-                    "service_name_by_container": {"seed_output_helper_1": "helper"},
-                },
-            ), patch(
-                "apps.run_starlink_shell_experiment._compose_audit",
-                return_value={
-                    "service_names_by_type": {"helper": ["seed_output_helper_1"]},
-                    "service_attachment_count": 1,
-                },
-            ), patch(
-                "apps.run_starlink_shell_experiment._compose_up_with_timeout",
-                return_value={"returncode": 0, "timed_out": False, "wall_seconds": 0.01},
-            ) as compose_up, patch(
-                "apps.run_starlink_shell_experiment._compose_down",
-                return_value={"returncode": 0, "stdout": "", "stderr": ""},
-            ) as compose_down:
-                proof = _bundle_backed_compose_pre_runtime_prepare_proof(
-                    prepared_update_bundle=bundle,
-                    helper_consumption_proof=helper_proof,
-                    args=self._args(compose_satellite_batch_size=1, compose_up_timeout_seconds=5),
-                    run_dir=Path(tmpdir),
-                )
 
-        self.assertTrue(proof["passed"])
-        self.assertTrue(proof["compose_started"])
-        self.assertTrue(proof["pre_runtime_prepare_reached"])
-        self.assertEqual(proof["pre_runtime_prepare_source"], "prepared_update_bundle")
-        self.assertEqual(proof["bpf_plan_source"], "prepared_update_bundle")
-        self.assertFalse(proof["runtime_started"])
-        self.assertFalse(proof["network_mutation_executed"])
-        self.assertTrue(proof["cleanup_executed"])
-        compose_up.assert_called_once()
-        compose_down.assert_called_once()
 
-    def test_compose_pre_runtime_prepare_fails_without_cleanup_scope(self) -> None:
-        bundle = self._frozen_bundle()
-        bundle["cleanup_owned_scope"] = {"resource_count": 0}
-        helper_proof = _bundle_backed_minimal_helper_consumption_proof(
-            prepared_update_bundle=bundle,
-            runtime_source_gate=_bundle_backed_runtime_source_binding_gate(
-                prepared_update_bundle=bundle,
-                source_gate=_bundle_backed_live_execution_source_gate(
-                    load_gate=_verify_frozen_prepared_bundle(bundle),
-                    no_compose_proof_mode=True,
-                ),
-            ),
-        )
-        with tempfile.TemporaryDirectory() as tmpdir:
-            proof = _bundle_backed_compose_pre_runtime_prepare_proof(
-                prepared_update_bundle=bundle,
-                helper_consumption_proof=helper_proof,
-                args=self._args(compose_satellite_batch_size=1, compose_up_timeout_seconds=5),
-                run_dir=Path(tmpdir),
-            )
 
-        self.assertFalse(proof["passed"])
-        self.assertIn(
-            "bundle_runtime_cleanup_owned_scope_missing",
-            {blocker["blocker"] for blocker in proof["blockers"]},
-        )
 
-    def test_one_horizon_runtime_proof_fails_without_executable_bundle_inputs(self) -> None:
-        bundle = self._frozen_bundle()
-        bundle.pop("executable_runtime_inputs", None)
-        proof = _bundle_backed_one_horizon_runtime_proof(
-            prepared_update_bundle=bundle,
-            compose_pre_runtime_prepare_proof={
-                "passed": True,
-                "compose_started": True,
-                "pre_runtime_prepare_reached": True,
-                "live_used_frozen_bundle": True,
-                "cleanup_executed": True,
-                "cleanup_source": "prepared_update_bundle",
-                "cleanup_bounded_to_bundle_owned_scope": True,
-            },
-            args=self._args(max_runtime_epochs=1),
-            run_dir=Path("/tmp/ignored"),
-        )
 
-        self.assertFalse(proof["passed"])
-        self.assertFalse(proof["runtime_started"])
-        self.assertTrue(proof["compose_started"])
-        self.assertEqual(proof["runtime_execution_source"], "blocked")
-        blockers = {blocker["blocker"] for blocker in proof["blockers"]}
-        self.assertIn("bundle_one_horizon_runtime_executable_inputs_missing", blockers)
-        self.assertIn(
-            "bundle_one_horizon_runtime_would_recompute_authoritative_plan",
-            blockers,
-        )
-        unsafe = {
-            entry["callsite"]
-            for entry in proof["remaining_recompute_callsites"]
-            if entry["classification"] == "unsafe_runtime_blocker"
-        }
-        self.assertIn("_realization_contexts", unsafe)
-        self.assertIn("_run_window_resource_coverage_plan", unsafe)
 
-    def test_one_horizon_runtime_proof_consumes_executable_bundle_inputs(self) -> None:
-        bundle = self._frozen_bundle()
-        proof = _bundle_backed_one_horizon_runtime_proof(
-            prepared_update_bundle=bundle,
-            compose_pre_runtime_prepare_proof={
-                "passed": True,
-                "compose_started": True,
-                "pre_runtime_prepare_reached": True,
-                "live_used_frozen_bundle": True,
-                "cleanup_executed": True,
-                "cleanup_source": "prepared_update_bundle",
-                "cleanup_bounded_to_bundle_owned_scope": True,
-            },
-            args=self._args(max_runtime_epochs=1),
-            run_dir=Path("/tmp/ignored"),
-        )
 
-        self.assertTrue(proof["passed"])
-        self.assertTrue(proof["runtime_started"])
-        self.assertEqual(proof["runtime_execution_source"], "prepared_update_bundle")
-        self.assertEqual(
-            proof["executable_runtime_inputs_source"],
-            "prepared_update_bundle",
-        )
-        self.assertEqual(proof["executed_horizon_count"], 1)
-        self.assertGreater(proof["runtime_transaction_executed_count"], 0)
-        self.assertEqual(
-            proof["generation_preload_status"],
-            "noop_reuse_equivalent",
-        )
-        self.assertFalse(proof["unsafe_planner_callsites_reached"])
 
-    def test_1p1_horizon_runtime_proof_consumes_h1_preloaded_inputs(self) -> None:
-        bundle = self._frozen_bundle()
-        proof = _bundle_backed_1p1_horizon_runtime_proof(
-            prepared_update_bundle=bundle,
-            compose_pre_runtime_prepare_proof={
-                "passed": True,
-                "compose_started": True,
-                "pre_runtime_prepare_reached": True,
-                "live_used_frozen_bundle": True,
-                "cleanup_executed": True,
-                "cleanup_source": "prepared_update_bundle",
-                "cleanup_bounded_to_bundle_owned_scope": True,
-            },
-            args=self._args(bundle_backed_1p1_horizon_runtime_proof=True),
-            run_dir=Path("/tmp/ignored"),
-        )
 
-        self.assertTrue(proof["passed"])
-        self.assertTrue(proof["runtime_started"])
-        self.assertEqual(proof["executed_horizon_count"], 2)
-        self.assertEqual(proof["executed_horizon_ids"], ["H0", "H1"])
-        self.assertEqual(proof["h1_lookahead_event_ids_during_h0"], ["runtime-2"])
-        self.assertEqual(proof["h1_current_event_ids"], ["runtime-2"])
-        self.assertTrue(proof["h1_preloaded_before_execution"])
-        self.assertTrue(proof["h1_consumed_preloaded_inputs"])
-        self.assertFalse(proof["h1_runtime_recompute_used"])
-        self.assertEqual(proof["runtime_transaction_counts_per_horizon"]["H1"], 1)
-        self.assertEqual(
-            proof["generation_status_per_horizon"]["H1"]["preload"],
-            "consumed_preloaded_inputs",
-        )
-        self.assertFalse(proof["unsafe_planner_callsites_reached"])
 
-    def test_1p1_horizon_runtime_proof_fails_without_h1_preload_context(self) -> None:
-        bundle = self._frozen_bundle()
-        bundle["executable_runtime_inputs"]["lookahead_preload_contexts"] = []
 
-        proof = _bundle_backed_1p1_horizon_runtime_proof(
-            prepared_update_bundle=bundle,
-            compose_pre_runtime_prepare_proof={
-                "passed": True,
-                "compose_started": True,
-                "pre_runtime_prepare_reached": True,
-                "live_used_frozen_bundle": True,
-            },
-            args=self._args(bundle_backed_1p1_horizon_runtime_proof=True),
-            run_dir=Path("/tmp/ignored"),
-        )
 
-        blockers = {blocker["blocker"] for blocker in proof["blockers"]}
-        self.assertFalse(proof["passed"])
-        self.assertIn("bundle_1p1_h1_preload_context_missing", blockers)
-
-    def test_1p1_horizon_runtime_proof_fails_on_runtime_recompute_attempt(self) -> None:
-        bundle = self._frozen_bundle()
-
-        proof = _bundle_backed_1p1_horizon_runtime_proof(
-            prepared_update_bundle=bundle,
-            compose_pre_runtime_prepare_proof={
-                "passed": True,
-                "compose_started": True,
-                "pre_runtime_prepare_reached": True,
-                "live_used_frozen_bundle": True,
-            },
-            args=self._args(
-                bundle_backed_1p1_horizon_runtime_proof=True,
-                bundle_1p1_queue_recompute_attempted=True,
-            ),
-            run_dir=Path("/tmp/ignored"),
-        )
-
-        self.assertFalse(proof["passed"])
-        self.assertIn(
-            "bundle_1p1_runtime_queue_recompute_attempted",
-            {blocker["blocker"] for blocker in proof["blockers"]},
-        )
-
-    def test_1p1_horizon_runtime_proof_fails_without_equivalence_proof(self) -> None:
-        bundle = self._frozen_bundle()
-        bundle["executable_runtime_inputs"]["generation_equivalence_proof"] = {}
-
-        proof = _bundle_backed_1p1_horizon_runtime_proof(
-            prepared_update_bundle=bundle,
-            compose_pre_runtime_prepare_proof={
-                "passed": True,
-                "compose_started": True,
-                "pre_runtime_prepare_reached": True,
-                "live_used_frozen_bundle": True,
-            },
-            args=self._args(bundle_backed_1p1_horizon_runtime_proof=True),
-            run_dir=Path("/tmp/ignored"),
-        )
-
-        blockers = {blocker["blocker"] for blocker in proof["blockers"]}
-        self.assertFalse(proof["passed"])
-        self.assertIn("bundle_1p1_h1_noop_reuse_without_equivalence_proof", blockers)
-
-    def test_1p1_horizon_runtime_proof_fails_on_generation_hash_mismatch(self) -> None:
-        bundle = self._frozen_bundle()
-        bundle["executable_runtime_inputs"]["generation_equivalence_proof"][
-            "active_generation_after"
-        ] = "tampered"
-
-        proof = _bundle_backed_1p1_horizon_runtime_proof(
-            prepared_update_bundle=bundle,
-            compose_pre_runtime_prepare_proof={
-                "passed": True,
-                "compose_started": True,
-                "pre_runtime_prepare_reached": True,
-                "live_used_frozen_bundle": True,
-            },
-            args=self._args(bundle_backed_1p1_horizon_runtime_proof=True),
-            run_dir=Path("/tmp/ignored"),
-        )
-
-        self.assertFalse(proof["passed"])
-        self.assertIn(
-            "bundle_one_horizon_runtime_executable_input_hash_mismatch",
-            {blocker["blocker"] for blocker in proof["blockers"]},
-        )
-
-    def test_1p1_horizon_runtime_proof_fails_on_runtime_resource_or_reload_or_cleanup_repair(
-        self,
-    ) -> None:
-        bundle = self._frozen_bundle()
-
-        proof = _bundle_backed_1p1_horizon_runtime_proof(
-            prepared_update_bundle=bundle,
-            compose_pre_runtime_prepare_proof={
-                "passed": True,
-                "compose_started": True,
-                "pre_runtime_prepare_reached": True,
-                "live_used_frozen_bundle": True,
-            },
-            args=self._args(
-                bundle_backed_1p1_horizon_runtime_proof=True,
-                bundle_1p1_fixed_resource_creation_attempted=True,
-                bundle_1p1_full_generation_reload_attempted=True,
-                bundle_1p1_cleanup_repair_success_path_attempted=True,
-            ),
-            run_dir=Path("/tmp/ignored"),
-        )
-
-        blockers = {blocker["blocker"] for blocker in proof["blockers"]}
-        self.assertFalse(proof["passed"])
-        self.assertIn(
-            "bundle_1p1_runtime_fixed_resource_creation_attempted",
-            blockers,
-        )
-        self.assertIn("bundle_1p1_runtime_full_generation_reload_attempted", blockers)
-        self.assertIn("bundle_1p1_cleanup_repair_success_path_attempted", blockers)
-
-    def test_one_horizon_runtime_proof_fails_on_action_plan_hash_mismatch(self) -> None:
-        bundle = self._frozen_bundle()
-        bundle["executable_runtime_inputs"]["network_mutation_plan"][
-            "actions"
-        ].append({"action_id": "tampered"})
-
-        proof = _bundle_backed_one_horizon_runtime_proof(
-            prepared_update_bundle=bundle,
-            compose_pre_runtime_prepare_proof={
-                "passed": True,
-                "compose_started": True,
-                "pre_runtime_prepare_reached": True,
-                "live_used_frozen_bundle": True,
-            },
-            args=self._args(max_runtime_epochs=1),
-            run_dir=Path("/tmp/ignored"),
-        )
-
-        self.assertFalse(proof["passed"])
-        self.assertIn(
-            "bundle_one_horizon_runtime_executable_input_hash_mismatch",
-            {blocker["blocker"] for blocker in proof["blockers"]},
-        )
-
-    def test_one_horizon_runtime_proof_fails_without_generation_equivalence(self) -> None:
-        bundle = self._frozen_bundle()
-        bundle["executable_runtime_inputs"]["generation_equivalence_proof"] = {}
-
-        proof = _bundle_backed_one_horizon_runtime_proof(
-            prepared_update_bundle=bundle,
-            compose_pre_runtime_prepare_proof={
-                "passed": True,
-                "compose_started": True,
-                "pre_runtime_prepare_reached": True,
-                "live_used_frozen_bundle": True,
-            },
-            args=self._args(max_runtime_epochs=1),
-            run_dir=Path("/tmp/ignored"),
-        )
-
-        self.assertFalse(proof["passed"])
-        self.assertIn(
-            "bundle_one_horizon_runtime_executable_inputs_missing",
-            {blocker["blocker"] for blocker in proof["blockers"]},
-        )
-
-    def test_live_execution_source_gate_allows_explicit_runtime_proof_mode(self) -> None:
-        bundle = self._frozen_bundle()
-        load_gate = _verify_frozen_prepared_bundle(
-            bundle,
-            args=self._args(bundle_backed_one_horizon_runtime_proof=True),
-        )
-        source_gate = _bundle_backed_live_execution_source_gate(
-            load_gate=load_gate,
-            no_compose_proof_mode=False,
-            bundle_backed_runtime_proof_mode=True,
-        )
-
-        self.assertTrue(load_gate["passed"])
-        self.assertTrue(source_gate["passed"])
-        self.assertTrue(source_gate["compose_up_allowed"])
-        self.assertEqual(source_gate["execution_source"], "prepared_update_bundle")
 
     def test_queue_accounting_non_mutually_exclusive_fails_before_compose(self) -> None:
         bundle = self._frozen_bundle()
@@ -4414,7 +4929,6 @@ class FrozenPreparedBundleContractTests(unittest.TestCase):
     ) -> None:
         source_gate = _bundle_backed_live_execution_source_gate(
             load_gate=_verify_frozen_prepared_bundle(self._frozen_bundle()),
-            no_compose_proof_mode=False,
         )
 
         self.assertTrue(source_gate["passed"])
@@ -4519,7 +5033,6 @@ class FrozenPreparedBundleContractTests(unittest.TestCase):
                 "loaded_bundle_id": bundle["bundle_id"],
                 "loaded_bundle_hash": bundle["bundle_hash"],
             },
-            no_compose_proof_mode=False,
         )
 
         normal_gate = _frozen_bundle_normal_runtime_inputs_gate(

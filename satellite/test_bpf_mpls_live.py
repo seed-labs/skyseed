@@ -25,10 +25,10 @@ from satellite.bpf_mpls_live import (
     MPLS_INTERFACE_ROLE_MPLS,
     Z_TO_G,
     attach_mpls,
-    build_minimal_live_maps,
     compile_mpls_bpf,
     generation_delete_manifest_for_compiled_mpls_maps,
     load_mpls_maps,
+    load_static_ut_gateway_policies,
     mpls_map_state,
     pack_u32s,
     read_mpls_interface_roles,
@@ -39,7 +39,9 @@ from linux_mpls_runtime import (
     DirectGatewayExperimentContext,
     MplsPathSegment,
     _bpf_mpls_context_fec_ids,
+    _bpf_owned_activate_preloaded_generation,
     _bpf_owned_compile_mpls_maps_for_contexts,
+    _bpf_owned_find_preloaded_generation_record,
     _bpf_owned_planned_overlay_compiled_maps,
     _bpf_owned_runtime_generation_id,
 )
@@ -49,6 +51,61 @@ from contracts import RUNTIME_ACTION_MODEL_VERSION, RUNTIME_UPDATE_PLAN_SCHEMA_V
 class BpfMplsLiveTests(unittest.TestCase):
     def tearDown(self) -> None:
         bpf_dataplane_canary.clear_container_pid_cache()
+
+    def test_static_ut_gateway_policy_batches_lpm_default_and_special_once(self) -> None:
+        batch_payloads: list[str] = []
+
+        def fake_bpftool(args, *, timeout=10.0):
+            batch_payloads.append(Path(args[2]).read_text(encoding="utf-8"))
+            return {"returncode": 0, "stdout": "", "stderr": "", "args": list(args)}
+
+        with patch("satellite.bpf_mpls_live.bpftool", side_effect=fake_bpftool):
+            result = load_static_ut_gateway_policies(
+                [
+                    {
+                        "egress_ifindex": 101,
+                        "prefix": "0.0.0.0/0",
+                        "gateway_selector_label": 16,
+                    },
+                    {
+                        "egress_ifindex": 101,
+                        "prefix": "198.18.2.1/32",
+                        "gateway_selector_label": 17,
+                    },
+                ]
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["policy_entry_count"], 2)
+        self.assertEqual(result["batch_command_count"], 1)
+        self.assertEqual(result["runtime_write_count"], 0)
+        self.assertEqual(len(batch_payloads), 1)
+        # LPM prefix length includes the fixed 32-bit egress-ifindex prefix:
+        # /0 => 32 and /32 => 64.
+        self.assertIn("20 00 00 00", batch_payloads[0])
+        self.assertIn("40 00 00 00", batch_payloads[0])
+
+    def test_preloaded_generation_lookup_accepts_physical_generation_zero(self) -> None:
+        record = {
+            "ok": True,
+            "inactive_generation_written": True,
+            "generation_id": 0,
+            "horizon_id": "H3",
+            "source_state_id": "h2-final-state",
+            "intent_hash": "h3-generation-zero-intent",
+            "compiled_runtime_inputs": {"active_generation": {"value": 0}},
+        }
+
+        found = _bpf_owned_find_preloaded_generation_record(
+            readiness={"preloaded_generation_records": [record]},
+            target_generation_id=0,
+            target_intent_hash="h3-generation-zero-intent",
+            target_horizon_id="H3",
+            current_source_state_id="h2-final-state",
+        )
+
+        self.assertIsNotNone(found)
+        self.assertEqual(found["generation_id"], 0)
 
     def test_container_pid_cache_reuses_successful_docker_inspect(self) -> None:
         bpf_dataplane_canary.clear_container_pid_cache()
@@ -74,6 +131,14 @@ class BpfMplsLiveTests(unittest.TestCase):
             calls,
             [["docker", "inspect", "-f", "{{.State.Pid}}", "ut2017"]],
         )
+
+    def test_frozen_container_pid_cache_forbids_runtime_docker_lookup(self) -> None:
+        bpf_dataplane_canary.consume_frozen_container_pid_cache({"ut2017": 12345})
+        with patch("satellite.bpf_dataplane_canary.run_command") as run_command:
+            self.assertEqual(bpf_dataplane_canary.container_pid("ut2017"), 12345)
+            with self.assertRaisesRegex(RuntimeError, "frozen container pid missing"):
+                bpf_dataplane_canary.container_pid("ut2018")
+        run_command.assert_not_called()
 
     def _mock_bpf_maps(
         self,
@@ -603,6 +668,59 @@ class BpfMplsLiveTests(unittest.TestCase):
             any(call[:4] == ["tc", "filter", "add", "dev"] for call in calls)
         )
 
+    def test_direct_existing_delta_attach_executes_without_clsact_probe(self) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(interface_ref, args, *, timeout):
+            rendered = [str(part) for part in args]
+            calls.append(rendered)
+            return {"returncode": 0, "stdout": "", "stderr": ""}
+
+        with patch(
+            "satellite.bpf_mpls_live.run_mpls_interface_command",
+            side_effect=fake_run,
+        ):
+            results = attach_mpls(
+                "netns:stl-940023:fs0007",
+                Path("/tmp/skyseed_tc_mpls_dataplane.o"),
+                directions=["egress"],
+                control_plane_ipv4_addrs=["10.23.0.1"],
+                clsact_setup_mode="direct_existing_delta",
+            )
+
+        self.assertTrue(all(int(result.get("returncode") or 0) == 0 for result in results))
+        self.assertFalse(any(call[:3] == ["tc", "qdisc", "show"] for call in calls))
+        self.assertFalse(any(call[:3] == ["tc", "qdisc", "add"] for call in calls))
+        self.assertTrue(any(call[:4] == ["tc", "filter", "add", "dev"] for call in calls))
+
+    def test_direct_new_delta_attach_does_not_accept_existing_clsact(self) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(interface_ref, args, *, timeout):
+            rendered = [str(part) for part in args]
+            calls.append(rendered)
+            if rendered[:4] == ["tc", "qdisc", "add", "dev"]:
+                return {
+                    "returncode": 2,
+                    "stdout": "",
+                    "stderr": "Error: Exclusivity flag on, cannot modify.",
+                }
+            return {"returncode": 0, "stdout": "", "stderr": ""}
+
+        with patch(
+            "satellite.bpf_mpls_live.run_mpls_interface_command",
+            side_effect=fake_run,
+        ):
+            results = attach_mpls(
+                "netns:stl-940023:ua-u2005s0",
+                Path("/tmp/skyseed_tc_mpls_dataplane.o"),
+                directions=["ingress"],
+                clsact_setup_mode="direct_new_delta",
+            )
+
+        self.assertEqual(int(results[0]["returncode"]), 2)
+        self.assertEqual(calls, [["tc", "qdisc", "add", "dev", "{iface}", "clsact"]])
+
     def test_verify_mpls_clsact_reports_expected_reuse_loss(self) -> None:
         calls: list[list[str]] = []
 
@@ -716,6 +834,18 @@ class BpfMplsLiveTests(unittest.TestCase):
         self.assertIn("COUNTER_ROLE_MAP_MISSING", source)
         self.assertIn("!(*role & IFACE_ROLE_CLASSIFIER)", source)
         self.assertIn("COUNTER_NON_GZ_IP_PASS", source)
+
+    def test_c_program_keeps_kernel_5_4_manual_mpls_pop_fallback(self) -> None:
+        source = Path(DEFAULT_MPLS_SOURCE).read_text(encoding="utf-8")
+
+        self.assertIn("static __always_inline int pop_mpls_manual", source)
+        self.assertIn("bpf_skb_change_tail", source)
+        self.assertIn("COUNTER_POP_MANUAL_FALLBACK", source)
+        self.assertIn("COUNTER_POP_MANUAL_FAIL", source)
+        self.assertIn(
+            "if (pop_mpls_manual(skb, handoff->inner_ethertype) < 0)",
+            source,
+        )
 
     def test_load_mpls_maps_uses_label_lfib_keys_without_dst_ip(self) -> None:
         compiled = {
@@ -2388,44 +2518,6 @@ class BpfMplsLiveTests(unittest.TestCase):
             self.assertTrue(second["cache"]["cache_hit"])
             self.assertEqual(second_object.read_bytes(), b"compiled-object")
 
-    def test_minimal_live_maps_have_two_edge_classifiers_and_label_core(self) -> None:
-        names = {"ut": "ut-ns", "s1": "s1-ns", "s2": "s2-ns", "gw": "gw-ns"}
-        fake_ifindices = {
-            "ipnetns:s1-ns:s1u": 11,
-            "ipnetns:s1-ns:s1s2": 12,
-            "ipnetns:s2-ns:s2s1": 21,
-            "ipnetns:s2-ns:s2gw": 22,
-            "ipnetns:gw-ns:gws2": 31,
-        }
-        fake_macs = {
-            "ipnetns:ut-ns:ut0": "02:00:00:00:00:01",
-            "ipnetns:s1-ns:s1u": "02:00:00:00:00:11",
-            "ipnetns:s1-ns:s1s2": "02:00:00:00:00:12",
-            "ipnetns:s2-ns:s2s1": "02:00:00:00:00:21",
-            "ipnetns:s2-ns:s2gw": "02:00:00:00:00:22",
-            "ipnetns:gw-ns:gws2": "02:00:00:00:00:31",
-        }
-
-        with patch(
-            "satellite.bpf_mpls_live.interface_ifindex",
-            side_effect=lambda ref: fake_ifindices[ref],
-        ), patch(
-            "satellite.bpf_mpls_live.interface_mac",
-            side_effect=lambda ref: fake_macs[ref],
-        ):
-            compiled = build_minimal_live_maps(names)
-
-        self.assertEqual(len(compiled["ingress_classifier_map"]), 2)
-        self.assertEqual(len(compiled["core_lfib_map"]), 2)
-        self.assertEqual(len(compiled["egress_handoff_map"]), 2)
-        self.assertEqual(
-            {entry["value"]["direction"] for entry in compiled["ingress_classifier_map"]},
-            {G_TO_Z, Z_TO_G},
-        )
-        self.assertFalse(
-            any("dst_ipv4" in entry["key"] for entry in compiled["core_lfib_map"])
-        )
-
     def test_runtime_contexts_compile_to_mpls_lfib_without_dst_ip_core_keys(
         self,
     ) -> None:
@@ -2533,6 +2625,8 @@ class BpfMplsLiveTests(unittest.TestCase):
                 {"node_id": "mini-b", "ip_address": "10.160.42.72"},
             ),
             traffic_scope="default_gateway_class",
+            gateway_selector_label=16,
+            destination_prefix="0.0.0.0/0",
         )
 
         refs: set[str] = set()
@@ -2558,15 +2652,72 @@ class BpfMplsLiveTests(unittest.TestCase):
                 generation_id=9,
             )
 
+        frozen_binding = compiled["frozen_interface_binding_cache"]
+        with patch(
+            "satellite.bpf_mpls_live.interface_ifindex",
+            side_effect=AssertionError("live ifindex discovery forbidden"),
+        ), patch(
+            "satellite.bpf_mpls_live.interface_mac",
+            side_effect=AssertionError("live MAC discovery forbidden"),
+        ):
+            compiled_from_frozen_binding = _bpf_owned_compile_mpls_maps_for_contexts(
+                contexts=[context],
+                generation_id=10,
+                interface_ifindex_cache=dict(
+                    frozen_binding["ifindex_by_interface_ref"]
+                ),
+                interface_mac_cache=dict(
+                    frozen_binding["mac_by_interface_ref"]
+                ),
+                require_complete_interface_binding_cache=True,
+            )
+
+        self.assertEqual(
+            compiled_from_frozen_binding["active_generation"]["value"],
+            10,
+        )
+        self.assertFalse(frozen_binding["live_discovery_allowed"])
+        details_by_ref = {
+            detail["interface_ref"]: detail
+            for detail in compiled_from_frozen_binding[
+                "attached_interface_details"
+            ]
+        }
+        self.assertEqual(
+            details_by_ref["netns:sat-a:ut0"]["control_plane_ipv4_addrs"],
+            ["10.90.42.1"],
+        )
+        self.assertNotIn("netns:gw-a:nat0", details_by_ref)
+
         self.assertEqual(
             compiled["compiled_mpls_map_counts"],
             {
-                "ingress_classifier_map": 3,
+                "ingress_classifier_map": 1,
+                "ut_gateway_policy_map": 1,
+                "gateway_selector_ingress_map": 1,
                 "core_lfib_map": 4,
                 "egress_handoff_map": 2,
+                "zone_edge_delivery_map": 1,
                 "generation_base_map": 1,
                 "active_generation": 1,
             },
+        )
+        self.assertIn(
+            {
+                "edge_role": "z_to_g_local_origin_classifier",
+                "target_ip": "10.90.42.2",
+                "ingress_interface": "netns:gw-a:gw0",
+            },
+            [
+                {
+                    "edge_role": dict(entry.get("metadata") or {}).get("edge_role"),
+                    "target_ip": dict(entry.get("metadata") or {}).get("target_ip"),
+                    "ingress_interface": dict(entry.get("metadata") or {}).get(
+                        "ingress_interface"
+                    ),
+                }
+                for entry in compiled["ingress_classifier_map"]
+            ],
         )
         self.assertEqual(
             compiled["generation_base_map"],
@@ -2585,18 +2736,20 @@ class BpfMplsLiveTests(unittest.TestCase):
         self.assertFalse(compiled["map_conflicts"])
         self.assertTrue(
             any(
-                entry.get("handoff") == "zone_local_delivery"
-                and int(entry.get("out_ifindex") or 0) > 0
+                entry.get("handoff") == "shared_zone_edge_lookup"
+                and int(entry.get("out_ifindex") or 0) == 0
                 for entry in compiled["resolved_mpls_flow_entries"]
                 if entry.get("map_type") == "egress_handoff_map"
             )
         )
+        self.assertEqual(len(compiled["zone_edge_delivery_map"]), 1)
         self.assertTrue(refs)
         for entry in compiled["core_lfib_map"]:
             self.assertEqual(entry["key"]["generation"], 9)
             self.assertIn("label", entry["key"])
             self.assertNotIn("dst_ipv4", entry["key"])
             self.assertNotIn("target_ip", entry["key"])
+
         self.assertEqual(
             {
                 entry["direction"]
@@ -2653,6 +2806,8 @@ class BpfMplsLiveTests(unittest.TestCase):
             ),
             gateway_nat_source_ip="10.80.0.19",
             traffic_scope="special_prefix_override",
+            gateway_selector_label=17,
+            destination_prefix="10.160.42.72/32",
         )
 
         with patch(
@@ -2671,24 +2826,24 @@ class BpfMplsLiveTests(unittest.TestCase):
         forward_classifiers = [
             entry
             for entry in combined["resolved_mpls_flow_entries"]
-            if entry["map_type"] == "ingress_classifier_map"
+            if entry["map_type"] == "gateway_selector_ingress_map"
             and entry["direction"] == G_TO_Z
         ]
         self.assertEqual(
             {
-                (entry["flow_id"], entry["target_ip"])
+                (entry["flow_id"], entry["label"])
                 for entry in forward_classifiers
             },
             {
-                ("ut-internet-egress:ut42", "10.154.42.129"),
+                ("ut-internet-egress:ut42", 16),
                 (
                     "ut-internet-egress:ut42:override:asn160_via_selected_secondary_gateway",
-                    "10.160.42.72",
+                    17,
                 ),
             },
         )
         classifier_labels = {
-            entry["initial_label"] for entry in forward_classifiers
+            entry["out_label"] for entry in forward_classifiers
         }
         self.assertEqual(len(classifier_labels), 2)
         self.assertTrue(all(label >= 524288 for label in classifier_labels))
@@ -2701,7 +2856,150 @@ class BpfMplsLiveTests(unittest.TestCase):
             2,
         )
 
-    def test_reverse_zone_delivery_labels_and_handoffs_are_ut_specific(
+    def test_preloaded_flip_preserves_frozen_attach_capability_for_next_worker(
+        self,
+    ) -> None:
+        plan = RuntimeUpdatePlan(
+            schema_version=RUNTIME_UPDATE_PLAN_SCHEMA_VERSION,
+            plan_id="rtplan-h1-flip",
+            target_snapshot={"snapshot_id": "h1", "slice_id": "slice-2"},
+            planner={"planner_name": "test"},
+            apply_model={
+                "state_model": "full_state_intent",
+                "action_model": RUNTIME_ACTION_MODEL_VERSION,
+            },
+            node_subplans={},
+            replacement_semantics={},
+            validation_expectations={},
+        )
+        previous_detail = {
+            "interface_ref": "netns:sat-a:if0",
+            "interface_name": "netns:sat-a:if0",
+            "ifindex": 101,
+            "mac_address": "02:00:00:00:00:01",
+            "attach_directions": ["ingress"],
+            "expected_roles": ["g_to_z_core_lfib"],
+            "control_plane_ipv4_addrs": ["10.0.0.1"],
+        }
+        next_detail = {
+            **previous_detail,
+            "attach_directions": ["egress"],
+            "expected_roles": ["z_to_g_zone_handoff"],
+            "control_plane_ipv4_addrs": ["10.0.0.2"],
+        }
+        readiness = {
+            "ready": True,
+            "ok": True,
+            "active_generation": 1,
+            "generation_id": 1,
+            "current_horizon_id": "H0",
+            "active_physical_horizon_generation_key": "H0:g1",
+            "attach_plan": {"netns:sat-a:if0": ["ingress"]},
+            "attached_interfaces": ["netns:sat-a:if0"],
+            "attached_interface_details": [previous_detail],
+            "compiled_runtime_inputs": {
+                "active_generation": {"value": 1},
+                "attach_plan": {"netns:sat-a:if0": ["ingress"]},
+                "attached_interface_details": [previous_detail],
+                "frozen_interface_binding_cache": {
+                    "ifindex_by_interface_ref": {
+                        "netns:sat-a:if0": 101,
+                        "netns:ut-a:ut0": 201,
+                    },
+                    "mac_by_interface_ref": {
+                        "netns:sat-a:if0": "02:00:00:00:00:01",
+                        "netns:ut-a:ut0": "02:00:00:00:00:11",
+                    },
+                    "complete": True,
+                    "live_discovery_allowed": False,
+                },
+            },
+            "preloaded_generation_records": [],
+            "prepared_generation_ids": [2],
+        }
+        record = {
+            "ok": True,
+            "inactive_generation_written": True,
+            "generation_id": 2,
+            "horizon_id": "H1",
+            "horizon_generation_key": "H1:g2",
+            "physical_horizon_generation_key": "H1:g2",
+            "source_state_id": "h0",
+            "target_state_id": "h1",
+            "frozen_preloaded_generation_intent_authoritative": True,
+            "compiled_runtime_inputs": {
+                "active_generation": {"value": 2},
+                "attach_plan": {"netns:sat-a:if0": ["egress"]},
+                "attached_interfaces": ["netns:sat-a:if0"],
+                "attached_interface_details": [next_detail],
+                "compiled_mpls_map_counts": {},
+                "frozen_interface_binding_cache": {
+                    "ifindex_by_interface_ref": {
+                        "netns:sat-a:if0": 101,
+                        "netns:ut-a:ut0": 201,
+                    },
+                    "mac_by_interface_ref": {
+                        "netns:sat-a:if0": "02:00:00:00:00:01",
+                        "netns:ut-a:ut0": "02:00:00:00:00:11",
+                    },
+                    "complete": True,
+                    "live_discovery_allowed": False,
+                },
+            },
+            "preload_report": {},
+        }
+        proof = {
+            "generation_id": 2,
+            "generation_source": "unit-test",
+            "prepare_steps": {},
+            "runtime_epoch_intent": {},
+        }
+        with patch(
+            "linux_mpls_runtime._derive_bpf_owned_readiness_proof",
+            return_value=proof,
+        ), patch(
+            "satellite.bpf_mpls_live.load_mpls_maps",
+            return_value={
+                "ok": True,
+                "active_generation_flip_only": True,
+                "active_generation_update_count": 1,
+            },
+        ):
+            activated = _bpf_owned_activate_preloaded_generation(
+                runtime_update_plan=plan,
+                readiness=readiness,
+                record=record,
+            )
+
+        self.assertTrue(activated["ready"])
+        self.assertEqual(
+            activated["attach_plan"]["netns:sat-a:if0"],
+            ["egress", "ingress"],
+        )
+        detail = activated["attached_interface_details"][0]
+        self.assertEqual(
+            detail["expected_roles"],
+            ["g_to_z_core_lfib", "z_to_g_zone_handoff"],
+        )
+        self.assertEqual(
+            detail["control_plane_ipv4_addrs"],
+            ["10.0.0.1", "10.0.0.2"],
+        )
+        self.assertFalse(
+            activated["frozen_interface_binding_cache"]["live_discovery_allowed"]
+        )
+        self.assertEqual(
+            activated["frozen_interface_binding_cache"][
+                "mac_by_interface_ref"
+            ]["netns:ut-a:ut0"],
+            "02:00:00:00:00:11",
+        )
+        self.assertEqual(
+            activated["retired_bpf_generation_cleanup_candidate"]["horizon_id"],
+            "H0",
+        )
+
+    def test_reverse_core_is_shared_and_zone_delivery_is_ut_specific(
         self,
     ) -> None:
         base = DirectGatewayExperimentContext(
@@ -2781,6 +3079,8 @@ class BpfMplsLiveTests(unittest.TestCase):
             ),
             validation_targets=({"node_id": "mini-a", "ip_address": "10.154.42.129"},),
             traffic_scope="default_gateway_class",
+            gateway_selector_label=16,
+            destination_prefix="0.0.0.0/0",
         )
         peer = replace(
             base,
@@ -2823,27 +3123,39 @@ class BpfMplsLiveTests(unittest.TestCase):
                 contexts=[base, peer],
                 generation_id=11,
             )
+            compiled_base_only = _bpf_owned_compile_mpls_maps_for_contexts(
+                contexts=[base],
+                generation_id=11,
+            )
 
         self.assertFalse(compiled["map_conflicts"])
         self.assertFalse(compiled["intermediate_core_lookup_uses_dst_ip"])
         handoffs = [
             entry
-            for entry in compiled["resolved_mpls_flow_entries"]
-            if entry.get("map_type") == "egress_handoff_map"
-            and entry.get("direction") == Z_TO_G
-            and entry.get("handoff") == "zone_local_delivery"
+            for entry in compiled["egress_handoff_map"]
+            if entry["metadata"].get("handoff") == "shared_zone_edge_lookup"
         ]
+        self.assertEqual(len(handoffs), 1)
+        self.assertEqual(handoffs[0]["value"]["out_ifindex"], 0)
+        deliveries = compiled["zone_edge_delivery_map"]
         self.assertEqual(
-            {(entry["ut_id"], entry["out_ifindex"]) for entry in handoffs},
+            {
+                (entry["metadata"]["ut_id"], entry["value"]["out_ifindex"])
+                for entry in deliveries
+            },
             {("ut42", 101), ("ut43", 102)},
         )
         self.assertEqual(
-            {(entry["ut_id"], entry["new_dst_ip"]) for entry in handoffs},
+            {
+                (entry["metadata"]["ut_id"], entry["value"]["new_dst_ip"])
+                for entry in deliveries
+            },
             {("ut42", "10.90.42.2"), ("ut43", "10.90.43.2")},
         )
+        self.assertEqual(len({entry["key"]["label"] for entry in deliveries}), 1)
         self.assertEqual(
-            len({entry["label"] for entry in handoffs}),
-            2,
+            len(compiled["core_lfib_map"]),
+            len(compiled_base_only["core_lfib_map"]),
         )
         core_entries = [
             entry
@@ -2853,7 +3165,7 @@ class BpfMplsLiveTests(unittest.TestCase):
         ]
         self.assertEqual(
             {entry["fec_id"] for entry in core_entries},
-            {handoffs[0]["fec_id"]},
+            {handoffs[0]["metadata"]["fec_id"]},
         )
         self.assertTrue(all(entry["ut_id"] in {"ut42", "ut43"} for entry in core_entries))
         self.assertTrue(all(entry.get("uses_dst_ip") is False for entry in core_entries))
@@ -2862,15 +3174,7 @@ class BpfMplsLiveTests(unittest.TestCase):
             self.assertNotIn("target_ip", entry["key"])
             self.assertNotEqual(entry["value"].get("new_dst_ip"), "10.90.42.2")
             self.assertNotEqual(entry["value"].get("new_dst_ip"), "10.90.43.2")
-        handoff_values = [
-            entry["value"]
-            for entry in compiled["egress_handoff_map"]
-            if entry["metadata"].get("handoff") == "zone_local_delivery"
-        ]
-        self.assertEqual(
-            {value.get("new_dst_ip") for value in handoff_values},
-            {"10.90.42.2", "10.90.43.2"},
-        )
+        self.assertNotIn("new_dst_ip", handoffs[0]["value"])
         reverse_allocations = [
             entry
             for entry in compiled["label_allocation"]["entries"]
@@ -2878,13 +3182,13 @@ class BpfMplsLiveTests(unittest.TestCase):
         ]
         self.assertTrue(
             all(
-                entry.get("allocation_scope") == "zone_local_delivery"
+                entry.get("allocation_scope") == "fec_hop"
                 for entry in reverse_allocations
             )
         )
         self.assertEqual(
             len({entry["allocated_label"] for entry in reverse_allocations}),
-            len(reverse_allocations),
+            len(base.reverse_segments),
         )
 
 

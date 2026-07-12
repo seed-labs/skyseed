@@ -36,6 +36,7 @@ from linux_mpls_runtime import (
     _bpf_owned_host_interface_name,
     _bpf_owned_host_interfaces_for_contexts,
     _bpf_owned_path_observability_summary,
+    _bpf_owned_preflight_after_edge_apply,
     _bpf_owned_runtime_readiness_failure_message,
     _bpf_owned_ut_access_satellite_endpoint,
     _classify_bpf_owned_packet_path_blocker,
@@ -199,13 +200,9 @@ class _FakeCleanupInstaller(DirectNetnsVethSlotLinkNamespaceQdiscInstaller):
     ) -> dict[str, Any]:
         bounded = prepared_resource_scope_by_slot is not None
         return {
-            "temp_host_interface_names": ["vt1", "vt1", "missing-temp"],
+            "temp_host_interface_count": 3,
             "host_interface_names": ["vh1", "vh1", "missing-host"],
-            "container_interface_names": [
-                {"node_id": "node-a", "interface_name": "eth9"},
-                {"node_id": "node-a", "interface_name": "eth9"},
-                {"node_id": "node-b", "interface_name": "eth9"},
-            ],
+            "container_interface_count": 3,
             "bridge_names": ["br1", "br1", "missing-br"],
             "slot_counts_by_type": {},
             "candidate_resource_counts_by_type": {},
@@ -279,29 +276,6 @@ class _FakeCleanupInstaller(DirectNetnsVethSlotLinkNamespaceQdiscInstaller):
 
     def _delete_bridge_best_effort(self, bridge_name: str) -> str:
         return self._delete_host_interface_best_effort(bridge_name)
-
-    def _delete_container_interface_if_present(
-        self,
-        *,
-        node_id: str,
-        interface_name: str,
-        known_interfaces: set[str] | None = None,
-    ) -> None:
-        self.container_interfaces.setdefault(node_id, set()).discard(interface_name)
-        if known_interfaces is not None:
-            known_interfaces.discard(interface_name)
-
-    def _delete_container_interface_best_effort(
-        self,
-        *,
-        node_id: str,
-        interface_name: str,
-    ) -> str:
-        interfaces = self.container_interfaces.setdefault(node_id, set())
-        if interface_name in interfaces:
-            interfaces.discard(interface_name)
-            return "deleted"
-        return "absent"
 
     def _run_command(
         self,
@@ -785,10 +759,20 @@ class RollbackCleanupOptimizationTests(unittest.TestCase):
         self.assertEqual(contract["linux_gz_fallback_command_count"], 0)
         self.assertEqual(contract["eligible_core_fallback_to_linux"], 0)
         self.assertEqual(contract["fallback_to_linux_count"], 0)
-        self.assertEqual(contract["effective_backend_mode"], "bpf_owned")
+        self.assertEqual(
+            contract["effective_backend_mode"],
+            "bpf_owned_disallowed_host_required_apply",
+        )
         self.assertEqual(contract["host_required_count"], 2)
+        self.assertEqual(contract["bpf_owned_disallowed_host_required_count"], 1)
+        self.assertEqual(
+            contract["bpf_owned_disallowed_host_required_commands"][0][
+                "backend_scope"
+            ],
+            "edge_nat_iptables",
+        )
         self.assertEqual(contract["bpf_owned_satellite_core_gz_scope_count"], 2)
-        self.assertTrue(contract["bpf_owned_strict_no_linux_gz_fallback_guard"])
+        self.assertFalse(contract["bpf_owned_strict_no_linux_gz_fallback_guard"])
         self.assertEqual(contract["gz_core_coverage"]["g_to_z_core_command_count"], 1)
         self.assertEqual(contract["gz_core_coverage"]["z_to_g_core_command_count"], 1)
         self.assertEqual(
@@ -934,6 +918,195 @@ class RollbackCleanupOptimizationTests(unittest.TestCase):
             )
         )
 
+    def test_bpf_owned_edge_routes_are_not_reapplied_after_session_state(self) -> None:
+        context = DirectGatewayExperimentContext(
+            flow_id="flow-1",
+            ut_id="ut1",
+            zone_id="zone-a",
+            serving_satellite_id="sat-a",
+            selected_gateway_id="gw1",
+            selected_gateway_satellite_id="sat-a",
+            zone_return_prefixes=("10.90.1.2/32",),
+            ping_target_ip="10.91.1.2",
+            target_host_node_id="gw1",
+            policy_table_id=1001,
+            policy_rule_priority=1001,
+            satellite_path=("sat-a",),
+            forward_labels=(16001,),
+            reverse_labels=(17001,),
+            ut_access_interface="ua-u1s0",
+            ut_access_ip="10.90.1.2",
+            ut_access_peer_ip="10.90.1.1",
+            gateway_access_interface="ga-gw1s0",
+            gateway_access_ip="10.91.1.2",
+            gateway_access_peer_ip="10.91.1.1",
+            gateway_nat_interface="ix100",
+            gateway_nat_source_ip="10.242.1.2",
+            forward_segments=(
+                MplsPathSegment(
+                    link_id="sat-a-gw1",
+                    source_node_id="sat-a",
+                    source_node_type="satellite",
+                    source_interface="ga-gw1s0",
+                    source_ip="10.91.1.1",
+                    destination_node_id="gw1",
+                    destination_node_type="gateway",
+                    destination_interface="ga-gw1s0",
+                    destination_ip="10.91.1.2",
+                    label=16001,
+                ),
+            ),
+            reverse_segments=(
+                MplsPathSegment(
+                    link_id="gw1-sat-a",
+                    source_node_id="gw1",
+                    source_node_type="gateway",
+                    source_interface="ga-gw1s0",
+                    source_ip="10.91.1.2",
+                    destination_node_id="sat-a",
+                    destination_node_type="satellite",
+                    destination_interface="ga-gw1s0",
+                    destination_ip="10.91.1.1",
+                    label=17001,
+                ),
+            ),
+            validation_targets=(
+                {
+                    "node_id": "gw1",
+                    "ip_address": "10.91.1.2",
+                    "target_role": "selected_gateway_access",
+                },
+            ),
+        )
+        installer = linux_mpls_runtime.MinimalRealLinuxMplsInstaller()
+        missing_preflight = linux_mpls_runtime._capture_bpf_owned_preflight_state(
+            context
+        )
+
+        first_apply = [
+            *installer._bpf_owned_apply_specs(context, missing_preflight),
+            *installer._bpf_owned_gateway_local_return_apply_specs(
+                context,
+                missing_preflight,
+            ),
+        ]
+        applied_preflight = _bpf_owned_preflight_after_edge_apply(
+            context,
+            missing_preflight,
+        )
+        second_apply = [
+            *installer._bpf_owned_apply_specs(context, applied_preflight),
+            *installer._bpf_owned_gateway_local_return_apply_specs(
+                context,
+                applied_preflight,
+            ),
+        ]
+
+        self.assertEqual(
+            [spec.description for spec in first_apply],
+            [
+                "install UT default route",
+                "configure explicit gateway ICMP service loopback",
+                "install gateway local-origin BPF return route",
+            ],
+        )
+        self.assertEqual(
+            [spec.description for spec in second_apply],
+            ["configure explicit gateway ICMP service loopback"],
+        )
+
+        kept, contract = _plan_backend_apply_contract(
+            first_apply,
+            backend_config=_normalize_forwarding_backend_config(
+                forwarding_backend="bpf_owned",
+                bpf_owned_readiness={
+                    "schema_version": BPF_OWNED_PROOF_SCHEMA_VERSION,
+                    "ok": True,
+                    "ready": True,
+                },
+            ),
+            contract_phase="apply",
+        )
+        self.assertEqual(
+            [spec.description for spec in kept],
+            [spec.description for spec in first_apply],
+        )
+        self.assertEqual(
+            contract["counts_by_scope"],
+            {
+                "edge_bpf_endpoint_route": 2,
+                "edge_bpf_endpoint_service": 1,
+            },
+        )
+        self.assertEqual(contract["host_required_count"], 3)
+        self.assertEqual(contract["bpf_owned_satellite_core_gz_scope_count"], 0)
+        self.assertEqual(contract["linux_gz_fallback_command_count"], 0)
+
+    def test_bpf_owned_clean_contract_rejects_satellite_ut_linux_route(self) -> None:
+        specs = [
+            RuntimeCommandSpec(
+                node_id="sat-a",
+                phase="apply",
+                description="install serving-satellite UT delivery route",
+                command=("ip", "route", "replace", "10.90.1.2/32", "dev", "ua-u1s0"),
+            )
+        ]
+
+        kept, contract = _plan_backend_apply_contract(
+            specs,
+            backend_config=_normalize_forwarding_backend_config(
+                forwarding_backend="bpf_owned",
+                bpf_owned_readiness={
+                    "schema_version": BPF_OWNED_PROOF_SCHEMA_VERSION,
+                    "ok": True,
+                    "ready": True,
+                },
+            ),
+            contract_phase="apply",
+        )
+
+        self.assertEqual(kept, [])
+        self.assertEqual(contract["bpf_owned_satellite_core_gz_scope_count"], 1)
+        self.assertEqual(contract["skipped_by_bpf_backend_count"], 1)
+        self.assertEqual(contract["linux_gz_fallback_command_count"], 0)
+        self.assertEqual(
+            contract["commands"][0]["apply_action"],
+            "skipped_by_bpf_backend",
+        )
+
+    def test_bpf_owned_clean_contract_blocks_non_edge_host_required_route(self) -> None:
+        specs = [
+            RuntimeCommandSpec(
+                node_id="gw1",
+                phase="apply",
+                description="install fallback control route",
+                command=("ip", "route", "replace", "192.0.2.0/24", "dev", "ix100"),
+            )
+        ]
+
+        kept, contract = _plan_backend_apply_contract(
+            specs,
+            backend_config=_normalize_forwarding_backend_config(
+                forwarding_backend="bpf_owned",
+                bpf_owned_readiness={
+                    "schema_version": BPF_OWNED_PROOF_SCHEMA_VERSION,
+                    "ok": True,
+                    "ready": True,
+                },
+            ),
+            contract_phase="apply",
+        )
+
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(contract["host_required_count"], 1)
+        self.assertEqual(contract["bpf_owned_disallowed_host_required_count"], 1)
+        self.assertEqual(
+            contract["bpf_owned_disallowed_host_required_commands"][0][
+                "backend_scope"
+            ],
+            "fallback_control_route",
+        )
+
     def test_linux_mpls_backend_can_install_linux_gz_forwarding(self) -> None:
         specs = [
             RuntimeCommandSpec(
@@ -994,8 +1167,10 @@ class RollbackCleanupOptimizationTests(unittest.TestCase):
                         "steps": {
                             "map_load": {
                                 "loaded_classifier_count": 2,
+                                "loaded_gateway_selector_ingress_count": 2,
                                 "loaded_core_lfib_count": 2,
                                 "loaded_egress_handoff_count": 2,
+                                "loaded_zone_edge_delivery_count": 2,
                             }
                         }
                     }
@@ -1280,7 +1455,16 @@ class RollbackCleanupOptimizationTests(unittest.TestCase):
                     segment("sat-b-sat-a", "sat-b", "ba0", "sat-a", "ba0", 201),
                 ),
                 validation_targets=({"ip_address": "10.154.0.129", "node_id": "as154-host-new"},),
-                traffic_scope="ordinary_internet_default",
+                traffic_scope="default_gateway_class",
+                gateway_selector_label=16 if gateway == "gw1" else 17,
+                destination_prefix="0.0.0.0/0",
+                return_path_intent={
+                    "bpf_realization": {
+                        "mode": "shared_gz_fec_with_zone_edge_delivery",
+                        "linux_mpls_fallback": False,
+                        "per_ut_core_state": False,
+                    }
+                },
             )
 
         compiled = _bpf_owned_compile_mpls_maps_for_contexts(
@@ -1305,7 +1489,7 @@ class RollbackCleanupOptimizationTests(unittest.TestCase):
         self.assertEqual(len(first_hop_labels), 2)
         self.assertNotEqual(first_hop_labels[0], first_hop_labels[1])
 
-    def test_bpf_owned_prepare_phase_falls_back_when_attach_fails(self) -> None:
+    def test_bpf_owned_prepare_phase_fails_closed_when_attach_fails(self) -> None:
         with patch.object(
             linux_mpls_runtime,
             "_bpf_owned_host_interfaces_for_contexts",
@@ -1330,7 +1514,8 @@ class RollbackCleanupOptimizationTests(unittest.TestCase):
             )
 
         self.assertFalse(proof["ready"])
-        self.assertTrue(proof["fallback_to_linux"])
+        self.assertFalse(proof["fallback_to_linux"])
+        self.assertTrue(proof["fail_closed"])
         self.assertEqual(proof["fallback_reason"], "tc_bpf_mpls_attach_failed")
 
     def test_strict_bpf_owned_map_reload_failure_does_not_full_attach(
@@ -1498,7 +1683,16 @@ class RollbackCleanupOptimizationTests(unittest.TestCase):
                 {"node_id": "as160-host42", "ip_address": "10.160.42.72"},
                 {"node_id": "as154-host42", "ip_address": "10.154.42.129"},
             ),
-            return_path_intent={},
+            return_path_intent={
+                "bpf_realization": {
+                    "mode": "shared_gz_fec_with_zone_edge_delivery",
+                    "linux_mpls_fallback": False,
+                    "per_ut_core_state": False,
+                }
+            },
+            traffic_scope="special_prefix_gateway_class",
+            gateway_selector_label=42,
+            destination_prefix="10.160.42.72/32",
         )
         with tempfile.TemporaryDirectory() as tmp:
             topology_path = Path(tmp) / "topology.json"
@@ -1515,7 +1709,12 @@ class RollbackCleanupOptimizationTests(unittest.TestCase):
         directions = {entry["direction"] for entry in entries}
         self.assertEqual(
             directions,
-            {"g_to_z_access_ingress", "z_to_g", "z_to_g_nat_ingress"},
+            {
+                "g_to_z_access_ingress",
+                "z_to_g",
+                "z_to_g_local_origin",
+                "z_to_g_nat_ingress",
+            },
         )
         self.assertTrue(all(entry["ut_id"] == "ut42" for entry in entries))
         self.assertTrue(all(entry["selected_gateway_id"] == "gw9" for entry in entries))
@@ -1543,6 +1742,19 @@ class RollbackCleanupOptimizationTests(unittest.TestCase):
         self.assertEqual(nat_entries[0]["new_dst_ip"], "10.90.42.2")
         self.assertEqual(nat_entries[0]["ingress_interface"], "netns:gw9:ix209")
         self.assertEqual(nat_entries[0]["egress_interface"], "netns:gw9:ga-g9s0")
+        local_origin_entries = [
+            entry for entry in entries if entry["direction"] == "z_to_g_local_origin"
+        ]
+        self.assertEqual(len(local_origin_entries), 1)
+        self.assertEqual(local_origin_entries[0]["target_ip"], "10.90.42.2")
+        self.assertEqual(
+            local_origin_entries[0]["ingress_interface"],
+            "netns:gw9:ga-g9s0",
+        )
+        self.assertEqual(
+            local_origin_entries[0]["egress_interface"],
+            "netns:gw9:ga-g9s0",
+        )
         handoff_entries = [entry for entry in entries if entry["direction"] == "z_to_g"]
         self.assertEqual(len(handoff_entries), 1)
         self.assertEqual(handoff_entries[0]["ingress_interface"], "netns:stl-4242:ga-g9s0")
@@ -1556,6 +1768,34 @@ class RollbackCleanupOptimizationTests(unittest.TestCase):
                 "destination_node_id": "ut42",
                 "destination_interface": "ua-u42s0",
             },
+        )
+        compiled = _bpf_owned_compile_mpls_maps_for_contexts(
+            contexts=(context,),
+            generation_id=7,
+            offline=True,
+        )
+        local_origin_compiled = [
+            entry
+            for entry in compiled["resolved_mpls_flow_entries"]
+            if entry.get("local_origin") is True
+        ]
+        self.assertEqual(len(local_origin_compiled), 1)
+        self.assertEqual(
+            local_origin_compiled[0]["ingress_interface"],
+            "netns:gw9:ga-g9s0",
+        )
+        attach_detail = {
+            detail["interface_ref"]: detail
+            for detail in compiled["attached_interface_details"]
+        }
+        self.assertIn("netns:gw9:ga-g9s0", attach_detail)
+        self.assertIn(
+            "egress",
+            attach_detail["netns:gw9:ga-g9s0"]["attach_directions"],
+        )
+        self.assertIn(
+            "z_to_g_local_origin_classifier",
+            attach_detail["netns:gw9:ga-g9s0"]["expected_roles"],
         )
 
     def test_bpf_owned_packet_routes_prefer_override_primary_target(self) -> None:
@@ -2272,13 +2512,15 @@ class RollbackCleanupOptimizationTests(unittest.TestCase):
 
         metrics = summary["cleanup_metrics"]
         self.assertTrue(summary["cleanup_completed"])
-        self.assertEqual(metrics["duplicate_cleanup_skipped_count"], 4)
-        self.assertEqual(metrics["skipped_noop_count"], 4)
-        self.assertEqual(metrics["cleanup_resource_attempted_count"], 8)
-        self.assertEqual(metrics["cleanup_resource_succeeded_count"], 4)
+        self.assertEqual(metrics["duplicate_cleanup_skipped_count"], 2)
+        self.assertEqual(metrics["paired_container_cleanup_elided_count"], 3)
+        self.assertEqual(metrics["completed_temp_name_cleanup_elided_count"], 3)
+        self.assertEqual(metrics["skipped_noop_count"], 2)
+        self.assertEqual(metrics["cleanup_resource_attempted_count"], 4)
+        self.assertEqual(metrics["cleanup_resource_succeeded_count"], 2)
         self.assertEqual(summary["removed_host_interface_count"], 1)
-        self.assertEqual(summary["removed_temp_host_interface_count"], 1)
-        self.assertEqual(summary["removed_container_interface_count"], 1)
+        self.assertEqual(summary["removed_temp_host_interface_count"], 0)
+        self.assertEqual(summary["removed_container_interface_count"], 0)
         self.assertEqual(summary["removed_bridge_count"], 1)
         self.assertEqual(
             metrics["cleanup_scope_source"],
@@ -2314,6 +2556,33 @@ class RollbackCleanupOptimizationTests(unittest.TestCase):
         self.assertEqual(metrics["cleanup_execution_model"], "blocked_missing_owned_resource_index")
         self.assertFalse(metrics["global_scan_diagnostic_only"])
 
+    def test_host_artifact_cleanup_merges_frozen_worker_delta_without_scan(self) -> None:
+        installer = _FakeCleanupInstaller()
+        installer._prepared_resource_keys_by_slot = {"slot-a": {"resource-a"}}
+
+        summary = installer.cleanup_runtime_artifacts(
+            topology_path=Path("topology.json"),
+            link_state_path=Path("link_state.json"),
+            additional_prepared_resource_scope_by_slot={
+                "slot-a": {"resource-b"},
+                "slot-b": {"resource-c"},
+            },
+        )
+
+        metrics = summary["cleanup_metrics"]
+        self.assertTrue(summary["cleanup_completed"])
+        self.assertEqual(
+            metrics["cleanup_scope_source"],
+            "prepared_owned_resource_index_plus_frozen_horizon_worker_scope",
+        )
+        self.assertEqual(metrics["prepared_slot_scope_count"], 2)
+        self.assertEqual(metrics["frozen_horizon_worker_slot_scope_count"], 2)
+        self.assertEqual(metrics["frozen_horizon_worker_resource_scope_count"], 2)
+        self.assertTrue(metrics["bounded_owned_scope"])
+        self.assertFalse(metrics["full_topology_candidate_inventory_fallback"])
+        self.assertEqual(installer.host_interface_scan_count, 0)
+        self.assertEqual(installer.container_interface_scan_count, 0)
+
     def test_additive_prepare_success_schema_is_explicit_for_non_empty_delta(
         self,
     ) -> None:
@@ -2343,7 +2612,6 @@ class RollbackCleanupOptimizationTests(unittest.TestCase):
 
         with (
             patch.object(installer, "_load_topology", return_value=topology),
-            patch.object(installer, "_prepare_bridge_netfilter_passthrough"),
             patch.object(installer, "_host_interface_name_set", return_value=set()),
             patch.object(
                 installer,
@@ -2688,11 +2956,11 @@ class RollbackCleanupOptimizationTests(unittest.TestCase):
         self.assertEqual(inventory["missing_slot_names"], [])
         self.assertEqual(len(inventory["bridge_names"]), 1)
         self.assertEqual(len(inventory["host_interface_names"]), 2)
-        self.assertEqual(len(inventory["temp_host_interface_names"]), 2)
-        self.assertEqual(len(inventory["container_interface_names"]), 2)
+        self.assertEqual(inventory["temp_host_interface_count"], 2)
+        self.assertEqual(inventory["container_interface_count"], 2)
 
     def test_compose_down_uses_run_owned_project_and_file(self) -> None:
-        import run_starlink_shell_runtime_attempt
+        import run_starlink_shell_experiment
 
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp) / "seed_output"
@@ -2711,11 +2979,11 @@ class RollbackCleanupOptimizationTests(unittest.TestCase):
                 stderr="",
             )
             with patch.object(
-                run_starlink_shell_runtime_attempt.subprocess,
+                run_starlink_shell_experiment.subprocess,
                 "run",
                 return_value=completed,
             ) as run:
-                result = run_starlink_shell_runtime_attempt._compose_down(output_dir)
+                result = run_starlink_shell_experiment._compose_down(output_dir)
 
         self.assertIsNotNone(result)
         command = run.call_args.args[0]

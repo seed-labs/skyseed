@@ -319,7 +319,7 @@ def compile_qdisc_timeline(artifacts: dict[str, Any]) -> dict[str, Any]:
     return {
         "schema_version": 1,
         "goal": "Skyseed Goal 12 ParameterEpoch qdisc timeline compiler",
-        "generated_at": "not_recorded_for_reproducible_baseline",
+        "generated_at": "not_recorded_for_deterministic_baseline",
         "input_artifacts": {
             "source_root": artifacts["source_root"],
             "temporal_plan_path": artifacts["temporal_plan_path"],

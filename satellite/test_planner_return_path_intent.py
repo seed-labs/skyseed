@@ -11,7 +11,7 @@ from typing import Any, Dict, List
 from contracts import TOPOLOGY_SNAPSHOT_SCHEMA_VERSION, TopologySnapshot
 from linux_mpls_runtime import _realization_contexts, _zone_return_install_intents
 from planner import UtInternetExperimentPlanner
-from temporal_planning import diff_gz_fec_plans, gz_fec_plan
+from temporal_planning import _runtime_plan_dict, diff_gz_fec_plans, gz_fec_plan
 
 
 def _snapshot() -> TopologySnapshot:
@@ -30,6 +30,10 @@ def _snapshot() -> TopologySnapshot:
             },
             "gw1": {
                 "node_id": "gw1",
+                "node_type": "gateway",
+            },
+            "gw2": {
+                "node_id": "gw2",
                 "node_type": "gateway",
             },
             "ut101": {
@@ -63,6 +67,29 @@ def _snapshot() -> TopologySnapshot:
                         "node_type": "satellite",
                         "interface_name": "ga-g1s0",
                         "ip_address": "10.0.0.2/30",
+                    },
+                ],
+            },
+            {
+                "link_id": "gw2-gateway-slot0",
+                "slot_type": "gw_access",
+                "occupied": True,
+                "binding": {
+                    "gateway_id": "gw2",
+                    "satellite_id": "stl-950001",
+                },
+                "endpoints": [
+                    {
+                        "node_id": "gw2",
+                        "node_type": "gateway",
+                        "interface_name": "ga-g2s0",
+                        "ip_address": "10.0.0.5/30",
+                    },
+                    {
+                        "node_id": "stl-950001",
+                        "node_type": "satellite",
+                        "interface_name": "ga-g2s0",
+                        "ip_address": "10.0.0.6/30",
                     },
                 ],
             },
@@ -102,8 +129,40 @@ def _snapshot() -> TopologySnapshot:
         },
         ut_zone_membership={"ut101": "zone-a"},
         planner_hints={
-            "gateway_ids": ["gw1"],
+            "gateway_ids": ["gw1", "gw2"],
             "satellite_ids": ["stl-950001"],
+            "gateway_service_catalog": {
+                "gw1": {
+                    "gateway_id": "gw1",
+                    "gateway_selector_label": 16,
+                    "gateway_service_ipv4": "198.18.1.1/32",
+                },
+                "gw2": {
+                    "gateway_id": "gw2",
+                    "gateway_selector_label": 17,
+                    "gateway_service_ipv4": "198.18.2.1/32",
+                },
+            },
+            "ut_gateway_policies": {
+                "ut101": {
+                    "ut_id": "ut101",
+                    "zone_id": "zone-a",
+                    "selection_model": "longest_prefix_match",
+                    "immutable_for_run": True,
+                    "rules": [
+                        {
+                            "prefix": "0.0.0.0/0",
+                            "gateway_id": "gw1",
+                            "gateway_selector_label": 16,
+                        },
+                        {
+                            "prefix": "198.18.2.1/32",
+                            "gateway_id": "gw2",
+                            "gateway_selector_label": 17,
+                        },
+                    ],
+                }
+            },
         },
     )
 
@@ -158,7 +217,16 @@ def _snapshot_with_two_uts_same_zone() -> TopologySnapshot:
         active_links=active_links,
         zones=zones,
         ut_zone_membership={"ut101": "zone-a", "ut102": "zone-a"},
-        planner_hints=deepcopy(base.planner_hints),
+        planner_hints={
+            **deepcopy(base.planner_hints),
+            "ut_gateway_policies": {
+                **deepcopy(base.planner_hints["ut_gateway_policies"]),
+                "ut102": {
+                    **deepcopy(base.planner_hints["ut_gateway_policies"]["ut101"]),
+                    "ut_id": "ut102",
+                },
+            },
+        },
     )
 
 
@@ -178,7 +246,7 @@ def _actions_for_node(plan: Any, node_id: str) -> List[Dict[str, Any]]:
 
 
 class PlannerReturnPathIntentTests(unittest.TestCase):
-    def test_flow_context_carries_zone_return_intent_and_compat_reverse_fields(self) -> None:
+    def test_flow_context_carries_shared_zone_return_and_edge_delivery_intent(self) -> None:
         plan = UtInternetExperimentPlanner().plan(_snapshot())
 
         contexts = _flow_contexts(plan)
@@ -227,10 +295,7 @@ class PlannerReturnPathIntentTests(unittest.TestCase):
             candidate_route["route_scope"],
             "zone_or_gateway_zone_return_reachability",
         )
-        self.assertEqual(
-            candidate_route["current_compatibility_route_scope"],
-            "ut_32_return_route",
-        )
+        self.assertNotIn("current_compatibility_route_scope", candidate_route)
         self.assertEqual(
             candidate_route["target_route_scope"],
             "zone_or_gateway_zone_return_target",
@@ -256,15 +321,15 @@ class PlannerReturnPathIntentTests(unittest.TestCase):
             "gw1-gateway-slot0",
         )
         self.assertEqual(
-            candidate_stack["current_compatibility_label_scope_id"],
+            candidate_stack["shared_backbone_label_scope_id"],
             context["shared_backbone_label_scope_id"],
         )
         self.assertEqual(
-            candidate_stack["current_compatibility_reverse_label_count"],
+            candidate_stack["reverse_label_count"],
             1,
         )
         self.assertEqual(
-            candidate_stack["current_compatibility_reverse_labels"],
+            candidate_stack["reverse_labels"],
             [200000],
         )
         self.assertEqual(
@@ -304,9 +369,11 @@ class PlannerReturnPathIntentTests(unittest.TestCase):
             "local_ut_delivery",
         )
         self.assertEqual(
-            return_intent["current_linux_realization"]["mode"],
-            "shared_gz_backbone",
+            return_intent["bpf_realization"]["mode"],
+            "shared_gz_fec_with_zone_edge_delivery",
         )
+        self.assertFalse(return_intent["bpf_realization"]["linux_mpls_fallback"])
+        self.assertFalse(return_intent["bpf_realization"]["per_ut_core_state"])
 
         self.assertEqual(context["reverse_link_ids"], ["gw1-gateway-slot0"])
         self.assertEqual(context["reverse_labels"], [200000])
@@ -368,7 +435,17 @@ class PlannerReturnPathIntentTests(unittest.TestCase):
                         "network_name": "gw1-uplink",
                         "ip_address": "10.200.0.1/24",
                     },
-                }
+                },
+                {
+                    "gateway_id": "gw2",
+                    "bootstrap_network": {
+                        "endpoint": {"ip_address": "10.201.0.1/24"}
+                    },
+                    "internet_uplink": {
+                        "network_name": "gw2-uplink",
+                        "ip_address": "10.201.0.1/24",
+                    },
+                },
             ]
         }
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -381,8 +458,8 @@ class PlannerReturnPathIntentTests(unittest.TestCase):
                 runtime_update_plan=plan,
             )
 
-        self.assertEqual(len(contexts), 1)
-        context = contexts[0]
+        self.assertEqual(len(contexts), 2)
+        context = next(item for item in contexts if item.selected_gateway_id == "gw1")
         self.assertEqual(context.zone_id, "zone-a")
         self.assertEqual(context.zone_return_prefixes, ("10.10.0.101/32",))
         self.assertEqual(context.gateway_class_id, "zone-a:default-gateway:gw1")
@@ -391,17 +468,18 @@ class PlannerReturnPathIntentTests(unittest.TestCase):
             "zone_return_delivery",
         )
         self.assertEqual(
-            context.return_path_intent["current_linux_realization"]["mode"],
-            "shared_gz_backbone",
+            context.return_path_intent["bpf_realization"]["mode"],
+            "shared_gz_fec_with_zone_edge_delivery",
         )
 
         intents = _zone_return_install_intents(contexts)
-        self.assertEqual(len(intents), 1)
-        self.assertEqual(intents[0].target_key, "gw1:zone-a:stl-950001")
-        self.assertEqual(intents[0].flow_ids, ("ut-internet-egress:ut101",))
-        self.assertEqual(intents[0].ut_ids, ("ut101",))
+        self.assertEqual(len(intents), 2)
+        default_intent = next(item for item in intents if item.selected_gateway_id == "gw1")
+        self.assertEqual(default_intent.target_key, "gw1:zone-a:stl-950001")
+        self.assertEqual(default_intent.flow_ids, ("ut-internet-egress:ut101",))
+        self.assertEqual(default_intent.ut_ids, ("ut101",))
         self.assertEqual(
-            intents[0].target_backbone_state_model,
+            default_intent.target_backbone_state_model,
             "shared_gateway_zone_or_zone_return_reachability",
         )
 
@@ -412,13 +490,15 @@ class PlannerReturnPathIntentTests(unittest.TestCase):
         self.assertFalse(
             fec_plan["planning_scope"]["backbone_state_scales_with_ut_count"]
         )
-        self.assertEqual(fec_plan["flow_count"], 2)
-        self.assertEqual(fec_plan["forward_fec_count"], 1)
-        self.assertEqual(fec_plan["return_fec_count"], 1)
+        self.assertEqual(fec_plan["flow_count"], 4)
+        self.assertEqual(fec_plan["forward_fec_count"], 2)
+        self.assertEqual(fec_plan["return_fec_count"], 2)
         for fec_group in fec_plan["forward_fecs"] + fec_plan["return_fecs"]:
             self.assertNotIn("None", fec_group["affected_nodes"])
 
-        return_fec = fec_plan["return_fecs"][0]
+        return_fec = next(
+            item for item in fec_plan["return_fecs"] if item["selected_gateway_id"] == "gw1"
+        )
         self.assertEqual(return_fec["target_key"], "gw1:zone-a:stl-950001")
         self.assertEqual(return_fec["ut_ids"], ["ut101", "ut102"])
         self.assertEqual(
@@ -431,13 +511,29 @@ class PlannerReturnPathIntentTests(unittest.TestCase):
         )
 
         cold_diff = diff_gz_fec_plans(None, fec_plan)
-        self.assertEqual(cold_diff["changed_fec_group_count"], 2)
+        self.assertEqual(cold_diff["changed_fec_group_count"], 4)
         self.assertEqual(cold_diff["diff_scope"], "changed_fec_zone_path_groups_only")
 
         unchanged_diff = diff_gz_fec_plans(fec_plan, fec_plan)
         self.assertEqual(unchanged_diff["changed_fec_group_count"], 0)
-        self.assertEqual(unchanged_diff["skipped_unchanged_fec_group_count"], 2)
+        self.assertEqual(unchanged_diff["skipped_unchanged_fec_group_count"], 4)
         self.assertEqual(unchanged_diff["estimated_lfib_route_operation_items"], 0)
+
+    def test_runtime_plan_conversion_never_reuses_process_identity_cache(self) -> None:
+        plan = UtInternetExperimentPlanner().plan(_snapshot())
+        first = _runtime_plan_dict(plan)
+        node_id = next(iter(plan.node_subplans))
+        replacement = deepcopy(plan.node_subplans[node_id])
+        replacement["conversion_marker"] = "current-plan-content"
+        plan.node_subplans[node_id] = replacement
+
+        second = _runtime_plan_dict(plan)
+
+        self.assertNotIn("conversion_marker", first["node_subplans"][node_id])
+        self.assertEqual(
+            second["node_subplans"][node_id]["conversion_marker"],
+            "current-plan-content",
+        )
 
 
 if __name__ == "__main__":

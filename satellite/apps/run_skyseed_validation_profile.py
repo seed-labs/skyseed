@@ -10,6 +10,7 @@ import hashlib
 import ipaddress
 import json
 import math
+import os
 import re
 import shutil
 import subprocess
@@ -28,27 +29,31 @@ SATELLITE_DIR = bootstrap_app_import_path()
 REPO_ROOT = SATELLITE_DIR.parent
 PROFILE_DIR = SATELLITE_DIR / "configs" / "validation_profiles"
 STARLINK_RUNNER = SATELLITE_DIR / "apps" / "run_starlink_shell_experiment.py"
-MINIMAL_RELOAD_RUNNER = (
-    SATELLITE_DIR / "apps" / "run_minimal_resident_bpf_map_reload_repro.py"
+from ground_model import (
+    load_gateway_catalog,
+    load_ut_catalog,
+    load_ut_gateway_policy_catalog,
+    load_zone_catalog,
 )
-
-from ground_model import load_gateway_catalog, load_ut_catalog, load_zone_catalog
 from runtime_execution_trace import write_execution_trace_artifacts
 
 
-LEGACY_DEMO_UT_IDS = {"ut1", "ut2", "ut3", "ut4"}
-LEGACY_DEMO_GATEWAY_IDS = {"gw1", "gw2", "gw3", "gw4", "gw5", "gw6", "gw7", "gw8"}
+LEGACY_PYTHONPATH_ENTRIES = {"/home/seed/seed-emulator"}
 
 RUNNER_ARG_ORDER = (
     "run_mode",
     "orbit_input_mode",
     "planned_shell_id",
     "max_satellites",
+    "orbit_data",
     "ut_catalog",
+    "ut_gateway_policy_catalog",
     "gateway_catalog",
+    "gateway_binding_catalog",
     "zone_catalog",
     "ut_ids",
     "gateway_ids",
+    "zone_ids",
     "max_uts",
     "max_gateways",
     "ground_placement",
@@ -56,6 +61,9 @@ RUNNER_ARG_ORDER = (
     "sample_interval",
     "event_evaluation_interval",
     "horizon_seconds",
+    "visualization_link_start_timestamp",
+    "visualization_link_interval",
+    "visualization_link_duration_seconds",
     "slice_count",
     "step_seconds",
     "max_runtime_epochs",
@@ -76,6 +84,7 @@ RUNNER_ARG_ORDER = (
     "preflight_policy",
     "host_prepare_policy",
     "forwarding_backend",
+    "bpftool_path",
     "bpf_backend",
     "compose_build_policy",
     "compose_up_timeout_seconds",
@@ -87,6 +96,7 @@ RUNNER_ARG_ORDER = (
     "container_readiness_timeout_seconds",
     "initial_runtime_readiness_timeout_seconds",
     "progress_heartbeat_seconds",
+    "runtime_ping_observer_seconds",
     "startup_stall_warning_seconds",
     "epoch_stall_warning_seconds",
     "mini_internet_node_prefix",
@@ -98,16 +108,15 @@ RUNNER_ARG_ORDER = (
 
 BOOLEAN_RUNNER_FLAGS = {
     "preview_only_no_compile": "--preview-only-no-compile",
-    "prepare_only_no_compose": "--prepare-only-no-compose",
-    "stop_after_pre_start_gates": "--stop-after-pre-start-gates",
-    "bundle_backed_compose_pre_runtime_proof": "--bundle-backed-compose-pre-runtime-proof",
-    "bundle_backed_one_horizon_runtime_proof": "--bundle-backed-one-horizon-runtime-proof",
-    "bundle_backed_1p1_horizon_runtime_proof": "--bundle-backed-1p1-horizon-runtime-proof",
     "keep_environment": "--keep-environment",
     "reuse_running_compose_environment": "--reuse-running-compose-environment",
     "emit_bpf_shadow": "--emit-bpf-shadow",
     "bpf_dataplane_canary": "--bpf-dataplane-canary",
     "enable_seed_internet_map": "--enable-seed-internet-map",
+    "require_visualization_links": "--require-visualization-links",
+}
+BOOLEAN_RUNNER_ARG_FLAGS = {
+    "continuous": "--continuous",
 }
 
 CAPACITY_BLOCKER_LABEL = "DOCKER_DUMMY_NETWORK_POOL_CAPACITY_BLOCKER"
@@ -207,6 +216,25 @@ def _write_jsonl(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
     )
 
 
+def _clean_validation_subprocess_env(
+    base_env: Mapping[str, str] | None = None,
+) -> Dict[str, str]:
+    env = dict(os.environ if base_env is None else base_env)
+    required = [str(SATELLITE_DIR), str(REPO_ROOT)]
+    existing = [
+        item
+        for item in str(env.get("PYTHONPATH") or "").split(os.pathsep)
+        if item and os.path.normpath(item) not in LEGACY_PYTHONPATH_ENTRIES
+    ]
+    merged: List[str] = []
+    for item in [*required, *existing]:
+        if item and item not in merged:
+            merged.append(item)
+    env["PYTHONPATH"] = os.pathsep.join(merged)
+    env["PYTHONNOUSERSITE"] = "1"
+    return env
+
+
 def _run_command(
     command: Sequence[str],
     *,
@@ -221,6 +249,7 @@ def _run_command(
             stderr=subprocess.PIPE,
             check=False,
             timeout=timeout,
+            env=_clean_validation_subprocess_env(),
         )
     except subprocess.TimeoutExpired as exc:
         return subprocess.CompletedProcess(
@@ -306,7 +335,6 @@ def _resolve_selector(
     kind: str,
     entries: Sequence[Mapping[str, Any]],
     id_field: str,
-    legacy_ids: set[str],
     catalog_path: str | None,
 ) -> Dict[str, Any]:
     spec = _selector_spec(profile, kind)
@@ -327,14 +355,6 @@ def _resolve_selector(
             )
         selected_ids = [str(item) for item in raw_ids]
         source = f"profile.validation_selector.{kind}.ids"
-    elif mode == "catalog-derived-first-n":
-        count = int(spec.get("count") or 0)
-        if count <= 0:
-            raise ProfileContractError(
-                f"profile validation_selector.{kind}.count must be positive"
-            )
-        selected_ids = [str(entry[id_field]) for entry in _sort_entries(entries, id_field)[:count]]
-        source = f"profile.validation_selector.{kind}.catalog-derived-first-n"
     elif mode == "catalog-all":
         selected_ids = list(actual_ids)
         source = f"profile.validation_selector.{kind}.catalog-all"
@@ -351,13 +371,6 @@ def _resolve_selector(
         raise ProfileContractError(
             f"profile catalog id mismatch for {kind}: missing {missing}; "
             f"catalog_path={catalog_path}; actual_ids={actual_ids}"
-        )
-
-    hidden_legacy = sorted(set(selected_ids) & legacy_ids)
-    if hidden_legacy and mode != "explicit":
-        raise ProfileContractError(
-            f"profile selected legacy demo {kind} ids {hidden_legacy} via {mode}; "
-            "legacy demo ids require explicit profile selection and active catalog membership"
         )
 
     selected_sources = [
@@ -392,11 +405,25 @@ def resolve_catalog_contract(profile: Mapping[str, Any]) -> Dict[str, Any]:
         }
 
     ut_catalog_path = _resolve_repo_path(runner_args.get("ut_catalog"))
+    ut_gateway_policy_path = (
+        _resolve_repo_path(runner_args.get("ut_gateway_policy_catalog"))
+        if str(runner_args.get("ut_gateway_policy_catalog") or "").strip()
+        else None
+    )
     gateway_catalog_path = _resolve_repo_path(runner_args.get("gateway_catalog"))
     zone_catalog_path = _resolve_repo_path(runner_args.get("zone_catalog"))
     ut_entries = load_ut_catalog(ut_catalog_path)
-    gateway_entries = load_gateway_catalog(gateway_catalog_path)
+    gateway_binding_path = _resolve_repo_path(runner_args.get("gateway_binding_catalog"))
+    gateway_entries = load_gateway_catalog(
+        gateway_catalog_path,
+        binding_path=gateway_binding_path,
+    )
     zone_entries = load_zone_catalog(zone_catalog_path)
+    ut_gateway_policies = (
+        load_ut_gateway_policy_catalog(ut_gateway_policy_path)
+        if ut_gateway_policy_path is not None
+        else []
+    )
 
     selectors = {
         "ut": _resolve_selector(
@@ -404,7 +431,6 @@ def resolve_catalog_contract(profile: Mapping[str, Any]) -> Dict[str, Any]:
             kind="ut",
             entries=ut_entries,
             id_field="ut_id",
-            legacy_ids=LEGACY_DEMO_UT_IDS,
             catalog_path=ut_catalog_path,
         ),
         "gateway": _resolve_selector(
@@ -412,7 +438,6 @@ def resolve_catalog_contract(profile: Mapping[str, Any]) -> Dict[str, Any]:
             kind="gateway",
             entries=gateway_entries,
             id_field="gateway_id",
-            legacy_ids=LEGACY_DEMO_GATEWAY_IDS,
             catalog_path=gateway_catalog_path,
         ),
         "zone": _resolve_selector(
@@ -420,18 +445,26 @@ def resolve_catalog_contract(profile: Mapping[str, Any]) -> Dict[str, Any]:
             kind="zone",
             entries=zone_entries,
             id_field="zone_id",
-            legacy_ids=set(),
             catalog_path=zone_catalog_path,
         ),
     }
+    selected_ut_ids = set(selectors["ut"].get("selected_ids") or [])
+    policy_by_ut_id = {
+        str(entry.get("ut_id") or ""): dict(entry) for entry in ut_gateway_policies
+    }
+    missing_policy_ut_ids = sorted(selected_ut_ids - set(policy_by_ut_id))
+    if ut_gateway_policy_path is not None and missing_policy_ut_ids:
+        raise ValueError(
+            "selected UTs are missing immutable gateway policy: "
+            + ",".join(missing_policy_ut_ids)
+        )
     return {
         "ok": True,
         "required": True,
         "selectors": selectors,
-        "forbidden_legacy_defaults": {
-            "ut": sorted(LEGACY_DEMO_UT_IDS),
-            "gateway": sorted(LEGACY_DEMO_GATEWAY_IDS),
-        },
+        "gateway_binding_catalog_path": gateway_binding_path,
+        "ut_gateway_policy_catalog_path": ut_gateway_policy_path,
+        "selected_ut_gateway_policy_count": len(selected_ut_ids),
     }
 
 
@@ -1186,6 +1219,7 @@ def refresh_profile_run_summary_derived_artifacts(*, run_dir: Path) -> Dict[str,
         "static_inventory_precreated_connection_audit": "static_inventory_precreated_connection_audit.json",
         "normal_failure_cleanup": "normal_failure_cleanup_report.json",
         "normal_path_artifact_contract": "normal_path_artifact_contract.json",
+        "runtime_queue_route_identity_coverage": "runtime_queue_route_identity_coverage.json",
     }
     derived_artifact_owned_labels = {
         "normal_path_artifact_contract": {
@@ -1363,13 +1397,21 @@ def evaluate_startup_materialization_contract(
     high_progress_continue = any(
         bool(contract.get("high_progress_continue")) for contract in startup_contracts
     )
+    recent_progress_observed = any(
+        bool(contract.get("recent_progress_observed"))
+        or bool(contract.get("absolute_max_nonblocking_due_to_progress"))
+        or bool(contract.get("progress_observed"))
+        for contract in startup_contracts
+    )
     hard_cap_exceeded = (
         blocker_label == STARTUP_HARD_CAP_LABEL
         or any(
             bool(contract.get("hard_cap_exceeded"))
-            or bool(contract.get("absolute_max_exceeded"))
             for contract in startup_contracts
         )
+    )
+    absolute_cap_observed = any(
+        bool(contract.get("absolute_max_exceeded")) for contract in startup_contracts
     )
     resource_deadlock = (
         blocker_label == RESOURCE_DEADLOCK_LABEL
@@ -1423,10 +1465,6 @@ def evaluate_startup_materialization_contract(
         if expected_value is not None and observed.get(key) != expected_value
     ]
     outcome_labels: List[str] = []
-    if soft_budget_exceeded:
-        outcome_labels.extend(
-            [STARTUP_SOFT_BUDGET_WARNING_LABEL, STARTUP_COST_ANOMALY_LABEL]
-        )
     if grace_applied or high_progress_continue:
         outcome_labels.append(SLOW_PROGRESS_CONTINUE_LABEL)
     if high_progress_continue:
@@ -1466,8 +1504,6 @@ def evaluate_startup_materialization_contract(
             if operator_abort
             else "slow_but_progressing_continue"
             if grace_applied or high_progress_continue or slow_but_progressing
-            else "startup_soft_budget_exceeded_warning"
-            if soft_budget_exceeded
             else "not_timed_out"
         ),
         "compose_up_timeout_seconds": compose_timeout,
@@ -1483,12 +1519,14 @@ def evaluate_startup_materialization_contract(
         "remaining_batches": remaining_batches,
         "progress_ratio": round(progress_ratio, 6),
         "soft_budget_exceeded": soft_budget_exceeded,
+        "soft_budget_warning": False,
+        "recent_progress_observed": recent_progress_observed,
         "progress_was_happening_at_timeout": slow_but_progressing,
         "actual_stall_detected": actual_stall,
         "progress_grace_applied": grace_applied,
         "high_progress_continue": high_progress_continue,
         "no_progress_stall": no_progress_stall,
-        "absolute_cap_exceeded": hard_cap_exceeded,
+        "absolute_cap_exceeded": absolute_cap_observed,
         "hard_cap_exceeded": hard_cap_exceeded,
         "resource_deadlock_startup_abort": resource_deadlock,
         "operator_abort": operator_abort,
@@ -1643,8 +1681,6 @@ def evaluate_startup_state_supervision_contract(
     if recoverable_stage_failure and checkpoint_available and not cleanup_required:
         cleanup_required = False
     labels = [STARTUP_STATE_SUPERVISION_LABEL]
-    if bool(startup_contract.get("soft_budget_exceeded")):
-        labels.append(STARTUP_SOFT_BUDGET_WARNING_ONLY_LABEL)
     if bool(startup_contract.get("high_progress_continue") or startup_contract.get("progress_grace_applied")) and not cleanup_required:
         labels.append(STARTUP_PROGRESSING_CONTINUE_LABEL)
     if no_progress:
@@ -2026,10 +2062,7 @@ def _prepared_bpf_scope(prepared: Mapping[str, Any] | None) -> Dict[str, Any]:
 def evaluate_static_inventory_precreated_connection_audit(
     *,
     run_dir: Path,
-    interface_refs: Sequence[str] = (
-        "netns:stl-940120:xp120a",
-        "netns:stl-940178:xp120b",
-    ),
+    interface_refs: Sequence[str] | None = None,
 ) -> Dict[str, Any]:
     topology = _load_json_maybe(run_dir / "topology.json") or {}
     link_state = _load_json_maybe(run_dir / "link_state.json") or {}
@@ -2038,6 +2071,7 @@ def evaluate_static_inventory_precreated_connection_audit(
     lifecycle = _load_json_maybe(run_dir / "lifecycle_aware_horizon_contract.json") or {}
     catalog_gate = _load_json_maybe(run_dir / "profile_catalog_gate.json") or {}
     slot_capacity = _load_json_maybe(run_dir / "slot_capacity_audit.json") or {}
+    resource_budget = _load_json_maybe(run_dir / "resource_budget.json") or {}
     inventory = _slot_inventory(topology)
     link_slots = [dict(slot or {}) for slot in list(link_state.get("slots") or [])]
     link_slots_by_type: Dict[str, List[Dict[str, Any]]] = {}
@@ -2080,8 +2114,17 @@ def evaluate_static_inventory_precreated_connection_audit(
     unsafe_conflict_count = int(
         dict(offline.get("aggregate") or {}).get("unsafe_conflict_count") or 0
     )
-    xp_reports: List[Dict[str, Any]] = []
-    for interface_ref in interface_refs:
+    derived_interface_refs = list(interface_refs or [])
+    if not derived_interface_refs:
+        for slot in inventory.get("cross_plane_isl", []):
+            slot_state = _link_state_slot(link_state, slot.get("slot_name"))
+            if bool(slot_state.get("occupied")):
+                continue
+            derived_interface_refs.extend(_slot_endpoint_interface_refs(slot))
+            if len(derived_interface_refs) >= 2:
+                break
+    cross_plane_inactive_reports: List[Dict[str, Any]] = []
+    for interface_ref in derived_interface_refs[:2]:
         slot = _slot_for_interface(topology, interface_ref) or {}
         slot_state = _link_state_slot(link_state, slot.get("slot_name"))
         slot_found = bool(slot)
@@ -2140,7 +2183,7 @@ def evaluate_static_inventory_precreated_connection_audit(
         }
         proof = dict(report["inactive_visibility_proof"])
         report["inactive_visibility_passed"] = all(bool(value) for value in proof.values() if isinstance(value, bool))
-        xp_reports.append(report)
+        cross_plane_inactive_reports.append(report)
     categories = {
         "ut_current_next_slots": {
             "slot_type": "ut_access",
@@ -2188,6 +2231,12 @@ def evaluate_static_inventory_precreated_connection_audit(
         str(key): int(value)
         for key, value in dict(slot_basis.get("gateway_required_by_id") or {}).items()
     }
+    budget_gateway_by_id = {
+        str(key): int(dict(value or {}).get("budgeted_slots") or 0)
+        for key, value in dict(
+            dict(resource_budget.get("gateway_access") or {}).get("per_gateway") or {}
+        ).items()
+    }
     ut_required_by_id = {
         str(key): int(value)
         for key, value in dict(slot_basis.get("ut_required_by_id") or {}).items()
@@ -2219,11 +2268,18 @@ def evaluate_static_inventory_precreated_connection_audit(
         )
         or sum(gw_required_by_id.values())
     )
+    gw_budget_required = int(
+        dict(resource_budget.get("gateway_access") or {}).get(
+            "recommended_total_slots"
+        )
+        or sum(budget_gateway_by_id.values())
+        or gw_required
+    )
     gw_derivation_complete = (
         bool(selected_gateways)
-        and len(gw_required_by_id) == len(selected_gateways)
-        and not missing_gateway_ids
-        and gw_prepared == gw_required
+        and set(budget_gateway_by_id) == {str(gateway_id) for gateway_id in selected_gateways}
+        and gw_prepared == gw_budget_required
+        and gw_budget_required == sum(budget_gateway_by_id.values())
     )
     slot_derivation_audit = {
         "ut_current_next_slots": {
@@ -2258,29 +2314,34 @@ def evaluate_static_inventory_precreated_connection_audit(
             "note": dict(slot_capacity.get("notes") or {}).get("ut_access"),
         },
         "gw_max_simultaneous_slots": {
-            "source_artifact": "slot_capacity_audit.json",
+            "source_artifact": "resource_budget.json",
             "source_fields": [
-                "calculation_basis.gateway_required_by_id",
-                "calculation_basis.active_link_max_concurrent_by_type.gw_access",
-                "required_max_concurrent_slots_by_type.gw_access",
+                "gateway_access.per_gateway",
+                "gateway_access.recommended_total_slots",
                 "prepared_slots_by_type.gw_access",
-                "notes.gw_access",
+                "policy.gateway_slot_margin",
             ],
             "selected_gateway_count": len(selected_gateways),
-            "required_by_id_count": len(gw_required_by_id),
-            "missing_selected_gateway_ids_in_required_by_id": missing_gateway_ids,
+            "required_by_id_count": len(budget_gateway_by_id),
+            "missing_selected_gateway_ids_in_required_by_id": sorted(
+                str(gateway_id)
+                for gateway_id in selected_gateways
+                if str(gateway_id) not in budget_gateway_by_id
+            ),
+            "planner_selected_gateway_required_by_id_count": len(gw_required_by_id),
+            "planner_selected_gateway_missing_ids": missing_gateway_ids,
             "active_link_max_concurrent_gw_access": int(
                 dict(slot_basis.get("active_link_max_concurrent_by_type") or {}).get(
                     "gw_access"
                 )
                 or 0
             ),
-            "required_slot_count": gw_required,
+            "required_slot_count": gw_budget_required,
             "prepared_slot_count": gw_prepared,
-            "prepared_minus_required": gw_prepared - gw_required,
-            "per_gateway_required_slot_counts": sorted(set(gw_required_by_id.values())),
+            "prepared_minus_required": gw_prepared - gw_budget_required,
+            "per_gateway_required_slot_counts": sorted(set(budget_gateway_by_id.values())),
             "derivation_kind": (
-                "event_timeline_bounded_capacity"
+                "visualization_physical_budget_per_selected_gateway"
                 if gw_derivation_complete
                 else "incomplete_or_configured_capacity"
             ),
@@ -2300,16 +2361,16 @@ def evaluate_static_inventory_precreated_connection_audit(
             "note": dict(slot_capacity.get("notes") or {}).get("gw_access"),
             "conclusion": (
                 "GW slot count is derived from per-gateway maximum simultaneous "
-                "selected satellite connections observed in the EventTimeline "
-                "horizon plus policy margin; this is bounded configured capacity, "
-                "not a proof of physical maximum service capacity."
+                "selected satellite connections in the resource budget plus policy "
+                "margin for every selected gateway; planner-selected gateway usage "
+                "is not used as a proxy for inventory capacity."
                 if gw_derivation_complete
                 else (
                     f"{gw_prepared} prepared GW slots look like bounded inventory "
-                    "capacity, but exact per-selected-GW derivation is incomplete "
-                    f"because required_by_id covers {len(gw_required_by_id)}/"
+                    "capacity, but exact per-selected-GW budget derivation is incomplete "
+                    f"because resource_budget covers {len(budget_gateway_by_id)}/"
                     f"{len(selected_gateways)} gateways and required total is "
-                    f"{gw_required} while prepared total is {gw_prepared}."
+                    f"{gw_budget_required} while prepared total is {gw_prepared}."
                 )
             ),
         },
@@ -2353,7 +2414,7 @@ def evaluate_static_inventory_precreated_connection_audit(
         "outcome_labels": outcome_labels,
         "categories": categories,
         "slot_derivation_audit": slot_derivation_audit,
-        "xp120_exact_inactive_visibility_proof": xp_reports,
+        "cross_plane_inactive_visibility_proof": cross_plane_inactive_reports,
         "linux_gz_mpls_lfib_fallback_count": linux_fallback_count,
         "unsafe_map_conflict_count": unsafe_conflict_count,
         "lifecycle_horizon": {
@@ -2376,9 +2437,10 @@ def evaluate_static_inventory_precreated_connection_audit(
             "in_plane_fixed_slots_audited": True,
             "cross_plane_bounded_slot_pool_audited": True,
             "event_timeline_changes_activation_not_inventory_existence": True,
-            "xp120_interface_count": len(xp_reports),
-            "xp120_visibility_passed": all(
-                bool(report["inactive_visibility_passed"]) for report in xp_reports
+            "cross_plane_inactive_interface_count": len(cross_plane_inactive_reports),
+            "cross_plane_inactive_visibility_passed": all(
+                bool(report["inactive_visibility_passed"])
+                for report in cross_plane_inactive_reports
             ),
             "linux_fallback_blocks_visibility": linux_fallback_count > 0,
         },
@@ -3798,6 +3860,9 @@ def evaluate_normal_path_artifact_contract(*, run_dir: Path) -> Dict[str, Any]:
     ) or {}
     horizon_queue = _load_json_maybe(run_dir / "horizon_lifecycle_queue_contract.json") or {}
     preload = _load_json_maybe(run_dir / "runtime_preload_diff_contract_audit.json") or {}
+    route_identity_coverage = (
+        _load_json_maybe(run_dir / "runtime_queue_route_identity_coverage.json") or {}
+    )
     cleanup = normalize_cleanup_report_artifact(run_dir=run_dir) or {}
 
     prepared_runtime = dict(prepared_bundle.get("continuous_runtime_execution") or {})
@@ -3905,6 +3970,20 @@ def evaluate_normal_path_artifact_contract(*, run_dir: Path) -> Dict[str, Any]:
         explicit_bpf_preload_diff_execution_evidence_present
         or horizon_preload_plan_present
     )
+    route_identity_coverage_present = bool(route_identity_coverage)
+    route_identity_coverage_passed = bool(
+        not route_identity_coverage_present or route_identity_coverage.get("ok") is True
+    )
+    route_identity_component = dict(
+        route_identity_coverage.get("route_identity_coverage")
+        or route_identity_coverage
+    )
+    runtime_queue_integrity_component = dict(
+        route_identity_coverage.get("queue_integrity") or {}
+    )
+    bpf_generation_slot_coverage_component = dict(
+        route_identity_coverage.get("bpf_generation_slot_coverage") or {}
+    )
     run_window_resource_coverage_present = bool(run_window_resource_coverage_plan)
     run_window_resource_coverage_passed = bool(
         run_window_resource_coverage_present
@@ -3945,7 +4024,14 @@ def evaluate_normal_path_artifact_contract(*, run_dir: Path) -> Dict[str, Any]:
         outcome_labels.append("BPF_PRELOAD_DIFF_PLAN_MISSING_BLOCKER")
     if not run_window_resource_coverage_passed:
         outcome_labels.append("RUN_WINDOW_RESOURCE_COVERAGE_BLOCKER")
-    if cleanup_mode == "normal_failure_cleanup" and not cleanup_owned_scope_evidence_present:
+    if route_identity_coverage_present:
+        outcome_labels.append("RUNTIME_QUEUE_ROUTE_IDENTITY_COVERAGE_PRESENT")
+    if route_identity_coverage_present and not route_identity_coverage_passed:
+        outcome_labels.append("RUNTIME_QUEUE_ROUTE_IDENTITY_COVERAGE_BLOCKER")
+    if (
+        cleanup_mode == "normal_failure_cleanup"
+        and not cleanup_owned_scope_evidence_present
+    ):
         outcome_labels.append("CLEANUP_OWNED_SCOPE_EVIDENCE_MISSING_BLOCKER")
     if explicit_horizon_lifecycle_queue_present:
         outcome_labels.append("HORIZON_LIFECYCLE_QUEUE_CONTRACT_PRESENT")
@@ -3993,6 +4079,62 @@ def evaluate_normal_path_artifact_contract(*, run_dir: Path) -> Dict[str, Any]:
         "run_window_resource_coverage_present": run_window_resource_coverage_present,
         "run_window_resource_coverage_passed": run_window_resource_coverage_passed,
         "run_window_resource_coverage_plan": run_window_resource_coverage_plan,
+        "runtime_queue_route_identity_coverage_present": route_identity_coverage_present,
+        "runtime_queue_route_identity_coverage_passed": route_identity_coverage_passed,
+        "runtime_queue_integrity_passed": bool(
+            not runtime_queue_integrity_component
+            or runtime_queue_integrity_component.get("ok") is True
+        ),
+        "runtime_queue_bpf_generation_slot_coverage_passed": bool(
+            not bpf_generation_slot_coverage_component
+            or bpf_generation_slot_coverage_component.get("ok") is True
+        ),
+        "runtime_queue_route_identity_coverage": {
+            "ok": route_identity_coverage.get("ok"),
+            "queue_integrity": {
+                "ok": runtime_queue_integrity_component.get("ok"),
+                "runtime_applicable_entry_count": int(
+                    runtime_queue_integrity_component.get(
+                        "runtime_applicable_entry_count"
+                    )
+                    or 0
+                ),
+                "missing_context_count": int(
+                    runtime_queue_integrity_component.get("missing_context_count")
+                    or 0
+                ),
+                "duplicate_entry_count": int(
+                    runtime_queue_integrity_component.get("duplicate_entry_count")
+                    or 0
+                ),
+            },
+            "bpf_generation_slot_coverage": {
+                "ok": bpf_generation_slot_coverage_component.get("ok"),
+                "generation_slot_record_count": int(
+                    bpf_generation_slot_coverage_component.get(
+                        "generation_slot_record_count"
+                    )
+                    or 0
+                ),
+                "generation_slot_widths": list(
+                    bpf_generation_slot_coverage_component.get(
+                        "generation_slot_widths"
+                    )
+                    or []
+                ),
+            },
+            "producer_source": str(route_identity_component.get("producer_source") or ""),
+            "consumer_identity_count": int(
+                route_identity_component.get("consumer_identity_count") or 0
+            ),
+            "producer_identity_count": int(
+                route_identity_component.get("producer_identity_count") or 0
+            ),
+            "missing_identity_count": int(
+                route_identity_component.get("missing_identity_count") or 0
+            ),
+            "blockers": list(route_identity_coverage.get("blockers") or [])[:20],
+        },
         "explicit_runtime_update_plan_present": explicit_runtime_update_plan_present,
         "runtime_update_plan_entry_count": runtime_plan_count,
         "explicit_event_timeline_plan_present": explicit_event_timeline_plan_present,
@@ -4035,6 +4177,9 @@ def evaluate_normal_path_artifact_contract(*, run_dir: Path) -> Dict[str, Any]:
             "runtime_update_plan": "runtime_update_plan_summary.json",
             "event_timeline": "horizon_execution_reconciled_summary.json",
             "horizon_lifecycle_queue": "horizon_lifecycle_queue_contract.json",
+            "runtime_queue_coverage": (
+                "runtime_queue_route_identity_coverage.json"
+            ),
             "bpf_preload_diff": "runtime_preload_diff_contract_audit.json",
             "cleanup": "normal_failure_cleanup_report.json",
         },
@@ -4090,8 +4235,11 @@ def reconcile_lifecycle_horizon_completion_with_execution(
     outcome_labels = list(lifecycle.get("outcome_labels") or [])
     originally_completed = bool(lifecycle.get("whole_horizon_completed"))
     originally_ready = bool(lifecycle.get("ready_for_next_horizon"))
-    if selected_event_failed and (originally_completed or originally_ready):
-        outcome_labels.append(HORIZON_COMPLETION_REPORTING_INCONSISTENT_LABEL)
+    outcome_labels = [
+        label
+        for label in outcome_labels
+        if label != HORIZON_COMPLETION_REPORTING_INCONSISTENT_LABEL
+    ]
     if parameter_delta_attach:
         outcome_labels.append(PARAMETER_UPDATE_TRIGGERED_DELTA_ATTACH_BLOCKER_LABEL)
     reconciled_events: List[Dict[str, Any]] = []
@@ -4119,11 +4267,25 @@ def reconcile_lifecycle_horizon_completion_with_execution(
         or 0
     )
     parameter_completed = int(current_epoch.get("parameter_epochs_completed") or 0)
+    failed_generation = (
+        bpf_readiness.get("active_generation")
+        if bpf_readiness.get("active_generation") not in (None, "", "None")
+        else dict(
+            dict(prepare.get("compiled_runtime_inputs") or {}).get(
+                "active_generation"
+            )
+            or {}
+        ).get("value")
+    )
     reconciled = {
         **lifecycle,
         "execution_reconciled": True,
+        "planned_whole_horizon_completed": originally_completed,
+        "planned_ready_for_next_horizon": originally_ready,
         "map_only_runtime_epochs_completed": map_only_completed,
         "parameter_epochs_completed": parameter_completed,
+        "completed_epoch_count": map_only_completed + parameter_completed,
+        "failed_generation": failed_generation,
         "whole_horizon_completed": (
             False if selected_event_failed else bool(lifecycle.get("whole_horizon_completed"))
         ),
@@ -4133,6 +4295,16 @@ def reconcile_lifecycle_horizon_completion_with_execution(
         "selected_event_failed": selected_event_failed,
         "failed_selected_event": failed_selected_event,
         "execution_failure_context": current_epoch,
+        "reporting_consistency": {
+            "ok": True,
+            "planned_state_separated_from_execution_state": True,
+            "completed_epoch_source": (
+                "failure_context.current_epoch_context"
+                if current_epoch
+                else "real_runtime_report.iterations"
+            ),
+            "legacy_inconsistency_label_emitted": False,
+        },
         "event_reports": reconciled_events,
         "outcome_labels": list(dict.fromkeys(outcome_labels)),
     }
@@ -4174,6 +4346,14 @@ def _runner_report_indicates_failure(report: Mapping[str, Any] | None) -> bool:
     if report.get("aggregate_runtime_succeeded") is False:
         return True
     return False
+
+
+def _effective_runner_returncode(
+    *, completed_returncode: int, runner_report: Mapping[str, Any] | None
+) -> int:
+    if int(completed_returncode) != 0:
+        return int(completed_returncode)
+    return 2 if _runner_report_indicates_failure(runner_report) else 0
 
 
 def _runner_report_startup_cost_warning_only(report: Mapping[str, Any] | None) -> bool:
@@ -4310,6 +4490,7 @@ def _enforce_profile_policy(profile: Mapping[str, Any]) -> None:
     booleans = dict(profile.get("runner_boolean_flags") or {})
     forbidden = dict(profile.get("forbidden_behavior") or {})
     strict = bool(forbidden.get("strict_bpf_owned_no_canary_experimental"))
+    long_run = dict(profile.get("long_run_contract") or {})
 
     if strict:
         if str(runner_args.get("forwarding_backend")) != "bpf_owned":
@@ -4330,6 +4511,24 @@ def _enforce_profile_policy(profile: Mapping[str, Any]) -> None:
             raise ProfileContractError(
                 "strict bpf_owned profile forbids bpf_shadow/bpf_canary forwarding backend"
             )
+        configured_bpftool = str(runner_args.get("bpftool_path") or "").strip()
+        bpftool_path = Path(configured_bpftool)
+        if (
+            not configured_bpftool
+            or not bpftool_path.is_absolute()
+            or not bpftool_path.is_file()
+            or not os.access(bpftool_path, os.X_OK)
+        ):
+            raise ProfileContractError(
+                "strict bpf_owned profile requires an executable absolute "
+                "runner_args.bpftool_path"
+            )
+        bpftool_probe = _run_command([configured_bpftool, "version"], timeout=5.0)
+        if bpftool_probe.returncode != 0:
+            raise ProfileContractError(
+                "strict bpf_owned profile bpftool_path probe failed: "
+                + str(bpftool_probe.stderr or bpftool_probe.stdout).strip()
+            )
 
     allowed = dict(profile.get("allowed_capabilities") or {})
     if bool(allowed.get("runtime")) is False and str(runner_args.get("run_mode")) == "real-runtime":
@@ -4340,6 +4539,80 @@ def _enforce_profile_policy(profile: Mapping[str, Any]) -> None:
         and str(runner_args.get("forwarding_backend", "")) == "bpf_owned"
     ):
         raise ProfileContractError("profile forbids BPF but runner_args.forwarding_backend=bpf_owned")
+    if bool(long_run.get("required")):
+        if bool(long_run.get("forbid_max_runtime_epochs")) and (
+            "max_runtime_epochs" in runner_args
+        ):
+            raise ProfileContractError(
+                "long-run profile forbids runner_args.max_runtime_epochs"
+            )
+        if bool(long_run.get("forbid_max_parameter_epochs")) and (
+            "max_parameter_epochs" in runner_args
+        ):
+            raise ProfileContractError(
+                "long-run profile forbids runner_args.max_parameter_epochs"
+            )
+        if bool(long_run.get("forbid_max_epochs")) and ("max_epochs" in runner_args):
+            raise ProfileContractError(
+                "long-run profile forbids runner_args.max_epochs"
+            )
+        expected_horizon_seconds = long_run.get("horizon_seconds")
+        if expected_horizon_seconds is not None and float(
+            runner_args.get("horizon_seconds") or 0.0
+        ) != float(expected_horizon_seconds):
+            raise ProfileContractError(
+                "long-run profile horizon_seconds does not match contract"
+            )
+        minimum_horizon_count = long_run.get("minimum_horizon_count")
+        if minimum_horizon_count is not None and int(
+            runner_args.get("loop_count") or 0
+        ) < int(minimum_horizon_count):
+            raise ProfileContractError(
+                "long-run profile loop_count is below minimum_horizon_count contract"
+            )
+        if minimum_horizon_count is not None and int(minimum_horizon_count) > 1:
+            if bool(runner_args.get("continuous")) is not True:
+                raise ProfileContractError(
+                    "long-run profile with multiple horizons requires runner_args.continuous=true"
+                )
+    visualization_links = dict(profile.get("visualization_physical_links") or {})
+    if bool(visualization_links.get("required")):
+        if not bool(booleans.get("require_visualization_links")):
+            raise ProfileContractError(
+                "visualization physical link profile must set "
+                "runner_boolean_flags.require_visualization_links=true"
+            )
+        if not str(runner_args.get("gateway_binding_catalog") or "").strip():
+            raise ProfileContractError(
+                "visualization physical link profile requires gateway_binding_catalog"
+            )
+        gateway_selector = dict(
+            dict(profile.get("validation_selector") or {}).get("gateway") or {}
+        )
+        if str(gateway_selector.get("mode")) != "explicit":
+            raise ProfileContractError(
+                "visualization physical link profile requires explicit gateway selector"
+            )
+        if not str(runner_args.get("visualization_link_start_timestamp") or "").strip():
+            raise ProfileContractError(
+                "visualization physical link profile requires a fixed start timestamp"
+            )
+        if (
+            str(runner_args.get("start_time") or "").strip()
+            != str(runner_args.get("visualization_link_start_timestamp") or "").strip()
+        ):
+            raise ProfileContractError(
+                "visualization physical link profile requires start_time to match "
+                "visualization_link_start_timestamp"
+            )
+        if not str(runner_args.get("visualization_link_interval") or "").strip():
+            raise ProfileContractError(
+                "visualization physical link profile requires an interval"
+            )
+        if float(runner_args.get("visualization_link_duration_seconds") or 0.0) <= 0.0:
+            raise ProfileContractError(
+                "visualization physical link profile requires positive duration"
+            )
 
 
 def build_underlying_command(
@@ -4352,13 +4625,6 @@ def build_underlying_command(
 ) -> List[str]:
     _enforce_profile_policy(profile)
     runner = str(profile.get("runner") or "starlink_shell_experiment")
-    if runner == "minimal_resident_bpf_map_reload":
-        return [
-            sys.executable,
-            str(MINIMAL_RELOAD_RUNNER),
-            "--output",
-            str(run_root / run_id / "minimal_resident_bpf_map_reload.json"),
-        ]
     if runner != "starlink_shell_experiment":
         raise ProfileContractError(f"unsupported profile runner: {runner!r}")
 
@@ -4370,6 +4636,8 @@ def build_underlying_command(
         runner_args["gateway_ids"] = ",".join(
             selectors["gateway"].get("selected_ids") or []
         )
+    if "zone" in selectors:
+        runner_args["zone_ids"] = ",".join(selectors["zone"].get("selected_ids") or [])
 
     command = [
         sys.executable,
@@ -4379,13 +4647,23 @@ def build_underlying_command(
         "--run-root",
         str(run_root),
     ]
+    for key, flag in BOOLEAN_RUNNER_ARG_FLAGS.items():
+        if bool(runner_args.get(key)):
+            command.append(flag)
     for key in RUNNER_ARG_ORDER:
         if key not in runner_args:
             continue
         value = runner_args[key]
         if value is None:
             continue
-        if key in {"ut_catalog", "gateway_catalog", "zone_catalog"}:
+        if key in {
+            "orbit_data",
+            "ut_catalog",
+            "ut_gateway_policy_catalog",
+            "gateway_catalog",
+            "gateway_binding_catalog",
+            "zone_catalog",
+        }:
             value = _resolve_repo_path(str(value))
         command.extend([_arg_name(key), _stringify(value)])
     for key, flag in BOOLEAN_RUNNER_FLAGS.items():
@@ -4774,11 +5052,6 @@ def run_profile(
     run_root: Path,
     run_id: str | None = None,
     dry_run: bool = False,
-    prepare_only_no_compose: bool = False,
-    stop_after_pre_start_gates: bool = False,
-    bundle_backed_compose_pre_runtime_proof: bool = False,
-    bundle_backed_one_horizon_runtime_proof: bool = False,
-    bundle_backed_1p1_horizon_runtime_proof: bool = False,
     load_frozen_prepared_bundle: Path | None = None,
     prepared_bundle_diagnostic_recompute_attempted: bool = False,
 ) -> Dict[str, Any]:
@@ -4788,35 +5061,18 @@ def run_profile(
     run_dir.mkdir(parents=True, exist_ok=True)
     catalog_gate = resolve_catalog_contract(profile)
     _write_json(run_dir / "profile_catalog_gate.json", catalog_gate)
-    capacity_gate = docker_dummy_network_capacity_gate(profile)
+    capacity_gate = docker_dummy_network_capacity_gate(
+        profile,
+        host_prefixes=[] if dry_run else None,
+        docker_prefixes=[] if dry_run else None,
+    )
     _write_json(run_dir / "docker_dummy_network_capacity_gate.json", capacity_gate)
     command = build_underlying_command(
         profile=profile,
         catalog_gate=catalog_gate,
         run_root=run_root,
         run_id=run_id,
-        extra_runner_boolean_flags=(
-            [
-                flag
-                for flag, enabled in (
-                    ("prepare_only_no_compose", prepare_only_no_compose),
-                    ("stop_after_pre_start_gates", stop_after_pre_start_gates),
-                    (
-                        "bundle_backed_compose_pre_runtime_proof",
-                        bundle_backed_compose_pre_runtime_proof,
-                    ),
-                    (
-                        "bundle_backed_one_horizon_runtime_proof",
-                        bundle_backed_one_horizon_runtime_proof,
-                    ),
-                    (
-                        "bundle_backed_1p1_horizon_runtime_proof",
-                        bundle_backed_1p1_horizon_runtime_proof,
-                    ),
-                )
-                if enabled
-            ]
-        ),
+        extra_runner_boolean_flags=(),
     )
     if load_frozen_prepared_bundle is not None:
         command.extend(
@@ -4859,12 +5115,26 @@ def run_profile(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=False,
+        env=_clean_validation_subprocess_env(),
     )
-    stdout_path.write_text(completed.stdout, encoding="utf-8")
+    run_manifest_path = run_dir / "run_manifest.json"
+    if run_manifest_path.is_file():
+        if stdout_path.exists() or stdout_path.is_symlink():
+            stdout_path.unlink()
+        os.link(run_manifest_path, stdout_path)
+        stdout_storage = "run_manifest_hardlink"
+    else:
+        stdout_path.write_text(completed.stdout, encoding="utf-8")
+        stdout_storage = "underlying_stdout_failure_artifact"
     stderr_path.write_text(completed.stderr, encoding="utf-8")
-    summary["returncode"] = int(completed.returncode)
+    summary["stdout_storage"] = stdout_storage
     summary["dry_run"] = False
     runner_report = _load_json_maybe(stdout_path)
+    effective_returncode = _effective_runner_returncode(
+        completed_returncode=int(completed.returncode),
+        runner_report=runner_report,
+    )
+    summary["returncode"] = effective_returncode
     prepared_bundle_load_gate = dict(
         (runner_report or {}).get("prepared_bundle_load_gate") or {}
     )
@@ -4944,7 +5214,7 @@ def run_profile(
         run_dir=run_dir,
         runner_report=runner_report,
         startup_contract=startup_contract,
-        returncode=int(completed.returncode),
+        returncode=effective_returncode,
     )
     _write_json(run_dir / "first_failure_summary.json", first_failure)
     summary["first_failure_summary"] = first_failure
@@ -4989,8 +5259,8 @@ def run_profile(
         *list(startup_operation_audit.get("outcome_labels") or []),
         *list(static_inventory_audit.get("outcome_labels") or []),
     ]
-    if _runner_report_indicates_failure(runner_report) or int(completed.returncode) != 0:
-        outcome_labels.append("RICH_S4_SMOKE_FAILED_FIRST_FAILURE_RECORDED")
+    if effective_returncode != 0:
+        outcome_labels.append("RICH_S4_OPERATIONAL_CLEAN_FAILED_FIRST_FAILURE_RECORDED")
     post_underlying_residue = detect_cleanup_residue(
         docker_dummy_network_pool=str(
             dict(profile.get("runner_args") or {}).get("docker_dummy_network_pool") or ""
@@ -5002,7 +5272,7 @@ def run_profile(
     normal_cleanup = None
     if _normal_failure_cleanup_required(
         profile=profile,
-        completed_returncode=int(completed.returncode),
+        completed_returncode=effective_returncode,
         runner_report=runner_report,
         residue=post_underlying_residue,
         startup_state_supervision=startup_state_supervision,
@@ -5070,7 +5340,7 @@ def run_profile(
         "STARTUP_MATERIALIZATION_BUDGET_EXCEEDED",
     }
     passed = (
-        int(completed.returncode) == 0
+        effective_returncode == 0
         and not _runner_report_indicates_failure(runner_report)
         and summary["external_cleanup_success"]
         and not (
@@ -5161,7 +5431,7 @@ def run_profile(
         )
     else:
         summary["outcome_label"] = (
-            "RICH_S4_OPERATIONAL_CLEAN_SMOKE_PASS"
+            "RICH_S4_OPERATIONAL_CLEAN_PASS"
             if passed
             else first_failure_label
             or (summary["outcome_labels"][0] if summary["outcome_labels"] else None)
@@ -5194,53 +5464,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Resolve catalogs and print the underlying command without executing it.",
     )
     parser.add_argument(
-        "--prepare-only-no-compose",
-        action="store_true",
-        help=(
-            "Run the underlying profile command only through official prepared "
-            "bundle and pre-compose gate generation, then exit before compose up."
-        ),
-    )
-    parser.add_argument(
-        "--stop-after-pre-start-gates",
-        action="store_true",
-        help=(
-            "Forward the underlying runner's pre-start gate stop mode without "
-            "starting compose."
-        ),
-    )
-    parser.add_argument(
-        "--bundle-backed-compose-pre-runtime-proof",
-        action="store_true",
-        help=(
-            "With a frozen prepared bundle, run the underlying minimal compose-backed "
-            "pre-runtime prepare proof and stop before runtime transactions."
-        ),
-    )
-    parser.add_argument(
-        "--bundle-backed-one-horizon-runtime-proof",
-        action="store_true",
-        help=(
-            "With a frozen prepared bundle, require the underlying official live path "
-            "to prove one bounded current horizon would consume the bundle as the "
-            "authoritative execution source."
-        ),
-    )
-    parser.add_argument(
-        "--bundle-backed-1p1-horizon-runtime-proof",
-        action="store_true",
-        help=(
-            "With a frozen prepared bundle, run the bounded H0 current plus H1 "
-            "preloaded-current source-of-truth validation and stop before full S4."
-        ),
-    )
-    parser.add_argument(
         "--load-frozen-prepared-bundle",
         type=Path,
         default=None,
         help=(
             "Pass a frozen prepared_update_bundle to the underlying profile "
-            "command for no-compose load/handoff verification."
+            "command for normal operational-clean execution."
         ),
     )
     parser.add_argument(
@@ -5312,17 +5541,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 run_root=Path(args.run_root).resolve(),
                 run_id=args.run_id,
                 dry_run=bool(args.dry_run),
-                prepare_only_no_compose=bool(args.prepare_only_no_compose),
-                stop_after_pre_start_gates=bool(args.stop_after_pre_start_gates),
-                bundle_backed_compose_pre_runtime_proof=bool(
-                    args.bundle_backed_compose_pre_runtime_proof
-                ),
-                bundle_backed_one_horizon_runtime_proof=bool(
-                    args.bundle_backed_one_horizon_runtime_proof
-                ),
-                bundle_backed_1p1_horizon_runtime_proof=bool(
-                    args.bundle_backed_1p1_horizon_runtime_proof
-                ),
                 load_frozen_prepared_bundle=args.load_frozen_prepared_bundle,
                 prepared_bundle_diagnostic_recompute_attempted=bool(
                     args.prepared_bundle_diagnostic_recompute_attempted

@@ -500,7 +500,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
     report: dict[str, Any] = {
         "schema_version": 1,
         "goal": "Skyseed Goal 10 BPF shadow compiler plus isolated packet-path replay",
-        "generated_at": "not_recorded_for_reproducible_baseline",
+        "generated_at": "not_recorded_for_deterministic_baseline",
         "input_artifacts": {
             "source_root": artifacts["source_root"],
             "gz_fec_plan_path": artifacts["gz_fec_plan_path"],

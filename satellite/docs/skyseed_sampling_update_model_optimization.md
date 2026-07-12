@@ -157,31 +157,10 @@ The preview builder still defaults `--sample-interval` to unset and
 provided, otherwise `step_seconds`. The real runtime helper also resolves
 sample interval from explicit CLI, temporal plan policy, or `step_seconds`.
 
-The concrete post-optimization 10s preview run was a planned-shell S5 dry run
-to `/tmp/skyseed_s5_10s_sampling_preview_opt_full`:
-
-```bash
-python satellite/apps/build_starlink_shell_preview.py \
-  --orbit-input-mode planned-shell \
-  --planned-shell-id S5 \
-  --max-satellites 172 \
-  --ut-catalog satellite/configs/starlink_shell_ground/realistic_preview_ut_catalog_32.json \
-  --gateway-catalog satellite/configs/starlink_shell_ground/realistic_preview_gateway_catalog_12.json \
-  --zone-catalog satellite/configs/starlink_shell_ground/realistic_preview_zone_catalog_16.json \
-  --max-uts 32 \
-  --max-gateways 12 \
-  --ground-placement catalog \
-  --start-time 2026-01-01T00:00:00Z \
-  --sample-interval 10 \
-  --event-evaluation-interval 10 \
-  --horizon-seconds 120 \
-  --step-seconds 10 \
-  --parameter-max-interval 240 \
-  --config-dir /tmp/skyseed_s5_10s_sampling_preview_opt_full \
-  --output-dir /tmp/skyseed_unused_output \
-  --skip-seed-render \
-  --format json
-```
+The historical concrete 10s preview used retired preview catalogs. Do not
+replay that command. Current sampling checks should be derived from the active
+`rich_s4_operational_clean_bpf` profile and the visualization orbit/gateway
+inputs.
 
 This is not an S4 dry run. The `s4_preview_readiness` schema was populated for
 an S5 preview with `planned_shell_id=S5` and `is_s4_preview=false`.

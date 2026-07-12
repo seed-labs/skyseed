@@ -4,12 +4,15 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
 from satellite.bpf_dataplane_canary import (
+    EXACT_TOOL_PATHS,
     SELECTOR_MODE_FULL_ELIGIBLE,
     bpf_map_capacities_for_scope,
     build_metrics,
@@ -17,12 +20,56 @@ from satellite.bpf_dataplane_canary import (
     host_interface_name,
     load_canary_maps,
     normalize_selector,
+    resolve_bpftool,
+    run_command,
     select_experimental_scope,
     select_canary_scope,
 )
 
 
 class BpfDataplaneCanaryTests(unittest.TestCase):
+    def test_bpftool_requires_one_explicit_path_without_discovery(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertIsNone(resolve_bpftool())
+        explicit = "/usr/lib/linux-tools/5.4.0-216-generic/bpftool"
+        with patch.dict(
+            os.environ,
+            {"SKYSEED_BPFTOOL_PATH": explicit},
+            clear=True,
+        ):
+            self.assertEqual(resolve_bpftool(), explicit)
+
+    def test_bpf_commands_use_exact_paths_without_path_lookup(self) -> None:
+        completed = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        with (
+            patch("satellite.bpf_dataplane_canary.os.geteuid", return_value=1000),
+            patch(
+                "satellite.bpf_dataplane_canary.subprocess.run",
+                return_value=completed,
+            ) as subprocess_run,
+        ):
+            result = run_command(
+                ["nsenter", "-t", "125", "-n", "--", "tc", "qdisc", "show"],
+                privileged=True,
+            )
+
+        self.assertEqual(result["returncode"], 0)
+        self.assertEqual(
+            subprocess_run.call_args.args[0],
+            [
+                EXACT_TOOL_PATHS["sudo"],
+                "-n",
+                EXACT_TOOL_PATHS["nsenter"],
+                "-t",
+                "125",
+                "-n",
+                "--",
+                EXACT_TOOL_PATHS["tc"],
+                "qdisc",
+                "show",
+            ],
+        )
+
     def test_selects_single_ut_access_scope_from_successful_runtime_ping(self) -> None:
         with tempfile.TemporaryDirectory(prefix="skyseed-bpf-canary-test-") as tmp:
             root = Path(tmp)

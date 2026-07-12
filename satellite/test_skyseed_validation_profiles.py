@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from apps.run_skyseed_validation_profile import (
     ProfileContractError,
     _cleanup_evidence_contract,
+    _effective_runner_returncode,
     _first_failure_summary,
     _normal_failure_cleanup_required,
     _persistent_artifact_contract,
@@ -39,6 +40,7 @@ from apps.run_skyseed_validation_profile import (
     run_cleanup_only,
     write_runtime_update_timing_evidence,
 )
+from ground_model import load_gateway_catalog
 
 
 def _completed(
@@ -56,23 +58,64 @@ def _completed(
 
 
 class SkyseedValidationProfileTests(unittest.TestCase):
+    def test_effective_runner_returncode_rejects_reported_failure(self) -> None:
+        self.assertEqual(
+            _effective_runner_returncode(
+                completed_returncode=0,
+                runner_report={"real_apply_success": False},
+            ),
+            2,
+        )
+        self.assertEqual(
+            _effective_runner_returncode(
+                completed_returncode=7,
+                runner_report={"real_apply_success": True},
+            ),
+            7,
+        )
     def _subprocess_env_without_pythonpath(self) -> dict[str, str]:
         env = dict(os.environ)
         env.pop("PYTHONPATH", None)
         return env
 
-    def test_profile_runner_import_smoke_without_pythonpath(self) -> None:
+    def test_visualization_gateway_catalog_requires_explicit_binding(self) -> None:
+        gateway_catalog = (
+            Path(__file__).resolve().parent
+            / "apps"
+            / "visualization"
+            / "starlink_gateways.json"
+        )
+        binding_catalog = (
+            Path(__file__).resolve().parent
+            / "configs"
+            / "starlink_shell_ground"
+            / "s4_visualization_gateway_binding_12.json"
+        )
+        with self.assertRaisesRegex(ValueError, "explicit gateway binding catalog"):
+            load_gateway_catalog(str(gateway_catalog))
+
+        entries = load_gateway_catalog(
+            str(gateway_catalog),
+            binding_path=str(binding_catalog),
+        )
+        self.assertEqual(entries[0]["gateway_id"], "gw201")
+        self.assertEqual(
+            entries[0]["visualization_gateway_id"],
+            "starlink-gs-0051-colburn-id",
+        )
+
+    def test_profile_runner_import_without_pythonpath(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             completed = subprocess.run(
                 [
                     "python3",
                     "satellite/apps/run_skyseed_validation_profile.py",
                     "--profile",
-                    "rich_s4_operational_clean_bpf_smoke",
+                    "rich_s4_operational_clean_bpf",
                     "--run-root",
                     tmp,
                     "--run-id",
-                    "profile-import-smoke",
+                    "profile-import",
                     "--dry-run",
                     "--format",
                     "json",
@@ -87,7 +130,7 @@ class SkyseedValidationProfileTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertNotIn("ModuleNotFoundError", completed.stderr)
 
-    def test_underlying_runner_import_smoke_without_pythonpath(self) -> None:
+    def test_underlying_runner_import_without_pythonpath(self) -> None:
         completed = subprocess.run(
             [
                 "python3",
@@ -132,7 +175,7 @@ class SkyseedValidationProfileTests(unittest.TestCase):
         self.assertIn("NO_RICH_S4_RERUN_NEEDED_FOR_IMPORT", completed.stdout)
 
     def test_slow_but_progressing_stage_timeout_is_resource_abort_not_soft_budget(self) -> None:
-        profile = load_profile("rich_s4_operational_clean_bpf_smoke")
+        profile = load_profile("rich_s4_operational_clean_bpf")
         runner_report = {
             "failure_reason": "docker_compose_up_timeout",
             "runtime_blocker": {
@@ -196,8 +239,8 @@ class SkyseedValidationProfileTests(unittest.TestCase):
         )
         self.assertTrue(contract["progress_was_happening_at_timeout"])
         self.assertFalse(contract["actual_stall_detected"])
-        self.assertIn("STARTUP_SOFT_BUDGET_EXCEEDED_WARNING", contract["outcome_labels"])
-        self.assertIn("STARTUP_MATERIALIZATION_COST_ANOMALY", contract["outcome_labels"])
+        self.assertNotIn("STARTUP_SOFT_BUDGET_EXCEEDED_WARNING", contract["outcome_labels"])
+        self.assertNotIn("STARTUP_MATERIALIZATION_COST_ANOMALY", contract["outcome_labels"])
         self.assertIn("SLOW_BUT_PROGRESSING_CONTINUE", contract["outcome_labels"])
         self.assertIn("RESOURCE_DEADLOCK_STARTUP_ABORT", contract["outcome_labels"])
         self.assertEqual(contract["kill_reason"], "resource_exhaustion_or_deadlock")
@@ -205,7 +248,7 @@ class SkyseedValidationProfileTests(unittest.TestCase):
         self.assertEqual(contract["remaining_batches"], 1)
 
     def test_progressing_startup_after_soft_budget_is_not_contract_failure(self) -> None:
-        profile = load_profile("rich_s4_operational_clean_bpf_smoke")
+        profile = load_profile("rich_s4_operational_clean_bpf")
         runner_report = {
             "failure_reason": "",
             "timing_analysis": {
@@ -214,9 +257,9 @@ class SkyseedValidationProfileTests(unittest.TestCase):
             "startup_strategy": {
                 "compose_stage_count": 72,
                 "footprint": {
-                    "service_count": 468,
-                    "network_count": 46,
-                    "attachment_count": 518,
+                    "service_count": 416,
+                    "network_count": 13,
+                    "attachment_count": 514,
                 },
                 "compose_stage_results": [
                     {
@@ -242,7 +285,7 @@ class SkyseedValidationProfileTests(unittest.TestCase):
         contract = evaluate_startup_materialization_contract(
             profile=profile,
             runner_report=runner_report,
-            capacity_gate={"required_dummy_networks": 772},
+            capacity_gate={"required_dummy_networks": 764},
         )
 
         self.assertTrue(contract["ok"])
@@ -251,13 +294,77 @@ class SkyseedValidationProfileTests(unittest.TestCase):
         self.assertTrue(contract["high_progress_continue"])
         self.assertFalse(contract["no_progress_stall"])
         self.assertFalse(contract["absolute_cap_exceeded"])
-        self.assertIn("STARTUP_SOFT_BUDGET_EXCEEDED_WARNING", contract["outcome_labels"])
-        self.assertIn("STARTUP_MATERIALIZATION_COST_ANOMALY", contract["outcome_labels"])
+        self.assertFalse(contract["soft_budget_warning"])
+        self.assertNotIn("STARTUP_SOFT_BUDGET_EXCEEDED_WARNING", contract["outcome_labels"])
+        self.assertNotIn("STARTUP_MATERIALIZATION_COST_ANOMALY", contract["outcome_labels"])
         self.assertIn("SLOW_BUT_PROGRESSING_CONTINUE", contract["outcome_labels"])
         self.assertNotIn("STARTUP_MATERIALIZATION_COST_BLOCKER", contract["outcome_labels"])
 
+    def test_r97_shape_recent_progress_past_old_absolute_cap_is_not_warning_or_blocker(self) -> None:
+        profile = load_profile("rich_s4_operational_clean_bpf")
+        startup_progress_contract = {
+            "soft_budget_exceeded": True,
+            "base_budget_exceeded": True,
+            "absolute_max_exceeded": True,
+            "hard_cap_exceeded": False,
+            "absolute_max_nonblocking_due_to_progress": True,
+            "recent_progress_observed": True,
+            "progress_observed": True,
+            "high_progress_continue": True,
+            "no_progress_stall": False,
+            "resource_deadlock_detected": False,
+            "allow_continue": True,
+            "completed_batches": 81,
+            "total_batches": 84,
+            "progress_ratio": 0.964286,
+            "seconds_since_progress": 0.473615,
+        }
+        runner_report = {
+            "failure_reason": "",
+            "runtime_blocker": {},
+            "timing_analysis": {
+                "startup_preparation": {"compose_up_wall_seconds": 1510.0}
+            },
+            "startup_strategy": {
+                "compose_stage_count": 84,
+                "footprint": {
+                    "service_count": 416,
+                    "network_count": 13,
+                    "attachment_count": 514,
+                },
+                "compose_stage_results": [
+                    {
+                        "stage_id": f"stage-{index}",
+                        "stage_type": "satellite_batch",
+                        "service_count": 12,
+                        "wall_seconds": 15.0,
+                        "timeout_seconds": 90.0,
+                        "timed_out": False,
+                        "startup_progress_contract": startup_progress_contract,
+                    }
+                    for index in range(81)
+                ],
+            },
+        }
+
+        contract = evaluate_startup_materialization_contract(
+            profile=profile,
+            runner_report=runner_report,
+            capacity_gate={"required_dummy_networks": 764},
+        )
+
+        self.assertTrue(contract["ok"])
+        self.assertTrue(contract["absolute_cap_exceeded"])
+        self.assertFalse(contract["hard_cap_exceeded"])
+        self.assertTrue(contract["recent_progress_observed"])
+        self.assertFalse(contract["soft_budget_warning"])
+        self.assertNotIn("STARTUP_HARD_CAP_EXCEEDED", contract["outcome_labels"])
+        self.assertNotIn("STARTUP_SOFT_BUDGET_EXCEEDED_WARNING", contract["outcome_labels"])
+        self.assertNotIn("STARTUP_MATERIALIZATION_COST_ANOMALY", contract["outcome_labels"])
+        self.assertIsNone(contract["kill_reason"])
+
     def test_stalled_startup_timeout_is_not_reported_as_progressing(self) -> None:
-        profile = load_profile("rich_s4_operational_clean_bpf_smoke")
+        profile = load_profile("rich_s4_operational_clean_bpf")
         runner_report = {
             "failure_reason": "docker_compose_up_timeout",
             "runtime_blocker": {
@@ -297,7 +404,7 @@ class SkyseedValidationProfileTests(unittest.TestCase):
         self.assertIn("RESOURCE_DEADLOCK_STARTUP_ABORT", contract["outcome_labels"])
 
     def test_compose_timeout_invokes_external_cleanup_contract(self) -> None:
-        profile = load_profile("rich_s4_operational_clean_bpf_smoke")
+        profile = load_profile("rich_s4_operational_clean_bpf")
         residue = {
             "counts": {
                 "compose_containers": 1,
@@ -319,7 +426,7 @@ class SkyseedValidationProfileTests(unittest.TestCase):
         )
 
     def test_retryable_final_batch_failure_produces_recoverable_checkpoint(self) -> None:
-        profile = load_profile("rich_s4_operational_clean_bpf_smoke")
+        profile = load_profile("rich_s4_operational_clean_bpf")
         runner_report = {
             "runtime_blocker": {
                 "stage": "docker_compose_up",
@@ -410,7 +517,7 @@ class SkyseedValidationProfileTests(unittest.TestCase):
         )
 
     def test_correctness_threatening_startup_error_requires_cleanup(self) -> None:
-        profile = load_profile("rich_s4_operational_clean_bpf_smoke")
+        profile = load_profile("rich_s4_operational_clean_bpf")
         runner_report = {
             "runtime_blocker": {
                 "stage": "docker_compose_up",
@@ -448,7 +555,7 @@ class SkyseedValidationProfileTests(unittest.TestCase):
         self.assertIn("CLEANUP_REQUIRED", supervision["outcome_labels"])
 
     def test_resource_deadlock_startup_requires_cleanup(self) -> None:
-        profile = load_profile("rich_s4_operational_clean_bpf_smoke")
+        profile = load_profile("rich_s4_operational_clean_bpf")
         runner_report = {
             "runtime_blocker": {
                 "stage": "docker_compose_up",
@@ -679,7 +786,7 @@ class SkyseedValidationProfileTests(unittest.TestCase):
         )
 
     def test_first_failure_summary_preserves_startup_timeout(self) -> None:
-        profile = load_profile("rich_s4_operational_clean_bpf_smoke")
+        profile = load_profile("rich_s4_operational_clean_bpf")
         with tempfile.TemporaryDirectory(dir="/home/seed/skyseed_runs") as tmp:
             run_dir = Path(tmp)
             summary = _first_failure_summary(
@@ -711,7 +818,7 @@ class SkyseedValidationProfileTests(unittest.TestCase):
     def test_first_failure_summary_preserves_completed_epoch_count_from_runtime_report(
         self,
     ) -> None:
-        profile = load_profile("rich_s4_operational_clean_bpf_smoke")
+        profile = load_profile("rich_s4_operational_clean_bpf")
         with tempfile.TemporaryDirectory(dir="/home/seed/skyseed_runs") as tmp:
             run_dir = Path(tmp)
             (run_dir / "real_runtime_report.json").write_text(
@@ -746,7 +853,7 @@ class SkyseedValidationProfileTests(unittest.TestCase):
     def test_first_failure_summary_reports_bpf_generation_capacity_blocker(
         self,
     ) -> None:
-        profile = load_profile("rich_s4_operational_clean_bpf_smoke")
+        profile = load_profile("rich_s4_operational_clean_bpf")
         with tempfile.TemporaryDirectory(dir="/home/seed/skyseed_runs") as tmp:
             run_dir = Path(tmp)
             (run_dir / "real_runtime_report.json").write_text(
@@ -854,7 +961,7 @@ class SkyseedValidationProfileTests(unittest.TestCase):
     def test_first_failure_summary_reports_parameter_delta_attach_blocker(
         self,
     ) -> None:
-        profile = load_profile("rich_s4_operational_clean_bpf_smoke")
+        profile = load_profile("rich_s4_operational_clean_bpf")
         with tempfile.TemporaryDirectory(dir="/home/seed/skyseed_runs") as tmp:
             run_dir = Path(tmp)
             (run_dir / "real_runtime_report.json").write_text(
@@ -928,7 +1035,7 @@ class SkyseedValidationProfileTests(unittest.TestCase):
     def test_first_failure_summary_reports_parameter_hidden_recovery_blocker(
         self,
     ) -> None:
-        profile = load_profile("rich_s4_operational_clean_bpf_smoke")
+        profile = load_profile("rich_s4_operational_clean_bpf")
         with tempfile.TemporaryDirectory(dir="/home/seed/skyseed_runs") as tmp:
             run_dir = Path(tmp)
             (run_dir / "real_runtime_report.json").write_text(
@@ -1224,6 +1331,112 @@ class SkyseedValidationProfileTests(unittest.TestCase):
         self.assertIn("GLOBAL_SCAN_DIAGNOSTIC_ONLY", contract["outcome_labels"])
         self.assertEqual(written["runtime_update_plan_entry_count"], 1)
 
+    def test_normal_path_artifact_contract_blocks_failed_route_identity_coverage(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/home/seed/skyseed_runs") as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "prepared_update_bundle.json").write_text(
+                json.dumps(
+                    {
+                        "current_execution_queue": [{"epoch_id": "runtimeepoch-1"}],
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (run_dir / "runtime_queue_route_identity_coverage.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "skyseed-runtime-queue-route-identity-coverage-v1",
+                        "ok": False,
+                        "producer_source": "prepared_route_identity_evidence",
+                        "consumer_identity_count": 2,
+                        "producer_identity_count": 1,
+                        "missing_identity_count": 1,
+                        "blockers": [
+                            {
+                                "label": "ROUTE_IDENTITY_PRODUCER_MISSING",
+                                "identity_kind": "gw_bpf_local_return_route",
+                            }
+                        ],
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            contract = evaluate_normal_path_artifact_contract(run_dir=run_dir)
+
+        self.assertTrue(contract["runtime_queue_route_identity_coverage_present"])
+        self.assertFalse(contract["runtime_queue_route_identity_coverage_passed"])
+        self.assertIn(
+            "RUNTIME_QUEUE_ROUTE_IDENTITY_COVERAGE_BLOCKER",
+            contract["outcome_labels"],
+        )
+
+    def test_normal_path_artifact_contract_reports_runtime_queue_generation_coverage(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(dir="/home/seed/skyseed_runs") as tmp:
+            run_dir = Path(tmp)
+            (run_dir / "prepared_update_bundle.json").write_text(
+                json.dumps(
+                    {
+                        "current_execution_queue": [{"epoch_id": "runtimeepoch-1"}],
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (run_dir / "runtime_queue_route_identity_coverage.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "skyseed-runtime-queue-coverage-v1",
+                        "ok": False,
+                        "queue_integrity": {
+                            "ok": True,
+                            "runtime_applicable_entry_count": 2,
+                            "missing_context_count": 0,
+                            "duplicate_entry_count": 0,
+                        },
+                        "bpf_generation_slot_coverage": {
+                            "ok": False,
+                            "generation_slot_record_count": 2,
+                            "generation_slot_widths": [32],
+                        },
+                        "route_identity_coverage": {
+                            "ok": True,
+                            "producer_source": "planned_producer_contexts",
+                            "consumer_identity_count": 2,
+                            "producer_identity_count": 2,
+                            "missing_identity_count": 0,
+                        },
+                        "blockers": [
+                            {
+                                "gate": "bpf_generation_slot_coverage",
+                                "label": "BPF_GENERATION_SLOT_ASSIGNMENT_MISMATCH",
+                            }
+                        ],
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            contract = evaluate_normal_path_artifact_contract(run_dir=run_dir)
+
+        self.assertTrue(contract["runtime_queue_route_identity_coverage_present"])
+        self.assertFalse(contract["runtime_queue_route_identity_coverage_passed"])
+        self.assertTrue(contract["runtime_queue_integrity_passed"])
+        self.assertFalse(
+            contract["runtime_queue_bpf_generation_slot_coverage_passed"]
+        )
+        self.assertEqual(
+            contract["runtime_queue_route_identity_coverage"][
+                "bpf_generation_slot_coverage"
+            ]["generation_slot_record_count"],
+            2,
+        )
+
     def test_normal_path_artifact_contract_does_not_treat_queue_as_owned_index(
         self,
     ) -> None:
@@ -1395,6 +1608,7 @@ class SkyseedValidationProfileTests(unittest.TestCase):
             "CLEANUP_OWNED_SCOPE_EVIDENCE_MISSING_BLOCKER",
             contract["outcome_labels"],
         )
+
 
     def test_cleanup_report_normalization_labels_legacy_cleanup_artifact(self) -> None:
         normalized = normalize_cleanup_report_contract(
@@ -1610,7 +1824,7 @@ class SkyseedValidationProfileTests(unittest.TestCase):
             self.assertIn("TIMING_FIELDS_MISSING_IN_EXISTING_ARTIFACTS", summary["outcome_labels"])
 
     def test_soft_budget_warning_label_does_not_create_first_failure(self) -> None:
-        profile = load_profile("rich_s4_operational_clean_bpf_smoke")
+        profile = load_profile("rich_s4_operational_clean_bpf")
         with tempfile.TemporaryDirectory(dir="/home/seed/skyseed_runs") as tmp:
             summary = _first_failure_summary(
                 profile=profile,
@@ -1633,7 +1847,7 @@ class SkyseedValidationProfileTests(unittest.TestCase):
         self.assertIsNone(summary["first_failure_label"])
 
     def test_startup_cost_warning_reason_is_not_first_failure_reason(self) -> None:
-        profile = load_profile("rich_s4_operational_clean_bpf_smoke")
+        profile = load_profile("rich_s4_operational_clean_bpf")
         with tempfile.TemporaryDirectory(dir="/home/seed/skyseed_runs") as tmp:
             summary = _first_failure_summary(
                 profile=profile,
@@ -1666,25 +1880,25 @@ class SkyseedValidationProfileTests(unittest.TestCase):
             "cost_sanity_failed:STARTUP_COST_ANOMALY",
         )
 
-    def test_static_inventory_precreated_connection_audit_reports_xp120_visibility(
+    def test_static_inventory_precreated_connection_audit_reports_cross_plane_visibility(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory(dir="/home/seed/skyseed_runs") as tmp:
             run_dir = Path(tmp)
-            xp_slot = {
-                "slot_name": "p003p004-stl-940120-stl-940178-cross-slot0",
+            cross_plane_slot = {
+                "slot_name": "p001p002-stl-940004-stl-940063-cross-slot0",
                 "slot_type": "cross_plane_isl",
-                "network_name": "p003p004-stl-940120-stl-940178-cross-slot0",
-                "docker_network_name": "p003p004-stl-940120-stl-940178-cross-slot0",
-                "subnet": "10.92.120.0/29",
+                "network_name": "p001p002-stl-940004-stl-940063-cross-slot0",
+                "docker_network_name": "p001p002-stl-940004-stl-940063-cross-slot0",
+                "subnet": "10.93.1.0/29",
                 "candidate_pairs": [
                     {
-                        "satellite_a_id": "stl-940120",
-                        "satellite_b_id": "stl-940178",
+                        "satellite_a_id": "stl-940004",
+                        "satellite_b_id": "stl-940063",
                     }
                 ],
-                "endpoint_a_template": {"interface_name": "xp120a"},
-                "endpoint_b_template": {"interface_name": "xp120b"},
+                "endpoint_a_template": {"interface_name": "xp1a"},
+                "endpoint_b_template": {"interface_name": "xp1b"},
             }
             (run_dir / "topology.json").write_text(
                 json.dumps(
@@ -1696,7 +1910,7 @@ class SkyseedValidationProfileTests(unittest.TestCase):
                                 {"slot_name": "gw-1"},
                             ],
                             "same_plane_isl": [{"slot_name": "fixed-shell-0001"}],
-                            "cross_plane_isl": [xp_slot],
+                            "cross_plane_isl": [cross_plane_slot],
                         }
                     }
                 )
@@ -1715,7 +1929,7 @@ class SkyseedValidationProfileTests(unittest.TestCase):
                                 "preconnected_endpoints": [],
                             },
                             {
-                                "slot_name": xp_slot["slot_name"],
+                                "slot_name": cross_plane_slot["slot_name"],
                                 "slot_type": "cross_plane_isl",
                                 "occupied": False,
                                 "dynamic_endpoints": [],
@@ -1751,13 +1965,13 @@ class SkyseedValidationProfileTests(unittest.TestCase):
                                                 "prepare_steps": {
                                                     "real_backend_prepare": {
                                                         "attach_plan": {
-                                                            "netns:stl-940120:xp120a": ["ingress"],
-                                                            "netns:stl-940178:xp120b": ["ingress"],
+                                                            "netns:stl-940004:xp1a": ["ingress"],
+                                                            "netns:stl-940063:xp1b": ["ingress"],
                                                         },
                                                         "resident_attach_coverage": {
                                                             "compile_capacity_interfaces": [
-                                                                "netns:stl-940120:xp120a",
-                                                                "netns:stl-940178:xp120b",
+                                                                "netns:stl-940004:xp1a",
+                                                                "netns:stl-940063:xp1b",
                                                             ],
                                                             "active_materialized_interfaces": [],
                                                             "future_materialized_attach_eligible_interfaces": [],
@@ -1843,6 +2057,24 @@ class SkyseedValidationProfileTests(unittest.TestCase):
                 + "\n",
                 encoding="utf-8",
             )
+            (run_dir / "resource_budget.json").write_text(
+                json.dumps(
+                    {
+                        "gateway_access": {
+                            "recommended_total_slots": 2,
+                            "per_gateway": {
+                                "gw-a": {
+                                    "budgeted_slots": 2,
+                                    "max_simultaneous_active_links": 1,
+                                }
+                            },
+                        },
+                        "policy": {"gateway_slot_margin": 1},
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
 
             audit = evaluate_static_inventory_precreated_connection_audit(
                 run_dir=run_dir,
@@ -1857,19 +2089,19 @@ class SkyseedValidationProfileTests(unittest.TestCase):
         )
         self.assertEqual(audit["categories"]["in_plane_fixed_slots"]["slot_count"], 1)
         self.assertEqual(audit["categories"]["cross_plane_bounded_slot_pool"]["slot_count"], 1)
-        self.assertTrue(audit["summary"]["xp120_visibility_passed"])
-        xp120a = audit["xp120_exact_inactive_visibility_proof"][0]
-        self.assertTrue(xp120a["slot_inventory"]["preallocated_static_inventory_slot"])
-        self.assertTrue(xp120a["bpf_scope"]["in_attach_plan"])
-        self.assertTrue(xp120a["bpf_scope"]["in_compile_capacity_interfaces"])
-        self.assertTrue(xp120a["inactive_visibility_proof"]["occupied_false"])
+        self.assertTrue(audit["summary"]["cross_plane_inactive_visibility_passed"])
+        cross_plane_report = audit["cross_plane_inactive_visibility_proof"][0]
+        self.assertTrue(cross_plane_report["slot_inventory"]["preallocated_static_inventory_slot"])
+        self.assertTrue(cross_plane_report["bpf_scope"]["in_attach_plan"])
+        self.assertTrue(cross_plane_report["bpf_scope"]["in_compile_capacity_interfaces"])
+        self.assertTrue(cross_plane_report["inactive_visibility_proof"]["occupied_false"])
         self.assertTrue(
-            xp120a["inactive_visibility_proof"][
+            cross_plane_report["inactive_visibility_proof"][
                 "no_reachable_peer_or_bridge_forwarding_path"
             ]
         )
         self.assertTrue(
-            xp120a["inactive_visibility_proof"]["no_linux_ip_or_mpls_fallback"]
+            cross_plane_report["inactive_visibility_proof"]["no_linux_ip_or_mpls_fallback"]
         )
         self.assertTrue(audit["summary"]["ut_current_next_semantics_confirmed"])
         self.assertTrue(audit["summary"]["gw_slot_derivation_complete"])
@@ -1925,6 +2157,24 @@ class SkyseedValidationProfileTests(unittest.TestCase):
                         "notes": {
                             "gw_access": "required is max simultaneous plus margin",
                         },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (run_dir / "resource_budget.json").write_text(
+                json.dumps(
+                    {
+                        "gateway_access": {
+                            "recommended_total_slots": 2,
+                            "per_gateway": {
+                                "gw-a": {
+                                    "budgeted_slots": 2,
+                                    "max_simultaneous_active_links": 1,
+                                }
+                            },
+                        },
+                        "policy": {"gateway_slot_margin": 1},
                     }
                 )
                 + "\n",
@@ -2005,6 +2255,25 @@ class SkyseedValidationProfileTests(unittest.TestCase):
                         "notes": {
                             "gw_access": "derived from max simultaneous satellite connections plus margin",
                         },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (run_dir / "resource_budget.json").write_text(
+                json.dumps(
+                    {
+                        "gateway_access": {
+                            "recommended_total_slots": 24,
+                            "per_gateway": {
+                                gateway_id: {
+                                    "budgeted_slots": 2,
+                                    "max_simultaneous_active_links": 1,
+                                }
+                                for gateway_id in selected_gateways
+                            },
+                        },
+                        "policy": {"gateway_slot_margin": 1},
                     }
                 )
                 + "\n",
@@ -2490,10 +2759,13 @@ class SkyseedValidationProfileTests(unittest.TestCase):
             self.assertFalse(reconciled["ready_for_next_horizon"])
             self.assertEqual(reconciled["map_only_runtime_epochs_completed"], 4)
             self.assertEqual(reconciled["parameter_epochs_completed"], 0)
-            self.assertIn(
+            self.assertNotIn(
                 "HORIZON_COMPLETION_REPORTING_INCONSISTENT",
                 reconciled["outcome_labels"],
             )
+            self.assertEqual(reconciled["completed_epoch_count"], 4)
+            self.assertTrue(reconciled["planned_whole_horizon_completed"])
+            self.assertTrue(reconciled["reporting_consistency"]["ok"])
             self.assertIn(
                 "PARAMETER_UPDATE_TRIGGERED_DELTA_ATTACH_BLOCKER",
                 reconciled["outcome_labels"],
@@ -3406,7 +3678,7 @@ class SkyseedValidationProfileTests(unittest.TestCase):
         self.assertFalse(external_cleanup_success(residue))
 
     def test_profile_runner_blocks_rich_s4_when_residue_overlaps_dummy_pool(self) -> None:
-        profile = load_profile("rich_s4_operational_clean_bpf_smoke")
+        profile = load_profile("rich_s4_operational_clean_bpf")
 
         gate = docker_dummy_network_capacity_gate(
             profile,
@@ -3431,50 +3703,72 @@ class SkyseedValidationProfileTests(unittest.TestCase):
         )
 
     def test_rich_s4_catalog_contract_passes_with_actual_catalog_ids(self) -> None:
-        profile = load_profile("rich_s4_operational_clean_bpf_smoke")
+        profile = load_profile("rich_s4_operational_clean_bpf")
         gate = resolve_catalog_contract(profile)
 
         self.assertTrue(gate["ok"])
         self.assertEqual(gate["selectors"]["ut"]["selected_ids"][0], "ut2001")
         self.assertEqual(gate["selectors"]["ut"]["selected_ids"][-1], "ut2032")
+        self.assertEqual(len(gate["selectors"]["ut"]["selected_ids"]), 28)
+        self.assertNotIn("ut2015", gate["selectors"]["ut"]["selected_ids"])
+        self.assertNotIn("ut2027", gate["selectors"]["ut"]["selected_ids"])
         self.assertEqual(gate["selectors"]["gateway"]["selected_ids"][0], "gw201")
         self.assertEqual(gate["selectors"]["gateway"]["selected_ids"][-1], "gw212")
+        self.assertEqual(len(gate["selectors"]["gateway"]["actual_ids"]), 12)
+        self.assertEqual(len(gate["selectors"]["gateway"]["selected_ids"]), 12)
+        self.assertEqual(
+            gate["selectors"]["gateway"]["selected_sources"][0]["entry_source"],
+            "visualization_starlink_gateways",
+        )
         self.assertIn(
             "zone-north-america-west-wide",
             gate["selectors"]["zone"]["selected_ids"],
         )
+        self.assertNotIn(
+            "zone-africa-east-optional",
+            gate["selectors"]["zone"]["selected_ids"],
+        )
 
-    def test_stale_legacy_ut_ids_fail_with_profile_catalog_error(self) -> None:
-        profile = load_profile("rich_s4_operational_clean_bpf_smoke")
+    def test_unknown_ut_ids_fail_with_profile_catalog_error(self) -> None:
+        profile = load_profile("rich_s4_operational_clean_bpf")
         profile = copy.deepcopy(profile)
         profile["validation_selector"]["ut"] = {
             "mode": "explicit",
-            "ids": ["ut3", "ut4"],
+            "ids": ["ut9997", "ut9998"],
         }
 
         with self.assertRaisesRegex(
             ProfileContractError,
-            "profile catalog id mismatch for ut: missing \\['ut3', 'ut4'\\]",
+            "profile catalog id mismatch for ut: missing \\['ut9997', 'ut9998'\\]",
         ):
             resolve_catalog_contract(profile)
 
     def test_validation_selectors_are_catalog_aware_and_source_recorded(self) -> None:
-        profile = load_profile("rich_s4_preview_catalog_gate")
+        profile = load_profile("rich_s4_operational_clean_bpf")
         gate = resolve_catalog_contract(profile)
         ut_sources = gate["selectors"]["ut"]["selected_sources"]
 
-        self.assertEqual(len(ut_sources), 32)
+        self.assertEqual(len(ut_sources), 28)
         self.assertEqual(
             ut_sources[0]["selector_source"],
-            "profile.validation_selector.ut.catalog-derived-first-n",
+            "profile.validation_selector.ut.ids",
         )
         self.assertTrue(ut_sources[0]["catalog_path"].endswith(
             "s4_gz_rich_validation_ut_catalog_32.json"
         ))
         self.assertEqual(ut_sources[0]["id"], "ut2001")
+        self.assertEqual(
+            gate["selectors"]["gateway"]["selected_sources"][0]["selector_source"],
+            "profile.validation_selector.gateway.ids",
+        )
+        self.assertTrue(
+            gate["gateway_binding_catalog_path"].endswith(
+                "s4_visualization_gateway_binding_12.json"
+            )
+        )
 
     def test_profile_runner_expands_to_expected_underlying_runner_args(self) -> None:
-        profile = load_profile("rich_s4_operational_clean_bpf_smoke")
+        profile = load_profile("rich_s4_operational_clean_bpf")
         gate = resolve_catalog_contract(profile)
         command = build_underlying_command(
             profile=profile,
@@ -3486,16 +3780,44 @@ class SkyseedValidationProfileTests(unittest.TestCase):
 
         self.assertIn("--planned-shell-id S4", rendered)
         self.assertIn("--max-satellites 348", rendered)
-        self.assertIn("--ut-ids " + ",".join(f"ut20{i:02d}" for i in range(1, 33)), rendered)
+        self.assertIn(
+            "--orbit-data /home/seed/skyseed/satellite/apps/visualization/planned_shell_orbit_data_s1_s5.json",
+            rendered,
+        )
+        self.assertIn(
+            "--gateway-catalog /home/seed/skyseed/satellite/apps/visualization/starlink_gateways.json",
+            rendered,
+        )
+        expected_ut_ids = ",".join(
+            f"ut20{i:02d}" for i in range(1, 33) if i not in (15, 16, 27, 28)
+        )
+        self.assertIn("--ut-ids " + expected_ut_ids, rendered)
         self.assertIn("--gateway-ids " + ",".join(f"gw2{i:02d}" for i in range(1, 13)), rendered)
+        self.assertIn(
+            "--gateway-binding-catalog /home/seed/skyseed/satellite/configs/starlink_shell_ground/s4_visualization_gateway_binding_12.json",
+            rendered,
+        )
+        self.assertIn("--zone-ids zone-north-america-west-wide", rendered)
+        self.assertIn("--ground-placement catalog", rendered)
+        self.assertIn("--start-time 2026-07-09T00:00:00Z", rendered)
+        self.assertIn("--visualization-link-start-timestamp 2026-07-09T00:00:00Z", rendered)
+        self.assertIn("--visualization-link-duration-seconds 960", rendered)
+        self.assertIn("--require-visualization-links", rendered)
         self.assertIn("--runtime-mode operational_clean", rendered)
         self.assertIn("--forwarding-backend bpf_owned", rendered)
+        self.assertIn(
+            "--bpftool-path /usr/lib/linux-tools/5.4.0-216-generic/bpftool",
+            rendered,
+        )
         self.assertIn("--bpf-backend off", rendered)
-        self.assertIn("--compose-up-timeout-seconds 900", rendered)
+        self.assertIn("--compose-up-timeout-seconds 0", rendered)
+        self.assertIn("--compose-build-timeout-seconds 0", rendered)
         self.assertIn("--startup-high-progress-grace-ratio 0.95", rendered)
         self.assertIn("--startup-high-progress-grace-seconds 420", rendered)
         self.assertIn("--startup-slow-progress-grace-seconds 180", rendered)
-        self.assertIn("--startup-absolute-max-seconds 1500", rendered)
+        self.assertIn("--startup-absolute-max-seconds 0", rendered)
+        self.assertIn("--startup-stall-warning-seconds 0", rendered)
+        self.assertIn("--runtime-ping-observer-seconds 30", rendered)
         self.assertIn("--docker-dummy-network-pool 10.128.0.0/9", rendered)
         self.assertIn("--docker-dummy-network-mask 19", rendered)
         self.assertNotIn("ut3,ut4", rendered)
@@ -3503,8 +3825,129 @@ class SkyseedValidationProfileTests(unittest.TestCase):
         self.assertNotIn("--bpf-dataplane-canary", rendered)
         self.assertNotIn("--emit-bpf-shadow", rendered)
 
+    def test_visualization_profile_rejects_start_time_mismatch(self) -> None:
+        profile = copy.deepcopy(load_profile("rich_s4_operational_clean_bpf"))
+        profile["runner_args"]["start_time"] = "2026-07-09T01:00:00Z"
+        gate = resolve_catalog_contract(profile)
+
+        with self.assertRaisesRegex(
+            ProfileContractError,
+            "start_time to match visualization_link_start_timestamp",
+        ):
+            build_underlying_command(
+                profile=profile,
+                catalog_gate=gate,
+                run_root=Path("/tmp/skyseed-test-profile"),
+                run_id="profile-test",
+            )
+
+    def test_full_operational_clean_profile_has_no_epoch_caps(self) -> None:
+        profile = load_profile("rich_s4_operational_clean_bpf")
+        self.assertEqual(profile["long_run_contract"]["default_horizon_count"], 4)
+        self.assertEqual(profile["long_run_contract"]["minimum_horizon_count"], 2)
+        self.assertTrue(profile["long_run_contract"]["forbid_max_runtime_epochs"])
+        self.assertTrue(profile["long_run_contract"]["forbid_max_parameter_epochs"])
+        self.assertTrue(profile["long_run_contract"]["forbid_max_epochs"])
+        self.assertTrue(profile["runner_args"]["continuous"])
+        self.assertNotIn("max_runtime_epochs", profile["runner_args"])
+        self.assertNotIn("max_parameter_epochs", profile["runner_args"])
+        self.assertNotIn("max_epochs", profile["runner_args"])
+
+        gate = resolve_catalog_contract(profile)
+        command = build_underlying_command(
+            profile=profile,
+            catalog_gate=gate,
+            run_root=Path("/tmp/skyseed-test-profile"),
+            run_id="profile-test-full",
+        )
+        rendered = " ".join(command)
+
+        self.assertIn("--horizon-seconds 240", rendered)
+        self.assertIn("--continuous", rendered)
+        self.assertIn("--loop-count 4", rendered)
+        self.assertIn("--runtime-mode operational_clean", rendered)
+        self.assertIn("--forwarding-backend bpf_owned", rendered)
+        self.assertIn("--bpf-backend off", rendered)
+        self.assertIn("--runtime-ping-observer-seconds 30", rendered)
+        self.assertNotIn("--max-runtime-epochs", rendered)
+        self.assertNotIn("--max-parameter-epochs", rendered)
+        self.assertNotIn("--max-epochs", rendered)
+        self.assertNotIn("--bpf-dataplane-canary", rendered)
+        self.assertNotIn("--emit-bpf-shadow", rendered)
+
+    def test_full_operational_clean_profile_rejects_runtime_epoch_cap(self) -> None:
+        profile = load_profile("rich_s4_operational_clean_bpf")
+        profile = copy.deepcopy(profile)
+        profile["runner_args"]["max_runtime_epochs"] = 4
+        gate = resolve_catalog_contract(profile)
+
+        with self.assertRaisesRegex(
+            ProfileContractError,
+            "long-run profile forbids runner_args.max_runtime_epochs",
+        ):
+            build_underlying_command(
+                profile=profile,
+                catalog_gate=gate,
+                run_root=Path("/tmp/skyseed-test-profile"),
+                run_id="profile-test-full",
+            )
+
+    def test_full_operational_clean_profile_rejects_missing_continuous_mode(self) -> None:
+        profile = load_profile("rich_s4_operational_clean_bpf")
+        profile = copy.deepcopy(profile)
+        profile["runner_args"].pop("continuous", None)
+        gate = resolve_catalog_contract(profile)
+
+        with self.assertRaisesRegex(
+            ProfileContractError,
+            "multiple horizons requires runner_args.continuous=true",
+        ):
+            build_underlying_command(
+                profile=profile,
+                catalog_gate=gate,
+                run_root=Path("/tmp/skyseed-test-profile"),
+                run_id="profile-test-full",
+            )
+
+    def test_full_operational_clean_profile_rejects_parameter_epoch_cap(self) -> None:
+        profile = load_profile("rich_s4_operational_clean_bpf")
+        profile = copy.deepcopy(profile)
+        profile["runner_args"]["max_parameter_epochs"] = 1
+        gate = resolve_catalog_contract(profile)
+
+        with self.assertRaisesRegex(
+            ProfileContractError,
+            "long-run profile forbids runner_args.max_parameter_epochs",
+        ):
+            build_underlying_command(
+                profile=profile,
+                catalog_gate=gate,
+                run_root=Path("/tmp/skyseed-test-profile"),
+                run_id="profile-test-full",
+            )
+
+    def test_full_operational_clean_profile_allows_longer_horizon_count(self) -> None:
+        profile = load_profile("rich_s4_operational_clean_bpf")
+        profile = copy.deepcopy(profile)
+        profile["runner_args"]["loop_count"] = 5
+        gate = resolve_catalog_contract(profile)
+
+        command = build_underlying_command(
+            profile=profile,
+            catalog_gate=gate,
+            run_root=Path("/tmp/skyseed-test-profile"),
+            run_id="profile-test-h5",
+        )
+        rendered = " ".join(command)
+
+        self.assertIn("--horizon-seconds 240", rendered)
+        self.assertIn("--continuous", rendered)
+        self.assertIn("--loop-count 5", rendered)
+        self.assertNotIn("--max-runtime-epochs", rendered)
+        self.assertNotIn("--max-parameter-epochs", rendered)
+
     def test_capacity_gate_fails_when_pool_is_too_small(self) -> None:
-        profile = load_profile("rich_s4_operational_clean_bpf_smoke")
+        profile = load_profile("rich_s4_operational_clean_bpf")
         profile = copy.deepcopy(profile)
         profile["runner_args"]["docker_dummy_network_pool"] = "10.224.0.0/12"
         profile["runner_args"]["docker_dummy_network_mask"] = 16
@@ -3520,15 +3963,15 @@ class SkyseedValidationProfileTests(unittest.TestCase):
             gate["outcome_label"],
             "DOCKER_DUMMY_NETWORK_POOL_CAPACITY_BLOCKER",
         )
-        self.assertEqual(gate["required_dummy_networks"], 772)
+        self.assertEqual(gate["required_dummy_networks"], 631)
         self.assertEqual(gate["available_subnets"], 16)
         self.assertIn(
             "required_dummy_networks_exceeds_available_subnets",
             gate["failure_reasons"],
         )
 
-    def test_capacity_gate_passes_for_rich_s4_smoke_profile(self) -> None:
-        profile = load_profile("rich_s4_operational_clean_bpf_smoke")
+    def test_capacity_gate_passes_for_rich_s4_profile(self) -> None:
+        profile = load_profile("rich_s4_operational_clean_bpf")
 
         gate = docker_dummy_network_capacity_gate(
             profile,
@@ -3537,7 +3980,7 @@ class SkyseedValidationProfileTests(unittest.TestCase):
         )
 
         self.assertTrue(gate["ok"])
-        self.assertEqual(gate["required_dummy_networks"], 772)
+        self.assertEqual(gate["required_dummy_networks"], 631)
         self.assertEqual(gate["available_subnets"], 1024)
         self.assertEqual(gate["pool"], "10.128.0.0/9")
         self.assertEqual(gate["mask"], 19)
@@ -3546,7 +3989,7 @@ class SkyseedValidationProfileTests(unittest.TestCase):
         self.assertEqual(gate["docker_network_overlaps"], [])
 
     def test_strict_bpf_owned_profiles_reject_canary_experimental_options(self) -> None:
-        profile = load_profile("rich_s4_operational_clean_bpf_smoke")
+        profile = load_profile("rich_s4_operational_clean_bpf")
         profile = copy.deepcopy(profile)
         profile["runner_args"]["bpf_backend"] = "experimental"
         gate = resolve_catalog_contract(profile)
@@ -3559,7 +4002,7 @@ class SkyseedValidationProfileTests(unittest.TestCase):
                 run_id="profile-test",
             )
 
-        profile = load_profile("rich_s4_operational_clean_bpf_smoke")
+        profile = load_profile("rich_s4_operational_clean_bpf")
         profile = copy.deepcopy(profile)
         profile["runner_boolean_flags"] = {"bpf_dataplane_canary": True}
         gate = resolve_catalog_contract(profile)

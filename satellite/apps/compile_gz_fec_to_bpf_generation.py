@@ -451,7 +451,7 @@ def compile_generation_map(
     compiled = {
         "schema_version": 1,
         "goal": "Skyseed Goal 9 G/Z FEC intent to BPF generation map compiler",
-        "generated_at": "not_recorded_for_reproducible_baseline",
+        "generated_at": "not_recorded_for_deterministic_baseline",
         "compiler": "satellite/apps/compile_gz_fec_to_bpf_generation.py",
         "scope": {
             "shadow_only": True,

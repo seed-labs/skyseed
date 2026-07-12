@@ -52,8 +52,8 @@ def _build_run(
         {
             "orbit_input_mode": "planned-shell",
             "orbit_input_kind": "planned_shell_circular_orbit",
-            "orbit_source": "starlink_phase1_S4",
-            "selection_input_mode": "planned_shell_preset",
+            "orbit_source": "visualization_starlink_phase1_S4",
+            "selection_input_mode": "visualization_planned_shell_orbit_catalog",
             "shell_selection": {
                 "selected_satellite_count": 2,
                 "max_satellites_requested": 2,

@@ -109,7 +109,7 @@ def bpffs_state() -> dict[str, Any]:
     }
 
 
-def try_netns_smoke(*, sudo: bool) -> dict[str, Any]:
+def try_netns_tc_probe(*, sudo: bool) -> dict[str, Any]:
     ns_name = f"{PREFIX}_{os.getpid()}"
     veth_a = f"{PREFIX}a0"
     veth_b = f"{PREFIX}b0"
@@ -167,19 +167,19 @@ def mpls_state(*, sudo: bool) -> dict[str, Any]:
 
 
 def summarize(report: dict[str, Any]) -> list[str]:
-    smoke = report["capabilities"]["sudo_netns_tc_smoke"]
+    sudo_probe = report["capabilities"]["sudo_netns_tc_probe"]
     bpf_tools = report["tools"]["bpftool"]["available"]
     clang = report["tools"]["clang"]["available"]
     btf = report["kernel"]["btf_vmlinux_exists"]
-    direct = report["capabilities"]["direct_netns_tc_smoke"]["ok"]
-    sudo_smoke = smoke["ok"]
+    direct = report["capabilities"]["direct_netns_tc_probe"]["ok"]
+    sudo_ok = sudo_probe["ok"]
     lines = [
         f"kernel={report['kernel']['release']}",
         f"ip={report['tools']['ip']['available']} tc={report['tools']['tc']['available']}",
-        f"direct_netns_tc={direct} sudo_netns_tc={sudo_smoke}",
+        f"direct_netns_tc={direct} sudo_netns_tc={sudo_ok}",
         f"bpftool={bpf_tools} clang={clang} btf_vmlinux={btf}",
         f"bpffs_mounted={report['kernel']['bpffs']['mounted']}",
-        f"tc_netem_smoke={smoke.get('tc_netem_ok', False)}",
+        f"tc_netem_probe={sudo_probe.get('tc_netem_ok', False)}",
         f"mpls_route_show={report['kernel']['mpls']['route_show_ok']}",
     ]
     return lines
@@ -219,8 +219,8 @@ def build_report() -> dict[str, Any]:
             "gcc": command_version("gcc", ["--version"]),
         },
         "capabilities": {
-            "direct_netns_tc_smoke": try_netns_smoke(sudo=False),
-            "sudo_netns_tc_smoke": try_netns_smoke(sudo=True) if sudo_ok else {"ok": False, "reason": "sudo_unavailable"},
+            "direct_netns_tc_probe": try_netns_tc_probe(sudo=False),
+            "sudo_netns_tc_probe": try_netns_tc_probe(sudo=True) if sudo_ok else {"ok": False, "reason": "sudo_unavailable"},
         },
     }
     report["kernel"]["mpls"] = mpls_state(sudo=sudo_ok)

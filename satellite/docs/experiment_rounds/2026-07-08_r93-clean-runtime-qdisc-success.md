@@ -99,9 +99,6 @@ than `tc` process churn.
   `selected_gateway_access`, but r93 recorded 432/432 failed observations.
   This is now the next semantic/debugging item for return-path or gateway
   access reachability, not a blocker for the r93 runtime success claim.
-- Some legacy warning labels remain in post-run artifacts, such as
-  `host_mpls_preflight_skipped`. They are nonblocking for the BPF-owned clean
-  path, but should be removed or renamed during the next cleanup/refactor pass.
 - Runtime cleanup and final compose down still take several minutes after the
   data-plane run completes. This does not affect epoch success, but remains
   worth simplifying after the main functional work is complete.

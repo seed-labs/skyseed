@@ -379,32 +379,24 @@ def _activation_from_refinement(metadata: Mapping[str, Any]) -> Tuple[float, str
     return float(relative_time), str(time_utc)
 
 
-_RUNTIME_PLAN_DICT_CACHE: Dict[int, Dict[str, Any]] = {}
-
-
 def _runtime_plan_dict(runtime_update_plan: RuntimeUpdatePlan | Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(runtime_update_plan, dict):
         return dict(runtime_update_plan)
-    cache_key = id(runtime_update_plan)
-    cached = _RUNTIME_PLAN_DICT_CACHE.get(cache_key)
-    if cached is None:
-        cached = {
-            "schema_version": runtime_update_plan.schema_version,
-            "plan_id": runtime_update_plan.plan_id,
-            "target_snapshot": dict(runtime_update_plan.target_snapshot),
-            "planner": dict(runtime_update_plan.planner),
-            "apply_model": dict(runtime_update_plan.apply_model),
-            "node_subplans": {
-                str(node_id): dict(subplan)
-                for node_id, subplan in runtime_update_plan.node_subplans.items()
-            },
-            "replacement_semantics": dict(runtime_update_plan.replacement_semantics),
-            "validation_expectations": dict(
-                runtime_update_plan.validation_expectations
-            ),
-        }
-        _RUNTIME_PLAN_DICT_CACHE[cache_key] = cached
-    return dict(cached)
+    return {
+        "schema_version": runtime_update_plan.schema_version,
+        "plan_id": runtime_update_plan.plan_id,
+        "target_snapshot": dict(runtime_update_plan.target_snapshot),
+        "planner": dict(runtime_update_plan.planner),
+        "apply_model": dict(runtime_update_plan.apply_model),
+        "node_subplans": {
+            str(node_id): dict(subplan)
+            for node_id, subplan in runtime_update_plan.node_subplans.items()
+        },
+        "replacement_semantics": dict(runtime_update_plan.replacement_semantics),
+        "validation_expectations": dict(
+            runtime_update_plan.validation_expectations
+        ),
+    }
 
 
 def _node_position(snapshot: TopologySnapshot, node_id: str) -> Optional[Tuple[float, float, float]]:
@@ -633,29 +625,7 @@ def _flow_contexts_from_plan(runtime_update_plan: RuntimeUpdatePlan | Dict[str, 
             outcome = dict(action.get("intent", {}).get("outcome", {}))
             local_role = str(outcome.get("local_role", match.get("node_role", "")))
             if local_role == "ut_ingress":
-                gateway_selection = dict(outcome.get("gateway_selection", {}))
-                flow_id = str(gateway_selection.get("flow_id", match.get("flow_id", "")))
-                ut_id = str(gateway_selection.get("ut_id", ""))
-                if not flow_id:
-                    continue
-                gateway_bindings = [
-                    dict(binding)
-                    for binding in gateway_selection.get("gateway_class_bindings", [])
-                ]
-                if not gateway_bindings:
-                    gateway_bindings = [dict(gateway_selection.get("gateway_class_binding", {}))]
-                for binding in gateway_bindings:
-                    ingress_transport = dict(binding.get("ingress_transport", {}))
-                    flow_contexts.setdefault(flow_id, {}).update(
-                        {
-                            "flow_id": flow_id,
-                            "ut_id": ut_id,
-                            "zone_id": gateway_selection.get("zone_id"),
-                            "serving_satellite_id": binding.get("serving_satellite_id"),
-                            "selected_gateway_id": binding.get("selected_gateway_id"),
-                            "ut_ingress_label": ingress_transport.get("ingress_label"),
-                        }
-                    )
+                # Immutable UT edge policy is never a source of core FEC state.
                 continue
             flow_context = dict(outcome.get("flow_context", {}))
             flow_id = str(flow_context.get("flow_id", match.get("flow_id", "")))

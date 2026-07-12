@@ -41,8 +41,11 @@ DEFAULT_MPLS_SOURCE = (
 MPLS_PINNED_MAPS = [
     "active_generation",
     "ingress_classifier_map",
+    "ut_gateway_policy_map",
+    "gateway_selector_ingress_map",
     "core_lfib_map",
     "egress_handoff_map",
+    "zone_edge_delivery_map",
     "generation_base_map",
     "packet_counters",
     "interface_counters",
@@ -52,8 +55,11 @@ MPLS_PINNED_MAPS = [
 MPLS_KERNEL_MAP_NAMES = {
     "active_generation": "active_generati",
     "ingress_classifier_map": "ingress_classif",
+    "ut_gateway_policy_map": "ut_gateway_poli",
+    "gateway_selector_ingress_map": "gateway_selecto",
     "core_lfib_map": "core_lfib_map",
     "egress_handoff_map": "egress_handoff_",
+    "zone_edge_delivery_map": "zone_edge_deliv",
     "generation_base_map": "generation_base",
     "packet_counters": "packet_counters",
     "interface_counters": "interface_count",
@@ -73,6 +79,18 @@ MPLS_MAP_SHAPES = {
         "bytes_value": 36,
         "max_entries": 128,
     },
+    "ut_gateway_policy_map": {
+        "type": "lpm_trie",
+        "bytes_key": 12,
+        "bytes_value": 8,
+        "max_entries": 8192,
+    },
+    "gateway_selector_ingress_map": {
+        "type": "hash",
+        "bytes_key": 16,
+        "bytes_value": 28,
+        "max_entries": 8192,
+    },
     "core_lfib_map": {
         "type": "hash",
         "bytes_key": 16,
@@ -84,6 +102,12 @@ MPLS_MAP_SHAPES = {
         "bytes_key": 16,
         "bytes_value": 32,
         "max_entries": 128,
+    },
+    "zone_edge_delivery_map": {
+        "type": "hash",
+        "bytes_key": 16,
+        "bytes_value": 24,
+        "max_entries": 8192,
     },
     "generation_base_map": {
         "type": "hash",
@@ -118,8 +142,10 @@ MPLS_MAP_SHAPES = {
 }
 GENERATION_KEYED_MPLS_MAPS = {
     "ingress_classifier_map",
+    "gateway_selector_ingress_map",
     "core_lfib_map",
     "egress_handoff_map",
+    "zone_edge_delivery_map",
 }
 GENERATION_CAPACITY_SLACK = 16
 BPF_MAP_GENERATION_CAPACITY_BLOCKER = "BPF_MAP_GENERATION_CAPACITY_BLOCKER"
@@ -161,6 +187,7 @@ MPLS_CORE_ACTION = {
 ETH_P_IP = 0x0800
 MPLS_INTERFACE_ROLE_CLASSIFIER = 1
 MPLS_INTERFACE_ROLE_MPLS = 2
+MPLS_INTERFACE_ROLE_UT_GATEWAY_SELECTOR = 4
 MPLS_MISS_SAMPLE_REASONS = {
     1: "classifier_miss",
     2: "mpls_lfib_or_handoff_miss",
@@ -177,6 +204,7 @@ MPLS_MISS_SAMPLE_MAPS = {
     4: "active_generation",
     5: "interface_role_map",
     6: "packet_parse",
+    7: "zone_edge_delivery_map",
 }
 MPLS_MISS_SAMPLE_SLOTS = {
     0: "classifier",
@@ -198,8 +226,11 @@ def compile_mpls_bpf(
 ) -> dict[str, Any]:
     capacities = {
         "classifiers": 128,
+        "gateway_selectors": 8192,
+        "ut_gateway_policies": 8192,
         "lfib": 256,
         "handoffs": 128,
+        "zone_edge_deliveries": 8192,
         "packet_counters": 23,
         "interface_counter_entries": 8192,
         "generation_bases": 8192,
@@ -215,8 +246,14 @@ def compile_mpls_bpf(
         include_args = ["-I", str(arch_include)]
     define_args = [
         f"-DSKYSEED_BPF_MAX_MPLS_CLASSIFIERS={int(capacities['classifiers'])}",
+        "-DSKYSEED_BPF_MAX_GATEWAY_SELECTORS="
+        f"{int(capacities['gateway_selectors'])}",
+        "-DSKYSEED_BPF_MAX_UT_GATEWAY_POLICIES="
+        f"{int(capacities['ut_gateway_policies'])}",
         f"-DSKYSEED_BPF_MAX_MPLS_LFIB={int(capacities['lfib'])}",
         f"-DSKYSEED_BPF_MAX_MPLS_HANDOFFS={int(capacities['handoffs'])}",
+        "-DSKYSEED_BPF_MAX_ZONE_EDGE_DELIVERIES="
+        f"{int(capacities['zone_edge_deliveries'])}",
         "-DSKYSEED_BPF_MAX_MPLS_PACKET_COUNTERS="
         f"{int(capacities['packet_counters'])}",
         "-DSKYSEED_BPF_MAX_INTERFACE_COUNTER_ENTRIES="
@@ -492,7 +529,13 @@ def attach_mpls(
     control_plane_ipv4_addrs: Sequence[str] = (),
     clsact_setup_mode: str = "reset",
 ) -> list[dict[str, Any]]:
-    if clsact_setup_mode not in {"reset", "ensure_new_delta", "expect_existing"}:
+    if clsact_setup_mode not in {
+        "reset",
+        "ensure_new_delta",
+        "expect_existing",
+        "direct_new_delta",
+        "direct_existing_delta",
+    }:
         raise ValueError(f"unsupported clsact setup mode {clsact_setup_mode!r}")
     results: list[dict[str, Any]] = []
     if clsact_setup_mode == "reset":
@@ -544,7 +587,7 @@ def attach_mpls(
                 event="add_existing_ok_for_new_delta",
             )
         results.append(add_result)
-    else:
+    elif clsact_setup_mode == "expect_existing":
         show_result = run_mpls_interface_command(
             interface_ref,
             ["tc", "qdisc", "show", "dev", "{iface}"],
@@ -562,6 +605,23 @@ def attach_mpls(
                 )
             )
             return results
+    elif clsact_setup_mode == "direct_new_delta":
+        add_result = run_mpls_interface_command(
+            interface_ref,
+            ["tc", "qdisc", "add", "dev", "{iface}", "clsact"],
+            timeout=8.0,
+        )
+        add_result["clsact_lifecycle_event"] = "direct_add_new_delta"
+        results.append(add_result)
+        if not command_ok(add_result):
+            return results
+    else:
+        results.append(
+            _synthetic_clsact_result(
+                interface_ref,
+                event="direct_existing_delta_no_probe",
+            )
+        )
     for direction in directions:
         if direction not in {"ingress", "egress"}:
             raise ValueError(f"unsupported tc-BPF attach direction {direction!r}")
@@ -844,6 +904,59 @@ def update_mpls_u32_map(map_name: str, key: int, value: int) -> dict[str, Any]:
     return update_mpls_map(map_name, pack_u32s(key), pack_u32s(value))
 
 
+def load_static_ut_gateway_policies(
+    entries: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Cold-start-only batch load for immutable UT LPM gateway selectors."""
+
+    pending: list[dict[str, Any]] = []
+    logical_keys: set[tuple[int, str]] = set()
+    selector_ifindices: set[int] = set()
+    for raw in entries:
+        entry = dict(raw or {})
+        key = dict(entry.get("key") or entry)
+        value = dict(entry.get("value") or entry)
+        ifindex = int(key.get("egress_ifindex") or 0)
+        prefix = ipaddress.ip_network(str(key.get("prefix") or ""), strict=False)
+        label = int(value.get("gateway_selector_label") or 0)
+        if ifindex <= 0 or prefix.version != 4 or label < 16:
+            raise ValueError(f"invalid static UT gateway policy entry: {entry}")
+        logical_key = (ifindex, str(prefix))
+        if logical_key in logical_keys:
+            raise ValueError(f"duplicate static UT gateway policy entry: {logical_key}")
+        logical_keys.add(logical_key)
+        selector_ifindices.add(ifindex)
+        pending.append(
+            {
+                "map_name": "ut_gateway_policy_map",
+                "key_bytes": pack_u32s(
+                    32 + int(prefix.prefixlen),
+                    ifindex,
+                    ipv4_little_endian_u32(str(prefix.network_address)),
+                ),
+                "value_bytes": pack_u32s(1, label),
+                "operation": "cold_start_static_policy_update",
+                "generation": None,
+                "logical_key": {
+                    "egress_ifindex": ifindex,
+                    "prefix": str(prefix),
+                },
+            }
+        )
+    updates = _annotated_batch_map_updates(pending)
+    ok = bool(entries) and all(command_ok(item) for item in updates)
+    return {
+        "ok": ok,
+        "immutable_for_run": True,
+        "runtime_write_count": 0,
+        "policy_entry_count": len(logical_keys),
+        "selector_interface_count": len(selector_ifindices),
+        "batch_command_count": 1 if pending else 0,
+        "updates": updates,
+        "reason": "" if ok else "static_ut_gateway_policy_batch_load_failed",
+    }
+
+
 def _hex_bytes_to_int_le(hex_bytes: Sequence[str], offset: int) -> int | None:
     if offset + 4 > len(hex_bytes):
         return None
@@ -878,8 +991,10 @@ def _decode_map_update_fields(
     decoded_value: dict[str, Any] = {}
     if map_name in {
         "ingress_classifier_map",
+        "gateway_selector_ingress_map",
         "core_lfib_map",
         "egress_handoff_map",
+        "zone_edge_delivery_map",
     }:
         key_fields = u32s(key_bytes, 4)
         if len(key_bytes) != 16:
@@ -904,7 +1019,7 @@ def _decode_map_update_fields(
                 "dst_mac": _hex_bytes_to_mac(value_bytes, 24),
                 "src_mac": _hex_bytes_to_mac(value_bytes, 30),
             }
-        elif map_name == "core_lfib_map":
+        elif map_name in {"core_lfib_map", "gateway_selector_ingress_map"}:
             decoded_key = {
                 "generation": key_fields[0],
                 "ingress_ifindex": key_fields[1],
@@ -922,7 +1037,7 @@ def _decode_map_update_fields(
                 "dst_mac": _hex_bytes_to_mac(value_bytes, 16),
                 "src_mac": _hex_bytes_to_mac(value_bytes, 22),
             }
-        else:
+        elif map_name == "egress_handoff_map":
             decoded_key = {
                 "generation": key_fields[0],
                 "ingress_ifindex": key_fields[1],
@@ -940,6 +1055,23 @@ def _decode_map_update_fields(
                 "new_dst_ip": value_fields[4],
                 "dst_mac": _hex_bytes_to_mac(value_bytes, 20),
                 "src_mac": _hex_bytes_to_mac(value_bytes, 26),
+            }
+        else:
+            decoded_key = {
+                "generation": key_fields[0],
+                "ingress_ifindex": key_fields[1],
+                "label": key_fields[2],
+                "dst_ipv4": key_fields[3],
+            }
+            value_fields = u32s(value_bytes, 3)
+            if len(value_bytes) != 24:
+                warnings.append(f"unexpected_value_length:{len(value_bytes)}")
+            decoded_value = {
+                "active": value_fields[0],
+                "out_ifindex": value_fields[1],
+                "new_dst_ip": value_fields[2],
+                "dst_mac": _hex_bytes_to_mac(value_bytes, 12),
+                "src_mac": _hex_bytes_to_mac(value_bytes, 18),
             }
     elif map_name == "generation_base_map":
         decoded_key = {"generation": _hex_bytes_to_int_le(key_bytes, 0)}
@@ -1211,7 +1343,11 @@ def generation_delete_manifest_for_compiled_mpls_maps(
             },
         )
 
-    for map_name in ("core_lfib_map", "egress_handoff_map"):
+    for map_name in (
+        "gateway_selector_ingress_map",
+        "core_lfib_map",
+        "egress_handoff_map",
+    ):
         for entry in list(dict(compiled or {}).get(map_name) or []):
             key = dict(dict(entry).get("key") or {})
             generation = int(key.get("generation", active_generation))
@@ -1227,6 +1363,22 @@ def generation_delete_manifest_for_compiled_mpls_maps(
                 ),
                 logical_key=dict(key),
             )
+
+    for entry in list(dict(compiled or {}).get("zone_edge_delivery_map") or []):
+        key = dict(dict(entry).get("key") or {})
+        generation = int(key.get("generation", active_generation))
+        if generation != active_generation:
+            continue
+        append_delete(
+            "zone_edge_delivery_map",
+            pack_u32s(
+                generation,
+                int(key.get("ingress_ifindex") or 0),
+                int(key.get("label") or 0),
+                int(key.get("dst_ipv4") or 0),
+            ),
+            logical_key=dict(key),
+        )
 
     for entry in list(dict(compiled or {}).get("generation_base_map") or []):
         key = dict(dict(entry).get("key") or {})
@@ -1320,10 +1472,20 @@ def _normalized_generationless_logical_key(
             for key in ("ingress_ifindex", "dst_ipv4", "service_class")
             if key in normalized
         }
-    if map_name in {"core_lfib_map", "egress_handoff_map"}:
+    if map_name in {
+        "gateway_selector_ingress_map",
+        "core_lfib_map",
+        "egress_handoff_map",
+    }:
         return {
             key: normalized.get(key)
             for key in ("ingress_ifindex", "label", "direction")
+            if key in normalized
+        }
+    if map_name == "zone_edge_delivery_map":
+        return {
+            key: normalized.get(key)
+            for key in ("ingress_ifindex", "label", "dst_ipv4")
             if key in normalized
         }
     return normalized
@@ -2267,6 +2429,8 @@ def load_mpls_maps(compiled: dict[str, Any]) -> dict[str, Any]:
         bits = 0
         for raw_role in list(expected_roles or []):
             role_name = str(raw_role or "").lower()
+            if "ut_gateway_selector" in role_name:
+                bits |= MPLS_INTERFACE_ROLE_UT_GATEWAY_SELECTOR
             if "classifier" in role_name:
                 bits |= MPLS_INTERFACE_ROLE_CLASSIFIER
             if (
@@ -2333,6 +2497,42 @@ def load_mpls_maps(compiled: dict[str, Any]) -> dict[str, Any]:
         )
 
     loaded_core_keys: list[dict[str, Any]] = []
+    loaded_gateway_selector_keys: list[dict[str, Any]] = []
+    for entry in compiled.get("gateway_selector_ingress_map", []) or []:
+        key = dict(entry.get("key") or {})
+        value = dict(entry.get("value") or {})
+        ingress_ifindex = int(key.get("ingress_ifindex") or 0)
+        add_interface_role(
+            ingress_ifindex,
+            MPLS_INTERFACE_ROLE_MPLS,
+            "gateway_selector_ingress_map",
+        )
+        generation = int(key.get("generation", active_generation))
+        map_key = pack_u32s(
+            generation,
+            ingress_ifindex,
+            int(key.get("label") or 0),
+            direction_u32(key.get("direction", G_TO_Z)),
+        )
+        map_value = (
+            pack_u32s(
+                1 if value.get("active", True) else 0,
+                MPLS_CORE_ACTION.get(str(value.get("action") or "swap"), 1),
+                int(value.get("out_label") or 0),
+                int(value.get("out_ifindex") or 0),
+            )
+            + mac_pair_bytes(value)
+        )
+        append_map_update(
+            "gateway_selector_ingress_map",
+            map_key,
+            map_value,
+            operation="update",
+            generation=generation,
+            logical_key=dict(key),
+        )
+        loaded_gateway_selector_keys.append(dict(key))
+
     for entry in compiled.get("core_lfib_map", []) or []:
         key = dict(entry.get("key") or {})
         value = dict(entry.get("value") or {})
@@ -2390,7 +2590,16 @@ def load_mpls_maps(compiled: dict[str, Any]) -> dict[str, Any]:
         map_value = (
             pack_u32s(
                 1 if value.get("active", True) else 0,
-                3,
+                (
+                    4
+                    if str(
+                        value.get("handoff")
+                        or dict(entry.get("metadata") or {}).get("handoff")
+                        or ""
+                    )
+                    == "shared_zone_edge_lookup"
+                    else 3
+                ),
                 int(value.get("out_ifindex") or 0),
                 int(value.get("inner_ethertype") or ETH_P_IP),
                 new_dst_ip,
@@ -2407,6 +2616,48 @@ def load_mpls_maps(compiled: dict[str, Any]) -> dict[str, Any]:
                 logical_key=dict(key),
         )
         loaded_handoff_keys.append(dict(key))
+
+    loaded_zone_edge_delivery_keys: list[dict[str, Any]] = []
+    for entry in compiled.get("zone_edge_delivery_map", []) or []:
+        key = dict(entry.get("key") or {})
+        value = dict(entry.get("value") or {})
+        ingress_ifindex = int(key.get("ingress_ifindex") or 0)
+        add_interface_role(
+            ingress_ifindex,
+            MPLS_INTERFACE_ROLE_MPLS,
+            "zone_edge_delivery_map",
+        )
+        generation = int(key.get("generation", active_generation))
+        dst_ipv4 = int(key.get("dst_ipv4") or 0)
+        new_dst_ip = (
+            ipv4_little_endian_u32(str(value.get("new_dst_ip")))
+            if value.get("new_dst_ip")
+            else 0
+        )
+        append_map_update(
+            "zone_edge_delivery_map",
+            pack_u32s(
+                generation,
+                ingress_ifindex,
+                int(key.get("label") or 0),
+                dst_ipv4,
+            ),
+            pack_u32s(
+                1 if value.get("active", True) else 0,
+                int(value.get("out_ifindex") or 0),
+                new_dst_ip,
+            )
+            + mac_pair_bytes(value),
+            operation="update",
+            generation=generation,
+            logical_key={
+                "generation": generation,
+                "ingress_ifindex": ingress_ifindex,
+                "label": int(key.get("label") or 0),
+                "dst_ipv4": dst_ipv4,
+            },
+        )
+        loaded_zone_edge_delivery_keys.append(dict(key))
 
     loaded_generation_base_keys: list[dict[str, Any]] = []
     generation_base_entries = list(compiled.get("generation_base_map") or [])
@@ -2509,13 +2760,20 @@ def load_mpls_maps(compiled: dict[str, Any]) -> dict[str, Any]:
                 "role": role,
                 "classifier": bool(role & MPLS_INTERFACE_ROLE_CLASSIFIER),
                 "mpls": bool(role & MPLS_INTERFACE_ROLE_MPLS),
+                **(
+                    {"ut_gateway_selector": True}
+                    if role & MPLS_INTERFACE_ROLE_UT_GATEWAY_SELECTOR
+                    else {}
+                ),
             }
         )
 
     expected_entries_by_map = {
         "ingress_classifier_map": len(loaded_classifier_keys),
+        "gateway_selector_ingress_map": len(loaded_gateway_selector_keys),
         "core_lfib_map": len(loaded_core_keys),
         "egress_handoff_map": len(loaded_handoff_keys),
+        "zone_edge_delivery_map": len(loaded_zone_edge_delivery_keys),
         "generation_base_map": len(loaded_generation_base_keys),
         "active_generation": 1,
     }
@@ -2620,8 +2878,10 @@ def load_mpls_maps(compiled: dict[str, Any]) -> dict[str, Any]:
         if manifest_only_loader
         else (
             "ingress_classifier_map",
+            "gateway_selector_ingress_map",
             "core_lfib_map",
             "egress_handoff_map",
+            "zone_edge_delivery_map",
             "generation_base_map",
             "interface_role_map",
         )
@@ -3600,8 +3860,12 @@ def load_mpls_maps(compiled: dict[str, Any]) -> dict[str, Any]:
             "active_generation_flip_requires_all_data_map_updates": True,
         },
         "loaded_classifier_count": len(loaded_classifier_keys),
+        "loaded_gateway_selector_ingress_count": len(
+            loaded_gateway_selector_keys
+        ),
         "loaded_core_lfib_count": len(loaded_core_keys),
         "loaded_egress_handoff_count": len(loaded_handoff_keys),
+        "loaded_zone_edge_delivery_count": len(loaded_zone_edge_delivery_keys),
         "loaded_generation_base_count": len(loaded_generation_base_keys),
         "loaded_delete_manifest_count": len(loaded_delete_manifest_keys),
         "loaded_interface_role_count": len(loaded_interface_roles),
@@ -3615,8 +3879,10 @@ def load_mpls_maps(compiled: dict[str, Any]) -> dict[str, Any]:
             len(loaded_interface_roles) if skip_interface_role_map_updates else 0
         ),
         "loaded_classifier_keys": loaded_classifier_keys,
+        "loaded_gateway_selector_ingress_keys": loaded_gateway_selector_keys,
         "loaded_core_lfib_keys": loaded_core_keys,
         "loaded_egress_handoff_keys": loaded_handoff_keys,
+        "loaded_zone_edge_delivery_keys": loaded_zone_edge_delivery_keys,
         "loaded_interface_roles": loaded_interface_roles,
         "loaded_interface_role_sources": [
             {"ifindex": ifindex, "sources": sorted(sources)}
@@ -3903,1427 +4169,3 @@ def read_mpls_active_generation() -> dict[str, Any]:
         "active_generation": active_generation,
         "active_generations": generations,
     }
-
-
-def build_minimal_live_maps(names: dict[str, str]) -> dict[str, Any]:
-    def ref(ns_key: str, iface: str) -> str:
-        return f"ipnetns:{names[ns_key]}:{iface}"
-
-    ifindex = {
-        "s1u": interface_ifindex(ref("s1", "s1u")),
-        "s1s2": interface_ifindex(ref("s1", "s1s2")),
-        "s2s1": interface_ifindex(ref("s2", "s2s1")),
-        "s2gw": interface_ifindex(ref("s2", "s2gw")),
-        "gws2": interface_ifindex(ref("gw", "gws2")),
-    }
-    mac = {
-        "ut0": interface_mac(ref("ut", "ut0")),
-        "s1u": interface_mac(ref("s1", "s1u")),
-        "s1s2": interface_mac(ref("s1", "s1s2")),
-        "s2s1": interface_mac(ref("s2", "s2s1")),
-        "s2gw": interface_mac(ref("s2", "s2gw")),
-        "gws2": interface_mac(ref("gw", "gws2")),
-    }
-    return {
-        "schema_version": "skyseed-live-mpls-minimal-v1",
-        "active_generation": {"value": 0},
-        "ingress_classifier_map": [
-            {
-                "key": {
-                    "generation": 0,
-                    "ingress_ifindex": ifindex["s1u"],
-                    "dst_ipv4": ipv4_little_endian_u32("10.80.3.2"),
-                    "service_class_u32": 0,
-                },
-                "value": {
-                    "active": True,
-                    "fec_id": "minimal-g-to-z",
-                    "direction": G_TO_Z,
-                    "initial_label": 100,
-                    "out_ifindex": ifindex["s1s2"],
-                    "inner_ethertype": ETH_P_IP,
-                    "dst_mac": mac["s2s1"],
-                    "src_mac": mac["s1s2"],
-                },
-            },
-            {
-                "key": {
-                    "generation": 0,
-                    "ingress_ifindex": ifindex["s2gw"],
-                    "dst_ipv4": ipv4_little_endian_u32("10.80.1.2"),
-                    "service_class_u32": 0,
-                },
-                "value": {
-                    "active": True,
-                    "fec_id": "minimal-z-to-g",
-                    "direction": Z_TO_G,
-                    "initial_label": 200,
-                    "out_ifindex": ifindex["s2s1"],
-                    "inner_ethertype": ETH_P_IP,
-                    "dst_mac": mac["s1s2"],
-                    "src_mac": mac["s2s1"],
-                },
-            },
-        ],
-        "core_lfib_map": [
-            {
-                "key": {
-                    "generation": 0,
-                    "ingress_ifindex": ifindex["s2s1"],
-                    "label": 100,
-                    "direction": G_TO_Z,
-                },
-                "value": {
-                    "active": True,
-                    "action": "swap",
-                    "out_label": 101,
-                    "out_ifindex": ifindex["s2gw"],
-                    "dst_mac": mac["gws2"],
-                    "src_mac": mac["s2gw"],
-                },
-            },
-            {
-                "key": {
-                    "generation": 0,
-                    "ingress_ifindex": ifindex["s1s2"],
-                    "label": 200,
-                    "direction": Z_TO_G,
-                },
-                "value": {
-                    "active": True,
-                    "action": "preserve",
-                    "out_label": 200,
-                    "out_ifindex": ifindex["s1u"],
-                    "dst_mac": mac["ut0"],
-                    "src_mac": mac["s1u"],
-                },
-            },
-        ],
-        "egress_handoff_map": [
-            {
-                "key": {
-                    "generation": 0,
-                    "ingress_ifindex": ifindex["s2gw"],
-                    "label": 101,
-                    "direction": G_TO_Z,
-                },
-                "value": {
-                    "active": True,
-                    "out_ifindex": 0,
-                    "inner_ethertype": ETH_P_IP,
-                },
-            },
-            {
-                "key": {
-                    "generation": 0,
-                    "ingress_ifindex": ifindex["s1u"],
-                    "label": 200,
-                    "direction": Z_TO_G,
-                },
-                "value": {
-                    "active": True,
-                    "out_ifindex": 0,
-                    "inner_ethertype": ETH_P_IP,
-                    "dst_mac": mac["ut0"],
-                    "src_mac": mac["s1u"],
-                },
-            },
-        ],
-        "interface_refs": {
-            "s1u": ref("s1", "s1u"),
-            "s1s2": ref("s1", "s1s2"),
-            "s2s1": ref("s2", "s2s1"),
-            "s2gw": ref("s2", "s2gw"),
-            "gws2": ref("gw", "gws2"),
-        },
-        "attach_plan": {
-            ref("s1", "s1u"): ["ingress", "egress"],
-            ref("s1", "s1s2"): ["ingress"],
-            ref("s2", "s2s1"): ["ingress"],
-            ref("s2", "s2gw"): ["ingress", "egress"],
-        },
-        "ifindex": ifindex,
-        "mac": mac,
-    }
-
-
-def setup_minimal_live_namespaces(suffix: str) -> dict[str, Any]:
-    names = {
-        "ut": f"ss-ut-{suffix}",
-        "s1": f"ss-s1-{suffix}",
-        "s2": f"ss-s2-{suffix}",
-        "gw": f"ss-gw-{suffix}",
-    }
-    steps: list[dict[str, Any]] = []
-    for name in names.values():
-        steps.append(run_command(["ip", "netns", "add", name], timeout=4.0, privileged=True))
-    links = [
-        ("ut0", names["ut"], "s1u", names["s1"]),
-        ("s1s2", names["s1"], "s2s1", names["s2"]),
-        ("s2gw", names["s2"], "gws2", names["gw"]),
-    ]
-    for left_if, left_ns, right_if, right_ns in links:
-        steps.append(
-            run_command(
-                ["ip", "link", "add", left_if, "type", "veth", "peer", "name", right_if],
-                timeout=4.0,
-                privileged=True,
-            )
-        )
-        steps.append(
-            run_command(["ip", "link", "set", left_if, "netns", left_ns], timeout=4.0, privileged=True)
-        )
-        steps.append(
-            run_command(["ip", "link", "set", right_if, "netns", right_ns], timeout=4.0, privileged=True)
-        )
-    addr_commands = [
-        ("ut", "ut0", "10.80.1.2/24"),
-        ("s1", "s1u", "10.80.1.1/24"),
-        ("s2", "s2gw", "10.80.3.1/24"),
-        ("gw", "gws2", "10.80.3.2/24"),
-    ]
-    for ns_key, iface, address in addr_commands:
-        steps.append(
-            run_command(
-                ["ip", "-n", names[ns_key], "addr", "add", address, "dev", iface],
-                timeout=4.0,
-                privileged=True,
-            )
-        )
-    for ns in names.values():
-        steps.append(run_command(["ip", "-n", ns, "link", "set", "lo", "up"], timeout=4.0, privileged=True))
-    for ns_key, iface in [
-        ("ut", "ut0"),
-        ("s1", "s1u"),
-        ("s1", "s1s2"),
-        ("s2", "s2s1"),
-        ("s2", "s2gw"),
-        ("gw", "gws2"),
-    ]:
-        steps.append(
-            run_command(
-                ["ip", "-n", names[ns_key], "link", "set", iface, "up"],
-                timeout=4.0,
-                privileged=True,
-            )
-        )
-    steps.append(
-        run_command(
-            ["ip", "-n", names["ut"], "route", "add", "default", "via", "10.80.1.1"],
-            timeout=4.0,
-            privileged=True,
-        )
-    )
-    steps.append(
-        run_command(
-            ["ip", "-n", names["gw"], "route", "add", "10.80.1.0/24", "via", "10.80.3.1"],
-            timeout=4.0,
-            privileged=True,
-        )
-    )
-    return {"names": names, "steps": steps, "ok": all(command_ok(step) for step in steps)}
-
-
-def setup_minimal_divergent_live_namespaces(suffix: str) -> dict[str, Any]:
-    names = {
-        "ut": f"ss-ut-{suffix}",
-        "s1": f"ss-s1-{suffix}",
-        "s2": f"ss-s2-{suffix}",
-        "gwa": f"ss-gwa-{suffix}",
-        "gwb": f"ss-gwb-{suffix}",
-    }
-    steps: list[dict[str, Any]] = []
-    for name in names.values():
-        steps.append(run_command(["ip", "netns", "add", name], timeout=4.0, privileged=True))
-    links = [
-        ("ut0", names["ut"], "s1u", names["s1"]),
-        ("s1s2", names["s1"], "s2s1", names["s2"]),
-        ("s2gwa", names["s2"], "gwas2", names["gwa"]),
-        ("s2gwb", names["s2"], "gwbs2", names["gwb"]),
-    ]
-    for left_if, left_ns, right_if, right_ns in links:
-        steps.append(
-            run_command(
-                ["ip", "link", "add", left_if, "type", "veth", "peer", "name", right_if],
-                timeout=4.0,
-                privileged=True,
-            )
-        )
-        steps.append(
-            run_command(["ip", "link", "set", left_if, "netns", left_ns], timeout=4.0, privileged=True)
-        )
-        steps.append(
-            run_command(["ip", "link", "set", right_if, "netns", right_ns], timeout=4.0, privileged=True)
-        )
-    addr_commands = [
-        ("ut", "ut0", "10.80.1.2/24"),
-        ("s1", "s1u", "10.80.1.1/24"),
-        ("s2", "s2gwa", "10.80.3.1/24"),
-        ("gwa", "gwas2", "10.80.3.2/24"),
-        ("s2", "s2gwb", "10.80.4.1/24"),
-        ("gwb", "gwbs2", "10.80.4.2/24"),
-    ]
-    for ns_key, iface, address in addr_commands:
-        steps.append(
-            run_command(
-                ["ip", "-n", names[ns_key], "addr", "add", address, "dev", iface],
-                timeout=4.0,
-                privileged=True,
-            )
-        )
-    for ns in names.values():
-        steps.append(run_command(["ip", "-n", ns, "link", "set", "lo", "up"], timeout=4.0, privileged=True))
-    for ns_key, iface in [
-        ("ut", "ut0"),
-        ("s1", "s1u"),
-        ("s1", "s1s2"),
-        ("s2", "s2s1"),
-        ("s2", "s2gwa"),
-        ("s2", "s2gwb"),
-        ("gwa", "gwas2"),
-        ("gwb", "gwbs2"),
-    ]:
-        steps.append(
-            run_command(
-                ["ip", "-n", names[ns_key], "link", "set", iface, "up"],
-                timeout=4.0,
-                privileged=True,
-            )
-        )
-    steps.append(
-        run_command(
-            ["ip", "-n", names["ut"], "route", "add", "default", "via", "10.80.1.1"],
-            timeout=4.0,
-            privileged=True,
-        )
-    )
-    for gw_key, via in [("gwa", "10.80.3.1"), ("gwb", "10.80.4.1")]:
-        steps.append(
-            run_command(
-                ["ip", "-n", names[gw_key], "route", "add", "10.80.1.0/24", "via", via],
-                timeout=4.0,
-                privileged=True,
-            )
-        )
-    return {"names": names, "steps": steps, "ok": all(command_ok(step) for step in steps)}
-
-
-def cleanup_minimal_live_namespaces(names: dict[str, str]) -> dict[str, Any]:
-    steps = [
-        run_command(["ip", "netns", "del", name], timeout=4.0, privileged=True)
-        for name in names.values()
-    ]
-    return {"steps": steps, "ok": all(command_ok(step) or step.get("returncode") == 1 for step in steps)}
-
-
-def setup_live_role_repro_namespaces(suffix: str) -> dict[str, Any]:
-    names = {
-        "ut": f"ss-role-ut-{suffix}",
-        "s1": f"ss-role-s1-{suffix}",
-        "s2": f"ss-role-s2-{suffix}",
-        "gwd": f"ss-role-gwd-{suffix}",
-        "gwc": f"ss-role-gwc-{suffix}",
-    }
-    steps: list[dict[str, Any]] = []
-    for name in names.values():
-        steps.append(run_command(["ip", "netns", "add", name], timeout=4.0, privileged=True))
-    links = [
-        ("ut0", names["ut"], "s1u", names["s1"]),
-        ("s1gwd", names["s1"], "gwds1", names["gwd"]),
-        ("s1s2", names["s1"], "s2s1", names["s2"]),
-        ("s2gwc", names["s2"], "gwcs2", names["gwc"]),
-    ]
-    for left_if, left_ns, right_if, right_ns in links:
-        steps.append(
-            run_command(
-                ["ip", "link", "add", left_if, "type", "veth", "peer", "name", right_if],
-                timeout=4.0,
-                privileged=True,
-            )
-        )
-        steps.append(run_command(["ip", "link", "set", left_if, "netns", left_ns], timeout=4.0, privileged=True))
-        steps.append(run_command(["ip", "link", "set", right_if, "netns", right_ns], timeout=4.0, privileged=True))
-    addr_commands = [
-        ("ut", "ut0", "10.81.1.2/24"),
-        ("s1", "s1u", "10.81.1.1/24"),
-        ("s1", "s1gwd", "10.81.2.1/24"),
-        ("gwd", "gwds1", "10.81.2.2/24"),
-        ("s1", "s1s2", "10.81.12.1/24"),
-        ("s2", "s2s1", "10.81.12.2/24"),
-        ("s2", "s2gwc", "10.81.3.1/24"),
-        ("gwc", "gwcs2", "10.81.3.2/24"),
-    ]
-    for ns_key, iface, address in addr_commands:
-        steps.append(run_command(["ip", "-n", names[ns_key], "addr", "add", address, "dev", iface], timeout=4.0, privileged=True))
-    for ns in names.values():
-        steps.append(run_command(["ip", "-n", ns, "link", "set", "lo", "up"], timeout=4.0, privileged=True))
-    for ns_key, iface in [
-        ("ut", "ut0"),
-        ("s1", "s1u"),
-        ("s1", "s1gwd"),
-        ("s1", "s1s2"),
-        ("s2", "s2s1"),
-        ("s2", "s2gwc"),
-        ("gwd", "gwds1"),
-        ("gwc", "gwcs2"),
-    ]:
-        steps.append(run_command(["ip", "-n", names[ns_key], "link", "set", iface, "up"], timeout=4.0, privileged=True))
-    route_commands = [
-        ("ut", ["ip", "-n", names["ut"], "route", "add", "default", "via", "10.81.1.1"]),
-        ("gwd", ["ip", "-n", names["gwd"], "route", "add", "10.81.1.0/24", "via", "10.81.2.1"]),
-        ("gwc", ["ip", "-n", names["gwc"], "route", "add", "10.81.1.0/24", "via", "10.81.3.1"]),
-    ]
-    for _name, command in route_commands:
-        steps.append(run_command(command, timeout=4.0, privileged=True))
-    return {"names": names, "steps": steps, "ok": all(command_ok(step) for step in steps)}
-
-
-def build_live_role_repro_maps(names: dict[str, str]) -> dict[str, Any]:
-    def ref(ns_key: str, iface: str) -> str:
-        return f"ipnetns:{names[ns_key]}:{iface}"
-
-    refs = {
-        "s1u": ref("s1", "s1u"),
-        "s1gwd": ref("s1", "s1gwd"),
-        "s1s2": ref("s1", "s1s2"),
-        "s2s1": ref("s2", "s2s1"),
-        "s2gwc": ref("s2", "s2gwc"),
-        "gwds1": ref("gwd", "gwds1"),
-        "gwcs2": ref("gwc", "gwcs2"),
-        "ut0": ref("ut", "ut0"),
-    }
-    ifindex = {name: interface_ifindex(interface_ref) for name, interface_ref in refs.items()}
-    mac = {name: interface_mac(interface_ref) for name, interface_ref in refs.items()}
-
-    def classifier(generation: int, ingress: str, target_ip: str, fec_id: str, direction: str, label: int, out: str, dst: str, src: str) -> dict[str, Any]:
-        return {
-            "key": {
-                "generation": generation,
-                "ingress_ifindex": ifindex[ingress],
-                "dst_ipv4": ipv4_little_endian_u32(target_ip),
-                "service_class_u32": 0,
-            },
-            "value": {
-                "active": True,
-                "fec_id": fec_id,
-                "direction": direction,
-                "initial_label": label,
-                "out_ifindex": ifindex[out],
-                "inner_ethertype": ETH_P_IP,
-                "dst_mac": mac[dst],
-                "src_mac": mac[src],
-            },
-            "metadata": {"fec_id": fec_id, "target_ip": target_ip, "ingress": ingress},
-        }
-
-    def core(generation: int, ingress: str, label: int, direction: str, out_label: int, out: str, dst: str, src: str) -> dict[str, Any]:
-        return {
-            "key": {
-                "generation": generation,
-                "ingress_ifindex": ifindex[ingress],
-                "label": label,
-                "direction": direction,
-            },
-            "value": {
-                "active": True,
-                "action": "swap" if label != out_label else "preserve",
-                "out_label": out_label,
-                "out_ifindex": ifindex[out],
-                "dst_mac": mac[dst],
-                "src_mac": mac[src],
-            },
-        }
-
-    def handoff(generation: int, ingress: str, label: int, direction: str, dst: str | None = None, src: str | None = None) -> dict[str, Any]:
-        value: dict[str, Any] = {
-            "active": True,
-            "out_ifindex": 0,
-            "inner_ethertype": ETH_P_IP,
-        }
-        if dst and src:
-            value.update({"dst_mac": mac[dst], "src_mac": mac[src]})
-        return {
-            "key": {
-                "generation": generation,
-                "ingress_ifindex": ifindex[ingress],
-                "label": label,
-                "direction": direction,
-            },
-            "value": value,
-        }
-
-    labels = {
-        "direct_forward": 524500,
-        "direct_return": 524501,
-        "core_forward_0": 524510,
-        "core_forward_1": 524511,
-        "core_return_0": 524512,
-        "core_return_1": 524513,
-    }
-    return {
-        "schema_version": "skyseed-live-role-repro-mpls-maps-v1",
-        "active_generation": {"value": 0},
-        "ingress_classifier_map": [
-            classifier(0, "s1u", "10.81.2.2", "role-direct-g-to-z", G_TO_Z, labels["direct_forward"], "s1gwd", "gwds1", "s1gwd"),
-            classifier(0, "s1gwd", "10.81.1.2", "role-direct-z-to-g", Z_TO_G, labels["direct_return"], "s1u", "ut0", "s1u"),
-            classifier(0, "s1u", "10.81.3.2", "role-core-g-to-z", G_TO_Z, labels["core_forward_0"], "s1s2", "s2s1", "s1s2"),
-            classifier(0, "s2gwc", "10.81.1.2", "role-core-z-to-g", Z_TO_G, labels["core_return_0"], "s2s1", "s1s2", "s2s1"),
-        ],
-        "core_lfib_map": [
-            core(0, "s2s1", labels["core_forward_0"], G_TO_Z, labels["core_forward_1"], "s2gwc", "gwcs2", "s2gwc"),
-            core(0, "s1s2", labels["core_return_0"], Z_TO_G, labels["core_return_1"], "s1u", "ut0", "s1u"),
-        ],
-        "egress_handoff_map": [
-            handoff(0, "s1gwd", labels["direct_forward"], G_TO_Z),
-            handoff(0, "s1u", labels["direct_return"], Z_TO_G, "ut0", "s1u"),
-            handoff(0, "s2gwc", labels["core_forward_1"], G_TO_Z),
-            handoff(0, "s1u", labels["core_return_1"], Z_TO_G, "ut0", "s1u"),
-        ],
-        "interface_refs": refs,
-        "attach_plan": {
-            refs["s1u"]: ["ingress", "egress"],
-            refs["s1gwd"]: ["ingress", "egress"],
-            refs["s1s2"]: ["ingress"],
-            refs["s2s1"]: ["ingress"],
-            refs["s2gwc"]: ["ingress", "egress"],
-        },
-        "ifindex": ifindex,
-        "mac": mac,
-        "label_ledger_subset": labels,
-        "probe_path_table": [
-            {"probe": "direct", "path": ["ut", "s1", "gwd"], "target_ip": "10.81.2.2"},
-            {"probe": "core", "path": ["ut", "s1", "s2", "gwc"], "target_ip": "10.81.3.2"},
-            {"probe": "return", "path": ["gwc", "s2", "s1", "ut"], "target_ip": "10.81.1.2"},
-            {"probe": "non_gz_ip_pass", "path": ["s1", "s2"], "target_ip": "10.81.12.2"},
-        ],
-    }
-
-
-def build_minimal_divergent_generation_maps(names: dict[str, str]) -> dict[str, Any]:
-    def ref(ns_key: str, iface: str) -> str:
-        return f"ipnetns:{names[ns_key]}:{iface}"
-
-    refs = {
-        "s1u": ref("s1", "s1u"),
-        "s1s2": ref("s1", "s1s2"),
-        "s2s1": ref("s2", "s2s1"),
-        "s2gwa": ref("s2", "s2gwa"),
-        "s2gwb": ref("s2", "s2gwb"),
-        "gwas2": ref("gwa", "gwas2"),
-        "gwbs2": ref("gwb", "gwbs2"),
-    }
-    ifindex = {name: interface_ifindex(interface_ref) for name, interface_ref in refs.items()}
-    mac = {
-        "ut0": interface_mac(ref("ut", "ut0")),
-        **{name: interface_mac(interface_ref) for name, interface_ref in refs.items()},
-    }
-
-    def classifier(
-        *,
-        generation: int,
-        ingress: str,
-        target_ip: str,
-        fec_id: str,
-        direction: str,
-        label: int,
-        out: str,
-        dst: str,
-        src: str,
-    ) -> dict[str, Any]:
-        return {
-            "key": {
-                "generation": generation,
-                "ingress_ifindex": ifindex[ingress],
-                "dst_ipv4": ipv4_little_endian_u32(target_ip),
-                "service_class_u32": 0,
-            },
-            "value": {
-                "active": True,
-                "fec_id": fec_id,
-                "direction": direction,
-                "initial_label": label,
-                "out_ifindex": ifindex[out],
-                "inner_ethertype": ETH_P_IP,
-                "dst_mac": mac[dst],
-                "src_mac": mac[src],
-            },
-        }
-
-    def core(
-        *,
-        generation: int,
-        ingress: str,
-        label: int,
-        direction: str,
-        out_label: int,
-        out: str,
-        dst: str,
-        src: str,
-    ) -> dict[str, Any]:
-        return {
-            "key": {
-                "generation": generation,
-                "ingress_ifindex": ifindex[ingress],
-                "label": label,
-                "direction": direction,
-            },
-            "value": {
-                "active": True,
-                "action": "swap" if out_label != label else "preserve",
-                "out_label": out_label,
-                "out_ifindex": ifindex[out],
-                "dst_mac": mac[dst],
-                "src_mac": mac[src],
-            },
-        }
-
-    def handoff(
-        *,
-        generation: int,
-        ingress: str,
-        label: int,
-        direction: str,
-        dst: str | None = None,
-        src: str | None = None,
-    ) -> dict[str, Any]:
-        value: dict[str, Any] = {
-            "active": True,
-            "out_ifindex": 0,
-            "inner_ethertype": ETH_P_IP,
-        }
-        if dst and src:
-            value.update({"dst_mac": mac[dst], "src_mac": mac[src]})
-        return {
-            "key": {
-                "generation": generation,
-                "ingress_ifindex": ifindex[ingress],
-                "label": label,
-                "direction": direction,
-            },
-            "value": value,
-        }
-
-    return {
-        "schema_version": "skyseed-live-mpls-divergent-generation-v1",
-        "active_generation": {"value": 0},
-        "ingress_classifier_map": [
-            classifier(
-                generation=0,
-                ingress="s1u",
-                target_ip="10.80.3.2",
-                fec_id="minimal-default-gw",
-                direction=G_TO_Z,
-                label=524288,
-                out="s1s2",
-                dst="s2s1",
-                src="s1s2",
-            ),
-            classifier(
-                generation=0,
-                ingress="s2gwa",
-                target_ip="10.80.1.2",
-                fec_id="minimal-default-gw:return",
-                direction=Z_TO_G,
-                label=524290,
-                out="s2s1",
-                dst="s1s2",
-                src="s2s1",
-            ),
-            classifier(
-                generation=1,
-                ingress="s1u",
-                target_ip="10.80.4.2",
-                fec_id="minimal-override-gw",
-                direction=G_TO_Z,
-                label=524291,
-                out="s1s2",
-                dst="s2s1",
-                src="s1s2",
-            ),
-            classifier(
-                generation=1,
-                ingress="s2gwb",
-                target_ip="10.80.1.2",
-                fec_id="minimal-override-gw:return",
-                direction=Z_TO_G,
-                label=524293,
-                out="s2s1",
-                dst="s1s2",
-                src="s2s1",
-            ),
-        ],
-        "core_lfib_map": [
-            core(
-                generation=0,
-                ingress="s2s1",
-                label=524288,
-                direction=G_TO_Z,
-                out_label=524289,
-                out="s2gwa",
-                dst="gwas2",
-                src="s2gwa",
-            ),
-            core(
-                generation=0,
-                ingress="s1s2",
-                label=524290,
-                direction=Z_TO_G,
-                out_label=524290,
-                out="s1u",
-                dst="ut0",
-                src="s1u",
-            ),
-            core(
-                generation=1,
-                ingress="s2s1",
-                label=524291,
-                direction=G_TO_Z,
-                out_label=524292,
-                out="s2gwb",
-                dst="gwbs2",
-                src="s2gwb",
-            ),
-            core(
-                generation=1,
-                ingress="s1s2",
-                label=524293,
-                direction=Z_TO_G,
-                out_label=524293,
-                out="s1u",
-                dst="ut0",
-                src="s1u",
-            ),
-        ],
-        "egress_handoff_map": [
-            handoff(generation=0, ingress="s2gwa", label=524289, direction=G_TO_Z),
-            handoff(
-                generation=0,
-                ingress="s1u",
-                label=524290,
-                direction=Z_TO_G,
-                dst="ut0",
-                src="s1u",
-            ),
-            handoff(generation=1, ingress="s2gwb", label=524292, direction=G_TO_Z),
-            handoff(
-                generation=1,
-                ingress="s1u",
-                label=524293,
-                direction=Z_TO_G,
-                dst="ut0",
-                src="s1u",
-            ),
-        ],
-        "interface_refs": refs,
-        "attach_plan": {
-            ref("s1", "s1u"): ["ingress", "egress"],
-            ref("s1", "s1s2"): ["ingress"],
-            ref("s2", "s2s1"): ["ingress"],
-            ref("s2", "s2gwa"): ["ingress", "egress"],
-            ref("s2", "s2gwb"): ["ingress", "egress"],
-        },
-        "ifindex": ifindex,
-        "mac": mac,
-        "map_conflict_summary": {
-            "safe_duplicate_count": 0,
-            "unsafe_conflict_count": 0,
-        },
-        "flow_exercise": {
-            "shared_path_segment": ["ut", "s1", "s2"],
-            "default_gateway_flow": {
-                "generation": 0,
-                "target_ip": "10.80.3.2",
-                "path_node_sequence": ["ut", "s1", "s2", "gwa"],
-            },
-            "secondary_override_flow": {
-                "generation": 1,
-                "target_ip": "10.80.4.2",
-                "path_node_sequence": ["ut", "s1", "s2", "gwb"],
-            },
-        },
-    }
-
-
-def _counter_delta(
-    before: dict[str, int],
-    after: dict[str, int],
-) -> dict[str, int]:
-    keys = sorted({*before.keys(), *after.keys()})
-    return {key: int(after.get(key) or 0) - int(before.get(key) or 0) for key in keys}
-
-
-def _role_repro_counter_subset(counters: dict[str, int]) -> dict[str, int]:
-    labels = [
-        "classifier_hit",
-        "label_push",
-        "core_lfib_hit",
-        "label_swap",
-        "egress_handoff_hit",
-        "label_pop",
-        "non_gz_ip_pass",
-        "miss",
-        "drop",
-        "unknown_role_count",
-        "role_map_missing_count",
-        "gz_ip_pass_without_classification",
-        "mpls_shim_pass_without_lfib_or_handoff",
-    ]
-    return {label: int(counters.get(label) or 0) for label in labels}
-
-
-def _role_repro_probe(
-    *,
-    probe_id: str,
-    command: Sequence[str],
-    expected_positive: Sequence[str],
-    expected_zero: Sequence[str],
-    expected_command_success: bool = True,
-) -> dict[str, Any]:
-    before = dict(read_mpls_packet_counters().get("counters") or {})
-    active_before = read_mpls_active_generation()
-    result = run_command(list(command), timeout=10.0, privileged=True)
-    after = dict(read_mpls_packet_counters().get("counters") or {})
-    active_after = read_mpls_active_generation()
-    delta = _counter_delta(before, after)
-    subset = _role_repro_counter_subset(delta)
-    command_success = command_ok(result)
-    ok = (
-        command_success is bool(expected_command_success)
-        and all(int(delta.get(label) or 0) > 0 for label in expected_positive)
-        and all(int(delta.get(label) or 0) == 0 for label in expected_zero)
-    )
-    return {
-        "probe_id": probe_id,
-        "command": list(command),
-        "success": command_success,
-        "ok": ok,
-        "expected_command_success": bool(expected_command_success),
-        "expected_positive_counters": list(expected_positive),
-        "expected_zero_counters": list(expected_zero),
-        "active_generation_before": active_before.get("active_generation"),
-        "active_generation_after": active_after.get("active_generation"),
-        "counters_before": _role_repro_counter_subset(before),
-        "counters_after": _role_repro_counter_subset(after),
-        "counter_delta": subset,
-        "command_result": result,
-    }
-
-
-def _write_role_repro_markdown(report: dict[str, Any], path: Path) -> None:
-    lines = [
-        "# BPF Live Role Repro Report",
-        "",
-        f"- ok: `{report.get('ok')}`",
-        f"- reason: `{report.get('reason')}`",
-        f"- direct_probe_ok: `{dict(report.get('direct_probe') or {}).get('ok')}`",
-        f"- core_probe_ok: `{dict(report.get('core_probe') or {}).get('ok')}`",
-        f"- return_probe_ok: `{dict(report.get('return_probe') or {}).get('ok')}`",
-        f"- non_gz_ip_pass_probe_ok: `{dict(report.get('non_gz_ip_pass_probe') or {}).get('ok')}`",
-        "",
-        "## Counter Deltas",
-        "",
-    ]
-    for key in (
-        "direct_probe",
-        "core_probe",
-        "return_probe",
-        "non_gz_ip_pass_probe",
-        "classifier_miss_negative_probe",
-    ):
-        probe = dict(report.get(key) or {})
-        lines.append(f"- {key}: `{probe.get('counter_delta')}`")
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
-def run_bpf_live_role_repro(
-    *,
-    output_dir: Path | None = None,
-) -> dict[str, Any]:
-    started = time.perf_counter()
-    suffix = f"{int(time.time()) % 100000:x}"
-    names: dict[str, str] = {}
-    attached: list[str] = []
-    report: dict[str, Any] = {
-        "schema_version": "skyseed-bpf-live-role-repro-report-v1",
-        "ok": False,
-        "s4_run": False,
-        "strict_linux_fallback": False,
-        "linux_gz_fallback_enabled": False,
-        "linux_gz_fallback_command_count": 0,
-        "eligible_core_fallback_to_linux": 0,
-        "packet_keyed_ip_route_fallback": False,
-        "steps": {},
-    }
-    if output_dir is None:
-        output_dir = Path("satellite/output")
-    output_dir.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="skyseed-bpf-role-repro-") as tmp:
-        object_path = Path(tmp) / "skyseed_tc_mpls_dataplane.o"
-        try:
-            setup = setup_live_role_repro_namespaces(suffix)
-            report["steps"]["setup"] = setup
-            names = dict(setup.get("names") or {})
-            report["topology"] = {
-                "namespaces": dict(names),
-                "links": [
-                    "ut:ut0 <-> s1:s1u",
-                    "s1:s1gwd <-> gwd:gwds1",
-                    "s1:s1s2 <-> s2:s2s1",
-                    "s2:s2gwc <-> gwc:gwcs2",
-                ],
-            }
-            if not setup.get("ok"):
-                report["reason"] = "role_repro_topology_setup_failed"
-                return report
-            compiled = build_live_role_repro_maps(names)
-            report["probe_path_table"] = list(compiled.get("probe_path_table") or [])
-            report["label_ledger_subset"] = dict(
-                compiled.get("label_ledger_subset") or {}
-            )
-            attach_plan = {
-                str(interface_ref): [str(direction) for direction in directions]
-                for interface_ref, directions in dict(
-                    compiled.get("attach_plan") or {}
-                ).items()
-            }
-            report["steps"]["compile"] = compile_mpls_bpf(object_path=object_path)
-            if not command_ok(report["steps"]["compile"]):
-                report["reason"] = "compile_failed"
-                return report
-            interfaces = list(attach_plan.keys())
-            report["steps"]["cleanup_before_attach"] = rollback_mpls(
-                attached_interfaces=interfaces,
-                remove_maps=True,
-            )
-            attach_results: list[dict[str, Any]] = []
-            interface_refs_by_name = dict(compiled.get("interface_refs") or {})
-            ifindex_to_ref = {
-                int(ifindex): str(interface_refs_by_name.get(name) or "")
-                for name, ifindex in dict(compiled.get("ifindex") or {}).items()
-            }
-            classifier_interface_refs = {
-                ifindex_to_ref.get(
-                    int(dict(entry.get("key") or {}).get("ingress_ifindex") or 0)
-                )
-                for entry in list(compiled.get("ingress_classifier_map") or [])
-            }
-            classifier_interface_refs.discard(None)
-            control_plane_bypass_by_interface: dict[str, list[str]] = {}
-            for interface_ref in interfaces:
-                control_plane_ipv4_dsts = (
-                    interface_ipv4_addresses(interface_ref)
-                    if interface_ref in classifier_interface_refs
-                    else []
-                )
-                if control_plane_ipv4_dsts:
-                    control_plane_bypass_by_interface[interface_ref] = list(
-                        control_plane_ipv4_dsts
-                    )
-                result = attach_mpls(
-                    interface_ref,
-                    object_path,
-                    directions=attach_plan.get(interface_ref, ["ingress"]),
-                    control_plane_ipv4_addrs=control_plane_ipv4_dsts,
-                )
-                attach_results.extend(result)
-                attached.append(interface_ref)
-            report["classifier_control_plane_bypass"] = {
-                "mode": "tc_flower_dst_ip_local_classifier_interface_before_bpf",
-                "interface_ipv4_dsts": control_plane_bypass_by_interface,
-            }
-            report["classifier_control_plane_bypass_stats"] = {
-                interface_ref: read_mpls_tc_filter_stats(
-                    interface_ref,
-                    directions=attach_plan.get(interface_ref, ["ingress"]),
-                )
-                for interface_ref in sorted(control_plane_bypass_by_interface)
-            }
-            report["tc_attach_table"] = [
-                {
-                    "interface_ref": interface_ref,
-                    "directions": attach_plan.get(interface_ref, []),
-                }
-                for interface_ref in interfaces
-            ]
-            report["steps"]["attach"] = attach_results
-            attach_ok = bool(attach_results) and all(
-                command_ok(result)
-                or (
-                    "tc" in [str(part) for part in result.get("args", [])]
-                    and "qdisc" in [str(part) for part in result.get("args", [])]
-                    and "del" in [str(part) for part in result.get("args", [])]
-                )
-                for result in attach_results
-            )
-            if not attach_ok:
-                report["reason"] = "tc_bpf_mpls_attach_failed"
-                return report
-            map_load = load_mpls_maps(compiled)
-            report["steps"]["map_load"] = map_load
-            report["interface_role_binding_table"] = list(
-                map_load.get("loaded_interface_roles") or []
-            )
-            report["live_installed_map_key_subset"] = {
-                "classifier": list(map_load.get("loaded_classifier_keys") or []),
-                "core_lfib": list(map_load.get("loaded_core_lfib_keys") or []),
-                "egress_handoff": list(map_load.get("loaded_egress_handoff_keys") or []),
-                "interface_roles": list(map_load.get("loaded_interface_roles") or []),
-            }
-            if not map_load.get("ok"):
-                report["reason"] = "bpf_map_load_failed"
-                return report
-            report["active_generation_before_probes"] = read_mpls_active_generation()
-            positive_zero = [
-                "miss",
-                "drop",
-                "unknown_role_count",
-                "role_map_missing_count",
-                "gz_ip_pass_without_classification",
-                "mpls_shim_pass_without_lfib_or_handoff",
-            ]
-            report["direct_probe"] = _role_repro_probe(
-                probe_id="direct_handoff",
-                command=[
-                    "ip",
-                    "netns",
-                    "exec",
-                    names["ut"],
-                    "ping",
-                    "-n",
-                    "-c",
-                    "1",
-                    "-W",
-                    "2",
-                    "10.81.2.2",
-                ],
-                expected_positive=[
-                    "classifier_hit",
-                    "egress_handoff_hit",
-                    "label_push",
-                    "label_pop",
-                ],
-                expected_zero=positive_zero,
-            )
-            report["core_probe"] = _role_repro_probe(
-                probe_id="core_mpls_like",
-                command=[
-                    "ip",
-                    "netns",
-                    "exec",
-                    names["ut"],
-                    "ping",
-                    "-n",
-                    "-c",
-                    "1",
-                    "-W",
-                    "2",
-                    "10.81.3.2",
-                ],
-                expected_positive=[
-                    "classifier_hit",
-                    "core_lfib_hit",
-                    "egress_handoff_hit",
-                    "label_push",
-                    "label_pop",
-                ],
-                expected_zero=positive_zero,
-            )
-            report["return_probe"] = _role_repro_probe(
-                probe_id="return_z_path",
-                command=[
-                    "ip",
-                    "netns",
-                    "exec",
-                    names["gwc"],
-                    "ping",
-                    "-n",
-                    "-c",
-                    "1",
-                    "-W",
-                    "2",
-                    "10.81.1.2",
-                ],
-                expected_positive=[
-                    "classifier_hit",
-                    "core_lfib_hit",
-                    "egress_handoff_hit",
-                    "label_push",
-                    "label_pop",
-                ],
-                expected_zero=positive_zero,
-            )
-            report["non_gz_ip_pass_probe"] = _role_repro_probe(
-                probe_id="mpls_only_interface_non_gz_ip_pass",
-                command=[
-                    "ip",
-                    "netns",
-                    "exec",
-                    names["s1"],
-                    "ping",
-                    "-n",
-                    "-c",
-                    "1",
-                    "-W",
-                    "2",
-                    "10.81.12.2",
-                ],
-                expected_positive=["non_gz_ip_pass"],
-                expected_zero=[
-                    "miss",
-                    "drop",
-                    "unknown_role_count",
-                    "role_map_missing_count",
-                    "gz_ip_pass_without_classification",
-                    "mpls_shim_pass_without_lfib_or_handoff",
-                ],
-            )
-            report["classifier_control_plane_bypass_probe"] = _role_repro_probe(
-                probe_id="classifier_interface_local_control_plane_bypass",
-                command=[
-                    "ip",
-                    "netns",
-                    "exec",
-                    names["ut"],
-                    "ping",
-                    "-n",
-                    "-c",
-                    "1",
-                    "-W",
-                    "2",
-                    "10.81.1.1",
-                ],
-                expected_positive=[],
-                expected_zero=[
-                    "classifier_hit",
-                    "label_push",
-                    "core_lfib_hit",
-                    "label_swap",
-                    "egress_handoff_hit",
-                    "label_pop",
-                    "miss",
-                    "drop",
-                    "unknown_role_count",
-                    "role_map_missing_count",
-                    "gz_ip_pass_without_classification",
-                    "mpls_shim_pass_without_lfib_or_handoff",
-                    "non_gz_ip_pass",
-                ],
-            )
-            report["classifier_miss_negative_probe"] = _role_repro_probe(
-                probe_id="classifier_interface_strict_miss_drop_negative_control",
-                command=[
-                    "ip",
-                    "netns",
-                    "exec",
-                    names["ut"],
-                    "ping",
-                    "-n",
-                    "-c",
-                    "1",
-                    "-W",
-                    "1",
-                    "10.81.99.99",
-                ],
-                expected_positive=["miss", "drop"],
-                expected_zero=[
-                    "unknown_role_count",
-                    "role_map_missing_count",
-                    "gz_ip_pass_without_classification",
-                    "mpls_shim_pass_without_lfib_or_handoff",
-                ],
-                expected_command_success=False,
-            )
-            report["active_generation_after_probes"] = read_mpls_active_generation()
-            report["final_packet_counters"] = read_mpls_packet_counters()
-            report["final_interface_counters"] = read_mpls_interface_counters()
-            positive_probes = [
-                report["direct_probe"],
-                report["core_probe"],
-                report["return_probe"],
-                report["non_gz_ip_pass_probe"],
-                report["classifier_control_plane_bypass_probe"],
-            ]
-            report["ok"] = all(bool(probe.get("ok")) for probe in positive_probes) and bool(
-                report["classifier_miss_negative_probe"].get("ok")
-            )
-            report["reason"] = "" if report["ok"] else "bpf_live_role_repro_failed"
-            return report
-        finally:
-            if attached:
-                report["rollback"] = rollback_mpls(
-                    attached_interfaces=attached,
-                    remove_maps=True,
-                )
-            if names:
-                report["namespace_cleanup"] = cleanup_minimal_live_namespaces(names)
-            report["post_run_residue"] = mpls_residue_check(attached)
-            report["wall_seconds"] = round(time.perf_counter() - started, 6)
-            json_path = output_dir / "bpf_live_role_repro_report.json"
-            md_path = output_dir / "bpf_live_role_repro_report.md"
-            report["artifacts"] = {"json": str(json_path), "markdown": str(md_path)}
-            json_path.write_text(
-                json.dumps(report, indent=2, sort_keys=True) + "\n",
-                encoding="utf-8",
-            )
-            _write_role_repro_markdown(report, md_path)
-
-
-def run_minimal_live_mpls_reproduction() -> dict[str, Any]:
-    started = time.perf_counter()
-    suffix = f"{int(time.time()) % 100000:x}"
-    names: dict[str, str] = {}
-    attached: list[str] = []
-    report: dict[str, Any] = {
-        "schema_version": "skyseed-live-mpls-minimal-report-v1",
-        "ok": False,
-        "s4_run": False,
-        "strict_linux_fallback": False,
-        "steps": {},
-    }
-    with tempfile.TemporaryDirectory(prefix="skyseed-live-mpls-") as tmp:
-        object_path = Path(tmp) / "skyseed_tc_mpls_dataplane.o"
-        try:
-            setup = setup_minimal_live_namespaces(suffix)
-            report["steps"]["setup"] = setup
-            names = dict(setup.get("names") or {})
-            if not setup.get("ok"):
-                report["reason"] = "minimal_topology_setup_failed"
-                return report
-
-            compiled = build_minimal_live_maps(names)
-            report["compiled_maps"] = {
-                "loaded_classifier_count": len(compiled["ingress_classifier_map"]),
-                "loaded_core_lfib_count": len(compiled["core_lfib_map"]),
-                "loaded_egress_handoff_count": len(compiled["egress_handoff_map"]),
-                "core_lfib_keys": [entry["key"] for entry in compiled["core_lfib_map"]],
-                "intermediate_core_lookup_uses_dst_ip": False,
-            }
-            attach_plan = {
-                str(interface_ref): [str(direction) for direction in directions]
-                for interface_ref, directions in dict(
-                    compiled.get("attach_plan") or {}
-                ).items()
-            }
-            interfaces = list(
-                attach_plan.keys()
-                or list(compiled["interface_refs"].values())
-            )
-            report["steps"]["compile"] = compile_mpls_bpf(object_path=object_path)
-            if not command_ok(report["steps"]["compile"]):
-                report["reason"] = "compile_failed"
-                return report
-            report["steps"]["cleanup_before_attach"] = rollback_mpls(
-                attached_interfaces=interfaces,
-                remove_maps=True,
-            )
-            attach_results: list[dict[str, Any]] = []
-            for interface_ref in interfaces:
-                attach_results.extend(
-                    attach_mpls(
-                        interface_ref,
-                        object_path,
-                        directions=attach_plan.get(interface_ref, ["ingress"]),
-                    )
-                )
-                attached.append(interface_ref)
-            report["steps"]["attach"] = attach_results
-            if not attach_results or not all(
-                command_ok(result)
-                or (
-                    "tc" in [str(part) for part in result.get("args", [])]
-                    and "qdisc" in [str(part) for part in result.get("args", [])]
-                    and "del" in [str(part) for part in result.get("args", [])]
-                )
-                for result in attach_results
-            ):
-                report["reason"] = "tc_bpf_attach_failed"
-                return report
-            report["steps"]["map_load"] = load_mpls_maps(compiled)
-            if not report["steps"]["map_load"].get("ok"):
-                report["reason"] = "bpf_map_load_failed"
-                return report
-            report["steps"]["ping"] = run_command(
-                ["ip", "netns", "exec", names["ut"], "ping", "-n", "-c", "2", "-W", "2", "10.80.3.2"],
-                timeout=10.0,
-                privileged=True,
-            )
-            report["steps"]["packet_counters"] = read_mpls_packet_counters()
-            report["steps"]["interface_counters"] = read_mpls_interface_counters()
-            counters = dict(report["steps"]["packet_counters"].get("counters") or {})
-            report["ok"] = (
-                command_ok(report["steps"]["ping"])
-                and int(counters.get("classifier_hit") or 0) > 0
-                and int(counters.get("label_push") or 0) > 0
-                and int(counters.get("core_lfib_hit") or 0) > 0
-                and int(counters.get("label_swap") or 0) > 0
-                and int(counters.get("egress_handoff_hit") or 0) > 0
-                and int(counters.get("label_pop") or 0) > 0
-                and int(counters.get("drop") or 0) == 0
-            )
-            if report["ok"]:
-                report["reason"] = ""
-            elif (
-                int(counters.get("pop_manual_fail") or 0) > 0
-                or (
-                    int(counters.get("pop_adjust_fail") or 0) > 0
-                    and int(counters.get("label_pop") or 0) == 0
-                )
-            ):
-                report["reason"] = "mpls_label_pop_adjust_room_failed"
-                report["blocker"] = {
-                    "kind": "tc_bpf_mpls_pop_adjust_room_failed",
-                    "strict_failure": True,
-                    "linux_fallback": False,
-                    "pop_adjust_fail": int(counters.get("pop_adjust_fail") or 0),
-                    "egress_handoff_hit": int(
-                        counters.get("egress_handoff_hit") or 0
-                    ),
-                    "label_pop": int(counters.get("label_pop") or 0),
-                }
-            else:
-                report["reason"] = "minimal_live_ping_or_counter_check_failed"
-            return report
-        finally:
-            if attached:
-                report["rollback"] = rollback_mpls(
-                    attached_interfaces=attached,
-                    remove_maps=True,
-                )
-            if names:
-                report["namespace_cleanup"] = cleanup_minimal_live_namespaces(names)
-            report["post_run_residue"] = mpls_residue_check(attached)
-            report["wall_seconds"] = round(time.perf_counter() - started, 6)
-
-
-def run_minimal_live_mpls_generation_reproduction() -> dict[str, Any]:
-    started = time.perf_counter()
-    suffix = f"{int(time.time()) % 100000:x}"
-    names: dict[str, str] = {}
-    attached: list[str] = []
-    report: dict[str, Any] = {
-        "schema_version": "skyseed-live-mpls-divergent-generation-report-v1",
-        "ok": False,
-        "s4_run": False,
-        "strict_linux_fallback": False,
-        "linux_gz_fallback_enabled": False,
-        "linux_gz_fallback_command_count": 0,
-        "eligible_core_fallback_to_linux": 0,
-        "intermediate_core_lookup_uses_dst_ip": False,
-        "steps": {},
-    }
-    with tempfile.TemporaryDirectory(prefix="skyseed-live-mpls-gen-") as tmp:
-        object_path = Path(tmp) / "skyseed_tc_mpls_dataplane.o"
-        try:
-            setup = setup_minimal_divergent_live_namespaces(suffix)
-            report["steps"]["setup"] = setup
-            names = dict(setup.get("names") or {})
-            if not setup.get("ok"):
-                report["reason"] = "minimal_divergent_topology_setup_failed"
-                return report
-
-            compiled = build_minimal_divergent_generation_maps(names)
-            report["compiled_maps"] = {
-                "loaded_classifier_count": len(compiled["ingress_classifier_map"]),
-                "loaded_core_lfib_count": len(compiled["core_lfib_map"]),
-                "loaded_egress_handoff_count": len(compiled["egress_handoff_map"]),
-                "generation_count": 2,
-                "map_conflict_summary": compiled["map_conflict_summary"],
-                "core_lfib_keys": [entry["key"] for entry in compiled["core_lfib_map"]],
-                "intermediate_core_lookup_uses_dst_ip": False,
-                "flow_exercise": compiled["flow_exercise"],
-            }
-            attach_plan = {
-                str(interface_ref): [str(direction) for direction in directions]
-                for interface_ref, directions in dict(
-                    compiled.get("attach_plan") or {}
-                ).items()
-            }
-            interfaces = list(attach_plan.keys())
-            report["steps"]["compile"] = compile_mpls_bpf(object_path=object_path)
-            if not command_ok(report["steps"]["compile"]):
-                report["reason"] = "compile_failed"
-                return report
-            report["steps"]["cleanup_before_attach"] = rollback_mpls(
-                attached_interfaces=interfaces,
-                remove_maps=True,
-            )
-            attach_results: list[dict[str, Any]] = []
-            for interface_ref in interfaces:
-                attach_results.extend(
-                    attach_mpls(
-                        interface_ref,
-                        object_path,
-                        directions=attach_plan.get(interface_ref, ["ingress"]),
-                    )
-                )
-                attached.append(interface_ref)
-            report["steps"]["attach"] = attach_results
-            if not attach_results or not all(
-                command_ok(result)
-                or (
-                    "tc" in [str(part) for part in result.get("args", [])]
-                    and "qdisc" in [str(part) for part in result.get("args", [])]
-                    and "del" in [str(part) for part in result.get("args", [])]
-                )
-                for result in attach_results
-            ):
-                report["reason"] = "tc_bpf_attach_failed"
-                return report
-            report["steps"]["map_load"] = load_mpls_maps(compiled)
-            if not report["steps"]["map_load"].get("ok"):
-                report["reason"] = "bpf_map_load_failed"
-                return report
-
-            report["steps"]["active_generation_0"] = read_mpls_active_generation()
-            report["steps"]["default_gateway_ping"] = run_command(
-                ["ip", "netns", "exec", names["ut"], "ping", "-n", "-c", "2", "-W", "2", "10.80.3.2"],
-                timeout=10.0,
-                privileged=True,
-            )
-            report["steps"]["switch_active_generation_1"] = update_mpls_u32_map(
-                "active_generation",
-                0,
-                1,
-            )
-            report["steps"]["active_generation_1"] = read_mpls_active_generation()
-            report["steps"]["secondary_override_ping"] = run_command(
-                ["ip", "netns", "exec", names["ut"], "ping", "-n", "-c", "2", "-W", "2", "10.80.4.2"],
-                timeout=10.0,
-                privileged=True,
-            )
-            report["steps"]["packet_counters"] = read_mpls_packet_counters()
-            report["steps"]["interface_counters"] = read_mpls_interface_counters()
-            counters = dict(report["steps"]["packet_counters"].get("counters") or {})
-            report["flow_validation"] = {
-                "default_gateway_flow": command_ok(report["steps"]["default_gateway_ping"]),
-                "secondary_override_flow": command_ok(report["steps"]["secondary_override_ping"]),
-                "remote_return_flow": command_ok(report["steps"]["default_gateway_ping"])
-                and command_ok(report["steps"]["secondary_override_ping"]),
-                "active_generation_switch": (
-                    report["steps"]["active_generation_0"].get("active_generation") == 0
-                    and report["steps"]["active_generation_1"].get("active_generation") == 1
-                ),
-            }
-            report["ok"] = (
-                all(report["flow_validation"].values())
-                and int(counters.get("classifier_hit") or 0) > 0
-                and int(counters.get("label_push") or 0) > 0
-                and int(counters.get("core_lfib_hit") or 0) > 0
-                and int(counters.get("label_swap") or 0) > 0
-                and int(counters.get("egress_handoff_hit") or 0) > 0
-                and int(counters.get("label_pop") or 0) > 0
-                and int(counters.get("miss") or 0) == 0
-                and int(counters.get("drop") or 0) == 0
-            )
-            report["reason"] = "" if report["ok"] else "minimal_divergent_live_validation_failed"
-            return report
-        finally:
-            if attached:
-                report["rollback"] = rollback_mpls(
-                    attached_interfaces=attached,
-                    remove_maps=True,
-                )
-            if names:
-                report["namespace_cleanup"] = cleanup_minimal_live_namespaces(names)
-            report["post_run_residue"] = mpls_residue_check(attached)
-            report["wall_seconds"] = round(time.perf_counter() - started, 6)

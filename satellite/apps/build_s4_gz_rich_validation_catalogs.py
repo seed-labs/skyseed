@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 from typing import Any, Dict, List, Sequence, Tuple
 
@@ -21,6 +22,10 @@ CONFIG_ROOT = SATELLITE_ROOT / "configs" / "starlink_shell_ground"
 DEFAULT_ZONE_INPUT = CONFIG_ROOT / "realistic_preview_zone_catalog_16.json"
 DEFAULT_ZONE_OUTPUT = CONFIG_ROOT / "s4_gz_rich_validation_zone_catalog_16.json"
 DEFAULT_UT_OUTPUT = CONFIG_ROOT / "s4_gz_rich_validation_ut_catalog_32.json"
+DEFAULT_GATEWAY_INPUT = SATELLITE_ROOT / "apps" / "visualization" / "starlink_gateways.json"
+DEFAULT_GATEWAY_BINDING_INPUT = CONFIG_ROOT / "s4_visualization_gateway_binding_12.json"
+DEFAULT_GATEWAY_BINDING_OUTPUT = DEFAULT_GATEWAY_BINDING_INPUT
+DEFAULT_UT_POLICY_OUTPUT = CONFIG_ROOT / "s4_gz_rich_validation_ut_gateway_policy_32.json"
 
 
 COORDINATE_GATEWAY_IDS: Sequence[Tuple[str, str]] = (
@@ -175,17 +180,6 @@ def _zone_record(
         "default_gateway": default_gateway,
         "secondary_gateway": secondary_gateway,
         "preferred_gateway_ids": policy_gateways,
-        "fallback_to_shortest_path": True,
-        "max_additional_satellite_hops_relative_to_best_candidate": 2,
-        "prefix_overrides": [
-            {
-                "prefix": "10.160.0.0/24",
-                "gateway": secondary_gateway,
-                "preferred_gateway_ids": [secondary_gateway, default_gateway],
-                "policy_name": f"{zone_id}_asn160_remote_override",
-                "purpose": "default_plus_override_gateway_class_validation",
-            }
-        ],
         "service_domain": {
             "source": "coverage_aware_s4_gz_rich_validation_zone_catalog",
             "center": {
@@ -276,23 +270,140 @@ def build_catalogs(zone_input: Path) -> Tuple[List[Dict[str, Any]], List[Dict[st
     return zones, uts
 
 
+def _distance_km(lat_a: float, lon_a: float, lat_b: float, lon_b: float) -> float:
+    radius_km = 6371.0088
+    phi_a = math.radians(lat_a)
+    phi_b = math.radians(lat_b)
+    d_phi = math.radians(lat_b - lat_a)
+    d_lambda = math.radians(lon_b - lon_a)
+    value = (
+        math.sin(d_phi / 2.0) ** 2
+        + math.cos(phi_a) * math.cos(phi_b) * math.sin(d_lambda / 2.0) ** 2
+    )
+    return radius_km * 2.0 * math.atan2(math.sqrt(value), math.sqrt(1.0 - value))
+
+
+def build_gateway_bindings(
+    binding_input: Path,
+    gateway_input: Path,
+) -> List[Dict[str, Any]]:
+    gateways = {str(item["id"]): dict(item) for item in list(_read_json(gateway_input))}
+    bindings: List[Dict[str, Any]] = []
+    seen_labels: set[int] = set()
+    for raw in list(_read_json(binding_input)):
+        item = dict(raw)
+        gateway_id = str(item.get("gateway_id") or "")
+        gateway_index = int(item.get("gateway_index") or 0)
+        expected_index = int(gateway_id.removeprefix("gw"))
+        if gateway_index != expected_index or not 201 <= gateway_index <= 212:
+            raise ValueError(f"unsupported S4 gateway binding: {gateway_id}")
+        visualization = gateways.get(str(item.get("visualization_gateway_id") or ""))
+        if visualization is None:
+            raise ValueError(f"visualization gateway missing for {gateway_id}")
+        selector = 16 + gateway_index - 201
+        if selector in seen_labels:
+            raise ValueError(f"duplicate gateway selector label: {selector}")
+        seen_labels.add(selector)
+        item["gateway_selector_label"] = selector
+        item["gateway_service_ipv4"] = f"198.18.{gateway_index - 200}.1/32"
+        item["latitude_deg"] = float(visualization["latitude"])
+        item["longitude_deg"] = float(visualization["longitude"])
+        bindings.append(item)
+    if len(bindings) != 12:
+        raise ValueError(f"expected 12 gateway bindings, found {len(bindings)}")
+    return bindings
+
+
+def build_ut_gateway_policies(
+    zones: Sequence[Dict[str, Any]],
+    uts: Sequence[Dict[str, Any]],
+    bindings: Sequence[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    zones_by_id = {str(item["zone_id"]): dict(item) for item in zones}
+    bindings_by_id = {str(item["gateway_id"]): dict(item) for item in bindings}
+    policies: List[Dict[str, Any]] = []
+    for ut in uts:
+        ut_id = str(ut["ut_id"])
+        zone = zones_by_id[str(ut["zone_id"])]
+        default_gateway_id = str(list(zone.get("preferred_gateway_ids") or [])[0])
+        if default_gateway_id not in bindings_by_id:
+            raise ValueError(f"default gateway missing for {ut_id}: {default_gateway_id}")
+        candidates = [
+            item for item in bindings if str(item["gateway_id"]) != default_gateway_id
+        ]
+        if not candidates:
+            raise ValueError(f"second gateway unavailable for {ut_id}")
+        special = min(
+            candidates,
+            key=lambda item: (
+                _distance_km(
+                    float(ut["latitude_deg"]),
+                    float(ut["longitude_deg"]),
+                    float(item["latitude_deg"]),
+                    float(item["longitude_deg"]),
+                ),
+                str(item["gateway_id"]),
+            ),
+        )
+        default = bindings_by_id[default_gateway_id]
+        policies.append(
+            {
+                "ut_id": ut_id,
+                "zone_id": str(ut["zone_id"]),
+                "selection_model": "longest_prefix_match",
+                "immutable_for_run": True,
+                "policy_source": "temporary_s4_default_plus_nearest_non_default",
+                "rules": [
+                    {
+                        "prefix": "0.0.0.0/0",
+                        "gateway_id": default_gateway_id,
+                        "gateway_selector_label": int(default["gateway_selector_label"]),
+                        "rule_role": "default",
+                    },
+                    {
+                        "prefix": str(special["gateway_service_ipv4"]),
+                        "gateway_id": str(special["gateway_id"]),
+                        "gateway_selector_label": int(special["gateway_selector_label"]),
+                        "rule_role": "special",
+                    },
+                ],
+            }
+        )
+    return policies
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--zone-input", type=Path, default=DEFAULT_ZONE_INPUT)
     parser.add_argument("--zone-output", type=Path, default=DEFAULT_ZONE_OUTPUT)
     parser.add_argument("--ut-output", type=Path, default=DEFAULT_UT_OUTPUT)
+    parser.add_argument("--gateway-input", type=Path, default=DEFAULT_GATEWAY_INPUT)
+    parser.add_argument(
+        "--gateway-binding-input", type=Path, default=DEFAULT_GATEWAY_BINDING_INPUT
+    )
+    parser.add_argument(
+        "--gateway-binding-output", type=Path, default=DEFAULT_GATEWAY_BINDING_OUTPUT
+    )
+    parser.add_argument("--ut-policy-output", type=Path, default=DEFAULT_UT_POLICY_OUTPUT)
     args = parser.parse_args()
 
     zones, uts = build_catalogs(args.zone_input)
+    bindings = build_gateway_bindings(args.gateway_binding_input, args.gateway_input)
+    policies = build_ut_gateway_policies(zones, uts, bindings)
     _write_json(args.zone_output, zones)
     _write_json(args.ut_output, uts)
+    _write_json(args.gateway_binding_output, bindings)
+    _write_json(args.ut_policy_output, policies)
     print(
         json.dumps(
             {
                 "zone_output": str(args.zone_output),
                 "ut_output": str(args.ut_output),
+                "gateway_binding_output": str(args.gateway_binding_output),
+                "ut_policy_output": str(args.ut_policy_output),
                 "zone_count": len(zones),
                 "ut_count": len(uts),
+                "ut_policy_count": len(policies),
                 "ut_semantics": "workload_probe_only_not_control_plane_input",
             },
             indent=2,

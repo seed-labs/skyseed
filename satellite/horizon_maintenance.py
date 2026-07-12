@@ -83,8 +83,11 @@ def _compact_compiled_runtime_inputs(compiled_inputs: Mapping[str, Any]) -> Dict
     map_counts: Dict[str, int] = {}
     for key in (
         "ingress_classifier_map",
+        "ut_gateway_policy_map",
+        "gateway_selector_ingress_map",
         "core_lfib_map",
         "egress_handoff_map",
+        "zone_edge_delivery_map",
         "generation_base_map",
         "interface_role_map",
     ):
@@ -180,6 +183,10 @@ def _compact_maintenance_record_for_artifact(record: Mapping[str, Any]) -> Dict[
             "compiled_runtime_inputs",
             "active_generation_compiled_runtime_inputs",
             "preload_report",
+            "prepare_steps",
+            "g_to_z_entries",
+            "z_to_g_entries",
+            "packet_route_entries",
         }
     }
     if "compiled_runtime_inputs" in source:
@@ -196,6 +203,11 @@ def _compact_maintenance_record_for_artifact(record: Mapping[str, Any]) -> Dict[
         compact["preload_report_summary"] = _compact_preload_report_for_artifact(
             dict(source.get("preload_report") or {})
         )
+    if "prepare_steps" in source:
+        compact["prepare_steps_externalized"] = True
+    for field_name in ("g_to_z_entries", "z_to_g_entries", "packet_route_entries"):
+        if field_name in source:
+            compact[f"{field_name}_count"] = len(list(source.get(field_name) or []))
     return compact
 
 
@@ -205,15 +217,18 @@ def compiled_runtime_inputs_manifest_ready(compiled_inputs: Mapping[str, Any]) -
         return False
     if "compiled_runtime_inputs_summary" in source:
         return False
-    if source.get("schema_version") != "skyseed-bpf-owned-compiled-runtime-inputs-v1":
+    if source.get("schema_version") != "skyseed-bpf-owned-compiled-runtime-inputs-v2":
         return False
     return all(
         key in source
         for key in (
             "active_generation",
             "ingress_classifier_map",
+            "ut_gateway_policy_map",
+            "gateway_selector_ingress_map",
             "core_lfib_map",
             "egress_handoff_map",
+            "zone_edge_delivery_map",
         )
     )
 
@@ -368,7 +383,7 @@ class HorizonMaintenanceRequest:
     base_generation_id: int = 0
     prepared_generation_ids: Sequence[int] = field(default_factory=tuple)
     expected_preload_count: int = 0
-    worker_mode: str = "synchronous"
+    worker_mode: str = "process"
     forbidden_work_policy: Mapping[str, Any] = field(default_factory=dict)
 
     def to_payload(self) -> Dict[str, Any]:
@@ -460,10 +475,16 @@ def retired_cleanup_dependency_report(
     completed_count: int = 0,
     blocked_count: int = 0,
     blockers: Sequence[Mapping[str, Any]] | None = None,
+    status: str | None = None,
 ) -> Dict[str, Any]:
+    cleanup_status = str(status or "")
+    if not cleanup_status:
+        cleanup_status = "not_required" if not str(previous_horizon_id or "") else "unknown"
     return {
         "schema_version": "skyseed-horizon-maintenance-retired-cleanup-dependency-v1",
         "previous_horizon_id": str(previous_horizon_id or ""),
+        "status": cleanup_status,
+        "required": bool(previous_horizon_id),
         "queued_count": int(queued_count or 0),
         "completed_count": int(completed_count or 0),
         "blocked_count": int(blocked_count or 0),
@@ -581,12 +602,42 @@ def classify_horizon_maintenance(
                 "failed_count": len(failed_preloads),
             }
         )
+    incomplete_preloads = [
+        record
+        for record in inactive_records
+        if record.get("inactive_generation_written") is not True
+    ]
+    if incomplete_preloads:
+        blockers.append(
+            {
+                "stage": "inactive_generation_preload",
+                "reason": "preload_record_not_written",
+                "incomplete_count": len(incomplete_preloads),
+            }
+        )
     if forbidden_audit.get("passed") is not True:
         blockers.append(
             {
                 "stage": "forbidden_work_audit",
                 "reason": "forbidden_work_observed",
                 "violation_count": int(forbidden_audit.get("violation_count") or 0),
+            }
+        )
+    cleanup_status = str(cleanup_report.get("status") or "")
+    cleanup_required = bool(cleanup_report.get("required")) or bool(
+        request.previous_horizon_id
+    )
+    cleanup_ok_statuses = {"completed", "not_required", "safely_retained"}
+    if cleanup_required and cleanup_status not in cleanup_ok_statuses:
+        blockers.append(
+            {
+                "stage": "retired_generation_cleanup",
+                "reason": "previous_horizon_cleanup_not_complete",
+                "previous_horizon_id": str(request.previous_horizon_id),
+                "status": cleanup_status or "missing",
+                "queued_count": int(cleanup_report.get("queued_count") or 0),
+                "completed_count": int(cleanup_report.get("completed_count") or 0),
+                "blocked_count": int(cleanup_report.get("blocked_count") or 0),
             }
         )
     status = "ready"

@@ -1,13 +1,40 @@
 # Skyseed Phase Status
 
-Updated: 2026-06-23.
+Updated: 2026-07-11.
 
 ## Current Phase
 
-Shortened full-S4 strict `bpf_owned` optimization regression: PASS.
+Shared G/Z v2 architecture is implemented and offline-gated. A real 4H run is
+not authorized by this round.
 
 ## Last Proven Facts
 
+- The immutable-policy/shared-FEC architecture passes the complete r134 frozen
+  corpus: 100/100 current-code replans and compiles, H0-H3 each 25/25, including
+  physical generation zero, with no blocker or map conflict.
+- The offline companion gate passes 26/26 and full unit discovery passes
+  778/778. The canonical profile dry-run is continuous 4H, uncapped, and keeps
+  the runtime observer nonblocking at 30-second intervals.
+- No canonical real-runtime or long run followed the shared G/Z offline gate;
+  bounded companion fixtures completed scoped cleanup.
+
+- r121 completed compose, physical prewarm/current install, and all 25 H0 BPF
+  generation loads, then completed 10 H0 epochs before failing closed at epoch
+  11. The strict miss samples were host Avahi mDNS from experiment bridge
+  gateway addresses, not a missing generation/map entry or Linux fallback.
+- r121 also proved a failure-teardown race: the H1 process worker completed a
+  91-resource delta after cleanup had selected the parent's 681-resource owned
+  scope. Runtime rollback correctly failed with 91 interfaces remaining;
+  compose teardown then restored a clean post-run environment.
+- The r122 gate makes prepared bridge/veth links unicast-only, starts workers in
+  owned process groups, quiesces them before teardown, and merges only their
+  frozen delta owned scope into bounded cleanup. Full unit discovery is 744/744
+  and companion schema v5 is 15/15 with exact r121 artifact replay.
+- r122 was then stopped before runtime when live H0 prewarm inspection found the
+  direct veths fixed but compose-created GW IX bridges/endpoints still
+  multicast-capable. r123 freezes deterministic names for the 12 compose IX
+  bridges and prepares both exact bridges and frozen PID/netns endpoint refs as
+  unicast-only before BPF attach.
 - Replay determinism is fixed for the pinned replay path. Candidate replay now
   pins `source_timestamp_utc` / coordinate epoch from the baseline manifest and
   pins the selected epoch queue from the baseline `prepared_update_bundle` in
@@ -80,6 +107,9 @@ Shortened full-S4 strict `bpf_owned` optimization regression: PASS.
 
 ## Current Blockers
 
+- Canonical 4H acceptance remains blocked until r122 completes 100/100 runtime
+  epochs across H0-H3 with H1-H3 process maintenance, zero miss/fallback and
+  forbidden work, bounded successful rollback, and a clean post-run preflight.
 - No current correctness blocker for bounded full-S4 strict BPF/EventTimeline
   bring-up or the shortened full-S4 strict `bpf_owned` optimization
   regression.

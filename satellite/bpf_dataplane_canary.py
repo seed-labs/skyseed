@@ -10,7 +10,6 @@ import ipaddress
 import json
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import tempfile
 import time
@@ -23,6 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SOURCE = REPO_ROOT / "satellite" / "experimental" / "bpf" / "skyseed_tc_dataplane_canary.c"
 PIN_BASE = Path("/sys/fs/bpf/tc/globals")
 _CONTAINER_PID_CACHE: dict[str, int] = {}
+_CONTAINER_PID_CACHE_COMPLETE = False
 CANARY_PINNED_MAPS = [
     "active_generation",
     "generation_status",
@@ -66,6 +66,17 @@ IPPROTO_ICMP = 1
 ACTION_FORWARD = 1
 ACTION_PASS = 2
 BPFTOOL = ""
+EXACT_TOOL_PATHS = {
+    "clang": "/usr/bin/clang",
+    "tc": "/usr/sbin/tc",
+    "ip": "/usr/sbin/ip",
+    "docker": "/usr/bin/docker",
+    "sudo": "/usr/bin/sudo",
+    "nsenter": "/usr/bin/nsenter",
+    "rm": "/usr/bin/rm",
+    "test": "/usr/bin/test",
+    "true": "/usr/bin/true",
+}
 
 
 BPF_BACKEND_MODE = "experimental_bpf_backend"
@@ -1308,6 +1319,8 @@ def container_pid(node_id: str) -> int:
     cached = _CONTAINER_PID_CACHE.get(node_key)
     if cached is not None:
         return cached
+    if _CONTAINER_PID_CACHE_COMPLETE:
+        raise RuntimeError(f"frozen container pid missing for {node_id}")
     result = run_command(
         ["docker", "inspect", "-f", "{{.State.Pid}}", node_key],
         timeout=4.0,
@@ -1320,7 +1333,27 @@ def container_pid(node_id: str) -> int:
 
 
 def clear_container_pid_cache() -> None:
+    global _CONTAINER_PID_CACHE_COMPLETE
     _CONTAINER_PID_CACHE.clear()
+    _CONTAINER_PID_CACHE_COMPLETE = False
+
+
+def container_pid_cache_snapshot() -> dict[str, int]:
+    return dict(_CONTAINER_PID_CACHE)
+
+
+def consume_frozen_container_pid_cache(cache: dict[str, int]) -> None:
+    global _CONTAINER_PID_CACHE_COMPLETE
+    normalized = {
+        str(node_id): int(pid)
+        for node_id, pid in dict(cache or {}).items()
+        if str(node_id) and int(pid) > 0
+    }
+    if not normalized or len(normalized) != len(dict(cache or {})):
+        raise RuntimeError("frozen container pid cache invalid")
+    _CONTAINER_PID_CACHE.clear()
+    _CONTAINER_PID_CACHE.update(normalized)
+    _CONTAINER_PID_CACHE_COMPLETE = True
 
 
 def interface_command(interface_name: str, args: Sequence[str]) -> list[str]:
@@ -1366,8 +1399,16 @@ def run_command(
     privileged: bool = False,
 ) -> dict[str, Any]:
     command = [str(part) for part in args]
+    if command:
+        command[0] = EXACT_TOOL_PATHS.get(command[0], command[0])
+        if command[0] == EXACT_TOOL_PATHS["nsenter"] and "--" in command:
+            nested_index = command.index("--") + 1
+            if nested_index < len(command):
+                command[nested_index] = EXACT_TOOL_PATHS.get(
+                    command[nested_index], command[nested_index]
+                )
     if privileged and os.geteuid() != 0:
-        command = ["sudo", "-n", *command]
+        command = [EXACT_TOOL_PATHS["sudo"], "-n", *command]
     try:
         completed = subprocess.run(
             command,
@@ -1410,8 +1451,10 @@ def collect_environment() -> dict[str, Any]:
     bpftool_path = resolve_bpftool()
     return {
         "tools": {
-            name: shutil.which(name)
+            name: path
             for name in ["clang", "tc", "ip", "docker", "sudo"]
+            if os.path.isfile(path := EXACT_TOOL_PATHS[name])
+            and os.access(path, os.X_OK)
         }
         | {
             "bpftool": bpftool_path,
@@ -1423,7 +1466,12 @@ def collect_environment() -> dict[str, Any]:
         "sudo": {
             "uid": os.getuid(),
             "euid": os.geteuid(),
-            "noninteractive_sudo": command_ok(run_command(["sudo", "-n", "true"], timeout=4.0)),
+            "noninteractive_sudo": command_ok(
+                run_command(
+                    [EXACT_TOOL_PATHS["sudo"], "-n", EXACT_TOOL_PATHS["true"]],
+                    timeout=4.0,
+                )
+            ),
         },
     }
 
@@ -1441,21 +1489,14 @@ def attach_blockers(environment: dict[str, Any]) -> list[str]:
 
 
 def resolve_bpftool() -> str | None:
-    candidates: list[str] = []
-    path = shutil.which("bpftool")
-    if path:
-        candidates.append(path)
-    candidates.extend(str(candidate) for candidate in sorted(Path("/usr/lib/linux-tools").glob("*/bpftool")))
-    candidates.extend(str(candidate) for candidate in sorted(Path("/usr/lib").glob("linux-tools-*/bpftool")))
-    seen: set[str] = set()
-    for candidate in candidates:
-        if candidate in seen:
-            continue
-        seen.add(candidate)
-        result = run_command([candidate, "version"], timeout=5.0)
-        if command_ok(result):
-            return candidate
-    return path
+    configured = str(os.environ.get("SKYSEED_BPFTOOL_PATH") or "").strip()
+    if not configured:
+        return None
+    path = Path(configured)
+    if not path.is_absolute() or not path.is_file() or not os.access(path, os.X_OK):
+        return None
+    result = run_command([str(path), "version"], timeout=5.0)
+    return str(path) if command_ok(result) else None
 
 
 def bpf_map_capacities_for_scope(
@@ -1467,7 +1508,7 @@ def bpf_map_capacities_for_scope(
         return dict(DEFAULT_CANARY_CAPACITIES)
     limits = dict((scope.get("selector") or {}).get("safety_limits") or FULL_SCOPE_SAFETY_LIMITS)
     summary = dict(scope.get("compiled_full_scope") or compiled_full_scope_summary(compiled))
-    smoke_entries = len(
+    selected_probe_entries = len(
         {
             (
                 str(entry.get("target_ip")),
@@ -1487,11 +1528,11 @@ def bpf_map_capacities_for_scope(
     )
     gz_fec_entries = min(
         int(limits.get("max_gz_fec_entries") or FULL_SCOPE_SAFETY_LIMITS["max_gz_fec_entries"]),
-        max(1, int(summary.get("gz_fec_entry_count") or 0) + smoke_entries),
+        max(1, int(summary.get("gz_fec_entry_count") or 0) + selected_probe_entries),
     )
     parameter_entries = min(
         int(limits.get("max_parameter_entries") or FULL_SCOPE_SAFETY_LIMITS["max_parameter_entries"]),
-        max(1, int(summary.get("parameter_entry_count") or 0) + smoke_entries),
+        max(1, int(summary.get("parameter_entry_count") or 0) + selected_probe_entries),
     )
     return {
         "runtime_generations": runtime_generations,
@@ -1689,7 +1730,7 @@ def load_canary_maps(
         if full_scope
         else []
     )
-    dataplane_smoke_entries = len(
+    selected_probe_entries = len(
         {
             str(entry.get("target_ip"))
             for entry in list(scope.get("entries") or [])
@@ -1701,10 +1742,10 @@ def load_canary_maps(
         capacity_errors.append("runtime_generation_capacity_exceeded")
     if len(parameter_status_to_load) < len(parameter_status):
         capacity_errors.append("parameter_generation_capacity_exceeded")
-    if len(fec_entries_to_load) + dataplane_smoke_entries > int(capacities["gz_fec_entries"]):
+    if len(fec_entries_to_load) + selected_probe_entries > int(capacities["gz_fec_entries"]):
         capacity_errors.append("gz_fec_capacity_exceeded")
     if (
-        len(parameter_entries_to_load) + dataplane_smoke_entries
+        len(parameter_entries_to_load) + selected_probe_entries
         > int(capacities["parameter_entries"])
     ):
         capacity_errors.append("parameter_entry_capacity_exceeded")
@@ -1905,7 +1946,15 @@ def map_reference(map_name: str) -> tuple[list[str], dict[str, Any]]:
 def bpftool(args: Sequence[str], *, timeout: float = 10.0) -> dict[str, Any]:
     global BPFTOOL
     if not BPFTOOL:
-        BPFTOOL = resolve_bpftool() or "bpftool"
+        BPFTOOL = resolve_bpftool() or ""
+    if not BPFTOOL:
+        return {
+            "args": ["<unconfigured-skyseed-bpftool>", *args],
+            "returncode": 127,
+            "stdout": "",
+            "stderr": "SKYSEED_BPFTOOL_PATH is missing or invalid",
+            "timeout": False,
+        }
     return run_command([BPFTOOL, *args], timeout=timeout, privileged=True)
 
 

@@ -15,20 +15,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Sequence
 
-from mpls_host import probe_host_mpls_readiness
-
 WORKSPACE_ROOT = Path(__file__).resolve().parent.parent
 SATELLITE_DIR = Path(__file__).resolve().parent
 DEFAULT_RUN_ROOT = SATELLITE_DIR / "output" / "starlink_shell_experiments"
 DEFAULT_STATUS_DIR = SATELLITE_DIR / "output"
-PREFLIGHT_PROFILE_DEFAULT = "default"
 PREFLIGHT_PROFILE_OPERATIONAL_CLEAN_BPF_OWNED = "operational-clean-bpf-owned"
-PREFLIGHT_PROFILE_LEGACY_MPLS = "legacy-mpls"
-PREFLIGHT_PROFILES = (
-    PREFLIGHT_PROFILE_DEFAULT,
-    PREFLIGHT_PROFILE_OPERATIONAL_CLEAN_BPF_OWNED,
-    PREFLIGHT_PROFILE_LEGACY_MPLS,
-)
+PREFLIGHT_PROFILE_DEFAULT = PREFLIGHT_PROFILE_OPERATIONAL_CLEAN_BPF_OWNED
+PREFLIGHT_PROFILES = (PREFLIGHT_PROFILE_OPERATIONAL_CLEAN_BPF_OWNED,)
 SKYSEED_COMPOSE_PROJECT = "seed_output"
 SKYSEED_COMPOSE_FILE_NAME = "docker-compose.yml"
 BRIDGE_NETFILTER_SYSCTLS = (
@@ -134,8 +127,6 @@ def _normalize_preflight_profile(profile: str | None) -> str:
         "operational-clean": PREFLIGHT_PROFILE_OPERATIONAL_CLEAN_BPF_OWNED,
         "bpf-owned": PREFLIGHT_PROFILE_OPERATIONAL_CLEAN_BPF_OWNED,
         "strict-bpf-owned": PREFLIGHT_PROFILE_OPERATIONAL_CLEAN_BPF_OWNED,
-        "mpls": PREFLIGHT_PROFILE_LEGACY_MPLS,
-        "linux-mpls": PREFLIGHT_PROFILE_LEGACY_MPLS,
     }
     value = aliases.get(value, value)
     if value not in PREFLIGHT_PROFILES:
@@ -393,7 +384,7 @@ def _compose_processes(*, ignore_pids: Sequence[int] | None = None) -> Dict[str,
             args = parts[3]
             if pid in ignored:
                 continue
-            if "docker-compose" in args or "run_starlink_shell_experiment.py" in args or "run_starlink_shell_runtime_attempt.py" in args:
+            if "docker-compose" in args or "run_starlink_shell_experiment.py" in args:
                 if "rg " in args or "ps -eo" in args or "skyseed_preflight" in args:
                     continue
                 processes.append(
@@ -895,30 +886,6 @@ def _bridge_netfilter() -> Dict[str, Any]:
     }
 
 
-def _skipped_host_mpls_readiness(*, profile: str) -> Dict[str, Any]:
-    return {
-        "requirements": {
-            "host_kernel_modules": [],
-            "host_sysctls": [],
-            "iproute2_features": [],
-        },
-        "host": {
-            "modules": {},
-            "sysctls": {},
-            "iproute2": {},
-        },
-        "assessment": {
-            "ready": None,
-            "skipped": True,
-            "skip_reason": f"{profile}_does_not_require_host_mpls_preflight",
-            "blocking_reasons": [],
-            "recommended_next_steps": [
-                "Host MPLS readiness was skipped for the BPF-owned operational-clean profile.",
-            ],
-        },
-    }
-
-
 def _python_runtime() -> Dict[str, Any]:
     current_executable = Path(sys.executable).resolve()
     preferred_exists = PREFERRED_SEED310_PYTHON.exists()
@@ -1128,7 +1095,6 @@ def _assess_skyseed_preflight(
     docker_state = dict(checks.get("docker_state") or {})
     containers = dict(docker_state.get("containers") or {})
     disk_space = dict(checks.get("disk_space") or {})
-    mpls = dict(checks.get("host_mpls") or {})
     bridge_netfilter = dict(checks.get("bridge_netfilter") or {})
     python_runtime = dict(checks.get("python_runtime") or {})
     compose_processes = dict(checks.get("compose_processes") or {})
@@ -1176,15 +1142,6 @@ def _assess_skyseed_preflight(
     elif free_bytes < LOW_DISK_WARN_BYTES:
         warnings.append("disk_space_low")
 
-    host_mpls_assessment = dict(mpls.get("assessment") or {})
-    if host_mpls_assessment.get("skipped") is True:
-        warnings.append("host_mpls_preflight_skipped")
-    elif host_mpls_assessment.get("ready") is not True:
-        if profile == PREFLIGHT_PROFILE_LEGACY_MPLS:
-            blocking.append("host_mpls_not_ready")
-        else:
-            warnings.append("host_mpls_not_ready")
-
     if bridge_netfilter.get("passthrough_ready") is not True:
         warnings.append("bridge_netfilter_passthrough_not_ready")
     if python_runtime.get("supported_version") is not True:
@@ -1197,7 +1154,7 @@ def _assess_skyseed_preflight(
     if python_runtime.get("legacy_seed_emulator_pythonpath_override_present") is True:
         warnings.append("legacy_seed_emulator_pythonpath_override_present")
 
-    clean_environment_required = profile == PREFLIGHT_PROFILE_OPERATIONAL_CLEAN_BPF_OWNED
+    clean_environment_required = True
     if clean_environment_required and clean_residue_reasons:
         blocking.append("skyseed_environment_not_clean")
 
@@ -1216,49 +1173,26 @@ def _assess_skyseed_preflight(
 def run_skyseed_preflight(
     *,
     ignore_pids: Sequence[int] | None = None,
-    profile: str = PREFLIGHT_PROFILE_DEFAULT,
+    profile: str = PREFLIGHT_PROFILE_OPERATIONAL_CLEAN_BPF_OWNED,
 ) -> Dict[str, Any]:
     profile = _normalize_preflight_profile(profile)
-    operational_clean_lightweight = (
-        profile == PREFLIGHT_PROFILE_OPERATIONAL_CLEAN_BPF_OWNED
-    )
     docker_version = _run_jsonable(["docker", "--version"])
     docker_compose_version = _run_jsonable(["docker-compose", "version"])
     docker_state = {
-        "containers": (
-            _docker_container_state_project_scoped()
-            if operational_clean_lightweight
-            else _docker_container_state()
-        ),
-        "networks": (
-            _docker_network_state_project_scoped()
-            if operational_clean_lightweight
-            else _docker_network_state()
-        ),
+        "containers": _docker_container_state_project_scoped(),
+        "networks": _docker_network_state_project_scoped(),
     }
     compose_processes = _compose_processes(ignore_pids=ignore_pids)
-    direct_backend = (
-        _skipped_diagnostic_check(
-            name="direct_backend_host_artifacts",
-            result_key="interfaces",
-        )
-        if operational_clean_lightweight
-        else _direct_backend_host_artifacts()
+    direct_backend = _skipped_diagnostic_check(
+        name="direct_backend_host_artifacts",
+        result_key="interfaces",
     )
-    bpf_pinned_maps = (
-        _skipped_diagnostic_check(
-            name="bpf_pinned_map_artifacts",
-            result_key="map_names",
-        )
-        if operational_clean_lightweight
-        else _bpf_pinned_map_artifacts()
+    bpf_pinned_maps = _skipped_diagnostic_check(
+        name="bpf_pinned_map_artifacts",
+        result_key="map_names",
     )
     runtime_locks = _runtime_lock_files()
     disk_space = _disk_space()
-    if operational_clean_lightweight:
-        mpls = _skipped_host_mpls_readiness(profile=profile)
-    else:
-        mpls = probe_host_mpls_readiness()
     bridge_netfilter = _bridge_netfilter()
     python_runtime = _python_runtime()
 
@@ -1266,21 +1200,14 @@ def run_skyseed_preflight(
         "generated_at_utc": _timestamp_utc(),
         "workspace_root": str(WORKSPACE_ROOT),
         "profile": profile,
-        "diagnostic_policy": (
-            {
-                "mode": "operational_clean_lightweight",
-                "global_diagnostics_deferred": True,
-                "docker_scope": "compose_project_label",
-                "direct_backend_global_scan": "deferred",
-                "bpf_pin_global_scan": "deferred",
-                "known_compose_outputs_scan": "deferred",
-            }
-            if operational_clean_lightweight
-            else {
-                "mode": "default_full_diagnostic",
-                "global_diagnostics_deferred": False,
-            }
-        ),
+        "diagnostic_policy": {
+            "mode": "operational_clean_lightweight",
+            "global_diagnostics_deferred": True,
+            "docker_scope": "compose_project_label",
+            "direct_backend_global_scan": "deferred",
+            "bpf_pin_global_scan": "deferred",
+            "known_compose_outputs_scan": "deferred",
+        },
         "checks": {
             "docker_toolchain": {
                 "docker": docker_version,
@@ -1293,13 +1220,8 @@ def run_skyseed_preflight(
             "runtime_lock_files": runtime_locks,
             "disk_space": disk_space,
             "python_runtime": python_runtime,
-            "host_mpls": mpls,
             "bridge_netfilter": bridge_netfilter,
-            "known_compose_outputs": (
-                []
-                if operational_clean_lightweight
-                else _find_compose_outputs()
-            ),
+            "known_compose_outputs": [],
         },
     }
     report["assessment"] = _assess_skyseed_preflight(
@@ -1349,8 +1271,6 @@ def render_preflight_summary(report: Dict[str, Any]) -> str:
         f"  direct_backend_host_interfaces={len(report['checks']['direct_backend_host_artifacts'].get('interfaces', []))}",
         f"  runtime_lock_files={len(report['checks']['runtime_lock_files'].get('files', []))}",
         f"  free_disk_gib={round(float(disk['free_bytes']) / (1024 ** 3), 2)}",
-        f"  host_mpls_ready={report['checks']['host_mpls']['assessment'].get('ready')}",
-        f"  host_mpls_skipped={report['checks']['host_mpls']['assessment'].get('skipped', False)}",
         f"  bridge_netfilter_passthrough_ready={report['checks']['bridge_netfilter'].get('passthrough_ready')}",
     ]
     if report.get("cleanup_suggestions"):

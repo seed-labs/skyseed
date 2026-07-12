@@ -15,6 +15,7 @@ bootstrap_app_import_path()
 from mpls_host import (  # noqa: E402
     HostMplsPreparationError,
     ensure_host_mpls_ready,
+    prepare_bridge_netfilter_passthrough,
     probe_host_mpls_readiness,
     render_host_mpls_json,
     render_host_mpls_summary,
@@ -64,6 +65,7 @@ def main() -> int:
             return 0 if readiness["assessment"]["ready"] is True else 1
 
         summary = ensure_host_mpls_ready(auto_prepare=True)
+        summary["bridge_netfilter"] = prepare_bridge_netfilter_passthrough()
         _emit(summary, output_format=args.format)
         return 0
     except HostMplsPreparationError as exc:

@@ -143,13 +143,9 @@ The next shell target is S4:
 - altitude: `560 km`
 - inclination: `97.6 deg`
 
-The broader workload metadata is present under
-`satellite/configs/starlink_shell_ground/`:
-
-- UT catalog: `realistic_preview_ut_catalog_32.json`
-- gateway catalog: `realistic_preview_gateway_catalog_12.json`
-- zone catalog: `realistic_preview_zone_catalog_16.json`
-- summary: `realistic_preview_workload_summary.json`
+The current active S4 workload uses the `rich_s4_operational_clean_bpf` profile:
+UT and zone semantics come from the S4 rich validation catalogs, while orbit
+and gateway/base-station data come from `satellite/apps/visualization/`.
 
 Catalog coverage:
 
@@ -219,4 +215,3 @@ watched during that run:
 - The BPF-owned return handoff is now generalized and tested, but S4 should
   confirm it across broader gateway/zone/UT distributions.
 - Post-run preflight must remain clean before any larger or longer run.
-

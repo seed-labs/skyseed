@@ -7,10 +7,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Sequence
+from typing import Any, Dict, Mapping, Sequence
 
 from _path_setup import bootstrap_app_import_path
 
@@ -18,239 +19,75 @@ SATELLITE_DIR = bootstrap_app_import_path()
 REPO_ROOT = SATELLITE_DIR.parent
 SEED310_PYTHON = "/home/seed/miniconda3/envs/seed310/bin/python"
 RUNBOOK_PATH = SATELLITE_DIR / "docs" / "known_issues_runbook.md"
-LEGACY_HOST_RUNTIME_WARNINGS = {
+LEGACY_PYTHONPATH_ENTRIES = {"/home/seed/seed-emulator"}
+OPERATIONAL_CLEAN_NON_BLOCKING_PREFLIGHT_WARNINGS = {
     "host_mpls_not_ready",
-    "host_mpls_preflight_skipped",
     "bridge_netfilter_passthrough_not_ready",
 }
 
-CANONICAL_FAST_LONG_RUN_ARGS = [
-    "--run-mode",
-    "real-runtime",
-    "--run-id",
-    "<run_id>",
-    "--orbit-input-mode",
-    "planned-shell",
-    "--planned-shell-id",
-    "S5",
-    "--max-satellites",
-    "172",
-    "--max-uts",
-    "12",
-    "--max-gateways",
-    "6",
-    "--ut-ids",
-    "",
-    "--gateway-ids",
-    "",
-    "--ut-catalog",
-    "satellite/configs/starlink_shell_ground/one_shell_ut_catalog_12_grouped_valid6_gateways.json",
-    "--gateway-catalog",
-    "satellite/configs/starlink_shell_ground/one_shell_gateway_catalog_valid6.json",
-    "--zone-catalog",
-    "satellite/configs/starlink_shell_ground/one_shell_zone_catalog_6_valid6_gateways.json",
-    "--ground-placement",
-    "catalog",
-    "--start-time",
-    "2026-06-11T09:57:20Z",
-    "--sample-interval",
-    "60",
-    "--event-evaluation-interval",
-    "10",
-    "--horizon-seconds",
-    "7200",
-    "--continuous",
-    "--parameter-max-interval",
-    "120",
-    "--delay-threshold-ms",
-    "0.5",
-    "--loss-threshold-pct",
-    "0.02",
-    "--bandwidth-threshold-pct",
-    "5.0",
-    "--routing-cost-threshold",
-    "5",
-    "--runtime-mode",
-    "fast-demo",
-    "--loop-count",
-    "1",
-    "--interval",
-    "0",
-    "--ping-watch",
-    "ut101:as154-host-new",
-    "--stream-progress",
-    "--progress-heartbeat-seconds",
-    "15",
-    "--startup-stall-warning-seconds",
-    "900",
-    "--epoch-stall-warning-seconds",
-    "300",
-    "--preflight-policy",
-    "require-clean",
-    "--host-prepare-policy",
-    "auto",
-    "--compose-up-timeout-seconds",
-    "0",
-    "--compose-build-timeout-seconds",
-    "0",
-    "--container-readiness-timeout-seconds",
-    "0",
-    "--compose-build-policy",
-    "if-needed",
-    "--format",
-    "json",
-]
-
 OPERATIONAL_ITERATION_RUN_ARGS = [
-    "--run-mode",
-    "real-runtime",
-    "--run-id",
-    "<run_id>",
     "--run-root",
     "satellite/output/validation_profiles",
-    "--operational-profile",
-    "s4_h3_240s_bpf_owned_clean",
+    "--run-id",
+    "<run_id>",
+    "--profile",
+    "rich_s4_operational_clean_bpf",
     "--format",
     "json",
 ]
 
-from inspect_goal_readiness import (  # noqa: E402
-    DEFAULT_BASELINE_REAL_RUN,
-    DEFAULT_FAR_RUN,
-    DEFAULT_MIXED_RUN,
-    DEFAULT_NEAR_RUN,
-    DEFAULT_RETURN_AUDIT_RUN,
-    render_goal_readiness_summary,
-    summarize_goal_readiness,
-)
 
-
-def canonical_fast_long_run_profile() -> Dict[str, Any]:
-    run_command = [
-        SEED310_PYTHON,
-        str(SATELLITE_DIR / "apps" / "run_starlink_shell_experiment.py"),
-        *CANONICAL_FAST_LONG_RUN_ARGS,
+def _clean_session_subprocess_env(
+    base_env: Mapping[str, str] | None = None,
+) -> Dict[str, str]:
+    env = dict(os.environ if base_env is None else base_env)
+    required = [str(SATELLITE_DIR), str(REPO_ROOT)]
+    existing = [
+        item
+        for item in str(env.get("PYTHONPATH") or "").split(os.pathsep)
+        if item and os.path.normpath(item) not in LEGACY_PYTHONPATH_ENTRIES
     ]
-    return {
-        "profile_id": "1shell_172_12ut6gw_gz_2h_fast_representative",
-        "profile_status": "canonical_fast_path",
-        "purpose": (
-            "Fast representative 1-shell 172-satellite 12UT/6GW G/Z real-runtime "
-            "long run. Use this for performance evidence unless the objective is "
-            "explicitly diagnostic."
-        ),
-        "must_read_before_start": str(RUNBOOK_PATH),
-        "prestart_commands": [
-            ["sed", "-n", "1,360p", str(RUNBOOK_PATH)],
-            ["git", "status", "--short", "--branch"],
-            [
-                SEED310_PYTHON,
-                str(SATELLITE_DIR / "apps" / "skyseed_session_check.py"),
-                "--format",
-                "text",
-            ],
-            ["free", "-h"],
-            ["df", "-h", str(REPO_ROOT)],
-        ],
-        "run_command": run_command,
-        "representative_validation_profile": {
-            "runtime_mode": "fast-demo",
-            "pre_transition_probe_interval": 0,
-            "runtime_epoch_validation_interval": 0,
-            "parameter_epoch_validation_interval": 0,
-            "runtime_epoch_validation_scope": "reapplied_gateway_class_sample",
-            "keep": [
-                "host_prepare_auto",
-                "require_clean_preflight",
-                "ping_watch",
-                "first_runtime_epoch_ping_validation",
-                "first_parameter_epoch_targeted_validation",
-                "final_runtime_connectivity_validation",
-                "runtime_lock",
-                "post_run_preflight",
-                "resource_usage_jsonl",
-            ],
-            "diagnostic_flags_not_for_long_run": [
-                "--runtime-epoch-validation-interval 1",
-                "--parameter-epoch-validation-interval 1",
-                "--pre-transition-probe-interval 1",
-                "--runtime-mode correctness",
-            ],
-        },
-        "resource_gate": {
-            "record_before_start": [
-                "MemAvailable",
-                "SwapFree",
-                "workspace filesystem Avail",
-                "existing run directory size",
-                "skyseed preflight warning_reasons",
-            ],
-            "danger_zone": {
-                "swapfree_kib": 0,
-                "memavailable_kib_below": 512000,
-                "meaning": (
-                    "Stop cleanly and preserve artifacts unless the run is explicitly "
-                    "characterizing host resource limits."
-                ),
-            },
-        },
-        "timing_policy": {
-            "actual_network_update_headline": [
-                "semantic_data_plane_mutation_apply_seconds",
-                "node_local_apply_wall_seconds",
-            ],
-            "scheduler_pressure_headline": ["transition_wall_seconds"],
-            "cleanup_optimization_bucket": [
-                "semantic_pre_apply_cleanup_or_blocking_verification_seconds",
-                "node_local_incremental_cleanup_wall_seconds",
-            ],
-            "do_not_report_as_network_update": [
-                "transition_wall_seconds",
-                "runtime_rollback",
-                "host_artifact_cleanup",
-                "post_run_preflight",
-            ],
-        },
-        "monitor_commands": [
-            [
-                SEED310_PYTHON,
-                str(SATELLITE_DIR / "apps" / "inspect_temporal_run.py"),
-                "satellite/output/starlink_shell_experiments/<run_id>",
-                "--format",
-                "text",
-            ],
-            [
-                "tail",
-                "-n",
-                "5",
-                "satellite/output/starlink_shell_experiments/<run_id>/resource_usage.jsonl",
-            ],
-        ],
-    }
+    merged: list[str] = []
+    for item in [*required, *existing]:
+        if item and item not in merged:
+            merged.append(item)
+    env["PYTHONPATH"] = os.pathsep.join(merged)
+    env["PYTHONNOUSERSITE"] = "1"
+    return env
 
 
 def operational_iteration_profile() -> Dict[str, Any]:
+    clean_pythonpath = f"{SATELLITE_DIR}{os.pathsep}{REPO_ROOT}"
     run_command = [
+        "env",
+        "PYTHONNOUSERSITE=1",
+        f"PYTHONPATH={clean_pythonpath}",
         SEED310_PYTHON,
-        str(SATELLITE_DIR / "apps" / "run_starlink_shell_experiment.py"),
+        str(SATELLITE_DIR / "apps" / "run_skyseed_validation_profile.py"),
         *OPERATIONAL_ITERATION_RUN_ARGS,
     ]
     return {
-        "profile_id": "s4_h3_240s_bpf_owned_operational_iteration",
+        "profile_id": "rich_s4_operational_clean_bpf_4h_validation",
         "profile_status": "current_fast_iteration_path",
         "purpose": (
             "Current high-iteration BPF-owned operational-clean run. It keeps "
             "the experiment shape stable at 240s horizons, 10s slice/evaluation "
-            "cadence, and 3 horizons, while allowing each round to generate and "
+            "cadence, and 4 horizons, while allowing each round to generate and "
             "freeze fresh prepared inputs."
         ),
         "run_command": run_command,
-        "operational_profile": "s4_h3_240s_bpf_owned_clean",
+        "launch_environment": {
+            "PYTHONNOUSERSITE": "1",
+            "PYTHONPATH": clean_pythonpath,
+            "legacy_seed_emulator_pythonpath_removed": True,
+        },
+        "validation_profile": "rich_s4_operational_clean_bpf",
         "resolved_runtime_contract": {
             "horizon_seconds": 240,
             "sample_interval_seconds": 10,
             "event_evaluation_interval_seconds": 10,
-            "loop_count": 3,
+            "continuous": True,
+            "loop_count": 4,
             "runtime_mode": "operational_clean",
             "forwarding_backend": "bpf_owned",
             "preflight_policy": "require-clean",
@@ -258,12 +95,12 @@ def operational_iteration_profile() -> Dict[str, Any]:
             "runtime_epoch_validation_interval": 0,
             "parameter_epoch_validation_interval": 0,
             "runtime_epoch_validation_scope": "reapplied_gateway_class_sample",
+            "runtime_ping_observer_seconds": 30,
             "forbidden_runtime_work": [
                 "full_reload",
                 "full_scan",
                 "live_dump_diff",
                 "hidden_reconcile",
-                "legacy_controller_fallback",
                 "linux_core_forwarding_fallback",
             ],
         },
@@ -274,11 +111,13 @@ def operational_iteration_profile() -> Dict[str, Any]:
             "horizon_seconds=240",
             "sample_interval_seconds=10",
             "event_evaluation_interval_seconds=10",
-            "loop_count=3",
+            "continuous=true",
+            "loop_count=4",
             "runtime_mode=operational_clean",
             "forwarding_backend=bpf_owned",
             "preflight_policy=require_clean",
             "host_prepare_policy=auto",
+            "runtime_ping_observer_seconds=30 (nonblocking observation)",
             "no full reload, full scan, hidden repair, or fallback route",
         ],
         "expected_artifact_root": "satellite/output/validation_profiles",
@@ -295,8 +134,11 @@ def _operational_iteration_gate(
     blocking_reasons = [
         str(item) for item in list(preflight.get("blocking_reasons") or [])
     ]
+    non_blocking_warnings = sorted(
+        warnings & OPERATIONAL_CLEAN_NON_BLOCKING_PREFLIGHT_WARNINGS
+    )
     blocking_warnings = sorted(
-        warning for warning in warnings if warning not in LEGACY_HOST_RUNTIME_WARNINGS
+        warnings - OPERATIONAL_CLEAN_NON_BLOCKING_PREFLIGHT_WARNINGS
     )
     command = list(profile.get("run_command") or [])
     command_text = " ".join(command)
@@ -305,10 +147,12 @@ def _operational_iteration_gate(
         int(contract.get("horizon_seconds") or 0) == 240
         and int(contract.get("sample_interval_seconds") or 0) == 10
         and int(contract.get("event_evaluation_interval_seconds") or 0) == 10
-        and int(contract.get("loop_count") or 0) == 3
+        and bool(contract.get("continuous")) is True
+        and int(contract.get("loop_count") or 0) == 4
         and str(contract.get("runtime_mode") or "") == "operational_clean"
         and str(contract.get("forwarding_backend") or "") == "bpf_owned"
         and str(contract.get("host_prepare_policy") or "") == "auto"
+        and int(contract.get("runtime_ping_observer_seconds") or 0) == 30
     )
     explicit_command_shape_ready = all(
         required in command_text
@@ -316,14 +160,15 @@ def _operational_iteration_gate(
             "--horizon-seconds 240",
             "--sample-interval 10",
             "--event-evaluation-interval 10",
-            "--loop-count 3",
+            "--continuous",
+            "--loop-count 4",
             "--runtime-mode operational_clean",
             "--forwarding-backend bpf_owned",
             "--host-prepare-policy auto",
         )
     )
     profile_command_shape_ready = (
-        "--operational-profile s4_h3_240s_bpf_owned_clean" in command_text
+        "--profile rich_s4_operational_clean_bpf" in command_text
         and contract_shape_ready
     )
     command_shape_ready = explicit_command_shape_ready or profile_command_shape_ready
@@ -353,10 +198,7 @@ def _operational_iteration_gate(
         "schema_version": "skyseed-operational-iteration-gate-v1",
         "ready": ready,
         "blockers": blockers,
-        "non_blocking_warnings": [],
-        "suppressed_legacy_host_runtime_warnings": sorted(
-            warning for warning in warnings if warning in LEGACY_HOST_RUNTIME_WARNINGS
-        ),
+        "non_blocking_warnings": non_blocking_warnings,
         "warning_scope": "operational_clean_bpf_owned",
         "stale_static_goal_evidence_blocks_iteration": False,
         "static_evidence_ready": bool(readiness.get("static_evidence_ready")),
@@ -386,22 +228,96 @@ def _run_git_status(repo_root: Path) -> Dict[str, Any]:
     }
 
 
+def _preflight_not_run() -> Dict[str, Any]:
+    return {
+        "present": False,
+        "source": None,
+        "warning_reasons": [],
+        "blocking_reasons": [],
+        "scoped_hygiene_ready": None,
+        "preferred_seed310_selected": None,
+        "backend_host_runtime_ready": None,
+        "long_real_run_environment_ready": None,
+    }
+
+
+def _run_live_preflight() -> Dict[str, Any]:
+    result = subprocess.run(
+        [
+            SEED310_PYTHON,
+            str(SATELLITE_DIR / "apps" / "skyseed_preflight.py"),
+            "--profile",
+            "operational-clean-bpf-owned",
+            "--format",
+            "json",
+        ],
+        cwd=str(REPO_ROOT),
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=_clean_session_subprocess_env(),
+    )
+    if result.returncode != 0:
+        return {
+            **_preflight_not_run(),
+            "present": False,
+            "source": "skyseed_preflight",
+            "blocking_reasons": [f"skyseed_preflight_returncode:{result.returncode}"],
+            "stderr": result.stderr.strip(),
+        }
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        return {
+            **_preflight_not_run(),
+            "present": False,
+            "source": "skyseed_preflight",
+            "blocking_reasons": [f"skyseed_preflight_json_error:{exc}"],
+            "stderr": result.stderr.strip(),
+        }
+    assessment = dict(payload.get("assessment") or {})
+    checks = dict(payload.get("checks") or {})
+    python_runtime = dict(checks.get("python_runtime") or {})
+    counts = dict(assessment.get("cleanliness_counts") or {})
+    environment_clean = bool(assessment.get("environment_clean"))
+    return {
+        "present": True,
+        "source": "skyseed_preflight",
+        "warning_reasons": list(assessment.get("warning_reasons") or []),
+        "blocking_reasons": list(assessment.get("blocking_reasons") or []),
+        "scoped_hygiene_ready": environment_clean,
+        "preferred_seed310_selected": bool(
+            python_runtime.get("preferred_seed310_selected")
+        ),
+        "backend_host_runtime_ready": "not_applicable_for_operational_clean_bpf_owned",
+        "long_real_run_environment_ready": bool(assessment.get("ready")),
+        "cleanliness_counts": counts,
+        "workspace_root": payload.get("workspace_root"),
+    }
+
+
 def summarize_session_check(
     *,
     live_preflight: bool = True,
-    near_run: Path = DEFAULT_NEAR_RUN,
-    varied_runs: Sequence[Path] = (DEFAULT_MIXED_RUN, DEFAULT_FAR_RUN),
-    return_audit_run: Path = DEFAULT_RETURN_AUDIT_RUN,
-    baseline_real_run: Path = DEFAULT_BASELINE_REAL_RUN,
 ) -> Dict[str, Any]:
-    readiness = summarize_goal_readiness(
-        near_run=near_run,
-        varied_runs=list(varied_runs),
-        return_audit_run=return_audit_run,
-        baseline_real_run=baseline_real_run,
-        protection_run=baseline_real_run,
-        live_preflight=live_preflight,
+    preflight = _run_live_preflight() if live_preflight else _preflight_not_run()
+    long_real_run_ready = bool(
+        preflight.get("present")
+        and preflight.get("scoped_hygiene_ready")
+        and preflight.get("preferred_seed310_selected")
+        and not preflight.get("blocking_reasons")
     )
+    readiness = {
+        "preflight": preflight,
+        "static_evidence_ready": False,
+        "long_real_run_ready": long_real_run_ready,
+        "next_action": (
+            "start_active_validation_profile"
+            if long_real_run_ready
+            else "run_host_prepare_then_recheck_preflight_before_real_run"
+        ),
+    }
     iteration_profile = operational_iteration_profile()
     return {
         "check_kind": "skyseed_post_reboot_session_check",
@@ -410,7 +326,6 @@ def summarize_session_check(
         "repo_root": str(REPO_ROOT),
         "git_status": _run_git_status(REPO_ROOT),
         "goal_readiness": readiness,
-        "canonical_fast_long_run_profile": canonical_fast_long_run_profile(),
         "operational_iteration_profile": iteration_profile,
         "operational_iteration_gate": _operational_iteration_gate(
             readiness=readiness,
@@ -424,27 +339,9 @@ def render_session_check_summary(report: Dict[str, Any]) -> str:
     readiness = dict(report.get("goal_readiness", {}))
     display_readiness = dict(readiness)
     display_preflight = dict(display_readiness.get("preflight") or {})
-    display_preflight["raw_warning_reasons"] = list(
-        display_preflight.get("warning_reasons") or []
-    )
-    display_preflight["warning_reasons"] = [
-        str(warning)
-        for warning in list(display_preflight.get("warning_reasons") or [])
-        if str(warning) not in LEGACY_HOST_RUNTIME_WARNINGS
-    ]
-    if any(
-        warning in LEGACY_HOST_RUNTIME_WARNINGS
-        for warning in display_preflight.get("raw_warning_reasons", [])
-    ):
-        display_preflight["host_runtime_ready"] = (
-            "legacy_not_applicable_for_bpf_owned_operational_iteration"
-        )
     display_readiness["preflight"] = display_preflight
     iteration_gate = dict(report.get("operational_iteration_gate", {}))
     iteration_profile = dict(report.get("operational_iteration_profile", {}))
-    profile = dict(report.get("canonical_fast_long_run_profile", {}))
-    validation_profile = dict(profile.get("representative_validation_profile", {}))
-    timing_policy = dict(profile.get("timing_policy", {}))
     lines = [
         "Skyseed session check",
         f"  generated_at={report.get('generated_at')}",
@@ -459,20 +356,13 @@ def render_session_check_summary(report: Dict[str, Any]) -> str:
             "  operational_iteration_warnings="
             f"{','.join(iteration_gate.get('non_blocking_warnings', [])) or 'none'}"
         ),
-        f"  canonical_fast_profile={profile.get('profile_id')}",
         (
-            "  representative_validation: "
-            f"runtime_epoch_interval={validation_profile.get('runtime_epoch_validation_interval')} "
-            f"parameter_epoch_interval={validation_profile.get('parameter_epoch_validation_interval')} "
-            f"scope={validation_profile.get('runtime_epoch_validation_scope')}"
+            "  preflight: "
+            f"present={display_preflight.get('present')} "
+            f"scoped_hygiene_ready={display_preflight.get('scoped_hygiene_ready')} "
+            f"preferred_seed310_selected={display_preflight.get('preferred_seed310_selected')} "
+            f"warnings={','.join(display_preflight.get('warning_reasons', [])) or 'none'}"
         ),
-        (
-            "  timing_headlines: "
-            f"actual_update={','.join(timing_policy.get('actual_network_update_headline', []))} "
-            f"scheduler_pressure={','.join(timing_policy.get('scheduler_pressure_headline', []))} "
-            f"cleanup={','.join(timing_policy.get('cleanup_optimization_bucket', []))}"
-        ),
-        render_goal_readiness_summary(display_readiness),
     ]
     return "\n".join(lines)
 

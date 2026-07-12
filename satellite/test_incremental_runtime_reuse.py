@@ -20,6 +20,7 @@ from linux_mpls_runtime import (
     _zone_return_install_intents_for_contexts,
     _zone_return_install_intents,
     _zone_return_install_boundary_payload,
+    audit_prepared_runtime_consumer_contracts,
 )
 
 
@@ -65,7 +66,7 @@ def _context(
     shared_backbone_return_target: dict[str, Any] | None = None,
     candidate_shared_zone_return_route: dict[str, Any] | None = None,
     candidate_shared_return_label_stack: dict[str, Any] | None = None,
-    current_linux_realization_mode: str = "per_ut_flow_compatibility",
+    current_linux_realization_mode: str = "shared_gz_fec_with_zone_edge_delivery",
 ) -> DirectGatewayExperimentContext:
     forward_segment = _segment(
         link_id=f"{selected_gateway_id}-gateway-slot0",
@@ -99,8 +100,14 @@ def _context(
             "ut_id": ut_id,
             "selected_gateway_id": selected_gateway_id,
             "zone_serving_satellite_id": serving_satellite_id,
-            "current_linux_realization": {
-                "mode": current_linux_realization_mode,
+            "bpf_realization": {
+                "mode": (
+                    "shared_gz_fec_with_zone_edge_delivery"
+                    if current_linux_realization_mode == "shared_gz_backbone"
+                    else current_linux_realization_mode
+                ),
+                "linux_mpls_fallback": False,
+                "per_ut_core_state": False,
             },
         }
     if shared_backbone_return_target is not None:
@@ -181,6 +188,71 @@ def _session(*contexts: DirectGatewayExperimentContext) -> ActiveRuntimeSession:
 
 
 class IncrementalRuntimeReuseTests(unittest.TestCase):
+    def test_prepared_runtime_consumer_audit_covers_noop_and_successor_reapply(self) -> None:
+        old_flow = _context(
+            flow_id="flow-a",
+            ut_id="ut101",
+            zone_id="zone-a",
+            serving_satellite_id="stl-950117",
+            selected_gateway_id="gw1",
+            selected_gateway_satellite_id="stl-950117",
+            forward_label=10000,
+            reverse_label=200000,
+            zone_return_prefixes=("10.10.0.0/29",),
+        )
+        changed_flow = _context(
+            flow_id="flow-a",
+            ut_id="ut101",
+            zone_id="zone-a",
+            serving_satellite_id="stl-950118",
+            selected_gateway_id="gw2",
+            selected_gateway_satellite_id="stl-950118",
+            forward_label=10256,
+            reverse_label=200256,
+            zone_return_prefixes=("10.10.0.0/29",),
+        )
+
+        report = audit_prepared_runtime_consumer_contracts(
+            [
+                {"segment_epoch_key": "H0:slice-1", "contexts": (old_flow,)},
+                {"segment_epoch_key": "H0:slice-2", "contexts": (changed_flow,)},
+            ]
+        )
+
+        self.assertTrue(report["ok"])
+        self.assertEqual(
+            report["transition_counts"],
+            {"shared_gz_noop_hold": 1, "shared_gz_reapply": 1},
+        )
+        self.assertEqual(report["records"][0]["changed_flow_count"], 0)
+        self.assertEqual(report["records"][1]["changed_flow_count"], 1)
+
+    def test_prepared_runtime_consumer_audit_collects_invalid_mode_blocker(self) -> None:
+        invalid_flow = _context(
+            flow_id="flow-a",
+            ut_id="ut101",
+            zone_id="zone-a",
+            serving_satellite_id="stl-950117",
+            selected_gateway_id="gw1",
+            selected_gateway_satellite_id="stl-950117",
+            forward_label=10000,
+            reverse_label=200000,
+            zone_return_prefixes=("10.10.0.0/29",),
+            current_linux_realization_mode="retired_per_ut_mode",
+        )
+
+        report = audit_prepared_runtime_consumer_contracts(
+            [{"segment_epoch_key": "H0:slice-1", "contexts": (invalid_flow,)}]
+        )
+
+        self.assertFalse(report["ok"])
+        self.assertEqual(report["record_count"], 1)
+        self.assertEqual(
+            report["blockers"][0]["reason"],
+            "prepared_runtime_consumer_contract_exception",
+        )
+        self.assertIn("shared G/Z BPF realization", report["blockers"][0]["message"])
+
     def test_zone_return_install_intents_group_by_gateway_zone_and_serving_satellite(self) -> None:
         flow_a = _context(
             flow_id="flow-a",
@@ -229,10 +301,10 @@ class IncrementalRuntimeReuseTests(unittest.TestCase):
         self.assertEqual(intents[0].ut_ids, ("ut101", "ut102"))
         self.assertEqual(
             intents[0].current_linux_realization_mode,
-            "per_ut_flow_compatibility",
+            "shared_gz_fec_with_zone_edge_delivery",
         )
 
-    def test_zone_return_install_intents_do_not_merge_legacy_unknown_zones(self) -> None:
+    def test_zone_return_install_intents_reject_missing_explicit_zone(self) -> None:
         flow_a = _context(
             flow_id="flow-a",
             ut_id="ut101",
@@ -252,13 +324,8 @@ class IncrementalRuntimeReuseTests(unittest.TestCase):
             reverse_label=200256,
         )
 
-        intents = _zone_return_install_intents((flow_a, flow_b))
-
-        self.assertEqual(len(intents), 2)
-        self.assertEqual(
-            [intent.target_key for intent in intents],
-            ["gw1:legacy-ut:ut101:stl-950117", "gw1:legacy-ut:ut102:stl-950117"],
-        )
+        with self.assertRaisesRegex(RuntimeError, "shared G/Z BPF realization missing"):
+            _zone_return_install_intents((flow_a, flow_b))
 
     def test_zone_return_install_intents_prefer_explicit_shared_target(self) -> None:
         shared_target = {
@@ -420,7 +487,7 @@ class IncrementalRuntimeReuseTests(unittest.TestCase):
             payload["scale_summary"]["all"][
                 "current_backbone_return_state_item_count"
             ],
-            4,
+            1,
         )
         self.assertEqual(
             payload["scale_summary"]["all"][
@@ -432,20 +499,92 @@ class IncrementalRuntimeReuseTests(unittest.TestCase):
             payload["scale_summary"]["all"][
                 "current_to_target_backbone_state_ratio"
             ],
-            4.0,
+            1.0,
         )
         self.assertEqual(
             payload["scale_summary"]["all"][
                 "current_reverse_labels_to_candidate_label_stack_ratio"
             ],
-            2.0,
+            0.0,
         )
         self.assertEqual(
             payload["scale_summary"]["reapplied"][
                 "current_backbone_return_state_item_count"
             ],
-            2,
+            1,
         )
+
+    def test_zone_return_install_boundary_payload_allows_empty_shared_gz_noop(self) -> None:
+        flow = _context(
+            flow_id="flow-a",
+            ut_id="ut101",
+            zone_id="zone-a",
+            serving_satellite_id="stl-950117",
+            selected_gateway_id="gw1",
+            selected_gateway_satellite_id="stl-950117",
+            forward_label=10000,
+            reverse_label=200000,
+            zone_return_prefixes=("10.10.0.0/29",),
+            gateway_class_id="zone-a:default-gateway:gw1",
+            candidate_shared_zone_return_route={
+                "target_key": "gw1:zone-a:stl-950117:zone-route",
+                "route_prefixes": ["10.10.0.0/29"],
+            },
+            candidate_shared_return_label_stack={
+                "target_key": "gw1:zone-a:stl-950117:reverse-path:gw1-gateway-slot0",
+            },
+        )
+        intents = _zone_return_install_intents((flow,))
+
+        payload = _zone_return_install_boundary_payload(
+            all_contexts=(flow,),
+            reapplied_contexts=(),
+            all_intents=intents,
+            reapplied_intents=(),
+        )
+
+        self.assertEqual(payload["reapplied_state_transition"], "shared_gz_noop_hold")
+        self.assertEqual(payload["all_intent_count"], 1)
+        self.assertEqual(payload["reapplied_intent_count"], 0)
+        self.assertEqual(payload["reapplied_shared_zone_return_install_plans"], [])
+        self.assertEqual(payload["scale_summary"]["reapplied"]["flow_count"], 0)
+        self.assertEqual(
+            payload["scale_summary"]["reapplied"][
+                "current_backbone_return_state_item_count"
+            ],
+            0,
+        )
+        self.assertEqual(
+            payload["scale_summary"]["all"][
+                "current_backbone_return_state_item_count"
+            ],
+            1,
+        )
+
+    def test_zone_return_install_boundary_payload_rejects_empty_scope_with_intents(self) -> None:
+        flow = _context(
+            flow_id="flow-a",
+            ut_id="ut101",
+            zone_id="zone-a",
+            serving_satellite_id="stl-950117",
+            selected_gateway_id="gw1",
+            selected_gateway_satellite_id="stl-950117",
+            forward_label=10000,
+            reverse_label=200000,
+            zone_return_prefixes=("10.10.0.0/29",),
+        )
+        intents = _zone_return_install_intents((flow,))
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "empty reapplied shared G/Z context scope cannot carry return intents",
+        ):
+            _zone_return_install_boundary_payload(
+                all_contexts=(flow,),
+                reapplied_contexts=(),
+                all_intents=intents,
+                reapplied_intents=intents,
+            )
 
     def test_apply_specs_install_shared_zone_return_backbone_not_per_flow_reverse_backbone(self) -> None:
         flow_a = _context(
@@ -588,7 +727,10 @@ class IncrementalRuntimeReuseTests(unittest.TestCase):
             reapplied_intents=intents,
         )
 
-        self.assertEqual(payload["install_behavior"], "shared_gz_backbone")
+        self.assertEqual(
+            payload["install_behavior"],
+            "shared_gz_fec_with_zone_edge_delivery",
+        )
         self.assertIn("state_count_model", payload)
         self.assertEqual(
             payload["scale_summary"]["all"]["gateway_ut32_return_route_count"],
@@ -640,7 +782,10 @@ class IncrementalRuntimeReuseTests(unittest.TestCase):
             2,
         )
         mapping = payload["install_mapping"]
-        self.assertEqual(mapping["current_linux_realization"], "shared_gz_backbone")
+        self.assertEqual(
+            mapping["bpf_realization"],
+            "shared_gz_fec_with_zone_edge_delivery",
+        )
         self.assertEqual(mapping["all_intent_count"], 1)
         self.assertTrue(mapping["all_shared_apply_specs"])
         self.assertTrue(
@@ -1218,6 +1363,7 @@ class IncrementalRuntimeReuseTests(unittest.TestCase):
         flow_a = _context(
             flow_id="flow-a",
             ut_id="ut101",
+            zone_id="zone-a",
             serving_satellite_id="stl-950117",
             selected_gateway_id="gw1",
             selected_gateway_satellite_id="stl-950117",
@@ -1227,6 +1373,7 @@ class IncrementalRuntimeReuseTests(unittest.TestCase):
         flow_b = _context(
             flow_id="flow-b",
             ut_id="ut101",
+            zone_id="zone-a",
             serving_satellite_id="stl-950117",
             selected_gateway_id="gw1",
             selected_gateway_satellite_id="stl-950117",
@@ -1238,7 +1385,7 @@ class IncrementalRuntimeReuseTests(unittest.TestCase):
         plan = installer._rollback_verification_probe_plan((flow_a, flow_b))
 
         self.assertEqual(len(plan["context_probes"]), 2)
-        self.assertEqual(len(plan["specs"]), 3)
+        self.assertEqual(len(plan["specs"]), 4)
         self.assertEqual(
             plan["context_probes"][0]["ut_default_route_probe"],
             plan["context_probes"][1]["ut_default_route_probe"],

@@ -14,6 +14,11 @@ from typing import Any, Dict, List, Sequence
 
 HOST_MPLS_REQUIRED_MODULES = ("mpls_router", "mpls_iptunnel", "mpls_gso")
 HOST_MPLS_PLATFORM_LABELS = 1048575
+BRIDGE_NETFILTER_PASSTHROUGH_SYSCTLS = (
+    "net.bridge.bridge-nf-call-iptables",
+    "net.bridge.bridge-nf-call-ip6tables",
+    "net.bridge.bridge-nf-call-arptables",
+)
 
 _PREPARE_LOCK = threading.Lock()
 _PREPARED_STATE: Dict[str, Any] = {
@@ -192,6 +197,29 @@ def prepare_host_mpls() -> Dict[str, Any]:
     _PREPARED_STATE["prepared"] = True
     _PREPARED_STATE["summary"] = dict(summary)
     return summary
+
+
+def prepare_bridge_netfilter_passthrough() -> Dict[str, Any]:
+    started_at = time.perf_counter()
+    command_results: List[Dict[str, Any]] = []
+    for key in BRIDGE_NETFILTER_PASSTHROUGH_SYSCTLS:
+        result = _run_jsonable(["sudo", "-n", "sysctl", "-w", f"{key}=0"])
+        command_results.append(result)
+        if result["ok"] is not True:
+            raise HostMplsPreparationError(
+                "bridge netfilter passthrough preparation failed",
+                report={
+                    "prepared": False,
+                    "command_results": command_results,
+                    "failed_command": result,
+                    "wall_seconds": time.perf_counter() - started_at,
+                },
+            )
+    return {
+        "prepared": True,
+        "command_results": command_results,
+        "wall_seconds": time.perf_counter() - started_at,
+    }
 
 
 def ensure_host_mpls_ready(*, auto_prepare: bool = True) -> Dict[str, Any]:

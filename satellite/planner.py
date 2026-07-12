@@ -459,7 +459,7 @@ def _link_between_nodes(
 
 
 class UtInternetExperimentPlanner(Planner):
-    """First usable planner for the UT->MiniInternet experiment path."""
+    """Planner for immutable UT policy and shared gateway/zone FECs."""
 
     planner_name = "ut_internet_experiment_planner"
     planner_kind = "gz_mpls_experiment"
@@ -612,7 +612,6 @@ class UtInternetExperimentPlanner(Planner):
             ],
             "zone_serving_satellite_id": serving_satellite_id,
             "egress_node_id": serving_satellite_id,
-            "current_compatibility_route_scope": "ut_32_return_route",
             "target_route_scope": "zone_or_gateway_zone_return_target",
             "state_model": "candidate_shared_zone_return_route",
             "install_behavior": "installed_by_shared_gz_backbone_runtime",
@@ -626,9 +625,9 @@ class UtInternetExperimentPlanner(Planner):
             ),
             "shared_backbone_return_target_key": shared_return_target["target_key"],
             "reverse_path_signature": reverse_path_signature,
-            "current_compatibility_label_scope_id": shared_backbone_label_scope_id,
-            "current_compatibility_reverse_label_count": len(list(reverse_labels)),
-            "current_compatibility_reverse_labels": [
+            "shared_backbone_label_scope_id": shared_backbone_label_scope_id,
+            "reverse_label_count": len(list(reverse_labels)),
+            "reverse_labels": [
                 int(label) for label in reverse_labels
             ],
             "state_owner": "satellite_backbone",
@@ -689,12 +688,10 @@ class UtInternetExperimentPlanner(Planner):
                 },
             },
             "scale_target": "backbone_return_state_independent_of_ut_count",
-            "current_linux_realization": {
-                "mode": "shared_gz_backbone",
-                "reason": (
-                    "linux_installer_uses_gateway_zone_return_route_and_shared_reverse_lfib; "
-                    "per_ut_state_is_limited_to_gateway_edge_policy_and_serving_satellite_local_delivery"
-                ),
+            "bpf_realization": {
+                "mode": "shared_gz_fec_with_zone_edge_delivery",
+                "linux_mpls_fallback": False,
+                "per_ut_core_state": False,
             },
         }
 
@@ -717,38 +714,6 @@ class UtInternetExperimentPlanner(Planner):
             policy_table_id=base_intent.policy_table_id + flow_variant_index,
             policy_rule_priority=base_intent.policy_rule_priority + flow_variant_index,
         )
-
-    def _internet_validation_targets(
-        self,
-        topology_snapshot: TopologySnapshot,
-    ) -> List[Dict[str, Any]]:
-        return [
-            dict(target)
-            for target in topology_snapshot.planner_hints.get(
-                "internet_validation_targets",
-                [],
-            )
-        ]
-
-    def _special_prefix_policies(
-        self,
-        topology_snapshot: TopologySnapshot,
-    ) -> List[Dict[str, Any]]:
-        return [
-            dict(policy)
-            for policy in topology_snapshot.planner_hints.get("special_prefix_overrides", [])
-        ]
-
-    def _zone_default_gateway_policy(
-        self,
-        topology_snapshot: TopologySnapshot,
-        *,
-        zone_id: str,
-    ) -> Dict[str, Any]:
-        zone_policies = dict(
-            topology_snapshot.planner_hints.get("zone_default_gateway_preferences", {})
-        )
-        return dict(zone_policies.get(zone_id, {}))
 
     def _zone_resolution_context(
         self,
@@ -792,107 +757,26 @@ class UtInternetExperimentPlanner(Planner):
         *,
         topology_snapshot: TopologySnapshot,
         serving_satellite_id: str,
-        preferred_gateway_id: Optional[str] = None,
-        preferred_gateway_ids: Optional[Sequence[str]] = None,
-        selection_mode: str = "shortest_path",
-        fallback_to_shortest_path: bool = True,
-        max_additional_hops_relative_to_best_allowed: Optional[int] = None,
+        gateway_id: str,
     ) -> Optional[Tuple[str, List[str], Dict[str, Any]]]:
         adjacency = _satellite_adjacency(topology_snapshot)
-        gateway_candidates = self._gateway_candidates(topology_snapshot)
-        allowlisted_gateway_ids: List[str] = []
-        if preferred_gateway_ids:
-            for gateway_id in preferred_gateway_ids:
-                normalized_gateway_id = str(gateway_id).strip()
-                if normalized_gateway_id and normalized_gateway_id not in allowlisted_gateway_ids:
-                    allowlisted_gateway_ids.append(normalized_gateway_id)
-        if preferred_gateway_id is not None:
-            normalized_gateway_id = str(preferred_gateway_id).strip()
-            if normalized_gateway_id and normalized_gateway_id not in allowlisted_gateway_ids:
-                allowlisted_gateway_ids.append(normalized_gateway_id)
-
-        def _reachable_path_for_gateway(
-            gateway_id: str,
-        ) -> Optional[Tuple[str, List[str], Dict[str, Any]]]:
-            for candidate_gateway_id, gateway_satellite_id, gateway_link in gateway_candidates:
-                if candidate_gateway_id != gateway_id:
-                    continue
-                path = _shortest_satellite_path(
-                    adjacency=adjacency,
-                    start_node_id=serving_satellite_id,
-                    goal_node_id=gateway_satellite_id,
-                )
-                if path is None:
-                    return None
-                return candidate_gateway_id, path, gateway_link
-            return None
-
-        all_candidate_paths: List[Tuple[int, str, List[str], Dict[str, Any]]] = []
-        for gateway_id, gateway_satellite_id, gateway_link in gateway_candidates:
+        explicit_gateway_id = str(gateway_id or "").strip()
+        if not explicit_gateway_id:
+            raise PlannerError("explicit immutable gateway_id missing")
+        for candidate_gateway_id, gateway_satellite_id, gateway_link in self._gateway_candidates(
+            topology_snapshot
+        ):
+            if candidate_gateway_id != explicit_gateway_id:
+                continue
             path = _shortest_satellite_path(
                 adjacency=adjacency,
                 start_node_id=serving_satellite_id,
                 goal_node_id=gateway_satellite_id,
             )
             if path is None:
-                continue
-            all_candidate_paths.append((len(path) - 1, gateway_id, path, gateway_link))
-
-        if selection_mode == "stable_preferred_gateway_order" and allowlisted_gateway_ids:
-            ordered_preferred_paths: List[Tuple[str, List[str], Dict[str, Any]]] = []
-            for gateway_id in allowlisted_gateway_ids:
-                preferred_path = _reachable_path_for_gateway(gateway_id)
-                if preferred_path is not None:
-                    ordered_preferred_paths.append(preferred_path)
-            if ordered_preferred_paths:
-                if max_additional_hops_relative_to_best_allowed is None:
-                    return ordered_preferred_paths[0]
-                best_allowed_hops = (
-                    min(hops for hops, _, _, _ in all_candidate_paths)
-                    if fallback_to_shortest_path and all_candidate_paths
-                    else min(len(path) - 1 for _, path, _ in ordered_preferred_paths)
-                )
-                for candidate_gateway_id, candidate_path, candidate_gateway_link in ordered_preferred_paths:
-                    if (len(candidate_path) - 1) <= (
-                        best_allowed_hops + int(max_additional_hops_relative_to_best_allowed)
-                    ):
-                        return (
-                            candidate_gateway_id,
-                            candidate_path,
-                            candidate_gateway_link,
-                        )
-            if not fallback_to_shortest_path:
                 return None
-            if all_candidate_paths:
-                _, selected_gateway_id, satellite_path, gateway_link = min(
-                    all_candidate_paths,
-                    key=lambda item: (item[0], item[1], item[2]),
-                )
-                return selected_gateway_id, satellite_path, gateway_link
-
-        candidate_paths: List[Tuple[int, str, List[str], Dict[str, Any]]] = []
-        for gateway_id, gateway_satellite_id, gateway_link in gateway_candidates:
-            if allowlisted_gateway_ids and gateway_id not in allowlisted_gateway_ids:
-                continue
-            matching_path = next(
-                (
-                    (hops, candidate_gateway_id, path, candidate_gateway_link)
-                    for hops, candidate_gateway_id, path, candidate_gateway_link in all_candidate_paths
-                    if candidate_gateway_id == gateway_id
-                ),
-                None,
-            )
-            if matching_path is not None:
-                candidate_paths.append(matching_path)
-        if not candidate_paths and allowlisted_gateway_ids and fallback_to_shortest_path:
-            candidate_paths = list(all_candidate_paths)
-        if not candidate_paths:
-            return None
-        _, selected_gateway_id, satellite_path, gateway_link = min(
-            candidate_paths,
-            key=lambda item: (item[0], item[1], item[2]),
-        )
-        return selected_gateway_id, satellite_path, gateway_link
+            return candidate_gateway_id, path, gateway_link
+        return None
 
     def _flow_context(
         self,
@@ -903,22 +787,24 @@ class UtInternetExperimentPlanner(Planner):
         flow_suffix: str,
         flow_variant_index: int,
         validation_targets: List[Dict[str, Any]],
-        preferred_gateway_id: Optional[str] = None,
-        preferred_gateway_ids: Optional[Sequence[str]] = None,
-        gateway_selection_mode: str = "shortest_path",
-        max_additional_hops_relative_to_best_allowed: Optional[int] = None,
-        fallback_to_shortest_path: bool = True,
+        gateway_id: str,
         traffic_scope: str = "ordinary_internet_default",
         policy_name: Optional[str] = None,
         destination_prefix: Optional[str] = None,
+        gateway_selector_label: Optional[int] = None,
     ) -> Optional[Dict[str, Any]]:
         attachment = dict(topology_snapshot.nodes[ut_id].get("attachment", {}))
         zone = dict(topology_snapshot.zones.get(zone_id, {}))
-        if not bool(
-            zone.get("zone_service_resolved", zone.get("resolution_state") == "resolved")
-        ):
-            raise PlannerError(f"zone service is not resolved for {zone_id}/{ut_id}")
         zone_anchor_satellite_id = str(zone.get("active_serving_satellite_id") or "")
+        resolution_state = str(zone.get("resolution_state", "resolved"))
+        zone_service_resolved = bool(
+            zone.get(
+                "zone_service_resolved",
+                resolution_state == "resolved" and bool(zone_anchor_satellite_id),
+            )
+        )
+        if not zone_service_resolved:
+            raise PlannerError(f"zone service is not resolved for {zone_id}/{ut_id}")
         if not zone_anchor_satellite_id:
             raise PlannerError(f"missing zone anchor satellite for {zone_id}/{ut_id}")
         ut_access_satellite_id = str(attachment.get("active_serving_satellite_id") or "")
@@ -942,13 +828,7 @@ class UtInternetExperimentPlanner(Planner):
         gateway_path = self._resolve_gateway_path(
             topology_snapshot=topology_snapshot,
             serving_satellite_id=serving_satellite_id,
-            preferred_gateway_id=preferred_gateway_id,
-            preferred_gateway_ids=preferred_gateway_ids,
-            selection_mode=gateway_selection_mode,
-            fallback_to_shortest_path=fallback_to_shortest_path,
-            max_additional_hops_relative_to_best_allowed=(
-                max_additional_hops_relative_to_best_allowed
-            ),
+            gateway_id=gateway_id,
         )
         if gateway_path is None:
             return None
@@ -1009,12 +889,8 @@ class UtInternetExperimentPlanner(Planner):
             "traffic_scope": traffic_scope,
             "policy_name": policy_name,
             "destination_prefix": destination_prefix,
-            "gateway_selection_mode": gateway_selection_mode,
-            "preferred_gateway_ids": [
-                str(gateway_id)
-                for gateway_id in (preferred_gateway_ids or [])
-                if str(gateway_id).strip()
-            ],
+            "gateway_selector_label": gateway_selector_label,
+            "gateway_selection_mode": "explicit_immutable_ut_policy",
             "validation_targets": [dict(target) for target in validation_targets],
             "ping_target_ip": primary_target.get("ip_address"),
             "target_host_node_id": primary_target.get("node_id"),
@@ -1056,30 +932,6 @@ class UtInternetExperimentPlanner(Planner):
             "policy_rule_priority": intent.policy_rule_priority,
         }
 
-    def _satellite_hop_count(
-        self,
-        flow_context: Dict[str, Any],
-    ) -> int:
-        return max(0, len(list(flow_context.get("satellite_path", []))) - 1)
-
-    def _override_is_competitive(
-        self,
-        *,
-        default_flow_context: Dict[str, Any],
-        override_flow_context: Dict[str, Any],
-        policy: Dict[str, Any],
-    ) -> Tuple[bool, str]:
-        if not bool(policy.get("require_competitive_path_vs_default", False)):
-            return True, "competitive_check_disabled"
-        default_hops = self._satellite_hop_count(default_flow_context)
-        override_hops = self._satellite_hop_count(override_flow_context)
-        max_additional_hops = int(
-            policy.get("max_additional_satellite_hops_relative_to_default", 0)
-        )
-        if override_hops > default_hops + max_additional_hops:
-            return False, "preferred_gateway_path_excessive_vs_default"
-        return True, "competitive_vs_default"
-
     def _gateway_selection_for_ut(
         self,
         *,
@@ -1104,6 +956,9 @@ class UtInternetExperimentPlanner(Planner):
                 "flow_id": flow_context["flow_id"],
                 "gateway_class_id": gateway_class_id,
                 "selected_gateway_id": gateway_id,
+                "gateway_selector_label": int(
+                    flow_context.get("gateway_selector_label") or 0
+                ),
                 "serving_satellite_id": flow_context["serving_satellite_id"],
                 "ingress_transport": {
                     "encapsulation": "mpls_label_impose",
@@ -1132,6 +987,9 @@ class UtInternetExperimentPlanner(Planner):
                 {
                     "policy_name": flow_context.get("policy_name"),
                     "destination_prefix": flow_context.get("destination_prefix"),
+                    "gateway_selector_label": int(
+                        flow_context.get("gateway_selector_label") or 0
+                    ),
                     "gateway_class_id": gateway_class_id,
                     "resolution_state": "resolved",
                 }
@@ -1158,132 +1016,69 @@ class UtInternetExperimentPlanner(Planner):
         ut_id: str,
         zone_id: str,
     ) -> Dict[str, Any]:
-        validation_targets = self._internet_validation_targets(topology_snapshot)
-        zone_default_gateway_policy = self._zone_default_gateway_policy(
-            topology_snapshot,
-            zone_id=zone_id,
+        policies = dict(topology_snapshot.planner_hints.get("ut_gateway_policies") or {})
+        policy = dict(policies.get(str(ut_id)) or {})
+        if not policy:
+            raise PlannerError(f"immutable UT gateway policy missing for {ut_id}")
+        if str(policy.get("zone_id") or "") != str(zone_id):
+            raise PlannerError(f"UT gateway policy zone mismatch for {ut_id}/{zone_id}")
+        if policy.get("selection_model") != "longest_prefix_match":
+            raise PlannerError(f"UT gateway policy selection model invalid for {ut_id}")
+        if policy.get("immutable_for_run") is not True:
+            raise PlannerError(f"UT gateway policy is not immutable for {ut_id}")
+        service_catalog = dict(
+            topology_snapshot.planner_hints.get("gateway_service_catalog") or {}
         )
-        default_preferred_gateway_ids = [
-            str(gateway_id)
-            for gateway_id in zone_default_gateway_policy.get(
-                "preferred_gateway_ids",
-                zone_default_gateway_policy.get("regional_preferred_gateway_ids", []),
-            )
-            if str(gateway_id).strip()
-        ]
-        if not default_preferred_gateway_ids:
-            default_preferred_gateway_ids = [
-                str(gateway_id)
-                for gateway_id in zone_default_gateway_policy.get("gateway_ids", [])
-                if str(gateway_id).strip()
-            ]
-        default_flow_context = self._flow_context(
-            topology_snapshot=topology_snapshot,
-            ut_id=ut_id,
-            zone_id=zone_id,
-            flow_suffix="default",
-            flow_variant_index=0,
-            validation_targets=validation_targets,
-            preferred_gateway_ids=default_preferred_gateway_ids,
-            gateway_selection_mode=str(
-                zone_default_gateway_policy.get("selection_mode", "shortest_path")
-            ),
-            max_additional_hops_relative_to_best_allowed=zone_default_gateway_policy.get(
-                "max_additional_satellite_hops_relative_to_best_candidate"
-            ),
-            fallback_to_shortest_path=bool(
-                zone_default_gateway_policy.get("fallback_to_shortest_path", True)
-            ),
-            traffic_scope="ordinary_internet_default",
-        )
-        if default_flow_context is None:
-            raise PlannerError(f"no default gateway path available for {ut_id}")
-
-        override_flow_contexts: List[Dict[str, Any]] = []
-        unresolved_override_policies: List[Dict[str, Any]] = []
-        for variant_index, policy in enumerate(
-            self._special_prefix_policies(topology_snapshot),
-            start=1,
-        ):
-            policy_zone_id = str(policy.get("zone_id") or "")
-            if policy_zone_id and policy_zone_id != str(zone_id):
-                continue
-            target = dict(policy.get("target", {}))
+        rules = [dict(rule) for rule in list(policy.get("rules") or [])]
+        defaults = [rule for rule in rules if str(rule.get("prefix") or "") == "0.0.0.0/0"]
+        specials = [rule for rule in rules if str(rule.get("prefix") or "") != "0.0.0.0/0"]
+        if len(defaults) != 1 or not specials:
+            raise PlannerError(f"UT gateway policy rule set invalid for {ut_id}")
+        ordered_rules = [defaults[0], *sorted(specials, key=lambda item: str(item["prefix"]))]
+        flow_contexts: List[Dict[str, Any]] = []
+        for variant_index, rule in enumerate(ordered_rules):
+            gateway_id = str(rule.get("gateway_id") or "")
+            gateway_service = dict(service_catalog.get(gateway_id) or {})
+            service_prefix = str(gateway_service.get("gateway_service_ipv4") or "")
+            selector = gateway_service.get("gateway_selector_label")
+            if not service_prefix or selector in (None, "", "None"):
+                raise PlannerError(f"explicit gateway service binding missing for {gateway_id}")
+            if int(selector) != int(rule.get("gateway_selector_label") or -1):
+                raise PlannerError(f"gateway selector mismatch for {ut_id}/{gateway_id}")
+            service_ip = service_prefix.split("/", 1)[0]
+            role = "default" if variant_index == 0 else "special"
             flow_context = self._flow_context(
                 topology_snapshot=topology_snapshot,
                 ut_id=ut_id,
                 zone_id=zone_id,
-                flow_suffix=f"override:{policy.get('policy_name', variant_index)}",
+                flow_suffix=role if variant_index == 0 else f"special:{variant_index}",
                 flow_variant_index=variant_index,
-                validation_targets=[target] if target else [],
-                preferred_gateway_id=policy.get("preferred_gateway_id"),
-                preferred_gateway_ids=list(policy.get("preferred_gateway_ids", [])),
-                gateway_selection_mode=str(
-                    policy.get("selection_mode", "target_affinity_shortest_path")
+                validation_targets=[{"node_id": gateway_id, "ip_address": service_ip}],
+                gateway_id=gateway_id,
+                traffic_scope=(
+                    "default_gateway_class"
+                    if variant_index == 0
+                    else "special_prefix_gateway_class"
                 ),
-                fallback_to_shortest_path=bool(
-                    policy.get("fallback_to_shortest_path", True)
-                ),
-                traffic_scope="special_prefix_override",
-                policy_name=policy.get("policy_name"),
-                destination_prefix=policy.get("destination_prefix"),
+                policy_name=f"{ut_id}:{role}",
+                destination_prefix=str(rule.get("prefix") or ""),
+                gateway_selector_label=int(selector),
             )
-            if flow_context is None:
-                unresolved_override_policies.append(
-                    {
-                        "policy_name": policy.get("policy_name"),
-                        "destination_prefix": policy.get("destination_prefix"),
-                        "gateway_class_id": None,
-                        "resolution_state": "preferred_gateway_unreachable",
-                    }
+            if flow_context is None or str(flow_context["selected_gateway_id"]) != gateway_id:
+                raise PlannerError(
+                    f"frozen gateway path unreachable for {ut_id}/{gateway_id}"
                 )
-                continue
-            if (
-                flow_context["selected_gateway_id"]
-                == default_flow_context["selected_gateway_id"]
-            ):
-                unresolved_override_policies.append(
-                    {
-                        "policy_name": policy.get("policy_name"),
-                        "destination_prefix": policy.get("destination_prefix"),
-                        "gateway_class_id": self._gateway_class_id(
-                            zone_id=zone_id,
-                            gateway_id=str(flow_context["selected_gateway_id"]),
-                        ),
-                        "resolution_state": "resolved_same_as_default",
-                    }
-                )
-                continue
-            is_competitive, competitive_reason = self._override_is_competitive(
-                default_flow_context=default_flow_context,
-                override_flow_context=flow_context,
-                policy=policy,
-            )
-            if not is_competitive:
-                unresolved_override_policies.append(
-                    {
-                        "policy_name": policy.get("policy_name"),
-                        "destination_prefix": policy.get("destination_prefix"),
-                        "gateway_class_id": self._gateway_class_id(
-                            zone_id=zone_id,
-                            gateway_id=str(flow_context["selected_gateway_id"]),
-                        ),
-                        "resolution_state": competitive_reason,
-                        "default_gateway_id": default_flow_context["selected_gateway_id"],
-                        "default_satellite_hops": self._satellite_hop_count(
-                            default_flow_context
-                        ),
-                        "override_satellite_hops": self._satellite_hop_count(flow_context),
-                    }
-                )
-                continue
-            override_flow_contexts.append(flow_context)
+            flow_contexts.append(flow_context)
+        default_flow_context = flow_contexts[0]
+        override_flow_contexts = flow_contexts[1:]
         gateway_selection = self._gateway_selection_for_ut(
             zone_id=zone_id,
             default_flow_context=default_flow_context,
             override_flow_contexts=override_flow_contexts,
-            unresolved_override_policies=unresolved_override_policies,
+            unresolved_override_policies=[],
         )
+        gateway_selection["selection_model"] = "longest_prefix_match"
+        gateway_selection["immutable_for_run"] = True
         return {
             "default_flow_context": default_flow_context,
             "override_flow_contexts": override_flow_contexts,
@@ -1445,7 +1240,7 @@ class UtInternetExperimentPlanner(Planner):
                             "zone_id": zone_id,
                             "zone_serving_satellite_id": serving_satellite_id,
                             "serving_satellite_delivery_scope": "local_ut_delivery",
-                            "current_linux_realization": "per_ut_flow_compatibility",
+                            "bpf_realization": "shared_gz_fec_with_zone_edge_delivery",
                             "scale_target": "shared_zone_reachability_before_local_ut_delivery",
                         },
                     },
@@ -1636,7 +1431,7 @@ class UtInternetExperimentPlanner(Planner):
             },
             planner={
                 **self.metadata(),
-                "source": "iteration2_satellite_experiment",
+                "source": "skyseed_ut_gateway_planner",
             },
             apply_model={
                 "state_model": "full_state_intent",

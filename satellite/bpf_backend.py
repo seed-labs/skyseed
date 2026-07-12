@@ -612,7 +612,7 @@ def compile_bpf_shadow_backend(
     compiled = {
         "schema_version": 1,
         "goal": "Skyseed Goal 14 experimental BPF shadow backend landing",
-        "generated_at": "not_recorded_for_reproducible_baseline",
+        "generated_at": "not_recorded_for_deterministic_baseline",
         "backend_mode": BACKEND_MODE,
         "compiler": "satellite/bpf_backend.py",
         "input_mode": input_mode,

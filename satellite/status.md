@@ -1,5 +1,196 @@
 # Satellite Iteration 2 Status
 
+## 2026-07-12 - Compact Worker Handoff 4H Validation Complete
+
+- The compact-handoff long run crossed uncapped 1112.50s Compose startup,
+  completed H0 25/25, and consumed an H1 ready artifact with 25 inactive BPF
+  generations before failing the first H1 activation.
+- Generation, intent, horizon, snapshot, and epoch were correct. The lower BPF
+  selector compared worker `frozen_prepare_host_state` and scheduler
+  `live_state` IDs as raw strings even though the host-plan boundary already
+  defines them as aliases.
+- BPF preload selection now requires exact snapshot/epoch equivalence across
+  those two known namespaces and still rejects stale or unknown identities.
+  The actual H1 handoff artifact selects generation 32 after the fix.
+- A cheap companion invariant covers alias acceptance and stale rejection. It
+  adds no runtime resources or timeout. Validation passes 381/381 related and
+  791/791 full tests; current BPF compile and clean preflight also pass.
+- The r141 rerun completed H0-H3 100/100, including H3 physical generation zero,
+  aggregate runtime success, rollback, return code 0, and zero final residue.
+  Three maintenance workers completed 25/25 preloads with zero blockers in
+  120.71s, 93.47s, and 99.30s. Scheduler registration fell to 6.31s, 2.42s,
+  and 1.63s; the physical/attach/preload stages remained worker-owned.
+- Runtime BPF delta proved 56 handoffs, 56 pops, and 56 successful Linux-5.4
+  manual-pop fallbacks with zero runtime miss/drop delta, missing-generation or
+  missing-label drops, manual-pop failures, or Linux fallback commands.
+- Ping evidence contained 27 valid observations: 25 successes and two isolated
+  timeouts on different UT/gateway/policy tuples, with valid successes on both
+  gateways and no established fixed-gateway or same-flow consecutive outage.
+- Remaining nonblocking follow-up: activation lag averaged 24.13s and peaked at
+  48.08s before returning to 0.30s; approximately 1.5-3s/epoch is not fully
+  attributed by current transition submetrics. Improve attribution and, only if
+  useful later, externalize the remaining frozen base/readiness payload. Neither
+  is a new 1.0 correctness gate.
+
+## 2026-07-11 - r140 Continuous 4H Shared-G/Z Validation Complete
+
+- r140 completed H0-H3, 100/100 runtime transactions, with zero transaction
+  failures, aggregate runtime success, successful rollback, and clean post-run
+  preflight.
+- r138's valid empty no-op consumer scope is now explicit and replayed before
+  compose. The current frozen replay passes 100/100 with 1005 consumer binding
+  refs and zero retired IX refs when mini-internet is disabled.
+- r139 exposed two deeper regressions: H1 maintenance recomputed retired
+  `ix205`, and kernel-5.4 MPLS pop lost its BPF manual fallback. Both are fixed
+  without Linux/MPLS/NAT/mini-internet fallback.
+- Final BPF evidence contains 73 handoffs, 73 label pops, and 73 successful
+  manual-pop fallbacks with zero manual-pop failures. All three maintenance
+  workers completed 25/25 preloads with no blockers.
+- Ping observer evidence covered 20 UTs, all 12 gateways, and both default and
+  special-prefix classes. Of 35 valid records, 32 succeeded; three isolated
+  timeouts later recovered on the same gateways. Four superseded records were
+  excluded. There was no consecutive or fixed-gateway outage.
+- Validation is green: full discovery 785/785, companion v16 28/28, BPF compile
+  successful, and final residue zero.
+
+## 2026-07-11 - Shared G/Z Architecture Offline Gate Complete
+
+- The active v2 BPF ABI now follows immutable UT LPM policy -> stable gateway
+  selector -> shared G-to-Z FEC -> explicit gateway service loopback -> shared
+  Z-to-G FEC -> responsible-satellite zone-edge delivery.
+- Gateway selection is explicit and fail-closed. Active planning/runtime has no
+  preferred-list, shortest-path, target-IP, compatibility, per-UT reverse-core,
+  or Linux MPLS fallback route.
+- Frozen observer requests carry session/generation/slice identity and are
+  rejected as superseded when stale. Global BPF miss/drop counters remain audit
+  evidence and cannot gate an epoch.
+- Current-code r134 replay passes 100/100 frozen generations with H0-H3 25/25,
+  physical generation zero included, zero blockers, and zero map conflicts.
+  The companion lifecycle gate passes 26/26; full discovery passes 778/778;
+  the BPF program compiles successfully.
+- The canonical continuous 4H dry-run remains uncapped with a 30-second
+  nonblocking observer. No real or long run was started after this offline gate.
+
+## 2026-07-11 - r133 4H Dataplane Success; Observer Restored Before Final Run
+
+- r133 completed H0-H3 25/25 each (100/100), including H3 physical generation
+  zero, with aggregate runtime success, zero runtime exceptions, zero Linux
+  fallback/classifier misses, successful rollback, and clean post-run preflight.
+- Epoch averages were 6.259s, 6.328s, 6.746s, and 5.720s by horizon. Rolling
+  workers completed in 81.06-92.03s with correct retired cleanup.
+- Final audit found the nonblocking ping observer disabled by the active profile;
+  the raw observation file was empty and `ping_success` correctly remained null.
+  r133 is valid 4H dataplane evidence but not the requested complete experiment.
+- The canonical profile now emits `--runtime-ping-observer-seconds 30`; profile
+  builder/tests, session contract, and companion gate require it. Observer facts
+  remain nonblocking and cannot trigger runtime fallback or repair.
+
+## 2026-07-11 - r132 H3 Generation-Zero Failure Replayed And Gated
+
+- r132 completed H0/H1/H2 25/25 and crossed the former r131 H2 epoch-22
+  failure point. Rolling workers completed in 83.86-95.22s; delta attach was
+  29.39-29.84s and all forbidden-work counters were zero.
+- The H3 worker wrote all 25 generations, but the first consumer converted
+  valid physical generation `0` to `-1` through a truthiness default and
+  failed closed after 75 epochs. Lookup, consumed-record removal, and active
+  cleanup now preserve explicit zero values without an H3 special case.
+- Readiness also rejects `ok=true` records without a completed inactive map
+  write. The r132 real H3 handoff replay consumes generations 0 and 1 in order,
+  advances source state, and retires exactly one record per consumer.
+- Focused tests pass 225/225, full discovery passes 772/772, companion replay
+  passes 24/24 through r132 and H5, the r133 canonical dry-run has no caps, and
+  preflight/session checks are clean. r133 is the next permitted long run.
+
+## 2026-07-11 - Batched Horizon Worker Physical Prepare Gate
+
+- r131 showed rolling worker wall times of 170.63-192.39s.  The dominant
+  stages were additive physical preparation (74.27-93.97s) and delta BPF
+  attach (69.56-77.86s), not the 25 strict freezes/map preloads.
+- The single active veth creation path now preserves the ordered
+  create/move/rename/MAC/unicast/address/down-or-up lifecycle while batching
+  dependent commands at the container and host namespace boundaries.  This
+  reduces inactive endpoint process commands from 9 to 4 without discovery,
+  fallback, alternate execution, or changed H-boundary visibility.
+- Worker timing replaces the misleading zero values in the existing ready
+  artifact `subtask_wall_seconds` with fixed stage-level scalars.  The process
+  summary keeps only total wall time; there is no per-interface/per-generation
+  logging or additional artifact write.
+- Real validation created 20 inactive veth endpoints in 2.37785s
+  (0.118892s/endpoint) and cleaned them with zero residue.  Real binding and
+  active unicast bridge/veth gates pass.  Focused tests pass 78/78, the full
+  discovered suite passes 765/765, and the r113/r116-r130 companion lifecycle
+  gate passes 23/23 through H5 triple-slot reuse.
+- No new long run was started.  Binding capture still proves the complete
+  explicit required-ref set; no full scan, live diff, or scan-then-skip reuse
+  optimization was introduced.
+- The r131 attach audit then found that the frozen worker still used a serial
+  139-174-interface delta-attach loop while a different backend function owned
+  the source-inspected parallel executor.  Both callers now use one shared
+  deterministic delta-attach executor.  The worker consumes the explicit
+  frozen `max_node_workers=2` limit; interfaces from one frozen node remain
+  serial while at most two nodes run concurrently.  Missing limits fail before
+  physical work, and empty/failed task results cannot publish ready.
+- The previous companion parallelism check is corrected to inspect and execute
+  the active frozen helper with four delta interfaces.  Full regression passes
+  768/768 and companion lifecycle replay remains 23/23.
+- `tc -batch` was not added to attach.  A real two-veth check proved default
+  batch stops after a mid-batch duplicate while retaining earlier changes, and
+  `-force` continues to later changes but still fails.  Preserving per-command
+  idempotent `File exists` handling and all-or-nothing readiness therefore
+  requires a separate design/gate rather than wrapping current commands.
+
+## 2026-07-10 - r123 Systemic Repair Complete; Long Run Paused
+
+- r123 completed H0 25/25, and its H1 worker was ready before the boundary. The
+  failure was the initial parent PID cache being populated but unsealed, not a
+  slow worker miss. Initial binding now seals the exact cache; unsealed state
+  and PID drift fail with separate errors.
+- The H0 693.410766s discovery and 311.331089s clsact loops are deleted. H0 and
+  runtime preload consume frozen inputs and prepared attach authority only.
+- Worker ref discovery no longer performs 25 offline compiles before 25 strict
+  compiles. Exact final binding capture is batched per frozen node and bounded
+  to 16 workers; maintenance delta attach is likewise bounded-parallel after
+  physical prepare. The r123-based core worker budget projection is 95.375809s;
+  this is not yet a new-run measurement.
+- Generation ready/handoff records are compact, root/config and runner copies
+  are hardlinks, operational-clean epoch summaries omit nested runtime payloads,
+  and cleanup no longer repeats peer/temp endpoint deletion.
+- Clean preflight passes, the requested broad suite passes 584/584, companion
+  schema v7 passes 18/18 across r113 and r116-r123, and no new 4H run was
+  started as requested.
+
+## 2026-07-10 - r121 Parent Prepared-State Handoff Gate Ready
+
+- r120 completed H0 and a full asynchronous H1 prepare/preload, then failed at
+  the first H1 host consumer because the parent installer retained only H0
+  prepared ownership.
+- The fix publishes and accepts the complete additive union (681 existing + 91
+  delta = 772 resources) as frozen metadata without physical work, scans,
+  reconcile, active-state replacement, or early visibility.
+- The real r120 companion replay reproduces the old rejection and verifies the
+  two missing first-consumer targets plus all 772 owned resources after handoff.
+- Validation is green: focused 261/261, requested broad suite 574/574,
+  companion 13/13, unique canonical r121 dry-run, clean preflight, and
+  `git diff --check`.
+- Next action: run only `r121-4h-parent-prepared-state-handoff` and require all
+  H0-H3 boundaries, 100/100 epochs, zero forbidden counters, and clean teardown.
+
+## 2026-07-10 - r120 Final Binding Freeze Gate Ready
+
+- r119 H1 final-binding conflict is reconstructed from real artifacts and fixed
+  at the producer/consumer boundary: active base cache -> additive creation ->
+  exact post-prepare targeted capture -> shared strict compile cache.
+- The pre-long-run companion gate covers r116 worker replay, r117 real veth
+  capture, r118 bootstrap binding production, r119 conflict/final capture, and
+  H0-H5 cleanup/three-slot semantics without starting containers.
+- Validation is green: focused 39/39, requested broad suite 570/570, companion
+  12/12, clean preflight with zero BPF pins/runtime residue, and
+  `git diff --check`.
+- Next recommended action: launch only the canonical
+  `rich_s4_operational_clean_bpf` profile as
+  `r120-4h-final-binding-freeze`, monitor H boundaries and worker artifacts,
+  and require 100/100 epochs plus clean teardown.
+
 ## 2026-06-23 - Strict BPF-Owned Boundary And Compose Cleanup Gate
 
 - Split strict `bpf_owned` from legacy Linux MPLS fallback behavior in the
@@ -15,7 +206,7 @@
   `-f <seed_output/docker-compose.yml> -p <project> down --remove-orphans -v`
   and persists post-run compose residue details.
 - Focused validation passed:
-  `python3 -m py_compile satellite/linux_mpls_runtime.py satellite/runtime_operation_metrics.py satellite/apps/run_starlink_shell_runtime_attempt.py satellite/apps/run_starlink_shell_experiment.py satellite/test_rollback_cleanup_optimization.py`;
+  `python3 -m py_compile satellite/linux_mpls_runtime.py satellite/runtime_operation_metrics.py satellite/apps/run_starlink_shell_experiment.py satellite/test_rollback_cleanup_optimization.py`;
   `python3 -m unittest satellite.test_rollback_cleanup_optimization`;
   `PYTHONPATH=satellite:satellite/apps python3 -m unittest satellite.test_resource_usage_sampling satellite.test_skyseed_regression_metrics satellite.test_event_timeline_runtime_queue`.
 - Replay-gated shortened full-S4 strict BPF-owned run
@@ -86,13 +277,14 @@
   `python3 satellite/test_bpf_shadow_backend.py`;
   `PYTHONPATH=.:satellite:satellite/apps python3 satellite/test_runtime_validation_defaults.py`.
 
-## 2026-06-21 - Realistic Workload Preview Preparation
+## 2026-06-21 - Retired Realistic Workload Preview Preparation
 
-- Goal 18 added a preview-only realistic workload preparation path:
-  `apps/plan_realistic_skyseed_workload.py`,
-  `docs/skyseed_realistic_workload_plan.md`, and compact generated catalogs
-  under `configs/starlink_shell_ground/realistic_preview_*`.
-- The preview uses existing planned-shell `S1` capability
+- Goal 18 used a preview-only realistic workload preparation path and compact
+  generated catalogs under `configs/starlink_shell_ground/realistic_preview_*`.
+  That active generator/catalog route has since been removed; current planned
+  orbit and gateway/base-station inputs come from the visualization fixed data
+  bundle.
+- The retired preview used planned-shell `S1` capability
   (`72x22`, `1584` satellites) for high-pressure coverage/cardinality analysis.
   It is an upper-tier pressure target, not the immediate next real-runtime
   acceptance target. It does not change the canonical `S5` 172-satellite,
@@ -720,20 +912,6 @@
 - `inspect_temporal_run.py`, `inspect_return_path_scaling.py`, and
   `compare_temporal_runs.py` should now be the default reporting path before
   deciding whether to spend another long real run.
-- `satellite/apps/inspect_goal_evidence.py` now combines the goal-facing
-  evidence into one preview/artifact-only report: near/mixed/far path
-  diversity, return-path migration worklist, runtime validation/reuse
-  protections, timing classification, and the current real-run gate. With live
-  preflight it reports `near_one_hop=True`, `varied_multihop_runs=2`,
-  `one_hop_is_geography_specific=True`; the far preview reaches
-  `isl_hops_max=24`, so the old near-GW `1-hop` outcome is not treated as a
-  hard-coded sparse-shell guarantee. The same report records selected return
-  path scope `selected_flows=24`, `current_backbone_items=48`,
-  `target_backbone_items=12`, `ratio=4.0`, and
-  `top_backbone_work_item=reverse_lfib_label_stack`, while timing remains
-  separated as `initial_wall=586.899462`, steady RuntimeEpoch
-  `steady_count=5`, `steady_wall_avg=5.46845`, and ParameterEpoch
-  `parameter_wall_avg=1.136802`.
 - The same consolidated evidence now includes an explicit directional
   isolation summary. On the selected-smoke artifact, forward UT->GW evidence is
   represented by `forward_model=ut_edge_gateway_class_selection`,
@@ -746,16 +924,6 @@
   `1666.666667x` ratio. This makes the asymmetric state problem explicit:
   UT-side gateway-class choice is comparatively bounded, while return-path
   compatibility state is still the scale risk.
-- The readiness checks are now also consolidated in
-  `satellite/apps/inspect_goal_readiness.py`. With the current default
-  artifacts and live preflight it reports `static_evidence_ready=True` and
-  `long_real_run_ready=False`: distance diversity, return-path blocker audit,
-  runtime validation/reuse protections, and timing classification are present,
-  but host runtime readiness is still blocked by the expected
-  `host_mpls_not_ready` and `bridge_netfilter_passthrough_not_ready` warnings.
-  This should be the final gate before spending another long real-runtime run:
-  run the script once without live preflight for artifact review, then with
-  `--live-preflight` immediately before host prepare / real run.
 - Return-path migration blockers are now anchored to concrete Linux runtime
   install points via `satellite/return_path_install_audit.py` and
   `satellite/apps/inspect_return_path_install_points.py`. The current audit
@@ -763,10 +931,8 @@
   `satellite/linux_mpls_runtime.py`: `3` backbone-return blockers with `10`
   install points, `1` serving-satellite edge-local delivery blocker with `3`
   install points, and `1` gateway edge-policy blocker with `5` install points.
-  `inspect_goal_readiness.py` now includes this as
-  `install_points_ready=True`, so the static gate proves not only that return
-  path blockers exist in artifacts but also where the current compatibility
-  installer realizes them.
+  The static audit identifies both the artifact blockers and the concrete
+  installer points that realize them.
 - `satellite/apps/inspect_return_path_migration_worklist.py` now combines
   `return_path_audit.json` blocker counts with the Linux install-point audit.
   On `goal-1shell-172-preview-return-audit-selected-smoke`, both full and
@@ -825,39 +991,7 @@
   counts. This makes the desired transition explicit: GW return should move
   from per-UT `/32` compatibility routes toward shared zone/gateway-zone return
   reachability, while local UT delivery stays at the serving-satellite edge.
-- Latest post-reboot validation after adding candidate-metadata coverage, the
-  fixed session-check wrapper, and the consolidated goal-evidence report:
-  `PYTHONPATH=/home/seed/skyseed/satellite/apps:/home/seed/skyseed/satellite /home/seed/miniconda3/envs/seed310/bin/python -m unittest satellite/test_return_path_audit.py satellite/test_return_path_install_audit.py satellite/test_planner_return_path_intent.py satellite/test_incremental_runtime_reuse.py satellite/test_temporal_run_inspector.py satellite/test_temporal_run_comparator.py satellite/test_timing_analysis.py satellite/test_runtime_validation_defaults.py satellite/test_starlink_distance_matrix_inspector.py satellite/test_goal_readiness_inspector.py`
-  plus `satellite/test_skyseed_session_check.py` and
-  `satellite/test_goal_evidence_inspector.py` passed `44` tests.
-  `py_compile` also passed for
-  `satellite/planner.py`,
-  `satellite/linux_mpls_runtime.py`,
-  `satellite/return_path_audit.py`,
-  `satellite/temporal_run_inspector.py`,
-  `satellite/temporal_run_comparator.py`,
-  `satellite/return_path_install_audit.py`,
-  `satellite/apps/inspect_return_path_install_points.py`,
-  `satellite/apps/inspect_return_path_migration_worklist.py`,
-  `satellite/apps/inspect_goal_readiness.py`,
-  `satellite/apps/skyseed_session_check.py`,
-  `satellite/apps/inspect_goal_evidence.py`,
-  `satellite/test_return_path_install_audit.py`, and
-  `satellite/test_goal_readiness_inspector.py`,
-  `satellite/test_skyseed_session_check.py`,
-  `satellite/test_goal_evidence_inspector.py`.
-  Live `skyseed_preflight.py --format text` under `seed310` returned
-  `ready=True`, with zero scoped containers, networks, direct-backend host
-  interfaces, or runtime locks; the only warnings remained
-  `host_mpls_not_ready` and `bridge_netfilter_passthrough_not_ready`.
-  Live `skyseed_session_check.py --format text` reported branch
-  `main...origin/main [ahead 19]`, `dirty_entries=55`,
-  `static_evidence_ready=True`, `long_real_run_ready=False`, and
-  `next_action=run_host_prepare_then_recheck_preflight_before_real_run`.
-  Live `inspect_goal_evidence.py --live-preflight --format text` reported the
-  same long-run gate state plus directional isolation fields, and did not start
-  a real run.
-  A selected-smoke return-path scaling recomputation now reports
+- A selected-smoke return-path scaling recomputation reports
   `shared_candidate_zone_routes=18`, with `6` per snapshot, while
   `candidate_zone_route_coverage=0.0` and
   `candidate_zone_route_complete=False` correctly identify that the older
@@ -866,9 +1000,7 @@
   passed after adding the metadata-only zone-route candidate: `44` tests OK,
   with `py_compile` passing for planner, runtime, return audit, temporal
   inspector/comparator, and the goal/session app entry points.
-- `inspect_goal_readiness.py` and `inspect_goal_evidence.py` now surface the
-  same candidate zone-route fields in the main goal gates. The current default
-  selected runtime scope reports `candidate_zone_routes=12`,
+- The historical selected runtime scope reports `candidate_zone_routes=12`,
   `candidate_zone_route_coverage=0.0`, and
   `candidate_zone_route_complete=False`, because the selected-smoke artifact is
   still an older fallback-derived artifact. This is the expected baseline: a
@@ -1189,45 +1321,6 @@
   `5s` evidence before deciding whether another long `5s` run is worth the
   queue-pressure risk.
 
-## Legacy Baseline Context
-
-- The active system is the Iteration 2 small-scale satellite Internet platform.
-- Network construction is still based on SEED/seedemu:
-- `apps/build_iteration2_example_topology.py` builds the SEED topology,
-- satellite/gateway/UT inventory, and baseline `link_state.json`; shared
-- seedemu-facing helpers live in `seed_integration.py`.
-- Runtime execution follows the Iteration 2 contract path:
-- `TopologySnapshot -> RuntimeUpdatePlan -> NetworkMutationPlan`
-- plus node-local Linux/MPLS realization.
-- Phase1/controller-driven material is isolated under `legacy_phase1/`.
-- Generated outputs, test logs, and Python bytecode caches are not source.
-
-## Active Entry Points
-
-- Build the clean topology:
-  `python3 satellite/apps/build_iteration2_example_topology.py`
-- Run the Iteration 2 experiment preview or real execution:
-  `python3 satellite/apps/iteration2_satellite_experiment.py`
-- Run full clean-environment validation:
-  `bash satellite/test_bundle_current_network/scripts/run_full_runtime_validation.sh`
-- Observe MPLS paths manually:
-  `satellite/docs/guides/iteration2_mpls_observation_guide.md`
-
-## Latest Validation
-
-The latest completed full validation was:
-
-- run id: `full_runtime_20260606_223023`
-- result: `pass`
-- transition count: `5`
-- real apply: `success`
-- ping: `success`
-- rollback: `success`
-- average transition wall time: `26.634s`
-- dominant measured phase: `network_mutation_plan`
-- cleanup: compose stack stopped and no project-labeled containers/networks
-  remained
-
 Important observed `ut1` paths:
 
 - `small-scale-slice-0001`: `ut1 -> sat-b1 -> gw2 -> as160-host1`
@@ -1298,17 +1391,6 @@ checkpoint file instead of branching into fragmented status notes.
 
 ## Current Risks / Cleanup Targets
 
-- `controller.py` still exists for legacy and Phase A compatibility paths, but
-  it is no longer on the active steady-state host mutation hot path.
-- `mpls_control.py` remains a transitional/legacy MPLS helper used by
-  `controller.py` and legacy scripts.
-- `build_topology.py` is now an older broad SEED topology builder retained for
-  compatibility/reference; the active small-scale app uses `seed_integration.py`
-  for shared SEED helpers.
-- `legacy_contract_adapters.py` isolates old controller/link-state projection
-  helpers from the canonical contract schema module.
-- `docs/network_lower_layer_inventory.md` tracks lower-layer Linux/Docker/MPLS
-  mechanics that may belong in seedemu or a shared runtime layer later.
 - The largest remaining steady-state cost is now connectivity probing and
   validation around the node-local handoff, not access-link warmup itself.
 
@@ -1386,14 +1468,14 @@ checkpoint file instead of branching into fragmented status notes.
 
 ## Minimal Verification After Code Changes
 
-Use these checks after ordinary code cleanup:
+Use the active operational-clean checks after code changes:
 
 ```bash
 python3 -m py_compile \
-  satellite/apps/build_iteration2_example_topology.py \
-  satellite/apps/iteration2_satellite_experiment.py \
+  satellite/apps/run_skyseed_validation_profile.py \
+  satellite/apps/run_starlink_shell_experiment.py \
+  satellite/apps/pre_long_run_contract_check.py \
   satellite/contracts.py \
-  satellite/legacy_contract_adapters.py \
   satellite/seed_integration.py \
   satellite/topology_pipeline.py \
   satellite/experiment_topology.py \
@@ -1409,8 +1491,21 @@ python3 -m py_compile \
   satellite/linux_mpls_runtime.py
 ```
 
-Use the full validation after runtime/MPLS/topology changes:
+Use the flow-level companion check against the prepared run artifact before a
+new expensive validation:
 
 ```bash
-bash satellite/test_bundle_current_network/scripts/run_full_runtime_validation.sh
+PYTHONPATH=satellite:satellite/apps python3 \
+  satellite/apps/pre_long_run_contract_check.py \
+  --candidate-profile-run-dir <candidate-dry-run-dir> \
+  --worker-failed-run-dir <r116-run-dir> \
+  --cleanup-failed-run-dir <r113-run-dir> \
+  --initial-binding-failed-run-dir <r118-run-dir> \
+  --final-binding-conflict-run-dir <r119-run-dir> \
+  --parent-host-handoff-failed-run-dir <r120-run-dir> \
+  --multicast-cleanup-failed-run-dir <r121-run-dir> \
+  --compose-multicast-gap-run-dir <r122-run-dir> \
+  --latest-failed-run-dir <r123-run-dir> \
+  --expected-horizon-count <count> \
+  --expected-entries-per-horizon <count>
 ```

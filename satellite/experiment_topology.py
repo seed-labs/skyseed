@@ -805,6 +805,15 @@ def _scenario_planner_hints(
     }
     gateways_by_id = _topology_entry_by_id(topology.get("gateways", []), "gateway_id")
     user_terminals_by_id = _topology_entry_by_id(topology.get("user_terminals", []), "ut_id")
+    immutable_ut_gateway_policies = [
+        dict(entry)
+        for entry in list(
+            dict(topology.get("ground_model") or {}).get(
+                "ut_gateway_policy_catalog", []
+            )
+            or []
+        )
+    ]
     validation_targets = [
         dict(external_targets[target_node_id])
         for target_node_id in scenario.default_validation_target_node_ids
@@ -818,6 +827,65 @@ def _scenario_planner_hints(
             "ip_address": scenario.ping_target_ip,
         }
     )
+    if immutable_ut_gateway_policies:
+        policy_by_ut_id = {
+            str(entry.get("ut_id") or ""): dict(entry)
+            for entry in immutable_ut_gateway_policies
+        }
+        selected_ut_ids = [
+            str(terminal.ut_id) for terminal in scenario.terminal_profiles
+        ]
+        missing_policy_ut_ids = sorted(set(selected_ut_ids) - set(policy_by_ut_id))
+        if missing_policy_ut_ids:
+            raise ValueError(
+                "immutable UT gateway policy missing for selected UTs: "
+                + ",".join(missing_policy_ut_ids)
+            )
+        selected_policies = {
+            ut_id: dict(policy_by_ut_id[ut_id]) for ut_id in selected_ut_ids
+        }
+        referenced_gateway_ids = {
+            str(rule.get("gateway_id") or "")
+            for policy in selected_policies.values()
+            for rule in list(policy.get("rules") or [])
+        }
+        gateway_service_catalog: Dict[str, Dict[str, Any]] = {}
+        for gateway_id in sorted(referenced_gateway_ids):
+            gateway = dict(gateways_by_id.get(gateway_id) or {})
+            selector = gateway.get("gateway_selector_label")
+            service_prefix = str(gateway.get("gateway_service_ipv4") or "")
+            if selector in (None, "", "None") or not service_prefix:
+                raise ValueError(
+                    f"explicit gateway service binding missing for {gateway_id}"
+                )
+            gateway_service_catalog[gateway_id] = {
+                "gateway_id": gateway_id,
+                "gateway_selector_label": int(selector),
+                "gateway_service_ipv4": service_prefix,
+            }
+        return {
+            "experiment_profile": scenario.scenario_name,
+            "experiment_scope": "immutable_ut_policy_shared_gz_backbone",
+            "gateway_ids": [gateway.gateway_id for gateway in scenario.gateway_profiles],
+            "ut_ids": selected_ut_ids,
+            "ut_gateway_policies": selected_policies,
+            "gateway_service_catalog": gateway_service_catalog,
+            "internet_validation_targets": [],
+            "zone_default_gateway_preferences": {},
+            "special_prefix_overrides": [],
+            "gateway_ix_catalog": {},
+            "mini_internet_integration": {
+                "enabled": False,
+                "used_by_gz_runtime": False,
+                "reason": "gateway_service_loopback_only",
+            },
+            "gateway_selection_semantics": {
+                "source": "immutable_ut_gateway_policy_catalog",
+                "fallback": False,
+                "live_discovery": False,
+                "preferred_list_iteration": False,
+            },
+        }
     zone_membership: Dict[str, List[str]] = {}
     for terminal in scenario.terminal_profiles:
         zone_membership.setdefault(str(terminal.zone_id), []).append(str(terminal.ut_id))
@@ -1044,6 +1112,18 @@ def _scenario_planner_hints(
         "target_host_node_id": primary_target.get("node_id"),
         "ut_ids": [terminal.ut_id for terminal in scenario.terminal_profiles],
         "internet_validation_targets": validation_targets,
+        "ut_gateway_policies": {
+            str(entry.get("ut_id") or ""): dict(entry)
+            for entry in immutable_ut_gateway_policies
+        },
+        "gateway_service_catalog": {
+            gateway_id: {
+                "gateway_id": gateway_id,
+                "gateway_selector_label": gateway.get("gateway_selector_label"),
+                "gateway_service_ipv4": gateway.get("gateway_service_ipv4"),
+            }
+            for gateway_id, gateway in gateways_by_id.items()
+        },
         "zone_default_gateway_preferences": zone_default_gateway_preferences,
         "special_prefix_overrides": special_prefix_overrides,
         "gateway_ix_catalog": {
@@ -2401,6 +2481,270 @@ class SemiRealLineOfSightVisibilityModel(VisibilityModel):
                     "endpoints": [dict(endpoint) for endpoint in candidate.get("endpoints", [])],
                     "visibility_relation": link.get("visibility_relation"),
                     "visibility_elevation_deg": round(elevation_deg, 3),
+                }
+            )
+        return VisibilitySlice(
+            active_links=sorted(active_links, key=lambda entry: str(entry.get("link_id"))),
+            visibility_model=self.model_name,
+            candidate_visibility=candidate_visibility,
+        )
+
+
+class FrozenVisualizationLinkVisibilityModel(VisibilityModel):
+    """Consume prepared visualization ground/ISL links as the physical source."""
+
+    model_name = "visualization_frozen_physical_links_v1"
+
+    def __init__(
+        self,
+        *,
+        link_payload: Dict[str, Any],
+        ut_min_elevation_deg: float = 10.0,
+    ) -> None:
+        self.payload = dict(link_payload)
+        self.frames = [dict(frame) for frame in list(self.payload.get("links") or [])]
+        if not self.frames:
+            raise ValueError("visualization link payload contains no frames")
+        self.interval_seconds = self._parse_interval_seconds(
+            str(self.payload.get("interval") or "")
+        )
+        self.ut_min_elevation_deg = float(ut_min_elevation_deg)
+
+    @staticmethod
+    def _parse_interval_seconds(value: str) -> float:
+        text = str(value).strip().lower()
+        if not text:
+            raise ValueError("visualization link payload interval is required")
+        if text.endswith("ms"):
+            return float(text[:-2]) / 1000.0
+        if text.endswith("s"):
+            return float(text[:-1])
+        return float(text)
+
+    @staticmethod
+    def _pair_key(first: str, second: str) -> tuple[str, str]:
+        return tuple(sorted((str(first), str(second))))
+
+    def _frame_for_slice(self, orbit_slice: OrbitTopologySlice) -> Dict[str, Any]:
+        relative_time = float(
+            orbit_slice.time_slice.get("relative_time_seconds", 0.0)
+        )
+        frame_index = int(round(relative_time / self.interval_seconds))
+        if frame_index < 0 or frame_index >= len(self.frames):
+            raise ValueError(
+                "visualization link payload does not cover topology slice: "
+                f"relative_time_seconds={relative_time} frame_index={frame_index} "
+                f"frame_count={len(self.frames)} interval={self.interval_seconds}"
+            )
+        return self.frames[frame_index]
+
+    def evaluate(self, orbit_slice: OrbitTopologySlice) -> VisibilitySlice:
+        active_links: List[Dict[str, Any]] = []
+        candidate_visibility: Dict[str, List[Dict[str, Any]]] = {}
+        frame = self._frame_for_slice(orbit_slice)
+        ground_links_by_station: Dict[str, List[str]] = {}
+        for link in list(frame.get("groundLinks") or []):
+            station_id = str(dict(link).get("groundStationId") or "")
+            satellite_id = str(dict(link).get("satelliteId") or "")
+            if station_id and satellite_id:
+                ground_links_by_station.setdefault(station_id, []).append(satellite_id)
+        satellite_pairs = {
+            self._pair_key(
+                str(dict(link).get("satelliteAId") or ""),
+                str(dict(link).get("satelliteBId") or ""),
+            )
+            for link in list(frame.get("satelliteLinks") or [])
+            if dict(link).get("satelliteAId") and dict(link).get("satelliteBId")
+        }
+        positions = {
+            node_id: ExperimentNodePosition(
+                x_km=float(node.get("position_state", {}).get("x_km", 0.0)),
+                y_km=float(node.get("position_state", {}).get("y_km", 0.0)),
+                z_km=float(node.get("position_state", {}).get("z_km", 0.0)),
+            )
+            for node_id, node in orbit_slice.nodes.items()
+        }
+        for link in orbit_slice.candidate_links:
+            slot_type = str(link.get("slot_type"))
+            if slot_type == "ut_access":
+                owner_node_id = str(link.get("visibility_owner_node_id"))
+                owner_position = positions.get(owner_node_id)
+                visible_candidates = []
+                for candidate in list(link.get("candidate_bindings") or []):
+                    satellite_id = str(dict(candidate).get("satellite_id") or "")
+                    satellite_position = positions.get(satellite_id)
+                    if owner_position is None or satellite_position is None:
+                        continue
+                    elevation_deg = _elevation_deg(owner_position, satellite_position)
+                    if elevation_deg < self.ut_min_elevation_deg:
+                        continue
+                    visible_candidates.append((satellite_id, elevation_deg, dict(candidate)))
+                visible_candidates.sort(key=lambda item: (-item[1], item[0]))
+                candidate_visibility[owner_node_id] = [
+                    _candidate_visibility_record(
+                        link=link,
+                        candidate=candidate,
+                        metric_name="visibility_elevation_deg",
+                        metric_value=elevation_deg,
+                    )
+                    for satellite_id, elevation_deg, candidate in visible_candidates
+                ]
+                if not visible_candidates:
+                    continue
+                satellite_id, elevation_deg, candidate = visible_candidates[0]
+                active_links.append(
+                    {
+                        "link_id": link.get("link_id"),
+                        "slot_type": slot_type,
+                        "subnet": link.get("subnet"),
+                        "network_name": link.get("network_name"),
+                        "docker_network_name": link.get("docker_network_name"),
+                        "occupied": True,
+                        "binding": dict(candidate.get("binding", {})),
+                        "endpoints": [
+                            dict(endpoint)
+                            for endpoint in candidate.get("endpoints", [])
+                        ],
+                        "visibility_relation": link.get("visibility_relation"),
+                        "visibility_elevation_deg": round(elevation_deg, 3),
+                        "activation_model": "skyseed_ut_access_geometry_v1",
+                    }
+                )
+                continue
+            if slot_type == "gw_access":
+                owner_node_id = str(link.get("visibility_owner_node_id"))
+                visible_satellite_ids = set(ground_links_by_station.get(owner_node_id, []))
+                visible_candidates = []
+                for candidate in list(link.get("candidate_bindings") or []):
+                    satellite_id = str(dict(candidate).get("satellite_id") or "")
+                    if satellite_id not in visible_satellite_ids:
+                        continue
+                    owner_position = positions.get(owner_node_id)
+                    satellite_position = positions.get(satellite_id)
+                    elevation_deg = 0.0
+                    if owner_position is not None and satellite_position is not None:
+                        elevation_deg = _elevation_deg(owner_position, satellite_position)
+                    visible_candidates.append((satellite_id, elevation_deg, dict(candidate)))
+                visible_candidates.sort(key=lambda item: (-item[1], item[0]))
+                candidate_visibility[owner_node_id] = [
+                    _candidate_visibility_record(
+                        link=link,
+                        candidate=candidate,
+                        metric_name="visibility_elevation_deg",
+                        metric_value=elevation_deg,
+                    )
+                    for satellite_id, elevation_deg, candidate in visible_candidates
+                ]
+                if not visible_candidates:
+                    continue
+                satellite_id, elevation_deg, candidate = visible_candidates[0]
+                active_links.append(
+                    {
+                        "link_id": link.get("link_id"),
+                        "slot_type": slot_type,
+                        "subnet": link.get("subnet"),
+                        "network_name": link.get("network_name"),
+                        "docker_network_name": link.get("docker_network_name"),
+                        "occupied": True,
+                        "binding": dict(candidate.get("binding", {})),
+                        "endpoints": [
+                            dict(endpoint)
+                            for endpoint in candidate.get("endpoints", [])
+                        ],
+                        "visibility_relation": link.get("visibility_relation"),
+                        "visualization_ground_station_id": owner_node_id,
+                        "visibility_elevation_deg": round(elevation_deg, 3),
+                        "activation_model": self.model_name,
+                    }
+                )
+                continue
+            if slot_type == "same_plane_isl":
+                binding = dict(link.get("binding") or {})
+                pair = self._pair_key(
+                    str(binding.get("satellite_a_id") or ""),
+                    str(binding.get("satellite_b_id") or ""),
+                )
+                if pair not in satellite_pairs:
+                    continue
+                active_links.append(
+                    {
+                        key: value
+                        for key, value in link.items()
+                        if key not in {"visibility_owner_node_id", "candidate_bindings"}
+                    }
+                )
+                continue
+            if slot_type == "cross_plane_isl":
+                visible_candidates = []
+                for candidate in list(link.get("candidate_bindings") or []):
+                    endpoints = [dict(endpoint) for endpoint in candidate.get("endpoints", [])]
+                    if len(endpoints) != 2:
+                        continue
+                    pair = self._pair_key(
+                        str(endpoints[0].get("node_id") or ""),
+                        str(endpoints[1].get("node_id") or ""),
+                    )
+                    if pair not in satellite_pairs:
+                        continue
+                    first_position = positions.get(str(endpoints[0].get("node_id") or ""))
+                    second_position = positions.get(str(endpoints[1].get("node_id") or ""))
+                    distance_km = 0.0
+                    if first_position is not None and second_position is not None:
+                        distance_km = _distance_km(first_position, second_position)
+                    visible_candidates.append((distance_km, dict(candidate)))
+                candidate_visibility[str(link.get("link_id"))] = [
+                    {
+                        "satellite_pair_id": str(candidate.get("satellite_pair_id")),
+                        "binding": dict(candidate.get("binding", {})),
+                        "endpoints": [
+                            dict(endpoint)
+                            for endpoint in candidate.get("endpoints", [])
+                        ],
+                        "slot_type": slot_type,
+                        "cross_plane_distance_km": round(distance_km, 3),
+                    }
+                    for distance_km, candidate in sorted(
+                        visible_candidates,
+                        key=lambda item: (
+                            item[0],
+                            str(item[1].get("satellite_pair_id")),
+                        ),
+                    )
+                ]
+                if not visible_candidates:
+                    continue
+                distance_km, candidate = min(
+                    visible_candidates,
+                    key=lambda item: (
+                        item[0],
+                        str(item[1].get("satellite_pair_id")),
+                    ),
+                )
+                active_links.append(
+                    {
+                        "link_id": link.get("link_id"),
+                        "slot_type": slot_type,
+                        "subnet": link.get("subnet"),
+                        "network_name": link.get("network_name"),
+                        "docker_network_name": link.get("docker_network_name"),
+                        "bridge_gateway_ip": link.get("bridge_gateway_ip"),
+                        "occupied": True,
+                        "binding": dict(candidate.get("binding", {})),
+                        "endpoints": [
+                            dict(endpoint)
+                            for endpoint in candidate.get("endpoints", [])
+                        ],
+                        "visibility_relation": link.get("visibility_relation"),
+                        "cross_plane_distance_km": round(distance_km, 3),
+                        "activation_model": self.model_name,
+                    }
+                )
+                continue
+            active_links.append(
+                {
+                    key: value
+                    for key, value in link.items()
+                    if key not in {"visibility_owner_node_id", "candidate_bindings"}
                 }
             )
         return VisibilitySlice(

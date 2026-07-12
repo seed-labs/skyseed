@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import hashlib
 import json
 from datetime import datetime, timezone
 import math
@@ -28,7 +29,9 @@ from ground_model import (
     load_gateway_catalog,
     load_zone_catalog,
     load_ut_catalog,
+    load_ut_gateway_policy_catalog,
     select_gateway_entries,
+    select_zone_entries,
     select_ut_entries,
     summarize_ground_model,
 )
@@ -42,6 +45,7 @@ from orbit_data import (
     CelesTrakGpTleOrbitDataSource,
     DEFAULT_STARLINK_GP_TLE_URL,
     LocalOrbitDataSource,
+    ParsedTleRecord,
     StarlinkCatalogTableRecord,
     fetch_starlink_catalog_table_html,
     fetch_tle_for_catnr,
@@ -54,8 +58,6 @@ from seed_integration import resolve_platform
 from seedemu.compiler import Docker
 from starlink_shell import (
     PLANNED_STARLINK_PHASE1_SHELL_PRESETS,
-    generate_planned_shell_records,
-    planned_shell_preset,
     propagate_planned_shell_records,
     propagate_starlink_records,
     select_starlink_shell,
@@ -78,6 +80,7 @@ from temporal_planning import (
     build_sample_boundary_temporal_plan,
     build_temporal_plan,
 )
+from visualization_physical_links import write_frozen_visualization_link_artifacts
 
 
 DEFAULT_DATA_DIR = SATELLITE_DIR / "data" / "tle"
@@ -85,6 +88,9 @@ DEFAULT_TLE_PATH = DEFAULT_DATA_DIR / "starlink_latest.tle"
 DEFAULT_TLE_MANIFEST_PATH = DEFAULT_DATA_DIR / "starlink_latest.manifest.json"
 DEFAULT_CONFIG_DIR = SATELLITE_DIR / "configs" / "starlink_shell_preview"
 DEFAULT_OUTPUT_DIR = SATELLITE_DIR / "output" / "starlink_shell_preview"
+DEFAULT_PLANNED_ORBIT_CATALOG_PATH = (
+    SATELLITE_DIR / "apps" / "visualization" / "planned_shell_orbit_data_s1_s5.json"
+)
 
 
 def _write_json(path: Path, payload: Dict[str, Any]) -> None:
@@ -194,6 +200,63 @@ def _records_summary(records: Sequence[Any]) -> Dict[str, Any]:
         "mean_motion_rev_per_day_max": round(max(mean_motions), 9) if mean_motions else None,
         "epoch_utc_min": min(epochs).isoformat().replace("+00:00", "Z") if epochs else None,
         "epoch_utc_max": max(epochs).isoformat().replace("+00:00", "Z") if epochs else None,
+    }
+
+
+def _planned_shell_record_from_catalog(entry: Dict[str, Any]) -> Any:
+    return ParsedTleRecord(
+        satellite_name=str(entry["satellite_name"]),
+        norad_id=int(entry["norad_id"]),
+        epoch_utc=str(entry["epoch_utc"]),
+        inclination_deg=float(entry["inclination_deg"]),
+        eccentricity=float(entry.get("eccentricity", 0.0)),
+        mean_motion_rev_per_day=float(entry["mean_motion_rev_per_day"]),
+        raan_deg=float(entry["raan_deg"]),
+        argument_of_perigee_deg=float(entry.get("argument_of_perigee_deg", 0.0)),
+        mean_anomaly_deg=float(entry["mean_anomaly_deg"]),
+        line1=str(entry.get("line1") or f"PLANNED {entry['satellite_name']}"),
+        line2=str(entry.get("line2") or ""),
+    )
+
+
+def _load_planned_shell_records_from_catalog(
+    *,
+    path: Path,
+    shell_id: str,
+) -> tuple[List[Any], Dict[str, Any]]:
+    raw_text = path.read_text(encoding="utf-8")
+    payload = json.loads(raw_text)
+    if payload.get("schema_version") != "skyseed-planned-shell-orbit-data-v1":
+        raise ValueError(f"planned orbit catalog has unsupported schema: {path}")
+    records = list(payload.get("selected_records") or [])
+    normalized_shell_id = str(shell_id).upper()
+    shell_marker = f"-{normalized_shell_id}-"
+    selected = [
+        _planned_shell_record_from_catalog(dict(entry))
+        for entry in records
+        if shell_marker in str(entry.get("satellite_name") or "")
+    ]
+    if not selected:
+        raise ValueError(
+            f"planned orbit catalog {path} has no records for shell {normalized_shell_id}"
+        )
+    return selected, {
+        "source_name": "visualization_planned_shell_orbit_catalog",
+        "source_url": None,
+        "cache_path": str(path),
+        "manifest_path": None,
+        "fetched_at_utc": None,
+        "orbit_format": "skyseed_planned_shell_orbit_catalog",
+        "sha256": hashlib.sha256(raw_text.encode("utf-8")).hexdigest(),
+        "metadata": {
+            "schema_version": payload.get("schema_version"),
+            "orbit_data_kind": payload.get("orbit_data_kind"),
+            "orbit_source": payload.get("orbit_source"),
+            "requested": dict(payload.get("requested") or {}),
+            "selected_shell_id": normalized_shell_id,
+            "catalog_record_count": len(records),
+            "selected_shell_record_count": len(selected),
+        },
     }
 
 
@@ -414,7 +477,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--orbit-data",
         default=None,
-        help="Explicit local orbit data file for reproducible real-catalog runs.",
+        help="Explicit local orbit data file for repeatable real-catalog runs.",
     )
     parser.add_argument(
         "--manifest-path",
@@ -433,9 +496,19 @@ def parse_args() -> argparse.Namespace:
         help="Optional JSON file describing the UT catalog.",
     )
     parser.add_argument(
+        "--ut-gateway-policy-catalog",
+        default=None,
+        help="Required immutable UT longest-prefix-match gateway policy catalog for clean G/Z profiles.",
+    )
+    parser.add_argument(
         "--gateway-catalog",
         default=None,
         help="Optional JSON file describing the gateway catalog.",
+    )
+    parser.add_argument(
+        "--gateway-binding-catalog",
+        default=None,
+        help="Explicit Skyseed-to-visualization gateway binding catalog.",
     )
     parser.add_argument(
         "--zone-catalog",
@@ -451,6 +524,11 @@ def parse_args() -> argparse.Namespace:
         "--gateway-ids",
         default=None,
         help="Comma-separated selected gateway ids to emulate.",
+    )
+    parser.add_argument(
+        "--zone-ids",
+        default=None,
+        help="Comma-separated selected zone ids to include in the active model.",
     )
     parser.add_argument(
         "--max-uts",
@@ -502,6 +580,27 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=None,
         help="Optional temporal planning horizon. If set, derives sample count from horizon/sample interval.",
+    )
+    parser.add_argument(
+        "--require-visualization-links",
+        action="store_true",
+        help="Fail unless frozen visualization physical links are prepared and used.",
+    )
+    parser.add_argument(
+        "--visualization-link-start-timestamp",
+        default=None,
+        help="Explicit visualization exporter start timestamp for frozen physical links.",
+    )
+    parser.add_argument(
+        "--visualization-link-interval",
+        default="10s",
+        help="Visualization exporter interval for frozen physical links.",
+    )
+    parser.add_argument(
+        "--visualization-link-duration-seconds",
+        type=float,
+        default=None,
+        help="Frozen visualization physical link duration in seconds.",
     )
     parser.add_argument(
         "--step-seconds",
@@ -655,13 +754,24 @@ def main() -> int:
     effective_workload_catalog_json_path = config_dir / "effective_workload_catalog.json"
 
     ut_catalog = load_ut_catalog(args.ut_catalog)
+    ut_gateway_policy_catalog = (
+        load_ut_gateway_policy_catalog(args.ut_gateway_policy_catalog)
+        if args.ut_gateway_policy_catalog
+        else []
+    )
     selected_uts = select_ut_entries(
         ut_catalog,
         selected_ids=args.ut_ids,
         max_uts=int(args.max_uts) if args.max_uts is not None else None,
     )
-    gateway_catalog = load_gateway_catalog(args.gateway_catalog)
-    zone_catalog = load_zone_catalog(args.zone_catalog)
+    gateway_catalog = load_gateway_catalog(
+        args.gateway_catalog,
+        binding_path=args.gateway_binding_catalog,
+    )
+    zone_catalog = select_zone_entries(
+        load_zone_catalog(args.zone_catalog),
+        selected_ids=args.zone_ids,
+    )
     selected_gateways = select_gateway_entries(
         gateway_catalog,
         selected_ids=args.gateway_ids,
@@ -704,34 +814,24 @@ def main() -> int:
     orbit_source = "celestrak_starlink_gp_tle"
 
     if args.orbit_input_mode == "planned-shell":
-        preset = planned_shell_preset(str(args.planned_shell_id))
-        if int(args.max_satellites) > preset.satellite_count:
+        orbit_catalog_path = Path(args.orbit_data).resolve() if args.orbit_data else DEFAULT_PLANNED_ORBIT_CATALOG_PATH
+        full_records, artifact = _load_planned_shell_records_from_catalog(
+            path=orbit_catalog_path,
+            shell_id=str(args.planned_shell_id),
+        )
+        if int(args.max_satellites) > len(full_records):
             raise ValueError(
                 f"--max-satellites {args.max_satellites} exceeds planned shell "
-                f"{preset.shell_id} capacity {preset.satellite_count}"
+                f"{str(args.planned_shell_id).upper()} capacity {len(full_records)}"
             )
-        full_records = generate_planned_shell_records(shell_id=preset.shell_id)
         parse_result = None
         selection = select_starlink_shell(
             full_records,
             max_satellites=int(args.max_satellites),
         )
-        catalog_selection_mode = "planned_shell_preset"
+        catalog_selection_mode = "visualization_planned_shell_orbit_catalog"
         orbit_input_kind = "planned_shell_circular_orbit"
-        orbit_source = f"starlink_phase1_{preset.shell_id}"
-        artifact = {
-            "source_name": "planned_starlink_phase1_shell_preset",
-            "source_url": None,
-            "cache_path": None,
-            "manifest_path": None,
-            "fetched_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
-            "orbit_format": "planned_shell_preset",
-            "sha256": None,
-            "metadata": {
-                "planned_shell_preset": preset.to_dict(),
-                "object_count": len(full_records),
-            },
-        }
+        orbit_source = f"visualization_starlink_phase1_{str(args.planned_shell_id).upper()}"
         record_summary = _records_summary(full_records)
     else:
         local_mode = args.source_mode == "local" or args.orbit_data is not None
@@ -938,6 +1038,7 @@ def main() -> int:
         gateway_definitions=effective_gateway_definitions,
         mini_internet_node_prefix=str(args.mini_internet_node_prefix),
         mini_internet_ix_offset=int(args.mini_internet_ix_offset),
+        include_mini_internet=not bool(ut_gateway_policy_catalog),
     )
     seed_rendered = False
     seed_compiled = False
@@ -970,6 +1071,40 @@ def main() -> int:
             seed_compile_output_wall_seconds = time.perf_counter() - compile_started_at
             seed_compiled = True
 
+    visualization_link_artifacts = None
+    visualization_link_payload = None
+    if bool(args.require_visualization_links):
+        link_start_timestamp = (
+            str(args.visualization_link_start_timestamp)
+            if args.visualization_link_start_timestamp is not None
+            else str(args.start_time or "")
+        )
+        if not link_start_timestamp.strip():
+            raise ValueError(
+                "--require-visualization-links requires an explicit "
+                "--visualization-link-start-timestamp or --start-time"
+            )
+        link_duration_seconds = (
+            float(args.visualization_link_duration_seconds)
+            if args.visualization_link_duration_seconds is not None
+            else float(effective_horizon_seconds)
+        )
+        visualization_link_artifacts = write_frozen_visualization_link_artifacts(
+            output_dir=config_dir,
+            planned_shell=str(args.planned_shell_id),
+            planned_orbit_data=(
+                orbit_catalog_path
+                if args.orbit_input_mode == "planned-shell"
+                else Path(args.orbit_data or args.tle_path).resolve()
+            ),
+            gateway_definitions=effective_gateway_definitions,
+            start_timestamp=link_start_timestamp,
+            interval=str(args.visualization_link_interval),
+            duration_seconds=link_duration_seconds,
+            max_satellites=int(args.max_satellites),
+        )
+        visualization_link_payload = dict(visualization_link_artifacts["payload"])
+
     topology_inventory = build_starlink_shell_topology_inventory(
         layout,
         ut_definitions=effective_ut_definitions,
@@ -980,7 +1115,32 @@ def main() -> int:
         ut_slots_per_terminal=1 + max(0, int(args.ut_slot_margin)),
         gateway_slots_per_gateway=1 + max(0, int(args.gateway_slot_margin)),
         cross_plane_slot_model="candidate_pair",
+        visualization_link_payload=visualization_link_payload,
     )
+    if ut_gateway_policy_catalog:
+        topology_inventory["mini_internet"] = {
+            "transit_ases": [],
+            "stub_ases": [],
+            "external_test_targets": [],
+            "gateway_ix_peerings": [],
+            "enabled": False,
+            "reason": "gateway_service_loopback_only",
+        }
+        runtime_model = dict(topology_inventory.get("skyseed_runtime_model") or {})
+        runtime_model["seed_keeps"] = [
+            item
+            for item in list(runtime_model.get("seed_keeps") or [])
+            if item
+            not in {
+                "mini_internet",
+                "internet_exchanges",
+                "stable_gateway_to_mini_internet_attachments",
+            }
+        ]
+        topology_inventory["skyseed_runtime_model"] = runtime_model
+    topology_inventory.setdefault("ground_model", {})[
+        "ut_gateway_policy_catalog"
+    ] = [dict(entry) for entry in list(ut_gateway_policy_catalog)]
     if seed_compiled:
         startup_profile_patch_summary = _apply_skyseed_lightweight_startup_profiles(
             output_dir=output_dir,
@@ -993,10 +1153,12 @@ def main() -> int:
         topology_inventory=topology_inventory,
         link_state=link_state,
     )
+
     pipeline = build_starlink_topology_snapshot_pipeline(
         topology_path=topology_json_path,
         scenario=scenario,
         propagated_slices=propagated_slices,
+        visualization_link_payload=visualization_link_payload,
     )
     snapshots = pipeline.produce_snapshots()
     observation_index_set: set[int] = set()
@@ -1066,6 +1228,9 @@ def main() -> int:
         ),
         "ground_model": {
             "ut_catalog": [dict(entry) for entry in ut_catalog],
+            "ut_gateway_policy_catalog": [
+                dict(entry) for entry in list(ut_gateway_policy_catalog)
+            ],
             "selected_uts": [dict(entry) for entry in original_selected_uts],
             "effective_uts": [dict(entry) for entry in effective_ut_definitions],
             "gateway_catalog": [dict(entry) for entry in gateway_catalog],
@@ -1074,6 +1239,22 @@ def main() -> int:
             "zone_catalog": [dict(entry) for entry in original_zone_catalog],
             "effective_zone_catalog": [dict(entry) for entry in effective_zone_catalog],
             "coordinate_semantics": dict(coordinate_semantics),
+            "visualization_physical_links": (
+                None
+                if visualization_link_artifacts is None
+                else {
+                    "required": True,
+                    "visibility_model": "visualization_frozen_physical_links_v1",
+                    "ground_station_catalog_path": visualization_link_artifacts[
+                        "ground_station_catalog_path"
+                    ],
+                    "links_path": visualization_link_artifacts["links_path"],
+                    "serviceability_report_path": visualization_link_artifacts[
+                        "serviceability_report_path"
+                    ],
+                    "serviceability": dict(visualization_link_artifacts["report"]),
+                }
+            ),
         },
         "shell_selection": selection.manifest,
         "layout": layout.to_dict(),

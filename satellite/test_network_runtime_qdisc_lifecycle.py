@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import unittest
@@ -20,6 +21,560 @@ from network_mutation import make_runtime_parameter_mutation_policy
 
 
 class QdiscLifecycleTests(unittest.TestCase):
+    def test_container_pid_cache_must_be_exactly_sealed_before_handoff(self) -> None:
+        installer = DirectNetnsVethSlotLinkNamespaceQdiscInstaller()
+        installer._container_pid_cache = {"sat-a": 101, "gw-a": 202}
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "frozen_container_pid_cache_not_sealed",
+        ):
+            installer.frozen_container_pid_cache_snapshot()
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "frozen_container_pid_cache_scope_mismatch",
+        ):
+            installer.seal_container_pid_cache(expected_node_ids=["sat-a"])
+
+        seal = installer.seal_container_pid_cache(
+            expected_node_ids=["sat-a", "gw-a"]
+        )
+
+        self.assertTrue(seal["complete"])
+        self.assertFalse(seal["live_discovery_allowed"])
+        self.assertEqual(
+            installer.frozen_container_pid_cache_snapshot(),
+            {"sat-a": 101, "gw-a": 202},
+        )
+
+    def test_targeted_binding_capture_batches_by_frozen_node_without_scan(self) -> None:
+        installer = DirectNetnsVethSlotLinkNamespaceQdiscInstaller()
+        installer._container_pid_cache = {"sat-a": 101, "sat-b": 202}
+        commands = []
+
+        def run(command, *, allow_failure=False):
+            commands.append(list(command))
+            marker = command.index("skyseed-targeted-interface-unicast-prepare")
+            interface_names = list(command[marker + 1 :])
+            stdout = "".join(
+                json.dumps(
+                    [
+                        {
+                            "ifindex": 1000 + index,
+                            "address": f"02:00:00:00:00:{index + 1:02x}",
+                            "flags": ["BROADCAST", "UP"],
+                        }
+                    ]
+                )
+                + "\n"
+                for index, _ in enumerate(interface_names)
+            )
+            return subprocess.CompletedProcess(command, 0, stdout, "")
+
+        installer._run_command = run  # type: ignore[method-assign]
+        report = installer.capture_existing_container_interface_bindings(
+            interface_refs=[
+                "netns:sat-a:if0",
+                "netns:sat-a:if1",
+                "netns:sat-b:if0",
+            ]
+        )
+
+        self.assertTrue(report["ok"])
+        self.assertFalse(report["full_scan"])
+        self.assertEqual(report["requested_interface_ref_count"], 3)
+        self.assertEqual(report["targeted_node_batch_count"], 2)
+        self.assertEqual(report["targeted_nsenter_command_count"], 2)
+        self.assertEqual(len(commands), 2)
+        self.assertEqual(len(report["bindings"]), 3)
+
+    def test_targeted_binding_capture_parallel_failure_returns_no_partial_handoff(
+        self,
+    ) -> None:
+        installer = DirectNetnsVethSlotLinkNamespaceQdiscInstaller()
+        installer._container_pid_cache = {"sat-a": 101, "sat-b": 202}
+        commands = []
+
+        def run(command, *, allow_failure=False):
+            commands.append(list(command))
+            if "202" in command:
+                raise RuntimeError("frozen_target_interface_missing")
+            stdout = json.dumps(
+                [
+                    {
+                        "ifindex": 1001,
+                        "address": "02:00:00:00:00:01",
+                        "flags": ["BROADCAST", "UP"],
+                    }
+                ]
+            )
+            return subprocess.CompletedProcess(command, 0, stdout, "")
+
+        installer._run_command = run  # type: ignore[method-assign]
+
+        with self.assertRaisesRegex(RuntimeError, "frozen_target_interface_missing"):
+            installer.capture_existing_container_interface_bindings(
+                interface_refs=[
+                    "netns:sat-a:if0",
+                    "netns:sat-b:if0",
+                ]
+            )
+
+        self.assertEqual(len(commands), 2)
+
+    def test_horizon_handoff_merges_prepared_scope_without_replacing_active_state(
+        self,
+    ) -> None:
+        installer = DirectNetnsVethSlotLinkNamespaceQdiscInstaller()
+        installer._runtime_prepared = True
+        installer._prepared_topology_path = "/parent/topology.json"
+        installer._prepared_link_state_path = "/parent/link_state.json"
+        installer._prepared_resource_keys_by_slot = {
+            "slot-a": {"resource-old"}
+        }
+        installer._container_pid_cache = {"sat-a": 4242}
+        installer._container_pid_cache_complete = True
+
+        report = installer.accept_horizon_maintenance_prepared_state(
+            topology_path=Path(__file__),
+            link_state_path=Path(__file__),
+            prepared_resource_scope_by_slot={
+                "slot-a": ["resource-old", "resource-new"],
+                "slot-b": ["resource-b"],
+            },
+            prepared_resource_counts={
+                "bridge_count": 2,
+                "candidate_resource_count": 3,
+            },
+            frozen_container_pid_cache={"sat-a": 4242},
+        )
+
+        self.assertTrue(report["ok"])
+        self.assertTrue(report["physical_prepare_skipped"])
+        self.assertTrue(report["hidden_reconcile_skipped"])
+        self.assertTrue(report["parent_active_link_state_preserved"])
+        self.assertEqual(report["added_prepared_resource_count"], 2)
+        self.assertEqual(
+            installer._prepared_resource_keys_by_slot,
+            {
+                "slot-a": {"resource-old", "resource-new"},
+                "slot-b": {"resource-b"},
+            },
+        )
+        self.assertEqual(
+            installer._prepared_topology_path,
+            "/parent/topology.json",
+        )
+        self.assertEqual(
+            installer._prepared_link_state_path,
+            "/parent/link_state.json",
+        )
+
+    def test_horizon_handoff_rejects_dropped_parent_resource_and_pid_drift(
+        self,
+    ) -> None:
+        installer = DirectNetnsVethSlotLinkNamespaceQdiscInstaller()
+        installer._runtime_prepared = True
+        installer._prepared_resource_keys_by_slot = {
+            "slot-a": {"resource-old"}
+        }
+        installer._container_pid_cache = {"sat-a": 4242}
+        installer._container_pid_cache_complete = True
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "horizon_maintenance_handoff_dropped_prepared_resources",
+        ):
+            installer.accept_horizon_maintenance_prepared_state(
+                topology_path=Path(__file__),
+                link_state_path=Path(__file__),
+                prepared_resource_scope_by_slot={"slot-a": ["resource-new"]},
+                frozen_container_pid_cache={"sat-a": 4242},
+            )
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "horizon_maintenance_handoff_pid_cache_mismatch",
+        ):
+            installer.accept_horizon_maintenance_prepared_state(
+                topology_path=Path(__file__),
+                link_state_path=Path(__file__),
+                prepared_resource_scope_by_slot={"slot-a": ["resource-old"]},
+                frozen_container_pid_cache={"sat-a": 5252},
+            )
+
+    def test_additive_prepare_uses_frozen_owned_index_without_live_scans(self) -> None:
+        installer = DirectNetnsVethSlotLinkNamespaceQdiscInstaller()
+        installer._runtime_prepared = True
+        installer._load_topology = lambda _: {}  # type: ignore[method-assign]
+        installer._slot_inventory_for_names = lambda topology, slot_names: {  # type: ignore[method-assign]
+            "slot-a": {
+                "slot_name": "slot-a",
+                "slot_type": "cross_plane_isl",
+                "subnet": "10.0.0.0/30",
+            }
+        }
+        installer._host_interface_name_set = lambda: (_ for _ in ()).throw(  # type: ignore[method-assign]
+            AssertionError("live host scan forbidden")
+        )
+        installer._container_interface_name_set = lambda **_: (_ for _ in ()).throw(  # type: ignore[method-assign]
+            AssertionError("live netns scan forbidden")
+        )
+        installer._set_bridge_ready = lambda **_: None  # type: ignore[method-assign]
+        installer._preconnected_endpoint = lambda _: None  # type: ignore[method-assign]
+        installer._prepared_resources_for_slot = lambda **_: {  # type: ignore[method-assign]
+            "resource-a": {
+                "endpoints": [
+                    {
+                        "host_interface_name": "vhs-a",
+                        "temp_interface_name": "vtmp-a",
+                        "node_id": "sat-a",
+                        "interface_name": "xp-a",
+                        "ip_address": "10.0.0.1/30",
+                    }
+                ]
+            }
+        }
+        created = []
+
+        def create_with_binding(**kwargs):
+            created.append(kwargs)
+            return {
+                "interface_ref": "netns:sat-a:xp-a",
+                "ifindex": 4321,
+                "mac_address": "02:00:00:00:00:01",
+                "binding_source": "created_veth_operation_result",
+            }
+
+        installer._create_prepared_veth = create_with_binding  # type: ignore[method-assign]
+
+        report = installer.prepare_additive_resources(
+            topology_path=Path("topology.json"),
+            link_state_path=Path("link_state.json"),
+            prepared_resource_scope_by_slot={"slot-a": ["resource-a"]},
+        )
+
+        self.assertTrue(report["ok"])
+        self.assertTrue(report["live_host_interface_scan_skipped"])
+        self.assertTrue(report["live_container_interface_scan_skipped"])
+        self.assertEqual(
+            report["prepared_owned_resource_scope_by_slot"],
+            {"slot-a": ["resource-a"]},
+        )
+        self.assertEqual(len(created), 1)
+        self.assertTrue(created[0]["capture_binding"])
+        self.assertEqual(
+            report["created_container_interface_bindings"],
+            [
+                {
+                    "interface_ref": "netns:sat-a:xp-a",
+                    "ifindex": 4321,
+                    "mac_address": "02:00:00:00:00:01",
+                    "binding_source": "created_veth_operation_result",
+                }
+            ],
+        )
+
+    def test_created_veth_captures_binding_only_when_requested(self) -> None:
+        installer, commands = self._installer_with_recorded_commands()
+        installer._delete_host_interface_if_present = lambda *_, **__: None  # type: ignore[method-assign]
+        installer._container_pid = lambda _: 4242  # type: ignore[method-assign]
+        original_nsenter = installer._nsenter
+
+        def nsenter_with_ifindex(*, node_id, command, allow_failure=False):
+            if command[0] == "sh" and 'ip -j link show dev "$2"' in command[2]:
+                rendered = ["nsenter", str(node_id), *[str(part) for part in command]]
+                commands.append(rendered)
+                return subprocess.CompletedProcess(
+                    rendered,
+                    0,
+                    '[{"ifindex":4321,"ifname":"xp-a"}]\n',
+                    "",
+                )
+            return original_nsenter(
+                node_id=node_id,
+                command=command,
+                allow_failure=allow_failure,
+            )
+
+        installer._nsenter = nsenter_with_ifindex  # type: ignore[method-assign]
+        endpoint = {
+            "host_interface_name": "vhs-a",
+            "temp_interface_name": "vtmp-a",
+            "node_id": "sat-a",
+            "interface_name": "xp-a",
+            "ip_address": "10.0.0.1/30",
+        }
+
+        uncaptured = installer._create_prepared_veth(
+            bridge_name="br-a",
+            slot_name="slot-a",
+            endpoint=endpoint,
+            activate_now=False,
+            assign_ip=False,
+        )
+        self.assertIsNone(uncaptured)
+        self.assertFalse(
+            any(
+                "ip -j link show" in " ".join(command)
+                for command in commands
+            )
+        )
+
+        commands.clear()
+        captured = installer._create_prepared_veth(
+            bridge_name="br-a",
+            slot_name="slot-a",
+            endpoint=endpoint,
+            activate_now=False,
+            assign_ip=False,
+            capture_binding=True,
+        )
+        self.assertEqual(captured["interface_ref"], "netns:sat-a:xp-a")
+        self.assertEqual(captured["ifindex"], 4321)
+        self.assertEqual(captured["binding_source"], "created_veth_operation_result")
+        self.assertEqual(
+            sum(
+                "ip -j link show" in " ".join(command)
+                for command in commands
+            ),
+            1,
+        )
+        container_batches = [
+            command
+            for command in commands
+            if "skyseed-created-veth-container-prepare" in command
+        ]
+        host_batches = [
+            command
+            for command in commands
+            if "skyseed-created-veth-host-prepare" in command
+        ]
+        self.assertEqual(len(container_batches), 1)
+        self.assertEqual(len(host_batches), 1)
+        container_script = container_batches[0][4]
+        host_script = host_batches[0][4]
+        self.assertTrue(container_script.startswith("set -eu; "))
+        self.assertLess(
+            container_script.index('ip link set "$1" name "$2"'),
+            container_script.index('ip link set dev "$2" address "$3"'),
+        )
+        self.assertLess(
+            container_script.index('ip link set dev "$2" address "$3"'),
+            container_script.index('ip link set dev "$2" multicast off'),
+        )
+        self.assertIn('ip addr flush dev "$2" || true', container_script)
+        self.assertIn('ip link set "$2" down || true', container_script)
+        self.assertTrue(host_script.startswith("set -eu; "))
+        self.assertIn('ip link set dev "$1" multicast off', host_script)
+        self.assertIn('ip link set "$1" down || true', host_script)
+
+    def test_created_veth_container_batch_failure_stops_without_host_fallback(
+        self,
+    ) -> None:
+        installer, commands = self._installer_with_recorded_commands()
+        installer._container_pid = lambda _: 4242  # type: ignore[method-assign]
+
+        def fail_container_batch(*, node_id, command, allow_failure=False):
+            rendered = ["nsenter", str(node_id), *[str(part) for part in command]]
+            commands.append(rendered)
+            raise RuntimeError("synthetic_container_batch_failure")
+
+        installer._nsenter = fail_container_batch  # type: ignore[method-assign]
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "synthetic_container_batch_failure",
+        ):
+            installer._create_prepared_veth(
+                bridge_name="br-a",
+                slot_name="slot-a",
+                endpoint={
+                    "host_interface_name": "vhs-a",
+                    "temp_interface_name": "vtmp-a",
+                    "node_id": "sat-a",
+                    "interface_name": "xp-a",
+                    "ip_address": "10.0.0.1/30",
+                },
+                activate_now=False,
+                assign_ip=False,
+                capture_binding=True,
+            )
+        self.assertEqual(
+            sum("skyseed-created-veth-container-prepare" in command for command in commands),
+            1,
+        )
+        self.assertFalse(
+            any("skyseed-created-veth-host-prepare" in command for command in commands)
+        )
+
+    def test_prepared_bridge_disables_host_multicast_before_link_up(self) -> None:
+        installer, commands = self._installer_with_recorded_commands()
+
+        installer._set_bridge_ready(
+            bridge_name="br-a",
+            subnet="192.0.2.0/30",
+            bridge_gateway_ip="192.0.2.1",
+        )
+
+        multicast_command = [
+            "sudo", "-n", "ip", "link", "set", "dev", "br-a",
+            "multicast", "off",
+        ]
+        up_command = ["sudo", "-n", "ip", "link", "set", "br-a", "up"]
+        self.assertIn(multicast_command, commands)
+        self.assertIn(up_command, commands)
+        self.assertLess(
+            commands.index(multicast_command),
+            commands.index(up_command),
+        )
+
+    def test_initial_prepare_returns_complete_created_interface_cache(self) -> None:
+        installer = DirectNetnsVethSlotLinkNamespaceQdiscInstaller()
+        endpoint = {
+            "host_interface_name": "vhs-a",
+            "temp_interface_name": "vtmp-a",
+            "node_id": "sat-a",
+            "interface_name": "fs0001",
+            "ip_address": "10.0.0.1/30",
+        }
+        slot = {
+            "slot_name": "slot-a",
+            "slot_type": "same_plane_isl",
+            "subnet": "10.0.0.0/30",
+            "docker_network_name": "unused",
+        }
+        installer._runtime_artifact_inventory = lambda **_: {  # type: ignore[method-assign]
+            "inventory_scope": "bounded",
+            "slot_counts_by_type": {"same_plane_isl": 1},
+            "candidate_resource_counts_by_type": {"same_plane_isl": 1},
+            "candidate_endpoint_counts_by_type": {"same_plane_isl": 1},
+            "preconnected_endpoint_counts_by_type": {"same_plane_isl": 0},
+        }
+        installer._slot_inventory_for_names = lambda *_: {"slot-a": slot}  # type: ignore[method-assign]
+        installer._host_interface_name_set = lambda: set()  # type: ignore[method-assign]
+        installer._docker_network_name_set = lambda: set()  # type: ignore[method-assign]
+        installer._container_interface_name_set = lambda **_: set()  # type: ignore[method-assign]
+        installer._remove_docker_network_if_present = lambda *_, **__: None  # type: ignore[method-assign]
+        installer._delete_host_interface_if_present = lambda *_, **__: None  # type: ignore[method-assign]
+        installer._bridge_exists = lambda *_, **__: False  # type: ignore[method-assign]
+        installer._set_bridge_ready = lambda **_: None  # type: ignore[method-assign]
+        installer._preconnected_endpoint = lambda _: None  # type: ignore[method-assign]
+        installer._prepared_resources_for_slot = lambda **_: {  # type: ignore[method-assign]
+            "resource-a": {"resource_key": "resource-a", "endpoints": [endpoint]}
+        }
+        installer._mark_link_state_prepared = lambda **_: None  # type: ignore[method-assign]
+
+        def create(**kwargs):
+            self.assertTrue(kwargs["capture_binding"])
+            return {
+                "interface_ref": "netns:sat-a:fs0001",
+                "ifindex": 9001,
+                "mac_address": "02:00:00:00:00:01",
+                "binding_source": "created_veth_operation_result",
+            }
+
+        installer._create_prepared_veth = create  # type: ignore[method-assign]
+
+        report = installer._prepare_runtime(
+            topology={},
+            topology_path=Path("topology.json"),
+            link_state_path=Path("link_state.json"),
+            prepared_resource_scope_by_slot={"slot-a": ["resource-a"]},
+        )
+
+        cache = report["frozen_interface_binding_cache"]
+        self.assertTrue(cache["complete"])
+        self.assertFalse(cache["live_discovery_allowed"])
+        self.assertEqual(
+            cache["ifindex_by_interface_ref"],
+            {"netns:sat-a:fs0001": 9001},
+        )
+
+    def test_targeted_existing_binding_uses_frozen_pid_without_scan(self) -> None:
+        installer = DirectNetnsVethSlotLinkNamespaceQdiscInstaller()
+        installer._container_pid_cache = {"gw201": 4242}
+        commands = []
+
+        def run(command, *, allow_failure=False):
+            commands.append(list(command))
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                '[{"ifindex":201,"ifname":"ix200","address":"02:00:00:00:02:01"}]',
+                "",
+            )
+
+        installer._run_command = run  # type: ignore[method-assign]
+        report = installer.capture_existing_container_interface_bindings(
+            interface_refs=["netns:gw201:ix200"]
+        )
+
+        self.assertTrue(report["ok"])
+        self.assertFalse(report["full_scan"])
+        self.assertTrue(report["unicast_physical_prepare"])
+        self.assertEqual(report["multicast_disable_count"], 1)
+        self.assertEqual(report["requested_interface_ref_count"], 1)
+        self.assertEqual(report["bindings"][0]["ifindex"], 201)
+        self.assertEqual(
+            commands,
+            [[
+                "sudo", "-n", "nsenter", "-t", "4242", "-n",
+                "sh", "-c",
+                'set -eu; for interface_name do ip link set dev "$interface_name" '
+                'multicast off; ip -j link show dev "$interface_name"; done',
+                "skyseed-targeted-interface-unicast-prepare", "ix200",
+            ]],
+        )
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "targeted_interface_binding_frozen_pid_missing:gw202",
+        ):
+            installer.capture_existing_container_interface_bindings(
+                interface_refs=["netns:gw202:ix201"]
+            )
+        self.assertEqual(len(commands), 1)
+
+    def test_targeted_host_unicast_prepare_uses_exact_interface_names(self) -> None:
+        installer = DirectNetnsVethSlotLinkNamespaceQdiscInstaller()
+        commands = []
+
+        def run(command, *, allow_failure=False):
+            rendered = [str(part) for part in command]
+            commands.append(rendered)
+            stdout = ""
+            if rendered[:5] == ["ip", "-j", "link", "show", "dev"]:
+                stdout = json.dumps(
+                    [
+                        {
+                            "ifindex": 202,
+                            "ifname": rendered[5],
+                            "flags": ["BROADCAST", "UP"],
+                        }
+                    ]
+                )
+            return subprocess.CompletedProcess(rendered, 0, stdout, "")
+
+        installer._run_command = run  # type: ignore[method-assign]
+        report = installer.prepare_existing_host_interfaces_unicast(
+            interface_names=["sib-one", "sib-two", "sib-one"]
+        )
+
+        self.assertTrue(report["ok"])
+        self.assertFalse(report["full_scan"])
+        self.assertEqual(report["prepared_interface_count"], 2)
+        self.assertEqual(report["multicast_disable_count"], 2)
+        self.assertEqual(
+            [command for command in commands if command[:3] == ["sudo", "-n", "ip"]],
+            [
+                [
+                    "sudo", "-n", "ip", "link", "set", "dev", "sib-one",
+                    "multicast", "off",
+                ],
+                [
+                    "sudo", "-n", "ip", "link", "set", "dev", "sib-two",
+                    "multicast", "off",
+                ],
+            ],
+        )
+
     def _installer_with_recorded_commands(self) -> tuple[
         DirectNetnsVethSlotLinkNamespaceQdiscInstaller,
         list[list[str]],
@@ -195,7 +750,6 @@ class QdiscLifecycleTests(unittest.TestCase):
             slot=slot,
             resource=resource,
             runtime_parameters={"delay_ms": 12.5, "bandwidth_mbps": 100.0},
-            probe=False,
         )
 
         host_up_index = next(
@@ -216,6 +770,10 @@ class QdiscLifecycleTests(unittest.TestCase):
         self.assertLess(ns_up_index, batch_index)
         self.assertEqual(summary["qdisc_shell_command_count"], 1)
         self.assertEqual(summary["qdisc_sub_update_count"], 1)
+        self.assertTrue(
+            all("-brief" not in " ".join(command) for command in commands),
+            "activation must not repeat link/address discovery after fail-closed writes",
+        )
         self.assertIn(
             "qdisc replace dev vhs-ut1 root netem delay 12.500ms rate 100.000000mbit",
             installer._test_qdisc_batch_payloads[0],  # type: ignore[attr-defined]
@@ -293,8 +851,6 @@ class QdiscLifecycleTests(unittest.TestCase):
             "ut1-access-slot0": {"target-resource"}
         }
         installer._persist_operation_state = lambda **kwargs: None  # type: ignore[method-assign]
-        installer._probe_activated_resource = lambda **kwargs: None  # type: ignore[method-assign]
-
         result = installer.apply_operation(
             controller=SimpleNamespace(topology={}, topology_path="topology.json"),
             link_state_path=Path("link_state.json"),
@@ -667,7 +1223,6 @@ class QdiscLifecycleTests(unittest.TestCase):
 
     def test_operation_group_batches_structural_rebind_as_delete_then_replace(self) -> None:
         installer, commands = self._installer_with_recorded_commands()
-        probes: list[str] = []
         slots = {
             "slot-a": {"slot_name": "slot-a", "slot_type": "ut_access"},
             "slot-b": {"slot_name": "slot-b", "slot_type": "ut_access"},
@@ -693,10 +1248,6 @@ class QdiscLifecycleTests(unittest.TestCase):
             "slot-a": {"target-a"},
             "slot-b": {"target-b"},
         }
-        installer._probe_activated_resource = (  # type: ignore[method-assign]
-            lambda *, slot, resource: probes.append(str(slot["slot_name"]))
-        )
-
         results = installer.apply_operation_group(
             controller=SimpleNamespace(topology={}, topology_path="topology.json"),
             link_state_path=Path("link_state.json"),
@@ -741,7 +1292,10 @@ class QdiscLifecycleTests(unittest.TestCase):
         )
         self.assertLess(batch_commands[0][0], first_physical)
         self.assertLess(first_physical, batch_commands[1][0])
-        self.assertEqual(probes, ["slot-a", "slot-b"])
+        self.assertTrue(
+            all("-brief" not in " ".join(command) for command in commands),
+            "batched activation must not run per-resource discovery probes",
+        )
         self.assertEqual(sum(result["qdisc_batch_command_count"] for result in results), 2)
         self.assertEqual(sum(result["qdisc_batch_sub_update_count"] for result in results), 4)
 
@@ -770,8 +1324,6 @@ class QdiscLifecycleTests(unittest.TestCase):
         installer._prepared_resource_keys_by_slot = {  # type: ignore[attr-defined]
             "rebind-slot": {"target-rebind"},
         }
-        installer._probe_activated_resource = lambda *, slot, resource: None  # type: ignore[method-assign]
-
         results = installer.apply_operation_group(
             controller=SimpleNamespace(topology={}, topology_path="topology.json"),
             link_state_path=Path("link_state.json"),

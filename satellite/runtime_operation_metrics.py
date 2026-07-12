@@ -206,8 +206,13 @@ def classify_node_local_command_scope(
         scope = "satellite_core_mpls_lfib"
     elif "source rule" in description_text or "ip rule" in rendered:
         scope = "ip_route_rule"
-    elif "ut default route" in description_text:
-        scope = "ip_route_rule"
+    elif (
+        "ut default route" in description_text
+        or "gateway local-origin bpf return route" in description_text
+    ):
+        scope = "edge_bpf_endpoint_route"
+    elif "explicit gateway icmp service loopback" in description_text:
+        scope = "edge_bpf_endpoint_service"
     elif family == "route":
         scope = "fallback_control_route"
     else:
@@ -216,6 +221,8 @@ def classify_node_local_command_scope(
     residue_scope = {
         "satellite_core_mpls_lfib": "satellite_core_mpls_lfib_residue",
         "ip_route_rule": "ip_route_rule_residue",
+        "edge_bpf_endpoint_route": "edge_bpf_endpoint_route_residue",
+        "edge_bpf_endpoint_service": "edge_bpf_endpoint_service_residue",
         "mpls_readiness_sysctl": "mpls_readiness_sysctl_cleanup_or_check",
         "edge_nat_iptables": "edge_iptables_snat_residue",
         "fallback_control_route": "fallback_control_residue",

@@ -523,7 +523,7 @@ def ping_overhead(names: dict[str, str], object_path: Path, ping_count: int) -> 
     return {"cases": cases}
 
 
-def throughput_smoke(names: dict[str, str]) -> dict[str, Any]:
+def throughput_probe(names: dict[str, str]) -> dict[str, Any]:
     if not shutil.which("iperf3"):
         return {"skipped": True, "reason": "missing_iperf3"}
     server_command = ["ip", "netns", "exec", names["ns_b"], "iperf3", "-s", "-1", "-J"]
@@ -584,7 +584,7 @@ def run_isolated_experiment(source: Path, ping_count: int, run_throughput: bool)
                 return result
             result["generation_switch"] = generation_switch_test(names, object_path, ping_count)
             result["overhead"] = ping_overhead(names, object_path, ping_count)
-            result["throughput"] = throughput_smoke(names) if run_throughput else {"skipped": True}
+            result["throughput"] = throughput_probe(names) if run_throughput else {"skipped": True}
             result["ok"] = bool(result["generation_switch"]["ok"])
             return result
         finally:

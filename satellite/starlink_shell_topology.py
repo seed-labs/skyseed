@@ -23,6 +23,7 @@ from experiment_topology import (
     ExperimentTimeSlice,
     ExperimentTopologySlicer,
     ExperimentZoneProfile,
+    FrozenVisualizationLinkVisibilityModel,
     GroundLocation,
     SemiRealLineOfSightVisibilityModel,
     ZoneAnchorQualityGenerator,
@@ -1238,6 +1239,7 @@ def build_starlink_shell_emulator(
     gateway_definitions: Sequence[Dict[str, Any]] = DEFAULT_GATEWAY_CATALOG,
     mini_internet_node_prefix: str = "",
     mini_internet_ix_offset: int = 0,
+    include_mini_internet: bool = True,
 ) -> Emulator:
     emu = Emulator()
     base = Base()
@@ -1246,18 +1248,19 @@ def build_starlink_shell_emulator(
     ibgp = Ibgp()
     ospf = Ospf()
 
-    build_mini_internet(
-        base,
-        ebgp,
-        node_name_prefix=str(mini_internet_node_prefix),
-        ix_id_offset=int(mini_internet_ix_offset),
-        transit_asns=STARLINK_MINI_INTERNET_TRANSIT_ASNS,
-        stub_asns=STARLINK_MINI_INTERNET_STUB_ASNS,
-        extra_transit_ixs=_gateway_transit_ixs_for_mini_internet(
-            gateway_definitions,
+    if include_mini_internet:
+        build_mini_internet(
+            base,
+            ebgp,
+            node_name_prefix=str(mini_internet_node_prefix),
             ix_id_offset=int(mini_internet_ix_offset),
-        ),
-    )
+            transit_asns=STARLINK_MINI_INTERNET_TRANSIT_ASNS,
+            stub_asns=STARLINK_MINI_INTERNET_STUB_ASNS,
+            extra_transit_ixs=_gateway_transit_ixs_for_mini_internet(
+                gateway_definitions,
+                ix_id_offset=int(mini_internet_ix_offset),
+            ),
+        )
 
     satellite_as = base.createAutonomousSystem(SATELLITE_ASN)
     operator_as = base.createAutonomousSystem(SATELLITE_OPERATOR_ASN)
@@ -1340,16 +1343,17 @@ def build_starlink_shell_emulator(
         )
         gateway_routers[gateway_id].addSoftware("tcpdump")
         enable_mpls_readiness(gateway_routers[gateway_id])
-        gateway_routers[gateway_id].joinNetwork(
-            f"ix{definition['ix_id']}",
-            str(definition["ix_ip_address"]),
-        )
-        ebgp.addPrivatePeering(
-            int(definition["ix_id"]),
-            int(definition["upstream_asn"]),
-            SATELLITE_OPERATOR_ASN,
-            PeerRelationship.Provider,
-        )
+        if include_mini_internet:
+            gateway_routers[gateway_id].joinNetwork(
+                f"ix{definition['ix_id']}",
+                str(definition["ix_ip_address"]),
+            )
+            ebgp.addPrivatePeering(
+                int(definition["ix_id"]),
+                int(definition["upstream_asn"]),
+                SATELLITE_OPERATOR_ASN,
+                PeerRelationship.Provider,
+            )
 
     ospf.maskAsn(SATELLITE_ASN)
     ospf.maskAsn(SATELLITE_OPERATOR_ASN)
@@ -1372,6 +1376,7 @@ def build_starlink_shell_slot_inventory(
     ut_slots_per_terminal: int = 1,
     gateway_slots_per_gateway: int = 1,
     cross_plane_slot_model: str = "candidate_pair",
+    visualization_link_payload: Dict[str, Any] | None = None,
 ) -> Dict[str, List[Dict[str, Any]]]:
     candidate_satellite_ids = [satellite.satellite_id for satellite in layout.satellites]
     ut_slot_count = max(1, int(ut_slots_per_terminal))
@@ -1488,9 +1493,122 @@ def build_starlink_shell_slot_inventory(
                 }
             )
 
+    def _visualization_cross_plane_pairs() -> List[Dict[str, Any]]:
+        if visualization_link_payload is None:
+            return []
+        satellite_by_id = {
+            str(satellite.satellite_id): satellite for satellite in layout.satellites
+        }
+        pairs_by_key: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        for frame in list(dict(visualization_link_payload).get("links") or []):
+            for raw_link in list(dict(frame).get("satelliteLinks") or []):
+                link = dict(raw_link)
+                first_id = str(link.get("satelliteAId") or "")
+                second_id = str(link.get("satelliteBId") or "")
+                if not first_id or not second_id:
+                    continue
+                first_satellite = satellite_by_id.get(first_id)
+                second_satellite = satellite_by_id.get(second_id)
+                if first_satellite is None or second_satellite is None:
+                    continue
+                if first_satellite.orbit_id == second_satellite.orbit_id:
+                    continue
+                ordered = sorted(
+                    (first_satellite, second_satellite),
+                    key=lambda satellite: (
+                        int(satellite.plane_index),
+                        int(satellite.satellite_index_in_plane),
+                        str(satellite.satellite_id),
+                    ),
+                )
+                left, right = ordered[0], ordered[1]
+                pair_key = (str(left.satellite_id), str(right.satellite_id))
+                if pair_key in pairs_by_key:
+                    continue
+                pairs_by_key[pair_key] = {
+                    "satellite_a_id": str(left.satellite_id),
+                    "satellite_b_id": str(right.satellite_id),
+                    "satellite_a_direction": "right",
+                    "satellite_b_direction": "left",
+                    "orbit_a_id": str(left.orbit_id),
+                    "orbit_b_id": str(right.orbit_id),
+                    "orbit_a_plane_index": int(left.plane_index),
+                    "orbit_b_plane_index": int(right.plane_index),
+                    "orbit_a_label": str(left.plane_label),
+                    "orbit_b_label": str(right.plane_label),
+                }
+        return [
+            dict(pair)
+            for _, pair in sorted(
+                pairs_by_key.items(),
+                key=lambda item: (
+                    int(item[1]["orbit_a_plane_index"]),
+                    int(item[1]["orbit_b_plane_index"]),
+                    str(item[1]["satellite_a_id"]),
+                    str(item[1]["satellite_b_id"]),
+                ),
+            )
+        ]
+
     cross_plane_slots: List[Dict[str, Any]] = []
     slot_index = 1
-    for group in layout.cross_plane_slot_groups:
+    visualization_cross_plane_pairs = _visualization_cross_plane_pairs()
+    if visualization_cross_plane_pairs:
+        for pair in visualization_cross_plane_pairs:
+            pair_key = (
+                f"p{int(pair['orbit_a_plane_index']):03d}"
+                f"p{int(pair['orbit_b_plane_index']):03d}"
+            )
+            pair_suffix = (
+                f"{pair['satellite_a_id']}-{pair['satellite_b_id']}"
+            ).replace("_", "-")
+            slot_name = f"{pair_key}-{pair_suffix}-cross-slot0"
+            interface_a = f"xp{slot_index}a"
+            interface_b = f"xp{slot_index}b"
+            cross_plane_slots.append(
+                {
+                    "slot_name": slot_name,
+                    "slot_type": "cross_plane_isl",
+                    "network_name": slot_name,
+                    "docker_network_name": slot_name,
+                    "subnet": _prefix(93, slot_index, 29),
+                    "bridge_gateway_ip": _host_address(93, slot_index, 6),
+                    "slot_index": slot_index,
+                    "cross_plane_slot_model": "visualization_frozen_pair_resident",
+                    "pair_key": pair_key,
+                    "display_label": (
+                        f"{pair['orbit_a_label']} <-> {pair['orbit_b_label']}"
+                    ),
+                    "orbit_pair": [pair["orbit_a_id"], pair["orbit_b_id"]],
+                    "orbit_a_id": pair["orbit_a_id"],
+                    "orbit_b_id": pair["orbit_b_id"],
+                    "orbit_a_satellite_ids": [pair["satellite_a_id"]],
+                    "orbit_b_satellite_ids": [pair["satellite_b_id"]],
+                    "endpoint_a_template": _endpoint_record(
+                        node_id=f"<runtime-{pair['orbit_a_id']}-satellite>",
+                        node_type="satellite",
+                        interface_name=interface_a,
+                        ip_address=_host_ip(93, slot_index, 1, 29),
+                    ),
+                    "endpoint_b_template": _endpoint_record(
+                        node_id=f"<runtime-{pair['orbit_b_id']}-satellite>",
+                        node_type="satellite",
+                        interface_name=interface_b,
+                        ip_address=_host_ip(93, slot_index, 2, 29),
+                    ),
+                    "candidate_pairs": [
+                        {
+                            "satellite_a_id": pair["satellite_a_id"],
+                            "satellite_b_id": pair["satellite_b_id"],
+                            "satellite_a_direction": pair["satellite_a_direction"],
+                            "satellite_b_direction": pair["satellite_b_direction"],
+                        }
+                    ],
+                }
+            )
+            slot_index += 1
+
+    for group in (() if visualization_cross_plane_pairs else layout.cross_plane_slot_groups):
         if cross_plane_model == "candidate_pair":
             candidate_pairs = [dict(pair) for pair in group["candidate_pairs"]]
         elif cross_plane_model == "plane_pair_group":
@@ -1522,8 +1640,8 @@ def build_starlink_shell_slot_inventory(
                     "slot_type": "cross_plane_isl",
                     "network_name": slot_name,
                     "docker_network_name": slot_name,
-                    "subnet": _prefix(92, slot_index, 29),
-                    "bridge_gateway_ip": _host_address(92, slot_index, 6),
+                    "subnet": _prefix(93, slot_index, 29),
+                    "bridge_gateway_ip": _host_address(93, slot_index, 6),
                     "slot_index": slot_index if cross_plane_model == "candidate_pair" else pair_offset,
                     "cross_plane_slot_model": slot_model,
                     "pair_key": group["pair_key"],
@@ -1537,13 +1655,13 @@ def build_starlink_shell_slot_inventory(
                         node_id=f"<runtime-{group['orbit_a_id']}-satellite>",
                         node_type="satellite",
                         interface_name=interface_a,
-                        ip_address=_host_ip(92, slot_index, 1, 29),
+                        ip_address=_host_ip(93, slot_index, 1, 29),
                     ),
                     "endpoint_b_template": _endpoint_record(
                         node_id=f"<runtime-{group['orbit_b_id']}-satellite>",
                         node_type="satellite",
                         interface_name=interface_b,
-                        ip_address=_host_ip(92, slot_index, 2, 29),
+                        ip_address=_host_ip(93, slot_index, 2, 29),
                     ),
                     "candidate_pairs": slot_candidate_pairs,
                 }
@@ -1569,6 +1687,7 @@ def build_starlink_shell_topology_inventory(
     ut_slots_per_terminal: int = 1,
     gateway_slots_per_gateway: int = 1,
     cross_plane_slot_model: str = "candidate_pair",
+    visualization_link_payload: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     gateway_by_id = {
         str(definition["gateway_id"]): dict(definition)
@@ -1585,6 +1704,7 @@ def build_starlink_shell_topology_inventory(
         ut_slots_per_terminal=ut_slots_per_terminal,
         gateway_slots_per_gateway=gateway_slots_per_gateway,
         cross_plane_slot_model=cross_plane_slot_model,
+        visualization_link_payload=visualization_link_payload,
     )
 
     topology = {
@@ -1612,7 +1732,11 @@ def build_starlink_shell_topology_inventory(
             "node_startup_profiles": dict(SKYSEED_NODE_STARTUP_PROFILES),
             "ut_slots_per_terminal": max(1, int(ut_slots_per_terminal)),
             "gateway_slots_per_gateway": max(1, int(gateway_slots_per_gateway)),
-            "cross_plane_slot_semantic_model": str(cross_plane_slot_model),
+            "cross_plane_slot_semantic_model": (
+                "visualization_frozen_pair_resident"
+                if visualization_link_payload is not None
+                else str(cross_plane_slot_model)
+            ),
         },
         "skyseed_node_role_framework": dict(SKYSEED_NODE_ROLE_FRAMEWORK),
         "orbit_input": {
@@ -1688,6 +1812,12 @@ def build_starlink_shell_topology_inventory(
                 "gateway_region": gateway_by_id[gateway_id]["region"],
                 "display_name": gateway_by_id[gateway_id]["name"],
                 "gateway_index": gateway_by_id[gateway_id]["gateway_index"],
+                "gateway_selector_label": gateway_by_id[gateway_id].get(
+                    "gateway_selector_label"
+                ),
+                "gateway_service_ipv4": gateway_by_id[gateway_id].get(
+                    "gateway_service_ipv4"
+                ),
                 "catalog_coordinates": {
                     "latitude_deg": gateway_by_id[gateway_id]["latitude_deg"],
                     "longitude_deg": gateway_by_id[gateway_id]["longitude_deg"],
@@ -2242,16 +2372,25 @@ def build_starlink_topology_snapshot_pipeline(
     topology_path: Path,
     scenario: ExperimentScenario,
     propagated_slices: Sequence[PropagatedOrbitSlice],
+    visualization_link_payload: Dict[str, Any] | None = None,
 ) -> TopologySnapshotPipeline:
+    visibility_model = (
+        FrozenVisualizationLinkVisibilityModel(
+            link_payload=visualization_link_payload,
+            ut_min_elevation_deg=scenario.min_elevation_deg,
+        )
+        if visualization_link_payload is not None
+        else SemiRealLineOfSightVisibilityModel(
+            min_elevation_deg=scenario.min_elevation_deg
+        )
+    )
     return TopologySnapshotPipeline(
         orbit_producer=PropagatedStarlinkScenarioOrbitProducer(
             topology_path=topology_path,
             scenario=scenario,
             propagated_slices=propagated_slices,
         ),
-        visibility_model=SemiRealLineOfSightVisibilityModel(
-            min_elevation_deg=scenario.min_elevation_deg
-        ),
+        visibility_model=visibility_model,
         zone_generator=ZoneAnchorQualityGenerator(),
         topology_slicer=ExperimentTopologySlicer(),
     )

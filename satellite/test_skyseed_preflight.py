@@ -11,13 +11,10 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from skyseed_preflight import (  # noqa: E402
-    PREFLIGHT_PROFILE_DEFAULT,
-    PREFLIGHT_PROFILE_LEGACY_MPLS,
     PREFLIGHT_PROFILE_OPERATIONAL_CLEAN_BPF_OWNED,
     _assess_skyseed_preflight,
     _docker_container_state_project_scoped,
     _docker_network_state_project_scoped,
-    _skipped_host_mpls_readiness,
     cleanup_direct_backend_host_artifacts,
     cleanup_skyseed_environment_residue,
     render_preflight_summary,
@@ -56,12 +53,6 @@ def _base_checks() -> dict:
             "preferred_seed310_selected": False,
             "legacy_seed_emulator_pythonpath_override_present": False,
         },
-        "host_mpls": {
-            "assessment": {
-                "ready": True,
-                "blocking_reasons": [],
-            },
-        },
         "bridge_netfilter": {"passthrough_ready": True},
     }
 
@@ -97,46 +88,6 @@ class SkyseedPreflightTests(unittest.TestCase):
             1,
         )
         self.assertEqual(assessment["cleanliness_counts"]["runtime_lock_files"], 1)
-
-    def test_default_profile_keeps_residue_as_warning(self) -> None:
-        checks = _base_checks()
-        checks["docker_state"]["containers"]["named_skyseed_containers"] = [
-            {"name": "stl-1", "state": "exited"}
-        ]
-
-        assessment = _assess_skyseed_preflight(
-            checks,
-            profile=PREFLIGHT_PROFILE_DEFAULT,
-        )
-
-        self.assertTrue(assessment["ready"])
-        self.assertFalse(assessment["clean_environment_required"])
-        self.assertIn(
-            "named_skyseed_containers_present",
-            assessment["warning_reasons"],
-        )
-        self.assertNotIn(
-            "skyseed_environment_not_clean",
-            assessment["blocking_reasons"],
-        )
-
-    def test_operational_clean_skips_host_mpls_readiness(self) -> None:
-        skipped = _skipped_host_mpls_readiness(
-            profile=PREFLIGHT_PROFILE_OPERATIONAL_CLEAN_BPF_OWNED
-        )
-        checks = _base_checks()
-        checks["host_mpls"] = skipped
-
-        assessment = _assess_skyseed_preflight(
-            checks,
-            profile=PREFLIGHT_PROFILE_OPERATIONAL_CLEAN_BPF_OWNED,
-        )
-
-        self.assertIsNone(skipped["assessment"]["ready"])
-        self.assertTrue(skipped["assessment"]["skipped"])
-        self.assertTrue(assessment["ready"])
-        self.assertIn("host_mpls_preflight_skipped", assessment["warning_reasons"])
-        self.assertNotIn("host_mpls_not_ready", assessment["blocking_reasons"])
 
     def test_operational_clean_preflight_defers_global_diagnostics(self) -> None:
         with (
@@ -189,24 +140,22 @@ class SkyseedPreflightTests(unittest.TestCase):
         self.assertEqual(report["diagnostic_policy"]["mode"], "operational_clean_lightweight")
         self.assertTrue(report["checks"]["direct_backend_host_artifacts"]["skipped"])
         self.assertTrue(report["checks"]["bpf_pinned_map_artifacts"]["skipped"])
-        self.assertTrue(report["assessment"]["ready"])
-
-    def test_legacy_mpls_profile_blocks_when_mpls_is_not_ready(self) -> None:
-        checks = _base_checks()
-        checks["host_mpls"] = {
-            "assessment": {
-                "ready": False,
-                "blocking_reasons": ["host_mpls_modules_not_loaded"],
-            }
-        }
-
-        assessment = _assess_skyseed_preflight(
-            checks,
-            profile=PREFLIGHT_PROFILE_LEGACY_MPLS,
+        self.assertEqual(
+            set(report["checks"]),
+            {
+                "docker_toolchain",
+                "docker_state",
+                "compose_processes",
+                "direct_backend_host_artifacts",
+                "bpf_pinned_map_artifacts",
+                "runtime_lock_files",
+                "disk_space",
+                "python_runtime",
+                "bridge_netfilter",
+                "known_compose_outputs",
+            },
         )
-
-        self.assertFalse(assessment["ready"])
-        self.assertIn("host_mpls_not_ready", assessment["blocking_reasons"])
+        self.assertTrue(report["assessment"]["ready"])
 
     def test_cleanup_dry_run_plans_scoped_resources_without_execution(self) -> None:
         checks = _base_checks()

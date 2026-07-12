@@ -279,7 +279,7 @@ def build_report(compiled: dict[str, Any]) -> dict[str, Any]:
     return {
         "schema_version": 1,
         "goal": "Skyseed Goal 13 TheaterQ / timeline qdisc isolated feasibility",
-        "generated_at": "not_recorded_for_reproducible_baseline",
+        "generated_at": "not_recorded_for_deterministic_baseline",
         "input_artifacts": repo_relative_input_artifacts(compiled),
         "scope": {
             "canonical_runtime_changed": False,

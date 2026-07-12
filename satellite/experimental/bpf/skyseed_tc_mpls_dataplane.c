@@ -28,12 +28,24 @@
 #define SKYSEED_BPF_MAX_MPLS_CLASSIFIERS 128
 #endif
 
+#ifndef SKYSEED_BPF_MAX_GATEWAY_SELECTORS
+#define SKYSEED_BPF_MAX_GATEWAY_SELECTORS 8192
+#endif
+
+#ifndef SKYSEED_BPF_MAX_UT_GATEWAY_POLICIES
+#define SKYSEED_BPF_MAX_UT_GATEWAY_POLICIES 8192
+#endif
+
 #ifndef SKYSEED_BPF_MAX_MPLS_LFIB
 #define SKYSEED_BPF_MAX_MPLS_LFIB 256
 #endif
 
 #ifndef SKYSEED_BPF_MAX_MPLS_HANDOFFS
 #define SKYSEED_BPF_MAX_MPLS_HANDOFFS 128
+#endif
+
+#ifndef SKYSEED_BPF_MAX_ZONE_EDGE_DELIVERIES
+#define SKYSEED_BPF_MAX_ZONE_EDGE_DELIVERIES 8192
 #endif
 
 #ifndef SKYSEED_BPF_MAX_INTERFACE_COUNTER_ENTRIES
@@ -57,6 +69,7 @@
 #define ACTION_SWAP 1
 #define ACTION_PRESERVE 2
 #define ACTION_POP_AND_HANDOFF 3
+#define ACTION_POP_AND_ZONE_EDGE_LOOKUP 4
 
 #define COUNTER_CLASSIFIER_HIT 0
 #define COUNTER_LABEL_PUSH 1
@@ -84,6 +97,7 @@
 
 #define IFACE_ROLE_CLASSIFIER 1
 #define IFACE_ROLE_MPLS 2
+#define IFACE_ROLE_UT_GATEWAY_SELECTOR 4
 
 #define MPLS_POP_MANUAL_MAX_SHIFT 128
 #define MISS_SAMPLE_SLOT_CLASSIFIER 0
@@ -108,6 +122,7 @@
 #define MISS_MAP_ACTIVE_GENERATION 4
 #define MISS_MAP_INTERFACE_ROLE 5
 #define MISS_MAP_PACKET_PARSE 6
+#define MISS_MAP_ZONE_EDGE_DELIVERY 7
 
 struct bpf_elf_map {
     __u32 type;
@@ -137,6 +152,17 @@ struct ingress_classifier_value {
     unsigned char src_mac[6];
 };
 
+struct ut_gateway_policy_key {
+    __u32 prefixlen;
+    __u32 egress_ifindex;
+    __u32 dst_ipv4;
+};
+
+struct ut_gateway_policy_value {
+    __u32 active;
+    __u32 gateway_selector_label;
+};
+
 struct lfib_key {
     __u32 generation;
     __u32 ingress_ifindex;
@@ -158,6 +184,21 @@ struct egress_handoff_value {
     __u32 action;
     __u32 out_ifindex;
     __u32 inner_ethertype;
+    __u32 new_dst_ipv4;
+    unsigned char dst_mac[6];
+    unsigned char src_mac[6];
+};
+
+struct zone_edge_delivery_key {
+    __u32 generation;
+    __u32 ingress_ifindex;
+    __u32 label;
+    __u32 dst_ipv4;
+};
+
+struct zone_edge_delivery_value {
+    __u32 active;
+    __u32 out_ifindex;
     __u32 new_dst_ipv4;
     unsigned char dst_mac[6];
     unsigned char src_mac[6];
@@ -242,6 +283,23 @@ struct bpf_elf_map SEC("maps") ingress_classifier_map = {
     .pinning = PIN_GLOBAL_NS,
 };
 
+struct bpf_elf_map SEC("maps") ut_gateway_policy_map = {
+    .type = BPF_MAP_TYPE_LPM_TRIE,
+    .size_key = sizeof(struct ut_gateway_policy_key),
+    .size_value = sizeof(struct ut_gateway_policy_value),
+    .max_elem = SKYSEED_BPF_MAX_UT_GATEWAY_POLICIES,
+    .flags = BPF_F_NO_PREALLOC,
+    .pinning = PIN_GLOBAL_NS,
+};
+
+struct bpf_elf_map SEC("maps") gateway_selector_ingress_map = {
+    .type = BPF_MAP_TYPE_HASH,
+    .size_key = sizeof(struct lfib_key),
+    .size_value = sizeof(struct core_lfib_value),
+    .max_elem = SKYSEED_BPF_MAX_GATEWAY_SELECTORS,
+    .pinning = PIN_GLOBAL_NS,
+};
+
 struct bpf_elf_map SEC("maps") core_lfib_map = {
     .type = BPF_MAP_TYPE_HASH,
     .size_key = sizeof(struct lfib_key),
@@ -255,6 +313,14 @@ struct bpf_elf_map SEC("maps") egress_handoff_map = {
     .size_key = sizeof(struct lfib_key),
     .size_value = sizeof(struct egress_handoff_value),
     .max_elem = SKYSEED_BPF_MAX_MPLS_HANDOFFS,
+    .pinning = PIN_GLOBAL_NS,
+};
+
+struct bpf_elf_map SEC("maps") zone_edge_delivery_map = {
+    .type = BPF_MAP_TYPE_HASH,
+    .size_key = sizeof(struct zone_edge_delivery_key),
+    .size_value = sizeof(struct zone_edge_delivery_value),
+    .max_elem = SKYSEED_BPF_MAX_ZONE_EDGE_DELIVERIES,
     .pinning = PIN_GLOBAL_NS,
 };
 
@@ -304,6 +370,24 @@ lookup_core_lfib_planned_overlay(struct lfib_key *key)
     return bpf_map_lookup_elem(&core_lfib_map, key);
 }
 
+static __always_inline struct core_lfib_value *
+lookup_gateway_selector_planned_overlay(struct lfib_key *key)
+{
+    struct core_lfib_value *current = bpf_map_lookup_elem(
+        &gateway_selector_ingress_map,
+        key);
+    __u32 current_generation = key->generation;
+    __u32 base_generation;
+
+    if (current)
+        return current;
+    base_generation = planned_base_generation(current_generation);
+    if (base_generation == current_generation)
+        return 0;
+    key->generation = base_generation;
+    return bpf_map_lookup_elem(&gateway_selector_ingress_map, key);
+}
+
 static __always_inline struct egress_handoff_value *
 lookup_egress_handoff_planned_overlay(struct lfib_key *key)
 {
@@ -318,6 +402,24 @@ lookup_egress_handoff_planned_overlay(struct lfib_key *key)
         return 0;
     key->generation = base_generation;
     return bpf_map_lookup_elem(&egress_handoff_map, key);
+}
+
+static __always_inline struct zone_edge_delivery_value *
+lookup_zone_edge_delivery_planned_overlay(struct zone_edge_delivery_key *key)
+{
+    struct zone_edge_delivery_value *current = bpf_map_lookup_elem(
+        &zone_edge_delivery_map,
+        key);
+    __u32 current_generation = key->generation;
+    __u32 base_generation;
+
+    if (current)
+        return current;
+    base_generation = planned_base_generation(current_generation);
+    if (base_generation == current_generation)
+        return 0;
+    key->generation = base_generation;
+    return bpf_map_lookup_elem(&zone_edge_delivery_map, key);
 }
 
 static __always_inline struct ingress_classifier_value *
@@ -553,6 +655,12 @@ static __always_inline int pop_mpls(struct __sk_buff *skb, __u32 inner_ethertype
     return 0;
 }
 
+/*
+ * Linux 5.4 rejects the negative BPF_ADJ_ROOM_MAC operation used above for
+ * ping-sized frames.  Keep the pop entirely BPF-owned by shifting the inner
+ * frame over the shim and trimming the tail.  The strict live smoke and the
+ * operational profile both use frames within this deliberately bounded size.
+ */
 static __always_inline int pop_mpls_manual(struct __sk_buff *skb,
                                            __u32 inner_ethertype)
 {
@@ -636,7 +744,7 @@ int skyseed_mpls_dataplane(struct __sk_buff *skb)
             .label = label,
             .direction = direction,
         };
-        struct core_lfib_value *core = lookup_core_lfib_planned_overlay(&key);
+        struct core_lfib_value *core;
         sample_has_mpls = 1;
         sample_key_label = label;
         sample_key_direction = direction;
@@ -646,6 +754,25 @@ int skyseed_mpls_dataplane(struct __sk_buff *skb)
         sample_reason = MISS_REASON_MPLS_LFIB_HANDOFF;
         sample_slot = MISS_SAMPLE_SLOT_MPLS_LFIB_HANDOFF;
         sample_gz_scope = 1;
+
+        if (direction == MPLS_DIRECTION_G_TO_Z) {
+            struct core_lfib_value *selector =
+                lookup_gateway_selector_planned_overlay(&key);
+            if (selector && selector->active) {
+                if (selector->action != ACTION_SWAP || !selector->out_ifindex)
+                    goto bad_packet;
+                if (swap_mpls_label(skb, selector->out_label, direction) < 0)
+                    goto bad_packet;
+                if (rewrite_l2_bytes(skb, selector->dst_mac, selector->src_mac) < 0)
+                    goto bad_packet;
+                count_packet(COUNTER_LABEL_SWAP);
+                count_packet(COUNTER_REDIRECT);
+                count_interface_packet(skb->ifindex, COUNTER_REDIRECT);
+                return bpf_redirect(selector->out_ifindex, 0);
+            }
+            key.generation = active_generation_value;
+        }
+        core = lookup_core_lfib_planned_overlay(&key);
 
         if (core && core->active) {
             count_packet(COUNTER_CORE_LFIB_HIT);
@@ -692,6 +819,34 @@ int skyseed_mpls_dataplane(struct __sk_buff *skb)
                 }
             }
             count_packet(COUNTER_LABEL_POP);
+            if (handoff->action == ACTION_POP_AND_ZONE_EDGE_LOOKUP) {
+                struct zone_edge_delivery_key delivery_key;
+                struct zone_edge_delivery_value *delivery;
+
+                if (direction != MPLS_DIRECTION_Z_TO_G)
+                    goto bad_packet;
+                ip_status = parse_ipv4_dst(skb, &dst_ipv4);
+                if (ip_status <= 0)
+                    goto bad_packet;
+                delivery_key.generation = active_generation_value;
+                delivery_key.ingress_ifindex = skb->ifindex;
+                delivery_key.label = label;
+                delivery_key.dst_ipv4 = dst_ipv4;
+                delivery = lookup_zone_edge_delivery_planned_overlay(&delivery_key);
+                sample_key_generation = delivery_key.generation;
+                sample_key_dst_ipv4 = dst_ipv4;
+                sample_map_id = MISS_MAP_ZONE_EDGE_DELIVERY;
+                if (!delivery || !delivery->active || !delivery->out_ifindex)
+                    goto miss;
+                if (delivery->new_dst_ipv4 &&
+                    rewrite_dst_ipv4(skb, dst_ipv4, delivery->new_dst_ipv4) < 0)
+                    goto bad_packet;
+                if (rewrite_l2_bytes(skb, delivery->dst_mac, delivery->src_mac) < 0)
+                    goto bad_packet;
+                count_packet(COUNTER_REDIRECT);
+                count_interface_packet(skb->ifindex, COUNTER_REDIRECT);
+                return bpf_redirect(delivery->out_ifindex, 0);
+            }
             if (handoff->new_dst_ipv4) {
                 ip_status = parse_ipv4_dst(skb, &dst_ipv4);
                 if (ip_status < 0)
@@ -761,6 +916,26 @@ int skyseed_mpls_dataplane(struct __sk_buff *skb)
             interface_role = *role;
 
         if (role && (*role & ~(IFACE_ROLE_CLASSIFIER | IFACE_ROLE_MPLS))) {
+            if (*role == IFACE_ROLE_UT_GATEWAY_SELECTOR) {
+                struct ut_gateway_policy_key policy_key = {
+                    .prefixlen = 64,
+                    .egress_ifindex = skb->ifindex,
+                    .dst_ipv4 = dst_ipv4,
+                };
+                struct ut_gateway_policy_value *policy = bpf_map_lookup_elem(
+                    &ut_gateway_policy_map,
+                    &policy_key);
+                if (!policy || !policy->active || !policy->gateway_selector_label)
+                    goto miss;
+                if (push_mpls(
+                        skb,
+                        policy->gateway_selector_label,
+                        MPLS_DIRECTION_G_TO_Z) < 0)
+                    goto bad_packet;
+                count_packet(COUNTER_LABEL_PUSH);
+                count_packet(COUNTER_PASS);
+                return TC_ACT_OK;
+            }
             count_packet(COUNTER_UNKNOWN_ROLE);
             sample_reason = MISS_REASON_UNKNOWN_ROLE;
             sample_map_id = MISS_MAP_INTERFACE_ROLE;
@@ -798,6 +973,10 @@ int skyseed_mpls_dataplane(struct __sk_buff *skb)
             goto bad_packet;
         if (!classifier->out_ifindex)
             goto miss;
+        if (classifier->out_ifindex == skb->ifindex) {
+            count_packet(COUNTER_PASS);
+            return TC_ACT_OK;
+        }
         count_packet(COUNTER_REDIRECT);
         count_interface_packet(skb->ifindex, COUNTER_REDIRECT);
         return bpf_redirect(classifier->out_ifindex, 0);

@@ -8,6 +8,7 @@ from experiment_topology import (
     ExperimentTerminalProfile,
     ExperimentTimeSlice,
     ExperimentZoneProfile,
+    FrozenVisualizationLinkVisibilityModel,
     GroundLocation,
     ZoneAnchorQualityGenerator,
     _scenario_planner_hints,
@@ -16,6 +17,138 @@ from topology_pipeline import OrbitTopologySlice, VisibilitySlice, ZoneGeneratio
 
 
 class ExperimentTopologyHintTests(unittest.TestCase):
+    def test_frozen_visualization_links_drive_gateway_and_isl_not_ut_catalog(self) -> None:
+        model = FrozenVisualizationLinkVisibilityModel(
+            link_payload={
+                "timestamp": "2026-07-09T00:00:00Z",
+                "interval": "10s",
+                "links": [
+                    {
+                        "groundLinks": [
+                            {
+                                "groundStationId": "gw1",
+                                "satelliteId": "sat-a",
+                            }
+                        ],
+                        "satelliteLinks": [
+                            {
+                                "satelliteAId": "sat-a",
+                                "satelliteBId": "sat-b",
+                            }
+                        ],
+                    }
+                ],
+            },
+            ut_min_elevation_deg=5.0,
+        )
+        orbit_slice = OrbitTopologySlice(
+            time_slice={
+                "slice_id": "slice-1",
+                "relative_time_seconds": 0.0,
+            },
+            nodes={
+                "ut1": {
+                    "node_id": "ut1",
+                    "node_type": "user_terminal",
+                    "position_state": {
+                        "x_km": EARTH_RADIUS_KM,
+                        "y_km": 0.0,
+                        "z_km": 0.0,
+                    },
+                },
+                "gw1": {
+                    "node_id": "gw1",
+                    "node_type": "gateway",
+                    "position_state": {
+                        "x_km": EARTH_RADIUS_KM,
+                        "y_km": 0.0,
+                        "z_km": 0.0,
+                    },
+                },
+                "sat-a": {
+                    "node_id": "sat-a",
+                    "node_type": "satellite",
+                    "position_state": {
+                        "x_km": EARTH_RADIUS_KM + 550.0,
+                        "y_km": 0.0,
+                        "z_km": 0.0,
+                    },
+                },
+                "sat-b": {
+                    "node_id": "sat-b",
+                    "node_type": "satellite",
+                    "position_state": {
+                        "x_km": EARTH_RADIUS_KM + 560.0,
+                        "y_km": 0.0,
+                        "z_km": 0.0,
+                    },
+                },
+            },
+            candidate_links=[
+                {
+                    "link_id": "ut1-access-slot0",
+                    "slot_type": "ut_access",
+                    "visibility_owner_node_id": "ut1",
+                    "candidate_bindings": [
+                        {
+                            "satellite_id": "sat-a",
+                            "binding": {"ut_id": "ut1", "satellite_id": "sat-a"},
+                            "endpoints": [],
+                        }
+                    ],
+                },
+                {
+                    "link_id": "gw1-gateway-slot0",
+                    "slot_type": "gw_access",
+                    "visibility_owner_node_id": "gw1",
+                    "candidate_bindings": [
+                        {
+                            "satellite_id": "sat-a",
+                            "binding": {"gateway_id": "gw1", "satellite_id": "sat-a"},
+                            "endpoints": [],
+                        },
+                        {
+                            "satellite_id": "sat-b",
+                            "binding": {"gateway_id": "gw1", "satellite_id": "sat-b"},
+                            "endpoints": [],
+                        },
+                    ],
+                },
+                {
+                    "link_id": "same-plane-slot0",
+                    "slot_type": "same_plane_isl",
+                    "binding": {
+                        "satellite_a_id": "sat-a",
+                        "satellite_b_id": "sat-b",
+                    },
+                    "endpoints": [
+                        {"node_id": "sat-a"},
+                        {"node_id": "sat-b"},
+                    ],
+                },
+            ],
+            zone_generation_input=ZoneGenerationInput(
+                membership_mode="surface_partition_zone",
+                zones={},
+                ut_zone_membership={},
+            ),
+        )
+
+        result = model.evaluate(orbit_slice)
+        active_by_id = {str(link["link_id"]): dict(link) for link in result.active_links}
+
+        self.assertEqual(result.visibility_model, "visualization_frozen_physical_links_v1")
+        self.assertEqual(
+            active_by_id["gw1-gateway-slot0"]["binding"]["satellite_id"],
+            "sat-a",
+        )
+        self.assertIn("ut1-access-slot0", active_by_id)
+        self.assertEqual(
+            active_by_id["ut1-access-slot0"]["activation_model"],
+            "skyseed_ut_access_geometry_v1",
+        )
+        self.assertIn("same-plane-slot0", active_by_id)
+
     def test_special_prefix_target_exchange_tracks_shifted_gateway_ix(self) -> None:
         scenario = ExperimentScenario(
             scenario_name="test",

@@ -49,9 +49,8 @@ PYTHONPATH=/home/seed/skyseed/satellite \
    `Symptoms`, `Detection`, `Fix`, and `Notes` or `Evidence`.
 
 Before spending another long real run, run the durable session check. It is the
-machine-readable handoff for a new Codex window and includes the canonical fast
-long-run profile, the prestart commands, the timing headline policy, and the
-diagnostic flags that must not be used for representative performance runs:
+machine-readable handoff for a new Codex window and exposes only the current
+operational-clean validation profile:
 
 ```bash
 PYTHONPATH=/home/seed/skyseed/satellite \
@@ -59,7 +58,7 @@ PYTHONPATH=/home/seed/skyseed/satellite \
   satellite/apps/skyseed_session_check.py --format text
 ```
 
-For automation or for copying the exact canonical profile into a run note:
+For automation or for copying the exact active profile into a run note:
 
 ```bash
 PYTHONPATH=/home/seed/skyseed/satellite \
@@ -69,21 +68,14 @@ PYTHONPATH=/home/seed/skyseed/satellite \
   --write-report satellite/output/analysis/session_check_latest.json
 ```
 
-Do not reconstruct the long-run command from chat memory. Use the
-`canonical_fast_long_run_profile.run_command` field from the session check as
-the starting point, replace only `<run_id>`, and change performance-affecting
-flags only when the run objective explicitly says it is diagnostic.
-
-For the current high-iteration BPF-owned 3H/240s work, use
-`operational_iteration_profile.run_command` from the same session check. This
-profile is the handoff for new Codex conversations: it preserves the experiment
-shape that matters for the current debugging line (`--horizon-seconds 240`,
-10-second sample/event cadence, 3 horizons, `operational_clean`,
-`bpf_owned`, clean preflight, host prepare auto), while allowing each round to
-generate and freeze fresh prepared inputs. Do not require old
-`goal-1shell-*` preview/timing evidence to be present before a current
-operational iteration. Treat that older static evidence as reference material
-for the broader 1-shell objective, not as a blocker for the fast 240s rerun.
+Do not reconstruct the long-run command from chat memory. Use
+`operational_iteration_profile.run_command`, replace only `<run_id>`, and
+change performance-affecting flags only when the run objective explicitly says
+it is diagnostic. The active handoff is the 4H `rich_s4_operational_clean_bpf`
+validation profile: 240-second horizons, 10-second sample/event cadence,
+`operational_clean`, `bpf_owned`, clean preflight, host prepare auto, orbit data
+from `satellite/apps/visualization/planned_shell_orbit_data_s1_s5.json`, and
+gateway data from `satellite/apps/visualization/starlink_gateways.json`.
 
 Current reboot interpretation:
 
@@ -189,6 +181,40 @@ Use this stabilization checklist:
    - report/audit propagation tests
    - broader regression set around neighboring runtime paths
 
+Operational-clean BPF runs must also pass the frozen runtime queue coverage
+audit before compose starts. This audit is a preparation contract, not a
+runtime participant:
+
+- it consumes `normal_runtime_inputs.json`, `topology.json`, and the prepared
+  route identity evidence when available
+- it must not start Docker, call visualization, regenerate links, run live
+  discovery, install routes, or repair missing input
+- it blocks compose only for contract failures such as missing queue context, a
+  BPF generation slot assignment that does not match the three-slot buffer
+  contract, a prepared horizon segment count that does not match the requested
+  long-run horizon count, or a runtime route consumer whose required prepared
+  route identity has no producer
+- it records timing and compact counts, but timing is evidence for optimization,
+  not a fixed timeout gate
+
+The current artifact is `runtime_queue_route_identity_coverage.json` for
+compatibility with existing summaries, but its schema is the broader
+`skyseed-runtime-queue-coverage-v1`. The standalone replay command is:
+
+```bash
+PYTHONPATH=/home/seed/skyseed/satellite \
+  /home/seed/miniconda3/envs/seed310/bin/python \
+  satellite/apps/audit_runtime_queue_coverage.py \
+  --run-dir <run_dir-containing-normal_runtime_inputs.json> \
+  --expected-horizon-count <loop_count>
+```
+
+When a new frozen lifecycle is added, extend
+`satellite/runtime_queue_coverage_audit.py` and its tests before the next long
+run. The intended pattern is one evolving producer/consumer contract over the
+current clean path, not H3/H4-specific smoke scripts, capped launch profiles,
+or retired shortcuts kept in the active tree.
+
 For the 3H-240s BPF-owned rolling-horizon work, keep the gate focused on proof
 categories rather than one run's exact field names:
 
@@ -278,12 +304,26 @@ plane is ready, or recorded asynchronously:
   the run objective explicitly promotes them to a gate
 
 Absolute isolation is part of the contract. Legacy controller-backed,
-Linux-MPLS, mini-host validation, full reload, full scan, live dump/diff, and
-hidden reconcile paths may remain in the repository while refactoring is
-pending, but they must not be reachable as fallback or "safety" routes from the
-clean profile. If the clean profile unexpectedly selects one of those routes,
-the run should fail closed with an explicit unsupported-path error rather than
-silently repair, reconcile, or continue through legacy behavior.
+Linux-MPLS, mini-host validation, full reload, full scan, live dump/diff, hidden
+reconcile paths, and superseded maintenance routes must not remain as visible
+branches inside the active clean runner/profile. Delete or move retired paths
+out of the active implementation instead of keeping them as guarded fallbacks,
+"safety" routes, or optional modes. If a path should never be selected, it
+should not be a branch a future edit can accidentally revive.
+
+Apply the same rule to launch profiles and tests. Active validation profiles
+must represent the current clean objective, not old short, preview, capped-run,
+or retired-route shortcuts. Do not keep short-run profiles or tests that only
+prove a retired shortcut still launches. If a cheaper validation is needed,
+define a new one from the current objective and explicitly state what lifecycle
+boundary it covers.
+
+For major refactors, deletion is the stabilization mechanism. Retired modules,
+duplicate implementations, compatibility wrappers, temporary scripts, and
+obsolete tests should be removed from the active tree, not renamed, grouped
+together, documented as "do not use", or left behind behind a selector. The
+goal is that current source searches expose one intended path and current tests
+exercise that path directly.
 
 The clean path should have one authoritative source of truth for each state:
 
@@ -293,6 +333,34 @@ The clean path should have one authoritative source of truth for each state:
 - retired state for cleanup
 - historical evidence only for reporting and post-run analysis
 
+Large reports must follow the same ownership rule. If a record body already has
+an owner artifact, all other reports should carry only `path/hash/count/summary`
+references. Do not write the same prepared/frozen payload twice just to give it
+two names; use an alias or manifest reference, and break that alias only before
+writing genuinely different content. Runtime reports, timing summaries, ready
+artifacts, and handoff manifests must not embed full prepared bundles,
+pre-runtime BPF prepare bodies, compiled map bodies, per-update payloads, or
+generation write-cost audit bodies unless that file is the single owner of the
+data.
+
+The BPF generation map lifecycle is a rolling three-slot contract:
+
+- previous horizon generations are retired and cleaned by explicit manifest
+  deletes once no active, pending, queued, or ready record still references
+  them
+- current horizon generations are active/visible and must not be deleted or
+  overwritten
+- next horizon generations are prepared in inactive slots from frozen inputs
+  and become visible only at the runtime boundary
+
+H0 is the bootstrap exception: it has no previous horizon to clean. From H1
+onward, horizon maintenance should preserve this previous/current/next state so
+longer loops such as H4 do not lose track of physical slot ownership. A ready
+artifact for a future horizon must prove both that required inactive generation
+writes succeeded and that any physical slots it needs from retired generations
+are clean or still safely retained. Slot reuse based only on historical evidence
+or a broad live map scan is not a clean fallback.
+
 Do not add global live guards that compare consumed historical sets against
 mutable runtime queues. If a guard is needed, first classify which state class
 it reads and keep live checks scoped to the current operation or pending
@@ -301,12 +369,11 @@ consumption and then block the valid lifecycle later.
 
 ## Current Canonical Command Index
 
-The stable real-runtime path is planned-shell `S5` full `1-shell`, 6-zone
-metadata catalog, 12UT/6GW valid6 catalogs, `--ground-placement catalog`,
-event-time RuntimeEpoch/ParameterEpoch queueing with live replenishment, G/Z
-FEC diff planning, direct backend with SEED `dynamic_satellite_link=0`, timing
-marks, ping watcher, rollback, temporal/return-path audit, and post-run
-preflight.
+The stable real-runtime path is the 4H
+`rich_s4_operational_clean_bpf` validation profile. It consumes the
+visualization planned-shell orbit catalog and visualization gateway catalog,
+then applies the rich S4 G/Z UT and zone semantics through the BPF-owned clean
+runtime.
 
 Use these commands as the normal entry points:
 
@@ -326,34 +393,11 @@ PYTHONPATH=/home/seed/skyseed/satellite \
   satellite/apps/skyseed_session_check.py --format text
 ```
 
-Use `canonical_fast_long_run_profile.run_command` from the JSON form when
-copying the exact command into a run note:
-
-```bash
-PYTHONPATH=/home/seed/skyseed/satellite \
-  /home/seed/miniconda3/envs/seed310/bin/python \
-  satellite/apps/skyseed_session_check.py \
-  --format json \
-  --write-report satellite/output/analysis/session_check_latest.json
-```
-
-For the current BPF-owned operational-clean iteration, prefer
-`operational_iteration_profile.run_command` from the same JSON report. Replace
-only `<run_id>` unless the run note explicitly says this is a diagnostic
-variant. It is acceptable for this profile to regenerate and freeze a new
-prepared bundle each round; the docs in `satellite/docs/experiment_rounds/`
-carry the durable round-to-round evidence.
-
-- Short 6-zone real-runtime smoke:
-  use the same command profile, keep `--zone-catalog
-  satellite/configs/starlink_shell_ground/one_shell_zone_catalog_6_valid6_gateways.json`,
-  keep the 12UT/6GW valid6 catalogs, set a covered-window `--start-time`, and
-  reduce `--horizon-seconds` to about `600`. Do not switch to 24/32-zone
-  catalogs for a real-runtime smoke.
-- Gated 2h run:
-  use the "Canonical 6-Zone Gated Two-Hour Route" command below. The current
-  validated covered window is `2026-06-11T09:57:20Z` through
-  `2026-06-11T11:57:20Z`.
+Use `operational_iteration_profile.run_command` from the JSON form when copying
+the exact command into a run note. Replace only `<run_id>` unless the run note
+explicitly says this is a diagnostic variant. It is acceptable for this profile
+to regenerate and freeze a new prepared bundle each round; the docs in
+`satellite/docs/experiment_rounds/` carry the durable round-to-round evidence.
 - Preview-only zone comparison:
   use `satellite/apps/build_starlink_shell_preview.py` or
   `satellite/apps/build_starlink_shell_preview_matrix.py`; write artifacts
@@ -425,299 +469,24 @@ Recommended real-run mode for larger experiments:
 `--host-prepare-policy auto` should be treated as the normal baseline, not as
 an ad-hoc recovery flag.
 
-## Canonical Fast Long-Run Route
+## Current Operational-Clean Validation Route
 
-The current fastest representative route for the full `1-shell` S5 `172`
-satellite, `12UT/6GW` G/Z real-runtime run is the session-check profile:
+The only active long-run handoff is the session-check
+`operational_iteration_profile.run_command`. It points to
+`run_skyseed_validation_profile.py --profile rich_s4_operational_clean_bpf`.
 
-- `profile_id=1shell_172_12ut6gw_gz_2h_fast_representative`
-- `--runtime-mode fast-demo`
-- `--host-prepare-policy auto`
-- `--preflight-policy require-clean`
-- explicit 12UT/6GW catalogs:
-  `one_shell_ut_catalog_12_grouped_valid6_gateways.json` and
-  `one_shell_gateway_catalog_valid6.json`
-- explicit 6-zone metadata catalog:
-  `one_shell_zone_catalog_6_valid6_gateways.json`
-- explicit empty ID overrides:
-  `--ut-ids "" --gateway-ids ""`, so the runner uses the catalog/max-count
-  selection instead of its small default `ut3,ut4` / `gw5,gw6,gw7` sample
-- `--ground-placement catalog`; do not use `shell-aware` for this performance
-  baseline, because it rewrites effective UT/GW coordinates from satellite
-  subpoints and can turn the intended near-gateway catalog into a long-hop
-  synthetic workload.
-- `--horizon-seconds 7200 --continuous`
-- rolling initial horizon/replenishment behavior is expected; do not try to
-  generate the full two-hour horizon in one static preview unless the objective
-  explicitly asks for that diagnostic.
+The profile owns the real command shape, including the 4H horizon count, BPF
+clean runtime, disabled runtime epoch caps, and visualization-sourced orbit and
+gateway inputs. Do not keep alternate smoke, capped, 1-shell, or retired
+catalog commands in the active runbook. If a smaller diagnostic is needed,
+define it from the current profile and state the diagnostic objective in that
+round's note.
 
-The profile intentionally keeps startup hygiene, runtime lock, ping watcher,
-first/final validation, post-run preflight, timing checkpoints, and
-`resource_usage.jsonl`. Those are not the same as strict per-epoch diagnostic
-validation.
-
-## Canonical 6-Zone Gated Two-Hour Route
-
-Use this route when the objective is to repeat the successful 6-zone metadata
-real-runtime validation, not when validating 24/32-zone catalogs.
-
-Hard guards:
-
-- do not run 24-zone or 32-zone real runtime from this route
-- do not change G/Z semantics
-- do not tune coverage margin to force coverage
-- do not add broad hardening or strict diagnostic validation flags
-- do not create plots during the run; extract figures later from finalized
-  artifacts
-
-Gate 0, before any real runtime:
-
-1. Read this runbook and run the session check:
-
-```bash
-PYTHONPATH=/home/seed/skyseed/satellite \
-  /home/seed/miniconda3/envs/seed310/bin/python \
-  satellite/apps/skyseed_session_check.py --format text
-```
-
-2. Record host resource headroom and functional readiness:
-
-```bash
-free -h
-df -h /home/seed/skyseed satellite/output /tmp
-pgrep -af 'run_starlink_shell_experiment.py|docker-compose|compose up' || true
-/home/seed/miniconda3/envs/seed310/bin/python \
-  satellite/apps/skyseed_preflight.py \
-  --format json \
-  --write-report satellite/output/analysis/<analysis_id>/preflight_before_host_prepare.json
-```
-
-If preflight reports missing host MPLS/sysctl/bridge readiness, run host prepare
-or rely on the runner's `--host-prepare-policy auto`, then run preflight again.
-Do not start a long run if preflight reports stale compose processes, scoped
-containers/networks, direct-backend host interfaces, stale locks, or low
-resource headroom.
-
-Gate 1, coverage feasibility:
-
-- Use the 6-zone metadata catalog only:
-  `one_shell_zone_catalog_6_valid6_gateways.json`.
-- Required service zones are the five zones with
-  `required_for_runtime=true` / `service_role=required_service`.
-- Optional/observation zones, including `zone-south`, may be unresolved and
-  must not block this route.
-- Confirm the selected start window covers the full `7200s` horizon for
-  required service zones. For the current validated evidence, use:
-  `2026-06-11T09:57:20Z` through `2026-06-11T11:57:20Z`.
-- Write the coverage decision to an analysis artifact before starting real
-  runtime.
-
-Gate 2, run command shape:
-
-```bash
-env -u PYTHONPATH /home/seed/miniconda3/envs/seed310/bin/python \
-  satellite/apps/run_starlink_shell_experiment.py \
-  --run-mode real-runtime \
-  --run-id <run_id> \
-  --orbit-input-mode planned-shell \
-  --planned-shell-id S5 \
-  --max-satellites 172 \
-  --max-uts 12 \
-  --max-gateways 6 \
-  --ut-ids "" \
-  --gateway-ids "" \
-  --ut-catalog satellite/configs/starlink_shell_ground/one_shell_ut_catalog_12_grouped_valid6_gateways.json \
-  --gateway-catalog satellite/configs/starlink_shell_ground/one_shell_gateway_catalog_valid6.json \
-  --zone-catalog satellite/configs/starlink_shell_ground/one_shell_zone_catalog_6_valid6_gateways.json \
-  --ground-placement catalog \
-  --start-time 2026-06-11T09:57:20Z \
-  --sample-interval 60 \
-  --event-evaluation-interval 10 \
-  --horizon-seconds 7200 \
-  --continuous \
-  --parameter-max-interval 120 \
-  --delay-threshold-ms 0.5 \
-  --loss-threshold-pct 0.02 \
-  --bandwidth-threshold-pct 5.0 \
-  --routing-cost-threshold 5 \
-  --runtime-mode fast-demo \
-  --loop-count 1 \
-  --interval 0 \
-  --ping-watch ut101:as154-host-new \
-  --stream-progress \
-  --progress-heartbeat-seconds 15 \
-  --startup-stall-warning-seconds 900 \
-  --epoch-stall-warning-seconds 300 \
-  --pre-transition-probe-interval 0 \
-  --runtime-epoch-validation-interval 0 \
-  --runtime-epoch-validation-scope reapplied_gateway_class_sample \
-  --parameter-epoch-validation-interval 0 \
-  --preflight-policy require-clean \
-  --host-prepare-policy auto \
-  --compose-up-timeout-seconds 0 \
-  --compose-startup-mode auto \
-  --compose-build-timeout-seconds 0 \
-  --container-readiness-timeout-seconds 0 \
-  --compose-build-policy if-needed \
-  --format json
-```
-
-While the run is active, monitor `runtime_progress.json` and
-`resource_usage.jsonl`; do not infer failure from a quiet stdout redirect.
-If the live queue reaches `runtime_completed` or `runtime_rollback:*`, separate
-live runtime success from teardown time. Wait for runner exit unless resource
-pressure or a repeated stall makes that unsafe.
-
-Required final validation:
-
-- `run_manifest.json`: `ping_success=true`, `real_apply_success=true`,
-  `rollback_completed=true`, `post_run_clean=true`
-- `temporal_audit.json`: finalized, rollback completed, no future active-link
-  or forwarding-state violation, runtime mutation scope expected
-- `post_run_preflight.json`: ready and clean, with zero scoped compose
-  processes, containers, networks, direct-backend interfaces, and locks
-- `return_path_audit.json`: `current_realization=shared_gz_backbone`,
-  `current_return_state_scales_with_flow_count=false`
-- G/Z semantics evidence: `ut_mpls_egress_count=0`; if using the legacy
-  `inspect_gz_return_semantics.py`, ignore its all-zone `passed=false` when
-  the only failing zone is optional `zone-south`, and use the specific
-  `ut_not_mpls_egress=true` / `shared_gz_model_after` fields
-- timing artifacts: `timing.json.finalized=true`, and `timing.json`,
-  `timing.csv`, and `epoch_execution_details.jsonl` row counts match
-- report steady RuntimeEpoch excluding the initial materialization row
-- report final rollback/cleanup separately from live RuntimeEpoch timing
-
-Reference successful run:
-
-- run directory:
-  `satellite/output/starlink_shell_experiments/gz-z6metadata-2h-gated-20260611-0824`
-- analysis directory:
-  `satellite/output/analysis/gz_6zone_2h_gated_20260611_0819`
-- result: `325` RuntimeEpochs, `275` ParameterEpochs, `23` replenishments,
-  max runner RSS about `1091 MiB`, swap used `0`, final run directory about
-  `967 MiB`, post-run preflight clean
-
-For representative performance long runs, do not add these diagnostic flags:
-
-```bash
---runtime-epoch-validation-interval 1
---parameter-epoch-validation-interval 1
---pre-transition-probe-interval 1
---runtime-mode correctness
-```
-
-They are valid fault-isolation tools, but they are not the standard long-run
-performance route. If they are used, label the run as diagnostic and do not
-compare its timing headline against the fast representative baseline.
-
-For timing reports from this route, use this fixed vocabulary:
-
-- Actual network update headline:
-  `semantic_data_plane_mutation_apply_seconds` and
-  `node_local_apply_wall_seconds`.
-- Scheduler pressure / actual blocking window:
-  `transition_wall_seconds`.
-- Cleanup or pre-apply maintenance optimization bucket:
-  `semantic_pre_apply_cleanup_or_blocking_verification_seconds` and
-  `node_local_incremental_cleanup_wall_seconds`.
-- Do not report `transition_wall_seconds`, rollback, artifact cleanup, or
-  post-run preflight as "actual network update" time.
-
-For RuntimeEpochs, `semantic_data_plane_mutation_apply_seconds` is a composite
-headline, not an additional phase. It is currently computed as:
-
-```text
-semantic_runtime_host_apply_seconds
-+ semantic_runtime_node_local_apply_seconds
-```
-
-Do not add `data_plane_mutation_apply_seconds` to host or node-local apply when
-building a total. Use it as the headline, or break it into its host and
-node-local components.
-
-Current implementation caveat:
-
-- `--runtime-mode fast-demo` no longer runs full correctness-mode
-  pre-transition rollback, and representative long runs should not enable
-  strict per-epoch validation.
-- However, the node-local hot path still performs incremental pre-apply cleanup
-  for `incremental_cleanup_flow_ids` inside
-  `MinimalRealLinuxMplsInstaller.apply_and_validate`. This calls
-  `rollback_session(...)` on the subset of prior flows that are no longer
-  unchanged before applying the new slice.
-- Therefore, `semantic_pre_apply_cleanup_or_blocking_verification_seconds` and
-  `node_local_incremental_cleanup_wall_seconds` are real hot-path work today,
-  not only a reporting artifact. Treat any claim that cleanup was "fully
-  removed" as false until this code path is replaced by a no-rollback overwrite,
-  a cheaper targeted diff, or a proven stale-state-safe skip.
-- A run with `post_apply_validation_probe_seconds` near zero and
-  `required_safety_gate_seconds=0` can still be slow because this incremental
-  cleanup remains active.
-
-Evidence from the interrupted 2026-06-11 `1h` fast-profile attempt
-`long-1shell-12ut6gw-1h-fastprofile-idfix-20260611`:
-
-- The corrected command used explicit empty `--ut-ids "" --gateway-ids ""`
-  catalog selection and did not enable strict validation. Live progress showed
-  `validation_scheduled=false`, `post_apply_validation_probe_seconds` near
-  zero, and `required_safety_gate_seconds=0`.
-- Do not use `long-1shell-12ut6gw-2h-resourceprofile-host-20260611` as the
-  healthy performance baseline. It is already a degraded `65` RuntimeEpoch /
-  `80` ParameterEpoch sample: steady runtime cleanup was about `17.2s`, node
-  apply about `10.2s`, and each runtime epoch reapplied about half of the active
-  flows.
-- The healthy long-run baseline is
-  `gz-long-1shell-2h-real-contextprune-20260610-1854`, with `243`
-  RuntimeEpochs and `409` ParameterEpochs. In that run, steady RuntimeEpoch
-  host+node apply averaged about `3.7s`, node-local apply about `0.7s`,
-  incremental cleanup about `3.1s`, and cleanup was nonzero in only `118/242`
-  steady RuntimeEpochs. ParameterEpoch total wall time averaged about `1.7s`.
-- Compared with that baseline, the interrupted `1h` fast-profile attempt lost
-  the important context-pruning shape: reapplied flows rose to about half of
-  active flows every runtime epoch, cleanup became nonzero every runtime epoch,
-  node-local apply rose to about `21.5s`, and cleanup rose to about `38.1s`.
-- Treat the regression as loss of effective context pruning / incremental reuse
-  plus heavier shared G/Z apply work, not merely as a reporting-field change.
-
-Root-cause notes from the 2026-06-11 comparison:
-
-- Context pruning means `_select_incremental_runtime_contexts` fingerprints each
-  dataplane-relevant flow context and holds unchanged flows in the active
-  node-local session instead of reapplying them. In the healthy baseline,
-  steady RuntimeEpoch `reapplied` median was `0`, `held` median was `18`, and
-  node-local apply batch count median was `0`.
-- The later `valid6` fast-profile runs changed at least one flow every runtime
-  epoch, so incremental cleanup ran every runtime epoch. Cleanup cost is mostly
-  node-local rollback/probe batching, not ping validation: a representative
-  interrupted `1h` epoch used about `70` rollback batches plus about `70`
-  rollback-verification probe batches, versus about `9` rollback batches and no
-  shared-group verification batches in the healthy baseline.
-- Full `shared_gz_backbone` only removes UT-scale satellite-backbone state when
-  many flows share the same G/Z return target. The healthy baseline used a
-  near-colocated 2-zone catalog: about `18` active flows mapped to about `3`
-  G/Z targets, with average path hop count about `1.0`. The interrupted `valid6`
-  run mapped about `12-17` active flows to `12-17` distinct G/Z targets, with
-  average path hop count about `8.5` and max `26`; that workload receives little
-  sharing benefit and produces much heavier MPLS/sysctl route batches.
-- The `8.5` average path-hop regression was primarily a ground-placement
-  workload problem. The interrupted run used `--ground-placement shell-aware`
-  with empty explicit ID overrides, so the preview builder replaced catalog
-  coordinates with satellite-subpoint-derived effective coordinates. In that
-  run `ut101`-`ut106` stayed at `1` hop because the six gateways were also
-  placed on those first six synthetic UT points, while `ut107`-`ut112` averaged
-  roughly `10-19` hops and reached `26`. Use `--ground-placement catalog` and a
-  grouped/near-gateway UT catalog for representative long-run performance.
-- The snapshot planner fields
-  `max_additional_satellite_hops_relative_to_best_candidate` and
-  `max_additional_satellite_hops_relative_to_default` are relative constraints,
-  not absolute total-hop caps. Always verify actual `flow_path_hops` /
-  `path_hop_count` before treating a long run as representative.
-- Optimization should preserve G/Z semantics while reducing redundant work:
-  dedupe shared-zone apply/rollback by target key, skip rollback for preserved
-  shared targets without probing every affected node, avoid restoring MPLS
-  platform/input settings that remain required by active flows, and add
-  performance gates for `reapplied_ratio`, cleanup-nonzero ratio, node-local
-  batch count, and path-hop distribution.
+The current profile's gateway binding, visualization physical-link contract,
+and temporary serviceability selection are recorded in the corresponding
+experiment-round note and tests. Do not promote those phase-specific choices
+into a permanent runbook gate unless later runs prove they are durable project
+semantics.
 
 ## G/Z Zone Planning And Diff Artifacts
 
@@ -1326,16 +1095,10 @@ Before treating the run as representative, inspect:
 
 ### Fix
 
-Pass the explicit catalogs for this representative full-shell setup:
-
-```bash
---ut-catalog satellite/configs/starlink_shell_ground/one_shell_ut_catalog_12_grouped_valid6_gateways.json \
---gateway-catalog satellite/configs/starlink_shell_ground/one_shell_gateway_catalog_valid6.json \
---ground-placement catalog
-```
-
-Also make sure `--ping-watch` and any observed flow IDs refer to UTs that are
-actually selected by that catalog.
+The historical failure was caused by a command/catalog mismatch: the watcher and
+flow IDs named UTs that the command did not select. In the current active path,
+do not reconstruct that command. Use the validation profile handoff and make
+sure any diagnostic watcher or observer names IDs selected by that same profile.
 
 ### Evidence
 
@@ -1612,10 +1375,11 @@ The runner now separates:
 - the overall startup deadline
 - the per-stage watchdog/recovery timeout
 
-Even when the overall startup deadline is disabled or already exceeded,
-per-stage timeout/recovery remains active. The runner records
-`compose_up_overall_deadline_exceeded` when the overall budget is passed while
-continuing with stage-level watchdog behavior.
+Even when the overall startup deadline is disabled or would otherwise have
+been exceeded, per-stage timeout/recovery remains active. For the current
+`operational_clean` profile, whole-startup elapsed budgets are disabled and are
+not warning or failure evidence; startup wall time is recorded for offline
+analysis only.
 
 ### Detection
 
@@ -1627,7 +1391,8 @@ Inspect:
 
 Look for:
 
-- `compose_up_overall_deadline_exceeded`
+- `compose_up_elapsed_budget_observed` only if a nonzero whole-startup elapsed
+  budget was explicitly configured for diagnostic observation
 - `compose_up_stage_retry_started`
 - `compose_up_stage_retry_completed`
 - stage results where `overall_startup_deadline_exceeded_before_stage=true`
@@ -1635,8 +1400,10 @@ Look for:
 
 ### Operator Guidance
 
-- Do not rely on `--compose-up-timeout-seconds 0` as a safe way to “just wait
-  longer”.
+- For `operational_clean`, keep `--compose-up-timeout-seconds 0`,
+  `--startup-absolute-max-seconds 0`, and `--startup-stall-warning-seconds 0`
+  unless introducing a separately justified state/progress-based startup
+  contract.
 - Prefer the normal staged startup path with fixed per-stage watchdogs and
   recovery.
 - If a startup phase still hangs without emitting retry/recovery events, treat
@@ -1864,6 +1631,149 @@ whether the previous error string disappeared.
   handoff, compact artifacts, reports, cleanup, and failure propagation
 - keep the goal of each long run as completing the 3H operational iteration;
   bug-specific validation is only one checkpoint on that path
+
+## Operational-Clean Worker Budget and Edge Route State
+
+### Symptom
+
+- a process-owned horizon maintenance worker fails before boundary with
+  `bpf_resident_attach_coverage_budget_exceeded`
+- the failure artifact shows a nonempty attach plan and a default
+  `max_attach_interfaces` budget even though the process work input already
+  carries a larger dynamic `resident_attach_coverage_budget` / `bpf_attach_budget`
+- steady runtime epoch timing regresses while qdisc remains small; node-local
+  apply shows repeated UT default-route or GW return-route replacements
+
+### Detection
+
+- Run the offline horizon-maintenance process audit on newly prepared artifacts
+  before any expensive run. A process compact manifest with queued preload work
+  must include resident attach budget evidence, and the terminal ready/failure
+  report must show that attach prepare consumed that budget instead of the
+  default.
+- Compare steady runtime node-local apply against the last known clean
+  baseline. Repeated `route_replace` batches in clean BPF runtime are evidence
+  of lost session state, not qdisc regression.
+
+### Required Invariants
+
+- Capacity limits for BPF resident attach and generation windows must be derived
+  from the prepared horizon/window artifacts. Do not use a fixed default as the
+  operational-clean limit when a prepared run has dynamic budget evidence.
+- The rolling resident attach budget from the precompose role-union gate must be
+  carried into process worker payloads, frozen compiled inputs, frozen-manifest
+  proofs, and unioned attach inputs.
+- A process worker must not fall back to the default attach budget when the
+  prepared run has a rolling budget.
+- The runtime main loop must not live-compile future generation BPF maps from
+  context before the future physical interfaces exist. The only target-
+  generation path is process-owned maintenance: additive host preparation,
+  exact targeted final binding capture, strict freeze/compile from the frozen
+  context, attach capability preparation, then inactive generation preload.
+  Precompiled target inputs are rejected; there is no compile-allowed flag or
+  alternate source. The worker must carry the dynamic resident attach budget
+  and fail closed without default budgets, full reloads, full scans, or hidden
+  reconciliation.
+- Process-owned maintenance workers must take physical file paths from the
+  process work payload only. Work items may carry snapshot/runtime-plan
+  semantics, but they must not choose their own topology/link-state file path,
+  and missing payload paths must fail in offline worker replay before compose.
+- BPF-owned edge route preflight should avoid live probing, but successful
+  route installation must be reflected in the active session preflight. Do not
+  represent "not probed live" as "known missing" on every later epoch.
+- Clean runtime must not regenerate UT/GW edge route replacements every epoch
+  unless the active session state says that specific edge route is missing.
+
+## Operational-Clean Node-Local Boundary
+
+### Symptom
+
+- `node_local_apply` appears in clean BPF-owned runtime and can be mistaken for
+  satellite-core Linux route installation.
+- This is a correctness issue, not only a timing issue, if any retained
+  node-local command installs per-UT Linux routing/MPLS state in a satellite
+  namespace.
+
+### Required Invariants
+
+- In `operational_clean` / `bpf_owned`, satellite-core G/Z forwarding is owned
+  by BPF maps and resident BPF attachment only.
+- Retained Linux node-local commands in clean BPF runtime are limited to edge
+  endpoint bootstrap, currently UT default route and GW local-origin BPF return
+  route.
+- Serving-satellite per-UT delivery routes, policy rules, MPLS LFIB, shared
+  zone-return Linux routes, NAT/FORWARD fallback, full reload, full scan, and
+  hidden reconcile remain forbidden in the clean runtime path.
+- Timing reports should classify allowed edge endpoint routes separately from
+  generic `ip route` work so a larger `node_local_apply` cannot hide semantic
+  pollution.
+
+## Prepared Bundle Runtime Input Size
+
+### Symptom
+
+- Startup/freeze becomes comparable to compose time.
+- `executable_runtime_inputs.json` grows to GiB scale because it embeds full
+  normal runtime inputs rather than referencing the canonical prepared runtime
+  input artifact.
+
+### Required Invariants
+
+- `normal_runtime_inputs` is the canonical thaw source and should be stored as
+  its own prepared artifact with a stable hash.
+- `executable_runtime_inputs` should carry execution plans, small indices, and a
+  reference/hash to normal runtime inputs, not another embedded copy of the full
+  payload.
+- `normal_runtime_inputs` should not persist indexes that are exactly derivable
+  from the scoped canonical context, such as per-segment context, runtime plan,
+  distribution batch, topology snapshot, or top-level current-horizon context
+  copies. Build these indexes in memory for consumers that need them.
+- Loading code may hydrate the reference for existing consumers, but repeated
+  parsing/hash of the same large artifact in one process should be cached.
+- Startup optimization should remove duplicated whole-run materialization before
+  adding more timing probes.
+- Minimal phase progress is useful when it names an existing expensive
+  materialization phase, but it must not become a new live runtime guard or a
+  report path that blocks epoch updates.
+
+## Frozen PID Seal, Repeated Binding Work, and Artifact Amplification
+
+### Symptom
+
+- a ready maintenance worker is rejected at the H boundary with
+  `horizon_maintenance_handoff_pid_cache_mismatch` even though every PID value
+  matches
+- H0 inactive generation preload spends hundreds of seconds in interface
+  discovery or clsact checks while map writes take only a few seconds
+- worker/ready/handoff artifacts grow by embedding the same compiled maps or
+  preload reports for every generation
+- final cleanup spends minutes deleting container peers and temporary names
+  that were already removed by host-veth deletion or veth rename
+
+### Required Invariants
+
+- The initial targeted binding producer must seal the exact populated PID
+  cache before any maintenance request is emitted. Worker requests consume only
+  the sealed snapshot. An unsealed cache and PID value drift have distinct
+  fail-closed errors.
+- H0 and maintenance preload consume frozen compiled inputs plus prepared
+  attach authority. Interface discovery and live clsact guards are zero on the
+  preload/runtime path.
+- Worker binding requirements are derived directly from frozen contexts. Do
+  not run an offline full compile merely to discover refs and then strict-
+  compile the same generation again.
+- Final binding capture remains an exact ref operation. Batch requested
+  interfaces per frozen node/PID and use bounded node parallelism; never replace
+  it with a namespace link scan.
+- Maintenance delta attach may use bounded parallelism across distinct
+  interfaces after physical preparation. It must retain delta-only attach,
+  frozen control-plane addresses, and zero full attach/reload.
+- Ready/handoff generation records contain activation identity and compact
+  proof only. Full compiled maps and nested preload reports remain in their
+  owning frozen/worker artifacts and are not copied into every consumer.
+- Cleanup deletes owned host veths and bridges only. Host-veth deletion owns
+  peer removal; completed temporary names and paired container endpoints are
+  counted as elided work, not executed no-ops.
 
 ## When To Update This File
 

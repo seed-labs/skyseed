@@ -24,18 +24,17 @@ from skyseed_preflight import (  # noqa: E402
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Probe for stale Skyseed runtime state, Docker residue, host MPLS readiness, "
-            "and other recurring environment blockers before real experiments."
+            "Probe the operational-clean BPF-owned environment for stale Skyseed "
+            "runtime state and recurring experiment blockers."
         ),
     )
     parser.add_argument(
         "--profile",
         choices=PREFLIGHT_PROFILES,
-        default="default",
+        default="operational-clean-bpf-owned",
         help=(
-            "Preflight policy profile. Use operational-clean-bpf-owned before "
-            "strict BPF-owned clean runs; it requires a clean Skyseed environment "
-            "and skips legacy host MPLS readiness."
+            "Preflight policy profile. The standard path is operational-clean-bpf-"
+            "owned and does not inspect Linux native MPLS readiness."
         ),
     )
     parser.add_argument(
