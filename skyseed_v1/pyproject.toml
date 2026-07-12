@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "skyseed-v1"
+version = "1.0.0.dev0"
+description = "Composable satellite Internet emulation platform"
+readme = "README_EN.md"
+requires-python = ">=3.10"
+license = { text = "GPL-3.0-or-later" }
+dependencies = [
+  "PyYAML>=6,<7",
+  "requests>=2.22,<3",
+  "sgp4>=2.25,<3",
+]
+
+[project.scripts]
+skyseed-v1 = "skyseed_v1.cli.main:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"skyseed_v1.backends.bpf" = ["native/*.c"]
