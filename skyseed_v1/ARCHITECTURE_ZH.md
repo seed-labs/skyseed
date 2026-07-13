@@ -77,6 +77,8 @@ cli/examples -> public interfaces only
 - 网络激活是最高优先级路径；控制台、观测、审计投影和产物展示必须有界、延后、合并或允许降低新鲜度，不能反压 epoch 更新；
 - 严格 `bpf_owned` 不存在 Linux G/Z、MPLS、LFIB、NAT 或 Mini-Internet 转发回退；
 - EventTimeline 继续是运行时更新权威；
+- 一次运行只有一条连续冻结物理链路时间轴；滚动 horizon 通过对齐帧偏移消费，不能各自重启物理链路选择；
+- 每个准备好的 horizon 必须与初始 Compose 拓扑编译出的节点和 slot 物化身份完全一致；漂移在 Compose build 前失败，禁止运行时创建接口；
 - 未来状态 inactive 准备，只在语义边界激活；
 - 部分或不匹配的 worker 结果不是 ready；
 - qdisc/链路生命周期继续由 Linux 拥有，除非未来门禁明确改变；

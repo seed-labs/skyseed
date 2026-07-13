@@ -37,11 +37,32 @@ payload.
 `clean` removes only scoped Skyseed runtime residue and then requires a ready
 post-clean preflight; it refuses to run while a Skyseed process is active.
 
+Every normal run automatically creates
+`output/<run-id>/visualization/index.html` from that run's frozen H0-H3
+snapshots and physical links before Compose starts. The standalone page
+provides a rotatable 3D Earth and 96-frame timeline. It performs no independent
+orbit propagation or anchor selection; source-time or attachment disagreement
+fails closed before the real network is created.
+
 Start the real run with:
 
 ```bash
 python skyseed_v1/examples/s5_operational_clean/run.py
 ```
+
+After the real run reaches its epoch loop, a second terminal can demonstrate
+an actual selected path without manually finding containers or addresses:
+
+```bash
+python skyseed_v1/examples/s5_operational_clean/demo_ping.py
+```
+
+The action reads the example's immutable UT gateway rules and bound service
+addresses, reports each default/special rule and the current slice, then sends
+three pings per rule. A recent observer record can annotate the dynamic serving
+satellite but is not required. Add `--watch` to repeat until Ctrl-C. The
+equivalent unified action is `run.py demo-ping`. The probe
+is external to, and never awaited by, the network update process.
 
 The run writes artifacts under this example's `output/<run-id>/`. The terminal
 immediately acknowledges the launch and output path, then emits a bounded

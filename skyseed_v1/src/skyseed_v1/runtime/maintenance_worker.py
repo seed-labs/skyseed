@@ -797,6 +797,33 @@ def _prepared_attach_capability_readiness(
         ).items()
         if str(interface_ref)
     }
+    compact_attach_prepare = {
+        key: attach_prepare.get(key)
+        for key in (
+            "schema_version",
+            "ok",
+            "reason",
+            "source",
+            "runtime_apply_skipped",
+            "source_runtime_apply_occurred",
+            "active_generation_set",
+            "map_ready",
+            "runtime_full_generation_reload_count",
+            "full_attach_count",
+            "delta_attach_count",
+            "prepared_bpf_attach_capability_count",
+            "prepared_bpf_attach_interface_count",
+            "artifact_path",
+        )
+        if key in attach_prepare
+    }
+    compact_attach_prepare.update(
+        {
+            "attach_plan": attach_plan,
+            "attached_interfaces": attached_interfaces,
+            "attached_interface_details": attached_interface_details,
+        }
+    )
     return {
         "schema_version": "skyseed-prepared-attach-capability-readiness-v1",
         "ready": bool(source.get("ok") is True),
@@ -829,9 +856,9 @@ def _prepared_attach_capability_readiness(
                     or {}
                 ),
             },
-            "preactivation_attach_prepare": dict(attach_prepare),
+            "preactivation_attach_prepare": compact_attach_prepare,
         },
-        "preactivation_attach_prepare": dict(attach_prepare),
+        "preactivation_attach_prepare": compact_attach_prepare,
         "preactivation_attach_prepare_records": [
             {
                 "schema_version": (
@@ -1435,7 +1462,23 @@ def run_horizon_maintenance_process_payload(
             ),
             "horizon_id": str(request.next_horizon_id),
             "request_hash": request.request_hash,
-            "report": attach_report,
+            # The raw attach report includes the frozen compiler payload in
+            # several nested diagnostic branches.  The parent consumes only
+            # the immutable interface/role/binding capability, so publish
+            # that canonical projection instead of duplicating tens of
+            # megabytes at the process handoff.
+            "report": prepared_attach_readiness,
+            "source_report_summary": {
+                "ok": bool(attach_report.get("ok")),
+                "reason": str(attach_report.get("reason") or ""),
+                "prepared_bpf_attach_capability_count": int(
+                    attach_report.get("prepared_bpf_attach_capability_count") or 0
+                ),
+                "prepared_bpf_attach_interface_count": len(
+                    list(attach_report.get("attached_interface_details") or [])
+                ),
+                "raw_report_embedded": False,
+            },
         },
     )
     handoff_artifact = segment_dir / "horizon_maintenance_handoff_preloaded_generations.json"

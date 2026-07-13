@@ -8126,6 +8126,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Frozen visualization link duration in seconds.",
     )
     parser.add_argument(
+        "--visualization-link-frame-offset",
+        type=int,
+        default=0,
+        help="Internal rolling-horizon offset into the shared frozen link timeline.",
+    )
+    parser.add_argument(
         "--ground-placement",
         choices=("catalog", "shell-aware"),
         default="shell-aware",
@@ -8774,6 +8780,13 @@ def _preview_command(
             [
                 "--visualization-link-duration-seconds",
                 str(args.visualization_link_duration_seconds),
+            ]
+        )
+    if int(getattr(args, "visualization_link_frame_offset", 0)):
+        command.extend(
+            [
+                "--visualization-link-frame-offset",
+                str(int(args.visualization_link_frame_offset)),
             ]
         )
     if not bool(args.enable_seed_internet_map):
@@ -15372,6 +15385,50 @@ def _preview_summary_to_segment(
     }
 
 
+def _replenishment_preview_args(
+    args: argparse.Namespace,
+    *,
+    start_time_utc: str,
+    horizon_seconds: float,
+) -> argparse.Namespace:
+    """Bind every absolute-time preview input to one successor horizon."""
+    base_time = _parse_utc_timestamp(
+        str(args.visualization_link_start_timestamp or args.start_time)
+    )
+    segment_time = _parse_utc_timestamp(start_time_utc)
+    interval_text = str(args.visualization_link_interval).strip().lower()
+    interval_seconds = (
+        float(interval_text[:-2]) / 1000.0
+        if interval_text.endswith("ms")
+        else float(interval_text[:-1])
+        if interval_text.endswith("s")
+        else float(interval_text)
+    )
+    raw_offset = (segment_time - base_time).total_seconds() / interval_seconds
+    frame_offset = int(round(raw_offset))
+    if frame_offset < 0 or abs(raw_offset - frame_offset) > 1e-6:
+        raise ValueError(
+            "successor horizon start must align with frozen physical-link frames: "
+            f"start={start_time_utc} base={base_time.isoformat()} interval={interval_seconds}"
+        )
+    return _namespace_with_overrides(
+        args,
+        run_mode="preview",
+        start_time=start_time_utc,
+        visualization_link_frame_offset=frame_offset,
+        horizon_seconds=float(horizon_seconds),
+        slice_count=max(
+            1,
+            int(
+                math.floor(
+                    float(horizon_seconds) / _sample_interval_seconds(args=args)
+                )
+            )
+            + 1,
+        ),
+    )
+
+
 def _run_replenishment_preview(
     *,
     args: argparse.Namespace,
@@ -15387,15 +15444,10 @@ def _run_replenishment_preview(
     config_dir = segment_dir / "config"
     output_dir = segment_dir / "preview_only"
     segment_dir.mkdir(parents=True, exist_ok=True)
-    segment_args = _namespace_with_overrides(
+    segment_args = _replenishment_preview_args(
         args,
-        run_mode="preview",
-        start_time=start_time_utc,
+        start_time_utc=start_time_utc,
         horizon_seconds=float(horizon_seconds),
-        slice_count=max(
-            1,
-            int(math.floor(float(horizon_seconds) / _sample_interval_seconds(args=args))) + 1,
-        ),
     )
     command = _preview_command(
         args=segment_args,
@@ -15552,6 +15604,152 @@ def _prepare_frozen_rolling_horizon_segments(
             _parse_utc_timestamp(segment_end_time)
         )
     return segments
+
+
+def _frozen_horizon_topology_identity_gate(
+    segments: Sequence[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    """Prove every frozen horizon targets the one Compose materialization."""
+    records: List[Dict[str, Any]] = []
+    reference_hash = ""
+    for index, segment_any in enumerate(segments):
+        segment = dict(segment_any or {})
+        topology_path = Path(str(segment.get("topology_path") or "")).resolve()
+        topology = _read_json(topology_path)
+        materialization_contract = {
+            "satellites": topology.get("satellites"),
+            "gateways": topology.get("gateways"),
+            "user_terminals": topology.get("user_terminals"),
+            "internet_exchanges": topology.get("internet_exchanges"),
+            "slot_inventory": topology.get("slot_inventory"),
+        }
+        contract_hash = _canonical_json_hash(materialization_contract)
+        if index == 0:
+            reference_hash = contract_hash
+        records.append(
+            {
+                "horizon_id": str(segment.get("horizon_id") or f"H{index}"),
+                "topology_path": str(topology_path),
+                "materialization_contract_hash": contract_hash,
+                "matches_initial_compose_topology": contract_hash == reference_hash,
+            }
+        )
+    mismatches = [
+        record for record in records if not record["matches_initial_compose_topology"]
+    ]
+    return {
+        "schema_version": "skyseed-frozen-horizon-topology-identity-gate-v1",
+        "passed": not mismatches,
+        "contract": (
+            "all rolling horizons use the exact node and slot inventory compiled "
+            "into the initial Compose topology"
+        ),
+        "initial_materialization_contract_hash": reference_hash,
+        "horizon_count": len(records),
+        "mismatch_count": len(mismatches),
+        "mismatches": mismatches,
+        "horizons": records,
+        "runtime_interface_creation_allowed": False,
+        "failure_stage": "before_compose_build",
+    }
+
+
+def _frozen_horizon_time_alignment_gate(
+    segments: Sequence[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    """Prove orbit, snapshot, and physical-link time agree for every horizon."""
+    records: List[Dict[str, Any]] = []
+    blockers: List[Dict[str, Any]] = []
+    base_time: datetime | None = None
+    previous_end = ""
+    for index, segment_any in enumerate(segments):
+        segment = dict(segment_any or {})
+        horizon_id = str(segment.get("horizon_id") or f"H{index}")
+        snapshot_path = Path(str(segment.get("snapshot_preview_path") or "")).resolve()
+        snapshot_payload = _read_json(snapshot_path)
+        snapshots = list(snapshot_payload.get("snapshots") or [])
+        pipeline = dict(snapshot_payload.get("pipeline") or {})
+        config_dir = snapshot_path.parent
+        physical_path = config_dir / "visualization_physical_links.json"
+        physical = _read_json(physical_path)
+        physical_frames = list(physical.get("links") or [])
+        interval_text = str(physical.get("interval") or "").strip().lower()
+        interval_seconds = (
+            float(interval_text[:-2]) / 1000.0
+            if interval_text.endswith("ms")
+            else float(interval_text[:-1])
+            if interval_text.endswith("s")
+            else float(interval_text)
+        )
+        physical_base_time = datetime.fromtimestamp(
+            int(str(physical.get("timestamp"))) / 1000.0,
+            tz=timezone.utc,
+        )
+        if base_time is None:
+            base_time = physical_base_time
+        start_time = str(segment.get("start_time_utc") or "")
+        end_time = str(segment.get("end_time_utc") or "")
+        frame_offset = int(pipeline.get("visualization_link_frame_offset") or 0)
+        expected_offset = int(
+            round(
+                (_parse_utc_timestamp(start_time) - base_time).total_seconds()
+                / interval_seconds
+            )
+        )
+        snapshot_start = str(
+            dict(dict(snapshots[0]).get("time_slice") or {}).get(
+                "absolute_time_utc"
+            )
+            if snapshots
+            else ""
+        )
+        snapshot_end = str(
+            dict(dict(snapshots[-1]).get("time_slice") or {}).get(
+                "absolute_time_utc"
+            )
+            if snapshots
+            else ""
+        )
+        temporal_plan = dict(segment.get("temporal_plan") or {})
+        orbit_samples = list(temporal_plan.get("orbit_samples") or [])
+        orbit_start = str(dict(orbit_samples[0]).get("absolute_time_utc") or "") if orbit_samples else ""
+        orbit_end = str(dict(orbit_samples[-1]).get("absolute_time_utc") or "") if orbit_samples else ""
+        checks = {
+            "shared_physical_base_time": physical_base_time == base_time,
+            "contiguous_with_previous_horizon": index == 0 or start_time == previous_end,
+            "frame_offset_matches_horizon_start": frame_offset == expected_offset,
+            "snapshot_time_matches_horizon": snapshot_start == start_time and snapshot_end == end_time,
+            "orbit_time_matches_horizon": orbit_start == start_time and orbit_end == end_time,
+            "physical_frames_cover_snapshot_boundary": (
+                len(physical_frames) >= frame_offset + len(snapshots)
+            ),
+        }
+        failed_checks = sorted(name for name, passed in checks.items() if not passed)
+        record = {
+            "horizon_id": horizon_id,
+            "start_time_utc": start_time,
+            "end_time_utc": end_time,
+            "frame_offset": frame_offset,
+            "expected_frame_offset": expected_offset,
+            "interval_seconds": interval_seconds,
+            "snapshot_count": len(snapshots),
+            "physical_frame_count": len(physical_frames),
+            "checks": checks,
+            "passed": not failed_checks,
+        }
+        records.append(record)
+        if failed_checks:
+            blockers.append({"horizon_id": horizon_id, "failed_checks": failed_checks})
+        previous_end = end_time
+    return {
+        "schema_version": "skyseed-frozen-horizon-time-alignment-gate-v1",
+        "passed": not blockers,
+        "horizon_count": len(records),
+        "blocker_count": len(blockers),
+        "blockers": blockers,
+        "horizons": records,
+        "failure_stage": "before_compose_build",
+    }
 
 
 TIMING_BREAKDOWN_DEFINITIONS = {
@@ -32236,6 +32434,69 @@ def main(argv: Sequence[str] | None = None) -> int:
                 }
                 for segment in frozen_prepared_horizon_segments
             ],
+        )
+        frozen_horizon_topology_identity_gate = (
+            _frozen_horizon_topology_identity_gate(
+                frozen_prepared_horizon_segments
+            )
+        )
+        _write_json(
+            run_dir / "frozen_horizon_topology_identity_gate.json",
+            frozen_horizon_topology_identity_gate,
+        )
+        if not bool(frozen_horizon_topology_identity_gate.get("passed")):
+            raise RuntimeError(
+                "frozen_horizon_topology_identity_gate_failed_before_compose:"
+                + str(
+                    frozen_horizon_topology_identity_gate.get("mismatch_count")
+                    or 0
+                )
+            )
+        frozen_horizon_time_alignment_gate = _frozen_horizon_time_alignment_gate(
+            frozen_prepared_horizon_segments
+        )
+        _write_json(
+            run_dir / "frozen_horizon_time_alignment_gate.json",
+            frozen_horizon_time_alignment_gate,
+        )
+        if not bool(frozen_horizon_time_alignment_gate.get("passed")):
+            raise RuntimeError(
+                "frozen_horizon_time_alignment_gate_failed_before_compose:"
+                + str(frozen_horizon_time_alignment_gate.get("blocker_count") or 0)
+            )
+        phase_start = time.perf_counter()
+        _progress_update(
+            phase="generate_run_visualization",
+            event_type="generate_run_visualization_started",
+            phase_detail={"source": "frozen_runtime_inputs"},
+            write_events=False,
+        )
+        from skyseed_v1.visualization.demo_globe import write_demo_globe
+
+        run_visualization_index = write_demo_globe(run_dir)
+        phase_timing["generate_run_visualization_wall_seconds"] = round(
+            time.perf_counter() - phase_start,
+            6,
+        )
+        _progress_update(
+            phase="generate_run_visualization_completed",
+            event_type="generate_run_visualization_completed",
+            phase_detail={
+                "source": "frozen_runtime_inputs",
+                "index_html": str(run_visualization_index),
+            },
+            write_events=False,
+        )
+        events.append(
+            {
+                "timestamp_utc": _timestamp_utc(),
+                "event_type": "run_visualization_generated",
+                "source": "frozen_runtime_inputs",
+                "index_html": str(run_visualization_index),
+                "wall_seconds": phase_timing[
+                    "generate_run_visualization_wall_seconds"
+                ],
+            }
         )
         phase_start = time.perf_counter()
         _progress_update(

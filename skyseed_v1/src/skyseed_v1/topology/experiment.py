@@ -2500,6 +2500,7 @@ class FrozenVisualizationLinkVisibilityModel(VisibilityModel):
         *,
         link_payload: Dict[str, Any],
         ut_min_elevation_deg: float = 10.0,
+        frame_offset: int = 0,
     ) -> None:
         self.payload = dict(link_payload)
         self.frames = [dict(frame) for frame in list(self.payload.get("links") or [])]
@@ -2509,6 +2510,7 @@ class FrozenVisualizationLinkVisibilityModel(VisibilityModel):
             str(self.payload.get("interval") or "")
         )
         self.ut_min_elevation_deg = float(ut_min_elevation_deg)
+        self.frame_offset = max(0, int(frame_offset))
 
     @staticmethod
     def _parse_interval_seconds(value: str) -> float:
@@ -2529,7 +2531,9 @@ class FrozenVisualizationLinkVisibilityModel(VisibilityModel):
         relative_time = float(
             orbit_slice.time_slice.get("relative_time_seconds", 0.0)
         )
-        frame_index = int(round(relative_time / self.interval_seconds))
+        frame_index = self.frame_offset + int(
+            round(relative_time / self.interval_seconds)
+        )
         if frame_index < 0 or frame_index >= len(self.frames):
             raise ValueError(
                 "visualization link payload does not cover topology slice: "

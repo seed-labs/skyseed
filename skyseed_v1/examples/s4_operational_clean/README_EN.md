@@ -50,6 +50,31 @@ use `preflight --format json` only when full audit evidence is needed.
 `clean` removes only scoped Skyseed runtime residue and then requires a ready
 post-clean preflight; it refuses to run while a Skyseed process is active.
 
+Every normal run automatically generates its own offline page at
+`output/<run-id>/visualization/index.html` after all rolling-horizon inputs are
+frozen and before Compose starts. Open it directly in a browser to rotate/zoom
+Earth, scrub or play time, and
+toggle satellites, UTs, gateways, zones, ISLs, canonical UT-to-zone-anchor
+attachments, and logical UT-to-gateway policy. The page reads the exact frozen
+snapshots and physical links consumed by that run; it performs no independent
+orbit propagation or anchor selection. Time or attachment disagreement fails
+the run before Compose.
+
+While the real runtime is in its epoch loop, run this in a second terminal:
+
+```bash
+python skyseed_v1/examples/s4_operational_clean/demo_ping.py
+```
+
+It reads the example's immutable UT gateway policy and gateway service
+addresses, prints each default/special rule and the current runtime slice, then
+runs three pings per rule from that UT container. A recent observer record may
+also annotate the dynamic serving satellite; it is not a prerequisite.
+`demo_ping.py --watch` repeats the demonstration until Ctrl-C, and
+`demo_ping.py --ut ut2014` selects a particular UT. The equivalent unified
+action is `run.py demo-ping`. This demo sends probe traffic
+but never blocks the network update process.
+
 Changing `RuntimeConfig(sample_interval_seconds=10)` to `20` updates event
 evaluation and visualization sampling automatically. The resolved configuration
 is written to `output/<run-id>/effective_profile.json`.

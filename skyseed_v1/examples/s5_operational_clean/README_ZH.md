@@ -25,11 +25,22 @@ python skyseed_v1/examples/s5_operational_clean/run.py preview
 
 `preflight` 用 `ready=True` 或 `ready=False` 开头输出简短摘要；完整审计 payload 使用 `--format json`。`clean` 只清理 Skyseed 归属残留并要求之后 ready，有活跃进程时拒绝运行。
 
+每次正常运行都会在 Compose 前，从该次运行冻结的 H0-H3 快照和物理链路自动生成
+`output/<run-id>/visualization/index.html`。页面提供可旋转的 3D 地球和 96 帧时间轴，不再独立传播轨道或选择 anchor；源时间或 attachment 不一致会失败关闭，真实网络不会在错误投影后继续创建。
+
 真实运行：
 
 ```bash
 python skyseed_v1/examples/s5_operational_clean/run.py
 ```
+
+真实运行进入 epoch 循环后，可在第二个终端直接演示实际选择的路径，不需要手动查容器名或地址：
+
+```bash
+python skyseed_v1/examples/s5_operational_clean/demo_ping.py
+```
+
+该动作直接读取示例中一次运行内不可变的 UT 网关规则和绑定服务地址，显示每条默认/特殊规则与当前切片，再对每条规则自动发送三次 ping。近期观察记录可补充动态服务卫星，但不是前置条件。增加 `--watch` 可持续演示到 Ctrl-C；等价的统一动作是 `run.py demo-ping`。探测在网络更新进程之外执行，网络更新不会等待它。
 
 产物写到本示例的 `output/<run-id>/`。终端立即确认启动和路径，初始预览期间显示有界心跳，之后显示合并阶段变化及每个完成的 runtime epoch。控制台投影是独立观察者，不会延迟网络更新。清理完成后删除 `output/` 即可清空本示例全部生成状态。
 

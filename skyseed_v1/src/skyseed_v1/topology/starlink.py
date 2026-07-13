@@ -2378,11 +2378,13 @@ def build_starlink_topology_snapshot_pipeline(
     scenario: ExperimentScenario,
     propagated_slices: Sequence[PropagatedOrbitSlice],
     visualization_link_payload: Dict[str, Any] | None = None,
+    visualization_link_frame_offset: int = 0,
 ) -> TopologySnapshotPipeline:
     visibility_model = (
         FrozenVisualizationLinkVisibilityModel(
             link_payload=visualization_link_payload,
             ut_min_elevation_deg=scenario.min_elevation_deg,
+            frame_offset=int(visualization_link_frame_offset),
         )
         if visualization_link_payload is not None
         else SemiRealLineOfSightVisibilityModel(

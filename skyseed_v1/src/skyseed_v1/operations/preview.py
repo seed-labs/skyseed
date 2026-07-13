@@ -601,6 +601,12 @@ def parse_args() -> argparse.Namespace:
         help="Frozen visualization physical link duration in seconds.",
     )
     parser.add_argument(
+        "--visualization-link-frame-offset",
+        type=int,
+        default=0,
+        help="Rolling-horizon frame offset into the shared frozen link payload.",
+    )
+    parser.add_argument(
         "--step-seconds",
         type=float,
         default=120.0,
@@ -1091,6 +1097,14 @@ def main() -> int:
             if args.visualization_link_duration_seconds is not None
             else float(effective_horizon_seconds)
         )
+        interval_text = str(args.visualization_link_interval).strip().lower()
+        link_interval_seconds = (
+            float(interval_text[:-2]) / 1000.0
+            if interval_text.endswith("ms")
+            else float(interval_text[:-1])
+            if interval_text.endswith("s")
+            else float(interval_text)
+        )
         visualization_link_artifacts = write_frozen_visualization_link_artifacts(
             output_dir=config_dir,
             planned_shell=str(args.planned_shell_id),
@@ -1102,7 +1116,10 @@ def main() -> int:
             gateway_definitions=effective_gateway_definitions,
             start_timestamp=link_start_timestamp,
             interval=str(args.visualization_link_interval),
-            duration_seconds=link_duration_seconds,
+            # One inclusive lookahead frame is required by the final topology
+            # boundary while the runtime still executes exactly duration/interval
+            # frames.
+            duration_seconds=link_duration_seconds + link_interval_seconds,
             max_satellites=int(args.max_satellites),
         )
         visualization_link_payload = dict(visualization_link_artifacts["payload"])
@@ -1161,6 +1178,7 @@ def main() -> int:
         scenario=scenario,
         propagated_slices=propagated_slices,
         visualization_link_payload=visualization_link_payload,
+        visualization_link_frame_offset=int(args.visualization_link_frame_offset),
     )
     snapshots = pipeline.produce_snapshots()
     observation_index_set: set[int] = set()
@@ -1453,7 +1471,12 @@ def main() -> int:
     _write_json(
         snapshot_preview_json_path,
         {
-            "pipeline": pipeline.metadata(),
+            "pipeline": {
+                **pipeline.metadata(),
+                "visualization_link_frame_offset": int(
+                    args.visualization_link_frame_offset
+                ),
+            },
             "snapshots": [snapshot.to_dict() for snapshot in snapshots],
         },
     )

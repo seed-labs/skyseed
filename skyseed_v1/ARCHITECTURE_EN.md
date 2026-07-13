@@ -127,6 +127,12 @@ Additional rules:
 - strict `bpf_owned` has no Linux G/Z, MPLS, LFIB, NAT, or Mini-Internet
   forwarding fallback;
 - EventTimeline remains the runtime update authority;
+- one run has one continuous frozen physical-link timeline; rolling horizons
+  consume aligned frame offsets from it and must not restart physical-link
+  selection independently;
+- every prepared horizon must have the exact node and slot materialization
+  identity compiled into the initial Compose topology; drift fails before
+  Compose build and runtime interface creation is forbidden;
 - future state is prepared inactive and activated only at its semantic boundary;
 - partial or mismatched worker results are not ready;
 - qdisc/link lifecycle remains Linux-owned unless a later gate changes it;

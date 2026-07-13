@@ -33,6 +33,17 @@ python skyseed_v1/examples/s4_operational_clean/run.py preview
 
 `inspect`、`preview` 不创建真实网络；`preflight` 只探测主机就绪并输出简短摘要，完整审计证据使用 `preflight --format json`；`clean` 只删除 Skyseed 归属残留并要求清理后预检 ready，有 Skyseed 进程活跃时会拒绝执行。
 
+每次正常运行会在全部 rolling-horizon 输入冻结后、Compose 启动前，自动生成自己的离线页面
+`output/<run-id>/visualization/index.html`。浏览器直接打开后，可以旋转、缩放地球、拖动或播放时间轴，并分别开关卫星、UT、GW、zone、ISL、规范 UT→zone anchor attachment 和逻辑 UT→GW 策略。页面直接读取该次运行实际消费的冻结快照与物理链路，不再独立传播轨道或选择 anchor；时间或 attachment 不一致会在 Compose 前令运行失败。
+
+真实运行进入 epoch 循环后，在第二个终端执行：
+
+```bash
+python skyseed_v1/examples/s4_operational_clean/demo_ping.py
+```
+
+它直接读取示例中一次运行内不可变的 UT 网关策略和 GW 服务地址，显示默认/特殊规则与当前切片，再从该 UT 容器对每条规则自动发送三次 ping。若已有近期观察记录，还会补充动态服务卫星，但观察记录不是 ping 的前置条件。`demo_ping.py --watch` 会持续演示到 Ctrl-C；`demo_ping.py --ut ut2014` 可指定 UT。等价的统一动作是 `run.py demo-ping`。演示会产生探测流量，但不会阻塞网络更新进程。
+
 把 `RuntimeConfig(sample_interval_seconds=10)` 改为 `20` 会自动更新事件判断和可视化采样。解析配置写入 `output/<run-id>/effective_profile.json`。
 
 自动化和特殊 run root/ID 可使用参数 CLI：
