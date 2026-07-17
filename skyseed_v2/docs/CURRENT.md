@@ -2,11 +2,21 @@
 
 ## Current phase
 
-Static Emulator core excluding UT: COMPLETE.
+Static Emulator core excluding UT: COMPLETE
+
+## Current objective
+
+Investigate v1 S4 static scenario facts for scale-validation input.
+
+## Implementation status
+
+Not started.
 
 ## Current workflow step
 
-Manual InternetMap visual acceptance is confirmed and the formal runtime environment is cleaned. Do not start another slice automatically.
+The directed v1 S4 static-scenario investigation is complete. Review its
+conflicts and unresolved semantics before approving any implementation. Do not
+start another slice automatically.
 
 ## Confirmed direction
 
@@ -44,6 +54,7 @@ Manual InternetMap visual acceptance is confirmed and the formal runtime environ
 - GroundStation uses the inherited standard Router Compiler path. Skyseed only replaces its metadata by key so InternetMap sees `GroundStation` with `type=rnode`; no GS-specific dispatch or private accumulator access was added.
 - Runtime validation proved forwarding, established eBGP, packet-level ground reachability, one GS ground edge, and two unchanged Satellite vertices with zero Satellite edges.
 - Automated and manual complete Emulator validation is recorded in `docs/evidence/complete-static-emulator-validation.md`. Its formal runtime resources and generated temporary output have been cleaned.
+- The v1 S4 investigation is recorded in `docs/reference/v1/s4-static-scenario-investigation.md`. It treats v1 only as a historical static-fact source and does not make S4 a permanent Emulator default.
 
 ## Open design questions
 
@@ -53,10 +64,14 @@ Manual InternetMap visual acceptance is confirmed and the formal runtime environ
 - Whether a future SEED public custom-Router insertion hook can replace the current narrow GroundStation AS lifecycle extension.
 - How a future Backend Planner, Execution Compiler or Runner maps `SimulationNodeId` to actual SEED, container, namespace or kernel resources; this is future design scope, not current technical debt.
 - The next vertical slice, which requires explicit design approval.
+- Whether scale validation should use the effective successful S4 baseline with no ordinary ground Internet, IX or static peering, or a separately named historical mini-Internet variant.
+- Whether v1 Satellite/Orbit identifier strings and GS service `/32` addresses must be preserved in the first S4 reconstruction input.
+- Whether GroundStation operator should remain unspecified or be explicitly supplied by the user.
 
 ## Next single objective
 
-Review the completed static Emulator core and explicitly approve the next slice.
+Review the S4 static-scenario investigation and resolve its listed semantic
+questions before any implementation.
 
 ## Acceptance state
 
@@ -66,6 +81,8 @@ Review the completed static Emulator core and explicitly approve the next slice.
 - SimulationEntityCatalog: implemented
 - Automated Emulator integration: PASS
 - Manual InternetMap visual acceptance: PASS
+- S4 static-scenario investigation: completed
+- S4 static reconstruction implementation: not started
 - UT: outside current Emulator core
 
 Static Emulator core excluding UT: COMPLETE. The user confirmed the visual
