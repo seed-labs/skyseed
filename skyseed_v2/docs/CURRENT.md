@@ -2,11 +2,11 @@
 
 ## Current phase
 
-Initial architecture baseline.
+First functional vertical slice implemented and validated.
 
 ## Current workflow step
 
-The initial whole-system design has been recorded. No functional vertical slice has started.
+Review the isolated Satellite static Emulator slice. Do not start the next slice automatically.
 
 ## Confirmed direction
 
@@ -21,15 +21,25 @@ The initial whole-system design has been recorded. No functional vertical slice 
 - Runner executes approved content and emits structured observations.
 - UT is temporarily outside the current main slice.
 - v1 is referenced only when a current design problem requires a focused investigation.
+- The first slice implements `Shell -> Orbit -> Satellite` as a static domain hierarchy.
+- `Satellite` is the one Skyseed Satellite object, directly inherits SEED `Node`, and is the same instance created by Orbit, registered by AS, and handled by Compiler.
+- Immutable `SatelliteDescriptor` is the restricted Emulator–Simulator view; Simulator never receives the complete Satellite/Node.
+- `SatelliteDescriptorProjector` reads approved static values and the stable runtime reference from that unique Satellite.
+- Satellite is a first-class `satnode` with role `Satellite`; it is never registered or labelled as Host.
+- Satellite containers use explicit `network_mode: none` and expose only loopback.
+- Satellite-specific Docker compilation is concentrated in one internal boundary; the private SEED service accumulator has one fail-closed access point.
+- Satellite metadata is normalized by complete key before serialization, so identity labels are unique.
+- Runtime InternetMap validation found two Satellite vertices and zero edges.
+- GroundStation single-object model is an approved conceptual direction: the user-facing GroundStation is expected to reuse SEED Router or equivalent capabilities and project a restricted immutable GroundStationDescriptor.
+- GroundStation implementation has not started; Router inheritance and capability composition must be revalidated in the GroundStation vertical slice.
 
 ## Open design questions
 
-- The minimal base-node model and its relationship with SEED.
-- The first Emulator vertical slice.
-- The exact read-only contract between Emulator and Simulator.
-- Which parts of SEED require focused investigation during the first slice.
-- The detailed object responsibilities inside Emulator.
+- The exact GroundStation inheritance and capability-composition boundary after focused investigation of current SEED routing behavior.
+- The read-only contracts for entities other than Satellite.
+- Whether a future SEED public node-dispatch hook can replace the current narrow private Compiler integration point.
+- The next vertical slice, which requires explicit design approval.
 
 ## Next single objective
 
-Design the first Emulator vertical slice before implementing business functionality.
+Review and accept or revise the isolated Satellite slice and its runtime evidence.

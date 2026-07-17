@@ -141,9 +141,9 @@ Observation 负责收集执行过程、操作结果、时间和错误等信息�
 
 以下内容尚未确定，将在相关垂直切片中继续设计：
 
-- 基础节点与 SEED Node/Router 的关系；
-- Emulator 内部对象的最终组成；
-- Emulator–Simulator 合同的具体类型；
+- GroundStation 对 SEED Router 的正式继承或能力组合方案；
+- Satellite 以外 Emulator 对象的最终组成；
+- Satellite 以外 Emulator–Simulator 合同的具体类型；
 - Topology 子系统的最终对象结构；
 - Slice 的完整数据合同；
 - Semantic Plan 和 Backend Plan 的具体格式；
@@ -151,3 +151,46 @@ Observation 负责收集执行过程、操作结果、时间和错误等信息�
 - UT 子系统；
 - 有限运行和流式运行；
 - 真实后端与 v1 优化能力的吸收方式。
+
+## 9. First implemented vertical slice
+
+孤立 Satellite 静态 Emulator 已确定并实现以下边界：
+
+- `Satellite` 是唯一的 Skyseed 卫星对象，直接继承 SEED `Node`，并以独有
+  `satnode`/`Satellite` 身份参加 Registry、configure 和 Compiler 生命周期；
+- `SatelliteDescriptor` 是不可变的 Simulator-facing 值对象；
+- `SatelliteDescriptorProjector` 从唯一 Satellite 读取批准的静态值和稳定
+  runtime node reference，Simulator 不接收完整 Satellite/Node；
+- `Shell -> Orbit -> Satellite` 是领域所有权层级；
+- Satellite 容器使用显式 `network_mode: none`，除 loopback 外没有接口；
+- Satellite 编译特例集中在单一内部边界，私有 SEED service accumulator
+  仅通过一个 fail-closed 封装点访问；
+- Compose metadata 先按完整 key 唯一化，再显式写入 Satellite 身份；
+- SEED runtime InternetMap 通过 labels 发现 Satellite，并将 Docker 的
+  `none` 伪网络表示归一化为空图边集合。
+
+具体合同见 `docs/design/isolated-satellite-emulator.md`，真实验证证据见
+`docs/evidence/isolated-satellite-validation.md`。
+
+## 10. GroundStation approved conceptual direction
+
+GroundStation 的单对象模型是当前批准的概念方向，但实现尚未开始。未来用户只
+创建和管理一个 GroundStation；不会同时创建长期存在的节点 adapter，也不会
+维护二者间的稳定 ID binding。
+
+该唯一对象预计同时承载地面站静态语义和经过正式确认的 SEED Router 或等价
+节点能力。静态语义大致包括稳定 ID、位置与海拔、运营商、类型或服务分类，
+以及用户配置的静态 Service 和路由策略。节点能力预计包括 Registry/configure
+生命周期、容器配置、加入地面 Network/IX、地面 forwarding、显式启用的路由
+协议与 Service、metadata，以及未来卫星侧动态接口的执行入口。
+
+GroundStation 不负责可见性、连接选择、Zone 服务卫星选择、动态路径、拓扑
+切片或后端更新规划，这些仍属于 Simulator。
+
+Simulator 只接收不可变 `GroundStationDescriptor`。Descriptor 预计提供位置、
+分类、稳定运行节点引用和经确认的其他只读静态字段，不暴露完整 Router、
+Registry、路由守护进程配置、软件/文件/命令、Docker/Compose 对象、可修改接口
+或 Emulator 生命周期方法。
+
+直接继承 SEED Router 是当前方向，不是最终 API 铁则。正式继承与能力组合边界
+将在 GroundStation 纵向切片开始时，基于届时的 SEED 路由能力重新调查和确认。

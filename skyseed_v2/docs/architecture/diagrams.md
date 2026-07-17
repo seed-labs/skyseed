@@ -111,3 +111,97 @@ flowchart TD
     Satellite --> ReadOnlyView
     GroundStation --> ReadOnlyView
 ```
+
+## 5. Implemented isolated Satellite boundary
+
+```mermaid
+flowchart LR
+    subgraph Domain[Static Emulator Domain]
+        Shell --> Orbit --> Satellite
+    end
+
+    subgraph SeedIntegration[SEED Integration]
+        Satellite -->|inherits| SeedNode[SEED Node]
+        Container[network_mode: none]
+        Satellite --> Container
+    end
+
+    subgraph Contract[Simulator Contract]
+        RuntimeRef[RuntimeNodeReference]
+        Projector[SatelliteDescriptorProjector]
+        Descriptor[Immutable SatelliteDescriptor]
+        Satellite -->|approved scalar values| Projector
+        Projector --> Descriptor
+        Satellite --> RuntimeRef
+        RuntimeRef --> Descriptor
+    end
+```
+
+```mermaid
+classDiagram
+    class Shell
+    class Orbit
+    class Satellite
+    class SeedNode
+    class SatelliteDescriptorProjector
+    class SatelliteDescriptor
+
+    Shell "1" *-- "*" Orbit
+    Orbit "1" *-- "*" Satellite
+    Satellite --|> SeedNode
+    SatelliteDescriptorProjector --> Satellite : reads restricted values
+    SatelliteDescriptorProjector --> SatelliteDescriptor : produces
+```
+
+```text
+Satellite(Node) -> SatelliteDescriptorProjector -> SatelliteDescriptor
+```
+
+## 6. GroundStation approved conceptual direction
+
+GroundStation 尚未实现。该图表达单对象方向，不预先决定最终 Router 继承或
+能力组合细节。
+
+```mermaid
+classDiagram
+    class GroundStation {
+        <<conceptual>>
+        +ground_station_id
+        +location
+        +station_type
+        +operator
+        +service_config
+        +join_ground_network(network)
+        +configure_ground_routing(policy)
+        +install_service(service)
+    }
+
+    class SeedRouter {
+        <<SEED>>
+    }
+
+    class GroundStationDescriptorProjector {
+        <<conceptual>>
+        +project(ground_station)
+    }
+
+    class GroundStationDescriptor {
+        <<conceptual immutable contract>>
+        +ground_station_id
+        +location
+        +station_type
+        +runtime_node_reference
+    }
+
+    GroundStation --|> SeedRouter
+    GroundStationDescriptorProjector --> GroundStation : reads
+    GroundStationDescriptorProjector --> GroundStationDescriptor : produces
+```
+
+```text
+Satellite(Node) -> SatelliteDescriptor
+GroundStation(Router, conceptual) -> GroundStationDescriptor
+```
+
+Simulator 只接收受限的 Descriptor。Router 继承方向必须在 GroundStation
+切片中重新验证，不能据此图提前实现。
