@@ -15,7 +15,7 @@ flowchart LR
     subgraph Emulator
         Emu[Emulator]
         Seed[SEED Components]
-        Catalog[Read-only Simulation Entity View]
+        Catalog[Implemented immutable SimulationEntityCatalog]
         RuntimeNodes[Container and Node Configuration]
     end
 
@@ -108,9 +108,11 @@ flowchart TD
     SkyseedAS --> StandardNode[Inherited Network / Host / Router]
     GroundStation --> GroundNetwork[SEED Ground Network]
 
-    Emulator --> ReadOnlyView[Read-only Simulator View]
-    Satellite --> ReadOnlyView
-    GroundStation --> ReadOnlyView
+    Builder[SimulationEntityCatalogBuilder] --> SkyseedAS
+    Satellite --> SatelliteProjector[SatelliteDescriptorProjector]
+    GroundStation --> GroundProjector[GroundStationDescriptorProjector]
+    SatelliteProjector --> Catalog[SimulationEntityCatalog]
+    GroundProjector --> Catalog
 ```
 
 ## 5. Implemented isolated Satellite boundary
@@ -258,3 +260,37 @@ flowchart LR
 `SkyseedDockerCompiler` 是唯一的公开 Skyseed Docker Compiler。Satellite 的
 零接口特殊行为仍集中在内部边界；GroundStation 和普通 SEED 节点继续复用
 上游路径。不存在按旧节点种类命名的公开 Compiler 别名。
+
+## 8. Implemented static Emulator output boundary
+
+```mermaid
+classDiagram
+    class SimulationEntityCatalog {
+        <<implemented / awaiting final visual acceptance>>
+        +get(node_id)
+        +get_satellite(node_id_or_id)
+        +get_ground_station(node_id_or_id)
+        +list_satellites()
+        +list_ground_stations()
+        +list_nodes()
+    }
+    class SimulationEntityCatalogBuilder {
+        <<implemented>>
+        +build(autonomous_systems)
+    }
+    class SkyseedAutonomousSystem
+    class SatelliteDescriptorProjector
+    class GroundStationDescriptorProjector
+    class SatelliteDescriptor
+    class GroundStationDescriptor
+
+    SimulationEntityCatalog "1" *-- "*" SatelliteDescriptor
+    SimulationEntityCatalog "1" *-- "*" GroundStationDescriptor
+    SimulationEntityCatalogBuilder --> SkyseedAutonomousSystem : reads
+    SimulationEntityCatalogBuilder --> SatelliteDescriptorProjector : delegates
+    SimulationEntityCatalogBuilder --> GroundStationDescriptorProjector : delegates
+    SimulationEntityCatalogBuilder --> SimulationEntityCatalog : produces
+```
+
+Builder 不读取 SEED Registry 或 Compiler output；Catalog 不包含 AS、Node、Router、
+容器或可修改集合。普通 SEED AS 不会被解释成 Skyseed 实体。

@@ -28,7 +28,8 @@ Emulator 基于 SEED 的基础能力，负责定义和物化预先确定的静�
 - 配置容器和 SEED 相关运行信息；
 - 构建地面互联网；
 - 配置地面站与地面互联网之间的静态关系；
-- 向 Simulator 提供其真正需要的只读实体信息。
+- 通过不可变 `SimulationEntityCatalog` 向 Simulator 提供其真正需要的只读
+  静态实体信息。
 
 Emulator 不负责：
 
@@ -104,6 +105,13 @@ target。Simulator 的 Topology、Connection、Route 和 Semantic Planning 阶�
 
 Compiler 从 SEED 集成对象产生运行 metadata，不通过 Descriptor 获取它。
 
+`SimulationEntityCatalog` 是当前已经实现的 Emulator 输出边界。独立的
+`SimulationEntityCatalogBuilder` 接收一个或多个 AS，只遍历其中的
+`SkyseedAutonomousSystem`，并委托现有 Satellite/GroundStation Projector 生成
+Descriptor。Catalog 对 `SimulationNodeId` 做全局唯一性检查，以确定性顺序保存
+不可修改的 Descriptor tuple，并提供按完整逻辑 ID 或无歧义实体 ID 的查询。
+它不读取 Registry、Compiler output 或 Compose，也不定义持久化格式。
+
 同进程对象传递、文件序列化或跨进程传输只是这一合同的不同适配方式，不属于领域边界本身。
 
 ## 4. Topology subsystem
@@ -170,8 +178,7 @@ Observation 负责收集执行过程、操作结果、时间和错误等信息�
 
 以下内容尚未确定，将在相关垂直切片中继续设计：
 
-- Satellite 以外 Emulator 对象的最终组成；
-- GroundStation 之后 Emulator–Simulator 合同的具体类型；
+- Satellite 与 GroundStation 之外 Emulator 对象的最终组成和只读合同；
 - Topology 子系统的最终对象结构；
 - Slice 的完整数据合同；
 - Semantic Plan 和 Backend Plan 的具体格式；
@@ -249,3 +256,21 @@ import，也不依赖 `contracts` 或 Compiler metadata 细节。`satnode`、`rn
 
 组合场景的测试、容器、路由、InternetMap 与清理证据见
 `docs/evidence/skyseed-structure-convergence-validation.md`。
+
+## 12. Implemented SimulationEntityCatalog boundary
+
+静态 Emulator 综合输出已由以下实现收口：
+
+- `SimulationEntityCatalog`：冻结的 Descriptor 快照，只包含
+  `SatelliteDescriptor`、`GroundStationDescriptor` 和只读逻辑 ID 索引；
+- `SimulationEntityCatalogBuilder`：支持 mixed、Satellite-only、GS-only 和
+  多个 Skyseed AS，忽略普通 SEED AS；
+- Catalog 构造对完整 `SimulationNodeId` 重复 fail-closed，不静默覆盖；
+- Catalog 顺序仅由 `SimulationNodeId.value` 决定，不受 AS 或实体遍历顺序影响；
+- 构建后的 AS 变化不影响既有 Catalog；
+- 正式 `complete_static_emulator.py` 示例同时生成 Catalog、编译真实混合场景并
+  启用 InternetMap。
+
+自动化 Emulator 集成验收已经完成；人工浏览器视觉验收仍待用户确认。Catalog
+当前状态为 **implemented / awaiting final visual acceptance**。这不会启动
+Simulator、UT、动态链路或运行资源解析。

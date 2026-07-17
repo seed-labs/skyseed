@@ -5,6 +5,7 @@ from pathlib import Path
 
 import skyseed_v2
 from skyseed_v2 import contracts
+from skyseed_v2 import catalog_builder
 from skyseed_v2.domain import GroundStation, Satellite, validate_identifier
 from skyseed_v2.seed import SkyseedDockerCompiler
 from skyseed_v2.seed.metadata import (
@@ -43,13 +44,15 @@ def test_domain_entities_do_not_depend_on_each_other_or_contracts() -> None:
 
 
 def test_contract_modules_have_only_the_approved_internal_dependencies() -> None:
-    from skyseed_v2.contracts import ground_station, identity, satellite
+    from skyseed_v2.contracts import catalog, ground_station, identity, satellite
 
+    catalog_imports = imported_modules(catalog)
     identity_imports = imported_modules(identity)
     satellite_imports = imported_modules(satellite)
     ground_station_imports = imported_modules(ground_station)
 
     for module_imports in (
+        catalog_imports,
         identity_imports,
         satellite_imports,
         ground_station_imports,
@@ -70,6 +73,28 @@ def test_contract_modules_have_only_the_approved_internal_dependencies() -> None
     } == {".identity"}
     assert ".ground_station" not in satellite_imports
     assert ".satellite" not in ground_station_imports
+    assert {name for name in catalog_imports if name.startswith(".")} == {
+        ".ground_station",
+        ".identity",
+        ".satellite",
+    }
+
+
+def test_catalog_builder_has_no_registry_compiler_or_output_dependency() -> None:
+    builder_imports = imported_modules(catalog_builder)
+
+    assert "skyseed_v2.seed.autonomous_system" in builder_imports
+    for forbidden_dependency in (
+        "skyseed_v2.seed.compiler",
+        "skyseed_v2.seed.metadata",
+        "seedemu.compiler",
+        "docker",
+    ):
+        assert not any(
+            module_name == forbidden_dependency
+            or module_name.startswith(f"{forbidden_dependency}.")
+            for module_name in builder_imports
+        )
 
 
 def test_removed_and_deferred_contract_apis_are_not_exported() -> None:
@@ -83,6 +108,23 @@ def test_removed_and_deferred_contract_apis_are_not_exported() -> None:
         assert not hasattr(skyseed_v2, forbidden_name)
 
     assert importlib.util.find_spec("skyseed_v2.contracts.runtime") is None
+
+
+def test_catalog_contract_and_builder_are_public_without_domain_backlinks() -> None:
+    from skyseed_v2.contracts import SimulationEntityCatalog
+    from skyseed_v2.domain import ground_station, satellite
+
+    assert skyseed_v2.SimulationEntityCatalog is SimulationEntityCatalog
+    assert skyseed_v2.SimulationEntityCatalogBuilder.__module__ == (
+        "skyseed_v2.catalog_builder"
+    )
+    assert not any(
+        "catalog" in module_name for module_name in imported_modules(satellite)
+    )
+    assert not any(
+        "catalog" in module_name
+        for module_name in imported_modules(ground_station)
+    )
 
 
 def test_shared_validation_and_seed_metadata_have_explicit_owners() -> None:

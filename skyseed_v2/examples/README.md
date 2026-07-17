@@ -1,5 +1,51 @@
 # Examples
 
+## Complete static Emulator
+
+`complete_static_emulator.py` is the formal combined Emulator example. It
+creates two isolated Satellites and one GroundStation in Skyseed AS65001, an
+ordinary ground Router in AS65002, one real IX/eBGP relationship, an immutable
+`SimulationEntityCatalog`, and an enabled runtime InternetMap.
+
+From `skyseed_v2/`:
+
+```bash
+PYTHONPATH=src python examples/complete_static_emulator.py \
+  --output /tmp/skyseed-v2-complete-static-emulator/output --override
+docker-compose -p skyseed_v2_complete_static \
+  -f /tmp/skyseed-v2-complete-static-emulator/output/docker-compose.yml config
+docker-compose -p skyseed_v2_complete_static \
+  -f /tmp/skyseed-v2-complete-static-emulator/output/docker-compose.yml build
+docker-compose -p skyseed_v2_complete_static \
+  -f /tmp/skyseed-v2-complete-static-emulator/output/docker-compose.yml up -d
+```
+
+The example prints this deterministic contract summary before compilation:
+
+```text
+Catalog summary: 2 SatelliteDescriptor, 1 GroundStationDescriptor, 3 unique SimulationNodeId
+- 65001/ground-station/gs-new-york
+- 65001/satellite/satellite-0
+- 65001/satellite/satellite-1
+```
+
+Open <http://127.0.0.1:8080/pro/map> after startup. After manual acceptance,
+clean only this example's resources with:
+
+```bash
+docker-compose -p skyseed_v2_complete_static \
+  -f /tmp/skyseed-v2-complete-static-emulator/output/docker-compose.yml \
+  down --remove-orphans
+docker image rm \
+  skyseed_v2_complete_static_satnode_65001_satellite-0:latest \
+  skyseed_v2_complete_static_satnode_65001_satellite-1:latest \
+  skyseed_v2_complete_static_brdnode_65001_gs-new-york:latest \
+  skyseed_v2_complete_static_brdnode_65002_ground-router:latest
+rm -rf /tmp/skyseed-v2-complete-static-emulator
+```
+
+The cleanup deliberately retains shared upstream and InternetMap images.
+
 ## Static GroundStation and ground eBGP
 
 `static_ground_station.py` is the formal GroundStation slice example. It

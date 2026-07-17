@@ -24,8 +24,9 @@
 2. SEED integration：描述卫星实体自身如何参加 SEED 节点生命周期；
 3. Simulator contract：描述 Simulator 能读取的只读视图。
 
-Satellite 与 GroundStation 静态 Emulator 主线已有纵向切片实现支撑。完整
-Entity Catalog 仍属于后续设计方向。图中的方法签名只表达职责，不是最终 API。
+Satellite、GroundStation 与完整静态 Entity Catalog 主线已有纵向切片实现支撑。
+Catalog 已完成自动验收，正等待人工 InternetMap 视觉确认。图中的未来 Simulator
+方法签名仍只表达职责，不是最终 API。
 
 ```mermaid
 classDiagram
@@ -36,7 +37,6 @@ classDiagram
         -autonomous_systems
         +create_autonomous_system(asn)
         +get_autonomous_system(asn)
-        +build_simulation_entity_catalog()
     }
 
     class SkyseedAutonomousSystem {
@@ -127,13 +127,21 @@ classDiagram
         +project(ground_station)
     }
 
+    class SimulationEntityCatalogBuilder {
+        <<implemented>>
+        +build(autonomous_systems)
+    }
+
     class SimulationEntityCatalog {
-        <<conceptual future contract / not implemented>>
+        <<implemented / awaiting final visual acceptance>>
         -satellites
         -ground_stations
         +get(node_id)
+        +get_satellite(node_id_or_id)
+        +get_ground_station(node_id_or_id)
         +list_satellites()
         +list_ground_stations()
+        +list_nodes()
     }
 
     class SatelliteDescriptor {
@@ -186,11 +194,14 @@ classDiagram
     SatelliteDescriptor "1" *-- "1" SimulationNodeId : identifies
     GroundStationDescriptor "1" *-- "1" SimulationNodeId : identifies
 
-    SimulationEntityCatalog "1" o-- "*" SatelliteDescriptor : contains
-    SimulationEntityCatalog "1" o-- "*" GroundStationDescriptor : contains
-    SimulationEntityCatalog --> SimulationNodeId : future lookup key
+    SimulationEntityCatalog "1" *-- "*" SatelliteDescriptor : contains
+    SimulationEntityCatalog "1" *-- "*" GroundStationDescriptor : contains
+    SimulationEntityCatalog --> SimulationNodeId : lookup key
 
-    Emulator --> SimulationEntityCatalog : exports read-only view
+    SimulationEntityCatalogBuilder --> SkyseedAutonomousSystem : reads
+    SimulationEntityCatalogBuilder --> SatelliteDescriptorProjector : delegates
+    SimulationEntityCatalogBuilder --> GroundStationDescriptorProjector : delegates
+    SimulationEntityCatalogBuilder --> SimulationEntityCatalog : produces
 ```
 
 - `Satellite` 是唯一的卫星对象并直接继承 SEED `Node`；
@@ -209,8 +220,10 @@ classDiagram
 - `SimulationNodeId` 与 SEED Registry、容器、namespace、Compose service 和
   execution target 无关。`satnode`、`rnode`、`brdnode` 只保留在独立的 SEED
   integration 层；
-- `SimulationEntityCatalog` 仍是未来方向而非当前实现；若后续进入设计，其内部
-  应以 `SimulationNodeId` 作为统一查询身份；
+- `SimulationEntityCatalog` 已实现为不可变、确定性 Descriptor 快照，以
+  `SimulationNodeId` 作为统一身份并对重复完整 ID fail-closed；
+- `SimulationEntityCatalogBuilder` 支持一个或多个 Skyseed AS，委托既有
+  Projector；普通 SEED AS 被忽略，Registry 和 Compiler output 不参与构建；
 - UT 暂不进入该图。
 
 ### GroundStation implemented static direction
@@ -273,10 +286,13 @@ classDiagram
     }
 
     class SimulationEntityCatalog {
-        <<conceptual future input / not implemented>>
+        <<implemented immutable input contract>>
         +get(node_id)
+        +get_satellite(node_id_or_id)
+        +get_ground_station(node_id_or_id)
         +list_satellites()
         +list_ground_stations()
+        +list_nodes()
     }
 
     class SimulationNodeId {

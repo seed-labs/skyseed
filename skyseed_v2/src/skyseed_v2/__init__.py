@@ -3,6 +3,7 @@
 from .contracts import (
     GroundStationDescriptor,
     SatelliteDescriptor,
+    SimulationEntityCatalog,
     SimulationNodeId,
 )
 from .domain import (
@@ -25,6 +26,7 @@ from .seed import (
     SkyseedAutonomousSystem,
     SkyseedDockerCompiler,
 )
+from .catalog_builder import SimulationEntityCatalogBuilder
 
 __all__ = [
     "GROUND_STATION_REGISTRY_TYPE",
@@ -39,6 +41,8 @@ __all__ = [
     "SatelliteBase",
     "SatelliteDescriptor",
     "SatelliteDescriptorProjector",
+    "SimulationEntityCatalog",
+    "SimulationEntityCatalogBuilder",
     "SimulationNodeId",
     "SkyseedAutonomousSystem",
     "SkyseedDockerCompiler",

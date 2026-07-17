@@ -2,11 +2,11 @@
 
 ## Current phase
 
-Emulator–Simulator logical node identity contract convergence implemented and validated.
+Complete static Emulator Catalog and integration implemented; automated acceptance passed, manual visual acceptance pending.
 
 ## Current workflow step
 
-Review the bounded logical identity change and its evidence. Do not start another slice automatically.
+Await user visual acceptance of the complete static Emulator. Keep the formal example running and do not start another slice automatically.
 
 ## Confirmed direction
 
@@ -35,13 +35,15 @@ Review the bounded logical identity change and its evidence. Do not start anothe
 - `SimulationNodeId` is a shared immutable logical identity in `contracts.identity`, with `asn`, `entity_kind` and `entity_id`; both Descriptors contain that same type.
 - Satellite and GroundStation domain entities do not import contracts or construct logical IDs; their single-input Projectors own contract construction.
 - Simulator-facing contracts contain no SEED Registry identity, container, namespace, Compose service or execution target. Satellite and GroundStation IDs remain consistent with their Descriptor node IDs.
+- `SimulationEntityCatalog` is the immutable, deterministic Emulator output boundary containing only Satellite/GroundStation Descriptors keyed by `SimulationNodeId`.
+- `SimulationEntityCatalogBuilder` supports mixed, Satellite-only, GroundStation-only and multiple Skyseed AS inputs, ignores ordinary SEED AS objects, delegates to the existing Projectors and never reads Registry or Compiler output.
 - `SkyseedAutonomousSystem` is the only public Skyseed AS type. One instance can own Satellites, GroundStations and inherited ordinary SEED objects, while multiple instances remain independent.
 - `SkyseedDockerCompiler` is the only public Skyseed Docker Compiler. Satellite special handling remains in `_SatelliteCompilerBoundary`; GroundStation and ordinary nodes use the inherited SEED path.
 - Shared identifier validation is owned by `domain.validation`; SEED metadata names are owned by `seed.metadata`.
-- The formal example puts two isolated Satellites and one GroundStation in the same Skyseed AS, gives GroundStation one IX interface, explicitly disables/masks GS-AS internal routing, establishes one eBGP session to an ordinary ground AS, and creates no GS–Satellite link.
+- The formal `complete_static_emulator.py` example puts two isolated Satellites and one GroundStation in the same Skyseed AS, builds a three-node Catalog, gives GroundStation one IX interface, explicitly disables/masks GS-AS internal routing, establishes one eBGP session to an ordinary ground AS, and creates no GS–Satellite link.
 - GroundStation uses the inherited standard Router Compiler path. Skyseed only replaces its metadata by key so InternetMap sees `GroundStation` with `type=rnode`; no GS-specific dispatch or private accumulator access was added.
 - Runtime validation proved forwarding, established eBGP, packet-level ground reachability, one GS ground edge, and two unchanged Satellite vertices with zero Satellite edges.
-- Structural convergence combined validation is recorded in `docs/evidence/skyseed-structure-convergence-validation.md`; it also proves all owned runtime resources were removed.
+- Automated complete Emulator validation is recorded in `docs/evidence/complete-static-emulator-validation.md`. Its formal runtime resources remain running for user visual acceptance.
 
 ## Open design questions
 
@@ -54,4 +56,17 @@ Review the bounded logical identity change and its evidence. Do not start anothe
 
 ## Next single objective
 
-Review and accept or revise the logical identity contract convergence. Catalog, Simulator and runtime-resource resolution remain unstarted.
+Await user visual acceptance of complete static Emulator.
+
+## Acceptance state
+
+- Satellite slice: completed
+- GroundStation slice: completed
+- Unified AS and identity contracts: completed
+- SimulationEntityCatalog: implemented / awaiting final visual acceptance
+- Automated Emulator integration: PASS
+- Manual InternetMap visual acceptance: PENDING
+- UT: outside current Emulator core
+
+Static Emulator core excluding UT must not be marked COMPLETE until the user
+confirms the visual result and the formal example is cleaned up.
