@@ -229,7 +229,8 @@ run, inspection, visualization, and cleanup commands.
 
 ## 10. Deferred work
 
-This slice deliberately does not establish a GroundStation model, ground
-network, Satellite interface, link, route, dynamic location, or Simulator.
-The next slice must be selected through review; this implementation does not
-implicitly authorize GroundStation work.
+At completion time this slice deliberately did not establish a GroundStation
+model, ground network, Satellite interface, link, route, dynamic location, or
+Simulator. The later GroundStation slice is documented separately in
+`static-ground-station-emulator.md`; it does not change this Satellite slice's
+isolation contract.

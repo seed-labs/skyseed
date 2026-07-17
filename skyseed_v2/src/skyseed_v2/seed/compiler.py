@@ -18,8 +18,11 @@ from seedemu.compiler.Docker import DockerCompilerFileTemplates
 from seedemu.core import Emulator
 
 from skyseed_v2.domain import (
+    GROUND_STATION_REGISTRY_TYPE,
+    GROUND_STATION_ROLE_LABEL,
     SATELLITE_REGISTRY_TYPE,
     SATELLITE_ROLE_LABEL,
+    GroundStation,
     Satellite,
 )
 
@@ -63,6 +66,37 @@ SEED_METADATA_PREFIX = "org.seedsecuritylabs.seedemu.meta."
 _METADATA_LINE = compile_pattern(
     r'^\s+(?P<key>org\.seedsecuritylabs\.seedemu\.meta\.[^:]+): "(?P<value>.*)"$'
 )
+
+
+def _unique_node_metadata(
+    compiler: Docker,
+    node: object,
+    stable_values: dict[str, str],
+) -> str:
+    """Replace upstream metadata by key and serialize every label once."""
+
+    upstream_labels = Docker._getNodeMeta(compiler, node)
+    labels: dict[str, str] = {}
+    for line in upstream_labels.splitlines():
+        if not line.strip():
+            continue
+        match = _METADATA_LINE.fullmatch(line)
+        if match is None:
+            raise RuntimeError(
+                f"unsupported upstream Docker metadata line: {line!r}"
+            )
+        labels[match.group("key")] = match.group("value")
+
+    for key, value in stable_values.items():
+        labels[f"{SEED_METADATA_PREFIX}{key}"] = value
+
+    return "".join(
+        DockerCompilerFileTemplates["compose_label_meta"].format(
+            key=key.removeprefix(SEED_METADATA_PREFIX),
+            value=value,
+        )
+        for key, value in labels.items()
+    )
 
 
 class _SatelliteCompilerBoundary:
@@ -172,19 +206,6 @@ class _SatelliteCompilerBoundary:
 
     def _metadata(self, node: Satellite) -> str:
         """Reuse upstream metadata, then replace values in one keyed map."""
-
-        upstream_labels = Docker._getNodeMeta(self._compiler, node)
-        labels: dict[str, str] = {}
-        for line in upstream_labels.splitlines():
-            if not line.strip():
-                continue
-            match = _METADATA_LINE.fullmatch(line)
-            if match is None:
-                raise RuntimeError(
-                    f"unsupported upstream Docker metadata line: {line!r}"
-                )
-            labels[match.group("key")] = match.group("value")
-
         stable_values = {
             "asn": str(node.getAsn()),
             "nodename": node.getName(),
@@ -196,15 +217,10 @@ class _SatelliteCompilerBoundary:
             "skyseed.orbit_id": node.orbit_id,
             "skyseed.runtime_node_ref": node.runtime_reference.value,
         }
-        for key, value in stable_values.items():
-            labels[f"{SEED_METADATA_PREFIX}{key}"] = value
-
-        return "".join(
-            DockerCompilerFileTemplates["compose_label_meta"].format(
-                key=key.removeprefix(SEED_METADATA_PREFIX),
-                value=value,
-            )
-            for key, value in labels.items()
+        return _unique_node_metadata(
+            self._compiler,
+            node,
+            stable_values,
         )
 
 
@@ -233,6 +249,29 @@ class SatelliteDockerCompiler(Docker):
 
     def getName(self) -> str:
         return "SkyseedDocker"
+
+    def _getNodeMeta(self, node) -> str:
+        """Extend standard rnode metadata only for a GroundStation instance."""
+
+        if not isinstance(node, GroundStation):
+            return super()._getNodeMeta(node)
+        location = node.location
+        stable_values = {
+            "asn": str(node.getAsn()),
+            "nodename": node.getName(),
+            "role": GROUND_STATION_ROLE_LABEL,
+            "type": GROUND_STATION_REGISTRY_TYPE,
+            "skyseed.entity_type": GROUND_STATION_ROLE_LABEL,
+            "skyseed.ground_station_id": node.ground_station_id,
+            "skyseed.latitude_deg": str(location.latitude_deg),
+            "skyseed.longitude_deg": str(location.longitude_deg),
+            "skyseed.station_type": node.station_type,
+            "skyseed.operator": node.operator,
+            "skyseed.runtime_node_ref": node.runtime_reference.value,
+        }
+        if location.elevation_m is not None:
+            stable_values["skyseed.elevation_m"] = str(location.elevation_m)
+        return _unique_node_metadata(self, node, stable_values)
 
     def _doCompile(self, emulator: Emulator) -> None:
         if self._skyseed_internet_map_enabled:

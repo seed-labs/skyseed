@@ -141,9 +141,8 @@ Observation 负责收集执行过程、操作结果、时间和错误等信息�
 
 以下内容尚未确定，将在相关垂直切片中继续设计：
 
-- GroundStation 对 SEED Router 的正式继承或能力组合方案；
 - Satellite 以外 Emulator 对象的最终组成；
-- Satellite 以外 Emulator–Simulator 合同的具体类型；
+- GroundStation 之后 Emulator–Simulator 合同的具体类型；
 - Topology 子系统的最终对象结构；
 - Slice 的完整数据合同；
 - Semantic Plan 和 Backend Plan 的具体格式；
@@ -172,25 +171,29 @@ Observation 负责收集执行过程、操作结果、时间和错误等信息�
 具体合同见 `docs/design/isolated-satellite-emulator.md`，真实验证证据见
 `docs/evidence/isolated-satellite-validation.md`。
 
-## 10. GroundStation approved conceptual direction
+## 10. Implemented static GroundStation direction
 
-GroundStation 的单对象模型是当前批准的概念方向，但实现尚未开始。未来用户只
-创建和管理一个 GroundStation；不会同时创建长期存在的节点 adapter，也不会
-维护二者间的稳定 ID binding。
+GroundStation 的单对象模型已实现并通过真实运行验证。用户只创建和管理一个
+GroundStation；不存在长期节点 adapter、`GroundStationNode` 或二者间 binding。
 
-该唯一对象预计同时承载地面站静态语义和经过正式确认的 SEED Router 或等价
-节点能力。静态语义大致包括稳定 ID、位置与海拔、运营商、类型或服务分类，
-以及用户配置的静态 Service 和路由策略。节点能力预计包括 Registry/configure
+该唯一对象直接继承 SEED Router，同时承载地面站静态语义与标准节点能力。
+静态语义包括稳定 ID、位置与可选海拔、运营商、类型及受限 service config。
+节点能力包括 Registry/configure
 生命周期、容器配置、加入地面 Network/IX、地面 forwarding、显式启用的路由
 协议与 Service、metadata，以及未来卫星侧动态接口的执行入口。
 
 GroundStation 不负责可见性、连接选择、Zone 服务卫星选择、动态路径、拓扑
 切片或后端更新规划，这些仍属于 Simulator。
 
-Simulator 只接收不可变 `GroundStationDescriptor`。Descriptor 预计提供位置、
-分类、稳定运行节点引用和经确认的其他只读静态字段，不暴露完整 Router、
+Simulator 只接收不可变 `GroundStationDescriptor`。Descriptor 提供位置、
+分类、operator 与稳定运行节点引用，不暴露完整 Router、
 Registry、路由守护进程配置、软件/文件/命令、Docker/Compose 对象、可修改接口
 或 Emulator 生命周期方法。
 
-直接继承 SEED Router 是当前方向，不是最终 API 铁则。正式继承与能力组合边界
-将在 GroundStation 纵向切片开始时，基于届时的 SEED 路由能力重新调查和确认。
+本轮证明直接继承 SEED Router 足以复用标准 `rnode`、IX border-router、
+Routing/eBGP、Docker Compiler 与 InternetMap 路径，且无需 GS 专用 Compiler
+dispatch。该结论仍是 evolving 边界，不会自动决定未来动态接口、Service 或
+复杂路由策略。
+
+具体合同见 `docs/design/static-ground-station-emulator.md`，真实验证证据见
+`docs/evidence/static-ground-station-validation.md`。

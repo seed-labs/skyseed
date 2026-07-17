@@ -157,23 +157,21 @@ classDiagram
 Satellite(Node) -> SatelliteDescriptorProjector -> SatelliteDescriptor
 ```
 
-## 6. GroundStation approved conceptual direction
+## 6. Implemented static GroundStation boundary
 
-GroundStation 尚未实现。该图表达单对象方向，不预先决定最终 Router 继承或
-能力组合细节。
+该图记录当前已验证的单对象静态纵向路径；动态卫星侧能力仍未实现。
 
 ```mermaid
 classDiagram
     class GroundStation {
-        <<conceptual>>
+        <<implemented / evolving>>
         +ground_station_id
         +location
         +station_type
         +operator
         +service_config
-        +join_ground_network(network)
-        +configure_ground_routing(policy)
-        +install_service(service)
+        +runtime_reference
+        +joinNetwork(network)
     }
 
     class SeedRouter {
@@ -181,16 +179,19 @@ classDiagram
     }
 
     class GroundStationDescriptorProjector {
-        <<conceptual>>
+        <<implemented>>
         +project(ground_station)
     }
 
     class GroundStationDescriptor {
-        <<conceptual immutable contract>>
+        <<implemented immutable contract>>
         +ground_station_id
-        +location
+        +latitude_deg
+        +longitude_deg
+        +elevation_m
         +station_type
-        +runtime_node_reference
+        +operator
+        +runtime_node
     }
 
     GroundStation --|> SeedRouter
@@ -200,8 +201,8 @@ classDiagram
 
 ```text
 Satellite(Node) -> SatelliteDescriptor
-GroundStation(Router, conceptual) -> GroundStationDescriptor
+GroundStation(Router) -> GroundStationDescriptor
 ```
 
-Simulator 只接收受限的 Descriptor。Router 继承方向必须在 GroundStation
-切片中重新验证，不能据此图提前实现。
+Simulator 只接收受限的 Descriptor。Router 继承方向已由标准 rnode、IX、
+Routing/eBGP、Compiler 和真实容器验证；未来动态 GS 能力仍需独立设计。

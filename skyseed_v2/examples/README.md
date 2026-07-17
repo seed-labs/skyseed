@@ -1,5 +1,17 @@
 # Examples
 
+## Static GroundStation and ground eBGP
+
+`static_ground_station.py` is the formal GroundStation slice example. It
+creates two still-isolated Satellites, one GroundStation Router on `ix100`,
+and one ordinary SEED Router with one explicit eBGP session:
+
+```bash
+python examples/static_ground_station.py --output examples/output/static_ground_station --override
+```
+
+No GS-to-Satellite interface or link is created.
+
 ## Isolated Satellites
 
 `isolated_satellites.py` is the executable example for the first vertical

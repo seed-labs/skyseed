@@ -2,11 +2,11 @@
 
 ## Current phase
 
-First functional vertical slice implemented and validated.
+Second functional vertical slice implemented and validated.
 
 ## Current workflow step
 
-Review the isolated Satellite static Emulator slice. Do not start the next slice automatically.
+Review the static GroundStation and minimal ground-network slice. Do not start another slice automatically.
 
 ## Confirmed direction
 
@@ -30,16 +30,19 @@ Review the isolated Satellite static Emulator slice. Do not start the next slice
 - Satellite-specific Docker compilation is concentrated in one internal boundary; the private SEED service accumulator has one fail-closed access point.
 - Satellite metadata is normalized by complete key before serialization, so identity labels are unique.
 - Runtime InternetMap validation found two Satellite vertices and zero edges.
-- GroundStation single-object model is an approved conceptual direction: the user-facing GroundStation is expected to reuse SEED Router or equivalent capabilities and project a restricted immutable GroundStationDescriptor.
-- GroundStation implementation has not started; Router inheritance and capability composition must be revalidated in the GroundStation vertical slice.
+- `GroundStation` is the one user-visible GS object, directly inherits SEED `Router`, and is the same instance returned by its AS, registered as `rnode`/border router, compiled and run.
+- GroundStation static fields and immutable `GroundStationDescriptor` projection are implemented; no complete Router crosses the future Simulator contract.
+- The formal example gives GroundStation one IX interface, disables GS iBGP and masks OSPF, establishes one explicit eBGP session to an ordinary ground AS, and creates no GS–Satellite link.
+- GroundStation uses the inherited standard Router Compiler path. Skyseed only replaces its metadata by key so InternetMap sees `GroundStation` with `type=rnode`; no GS-specific dispatch or private accumulator access was added.
+- Runtime validation proved forwarding, established eBGP, packet-level ground reachability, one GS ground edge, and two unchanged Satellite vertices with zero Satellite edges.
 
 ## Open design questions
 
-- The exact GroundStation inheritance and capability-composition boundary after focused investigation of current SEED routing behavior.
+- Future GroundStation dynamic satellite-side interface and service boundaries; the static Router inheritance result does not pre-authorize them.
 - The read-only contracts for entities other than Satellite.
 - Whether a future SEED public node-dispatch hook can replace the current narrow private Compiler integration point.
 - The next vertical slice, which requires explicit design approval.
 
 ## Next single objective
 
-Review and accept or revise the isolated Satellite slice and its runtime evidence.
+Review and accept or revise the static GroundStation slice and its runtime evidence.

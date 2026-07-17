@@ -24,8 +24,8 @@
 2. SEED integration：描述卫星实体自身如何参加 SEED 节点生命周期；
 3. Simulator contract：描述 Simulator 能读取的只读视图。
 
-Satellite 相关部分已有第一个纵向切片实现支撑。GroundStation 和完整 Entity
-Catalog 仍属于后续设计方向。图中的方法签名只表达职责，不是最终 API。
+Satellite 与 GroundStation 静态 Emulator 主线已有纵向切片实现支撑。完整
+Entity Catalog 仍属于后续设计方向。图中的方法签名只表达职责，不是最终 API。
 
 ```mermaid
 classDiagram
@@ -43,13 +43,23 @@ classDiagram
         <<implemented / evolving>>
         +getAsn()
         -shells
-        -ground_stations
         +create_shell(shell_id)
         +get_shell(shell_id)
         +satellites()
         +get_satellite(satellite_id)
         +satellite_descriptors()
+        +registerNodes(emulator)
+        +configure(emulator)
+    }
+
+    class GroundStationAutonomousSystem {
+        <<implemented / evolving>>
+        +getAsn()
+        -ground_stations
         +create_ground_station(config)
+        +get_ground_station(ground_station_id)
+        +ground_stations()
+        +ground_station_descriptors()
         +registerNodes(emulator)
         +configure(emulator)
     }
@@ -94,15 +104,16 @@ classDiagram
     }
 
     class GroundStation {
-        <<conceptual>>
+        <<implemented / evolving>>
         +ground_station_id
         +location
         +station_type
         +operator
         +service_config
-        +join_ground_network(network)
-        +configure_ground_routing(policy)
-        +install_service(service)
+        +runtime_reference
+        +joinNetwork(network)
+        +addSoftware(software)
+        +setFile(path, content)
     }
 
     class SeedNode {
@@ -119,7 +130,7 @@ classDiagram
     }
 
     class GroundStationDescriptorProjector {
-        <<conceptual>>
+        <<implemented>>
         +project(ground_station)
     }
 
@@ -147,11 +158,14 @@ classDiagram
     }
 
     class GroundStationDescriptor {
-        <<conceptual immutable contract>>
+        <<implemented immutable contract>>
         +ground_station_id
-        +location
+        +latitude_deg
+        +longitude_deg
+        +elevation_m
         +station_type
-        +runtime_node_reference
+        +operator
+        +runtime_node
     }
 
     class RuntimeNodeReference {
@@ -163,11 +177,12 @@ classDiagram
     }
 
     Emulator "1" o-- "*" SatelliteAutonomousSystem : manages
+    Emulator "1" o-- "*" GroundStationAutonomousSystem : manages
 
     SatelliteAutonomousSystem "1" *-- "*" Shell : owns
     Shell "1" *-- "*" Orbit : owns
     Orbit "1" *-- "*" Satellite : owns
-    SatelliteAutonomousSystem "1" o-- "*" GroundStation : manages
+    GroundStationAutonomousSystem "1" o-- "*" GroundStation : manages
 
     Satellite --|> SeedNode
     GroundStation --|> SeedRouter
@@ -188,29 +203,27 @@ classDiagram
 - `Satellite` 是唯一的卫星对象并直接继承 SEED `Node`；
 - Shell 和 Orbit 负责所有权，Satellite 自身负责节点与容器生命周期能力；
 - Descriptor 负责 Emulator–Simulator 只读边界；
-- 图中的 `SatelliteAutonomousSystem`、Shell、Orbit、Satellite、
-  SatelliteDescriptorProjector、SatelliteDescriptor 和 RuntimeNodeReference
-  名称及 Satellite 关系与当前实现一致；其中
-  GroundStation 集合和创建职责仍是概念方向，不代表现有 AS 已实现它们；
-- `GroundStation` 当前继承 `SeedRouter` 只是概念方向，正式设计需在
-  GroundStation 切片中确认；
+- 图中的 Satellite 与 GroundStation 两条静态对象、AS 生命周期和 Descriptor
+  投影关系均有当前实现支撑；
+- `GroundStation` 直接继承 `SeedRouter` 已通过本轮标准 `rnode`、IX、Routing、
+  eBGP、Compiler、容器和 InternetMap 真实运行验证，但仍是 evolving 边界；
 - `RuntimeNodeReference` 的当前字段与已实现合同一致，但最终字段仍未定稿；
   图的长期含义只要求它提供稳定运行节点引用；
 - UT 暂不进入该图。
 
-### GroundStation approved conceptual direction
+### GroundStation implemented static direction
 
-GroundStation 尚未实现。当前批准的方向是：用户创建和管理唯一的
-`GroundStation`，该对象预计直接复用 SEED Router 或经正式设计确认的等价
-能力，不再引入长期存在的第二个节点对象或稳定 ID binding。
+用户创建和管理唯一的 `GroundStation`。该对象直接继承 SEED Router，并作为
+标准 `rnode` 参加 Registry、configure、Routing、eBGP、Compiler 和容器生命
+周期；没有第二个节点对象、`GroundStationNode` 或稳定 ID binding。
 
-GroundStation 的预计静态语义包括：
+GroundStation 当前实现的静态语义包括：
 
 - ground station ID、地理位置和海拔；
-- 运营商、地面站类型、服务区域或分类；
-- 用户明确配置的静态 Service 和地面路由策略。
+- 运营商与地面站类型；
+- 受限的静态 service configuration。
 
-其预计复用的 SEED 节点能力包括 Registry/configure 生命周期、容器配置、
+其复用的 SEED 节点能力包括 Registry/configure 生命周期、容器配置、
 加入地面 Network 或 IX、地面侧 forwarding、显式启用的路由协议和 Service、
 metadata，以及未来卫星侧动态接口的节点执行入口。
 
@@ -218,16 +231,16 @@ metadata，以及未来卫星侧动态接口的节点执行入口。
 计算、TopologySlice、Backend Plan 或 BPF/MPLS 更新规划；它们属于未来
 Simulator。
 
-`GroundStationDescriptorProjector` 预计从唯一 GroundStation 投影不可变的
+`GroundStationDescriptorProjector` 从唯一 GroundStation 投影不可变的
 `GroundStationDescriptor`。Simulator 只接收该 Descriptor，不接收完整
 GroundStation/SEED Router。Descriptor 可包含稳定 ID、位置、必要分类、稳定
 运行节点引用和经过确认的只读静态值，但不得包含 Registry、BIRD/FRR 配置、
 软件、文件、启动命令、Docker/Compose 对象、可修改接口或 Emulator 生命周期
 方法。未来新增字段必须通过显式合同设计，而不是暴露完整 GroundStation。
 
-`GroundStation --|> SeedRouter` 记录当前总体方向，不是实现铁则。正式继承、
-组合边界和路由能力将在 GroundStation 纵向切片开始时依据当前 SEED 实现重新
-调查和确认。
+`GroundStation --|> SeedRouter` 已由当前静态纵向切片验证为合理的最小实现
+边界，但仍不是所有未来 GS 能力必须逐字遵守的铁则。卫星侧动态接口、更多
+Service 或更复杂路由能力必须在各自切片重新确认，不由本轮结果自动授权。
 
 ## Simulator conceptual class diagram
 

@@ -2,8 +2,26 @@
 
 from __future__ import annotations
 
-from skyseed_v2.contracts import SatelliteDescriptor
-from skyseed_v2.domain import Satellite
+from skyseed_v2.contracts import GroundStationDescriptor, SatelliteDescriptor
+from skyseed_v2.domain import GroundStation, Satellite
+
+
+class GroundStationDescriptorProjector:
+    """Project the unique GroundStation into its restricted contract."""
+
+    def project(self, ground_station: GroundStation) -> GroundStationDescriptor:
+        if not isinstance(ground_station, GroundStation):
+            raise TypeError("ground_station must be a GroundStation")
+        location = ground_station.location
+        return GroundStationDescriptor(
+            ground_station_id=ground_station.ground_station_id,
+            latitude_deg=location.latitude_deg,
+            longitude_deg=location.longitude_deg,
+            elevation_m=location.elevation_m,
+            station_type=ground_station.station_type,
+            operator=ground_station.operator,
+            runtime_node=ground_station.runtime_reference,
+        )
 
 
 class SatelliteDescriptorProjector:
