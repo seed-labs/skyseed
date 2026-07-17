@@ -35,7 +35,40 @@
 
 因此本文报告的 **v1 commit 是 `06b19eb718a79a9113ee95bc045f10953c1d8ab7`**；调查时 HEAD 含有完全相同的 v1 tree。成功产物目录自身没有内嵌 git commit，产物与 commit 的对应关系只能通过未变化的静态源和产物内容交叉验证，不能伪装成产物自证的精确 commit。
 
-### 2.2 标准入口及来源层级
+### 2.2 实现阶段 reference pin 审计
+
+后续 S4-scale 实现阶段的 monorepo 工作树已经位于
+`ad331b9c15e3a5fb522af9ff18a06434f99c0860` 之后。两个 commit 不是两套
+独立 v1 版本：`skyseed_v1/` 是同一 monorepo 的目录；
+`06b19eb718a79a9113ee95bc045f10953c1d8ab7` 是
+`ad331b9c15e3a5fb522af9ff18a06434f99c0860` 的祖先，merge-base 是前者，反向
+祖先关系不成立。`git rev-list --count 06b19eb..ad331b9` 为 12；中间提交用于
+建立、收敛和验收 v2，`ad331b9` 本身只记录本调查文档。
+
+实现 adapter 实际读取的三个文件在两个 commit 上完全相同：
+
+| 文件 | `06b19eb` blob | `ad331b9` blob |
+| --- | --- | --- |
+| `skyseed_v1/data/orbits/planned_shell_orbit_data_s1_s5.json` | `f24c6a4c938c8a6552116459ddf54fa7405bdf89` | 同左 |
+| `skyseed_v1/data/ground/starlink_gateways.json` | `8ca4726919c982cfd34a26d62ced9c3ac26a9583` | 同左 |
+| `skyseed_v1/data/ground/s4_visualization_gateway_binding_12.json` | `b54ecec87c3f5454afab15d8d1f789f5f51fa129` | 同左 |
+
+三者最后一次修改均来自 `3b33c369ff88ee7a790a6ea731c0afc3af403552`
+（`Add standalone Skyseed v1 architecture`）。因此 1 Shell、6 Orbit、每轨 58、
+总计 348 Satellite、12 GS、560 km 和 97.6° 等本轮关键输入没有变化；两个
+版本不存在可混用的分叉数据。
+
+实现最终 pin 到完整 commit
+`ad331b9c15e3a5fb522af9ff18a06434f99c0860`，理由是它是完成本调查记录后的
+明确不可变快照，而所选数据与原调查 reference byte-for-byte 相同。该 pin
+没有扩大 adapter 的数据职责：`examples/reference/v1_reference_snapshot.py`
+只验证 pin commit 存在、它是当前 HEAD 的祖先、三个固定文件存在且其工作树
+Git blob ID 与 pin 完全一致；adapter 在构造和每次 load 前执行该验证，再执行
+原有 JSON 形状和关键数据校验。commit 不存在、HEAD 非后代、文件缺失或内容
+漂移均 fail-closed。允许 HEAD 前进但不允许 reference 文件漂移，解释了实现时
+工作树更新而无需把两个 commit 当成两套输入。
+
+### 2.3 标准入口及来源层级
 
 1. 用户可见的标准组合入口是 `skyseed_v1/examples/s4_operational_clean/experiment.py:14-25`：`EXPERIMENT` 显式选择 `planned_shell("S4")` 和 `s4_rich_ground_network()`。
 2. shell 数量配置来自代码常量 `skyseed_v1/src/skyseed_v1/configuration/presets.py:6-10` 的 `SHELLS["S4"] = ShellConfig("S4", 6, 58, 190)`。其中 `190` 是动态跨轨候选 slot 数，不是静态星座规模输入。

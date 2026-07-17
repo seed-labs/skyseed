@@ -5,7 +5,11 @@ from yaml import compose as compose_yaml
 from yaml import safe_load
 from yaml.nodes import MappingNode, Node, SequenceNode
 
-from examples.s4_scale_static_emulator import build_scenario, compile_scenario
+from examples.s4_scale_static_emulator import (
+    build_scenario,
+    compile_scenario,
+    materialization_expectations,
+)
 
 
 METADATA_PREFIX = "org.seedsecuritylabs.seedemu.meta."
@@ -135,3 +139,9 @@ def test_s4_scale_compose_inventory_and_static_routing(tmp_path: Path) -> None:
         "reference_epoch_in_emulator": False,
         "s4_is_scale_reference_only": True,
     }
+    expected_services = materialization_expectations(
+        output / "docker-compose.yml"
+    )
+    assert len(expected_services.long_running) == 363
+    assert len(expected_services.successful_exit_helpers) == 2
+    assert set(expected_services.all_services) == set(compose["services"])

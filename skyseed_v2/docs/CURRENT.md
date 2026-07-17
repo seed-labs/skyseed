@@ -4,26 +4,27 @@
 
 Static Emulator core excluding UT: COMPLETE
 Generic constellation and GS construction: COMPLETE
-S4-scale static container materialization: PASS
-Static ground-network integration at scale: PASS
+S4-scale static materialization: PASS
+Batched Compose materialization: IMPLEMENTED AND VALIDATED
 
-Dynamic satellite-network reproduction: NOT STARTED
+Simulator: NOT STARTED
 
 ## Current objective
 
-The generic static-construction and S4-scale validation slice is complete.
-Await explicit approval before selecting another objective.
+The bounded Compose materialization closeout is complete. Await explicit
+approval before selecting another objective.
 
 ## Implementation status
 
-Complete for the generic static construction and scale-validation slice.
+Complete for the generic static construction, S4-scale validation and bounded
+Compose materialization slice.
 
 ## Current workflow step
 
-The formal scale experiment has passed automated, container, routing and
-InternetMap validation. Its project resources and generated output are
-cleaned. Do not start dynamic Satellite networking or Simulator work
-automatically.
+The formal scale experiment has passed launcher, full inventory, routing, ICMP
+and InternetMap validation through one Compose output and one project. Its
+project resources and generated output are cleaned. Do not start dynamic
+Satellite networking, Runner design or Simulator work automatically.
 
 ## Confirmed direction
 
@@ -65,9 +66,11 @@ automatically.
 - Immutable backend-independent specifications and application builders now construct arbitrary positive static constellation sizes, multiple Shells and GroundStations without S4-specific domain APIs.
 - Generated Orbit/Satellite IDs are derived from v2 Shell hierarchy and ordinal position; generated GS IDs are stable hashes of explicit semantic identity keys. They are deterministic, order-independent and do not preserve v1 IDs.
 - The v1 JSON-shape adapter is isolated under `examples/reference/`, immediately returns v2 specifications and is excluded from the wheel. The core package contains no v1 import or file-shape dependency.
+- The reference adapter pins `ad331b9c15e3a5fb522af9ff18a06434f99c0860` and fail-closed verifies ancestry plus the exact Git blobs of its three selected files before loading. The investigation commit `06b19eb718a79a9113ee95bc045f10953c1d8ab7` is its ancestor and has the same three blobs and key S4 inputs.
 - The formal `s4_scale_static_emulator.py` experiment uses the reference S4 scale to build one Shell, six Orbits, 348 isolated Satellites, 12 descriptive `operator=Starlink` GroundStations, two ordinary ground ASes, two IXes and two explicit eBGP peerings. It is not a permanent default or v1 compatibility mode.
 - The scale Catalog contains 360 Satellite/GS Descriptors; the compiled Compose contains 365 services. Runtime validation proved 348 no-network Satellite containers, 12 one-IX GS, two learned external prefixes, packet reachability and 348 zero-edge Satellite InternetMap vertices.
-- Full scale evidence is recorded in `docs/evidence/s4-scale-static-emulator-validation.md`. Docker Compose 1.27.4 required bounded 16-service Compose startup batches after its one-shot client fanout stalled; all 365 services were still materialized through the same Compose project.
+- `ComposeProjectLauncher` is a small integration-layer materialization tool outside the Emulator, Descriptor/Catalog, Compiler and Simulator domains. It consumes one existing Compose output/project, an explicit long-running/helper partition and a configurable batch size; it starts a stable complete inventory and fail-closed verifies batch and final project state without recompiling or rewriting Compose.
+- Formal launcher revalidation used batch size 16 directly, with no one-shot attempt or fallback: 23 batches materialized all 365 services from one Compose file into one project, ending with 363 running services and two helpers exited zero. Full evidence is recorded in `docs/evidence/s4-scale-batched-compose-materialization-validation.md`; the initial diagnosis remains in `docs/evidence/s4-scale-static-emulator-validation.md`.
 - No epoch, position computation, dynamic link, RuntimeNodeReference or runtime resource locator was introduced. Dynamic Satellite-network reproduction remains unstarted.
 
 ## Open design questions
@@ -94,10 +97,11 @@ explicitly choosing any dynamic Satellite-network or Simulator objective.
 - Manual InternetMap visual acceptance: PASS
 - S4 static-scenario investigation: completed
 - Generic constellation and GS construction: completed
-- S4-scale static container materialization: PASS
+- S4-scale static materialization: PASS
+- Batched Compose materialization: implemented and validated
 - Static ground-network integration at scale: PASS
-- Dynamic Satellite-network reproduction: not started
+- Simulator: not started
 - UT: outside current Emulator core
 
-Static Emulator core excluding UT: COMPLETE. The user confirmed the visual
-result and the formal example was cleaned up on 2026-07-17.
+Static Emulator core excluding UT: COMPLETE. The formal batched-materialization
+example was fully audited and cleaned up on 2026-07-17.

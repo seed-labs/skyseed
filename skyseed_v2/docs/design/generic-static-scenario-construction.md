@@ -70,6 +70,16 @@ or 12 and do not branch on S4.
 the committed S1-S5 orbit catalog and selected gateway files, validates their
 historical shapes, and immediately translates them into v2 specifications.
 
+The adapter pins the selected snapshot to full monorepo commit
+`ad331b9c15e3a5fb522af9ff18a06434f99c0860`. A narrow companion validator
+requires that commit to be an ancestor of the current HEAD and proves that the
+three actual worktree files have the exact Git blob IDs stored at that commit
+before parsing them. Missing commits/files, non-descendant history and content
+drift fail closed. The earlier investigation reference
+`06b19eb718a79a9113ee95bc045f10953c1d8ab7` is its ancestor and has identical
+blobs for all three selected files; the pin difference therefore records a
+newer monorepo documentation point, not different scenario data.
+
 For the current experiment it derives one 6-orbit, 58-satellite-per-orbit Shell
 with 560 km altitude, 97.6 degree inclination, uniform 60 degree RAAN spacing,
 uniform in-orbit spacing and the alternating plane phase offset. It selects 12
@@ -112,3 +122,17 @@ It does not prove dynamic orbit propagation, time advancement, ISL,
 GS-Satellite connectivity, Zone/G/Z routing, UT behavior, Simulator planning or
 v1 experiment equivalence. None of those capabilities is implemented by this
 slice.
+
+## Compose materialization boundary
+
+The scale scene is compiled exactly once into one Compose output. Bounded
+startup of that complete project is owned by the separate
+`ComposeProjectLauncher` integration tool under `skyseed_v2.materialization`,
+not by these specifications, builders, Catalog, Emulator, or Compiler. The
+caller supplies the exact long-running/helper classification and batch size;
+the launcher keeps one project/file, starts a deterministic complete inventory
+and verifies expected final states fail-closed.
+
+The design and formal scale evidence are recorded in
+`docs/design/compose-materialization.md` and
+`docs/evidence/s4-scale-batched-compose-materialization-validation.md`.

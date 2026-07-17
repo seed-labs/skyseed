@@ -21,6 +21,7 @@ from skyseed_v2 import (
     SimulationEntityCatalog,
     SimulationEntityCatalogBuilder,
 )
+from skyseed_v2.materialization import ComposeServiceExpectations
 from skyseed_v2.seed import (
     SatelliteBase,
     SkyseedAutonomousSystem,
@@ -71,16 +72,31 @@ def default_reference_root() -> Path:
 
 
 def reference_adapter(reference_root: Path) -> V1StaticInputAdapter:
-    return V1StaticInputAdapter(
-        orbit_catalog_path=(
-            reference_root
-            / "data/orbits/planned_shell_orbit_data_s1_s5.json"
-        ),
-        gateway_catalog_path=reference_root / "data/ground/starlink_gateways.json",
-        gateway_binding_path=(
-            reference_root
-            / "data/ground/s4_visualization_gateway_binding_12.json"
-        ),
+    return V1StaticInputAdapter(reference_root=reference_root)
+
+
+def materialization_expectations(
+    compose_file: Path,
+) -> ComposeServiceExpectations:
+    """Classify this scenario's nodes/map and SEED image-cache helpers."""
+
+    compose = safe_load(Path(compose_file).read_text(encoding="utf-8"))
+    if not isinstance(compose, dict) or not isinstance(compose.get("services"), dict):
+        raise ValueError("compiled Compose must contain a services mapping")
+    long_running = []
+    successful_exit_helpers = []
+    for service_name, service in compose["services"].items():
+        if not isinstance(service_name, str) or not isinstance(service, dict):
+            raise ValueError("compiled Compose contains an invalid service")
+        build = service.get("build")
+        dockerfile = build.get("dockerfile") if isinstance(build, dict) else None
+        if isinstance(dockerfile, str) and dockerfile.startswith("dummies/"):
+            successful_exit_helpers.append(service_name)
+        else:
+            long_running.append(service_name)
+    return ComposeServiceExpectations(
+        long_running=tuple(long_running),
+        successful_exit_helpers=tuple(successful_exit_helpers),
     )
 
 

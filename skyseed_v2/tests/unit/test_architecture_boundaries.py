@@ -174,3 +174,20 @@ def test_generic_static_specifications_are_backend_and_v1_independent() -> None:
         "resource_locator",
     ):
         assert forbidden not in source
+
+
+def test_compose_materialization_is_outside_emulator_and_compiler_models() -> None:
+    from skyseed_v2.materialization import compose_project_launcher
+
+    imports = imported_modules(compose_project_launcher)
+    forbidden_prefixes = (
+        "seedemu",
+        "skyseed_v2.contracts",
+        "skyseed_v2.domain",
+        "skyseed_v2.seed",
+    )
+    assert not any(
+        module == prefix or module.startswith(f"{prefix}.")
+        for module in imports
+        for prefix in forbidden_prefixes
+    )

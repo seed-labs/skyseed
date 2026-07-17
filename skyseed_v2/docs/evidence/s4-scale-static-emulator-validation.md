@@ -1,5 +1,11 @@
 # S4-Scale Static Emulator Validation
 
+> This document preserves the first scale run and its Compose 1.27.4 diagnosis.
+> The subsequent formal revalidation of the generic fail-closed launcher,
+> reference commit pin, per-batch timings and single-output materialization is
+> recorded in
+> `docs/evidence/s4-scale-batched-compose-materialization-validation.md`.
+
 ## 1. Scope and result
 
 Validation date: 2026-07-17 (America/New_York)

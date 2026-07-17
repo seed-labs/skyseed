@@ -22,35 +22,55 @@ docker-compose -p skyseed_v2_s4_scale_static \
 ```
 
 On the validated Docker Compose 1.27.4 host, one 365-service `up -d` fanout
-stalls inside the old client. Start the complete, unchanged service inventory
-in bounded Compose batches:
+stalls inside the old client. Materialize the complete, unchanged service
+inventory with the generic bounded launcher and an explicit batch size:
 
 ```bash
-compose_file=/tmp/skyseed-v2-s4-scale-static/output/docker-compose.yml
-project_name=skyseed_v2_s4_scale_static
-mapfile -t services < <(
-  docker-compose -p "$project_name" -f "$compose_file" config --services
+PYTHONPATH=src:. python - <<'PY'
+from pathlib import Path
+
+from examples.s4_scale_static_emulator import materialization_expectations
+from skyseed_v2.materialization import ComposeProjectLauncher
+
+compose_file = Path(
+    "/tmp/skyseed-v2-s4-scale-static/output/docker-compose.yml"
 )
-for ((offset=0; offset<${#services[@]}; offset+=16)); do
-  docker-compose -p "$project_name" -f "$compose_file" \
-    up -d "${services[@]:offset:16}"
-done
+result = ComposeProjectLauncher(
+    compose_file=compose_file,
+    project_name="skyseed_v2_s4_scale_static",
+    expectations=materialization_expectations(compose_file),
+    batch_size=16,
+).materialize()
+print(result)
+PY
 ```
 
-This is a client-side startup bound, not a smaller scenario or alternate
-runtime path. All 365 declared services remain in scope.
+This is a Compose materialization optimization, not a smaller scenario,
+fallback, or alternate compilation path. The launcher uses the same one
+Compose file and project for every batch, verifies explicit long-running and
+successful-exit helper sets, and keeps all 365 declared services in scope.
+Batch size is configurable; 16 is only the value validated on this host.
 
 The deterministic summary is written to `scenario-summary.json`. Runtime
 acceptance additionally audits all Satellite containers, both peering GS,
 ordinary Routers, eBGP/ICMP and <http://127.0.0.1:8080/pro/map>.
 
 After collecting evidence, clean only this project and its locally built node
-images:
+images. On the old Compose client, resolve the same service list and remove it
+in bounded groups before `down`; do not use a global Docker prune:
 
 ```bash
-docker-compose -p skyseed_v2_s4_scale_static \
-  -f /tmp/skyseed-v2-s4-scale-static/output/docker-compose.yml \
-  down --rmi local --remove-orphans
+compose_file=/tmp/skyseed-v2-s4-scale-static/output/docker-compose.yml
+project_name=skyseed_v2_s4_scale_static
+mapfile -t services < <(
+  docker-compose -p "$project_name" -f "$compose_file" config --services | sort
+)
+for ((offset=0; offset<${#services[@]}; offset+=16)); do
+  docker-compose -p "$project_name" -f "$compose_file" \
+    rm -f -s -v "${services[@]:offset:16}"
+done
+docker-compose -p "$project_name" -f "$compose_file" \
+  down --remove-orphans
 ```
 
 The shared upstream Router/Base images and the named InternetMap image must be

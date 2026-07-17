@@ -13,6 +13,12 @@ from math import isfinite, pi
 from pathlib import Path
 from typing import Any
 
+from examples.reference.v1_reference_snapshot import (
+    GitCommandRunner,
+    PINNED_V1_REFERENCE_COMMIT,
+    V1ReferenceSnapshotAudit,
+    validate_v1_reference_snapshot,
+)
 from skyseed_v2.specifications import (
     GroundStationSpecification,
     InOrbitPhaseDistributionSpecification,
@@ -98,13 +104,36 @@ class V1StaticInputAdapter:
     def __init__(
         self,
         *,
-        orbit_catalog_path: Path,
-        gateway_catalog_path: Path,
-        gateway_binding_path: Path,
+        reference_root: Path,
+        pinned_commit: str = PINNED_V1_REFERENCE_COMMIT,
+        snapshot_command_runner: GitCommandRunner | None = None,
     ) -> None:
-        self._orbit_catalog_path = Path(orbit_catalog_path)
-        self._gateway_catalog_path = Path(gateway_catalog_path)
-        self._gateway_binding_path = Path(gateway_binding_path)
+        self._reference_root = Path(reference_root).resolve()
+        self._pinned_commit = pinned_commit
+        self._snapshot_command_runner = snapshot_command_runner
+        self._reference_audit = self._validate_reference_snapshot()
+        self._orbit_catalog_path = (
+            self._reference_root
+            / "data/orbits/planned_shell_orbit_data_s1_s5.json"
+        )
+        self._gateway_catalog_path = (
+            self._reference_root / "data/ground/starlink_gateways.json"
+        )
+        self._gateway_binding_path = (
+            self._reference_root
+            / "data/ground/s4_visualization_gateway_binding_12.json"
+        )
+
+    @property
+    def reference_audit(self) -> V1ReferenceSnapshotAudit:
+        return self._reference_audit
+
+    def _validate_reference_snapshot(self) -> V1ReferenceSnapshotAudit:
+        return validate_v1_reference_snapshot(
+            self._reference_root,
+            pinned_commit=self._pinned_commit,
+            command_runner=self._snapshot_command_runner,
+        )
 
     def load(
         self,
@@ -114,6 +143,7 @@ class V1StaticInputAdapter:
         operator: str,
         station_type: str = "gateway",
     ) -> ReferenceStaticScenarioSpecifications:
+        self._reference_audit = self._validate_reference_snapshot()
         return ReferenceStaticScenarioSpecifications(
             shell=self._load_shell(
                 reference_shell_label=reference_shell_label,
