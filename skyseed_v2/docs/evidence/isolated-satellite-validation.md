@@ -145,7 +145,6 @@ org.seedsecuritylabs.seedemu.meta.skyseed.entity_type=Satellite
 org.seedsecuritylabs.seedemu.meta.skyseed.satellite_id=<stable ID>
 org.seedsecuritylabs.seedemu.meta.skyseed.shell_id=shell-1
 org.seedsecuritylabs.seedemu.meta.skyseed.orbit_id=orbit-1
-org.seedsecuritylabs.seedemu.meta.skyseed.runtime_node_ref=<stable reference>
 ```
 
 No Host identity or `meta.net.*` label was emitted.
@@ -386,10 +385,10 @@ wheel: skyseed_v2-0.1.0-py3-none-any.whl
 wheel sha256: d52dac7e167a2eace3be430218eb360faaa2c2fcfd610d8b4a3bdbabd6c355e5
 ```
 
-The Descriptor projector accepts the unique Satellite and reads its immutable
-scalar `RuntimeNodeReference`. The resulting frozen Descriptor contains no
-Satellite/Node, Registry, software, file, command, Compiler, Docker or Compose
-object.
+The Descriptor projector accepts the unique Satellite and constructs its
+immutable `SimulationNodeId` from ASN, the `satellite` entity kind and the
+satellite ID. The resulting frozen Descriptor contains no Satellite/Node,
+Registry, software, file, command, Compiler, Docker or Compose object.
 
 ### Formal compile and raw Compose evidence
 

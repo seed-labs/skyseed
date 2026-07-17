@@ -71,15 +71,38 @@ Simulator 只应获得其计算动态状态所需的只读信息，例如：
 - 轨道参数；
 - 地面站稳定标识；
 - 地面站位置；
-- 与实际运行节点建立对应关系所需的稳定引用。
+- 与运行后端无关的统一逻辑节点身份。
 
-Simulator 不应获得或依赖与动态计算无关的容器构建细节。
+Simulator 不应获得或依赖 SEED Registry、容器、namespace、Compose service
+或其他执行目标细节。
 
 SatelliteDescriptor 与 GroundStationDescriptor 都包含定义在公共
-`contracts.runtime` 模块中的同一不可变 `RuntimeNodeReference` 类型；该公共
-运行引用不属于任一实体专属合同。Satellite 与 GroundStation 实体本身不依赖
-合同层，也不保存该引用；各 Descriptor Projector 从实体的稳定 ASN、Registry
-类型和节点名构造合同值。
+`contracts.identity` 模块中的不可变 `SimulationNodeId`。其值由 `asn`、
+`entity_kind` 和 `entity_id` 组成，只标识 Skyseed/Simulator 中的逻辑节点。
+Satellite 与 GroundStation 实体本身不依赖合同层，也不保存该值；各 Descriptor
+Projector 从唯一实体拥有的静态标量构造它。同一 ASN 内即使两类实体使用相同
+文本 ID，也会因为 `entity_kind` 不同而保持唯一。
+
+当前合同要求 ASN 是正整数，`entity_kind` 只能是 `satellite` 或
+`ground-station`，`entity_id` 使用公共标识符规则校验。该值对象冻结、可哈希，
+稳定字符串形式为 `asn/entity_kind/entity_id`。
+
+`SimulationNodeId` 不等于 SEED Registry identity、容器 identity 或 execution
+target。Simulator 的 Topology、Connection、Route 和 Semantic Planning 阶段只
+使用逻辑身份。当 Backend Planner、Execution Compiler 或 Runner 需要把逻辑
+节点转换为实际 SEED Node、容器、namespace 或内核资源时，再根据当时的执行
+合同设计运行目标引用与解析机制；这属于尚未进入的后续设计范围，而非当前
+技术债。
+
+三种身份信息保持明确分层：
+
+- `SimulationNodeId = asn/entity_kind/entity_id`，对 Simulator 可见；
+- SEED Registry identity = scope、`satnode|rnode|brdnode`、node name，只供
+  SEED integration 生命周期使用；
+- InternetMap metadata = `type`、`role` 和相关 labels，只供运行环境与可视化
+  使用。
+
+Compiler 从 SEED 集成对象产生运行 metadata，不通过 Descriptor 获取它。
 
 同进程对象传递、文件序列化或跨进程传输只是这一合同的不同适配方式，不属于领域边界本身。
 
@@ -153,6 +176,8 @@ Observation 负责收集执行过程、操作结果、时间和错误等信息�
 - Slice 的完整数据合同；
 - Semantic Plan 和 Backend Plan 的具体格式；
 - Compiler 与 Runner 的精确接口；
+- Backend Planner、Execution Compiler 或 Runner 如何把 `SimulationNodeId`
+  解析为实际 SEED Node、容器、namespace 或内核资源；
 - UT 子系统；
 - 有限运行和流式运行；
 - 真实后端与 v1 优化能力的吸收方式。
@@ -165,7 +190,7 @@ Observation 负责收集执行过程、操作结果、时间和错误等信息�
   `satnode`/`Satellite` 身份参加 Registry、configure 和 Compiler 生命周期；
 - `SatelliteDescriptor` 是不可变的 Simulator-facing 值对象；
 - `SatelliteDescriptorProjector` 从唯一 Satellite 读取批准的静态值，并从
-  稳定标量构造 runtime node reference；Simulator 不接收完整 Satellite/Node；
+  稳定标量构造逻辑 `SimulationNodeId`；Simulator 不接收完整 Satellite/Node；
 - `Shell -> Orbit -> Satellite` 是领域所有权层级；
 - Satellite 容器使用显式 `network_mode: none`，除 loopback 外没有接口；
 - Satellite 编译特例集中在单一内部边界，私有 SEED service accumulator
@@ -192,7 +217,7 @@ GroundStation 不负责可见性、连接选择、Zone 服务卫星选择、动�
 切片或后端更新规划，这些仍属于 Simulator。
 
 Simulator 只接收不可变 `GroundStationDescriptor`。Descriptor 提供位置、
-分类、operator 与稳定运行节点引用，不暴露完整 Router、
+分类、operator 与逻辑 `SimulationNodeId`，不暴露完整 Router、
 Registry、路由守护进程配置、软件/文件/命令、Docker/Compose 对象、可修改接口
 或 Emulator 生命周期方法。
 
@@ -216,9 +241,11 @@ Docker 编译流程，只把 `satnode` 委托给 `_SatelliteCompilerBoundary`；
 GroundStation 仍走标准 Router 路径。上游缺少 custom-node dispatch hook 导致的
 私有 service accumulator 访问仍限制在一个 fail-closed 封装点。
 
-跨领域使用的标识符验证位于 `domain.validation`，SEED/Compose metadata 命名与
-运行引用字符串格式位于 `seed.metadata`。因此 Satellite 与 GroundStation
-领域模块不再互相 import，也不依赖 `contracts` 或 Compiler metadata 细节。
+跨领域使用的标识符验证位于 `domain.validation`，SEED/Compose metadata 命名
+位于 `seed.metadata`。因此 Satellite 与 GroundStation 领域模块不再互相
+import，也不依赖 `contracts` 或 Compiler metadata 细节。`satnode`、`rnode`、
+`brdnode` 以及 `Satellite`/`GroundStation` 运行 metadata 仍只属于 SEED 集成层，
+不进入 Descriptor。
 
 组合场景的测试、容器、路由、InternetMap 与清理证据见
 `docs/evidence/skyseed-structure-convergence-validation.md`。

@@ -35,25 +35,26 @@ classDiagram
     }
     class GroundStationDescriptor {
         <<immutable contract>>
+        +node_id
         +ground_station_id
         +latitude_deg
         +longitude_deg
         +elevation_m
         +station_type
         +operator
-        +runtime_node
     }
-    class RuntimeNodeReference {
-        <<shared immutable contract>>
+    class SimulationNodeId {
+        <<public immutable logical identity>>
         +asn
-        +registry_type
-        +node_name
+        +entity_kind
+        +entity_id
+        +value
     }
 
     GroundStation --|> SeedRouter
     GroundStationDescriptorProjector --> GroundStation : reads approved values
     GroundStationDescriptorProjector --> GroundStationDescriptor : produces
-    GroundStationDescriptor "1" *-- "1" RuntimeNodeReference : contains
+    GroundStationDescriptor "1" *-- "1" SimulationNodeId : identifies
 ```
 
 `GroundStation` in `src/skyseed_v2/domain/ground_station.py` is the only GS
@@ -107,16 +108,15 @@ deleted or modified after render to obtain that result.
 ## 5. Descriptor contract
 
 `GroundStationDescriptor` in `src/skyseed_v2/contracts/ground_station.py` and
-the shared `RuntimeNodeReference` in `src/skyseed_v2/contracts/runtime.py` are
+the shared `SimulationNodeId` in `src/skyseed_v2/contracts/identity.py` are
 frozen, slotted value objects. The independent projector in
 `src/skyseed_v2/projection.py` copies only approved scalar values and constructs
-the stable `RuntimeNodeReference(65001, "rnode", "gs-new-york")`.
+`SimulationNodeId(65001, "ground-station", "gs-new-york")`.
 
-The entity does not import the contracts layer or expose a
-`runtime_reference`. The Projector constructs the reference from stable
-`asn`, `registry_type` and `node_name` scalars. Its `registry_type` remains
-`rnode` even after the same object is additionally registered as `brdnode`
-for SEED border-router discovery.
+The entity does not import the contracts layer or construct the logical ID.
+The Projector constructs it from the entity's stable ASN and ground-station
+ID. Joining an IX and registering the same object as `brdnode` does not change
+the Descriptor or logical ID; `rnode` and `brdnode` remain SEED-only identities.
 
 The Descriptor contains no GroundStation/Router, Registry, routing backend,
 BIRD/FRR configuration, software, file, command, Docker/Compose object,
@@ -132,7 +132,7 @@ to normalize GroundStation metadata by complete key:
 
 - `role=GroundStation`;
 - `type=rnode`;
-- stable namespaced ID, location, classification and runtime reference.
+- stable namespaced entity ID, location and classification.
 
 The common keyed serializer replaces collisions before serialization, so no
 duplicate YAML label key is emitted. This does not access
@@ -177,3 +177,8 @@ Docker private-accumulator debt and does not require private AS-member access.
 The unified AS can be used with Satellites only, GroundStations only, or both,
 and retains inherited ordinary Network/Host/Router APIs. The implementation
 does not expose entity-specific AS subclasses or compatibility aliases.
+
+The Simulator-facing contract does not know the SEED Registry, container,
+namespace or Compose service. Mapping `SimulationNodeId` to execution resources
+will be designed only when a Backend Planner, Execution Compiler or Runner has
+a real consumer; no locator or resolver is introduced here.

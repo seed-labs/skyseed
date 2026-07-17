@@ -76,9 +76,10 @@ neighbor 10.100.0.152 as 152: present
 
 The raw Compose document passed a recursive duplicate-key traversal. Within
 the GS service, `role`, `type`, `skyseed.entity_type`,
-`skyseed.ground_station_id`, and `skyseed.runtime_node_ref` each occur once.
-The final identity is `GroundStation/rnode`; neither Host nor Satellite
-identity occurs in that service.
+and `skyseed.ground_station_id` each occur once. No Simulator logical identity
+is serialized as a Compose label. The SEED metadata identity is
+`GroundStation/rnode`; neither Host nor Satellite identity occurs in that
+service.
 
 ## 4. Build and startup
 
@@ -206,26 +207,26 @@ documented upstream-hook debt, and GroundStation adds no new access to it.
 GroundStation–Satellite links, dynamic interfaces, UT and Simulator remain
 unimplemented.
 
-## 10. Shared runtime-contract correction
+## 10. Logical identity contract convergence
 
-After the GroundStation runtime validation, `RuntimeNodeReference` moved from
-the Satellite-specific contract module to the shared
-`src/skyseed_v2/contracts/runtime.py` module. Its fields and value semantics did
-not change. Satellite and GroundStation Descriptors now contain the same public
-contract type without importing either entity-specific contract from the
-other.
+Satellite and GroundStation Descriptors now contain the same public,
+backend-independent `SimulationNodeId` from
+`src/skyseed_v2/contracts/identity.py`. The logical value contains ASN, entity
+kind and entity ID; it contains no SEED Registry, node-name, container,
+namespace or Compose-service locator. Joining the IX and becoming a `brdnode`
+does not change the GroundStation Descriptor or logical ID.
 
 Correction validation commands and results:
 
 ```text
 python -m compileall -q src tests examples: PASS
-focused pytest: 26 passed
-full pytest: 37 passed
+focused pytest: 47 passed
+full pytest: 61 passed
 pip wheel --no-deps --no-build-isolation: PASS
-wheel sha256: 7090f3e2ecd7711eca7b2d5c01411323645ffd9c004160878fbfbb83ed1cd3d2
+wheel sha256: 5934fa2f943405447df24c7485690d89daf40a101e97bdbae1d6c2755956d917
 ```
 
-Containers were not rebuilt or restarted for this correction because it did
-not change Compiler, AS, routing, Compose, container or runtime behavior. The
-runtime evidence in sections 3–8 remains the evidence for those paths; this
-section does not claim a new container run.
+Because the superseded locator had also been emitted as Compose metadata, the
+combined Satellite/GroundStation/eBGP/InternetMap smoke was rebuilt and rerun.
+Current runtime results are recorded in
+`skyseed-structure-convergence-validation.md`.

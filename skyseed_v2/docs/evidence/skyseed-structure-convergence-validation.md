@@ -5,7 +5,7 @@
 Validation date: 2026-07-17.
 
 - branch before commit: `feature/skyseed-v2`;
-- slice base: `1b05cc5cef48cee61fc9d95e7eae4c9f36914451`;
+- slice base: `c276b1d`;
 - Python: 3.10.20;
 - editable SEED: 0.0.7 from
   `/home/seed/seed-emulator-upstream-dev`;
@@ -13,8 +13,8 @@ Validation date: 2026-07-17.
 - Docker client/server: 19.03.8 / 19.03.8;
 - Compose: docker-compose 1.27.4;
 - formal output:
-  `/tmp/skyseed-v2-structure-convergence.uk71Ld/output`;
-- Compose project: `skyseed_v2_structure_convergence`.
+  `/tmp/skyseed-v2-logical-id-smoke.WeSABt/output`;
+- Compose project: `skyseed_v2_logical_identity`.
 
 The upstream SEED worktree was clean before and after validation. This run did
 not implement Catalog, Simulator, UT, a GS–Satellite link or any dynamic
@@ -27,10 +27,9 @@ Commands:
 ```bash
 python -m compileall -q src tests examples
 pytest -q tests/unit/test_architecture_boundaries.py \
-  tests/unit/test_shared_runtime_contract.py \
+  tests/unit/test_simulation_node_identity.py \
   tests/unit/test_satellite_projection.py \
   tests/unit/test_ground_station.py \
-  tests/integration/test_unified_skyseed_as.py \
   tests/integration/test_seed_satellite.py \
   tests/integration/test_ground_station_integration.py \
   tests/integration/test_compiler_output.py
@@ -43,17 +42,18 @@ Results:
 
 ```text
 compileall: PASS
-focused tests: 33 passed
-full tests: 44 passed
+focused tests: 47 passed
+full tests: 61 passed
 wheel: skyseed_v2-0.1.0-py3-none-any.whl
-wheel sha256: b43b597a25aa910df7d48bb8e92a1b02487e31c96ab2c9e501cc4f3b03176d54
+wheel sha256: 5934fa2f943405447df24c7485690d89daf40a101e97bdbae1d6c2755956d917
 ```
 
 The tests cover the one-AS mixed ownership path, Satellite-only and GS-only
 instances, two independent ASNs, inherited standard Network/Host/Router
 objects, exact Registry object identity, absence of Shell/Orbit from Registry,
-stable `satnode`/`rnode` projection, explicit Layer masks, Compiler dispatch,
-raw metadata uniqueness and the one fail-closed private accumulator access.
+stable `satnode`/`rnode` Registry identity, explicit Layer masks, Compiler
+dispatch, logical `SimulationNodeId` projection, raw metadata uniqueness and
+the one fail-closed private accumulator access.
 
 ## 3. Formal compile and Compose checks
 
@@ -61,9 +61,9 @@ Commands:
 
 ```bash
 PYTHONPATH=src python examples/static_ground_station.py \
-  --output /tmp/skyseed-v2-structure-convergence.uk71Ld/output
-docker-compose -p skyseed_v2_structure_convergence \
-  -f /tmp/skyseed-v2-structure-convergence.uk71Ld/output/docker-compose.yml \
+  --output /tmp/skyseed-v2-logical-id-smoke.WeSABt/output
+docker-compose -p skyseed_v2_logical_identity \
+  -f /tmp/skyseed-v2-logical-id-smoke.WeSABt/output/docker-compose.yml \
   config --quiet
 ```
 
@@ -74,17 +74,18 @@ processing for the explicitly masked/disabled Skyseed AS.
 
 A recursive traversal of the formal raw `docker-compose.yml` found no
 duplicate YAML keys. For each Satellite service, `role`, `type`,
-`skyseed.entity_type`, `skyseed.runtime_node_ref`, `skyseed.satellite_id`,
-`skyseed.shell_id` and `skyseed.orbit_id` each occurred exactly once. The GS
-service had one occurrence each of `role`, `type`, `skyseed.entity_type`,
-`skyseed.runtime_node_ref` and `skyseed.ground_station_id`.
+`skyseed.entity_type`, `skyseed.satellite_id`, `skyseed.shell_id` and
+`skyseed.orbit_id` each occurred exactly once. The GS service had one
+occurrence each of `role`, `type`, `skyseed.entity_type` and
+`skyseed.ground_station_id`. No logical node ID or execution locator is emitted
+as Compose metadata.
 
-Final identities were:
+SEED metadata identities and separate logical IDs were:
 
 ```text
-satellite-0: Satellite / satnode / 65001/satnode/satellite-0
-satellite-1: Satellite / satnode / 65001/satnode/satellite-1
-gs-new-york: GroundStation / rnode / 65001/rnode/gs-new-york
+satellite-0: SEED Satellite / satnode; logical 65001/satellite/satellite-0
+satellite-1: SEED Satellite / satnode; logical 65001/satellite/satellite-1
+gs-new-york: SEED GroundStation / rnode; logical 65001/ground-station/gs-new-york
 ```
 
 There was no Host identity or fabricated Satellite `net.*` metadata.
@@ -94,9 +95,12 @@ There was no Host identity or fabricated Satellite `net.*` metadata.
 Commands:
 
 ```bash
-docker-compose -p skyseed_v2_structure_convergence -f docker-compose.yml build
-docker-compose -p skyseed_v2_structure_convergence -f docker-compose.yml up -d
-docker-compose -p skyseed_v2_structure_convergence -f docker-compose.yml ps
+docker-compose -p skyseed_v2_logical_identity \
+  -f /tmp/skyseed-v2-logical-id-smoke.WeSABt/output/docker-compose.yml build
+docker-compose -p skyseed_v2_logical_identity \
+  -f /tmp/skyseed-v2-logical-id-smoke.WeSABt/output/docker-compose.yml up -d
+docker-compose -p skyseed_v2_logical_identity \
+  -f /tmp/skyseed-v2-logical-id-smoke.WeSABt/output/docker-compose.yml ps
 ```
 
 The two Satellite containers, GS, ordinary ground Router and InternetMap all
@@ -116,9 +120,9 @@ ix100
 ```
 
 There was no satellite-side GS interface. IPv4 forwarding was `1`. The GS
-service name used SEED's border-router path while its stable metadata and
-Descriptor identity remained `rnode`; tests also proved the same Python object
-was registered as both `rnode` and `brdnode`.
+service name used SEED's border-router path while its logical Descriptor ID
+remained `65001/ground-station/gs-new-york`; tests also proved the same Python
+object was registered as both `rnode` and `brdnode`.
 
 ## 5. Routing and packet evidence
 
@@ -183,12 +187,13 @@ claimed.
 Command:
 
 ```bash
-docker-compose -p skyseed_v2_structure_convergence -f docker-compose.yml \
+docker-compose -p skyseed_v2_logical_identity \
+  -f /tmp/skyseed-v2-logical-id-smoke.WeSABt/output/docker-compose.yml \
   down --remove-orphans
-docker image rm skyseed_v2_structure_convergence_brdnode_65002_ground-router:latest \
-  skyseed_v2_structure_convergence_brdnode_65001_gs-new-york:latest \
-  skyseed_v2_structure_convergence_satnode_65001_satellite-0:latest \
-  skyseed_v2_structure_convergence_satnode_65001_satellite-1:latest
+docker image rm skyseed_v2_logical_identity_brdnode_65002_ground-router:latest \
+  skyseed_v2_logical_identity_brdnode_65001_gs-new-york:latest \
+  skyseed_v2_logical_identity_satnode_65001_satellite-0:latest \
+  skyseed_v2_logical_identity_satnode_65001_satellite-1:latest
 ```
 
 Post-cleanup checks found zero project-labelled containers, zero project
@@ -203,6 +208,8 @@ pre-existing shared InternetMap image tag was retained.
 - SEED AS has no public custom Router factory/insertion hook. The unified AS
   retains a narrow GroundStation lifecycle extension without private AS-member
   access.
-- `RuntimeNodeReference.registry_type` currently maps the stable SEED
-  integration identity. Whether it remains in the long-term contract is
-  deferred to later explicit contract design.
+
+How Backend Planner, Execution Compiler or Runner will map a
+`SimulationNodeId` to an actual SEED Node, container, namespace or kernel
+resource is a future design scope, not current technical debt. No Catalog,
+Simulator or execution-resource resolver is implemented.

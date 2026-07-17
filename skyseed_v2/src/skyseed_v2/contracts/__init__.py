@@ -1,11 +1,11 @@
 """Read-only contracts exposed beyond the static Emulator domain."""
 
 from .ground_station import GroundStationDescriptor
-from .runtime import RuntimeNodeReference
+from .identity import SimulationNodeId
 from .satellite import SatelliteDescriptor
 
 __all__ = [
     "GroundStationDescriptor",
-    "RuntimeNodeReference",
+    "SimulationNodeId",
     "SatelliteDescriptor",
 ]

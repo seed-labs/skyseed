@@ -67,7 +67,7 @@ def main() -> None:
 
     print(f"compiled {len(satellite_as.satellites())} Satellites to {arguments.output}")
     for descriptor in satellite_as.satellite_descriptors():
-        print(f"- {descriptor.satellite_id}: {descriptor.runtime_node.value}")
+        print(f"- {descriptor.satellite_id}: {descriptor.node_id.value}")
 
 
 if __name__ == "__main__":

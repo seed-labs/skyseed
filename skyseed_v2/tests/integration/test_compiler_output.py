@@ -124,6 +124,7 @@ def test_compiler_emits_unique_satellite_metadata_in_raw_compose(tmp_path) -> No
             "satellite-0",
             "satellite-1",
         }
+        assert not any("runtime_node" in key for key in labels)
         assert not any(
             key.startswith("org.seedsecuritylabs.seedemu.meta.net.")
             for key in labels
@@ -145,6 +146,7 @@ def test_compiler_emits_unique_satellite_metadata_in_raw_compose(tmp_path) -> No
         assert 'meta.role: "Host"' not in service_text
         assert 'meta.type: "hnode"' not in service_text
         assert f"{METADATA_PREFIX}net." not in service_text
+        assert "skyseed.runtime_node_ref" not in service_text
 
 
 def test_user_registry_and_compiler_share_same_satellite_instances(tmp_path) -> None:

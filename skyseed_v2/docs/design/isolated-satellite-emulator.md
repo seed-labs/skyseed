@@ -26,7 +26,7 @@ flowchart LR
     Satellite[Satellite / satnode] -->|approved scalar values| Projector[SatelliteDescriptorProjector]
     Projector --> Descriptor[Immutable SatelliteDescriptor]
     Satellite --|> SeedNode[SEED Node]
-    Descriptor -->|contains| RuntimeRef[RuntimeNodeReference]
+    Descriptor -->|identified by| LogicalId[SimulationNodeId]
 ```
 
 - `Satellite` is defined in `src/skyseed_v2/domain/satellite.py`. It directly
@@ -34,28 +34,24 @@ flowchart LR
   It owns fixed orbit and payload values while reusing Node software, file,
   command, environment, Registry, configure and Compiler capabilities.
 - `SatelliteDescriptor` is defined in
-  `src/skyseed_v2/contracts/satellite.py`; the shared
-  `RuntimeNodeReference` is defined in
-  `src/skyseed_v2/contracts/runtime.py`. Both are frozen scalar value objects
-  and contain no SEED, Registry, Docker, file, software, command, or mutable
-  runtime object.
+  `src/skyseed_v2/contracts/satellite.py`; the shared `SimulationNodeId` is
+  defined in `src/skyseed_v2/contracts/identity.py`. Both are frozen, slotted
+  contract values and contain no SEED, Registry, Docker, file, software,
+  command, container locator, or mutable object.
 - `SatelliteDescriptorProjector` is the application projection service in
   `src/skyseed_v2/projection.py`. It reads only approved scalar values,
-  constructs the stable runtime reference, and produces the restricted view.
+  constructs the stable logical identity, and produces the restricted view.
 
-The runtime reference is the immutable triple `(asn, registry_type, node_name)`
-constructed by the Projector from stable Satellite scalars and is rendered as
-`65000/satnode/satellite-0` in the example. It is a stable runtime-node
-reference in the Emulator–Simulator contract, not a SEED `Node`. Its
-`registry_type` currently maps the SEED integration identity. Whether that
-field remains in the long-term contract is deferred to later contract design.
+The logical identity is `SimulationNodeId(asn, "satellite", satellite_id)` and
+is rendered as `65000/satellite/satellite-0` in the example. It is the stable
+Skyseed/Simulator identity of a logical node, not a SEED `Node`, Registry key,
+container identity, namespace, Compose service, or execution target.
 
-The projector accepts only the unique Satellite rather than a second runtime
-reference input. Satellite exposes the approved stable ASN, registry type and
-node name, but neither imports the contracts layer nor stores or exposes a
-`RuntimeNodeReference`. Passing another copy would recreate an avoidable
-identity mismatch. The projector remains outside the Compiler, and Simulator
-receives only the immutable Descriptor rather than the complete Satellite/Node.
+The projector accepts only the unique Satellite rather than a second identity
+input. Satellite exposes its existing stable ASN and satellite ID, but neither
+imports the contracts layer nor constructs a `SimulationNodeId`. The projector
+remains outside the Compiler, and Simulator receives only the immutable
+Descriptor rather than the complete Satellite/Node.
 
 ## 3. Static domain hierarchy
 
@@ -216,8 +212,7 @@ It also includes:
 - `skyseed.entity_type=Satellite`;
 - `skyseed.satellite_id`;
 - `skyseed.shell_id`;
-- `skyseed.orbit_id`;
-- `skyseed.runtime_node_ref`.
+- `skyseed.orbit_id`.
 
 No `net.*` labels are fabricated. Complete orbit parameters remain in the
 domain Satellite and SatelliteDescriptor rather than being packed into
@@ -242,3 +237,8 @@ model, ground network, Satellite interface, link, route, dynamic location, or
 Simulator. The later GroundStation slice is documented separately in
 `static-ground-station-emulator.md`; it does not change this Satellite slice's
 isolation contract.
+
+Mapping `SimulationNodeId` to a SEED Node, container, namespace or kernel
+resource is deliberately deferred until a Backend Planner, Execution Compiler
+or Runner has a real execution contract and consumer. No locator or resolver
+is part of this slice.

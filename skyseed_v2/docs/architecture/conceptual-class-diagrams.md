@@ -128,17 +128,17 @@ classDiagram
     }
 
     class SimulationEntityCatalog {
-        <<conceptual contract>>
+        <<conceptual future contract / not implemented>>
         -satellites
         -ground_stations
-        +get_satellite(satellite_id)
-        +get_ground_station(ground_station_id)
+        +get(node_id)
         +list_satellites()
         +list_ground_stations()
     }
 
     class SatelliteDescriptor {
         <<implemented immutable contract>>
+        +node_id
         +satellite_id
         +shell_id
         +orbit_id
@@ -147,25 +147,24 @@ classDiagram
         +inclination_deg
         +right_ascension_deg
         +mean_anomaly_deg
-        +runtime_node
     }
 
     class GroundStationDescriptor {
         <<implemented immutable contract>>
+        +node_id
         +ground_station_id
         +latitude_deg
         +longitude_deg
         +elevation_m
         +station_type
         +operator
-        +runtime_node
     }
 
-    class RuntimeNodeReference {
-        <<implemented contract value object>>
+    class SimulationNodeId {
+        <<public immutable logical identity>>
         +asn
-        +registry_type
-        +node_name
+        +entity_kind
+        +entity_id
         +value
     }
 
@@ -184,11 +183,12 @@ classDiagram
     GroundStationDescriptorProjector --> GroundStation : reads
     GroundStationDescriptorProjector --> GroundStationDescriptor : produces
 
-    SatelliteDescriptor "1" *-- "1" RuntimeNodeReference : contains
-    GroundStationDescriptor "1" *-- "1" RuntimeNodeReference : contains
+    SatelliteDescriptor "1" *-- "1" SimulationNodeId : identifies
+    GroundStationDescriptor "1" *-- "1" SimulationNodeId : identifies
 
     SimulationEntityCatalog "1" o-- "*" SatelliteDescriptor : contains
     SimulationEntityCatalog "1" o-- "*" GroundStationDescriptor : contains
+    SimulationEntityCatalog --> SimulationNodeId : future lookup key
 
     Emulator --> SimulationEntityCatalog : exports read-only view
 ```
@@ -203,12 +203,14 @@ classDiagram
   投影关系均有当前实现支撑；
 - `GroundStation` 直接继承 `SeedRouter` 已通过本轮标准 `rnode`、IX、Routing、
   eBGP、Compiler、容器和 InternetMap 真实运行验证，但仍是 evolving 边界；
-- `RuntimeNodeReference` 位于公共 `contracts.runtime` 模块，Satellite 与
-  GroundStation Descriptor 包含同一公共不可变类型。实体不 import 合同层、
-  不保存或公开 `runtime_reference`；Projector 从实体批准的稳定标量
-  `asn`、`registry_type`、`node_name` 构造该值。当前字段与已实现合同一致，但
-  最终字段仍未定稿；
-  图的长期含义只要求它提供稳定运行节点引用；
+- `SimulationNodeId` 位于公共 `contracts.identity` 模块，Satellite 与
+  GroundStation Descriptor 包含同一不可变逻辑身份。实体不 import 合同层；
+  Projector 从唯一实体的 ASN、实体种类和实体 ID 构造该值；
+- `SimulationNodeId` 与 SEED Registry、容器、namespace、Compose service 和
+  execution target 无关。`satnode`、`rnode`、`brdnode` 只保留在独立的 SEED
+  integration 层；
+- `SimulationEntityCatalog` 仍是未来方向而非当前实现；若后续进入设计，其内部
+  应以 `SimulationNodeId` 作为统一查询身份；
 - UT 暂不进入该图。
 
 ### GroundStation implemented static direction
@@ -234,7 +236,7 @@ Simulator。
 `GroundStationDescriptorProjector` 从唯一 GroundStation 投影不可变的
 `GroundStationDescriptor`。Simulator 只接收该 Descriptor，不接收完整
 GroundStation/SEED Router。Descriptor 可包含稳定 ID、位置、必要分类、稳定
-运行节点引用和经过确认的只读静态值，但不得包含 Registry、BIRD/FRR 配置、
+逻辑 `SimulationNodeId` 和经过确认的只读静态值，但不得包含 Registry、BIRD/FRR 配置、
 软件、文件、启动命令、Docker/Compose 对象、可修改接口或 Emulator 生命周期
 方法。未来新增字段必须通过显式合同设计，而不是暴露完整 GroundStation。
 
@@ -271,11 +273,18 @@ classDiagram
     }
 
     class SimulationEntityCatalog {
-        <<input contract>>
-        +get_satellite(satellite_id)
-        +get_ground_station(ground_station_id)
+        <<conceptual future input / not implemented>>
+        +get(node_id)
         +list_satellites()
         +list_ground_stations()
+    }
+
+    class SimulationNodeId {
+        <<implemented public logical identity>>
+        +asn
+        +entity_kind
+        +entity_id
+        +value
     }
 
     class ZoneModel {
@@ -483,6 +492,7 @@ classDiagram
     }
 
     Simulator --> SimulationEntityCatalog : reads
+    SimulationEntityCatalog --> SimulationNodeId : keys by
     Simulator --> ZoneModel : coordinates
     Simulator --> SimulationTimeline : coordinates
     Simulator --> Topology : coordinates
@@ -540,11 +550,15 @@ classDiagram
   所有实现细节的巨型类；
 - 具体算法应由拥有对应数据和职责的对象实现；
 - `ConnectionSlice`、`RouteSlice`、`TopologySlice` 当前方向是生成后不可变；
+- Topology、Connection、Route 和 Semantic Planning 只通过
+  `SimulationNodeId` 识别逻辑节点，不知道 SEED Registry 或容器；
 - `RouteSlice` 的权威数据倾向于节点本地转发状态，完整 path 是派生查询；
 - Semantic Planner 不包含 BPF、MPLS、Linux 命令或批处理细节；
 - Backend Planner 不允许重新计算 Topology；
 - Compiler 只降低已批准计划，不重新规划；
 - Runner 不进行网络业务判断，但负责通用执行合同；
+- Backend Planner、Execution Compiler 或 Runner 将逻辑节点解析为实际运行
+  资源的机制，留到出现真实消费者时再根据执行合同设计；
 - rollback、cleanup 和 failure policy 的最终模型尚未确定；
 - streaming、sliding window 和 UT 不在本图详细范围内。
 

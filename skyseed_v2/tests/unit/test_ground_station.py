@@ -4,7 +4,7 @@ import pytest
 from seedemu.core import Router
 
 import skyseed_v2
-from skyseed_v2.contracts import GroundStationDescriptor, RuntimeNodeReference
+from skyseed_v2.contracts import GroundStationDescriptor, SimulationNodeId
 from skyseed_v2.domain import GroundStation, GroundStationLocation
 from skyseed_v2.projection import GroundStationDescriptorProjector
 from skyseed_v2.seed import SkyseedAutonomousSystem
@@ -65,25 +65,38 @@ def test_ground_station_descriptor_is_immutable_and_restricted() -> None:
     descriptor = GroundStationDescriptorProjector().project(station)
 
     assert descriptor == GroundStationDescriptor(
+        node_id=SimulationNodeId(151, "ground-station", "gs-1"),
         ground_station_id="gs-1",
         latitude_deg=40.0,
         longitude_deg=-74.0,
         elevation_m=12.5,
         station_type="gateway",
         operator="Skyseed",
-        runtime_node=RuntimeNodeReference(151, "rnode", "gs-1"),
     )
     with pytest.raises(FrozenInstanceError):
         descriptor.operator = "changed"
-    assert not isinstance(descriptor.runtime_node, Router)
+    assert not isinstance(descriptor.node_id, Router)
+    assert descriptor.node_id.entity_id == descriptor.ground_station_id
+    for forbidden_attribute in (
+        "runtime_node",
+        "registry",
+        "node",
+        "router",
+        "compiler",
+        "docker",
+        "compose",
+        "container_config",
+        "namespace",
+    ):
+        assert not hasattr(descriptor, forbidden_attribute)
     assert {field.name for field in fields(descriptor)} == {
+        "node_id",
         "ground_station_id",
         "latitude_deg",
         "longitude_deg",
         "elevation_m",
         "station_type",
         "operator",
-        "runtime_node",
     }
 
 

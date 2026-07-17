@@ -128,12 +128,12 @@ flowchart LR
     end
 
     subgraph Contract[Simulator Contract]
-        RuntimeRef[RuntimeNodeReference]
+        LogicalId[SimulationNodeId]
         Projector[SatelliteDescriptorProjector]
         Descriptor[Immutable SatelliteDescriptor]
         Satellite -->|approved scalar values| Projector
         Projector --> Descriptor
-        Descriptor -->|contains| RuntimeRef
+        Descriptor -->|identified by| LogicalId
     end
 ```
 
@@ -145,14 +145,14 @@ classDiagram
     class SeedNode
     class SatelliteDescriptorProjector
     class SatelliteDescriptor
-    class RuntimeNodeReference
+    class SimulationNodeId
 
     Shell "1" *-- "*" Orbit
     Orbit "1" *-- "*" Satellite
     Satellite --|> SeedNode
     SatelliteDescriptorProjector --> Satellite : reads restricted values
     SatelliteDescriptorProjector --> SatelliteDescriptor : produces
-    SatelliteDescriptor "1" *-- "1" RuntimeNodeReference : contains
+    SatelliteDescriptor "1" *-- "1" SimulationNodeId : identifies
 ```
 
 ```text
@@ -187,26 +187,27 @@ classDiagram
 
     class GroundStationDescriptor {
         <<implemented immutable contract>>
+        +node_id
         +ground_station_id
         +latitude_deg
         +longitude_deg
         +elevation_m
         +station_type
         +operator
-        +runtime_node
     }
 
-    class RuntimeNodeReference {
-        <<shared immutable contract>>
+    class SimulationNodeId {
+        <<public immutable logical identity>>
         +asn
-        +registry_type
-        +node_name
+        +entity_kind
+        +entity_id
+        +value
     }
 
     GroundStation --|> SeedRouter
     GroundStationDescriptorProjector --> GroundStation : reads
     GroundStationDescriptorProjector --> GroundStationDescriptor : produces
-    GroundStationDescriptor "1" *-- "1" RuntimeNodeReference : contains
+    GroundStationDescriptor "1" *-- "1" SimulationNodeId : identifies
 ```
 
 ```text
@@ -216,6 +217,8 @@ GroundStation(Router) -> GroundStationDescriptor
 
 Simulator 只接收受限的 Descriptor。Router 继承方向已由标准 rnode、IX、
 Routing/eBGP、Compiler 和真实容器验证；未来动态 GS 能力仍需独立设计。
+`SimulationNodeId` 只表达 Simulator 逻辑身份，不表达图中 SEED Router 的
+Registry、容器或执行目标身份。
 
 ## 7. Implemented unified AS and Compiler boundaries
 

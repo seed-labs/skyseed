@@ -27,7 +27,6 @@ from skyseed_v2.domain import (
 )
 from skyseed_v2.seed.metadata import (
     SEED_METADATA_PREFIX,
-    format_runtime_node_reference,
     skyseed_metadata_key,
 )
 
@@ -219,13 +218,6 @@ class _SatelliteCompilerBoundary:
             skyseed_metadata_key("satellite_id"): node.satellite_id,
             skyseed_metadata_key("shell_id"): node.shell_id,
             skyseed_metadata_key("orbit_id"): node.orbit_id,
-            skyseed_metadata_key("runtime_node_ref"): (
-                format_runtime_node_reference(
-                    asn=node.getAsn(),
-                    registry_type=node.registry_type,
-                    node_name=node.getName(),
-                )
-            ),
         }
         return _unique_node_metadata(
             self._compiler,
@@ -277,13 +269,6 @@ class SkyseedDockerCompiler(Docker):
             skyseed_metadata_key("longitude_deg"): str(location.longitude_deg),
             skyseed_metadata_key("station_type"): node.station_type,
             skyseed_metadata_key("operator"): node.operator,
-            skyseed_metadata_key("runtime_node_ref"): (
-                format_runtime_node_reference(
-                    asn=node.getAsn(),
-                    registry_type=node.registry_type,
-                    node_name=node.getName(),
-                )
-            ),
         }
         if location.elevation_m is not None:
             stable_values[skyseed_metadata_key("elevation_m")] = str(

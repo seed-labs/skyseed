@@ -8,7 +8,7 @@ from yaml import compose as compose_yaml
 from yaml import safe_load
 from yaml.nodes import MappingNode, Node, SequenceNode
 
-from skyseed_v2.contracts import RuntimeNodeReference
+from skyseed_v2.contracts import SimulationNodeId
 from skyseed_v2.domain import GroundStation, GroundStationLocation, OrbitParameters
 from skyseed_v2.seed import (
     SATELLITE_REGISTRY_TYPE,
@@ -37,6 +37,7 @@ def build_rendered_ground_scenario():
         station_type="gateway",
         operator="Skyseed",
     )
+    descriptor_before_ix = skyseed_as.ground_station_descriptors()[0]
     station.joinNetwork("ix100", "10.100.0.101")
 
     ground_as = base.createAutonomousSystem(65002)
@@ -53,7 +54,14 @@ def build_rendered_ground_scenario():
     for layer in (base, Routing(), ospf, ibgp, ebgp):
         emulator.addLayer(layer)
     emulator.render()
-    return emulator, skyseed_as, station, ground_router, satellites
+    return (
+        emulator,
+        skyseed_as,
+        station,
+        ground_router,
+        satellites,
+        descriptor_before_ix,
+    )
 
 
 def node_files(node) -> dict[str, str]:
@@ -101,7 +109,9 @@ def raw_service_text(compose_text: str, service_name: str) -> str:
 
 
 def test_ground_station_uses_one_standard_rnode_and_border_router_instance() -> None:
-    emulator, station_as, station, _, _ = build_rendered_ground_scenario()
+    emulator, station_as, station, _, _, descriptor_before_ix = (
+        build_rendered_ground_scenario()
+    )
     registry = emulator.getRegistry()
 
     assert isinstance(station, GroundStation)
@@ -111,9 +121,13 @@ def test_ground_station_uses_one_standard_rnode_and_border_router_instance() -> 
     assert station_as.get_satellite("satellite-0") is not station
     assert registry.get("65001", "rnode", "gs-1") is station
     assert registry.get("65001", "brdnode", "gs-1") is station
-    assert station_as.ground_station_descriptors()[0].runtime_node == (
-        RuntimeNodeReference(65001, "rnode", "gs-1")
+    descriptor_after_brd_registration = station_as.ground_station_descriptors()[0]
+    assert descriptor_after_brd_registration == descriptor_before_ix
+    assert descriptor_after_brd_registration.node_id == SimulationNodeId(
+        65001, "ground-station", "gs-1"
     )
+    assert "rnode" not in descriptor_after_brd_registration.node_id.value
+    assert "brdnode" not in descriptor_after_brd_registration.node_id.value
     assert station.isBorderRouter()
     assert len(station.getInterfaces()) == 1
     assert station.getInterfaces()[0].getNet().getName() == "ix100"
@@ -122,7 +136,7 @@ def test_ground_station_uses_one_standard_rnode_and_border_router_instance() -> 
 
 
 def test_ground_station_has_only_explicit_ebgp_and_no_ospf_or_ibgp() -> None:
-    emulator, station_as, station, ground_router, _ = (
+    emulator, station_as, station, ground_router, _, _ = (
         build_rendered_ground_scenario()
     )
     bird = node_files(station)["/etc/bird/bird.conf"]
@@ -146,7 +160,7 @@ def test_ground_station_has_only_explicit_ebgp_and_no_ospf_or_ibgp() -> None:
 def test_ground_station_compiles_through_standard_router_path_with_metadata(
     tmp_path: Path,
 ) -> None:
-    emulator, _, station, _, _ = build_rendered_ground_scenario()
+    emulator, _, station, _, _, _ = build_rendered_ground_scenario()
     output = tmp_path / "output"
 
     class RecordingCompiler(SkyseedDockerCompiler):
@@ -178,9 +192,7 @@ def test_ground_station_compiles_through_standard_router_path_with_metadata(
     assert labels[
         "org.seedsecuritylabs.seedemu.meta.skyseed.ground_station_id"
     ] == "gs-1"
-    assert labels[
-        "org.seedsecuritylabs.seedemu.meta.skyseed.runtime_node_ref"
-    ] == "65001/rnode/gs-1"
+    assert not any("runtime_node" in key for key in labels)
     assert "Host" not in labels.values()
     assert "Satellite" not in labels.values()
     assert station.hasAttribute("__soft_install_tiers")
@@ -195,15 +207,15 @@ def test_ground_station_compiles_through_standard_router_path_with_metadata(
         "type",
         "skyseed.entity_type",
         "skyseed.ground_station_id",
-        "skyseed.runtime_node_ref",
     ):
         assert service_text.count(
             f"org.seedsecuritylabs.seedemu.meta.{key}:"
         ) == 1
+    assert "skyseed.runtime_node_ref" not in service_text
 
 
 def test_satellites_remain_isolated_in_ground_station_scenario() -> None:
-    emulator, _, station, _, satellites = build_rendered_ground_scenario()
+    emulator, _, station, _, satellites, _ = build_rendered_ground_scenario()
 
     assert emulator.getRegistry().getByType(
         "65001", SATELLITE_REGISTRY_TYPE

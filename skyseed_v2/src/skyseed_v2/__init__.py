@@ -2,8 +2,8 @@
 
 from .contracts import (
     GroundStationDescriptor,
-    RuntimeNodeReference,
     SatelliteDescriptor,
+    SimulationNodeId,
 )
 from .domain import (
     GroundStation,
@@ -34,12 +34,12 @@ __all__ = [
     "GroundStationLocation",
     "Orbit",
     "OrbitParameters",
-    "RuntimeNodeReference",
     "SATELLITE_REGISTRY_TYPE",
     "Satellite",
     "SatelliteBase",
     "SatelliteDescriptor",
     "SatelliteDescriptorProjector",
+    "SimulationNodeId",
     "SkyseedAutonomousSystem",
     "SkyseedDockerCompiler",
     "SatelliteRole",

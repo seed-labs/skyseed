@@ -3,7 +3,7 @@ import pytest
 from seedemu.core import Emulator, Node
 from seedemu.core.enums import NodeRole
 
-from skyseed_v2.contracts import RuntimeNodeReference
+from skyseed_v2.contracts import SimulationNodeId
 from skyseed_v2.domain import OrbitParameters, Satellite, SatelliteRole
 from skyseed_v2.seed import (
     SATELLITE_REGISTRY_TYPE,
@@ -91,12 +91,13 @@ def test_descriptor_is_restricted_projection_of_registered_satellite() -> None:
         )
         assert registered is satellite
         assert descriptor.satellite_id == satellite.satellite_id
-        assert descriptor.runtime_node == RuntimeNodeReference(
+        assert descriptor.node_id == SimulationNodeId(
             asn=satellite.getAsn(),
-            registry_type="satnode",
-            node_name=satellite.getName(),
+            entity_kind="satellite",
+            entity_id=satellite.satellite_id,
         )
-        assert not isinstance(descriptor.runtime_node, Node)
+        assert not isinstance(descriptor.node_id, Node)
+        assert "satnode" not in descriptor.node_id.value
 
 
 def test_as_rejects_duplicate_shell_and_satellite_ids_across_shells() -> None:

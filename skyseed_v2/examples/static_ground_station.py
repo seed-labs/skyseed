@@ -109,7 +109,7 @@ def main() -> None:
     for descriptor in skyseed_as.ground_station_descriptors():
         print(
             f"- {descriptor.ground_station_id}: "
-            f"{descriptor.runtime_node.value}"
+            f"{descriptor.node_id.value}"
         )
 
 
