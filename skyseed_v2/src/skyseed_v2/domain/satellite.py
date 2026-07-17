@@ -10,33 +10,17 @@ from typing import Iterable, Mapping
 
 from seedemu.core import Node, Scope, ScopeTier, ScopeType
 
-from skyseed_v2.contracts import RuntimeNodeReference
+from skyseed_v2.domain.validation import validate_identifier
 
 
 SATELLITE_REGISTRY_TYPE = "satnode"
 SATELLITE_ROLE_LABEL = "Satellite"
-SKYSEED_METADATA_PREFIX = "skyseed."
 
 
 class SatelliteRole(Enum):
     """A Skyseed role distinct from every upstream SEED NodeRole."""
 
     SATELLITE = SATELLITE_ROLE_LABEL
-
-
-def validate_identifier(value: str, field_name: str) -> str:
-    """Validate identifiers that must remain stable in Registry and output names."""
-
-    if not isinstance(value, str) or not value:
-        raise ValueError(f"{field_name} must be a non-empty string")
-    if not value[0].isalnum() or any(
-        not (character.isalnum() or character in "_.-") for character in value
-    ):
-        raise ValueError(
-            f"{field_name} must start with an alphanumeric character and contain "
-            "only alphanumeric characters, '_', '.', or '-'"
-        )
-    return value
 
 
 def _validate_angle(value: float, field_name: str, *, inclusive_upper: bool = False) -> float:
@@ -141,18 +125,6 @@ class Satellite(Node):
 
     def _initialize_skyseed_identity(self) -> None:
         self.setDisplayName(self.satellite_id)
-        self.setLabel(
-            f"{SKYSEED_METADATA_PREFIX}entity_type", SATELLITE_ROLE_LABEL
-        )
-        self.setLabel(
-            f"{SKYSEED_METADATA_PREFIX}satellite_id", self.satellite_id
-        )
-        self.setLabel(f"{SKYSEED_METADATA_PREFIX}shell_id", self.shell_id)
-        self.setLabel(f"{SKYSEED_METADATA_PREFIX}orbit_id", self.orbit_id)
-        self.setLabel(
-            f"{SKYSEED_METADATA_PREFIX}runtime_node_ref",
-            self.runtime_reference.value,
-        )
 
     @property
     def satellite_id(self) -> str:
@@ -183,12 +155,10 @@ class Satellite(Node):
         return self._payload
 
     @property
-    def runtime_reference(self) -> RuntimeNodeReference:
-        return RuntimeNodeReference(
-            asn=self.getAsn(),
-            registry_type=SATELLITE_REGISTRY_TYPE,
-            node_name=self.getName(),
-        )
+    def registry_type(self) -> str:
+        """Stable primary Registry identity used by integration adapters."""
+
+        return SATELLITE_REGISTRY_TYPE
 
     def scope(self) -> Scope:
         # SEED has no public ScopeType extension registry. ANY preserves
@@ -199,6 +169,7 @@ class Satellite(Node):
             node_id=self.getName(),
             as_id=self.getAsn(),
         )
+
 
 class Orbit:
     """An Orbit owned by exactly one Shell."""

@@ -27,7 +27,6 @@ def test_projector_reads_stable_identity_from_the_unique_satellite() -> None:
 
     assert isinstance(descriptor, SatelliteDescriptor)
     assert descriptor.satellite_id == entity.satellite_id
-    assert descriptor.runtime_node == entity.runtime_reference
     assert descriptor.runtime_node == RuntimeNodeReference(
         65000, "satnode", entity.satellite_id
     )

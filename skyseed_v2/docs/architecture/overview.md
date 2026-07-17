@@ -77,7 +77,9 @@ Simulator 不应获得或依赖与动态计算无关的容器构建细节。
 
 SatelliteDescriptor 与 GroundStationDescriptor 都包含定义在公共
 `contracts.runtime` 模块中的同一不可变 `RuntimeNodeReference` 类型；该公共
-运行引用不属于任一实体专属合同。
+运行引用不属于任一实体专属合同。Satellite 与 GroundStation 实体本身不依赖
+合同层，也不保存该引用；各 Descriptor Projector 从实体的稳定 ASN、Registry
+类型和节点名构造合同值。
 
 同进程对象传递、文件序列化或跨进程传输只是这一合同的不同适配方式，不属于领域边界本身。
 
@@ -162,8 +164,8 @@ Observation 负责收集执行过程、操作结果、时间和错误等信息�
 - `Satellite` 是唯一的 Skyseed 卫星对象，直接继承 SEED `Node`，并以独有
   `satnode`/`Satellite` 身份参加 Registry、configure 和 Compiler 生命周期；
 - `SatelliteDescriptor` 是不可变的 Simulator-facing 值对象；
-- `SatelliteDescriptorProjector` 从唯一 Satellite 读取批准的静态值和稳定
-  runtime node reference，Simulator 不接收完整 Satellite/Node；
+- `SatelliteDescriptorProjector` 从唯一 Satellite 读取批准的静态值，并从
+  稳定标量构造 runtime node reference；Simulator 不接收完整 Satellite/Node；
 - `Shell -> Orbit -> Satellite` 是领域所有权层级；
 - Satellite 容器使用显式 `network_mode: none`，除 loopback 外没有接口；
 - Satellite 编译特例集中在单一内部边界，私有 SEED service accumulator
@@ -201,3 +203,22 @@ dispatch。该结论仍是 evolving 边界，不会自动决定未来动态接�
 
 具体合同见 `docs/design/static-ground-station-emulator.md`，真实验证证据见
 `docs/evidence/static-ground-station-validation.md`。
+
+## 11. Implemented structural convergence
+
+`SkyseedAutonomousSystem` 是唯一公开的 Skyseed AS 扩展。一个实例可以同时拥有
+Shell/Orbit/Satellite、GroundStation 以及继承的普通 Network、Host 和 Router；
+也可以按卫星-only、GS-only 或混合方式使用。多个实例各自维护独立所有权和
+稳定 ID 索引。旧的按实体类型拆分 AS 已被删除且没有兼容别名。
+
+`SkyseedDockerCompiler` 是唯一公开的 Skyseed Docker Compiler。它沿用 SEED
+Docker 编译流程，只把 `satnode` 委托给 `_SatelliteCompilerBoundary`；
+GroundStation 仍走标准 Router 路径。上游缺少 custom-node dispatch hook 导致的
+私有 service accumulator 访问仍限制在一个 fail-closed 封装点。
+
+跨领域使用的标识符验证位于 `domain.validation`，SEED/Compose metadata 命名与
+运行引用字符串格式位于 `seed.metadata`。因此 Satellite 与 GroundStation
+领域模块不再互相 import，也不依赖 `contracts` 或 Compiler metadata 细节。
+
+组合场景的测试、容器、路由、InternetMap 与清理证据见
+`docs/evidence/skyseed-structure-convergence-validation.md`。

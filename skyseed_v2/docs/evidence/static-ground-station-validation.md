@@ -1,5 +1,10 @@
 # Static GroundStation Validation Evidence
 
+> Historical slice evidence: the scenario and names below record the state at
+> the time of that validation. The current combined-AS scenario and public
+> boundaries are validated in
+> `skyseed-structure-convergence-validation.md`.
+
 ## 1. Environment
 
 Validation date: 2026-07-17.

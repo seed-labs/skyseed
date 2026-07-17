@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from skyseed_v2.contracts import GroundStationDescriptor, SatelliteDescriptor
+from skyseed_v2.contracts import (
+    GroundStationDescriptor,
+    RuntimeNodeReference,
+    SatelliteDescriptor,
+)
 from skyseed_v2.domain import GroundStation, Satellite
 
 
@@ -20,7 +24,11 @@ class GroundStationDescriptorProjector:
             elevation_m=location.elevation_m,
             station_type=ground_station.station_type,
             operator=ground_station.operator,
-            runtime_node=ground_station.runtime_reference,
+            runtime_node=RuntimeNodeReference(
+                asn=ground_station.getAsn(),
+                registry_type=ground_station.registry_type,
+                node_name=ground_station.getName(),
+            ),
         )
 
 
@@ -43,5 +51,9 @@ class SatelliteDescriptorProjector:
             inclination_deg=parameters.inclination_deg,
             right_ascension_deg=parameters.right_ascension_deg,
             mean_anomaly_deg=satellite.mean_anomaly_deg,
-            runtime_node=satellite.runtime_reference,
+            runtime_node=RuntimeNodeReference(
+                asn=satellite.getAsn(),
+                registry_type=satellite.registry_type,
+                node_name=satellite.getName(),
+            ),
         )

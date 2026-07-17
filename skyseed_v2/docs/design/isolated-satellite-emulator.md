@@ -40,21 +40,22 @@ flowchart LR
   and contain no SEED, Registry, Docker, file, software, command, or mutable
   runtime object.
 - `SatelliteDescriptorProjector` is the application projection service in
-  `src/skyseed_v2/projection.py`. It reads only approved scalar values and the
-  stable runtime reference from Satellite and produces the restricted view.
+  `src/skyseed_v2/projection.py`. It reads only approved scalar values,
+  constructs the stable runtime reference, and produces the restricted view.
 
 The runtime reference is the immutable triple `(asn, registry_type, node_name)`
-owned by the Satellite identity and is rendered as
+constructed by the Projector from stable Satellite scalars and is rendered as
 `65000/satnode/satellite-0` in the example. It is a stable runtime-node
 reference in the Emulator–Simulator contract, not a SEED `Node`. Its
 `registry_type` currently maps the SEED integration identity. Whether that
 field remains in the long-term contract is deferred to later contract design.
 
 The projector accepts only the unique Satellite rather than a second runtime
-reference input. Satellite already owns the approved stable ASN, registry type
-and node name; passing another copy would recreate an avoidable identity
-mismatch. The projector remains outside the Compiler, and Simulator receives
-only the immutable Descriptor rather than the complete Satellite/Node.
+reference input. Satellite exposes the approved stable ASN, registry type and
+node name, but neither imports the contracts layer nor stores or exposes a
+`RuntimeNodeReference`. Passing another copy would recreate an avoidable
+identity mismatch. The projector remains outside the Compiler, and Simulator
+receives only the immutable Descriptor rather than the complete Satellite/Node.
 
 ## 3. Static domain hierarchy
 
@@ -82,7 +83,7 @@ Shell.
 
 Each Satellite adds a non-negative orbit index and fixed mean anomaly. Orbit
 indices are unique within an Orbit. Satellite IDs share one reservation set
-across all Shells in a `SatelliteAutonomousSystem`, so a stable ID cannot be
+across all Shells in a `SkyseedAutonomousSystem`, so a stable ID cannot be
 reused in another Orbit or Shell. Batch creation validates the complete batch
 before committing it.
 
@@ -97,8 +98,9 @@ environment configuration.
 
 ## 4. SEED integration lifecycle
 
-`SatelliteAutonomousSystem` extends SEED `AutonomousSystem` using the same
-general pattern as the investigated SCION extension:
+`SkyseedAutonomousSystem` extends SEED `AutonomousSystem` and owns any supported
+mix of static Skyseed entities. Its Satellite lifecycle uses the same general
+pattern as the investigated SCION extension:
 
 1. it owns Shells, while each Shell owns Orbits and each Orbit owns the unique
    Satellite instances;
@@ -140,7 +142,7 @@ payload service or dynamic network behavior.
 
 ## 6. Docker Compiler contract
 
-`SatelliteDockerCompiler` is a formal subclass of the upstream Docker
+`SkyseedDockerCompiler` is the single public Skyseed subclass of the upstream Docker
 Compiler. It retains the inherited image selection, Dockerfile generation,
 software cache tiers, Node options, labels, custom services, and Compose
 pipeline, while adding these contracts:
@@ -170,6 +172,10 @@ the missing public custom-node dispatch hook and must be revisited if SEED
 adds such a hook.
 
 No independent Docker/Compose generator exists in Skyseed.
+
+GroundStation and ordinary SEED Router/Host nodes use the inherited compiler
+path. The public Compiler name is intentionally not tied to one entity type,
+and no compatibility alias for the earlier Satellite-specific name remains.
 
 ## 7. Explicit no-network semantics
 

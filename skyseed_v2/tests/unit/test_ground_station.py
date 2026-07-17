@@ -7,7 +7,7 @@ import skyseed_v2
 from skyseed_v2.contracts import GroundStationDescriptor, RuntimeNodeReference
 from skyseed_v2.domain import GroundStation, GroundStationLocation
 from skyseed_v2.projection import GroundStationDescriptorProjector
-from skyseed_v2.seed import GroundStationAutonomousSystem
+from skyseed_v2.seed import SkyseedAutonomousSystem
 
 
 def create_station() -> GroundStation:
@@ -38,7 +38,7 @@ def test_ground_station_is_the_unique_router_object_with_static_fields() -> None
 
 
 def test_ground_station_as_rejects_duplicate_stable_ids() -> None:
-    station_as = GroundStationAutonomousSystem(151)
+    station_as = SkyseedAutonomousSystem(151)
     location = GroundStationLocation(40.0, -74.0)
     created = station_as.create_ground_station(
         "gs-1",

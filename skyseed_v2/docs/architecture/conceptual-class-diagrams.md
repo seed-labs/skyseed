@@ -39,23 +39,16 @@ classDiagram
         +build_simulation_entity_catalog()
     }
 
-    class SatelliteAutonomousSystem {
-        <<implemented / evolving>>
+    class SkyseedAutonomousSystem {
+        <<implemented>>
         +getAsn()
         -shells
+        -ground_stations
         +create_shell(shell_id)
         +get_shell(shell_id)
         +satellites()
         +get_satellite(satellite_id)
         +satellite_descriptors()
-        +registerNodes(emulator)
-        +configure(emulator)
-    }
-
-    class GroundStationAutonomousSystem {
-        <<implemented / evolving>>
-        +getAsn()
-        -ground_stations
         +create_ground_station(config)
         +get_ground_station(ground_station_id)
         +ground_stations()
@@ -96,7 +89,7 @@ classDiagram
         +mean_anomaly_deg
         +payload
         +node_role
-        +runtime_reference
+        +registry_type
         +scope()
         +addSoftware(software)
         +setFile(path, content)
@@ -110,7 +103,7 @@ classDiagram
         +station_type
         +operator
         +service_config
-        +runtime_reference
+        +registry_type
         +joinNetwork(network)
         +addSoftware(software)
         +setFile(path, content)
@@ -176,13 +169,11 @@ classDiagram
         +value
     }
 
-    Emulator "1" o-- "*" SatelliteAutonomousSystem : manages
-    Emulator "1" o-- "*" GroundStationAutonomousSystem : manages
-
-    SatelliteAutonomousSystem "1" *-- "*" Shell : owns
+    Emulator "1" o-- "*" SkyseedAutonomousSystem : manages
+    SkyseedAutonomousSystem "1" *-- "*" Shell : owns
     Shell "1" *-- "*" Orbit : owns
     Orbit "1" *-- "*" Satellite : owns
-    GroundStationAutonomousSystem "1" o-- "*" GroundStation : manages
+    SkyseedAutonomousSystem "1" o-- "*" GroundStation : manages
 
     Satellite --|> SeedNode
     GroundStation --|> SeedRouter
@@ -203,6 +194,9 @@ classDiagram
 ```
 
 - `Satellite` 是唯一的卫星对象并直接继承 SEED `Node`；
+- `SkyseedAutonomousSystem` 是唯一的 Skyseed AS 类型；同一个实例可以同时拥有
+  Shell/Orbit/Satellite、GroundStation 与继承的普通 Network/Host/Router，且可以
+  创建多个相互独立的实例；
 - Shell 和 Orbit 负责所有权，Satellite 自身负责节点与容器生命周期能力；
 - Descriptor 负责 Emulator–Simulator 只读边界；
 - 图中的 Satellite 与 GroundStation 两条静态对象、AS 生命周期和 Descriptor
@@ -210,8 +204,10 @@ classDiagram
 - `GroundStation` 直接继承 `SeedRouter` 已通过本轮标准 `rnode`、IX、Routing、
   eBGP、Compiler、容器和 InternetMap 真实运行验证，但仍是 evolving 边界；
 - `RuntimeNodeReference` 位于公共 `contracts.runtime` 模块，Satellite 与
-  GroundStation Descriptor 包含同一公共不可变类型；其当前字段与已实现合同
-  一致，但最终字段仍未定稿；
+  GroundStation Descriptor 包含同一公共不可变类型。实体不 import 合同层、
+  不保存或公开 `runtime_reference`；Projector 从实体批准的稳定标量
+  `asn`、`registry_type`、`node_name` 构造该值。当前字段与已实现合同一致，但
+  最终字段仍未定稿；
   图的长期含义只要求它提供稳定运行节点引用；
 - UT 暂不进入该图。
 

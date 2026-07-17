@@ -25,6 +25,11 @@ from skyseed_v2.domain import (
     GroundStation,
     Satellite,
 )
+from skyseed_v2.seed.metadata import (
+    SEED_METADATA_PREFIX,
+    format_runtime_node_reference,
+    skyseed_metadata_key,
+)
 
 
 NO_NETWORK_COMPOSE_SERVICE = """\
@@ -62,7 +67,6 @@ RUN sh /tmp/internet_map_none_network_patch.sh \\
     && rm /tmp/internet_map_none_network_patch.sh
 """
 
-SEED_METADATA_PREFIX = "org.seedsecuritylabs.seedemu.meta."
 _METADATA_LINE = compile_pattern(
     r'^\s+(?P<key>org\.seedsecuritylabs\.seedemu\.meta\.[^:]+): "(?P<value>.*)"$'
 )
@@ -104,7 +108,7 @@ class _SatelliteCompilerBoundary:
 
     def __init__(
         self,
-        compiler: "SatelliteDockerCompiler",
+        compiler: "SkyseedDockerCompiler",
         naming_scheme: str,
     ) -> None:
         self._compiler = compiler
@@ -211,11 +215,17 @@ class _SatelliteCompilerBoundary:
             "nodename": node.getName(),
             "role": SATELLITE_ROLE_LABEL,
             "type": SATELLITE_REGISTRY_TYPE,
-            "skyseed.entity_type": SATELLITE_ROLE_LABEL,
-            "skyseed.satellite_id": node.satellite_id,
-            "skyseed.shell_id": node.shell_id,
-            "skyseed.orbit_id": node.orbit_id,
-            "skyseed.runtime_node_ref": node.runtime_reference.value,
+            skyseed_metadata_key("entity_type"): SATELLITE_ROLE_LABEL,
+            skyseed_metadata_key("satellite_id"): node.satellite_id,
+            skyseed_metadata_key("shell_id"): node.shell_id,
+            skyseed_metadata_key("orbit_id"): node.orbit_id,
+            skyseed_metadata_key("runtime_node_ref"): (
+                format_runtime_node_reference(
+                    asn=node.getAsn(),
+                    registry_type=node.registry_type,
+                    node_name=node.getName(),
+                )
+            ),
         }
         return _unique_node_metadata(
             self._compiler,
@@ -224,8 +234,8 @@ class _SatelliteCompilerBoundary:
         )
 
 
-class SatelliteDockerCompiler(Docker):
-    """The formal Docker compiler for Skyseed Satellite emulations."""
+class SkyseedDockerCompiler(Docker):
+    """The formal Docker compiler for Skyseed emulations."""
 
     def __init__(
         self,
@@ -261,16 +271,24 @@ class SatelliteDockerCompiler(Docker):
             "nodename": node.getName(),
             "role": GROUND_STATION_ROLE_LABEL,
             "type": GROUND_STATION_REGISTRY_TYPE,
-            "skyseed.entity_type": GROUND_STATION_ROLE_LABEL,
-            "skyseed.ground_station_id": node.ground_station_id,
-            "skyseed.latitude_deg": str(location.latitude_deg),
-            "skyseed.longitude_deg": str(location.longitude_deg),
-            "skyseed.station_type": node.station_type,
-            "skyseed.operator": node.operator,
-            "skyseed.runtime_node_ref": node.runtime_reference.value,
+            skyseed_metadata_key("entity_type"): GROUND_STATION_ROLE_LABEL,
+            skyseed_metadata_key("ground_station_id"): node.ground_station_id,
+            skyseed_metadata_key("latitude_deg"): str(location.latitude_deg),
+            skyseed_metadata_key("longitude_deg"): str(location.longitude_deg),
+            skyseed_metadata_key("station_type"): node.station_type,
+            skyseed_metadata_key("operator"): node.operator,
+            skyseed_metadata_key("runtime_node_ref"): (
+                format_runtime_node_reference(
+                    asn=node.getAsn(),
+                    registry_type=node.registry_type,
+                    node_name=node.getName(),
+                )
+            ),
         }
         if location.elevation_m is not None:
-            stable_values["skyseed.elevation_m"] = str(location.elevation_m)
+            stable_values[skyseed_metadata_key("elevation_m")] = str(
+                location.elevation_m
+            )
         return _unique_node_metadata(self, node, stable_values)
 
     def _doCompile(self, emulator: Emulator) -> None:

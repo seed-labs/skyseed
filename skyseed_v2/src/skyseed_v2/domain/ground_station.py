@@ -10,8 +10,7 @@ from typing import Mapping
 from seedemu.core import Router
 from seedemu.core.enums import NodeRole
 
-from skyseed_v2.contracts import RuntimeNodeReference
-from skyseed_v2.domain.satellite import SKYSEED_METADATA_PREFIX, validate_identifier
+from skyseed_v2.domain.validation import validate_identifier
 
 
 GROUND_STATION_REGISTRY_TYPE = "rnode"
@@ -84,28 +83,12 @@ class GroundStation(Router):
         )
         self.setDisplayName(display_name or self.ground_station_id)
         self.setGeo(location.latitude_deg, location.longitude_deg)
-        self._initialize_skyseed_identity()
 
     @staticmethod
     def _validate_text(value: str, field_name: str) -> str:
         if not isinstance(value, str) or not value.strip():
             raise ValueError(f"{field_name} must be a non-empty string")
         return value.strip()
-
-    def _initialize_skyseed_identity(self) -> None:
-        values = {
-            "entity_type": GROUND_STATION_ROLE_LABEL,
-            "ground_station_id": self.ground_station_id,
-            "latitude_deg": str(self.location.latitude_deg),
-            "longitude_deg": str(self.location.longitude_deg),
-            "station_type": self.station_type,
-            "operator": self.operator,
-            "runtime_node_ref": self.runtime_reference.value,
-        }
-        if self.location.elevation_m is not None:
-            values["elevation_m"] = str(self.location.elevation_m)
-        for key, value in values.items():
-            self.setLabel(f"{SKYSEED_METADATA_PREFIX}{key}", value)
 
     @property
     def ground_station_id(self) -> str:
@@ -128,9 +111,7 @@ class GroundStation(Router):
         return self._service_config
 
     @property
-    def runtime_reference(self) -> RuntimeNodeReference:
-        return RuntimeNodeReference(
-            asn=self.getAsn(),
-            registry_type=GROUND_STATION_REGISTRY_TYPE,
-            node_name=self.getName(),
-        )
+    def registry_type(self) -> str:
+        """Stable primary Registry identity independent of border state."""
+
+        return GROUND_STATION_REGISTRY_TYPE

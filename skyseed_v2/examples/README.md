@@ -3,8 +3,9 @@
 ## Static GroundStation and ground eBGP
 
 `static_ground_station.py` is the formal GroundStation slice example. It
-creates two still-isolated Satellites, one GroundStation Router on `ix100`,
-and one ordinary SEED Router with one explicit eBGP session:
+creates one `SkyseedAutonomousSystem` (AS65001) containing two still-isolated
+Satellites and one GroundStation Router on `ix100`, plus one ordinary SEED
+Router in AS65002 with one explicit eBGP session:
 
 ```bash
 python examples/static_ground_station.py --output examples/output/static_ground_station --override

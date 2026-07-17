@@ -99,12 +99,13 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    Emulator --> AS
-    AS --> Shell
+    Emulator --> SkyseedAS[SkyseedAutonomousSystem]
+    SkyseedAS --> Shell
     Shell --> Orbit
     Orbit --> Satellite
 
-    AS --> GroundStation
+    SkyseedAS --> GroundStation
+    SkyseedAS --> StandardNode[Inherited Network / Host / Router]
     GroundStation --> GroundNetwork[SEED Ground Network]
 
     Emulator --> ReadOnlyView[Read-only Simulator View]
@@ -171,7 +172,7 @@ classDiagram
         +station_type
         +operator
         +service_config
-        +runtime_reference
+        +registry_type
         +joinNetwork(network)
     }
 
@@ -215,3 +216,42 @@ GroundStation(Router) -> GroundStationDescriptor
 
 Simulator 只接收受限的 Descriptor。Router 继承方向已由标准 rnode、IX、
 Routing/eBGP、Compiler 和真实容器验证；未来动态 GS 能力仍需独立设计。
+
+## 7. Implemented unified AS and Compiler boundaries
+
+```mermaid
+classDiagram
+    class SkyseedAutonomousSystem {
+        <<implemented>>
+        +create_shell(shell_id)
+        +create_ground_station(config)
+        +createNetwork(name)
+        +createHost(name)
+        +createRouter(name)
+    }
+    class Shell
+    class Orbit
+    class Satellite
+    class GroundStation
+    class StandardSeedNode
+
+    SkyseedAutonomousSystem "1" *-- "*" Shell
+    Shell "1" *-- "*" Orbit
+    Orbit "1" *-- "*" Satellite
+    SkyseedAutonomousSystem "1" o-- "*" GroundStation
+    SkyseedAutonomousSystem "1" o-- "*" StandardSeedNode
+```
+
+```mermaid
+flowchart LR
+    Emulator --> Compiler[SkyseedDockerCompiler]
+    Compiler -->|satnode only| SatelliteBoundary[_SatelliteCompilerBoundary]
+    Compiler -->|rnode, hnode and networks| Upstream[SEED Docker Compiler flow]
+    SatelliteBoundary --> Accumulator[Single fail-closed private accumulator access]
+    Upstream --> Compose[docker-compose.yml]
+    Accumulator --> Compose
+```
+
+`SkyseedDockerCompiler` 是唯一的公开 Skyseed Docker Compiler。Satellite 的
+零接口特殊行为仍集中在内部边界；GroundStation 和普通 SEED 节点继续复用
+上游路径。不存在按旧节点种类命名的公开 Compiler 别名。

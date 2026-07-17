@@ -3,18 +3,19 @@ import pytest
 from seedemu.core import Emulator, Node
 from seedemu.core.enums import NodeRole
 
+from skyseed_v2.contracts import RuntimeNodeReference
 from skyseed_v2.domain import OrbitParameters, Satellite, SatelliteRole
 from skyseed_v2.seed import (
     SATELLITE_REGISTRY_TYPE,
-    SatelliteAutonomousSystem,
     SatelliteBase,
+    SkyseedAutonomousSystem,
 )
 
 
 def build_rendered_emulator():
     emulator = Emulator()
     base = SatelliteBase()
-    satellite_as = SatelliteAutonomousSystem(65000)
+    satellite_as = SkyseedAutonomousSystem(65000)
     base.setAutonomousSystem(satellite_as)
     shell = satellite_as.create_shell("shell-1")
     orbit = shell.create_orbit(
@@ -90,12 +91,16 @@ def test_descriptor_is_restricted_projection_of_registered_satellite() -> None:
         )
         assert registered is satellite
         assert descriptor.satellite_id == satellite.satellite_id
-        assert descriptor.runtime_node == satellite.runtime_reference
+        assert descriptor.runtime_node == RuntimeNodeReference(
+            asn=satellite.getAsn(),
+            registry_type="satnode",
+            node_name=satellite.getName(),
+        )
         assert not isinstance(descriptor.runtime_node, Node)
 
 
 def test_as_rejects_duplicate_shell_and_satellite_ids_across_shells() -> None:
-    satellite_as = SatelliteAutonomousSystem(65000)
+    satellite_as = SkyseedAutonomousSystem(65000)
     first_shell = satellite_as.create_shell("shell-1")
     with pytest.raises(ValueError, match="shell_id"):
         satellite_as.create_shell("shell-1")

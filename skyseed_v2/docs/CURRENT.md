@@ -2,11 +2,11 @@
 
 ## Current phase
 
-Second functional vertical slice implemented and validated.
+GroundStation post-slice structural convergence implemented and validated.
 
 ## Current workflow step
 
-Review the static GroundStation and minimal ground-network slice. Do not start another slice automatically.
+Review the unified Skyseed AS, public contract boundaries and combined runtime evidence. Do not start another slice automatically.
 
 ## Confirmed direction
 
@@ -24,7 +24,7 @@ Review the static GroundStation and minimal ground-network slice. Do not start a
 - The first slice implements `Shell -> Orbit -> Satellite` as a static domain hierarchy.
 - `Satellite` is the one Skyseed Satellite object, directly inherits SEED `Node`, and is the same instance created by Orbit, registered by AS, and handled by Compiler.
 - Immutable `SatelliteDescriptor` is the restricted Emulator–Simulator view; Simulator never receives the complete Satellite/Node.
-- `SatelliteDescriptorProjector` reads approved static values and the stable runtime reference from that unique Satellite.
+- `SatelliteDescriptorProjector` reads approved static values and constructs the stable runtime reference from that unique Satellite's stable scalars.
 - Satellite is a first-class `satnode` with role `Satellite`; it is never registered or labelled as Host.
 - Satellite containers use explicit `network_mode: none` and expose only loopback.
 - Satellite-specific Docker compilation is concentrated in one internal boundary; the private SEED service accumulator has one fail-closed access point.
@@ -33,17 +33,23 @@ Review the static GroundStation and minimal ground-network slice. Do not start a
 - `GroundStation` is the one user-visible GS object, directly inherits SEED `Router`, and is the same instance returned by its AS, registered as `rnode`/border router, compiled and run.
 - GroundStation static fields and immutable `GroundStationDescriptor` projection are implemented; no complete Router crosses the future Simulator contract.
 - `RuntimeNodeReference` is a shared immutable contract in `contracts.runtime`; both Satellite and GroundStation Descriptors contain that same type, and neither entity-specific contract module depends on the other.
-- The formal example gives GroundStation one IX interface, disables GS iBGP and masks OSPF, establishes one explicit eBGP session to an ordinary ground AS, and creates no GS–Satellite link.
+- Satellite and GroundStation domain entities do not import contracts, store a RuntimeNodeReference or expose `runtime_reference`; their Projectors own contract construction.
+- `SkyseedAutonomousSystem` is the only public Skyseed AS type. One instance can own Satellites, GroundStations and inherited ordinary SEED objects, while multiple instances remain independent.
+- `SkyseedDockerCompiler` is the only public Skyseed Docker Compiler. Satellite special handling remains in `_SatelliteCompilerBoundary`; GroundStation and ordinary nodes use the inherited SEED path.
+- Shared identifier validation is owned by `domain.validation`; SEED metadata names and runtime-reference formatting are owned by `seed.metadata`.
+- The formal example puts two isolated Satellites and one GroundStation in the same Skyseed AS, gives GroundStation one IX interface, explicitly disables/masks GS-AS internal routing, establishes one eBGP session to an ordinary ground AS, and creates no GS–Satellite link.
 - GroundStation uses the inherited standard Router Compiler path. Skyseed only replaces its metadata by key so InternetMap sees `GroundStation` with `type=rnode`; no GS-specific dispatch or private accumulator access was added.
 - Runtime validation proved forwarding, established eBGP, packet-level ground reachability, one GS ground edge, and two unchanged Satellite vertices with zero Satellite edges.
+- Structural convergence combined validation is recorded in `docs/evidence/skyseed-structure-convergence-validation.md`; it also proves all owned runtime resources were removed.
 
 ## Open design questions
 
 - Future GroundStation dynamic satellite-side interface and service boundaries; the static Router inheritance result does not pre-authorize them.
 - The read-only contracts for entities other than Satellite.
 - Whether a future SEED public node-dispatch hook can replace the current narrow private Compiler integration point.
+- Whether the contract's `registry_type` should remain a long-term runtime-node locator field.
 - The next vertical slice, which requires explicit design approval.
 
 ## Next single objective
 
-Review and accept or revise the static GroundStation slice and its runtime evidence.
+Review and accept or revise the structural convergence and combined runtime evidence.

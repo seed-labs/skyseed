@@ -23,7 +23,7 @@ classDiagram
         +station_type
         +operator
         +service_config
-        +runtime_reference
+        +registry_type
         +joinNetwork(network)
     }
     class SeedRouter {
@@ -57,7 +57,7 @@ classDiagram
 ```
 
 `GroundStation` in `src/skyseed_v2/domain/ground_station.py` is the only GS
-object. `GroundStationAutonomousSystem.create_ground_station()` returns the
+object. `SkyseedAutonomousSystem.create_ground_station()` returns the
 same instance later exposed by AS queries, registered as `rnode`, configured,
 recognized as a border router, compiled and run. There is no
 `GroundStationNode`, adapter object or binding map.
@@ -91,16 +91,17 @@ Standard Routing supplies IPv4 forwarding, Router image, BIRD, and `dummy0` as
 the Router loopback. The GS has no local internal network and no satellite-side
 interface.
 
-The protocol controls are explicit:
+The protocol controls belong to the formal scenario and its Layers, rather
+than being hidden in the AS constructor:
 
-- `GroundStationAutonomousSystem` sets upstream AS iBGP mode to `disabled`;
+- the scenario explicitly sets the Skyseed AS iBGP mode to `disabled`;
 - the scenario also masks the GS ASN in `Ibgp`;
 - `Ospf.maskAsn()` excludes the GS ASN;
 - `Ebgp.addPrivatePeering()` creates one requested session to the ordinary
   ground AS.
 
 Generated `/etc/bird/bird.conf` is the acceptance boundary: it has exactly one
-`protocol bgp`, peer ASN 152, and no `protocol ospf` or iBGP session. No file is
+`protocol bgp`, peer ASN 65002, and no `protocol ospf` or iBGP session. No file is
 deleted or modified after render to obtain that result.
 
 ## 5. Descriptor contract
@@ -108,8 +109,14 @@ deleted or modified after render to obtain that result.
 `GroundStationDescriptor` in `src/skyseed_v2/contracts/ground_station.py` and
 the shared `RuntimeNodeReference` in `src/skyseed_v2/contracts/runtime.py` are
 frozen, slotted value objects. The independent projector in
-`src/skyseed_v2/projection.py` copies only approved scalar values and the
-stable `RuntimeNodeReference(151, "rnode", "gs-new-york")`.
+`src/skyseed_v2/projection.py` copies only approved scalar values and constructs
+the stable `RuntimeNodeReference(65001, "rnode", "gs-new-york")`.
+
+The entity does not import the contracts layer or expose a
+`runtime_reference`. The Projector constructs the reference from stable
+`asn`, `registry_type` and `node_name` scalars. Its `registry_type` remains
+`rnode` even after the same object is additionally registered as `brdnode`
+for SEED border-router discovery.
 
 The Descriptor contains no GroundStation/Router, Registry, routing backend,
 BIRD/FRR configuration, software, file, command, Docker/Compose object,
@@ -120,7 +127,7 @@ extend this contract explicitly rather than expose the Router.
 
 GroundStation is not handled by `_SatelliteCompilerBoundary`. It follows the
 upstream `_compileNode()` Router path, including real network attachment.
-`SatelliteDockerCompiler._getNodeMeta()` performs one small type check solely
+`SkyseedDockerCompiler._getNodeMeta()` performs one small type check solely
 to normalize GroundStation metadata by complete key:
 
 - `role=GroundStation`;
@@ -141,19 +148,18 @@ interface. Unlike isolated Satellites, it does not use `network_mode: none`.
 `examples/static_ground_station.py` builds:
 
 ```text
-Satellite AS 65000
-└── Shell / Orbit / two isolated Satellites
-
-GroundStation AS 151
+Skyseed AS 65001
+├── Shell / Orbit / two isolated Satellites
 └── GroundStation gs-new-york ── ix100
                                   │ explicit eBGP
-Ground AS 152                     │
+Ground AS 65002                   │
 └── standard Router ──────────────┘
-    └── ground-net 10.152.0.0/24
+    └── ground-net 10.202.0.0/24
 ```
 
-The routable packet-level target is the ordinary Router's ground-side address
-`10.152.0.254`. No static route stands in for eBGP.
+The same `SkyseedAutonomousSystem(65001)` owns both entity kinds. The routable
+packet-level target is the ordinary Router's ground-side address
+`10.202.0.254`. No static route stands in for eBGP.
 
 ## 8. Evolving and deferred decisions
 
@@ -165,5 +171,9 @@ GS roles require their own design and may expose additional SEED capability
 trade-offs.
 
 Upstream AS still lacks a public custom Router factory/insertion hook, so the
-custom AS has a narrow lifecycle override. This is separate from the existing
+unified Skyseed AS has a narrow lifecycle override. This is separate from the existing
 Docker private-accumulator debt and does not require private AS-member access.
+
+The unified AS can be used with Satellites only, GroundStations only, or both,
+and retains inherited ordinary Network/Host/Router APIs. The implementation
+does not expose entity-specific AS subclasses or compatibility aliases.

@@ -9,9 +9,9 @@ from yaml.nodes import MappingNode, Node, SequenceNode
 from skyseed_v2.domain import OrbitParameters
 from skyseed_v2.seed import (
     SATELLITE_REGISTRY_TYPE,
-    SatelliteAutonomousSystem,
     SatelliteBase,
-    SatelliteDockerCompiler,
+    SkyseedAutonomousSystem,
+    SkyseedDockerCompiler,
 )
 
 
@@ -21,7 +21,7 @@ METADATA_PREFIX = "org.seedsecuritylabs.seedemu.meta."
 def compile_two_satellites(output: Path, *, conflicting_metadata: bool = False):
     emulator = Emulator()
     base = SatelliteBase()
-    satellite_as = SatelliteAutonomousSystem(65000)
+    satellite_as = SkyseedAutonomousSystem(65000)
     base.setAutonomousSystem(satellite_as)
     orbit = satellite_as.create_shell("shell-1").create_orbit(
         "orbit-1", parameters=OrbitParameters(550.0, 53.0, 15.0)
@@ -36,7 +36,7 @@ def compile_two_satellites(output: Path, *, conflicting_metadata: bool = False):
             node.setLabel("role", "Host")
             node.setLabel("type", "hnode")
             node.setLabel("skyseed.entity_type", "Host")
-    compiler = SatelliteDockerCompiler(internet_map_enabled=False)
+    compiler = SkyseedDockerCompiler(internet_map_enabled=False)
     emulator.compile(compiler, str(output))
     compose_text = (output / "docker-compose.yml").read_text()
     return emulator, compiler, safe_load(compose_text), compose_text, satellites
@@ -81,7 +81,7 @@ def test_compiler_dispatches_two_unique_satellites_through_formal_output(
     )
     services = satellite_services(compose)
 
-    assert isinstance(compiler, SatelliteDockerCompiler)
+    assert isinstance(compiler, SkyseedDockerCompiler)
     assert set(services) == {
         "satnode_65000_satellite-0",
         "satnode_65000_satellite-1",
@@ -166,7 +166,7 @@ def test_runtime_map_uses_auditable_no_network_adapter(tmp_path) -> None:
     output = tmp_path / "output"
     emulator = Emulator()
     base = SatelliteBase()
-    satellite_as = SatelliteAutonomousSystem(65000)
+    satellite_as = SkyseedAutonomousSystem(65000)
     base.setAutonomousSystem(satellite_as)
     orbit = satellite_as.create_shell("shell-1").create_orbit(
         "orbit-1", parameters=OrbitParameters(550.0, 53.0, 15.0)
@@ -174,7 +174,7 @@ def test_runtime_map_uses_auditable_no_network_adapter(tmp_path) -> None:
     orbit.create_satellites(2, satellite_id_prefix="satellite")
     emulator.addLayer(base)
     emulator.render()
-    emulator.compile(SatelliteDockerCompiler(internet_map_enabled=True), str(output))
+    emulator.compile(SkyseedDockerCompiler(internet_map_enabled=True), str(output))
 
     compose = safe_load((output / "docker-compose.yml").read_text())
     map_service = compose["services"]["seedemu_internet_map"]
@@ -188,7 +188,7 @@ def test_runtime_map_uses_auditable_no_network_adapter(tmp_path) -> None:
 
 
 def test_private_upstream_service_accumulator_fails_closed_on_drift() -> None:
-    compiler = SatelliteDockerCompiler(internet_map_enabled=False)
+    compiler = SkyseedDockerCompiler(internet_map_enabled=False)
     compiler.__dict__.pop("_Docker__services")
 
     with pytest.raises(RuntimeError, match="private service accumulator"):

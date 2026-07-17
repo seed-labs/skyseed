@@ -9,16 +9,16 @@ from seedemu.core import Emulator
 
 from skyseed_v2.domain import OrbitParameters
 from skyseed_v2.seed import (
-    SatelliteAutonomousSystem,
     SatelliteBase,
-    SatelliteDockerCompiler,
+    SkyseedAutonomousSystem,
+    SkyseedDockerCompiler,
 )
 
 
-def build_emulator() -> tuple[Emulator, SatelliteAutonomousSystem]:
+def build_emulator() -> tuple[Emulator, SkyseedAutonomousSystem]:
     emulator = Emulator()
     base = SatelliteBase()
-    satellite_as = SatelliteAutonomousSystem(65000)
+    satellite_as = SkyseedAutonomousSystem(65000)
     base.setAutonomousSystem(satellite_as)
 
     shell = satellite_as.create_shell("shell-1")
@@ -58,7 +58,7 @@ def main() -> None:
     emulator, satellite_as = build_emulator()
     emulator.render()
     emulator.compile(
-        SatelliteDockerCompiler(
+        SkyseedDockerCompiler(
             internet_map_enabled=not arguments.no_internet_map
         ),
         str(arguments.output),

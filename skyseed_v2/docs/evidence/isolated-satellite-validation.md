@@ -1,5 +1,11 @@
 # Isolated Satellite Validation Evidence
 
+> Historical slice evidence: commands and public class names below record the
+> implementation at the time of that validation. The current public AS and
+> Compiler are `SkyseedAutonomousSystem` and `SkyseedDockerCompiler`; current
+> structural evidence is recorded in
+> `skyseed-structure-convergence-validation.md`.
+
 ## 1. Validation environment
 
 Validation date: 2026-07-17.

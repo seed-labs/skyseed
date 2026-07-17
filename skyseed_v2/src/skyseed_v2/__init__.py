@@ -21,16 +21,14 @@ from .projection import (
 from .seed import (
     GROUND_STATION_REGISTRY_TYPE,
     SATELLITE_REGISTRY_TYPE,
-    GroundStationAutonomousSystem,
-    SatelliteAutonomousSystem,
     SatelliteBase,
-    SatelliteDockerCompiler,
+    SkyseedAutonomousSystem,
+    SkyseedDockerCompiler,
 )
 
 __all__ = [
     "GROUND_STATION_REGISTRY_TYPE",
     "GroundStation",
-    "GroundStationAutonomousSystem",
     "GroundStationDescriptor",
     "GroundStationDescriptorProjector",
     "GroundStationLocation",
@@ -39,11 +37,11 @@ __all__ = [
     "RuntimeNodeReference",
     "SATELLITE_REGISTRY_TYPE",
     "Satellite",
-    "SatelliteAutonomousSystem",
     "SatelliteBase",
     "SatelliteDescriptor",
     "SatelliteDescriptorProjector",
-    "SatelliteDockerCompiler",
+    "SkyseedAutonomousSystem",
+    "SkyseedDockerCompiler",
     "SatelliteRole",
     "Shell",
 ]
