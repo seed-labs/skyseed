@@ -5,8 +5,9 @@
 This slice combines the completed Satellite, GroundStation, unified AS and
 logical identity contracts into the formal static Emulator output boundary.
 `SimulationEntityCatalog` and its Builder are implemented, and automated
-Emulator integration acceptance is complete. Manual InternetMap visual
-acceptance remains pending.
+Emulator integration and manual InternetMap visual acceptance are complete.
+The scoped formal runtime environment has been cleaned. Static Emulator core
+excluding UT: COMPLETE.
 
 The slice adds no node kind, Simulator, UT, GS–Satellite link, dynamic
 interface, topology/planning system, execution-resource resolver or Catalog

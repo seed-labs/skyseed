@@ -271,6 +271,6 @@ import，也不依赖 `contracts` 或 Compiler metadata 细节。`satnode`、`rn
 - 正式 `complete_static_emulator.py` 示例同时生成 Catalog、编译真实混合场景并
   启用 InternetMap。
 
-自动化 Emulator 集成验收已经完成；人工浏览器视觉验收仍待用户确认。Catalog
-当前状态为 **implemented / awaiting final visual acceptance**。这不会启动
-Simulator、UT、动态链路或运行资源解析。
+自动化 Emulator 集成验收与人工浏览器视觉验收均已完成，正式运行环境也已按
+项目范围清理。Catalog 当前状态为 **implemented**；**Static Emulator core
+excluding UT: COMPLETE**。这不会启动 Simulator、UT、动态链路或运行资源解析。

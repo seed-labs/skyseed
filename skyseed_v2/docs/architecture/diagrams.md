@@ -266,7 +266,7 @@ flowchart LR
 ```mermaid
 classDiagram
     class SimulationEntityCatalog {
-        <<implemented / awaiting final visual acceptance>>
+        <<implemented>>
         +get(node_id)
         +get_satellite(node_id_or_id)
         +get_ground_station(node_id_or_id)

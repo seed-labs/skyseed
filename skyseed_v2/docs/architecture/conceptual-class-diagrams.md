@@ -25,8 +25,8 @@
 3. Simulator contract：描述 Simulator 能读取的只读视图。
 
 Satellite、GroundStation 与完整静态 Entity Catalog 主线已有纵向切片实现支撑。
-Catalog 已完成自动验收，正等待人工 InternetMap 视觉确认。图中的未来 Simulator
-方法签名仍只表达职责，不是最终 API。
+Catalog 已完成自动验收和人工 InternetMap 视觉验收，正式运行环境也已清理。
+图中的未来 Simulator 方法签名仍只表达职责，不是最终 API。
 
 ```mermaid
 classDiagram
@@ -133,7 +133,7 @@ classDiagram
     }
 
     class SimulationEntityCatalog {
-        <<implemented / awaiting final visual acceptance>>
+        <<implemented>>
         -satellites
         -ground_stations
         +get(node_id)

@@ -2,11 +2,11 @@
 
 ## Current phase
 
-Complete static Emulator Catalog and integration implemented; automated acceptance passed, manual visual acceptance pending.
+Static Emulator core excluding UT: COMPLETE.
 
 ## Current workflow step
 
-Await user visual acceptance of the complete static Emulator. Keep the formal example running and do not start another slice automatically.
+Manual InternetMap visual acceptance is confirmed and the formal runtime environment is cleaned. Do not start another slice automatically.
 
 ## Confirmed direction
 
@@ -43,7 +43,7 @@ Await user visual acceptance of the complete static Emulator. Keep the formal ex
 - The formal `complete_static_emulator.py` example puts two isolated Satellites and one GroundStation in the same Skyseed AS, builds a three-node Catalog, gives GroundStation one IX interface, explicitly disables/masks GS-AS internal routing, establishes one eBGP session to an ordinary ground AS, and creates no GS–Satellite link.
 - GroundStation uses the inherited standard Router Compiler path. Skyseed only replaces its metadata by key so InternetMap sees `GroundStation` with `type=rnode`; no GS-specific dispatch or private accumulator access was added.
 - Runtime validation proved forwarding, established eBGP, packet-level ground reachability, one GS ground edge, and two unchanged Satellite vertices with zero Satellite edges.
-- Automated complete Emulator validation is recorded in `docs/evidence/complete-static-emulator-validation.md`. Its formal runtime resources remain running for user visual acceptance.
+- Automated and manual complete Emulator validation is recorded in `docs/evidence/complete-static-emulator-validation.md`. Its formal runtime resources and generated temporary output have been cleaned.
 
 ## Open design questions
 
@@ -56,17 +56,17 @@ Await user visual acceptance of the complete static Emulator. Keep the formal ex
 
 ## Next single objective
 
-Await user visual acceptance of complete static Emulator.
+Review the completed static Emulator core and explicitly approve the next slice.
 
 ## Acceptance state
 
 - Satellite slice: completed
 - GroundStation slice: completed
 - Unified AS and identity contracts: completed
-- SimulationEntityCatalog: implemented / awaiting final visual acceptance
+- SimulationEntityCatalog: implemented
 - Automated Emulator integration: PASS
-- Manual InternetMap visual acceptance: PENDING
+- Manual InternetMap visual acceptance: PASS
 - UT: outside current Emulator core
 
-Static Emulator core excluding UT must not be marked COMPLETE until the user
-confirms the visual result and the formal example is cleaned up.
+Static Emulator core excluding UT: COMPLETE. The user confirmed the visual
+result and the formal example was cleaned up on 2026-07-17.

@@ -121,7 +121,8 @@ seedemu_internet_map                   Up, 0.0.0.0:8080->8080/tcp
 ```
 
 The two image-cache helper containers exited 0 as expected. The formal
-environment intentionally remains running for user visual acceptance.
+environment remained running through user visual acceptance and was removed
+after acceptance as recorded in section 9.
 
 ## 6. Satellite and GroundStation runtime checks
 
@@ -178,18 +179,19 @@ ordinary Router vertices: 1
 ordinary Router edges: 2 (ix100 and ground-net)
 ```
 
-The API exposes the expected node names, roles and ASNs. HTTP and graph-data
-checks are automated evidence only; no claim of manual browser visual
-acceptance is made.
+The API exposes the expected node names, roles and ASNs. These HTTP and
+graph-data checks are automated evidence; the separate manual browser result
+is recorded below.
 
 ## 8. Manual visual acceptance
 
 ```text
 Automated verification: completed
-Browser visual acceptance: pending user confirmation
+Browser visual acceptance: PASS (user-confirmed 2026-07-17)
 ```
 
-Available URLs while the formal environment remains running:
+The following URLs were available during acceptance and are now offline after
+the scoped cleanup:
 
 - localhost: `http://127.0.0.1:8080/pro/map`
 - detected host address: `http://10.0.2.15:8080/pro/map`
@@ -197,7 +199,7 @@ Available URLs while the formal environment remains running:
 No firewall or host-network setting was changed. The second URL is reachable
 only if the user's host/VM network permits access to that detected address.
 
-Shortest visual check:
+Accepted visual check:
 
 1. Confirm `satellite-0` and `satellite-1` are visible and each has zero edge.
 2. Confirm `New York Ground Station` has one real IX edge.
@@ -205,10 +207,10 @@ Shortest visual check:
 4. Confirm names, roles and ASNs are distinguishable, with no duplicate node,
    Host masquerade or fabricated satellite link.
 
-## 9. Deferred cleanup
+## 9. Cleanup evidence
 
-Do not run this until visual acceptance is complete. The following commands
-are scoped to the formal output, Compose project and four project images:
+After visual acceptance, cleanup was restricted to the formal output, Compose
+project and four project images. The executed operations were:
 
 ```bash
 docker-compose -p skyseed_v2_complete_static \
@@ -219,14 +221,28 @@ docker image rm \
   skyseed_v2_complete_static_satnode_65001_satellite-1:latest \
   skyseed_v2_complete_static_brdnode_65001_gs-new-york:latest \
   skyseed_v2_complete_static_brdnode_65002_ground-router:latest
-rm -rf /tmp/skyseed-v2-complete-static-emulator
+find /tmp/skyseed-v2-complete-static-emulator -depth -delete
 ```
 
-Shared upstream images and the named InternetMap image are intentionally not
-removed. Until the user confirms the visual result and cleanup is executed,
-the phase remains:
+Post-cleanup verification:
+
+```text
+project containers: 0
+project networks: 0
+project images: 0
+temporary output present: no
+TCP port 8080 listeners: 0
+upstream SEED worktree: clean
+```
+
+Seven project containers (five services and two exited image-cache helpers),
+three project networks and four project images were removed. Shared upstream
+SEED images and the named InternetMap image were intentionally retained.
+
+Final phase state:
 
 ```text
 Emulator automated acceptance: PASS
-Emulator manual visual acceptance: PENDING
+Emulator manual visual acceptance: PASS
+Static Emulator core excluding UT: COMPLETE
 ```
