@@ -151,3 +151,26 @@ def test_retired_as_and_compiler_names_have_no_aliases() -> None:
 def test_private_upstream_accumulator_has_one_source_access_point() -> None:
     compiler_source = Path(inspect.getsourcefile(SkyseedDockerCompiler)).read_text()
     assert compiler_source.count('"_Docker__services"') == 1
+
+
+def test_generic_static_specifications_are_backend_and_v1_independent() -> None:
+    from skyseed_v2 import specifications
+
+    imports = imported_modules(specifications)
+    assert not any(
+        module == "seedemu"
+        or module.startswith("seedemu.")
+        or module == "skyseed_v1"
+        or module.startswith("skyseed_v1.")
+        for module in imports
+    )
+    source = Path(inspect.getsourcefile(specifications)).read_text()
+    for forbidden in (
+        "epoch_utc",
+        "simulation_start_time",
+        "current_position",
+        "visibility",
+        "RuntimeNodeReference",
+        "resource_locator",
+    ):
+        assert forbidden not in source

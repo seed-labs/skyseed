@@ -3,20 +3,27 @@
 ## Current phase
 
 Static Emulator core excluding UT: COMPLETE
+Generic constellation and GS construction: COMPLETE
+S4-scale static container materialization: PASS
+Static ground-network integration at scale: PASS
+
+Dynamic satellite-network reproduction: NOT STARTED
 
 ## Current objective
 
-Investigate v1 S4 static scenario facts for scale-validation input.
+The generic static-construction and S4-scale validation slice is complete.
+Await explicit approval before selecting another objective.
 
 ## Implementation status
 
-Not started.
+Complete for the generic static construction and scale-validation slice.
 
 ## Current workflow step
 
-The directed v1 S4 static-scenario investigation is complete. Review its
-conflicts and unresolved semantics before approving any implementation. Do not
-start another slice automatically.
+The formal scale experiment has passed automated, container, routing and
+InternetMap validation. Its project resources and generated output are
+cleaned. Do not start dynamic Satellite networking or Simulator work
+automatically.
 
 ## Confirmed direction
 
@@ -55,6 +62,13 @@ start another slice automatically.
 - Runtime validation proved forwarding, established eBGP, packet-level ground reachability, one GS ground edge, and two unchanged Satellite vertices with zero Satellite edges.
 - Automated and manual complete Emulator validation is recorded in `docs/evidence/complete-static-emulator-validation.md`. Its formal runtime resources and generated temporary output have been cleaned.
 - The v1 S4 investigation is recorded in `docs/reference/v1/s4-static-scenario-investigation.md`. It treats v1 only as a historical static-fact source and does not make S4 a permanent Emulator default.
+- Immutable backend-independent specifications and application builders now construct arbitrary positive static constellation sizes, multiple Shells and GroundStations without S4-specific domain APIs.
+- Generated Orbit/Satellite IDs are derived from v2 Shell hierarchy and ordinal position; generated GS IDs are stable hashes of explicit semantic identity keys. They are deterministic, order-independent and do not preserve v1 IDs.
+- The v1 JSON-shape adapter is isolated under `examples/reference/`, immediately returns v2 specifications and is excluded from the wheel. The core package contains no v1 import or file-shape dependency.
+- The formal `s4_scale_static_emulator.py` experiment uses the reference S4 scale to build one Shell, six Orbits, 348 isolated Satellites, 12 descriptive `operator=Starlink` GroundStations, two ordinary ground ASes, two IXes and two explicit eBGP peerings. It is not a permanent default or v1 compatibility mode.
+- The scale Catalog contains 360 Satellite/GS Descriptors; the compiled Compose contains 365 services. Runtime validation proved 348 no-network Satellite containers, 12 one-IX GS, two learned external prefixes, packet reachability and 348 zero-edge Satellite InternetMap vertices.
+- Full scale evidence is recorded in `docs/evidence/s4-scale-static-emulator-validation.md`. Docker Compose 1.27.4 required bounded 16-service Compose startup batches after its one-shot client fanout stalled; all 365 services were still materialized through the same Compose project.
+- No epoch, position computation, dynamic link, RuntimeNodeReference or runtime resource locator was introduced. Dynamic Satellite-network reproduction remains unstarted.
 
 ## Open design questions
 
@@ -64,14 +78,11 @@ start another slice automatically.
 - Whether a future SEED public custom-Router insertion hook can replace the current narrow GroundStation AS lifecycle extension.
 - How a future Backend Planner, Execution Compiler or Runner maps `SimulationNodeId` to actual SEED, container, namespace or kernel resources; this is future design scope, not current technical debt.
 - The next vertical slice, which requires explicit design approval.
-- Whether scale validation should use the effective successful S4 baseline with no ordinary ground Internet, IX or static peering, or a separately named historical mini-Internet variant.
-- Whether v1 Satellite/Orbit identifier strings and GS service `/32` addresses must be preserved in the first S4 reconstruction input.
-- Whether GroundStation operator should remain unspecified or be explicitly supplied by the user.
 
 ## Next single objective
 
-Review the S4 static-scenario investigation and resolve its listed semantic
-questions before any implementation.
+No next slice is authorized. Review the completed static scale evidence before
+explicitly choosing any dynamic Satellite-network or Simulator objective.
 
 ## Acceptance state
 
@@ -82,7 +93,10 @@ questions before any implementation.
 - Automated Emulator integration: PASS
 - Manual InternetMap visual acceptance: PASS
 - S4 static-scenario investigation: completed
-- S4 static reconstruction implementation: not started
+- Generic constellation and GS construction: completed
+- S4-scale static container materialization: PASS
+- Static ground-network integration at scale: PASS
+- Dynamic Satellite-network reproduction: not started
 - UT: outside current Emulator core
 
 Static Emulator core excluding UT: COMPLETE. The user confirmed the visual

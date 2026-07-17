@@ -1,5 +1,61 @@
 # Examples
 
+## S4-scale static Emulator
+
+`s4_scale_static_emulator.py` is the formal scale experiment for generic static
+construction. S4 is a size reference only. The example uses the reference-only
+adapter under `examples/reference/`, creates one 6-orbit/348-Satellite Shell and
+12 `operator=Starlink` GroundStations through generic v2 builders, then adds two
+ordinary ground ASes, two IX networks, two explicit eBGP sessions and two new
+ground test prefixes. It does not import an epoch or historical service `/32`,
+and it creates no Satellite link.
+
+From `skyseed_v2/`:
+
+```bash
+PYTHONPATH=src:. python examples/s4_scale_static_emulator.py \
+  --output /tmp/skyseed-v2-s4-scale-static/output --override
+docker-compose -p skyseed_v2_s4_scale_static \
+  -f /tmp/skyseed-v2-s4-scale-static/output/docker-compose.yml config --quiet
+docker-compose -p skyseed_v2_s4_scale_static \
+  -f /tmp/skyseed-v2-s4-scale-static/output/docker-compose.yml build
+```
+
+On the validated Docker Compose 1.27.4 host, one 365-service `up -d` fanout
+stalls inside the old client. Start the complete, unchanged service inventory
+in bounded Compose batches:
+
+```bash
+compose_file=/tmp/skyseed-v2-s4-scale-static/output/docker-compose.yml
+project_name=skyseed_v2_s4_scale_static
+mapfile -t services < <(
+  docker-compose -p "$project_name" -f "$compose_file" config --services
+)
+for ((offset=0; offset<${#services[@]}; offset+=16)); do
+  docker-compose -p "$project_name" -f "$compose_file" \
+    up -d "${services[@]:offset:16}"
+done
+```
+
+This is a client-side startup bound, not a smaller scenario or alternate
+runtime path. All 365 declared services remain in scope.
+
+The deterministic summary is written to `scenario-summary.json`. Runtime
+acceptance additionally audits all Satellite containers, both peering GS,
+ordinary Routers, eBGP/ICMP and <http://127.0.0.1:8080/pro/map>.
+
+After collecting evidence, clean only this project and its locally built node
+images:
+
+```bash
+docker-compose -p skyseed_v2_s4_scale_static \
+  -f /tmp/skyseed-v2-s4-scale-static/output/docker-compose.yml \
+  down --rmi local --remove-orphans
+```
+
+The shared upstream Router/Base images and the named InternetMap image must be
+retained. The experiment output under `/tmp` may then be removed.
+
 ## Complete static Emulator
 
 `complete_static_emulator.py` is the formal combined Emulator example. It
