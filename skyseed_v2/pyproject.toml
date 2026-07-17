@@ -8,13 +8,16 @@ version = "0.1.0"
 description = "Next-generation Skyseed satellite Internet simulation system"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = ["PyYAML>=6", "seedemu==0.0.7"]
 
 [project.optional-dependencies]
 test = ["pytest>=7"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"skyseed_v2.seed" = ["assets/*.sh"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
