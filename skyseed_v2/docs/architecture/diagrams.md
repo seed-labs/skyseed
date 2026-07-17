@@ -2,6 +2,10 @@
 
 这些图只表达当前确认的模块关系和信息流，不代表最终类图或最终 API。
 
+Detailed conceptual class diagrams with responsibilities, key attributes and
+methods are maintained in
+[conceptual-class-diagrams.md](./conceptual-class-diagrams.md).
+
 ## 1. System boundary
 
 ```mermaid

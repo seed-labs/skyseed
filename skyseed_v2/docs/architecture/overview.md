@@ -6,6 +6,10 @@
 
 它不是完整设计，也不定义最终类、字段或 API。具体对象和合同将在相应垂直切片开始时逐步设计和确认。
 
+Detailed conceptual class diagrams with responsibilities, key attributes and
+methods are maintained in
+[conceptual-class-diagrams.md](./conceptual-class-diagrams.md).
+
 ## 2. System division
 
 系统分为两个主要部分：
