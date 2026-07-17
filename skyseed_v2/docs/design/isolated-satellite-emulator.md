@@ -26,17 +26,19 @@ flowchart LR
     Satellite[Satellite / satnode] -->|approved scalar values| Projector[SatelliteDescriptorProjector]
     Projector --> Descriptor[Immutable SatelliteDescriptor]
     Satellite --|> SeedNode[SEED Node]
-    Satellite -->|supplies stable identity| RuntimeRef[RuntimeNodeReference]
-    RuntimeRef --> Descriptor
+    Descriptor -->|contains| RuntimeRef[RuntimeNodeReference]
 ```
 
 - `Satellite` is defined in `src/skyseed_v2/domain/satellite.py`. It directly
   inherits SEED `Node` and is the only object representing one Satellite.
   It owns fixed orbit and payload values while reusing Node software, file,
   command, environment, Registry, configure and Compiler capabilities.
-- `SatelliteDescriptor` and `RuntimeNodeReference` are frozen scalar value
-  objects in `src/skyseed_v2/contracts/satellite.py`. They contain no SEED,
-  Registry, Docker, file, software, command, or mutable runtime object.
+- `SatelliteDescriptor` is defined in
+  `src/skyseed_v2/contracts/satellite.py`; the shared
+  `RuntimeNodeReference` is defined in
+  `src/skyseed_v2/contracts/runtime.py`. Both are frozen scalar value objects
+  and contain no SEED, Registry, Docker, file, software, command, or mutable
+  runtime object.
 - `SatelliteDescriptorProjector` is the application projection service in
   `src/skyseed_v2/projection.py`. It reads only approved scalar values and the
   stable runtime reference from Satellite and produces the restricted view.

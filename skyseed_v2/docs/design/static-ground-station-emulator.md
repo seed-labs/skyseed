@@ -43,10 +43,17 @@ classDiagram
         +operator
         +runtime_node
     }
+    class RuntimeNodeReference {
+        <<shared immutable contract>>
+        +asn
+        +registry_type
+        +node_name
+    }
 
     GroundStation --|> SeedRouter
     GroundStationDescriptorProjector --> GroundStation : reads approved values
     GroundStationDescriptorProjector --> GroundStationDescriptor : produces
+    GroundStationDescriptor "1" *-- "1" RuntimeNodeReference : contains
 ```
 
 `GroundStation` in `src/skyseed_v2/domain/ground_station.py` is the only GS
@@ -98,8 +105,9 @@ deleted or modified after render to obtain that result.
 
 ## 5. Descriptor contract
 
-`GroundStationDescriptor` in `src/skyseed_v2/contracts/ground_station.py` is a
-frozen, slotted value object. The independent projector in
+`GroundStationDescriptor` in `src/skyseed_v2/contracts/ground_station.py` and
+the shared `RuntimeNodeReference` in `src/skyseed_v2/contracts/runtime.py` are
+frozen, slotted value objects. The independent projector in
 `src/skyseed_v2/projection.py` copies only approved scalar values and the
 stable `RuntimeNodeReference(151, "rnode", "gs-new-york")`.
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .satellite import RuntimeNodeReference
+from . import runtime as _runtime
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,4 +17,4 @@ class GroundStationDescriptor:
     elevation_m: float | None
     station_type: str
     operator: str
-    runtime_node: RuntimeNodeReference
+    runtime_node: _runtime.RuntimeNodeReference

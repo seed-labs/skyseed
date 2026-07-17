@@ -75,6 +75,10 @@ Simulator 只应获得其计算动态状态所需的只读信息，例如：
 
 Simulator 不应获得或依赖与动态计算无关的容器构建细节。
 
+SatelliteDescriptor 与 GroundStationDescriptor 都包含定义在公共
+`contracts.runtime` 模块中的同一不可变 `RuntimeNodeReference` 类型；该公共
+运行引用不属于任一实体专属合同。
+
 同进程对象传递、文件序列化或跨进程传输只是这一合同的不同适配方式，不属于领域边界本身。
 
 ## 4. Topology subsystem

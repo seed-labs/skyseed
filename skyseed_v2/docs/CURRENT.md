@@ -32,6 +32,7 @@ Review the static GroundStation and minimal ground-network slice. Do not start a
 - Runtime InternetMap validation found two Satellite vertices and zero edges.
 - `GroundStation` is the one user-visible GS object, directly inherits SEED `Router`, and is the same instance returned by its AS, registered as `rnode`/border router, compiled and run.
 - GroundStation static fields and immutable `GroundStationDescriptor` projection are implemented; no complete Router crosses the future Simulator contract.
+- `RuntimeNodeReference` is a shared immutable contract in `contracts.runtime`; both Satellite and GroundStation Descriptors contain that same type, and neither entity-specific contract module depends on the other.
 - The formal example gives GroundStation one IX interface, disables GS iBGP and masks OSPF, establishes one explicit eBGP session to an ordinary ground AS, and creates no GS–Satellite link.
 - GroundStation uses the inherited standard Router Compiler path. Skyseed only replaces its metadata by key so InternetMap sees `GroundStation` with `type=rnode`; no GS-specific dispatch or private accumulator access was added.
 - Runtime validation proved forwarding, established eBGP, packet-level ground reachability, one GS ground edge, and two unchanged Satellite vertices with zero Satellite edges.

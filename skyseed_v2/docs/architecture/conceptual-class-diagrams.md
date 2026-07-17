@@ -188,11 +188,13 @@ classDiagram
     GroundStation --|> SeedRouter
 
     SatelliteDescriptorProjector --> Satellite : reads
-    SatelliteDescriptorProjector --> RuntimeNodeReference : reads
     SatelliteDescriptorProjector --> SatelliteDescriptor : produces
 
     GroundStationDescriptorProjector --> GroundStation : reads
     GroundStationDescriptorProjector --> GroundStationDescriptor : produces
+
+    SatelliteDescriptor "1" *-- "1" RuntimeNodeReference : contains
+    GroundStationDescriptor "1" *-- "1" RuntimeNodeReference : contains
 
     SimulationEntityCatalog "1" o-- "*" SatelliteDescriptor : contains
     SimulationEntityCatalog "1" o-- "*" GroundStationDescriptor : contains
@@ -207,7 +209,9 @@ classDiagram
   投影关系均有当前实现支撑；
 - `GroundStation` 直接继承 `SeedRouter` 已通过本轮标准 `rnode`、IX、Routing、
   eBGP、Compiler、容器和 InternetMap 真实运行验证，但仍是 evolving 边界；
-- `RuntimeNodeReference` 的当前字段与已实现合同一致，但最终字段仍未定稿；
+- `RuntimeNodeReference` 位于公共 `contracts.runtime` 模块，Satellite 与
+  GroundStation Descriptor 包含同一公共不可变类型；其当前字段与已实现合同
+  一致，但最终字段仍未定稿；
   图的长期含义只要求它提供稳定运行节点引用；
 - UT 暂不进入该图。
 

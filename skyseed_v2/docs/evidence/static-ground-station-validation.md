@@ -200,3 +200,27 @@ documented upstream-hook debt, and GroundStation adds no new access to it.
 
 GroundStation–Satellite links, dynamic interfaces, UT and Simulator remain
 unimplemented.
+
+## 10. Shared runtime-contract correction
+
+After the GroundStation runtime validation, `RuntimeNodeReference` moved from
+the Satellite-specific contract module to the shared
+`src/skyseed_v2/contracts/runtime.py` module. Its fields and value semantics did
+not change. Satellite and GroundStation Descriptors now contain the same public
+contract type without importing either entity-specific contract from the
+other.
+
+Correction validation commands and results:
+
+```text
+python -m compileall -q src tests examples: PASS
+focused pytest: 26 passed
+full pytest: 37 passed
+pip wheel --no-deps --no-build-isolation: PASS
+wheel sha256: 7090f3e2ecd7711eca7b2d5c01411323645ffd9c004160878fbfbb83ed1cd3d2
+```
+
+Containers were not rebuilt or restarted for this correction because it did
+not change Compiler, AS, routing, Compose, container or runtime behavior. The
+runtime evidence in sections 3–8 remains the evidence for those paths; this
+section does not claim a new container run.

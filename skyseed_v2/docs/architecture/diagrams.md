@@ -132,8 +132,7 @@ flowchart LR
         Descriptor[Immutable SatelliteDescriptor]
         Satellite -->|approved scalar values| Projector
         Projector --> Descriptor
-        Satellite --> RuntimeRef
-        RuntimeRef --> Descriptor
+        Descriptor -->|contains| RuntimeRef
     end
 ```
 
@@ -145,12 +144,14 @@ classDiagram
     class SeedNode
     class SatelliteDescriptorProjector
     class SatelliteDescriptor
+    class RuntimeNodeReference
 
     Shell "1" *-- "*" Orbit
     Orbit "1" *-- "*" Satellite
     Satellite --|> SeedNode
     SatelliteDescriptorProjector --> Satellite : reads restricted values
     SatelliteDescriptorProjector --> SatelliteDescriptor : produces
+    SatelliteDescriptor "1" *-- "1" RuntimeNodeReference : contains
 ```
 
 ```text
@@ -194,9 +195,17 @@ classDiagram
         +runtime_node
     }
 
+    class RuntimeNodeReference {
+        <<shared immutable contract>>
+        +asn
+        +registry_type
+        +node_name
+    }
+
     GroundStation --|> SeedRouter
     GroundStationDescriptorProjector --> GroundStation : reads
     GroundStationDescriptorProjector --> GroundStationDescriptor : produces
+    GroundStationDescriptor "1" *-- "1" RuntimeNodeReference : contains
 ```
 
 ```text
