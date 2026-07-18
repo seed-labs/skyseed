@@ -22,7 +22,7 @@ SkyseedAutonomousSystem
 | `skyseed_v2.configuration` | Frozen Config values and versioned YAML loading | qualified `*Config` values, `load_static_emulator_config` |
 | `skyseed_v2.static_emulator` | Config-to-Emulator creation operation | `create_static_emulator`, `StaticEmulatorCreationResult` |
 | `skyseed_v2.node_id` | Neutral Emulator–Simulator–Compiler logical identity contract | `NodeId` |
-| `skyseed_v2.simulator_input_generation` | Shared entity traversal, NodeId derivation, input copying and Emulator entity indexing | three input-generation functions, `create_emulator_node_index` |
+| `skyseed_v2.simulator_input_generation` | Shared NodeId derivation, supported-entity traversal and pure input copying | three input-generation functions |
 | `skyseed_v2.simulator_input` | Immutable static data supplied to the future Simulator | `SatelliteSimulationInput`, `GroundStationSimulationInput`, `SimulatorStaticInput` |
 | `skyseed_v2.seedemu_integration` | Skyseed-owned extensions of external seedemu | `SkyseedAutonomousSystem`, `SatelliteBase`, `SkyseedDockerCompiler` |
 | `skyseed_v2.materialization` | Launch an already compiled Compose project | `ComposeProjectLauncher` |
@@ -58,8 +58,7 @@ GroundStation
 
 Iterable[SkyseedAutonomousSystem]
   → one supported-entity traversal and NodeId derivation
-  ├── create_simulator_static_input(...) → SimulatorStaticInput
-  └── create_emulator_node_index(...) → read-only Mapping[NodeId, entity]
+  → create_simulator_static_input(...) → SimulatorStaticInput
 ```
 
 The aggregate function accepts only `SkyseedAutonomousSystem` values, then
@@ -76,10 +75,26 @@ container, namespace, Compose, persistence or runtime Simulator object.
 `NodeId(asn, entity_kind, entity_id)` is deterministically derived by one
 private implementation in `simulator_input_generation.py`. It is a neutral
 cross-layer value from `skyseed_v2.node_id`, not a Satellite/GroundStation
-attribute, entity primary key, SEED Registry key or runtime-resource name.
-`create_emulator_node_index()` uses the same traversal and derivation to map
-each ID to the exact original Satellite or GroundStation instance. The mapping
-is read-only and duplicate IDs fail closed.
+attribute, lookup service, entity primary key, SEED Registry key or
+runtime-resource name. It exposes no resolve/entity/container method. No
+public or global `NodeId → entity/service/container` mapping exists.
+
+Future Compiler lookup is owner-directed rather than index-directed:
+
+```text
+NodeId.asn
+  → SatelliteBase.getAutonomousSystem(asn)
+  → require SkyseedAutonomousSystem
+NodeId.entity_kind + NodeId.entity_id
+  → get_satellite(entity_id) or get_ground_station(entity_id)
+  → exact owned entity
+```
+
+Existing hierarchy queries remain available when needed:
+`SkyseedAutonomousSystem.get_shell()` → `Shell.get_orbit()` →
+`Orbit.get_satellite()`. Unknown ASN/IDs and unsupported or mismatched kinds
+must fail closed. This documents a future Compiler contract only; no resolver,
+plan or Compiler update path is implemented.
 
 ## Public construction paths
 
@@ -115,9 +130,6 @@ flowchart LR
     N --> X
     X --> P[explicit eBGP]
     A -->|create_simulator_static_input| I[SimulatorStaticInput]
-    A -->|create_emulator_node_index| D[read-only NodeId to entity Mapping]
-    I --> V[validate equal NodeId sets]
-    D --> V
     B --> C[render + SkyseedDockerCompiler]
     C --> Q[output + generated controls]
 ```
@@ -135,10 +147,6 @@ flowchart LR
     R --> E[Emulator entities and layers]
     R -->|skyseed_autonomous_systems| F[create_simulator_static_input]
     F --> I[SimulatorStaticInput]
-    R -->|skyseed_autonomous_systems| N[create_emulator_node_index]
-    N --> D[read-only NodeId to entity Mapping]
-    I --> V[validate equal NodeId sets]
-    D --> V
     E --> K[render + SkyseedDockerCompiler]
     K --> O[output + generated controls]
 ```
@@ -146,9 +154,7 @@ flowchart LR
 The exact public sequence is:
 
 `load_static_emulator_config(path)` → `create_static_emulator(config)` →
-`create_simulator_static_input(creation.skyseed_autonomous_systems)` →
-`create_emulator_node_index(creation.skyseed_autonomous_systems)` → validate
-equal identity sets.
+`create_simulator_static_input(creation.skyseed_autonomous_systems)`.
 
 ```python
 config = load_static_emulator_config(path)
@@ -156,12 +162,6 @@ creation = create_static_emulator(config)
 simulator_input = create_simulator_static_input(
     creation.skyseed_autonomous_systems
 )
-emulator_node_index = create_emulator_node_index(
-    creation.skyseed_autonomous_systems
-)
-assert {
-    item.node_id for item in simulator_input.list_nodes()
-} == set(emulator_node_index)
 ```
 
 `create_static_emulator(config)` creates only Emulator entities and layers.
@@ -194,15 +194,20 @@ classDiagram
         <<entity owner + integration>>
         +create_shell(shell_id) Shell
         +create_ground_station(...) GroundStation
+        +get_shell(shell_id) Shell
+        +get_satellite(satellite_id) Satellite
+        +get_ground_station(ground_station_id) GroundStation
     }
     class Shell {
         <<Emulator entity>>
         +create_orbit(orbit_id, parameters) Orbit
+        +get_orbit(orbit_id) Orbit
     }
     class Orbit {
         <<Emulator entity>>
         +parameters OrbitParameters
         +create_satellite(...) Satellite
+        +get_satellite(satellite_id) Satellite
     }
     class OrbitParameters {
         <<entity-bound value>>
@@ -311,10 +316,7 @@ Static-input types and operations use explicit owner imports:
 from skyseed_v2.configuration import load_static_emulator_config
 from skyseed_v2.node_id import NodeId
 from skyseed_v2.static_emulator import create_static_emulator
-from skyseed_v2.simulator_input_generation import (
-    create_emulator_node_index,
-    create_simulator_static_input,
-)
+from skyseed_v2.simulator_input_generation import create_simulator_static_input
 from skyseed_v2.simulator_input import SimulatorStaticInput
 ```
 
@@ -351,9 +353,9 @@ No compatibility aliases remain for deleted classes, types or old imports.
 - `SimulationNodeId` is renamed to `NodeId`; its three fields and serialized
   `value` format remain unchanged, while its owner import becomes
   `from skyseed_v2.node_id import NodeId`.
-- `create_emulator_node_index()` is the only new public operation. It returns a
-  read-only `NodeId → original Satellite/GroundStation` mapping and shares the
-  static-input entity traversal and ID derivation.
+- The previously proposed `create_emulator_node_index()` is removed. Existing
+  Base/AS/Shell/Orbit lookup methods remain the only future entity-resolution
+  building blocks; no new lookup API was necessary.
 - Formal Python entrypoints generate project-scoped controls inside `output/`;
   source-level shell wrappers are removed.
 - Root exports remain the same six entity/value names.
@@ -363,9 +365,9 @@ No compatibility aliases remain for deleted classes, types or old imports.
 - [ ] Orbit alone owns common orbital parameters.
 - [ ] The three examples expose the intended call chains.
 - [ ] Static Simulator inputs contain no entity or runtime-resource reference.
-- [ ] Static input IDs exactly equal Emulator node-index keys.
-- [ ] Node-index values are the original entities and are resolved only by
-      `NodeId`, never by parsing names.
+- [ ] `NodeId` has no resolution/resource capability.
+- [ ] No public/global `NodeId → entity/service/container` mapping exists.
+- [ ] Existing owners provide only their narrow AS/Shell/Orbit/entity queries.
 - [ ] `simulator_input` imports no entity, seedemu integration or upstream
       seedemu module.
 - [ ] `StaticEmulatorCreationResult` has exactly three fields.

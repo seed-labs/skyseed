@@ -20,10 +20,11 @@ class NodeId:
 
     Layer: neutral cross-layer contract value. Simulator-input generation
     creates it; static inputs, future Simulator state and plans, and the
-    Compiler-side Emulator node index use it. It is not an Emulator entity
-    property, Registry key, container ID, Compose service, namespace,
-    interface name or Simulator-local sequence number. It is public from this
-    direct module because multiple architectural layers share the contract.
+    Compiler's future owner-directed lookup process use it. It is not an
+    Emulator entity property, lookup service, Registry key, container ID,
+    Compose service, namespace, interface name or Simulator-local sequence
+    number. It is public from this direct module because multiple
+    architectural layers share the contract.
     """
 
     asn: int

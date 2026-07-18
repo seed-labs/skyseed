@@ -162,8 +162,8 @@ def test_small_examples_show_public_construction_without_file_facades() -> None:
     assert ".createRouter(" in complete_source
     assert "SimulatorStaticInput" in complete_source
     assert "create_simulator_static_input" in complete_source
-    assert "create_emulator_node_index" in complete_source
-    assert "set(emulator_node_index)" in complete_source
+    assert "create_emulator_node_index" not in complete_source
+    assert "emulator_node_index" not in complete_source
     assert "from skyseed_v2.simulator_input import SimulatorStaticInput" in (
         complete_source
     )
@@ -179,8 +179,8 @@ def test_large_example_shows_load_create_and_input_generation_directly() -> None
     assert "load_static_emulator_config" in source
     assert "create_static_emulator" in source
     assert "create_simulator_static_input" in source
-    assert "create_emulator_node_index" in source
-    assert "set(emulator_node_index)" in source
+    assert "create_emulator_node_index" not in source
+    assert "emulator_node_index" not in source
     assert "from skyseed_v2.configuration import" in source
     assert "from skyseed_v2.static_emulator import" in source
     assert "from skyseed_v2.simulator_input_generation import" in source

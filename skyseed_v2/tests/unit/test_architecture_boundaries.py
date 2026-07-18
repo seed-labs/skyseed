@@ -167,11 +167,16 @@ def test_removed_and_deferred_boundary_apis_are_not_exported() -> None:
         "SeedRegistryLocator",
         "RuntimeNodeResolver",
         "ExecutionTargetRef",
+        "BoundaryResult",
+        "NodeBindingRegistry",
+        "NodeResolverManager",
+        "GlobalNodeRegistry",
     ):
         assert not hasattr(simulator_input, forbidden_name)
         assert not hasattr(skyseed_v2, forbidden_name)
 
     assert importlib.util.find_spec("skyseed_v2.simulator_input.runtime") is None
+    assert importlib.util.find_spec("skyseed_v2.simulator") is None
     assert importlib.util.find_spec("skyseed_v2.simulator_input.identity") is None
     for removed_module in (
         "skyseed_v2.contracts",
@@ -377,6 +382,8 @@ def test_configuration_creation_and_input_generation_respect_boundaries() -> Non
         for node in ast.walk(ast.parse(generation_source))
     )
     assert "def _derive_node_id(" in generation_source
+    assert "create_emulator_node_index" not in generation_source
+    assert "MappingProxyType" not in generation_source
     assert ".split(" not in generation_source
     assert "getName(" not in generation_source
 

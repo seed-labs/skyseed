@@ -5,7 +5,13 @@ from typing import get_type_hints
 import pytest
 
 import skyseed_v2
-from skyseed_v2.entities import GroundStation, Orbit, Satellite
+from skyseed_v2.entities import (
+    GroundStation,
+    GroundStationLocation,
+    Orbit,
+    OrbitParameters,
+    Satellite,
+)
 from skyseed_v2.simulator_input_generation import (
     create_ground_station_simulation_input,
     create_satellite_simulation_input,
@@ -16,7 +22,10 @@ from skyseed_v2.simulator_input import (
     SatelliteSimulationInput,
     SimulatorStaticInput,
 )
-from skyseed_v2.seedemu_integration import SkyseedAutonomousSystem
+from skyseed_v2.seedemu_integration import (
+    SatelliteBase,
+    SkyseedAutonomousSystem,
+)
 
 
 def test_node_id_is_stable_hashable_and_backend_independent() -> None:
@@ -37,6 +46,9 @@ def test_node_id_is_stable_hashable_and_backend_independent() -> None:
         "container_name",
         "namespace",
         "compose_service",
+        "resolve",
+        "get_entity",
+        "get_container",
     ):
         assert not hasattr(identity, forbidden)
     with pytest.raises(FrozenInstanceError):
@@ -145,3 +157,54 @@ def test_emulator_entities_do_not_hold_or_accept_node_id() -> None:
     assert "node_id" not in signature(
         SkyseedAutonomousSystem.create_ground_station
     ).parameters
+
+
+def test_existing_owners_provide_narrow_lookup_without_a_global_index() -> None:
+    base = SatelliteBase()
+    autonomous_system = SkyseedAutonomousSystem(65001)
+    base.setAutonomousSystem(autonomous_system)
+    shell = autonomous_system.create_shell("shell-1")
+    orbit = shell.create_orbit(
+        "orbit-1",
+        parameters=OrbitParameters(550.0, 53.0, 15.0),
+    )
+    satellite = orbit.create_satellite(
+        "shared",
+        orbit_index=0,
+        mean_anomaly_deg=0.0,
+    )
+    ground_station = autonomous_system.create_ground_station(
+        "shared",
+        location=GroundStationLocation(40.0, -74.0),
+        station_type="gateway",
+        operator="Skyseed",
+    )
+
+    assert base.getAutonomousSystem(65001) is autonomous_system
+    assert autonomous_system.get_shell("shell-1") is shell
+    assert shell.get_orbit("orbit-1") is orbit
+    assert orbit.get_satellite("shared") is satellite
+    assert autonomous_system.get_satellite("shared") is satellite
+    assert autonomous_system.get_ground_station("shared") is ground_station
+
+    with pytest.raises(AssertionError, match="does not exist"):
+        base.getAutonomousSystem(65002)
+    with pytest.raises(KeyError, match="does not exist"):
+        autonomous_system.get_shell("missing")
+    with pytest.raises(KeyError, match="does not exist"):
+        autonomous_system.get_satellite("missing")
+    with pytest.raises(KeyError, match="does not exist"):
+        autonomous_system.get_ground_station("missing")
+    with pytest.raises(KeyError, match="does not exist"):
+        shell.get_orbit("missing")
+    with pytest.raises(KeyError, match="does not exist"):
+        orbit.get_satellite("missing")
+
+    for owner in (base, autonomous_system, shell, orbit):
+        for forbidden_lookup in (
+            "get_node",
+            "resolve_node",
+            "resolve_resource",
+            "find_resource",
+        ):
+            assert not hasattr(owner, forbidden_lookup)

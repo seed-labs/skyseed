@@ -71,9 +71,9 @@ logical entity remains recognizable.
 
 `examples/complete_static_emulator/main.py` directly shows GroundStation,
 ordinary Router/Network, IX, explicit eBGP, static Simulator input and
-the read-only Emulator node index before compilation. It uses no YAML Config
-loading or static Emulator creation operation; both cross-layer outputs are
-generated directly from `(skyseed_as,)` and their NodeId sets are compared.
+compilation. It uses no YAML Config loading or static Emulator creation
+operation; the static input is generated directly from `(skyseed_as,)`, with
+no entity index or resolution path.
 
 ## 6. Deferred work
 

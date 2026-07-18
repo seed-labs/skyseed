@@ -15,5 +15,9 @@ recorded in
 The current formal-example generation/start boundary is recorded in
 `generated-example-output-controls-validation.md`.
 
-The current cross-layer logical identity and Emulator node-index validation is
-recorded in `node-id-and-emulator-node-index-validation.md`.
+The current pure cross-layer logical identity and owner-directed future lookup
+validation is recorded in
+`node-id-pure-contract-and-owner-lookup-validation.md`.
+
+`node-id-and-emulator-node-index-validation.md` is the historical validation
+for the superseded public node-index proposal and is not the current contract.

@@ -13,10 +13,7 @@ from skyseed_v2 import (
     GroundStationLocation,
     OrbitParameters,
 )
-from skyseed_v2.simulator_input_generation import (
-    create_emulator_node_index,
-    create_simulator_static_input,
-)
+from skyseed_v2.simulator_input_generation import create_simulator_static_input
 from skyseed_v2.seedemu_integration import (
     SatelliteBase,
     SkyseedAutonomousSystem,
@@ -94,15 +91,6 @@ def build_emulator() -> tuple[
         emulator.addLayer(layer)
 
     simulator_input = create_simulator_static_input((skyseed_as,))
-    emulator_node_index = create_emulator_node_index((skyseed_as,))
-    simulator_node_ids = {
-        simulation_input.node_id
-        for simulation_input in simulator_input.list_nodes()
-    }
-    if simulator_node_ids != set(emulator_node_index):
-        raise ValueError(
-            "SimulatorStaticInput NodeIds do not match Emulator node index"
-        )
     return emulator, skyseed_as, simulator_input
 
 

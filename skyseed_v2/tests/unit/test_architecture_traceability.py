@@ -203,7 +203,6 @@ def test_direct_file_driven_call_chain_is_documented() -> None:
         "load_static_emulator_config(path)",
         "create_static_emulator(config)",
         "create_simulator_static_input(creation.skyseed_autonomous_systems)",
-        "create_emulator_node_index(creation.skyseed_autonomous_systems)",
     ):
         assert operation in document
     for retired in (

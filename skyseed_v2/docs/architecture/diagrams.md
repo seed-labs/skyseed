@@ -45,15 +45,20 @@ classDiagram
         <<entity owner + seedemu integration>>
         +create_shell(shell_id) Shell
         +create_ground_station(...) GroundStation
+        +get_shell(shell_id) Shell
+        +get_satellite(satellite_id) Satellite
+        +get_ground_station(ground_station_id) GroundStation
     }
     class Shell {
         <<Emulator entity>>
         +create_orbit(orbit_id, parameters) Orbit
+        +get_orbit(orbit_id) Orbit
     }
     class Orbit {
         <<Emulator entity>>
         +parameters OrbitParameters
         +create_satellite(...) Satellite
+        +get_satellite(satellite_id) Satellite
     }
     class OrbitParameters {
         <<entity-bound value>>
@@ -110,10 +115,6 @@ flowchart TD
     IX --> P[explicit eBGP]
     A --> F[create_simulator_static_input]
     F --> I[SimulatorStaticInput]
-    A --> N[create_emulator_node_index]
-    N --> M[read-only NodeId to entity Mapping]
-    I --> V[validate equal NodeId sets]
-    M --> V
     B --> C[Emulator.render → SkyseedDockerCompiler]
 ```
 
@@ -129,10 +130,6 @@ flowchart LR
     CREATE --> RESULT[StaticEmulatorCreationResult]
     RESULT --> CONVERT[create_simulator_static_input]
     CONVERT --> INPUT[immutable SimulatorStaticInput]
-    RESULT --> INDEX[create_emulator_node_index]
-    INDEX --> MAPPING[read-only NodeId to entity Mapping]
-    INPUT --> VALIDATE[validate equal NodeId sets]
-    MAPPING --> VALIDATE
     RESULT --> COMP[render + SkyseedDockerCompiler]
 ```
 
@@ -145,23 +142,23 @@ flowchart LR
     GS[GroundStation] --> WALK
     WALK --> DERIVE[one private NodeId derivation]
     DERIVE --> CA[create_simulator_static_input]
-    DERIVE --> CI[create_emulator_node_index]
     CA --> SI[SatelliteSimulationInput + NodeId]
     CA --> GI[GroundStationSimulationInput + NodeId]
     SI --> INPUT[SimulatorStaticInput]
     GI --> INPUT
-    CI --> INDEX[read-only NodeId to original entity Mapping]
     INPUT --> SIM[future Simulator consumer boundary]
-    SIM -. future plan cites NodeId .-> INDEX
-    INDEX -. future Compiler lookup .-> COMP[real Emulator entity]
+    SIM -. future plan cites NodeId .-> COMP[future Compiler plan consumer]
+    COMP -. NodeId.asn .-> BASE[SatelliteBase.getAutonomousSystem]
+    BASE -. require Skyseed AS .-> OWNER[SkyseedAutonomousSystem]
+    OWNER -. kind + entity_id .-> ENTITY[Satellite or GroundStation]
 ```
 
 `SimulatorStaticInput` performs type validation, deterministic sorting,
 duplicate-ID rejection, immutable snapshotting and read-only indexing only. It
-does not traverse AS objects or call entity conversion. The separate Emulator
-node index contains the exact original entities, while the input contains no
-entity reference. The dashed path documents the future NodeId contract only;
-no Simulator, plan or Compiler update path is implemented.
+does not traverse AS objects or call entity conversion and contains no entity
+reference. No unified NodeId-to-entity/resource mapping exists. The dashed
+path documents future owner-directed Compiler calls only; no Simulator, plan,
+resolution or Compiler update path is implemented.
 
 ## 7. Generated experiment artifact and materialization
 

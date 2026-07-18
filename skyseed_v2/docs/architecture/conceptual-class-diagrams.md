@@ -21,16 +21,21 @@ classDiagram
         <<entity owner + seedemu integration>>
         +create_shell(shell_id) Shell
         +create_ground_station(...) GroundStation
+        +get_shell(shell_id) Shell
+        +get_satellite(satellite_id) Satellite
+        +get_ground_station(ground_station_id) GroundStation
     }
     class Shell {
         <<Emulator entity>>
         +create_orbit(orbit_id, parameters) Orbit
+        +get_orbit(orbit_id) Orbit
     }
     class Orbit {
         <<Emulator entity>>
         +parameters OrbitParameters
         +create_satellite(...) Satellite
         +create_satellites(...) tuple
+        +get_satellite(satellite_id) Satellite
     }
     class OrbitParameters {
         <<entity-bound value>>
@@ -73,14 +78,12 @@ flowchart LR
     AS[Iterable of SkyseedAutonomousSystem] --> WALK[shared private traversal]
     WALK --> DERIVE[one private NodeId derivation]
     DERIVE --> CA[create_simulator_static_input]
-    DERIVE --> CI[create_emulator_node_index]
     CS --> SI[SatelliteSimulationInput]
     CG --> GI[GroundStationSimulationInput]
     CA --> SI
     CA --> GI
     SI --> AGG[SimulatorStaticInput]
     GI --> AGG
-    CI --> IDX[read-only Mapping NodeId to original entity]
 ```
 
 ```mermaid
@@ -112,9 +115,9 @@ classDiagram
 The dependency direction is intentional: `simulator_input_generation` depends
 on entities, seedemu integration, neutral `node_id` and `simulator_input`; the
 input package depends on none of the Emulator/SEED layers. The copied objects
-retain no entity, Registry, container or Compose reference. The node index is
-not a new class: it is a read-only Mapping from the same IDs to the exact
-original Satellite/GroundStation instances.
+retain no entity, Registry, container or Compose reference. `NodeId` is a pure
+value with no resolution method, and there is no public/global mapping from it
+to Emulator entities or runtime resources.
 
 ## Configuration, Emulator creation and input generation
 
@@ -141,10 +144,14 @@ classDiagram
 `create_static_emulator(config)` sequences existing public construction calls
 and returns only the three creation outputs. A separate
 `create_simulator_static_input(creation.skyseed_autonomous_systems)` call
-generates the immutable Simulator input; `create_emulator_node_index(...)`
-generates the Compiler-facing lookup from the same entity collection. None is
-an entity or ownership level, and handwritten examples do not require the
-file-driven operations.
+generates the immutable Simulator input. None is an entity or ownership level,
+and handwritten examples do not require the file-driven operations.
+
+Future Compiler resolution will reuse the implemented owner methods rather
+than add an index: Base `getAutonomousSystem(asn)`, Skyseed AS
+`get_satellite()` / `get_ground_station()` / `get_shell()`, Shell
+`get_orbit()` and Orbit `get_satellite()`. No Compiler resolution path exists
+yet.
 
 ## Materialization boundary
 

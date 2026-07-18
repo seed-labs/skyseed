@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Mapping
-from types import MappingProxyType
+from collections.abc import Iterable, Iterator
 
 from skyseed_v2.entities import (
     GroundStation,
@@ -216,26 +215,7 @@ def create_simulator_static_input(
     return SimulatorStaticInput(satellites, ground_stations)
 
 
-def create_emulator_node_index(
-    skyseed_autonomous_systems: Iterable[SkyseedAutonomousSystem],
-) -> Mapping[NodeId, Satellite | GroundStation]:
-    """Index original Emulator entities by their shared cross-layer NodeId.
-
-    The returned mapping is read-only. Its values are the exact Satellite and
-    GroundStation instances from the supplied entity trees; it contains no
-    Registry, container, Compose, namespace or interface information.
-    """
-
-    node_index: dict[NodeId, Satellite | GroundStation] = {}
-    for node_id, entity, _ in _iter_skyseed_nodes(skyseed_autonomous_systems):
-        if node_id in node_index:
-            raise ValueError(f"duplicate NodeId: {node_id.value}")
-        node_index[node_id] = entity
-    return MappingProxyType(node_index)
-
-
 __all__ = [
-    "create_emulator_node_index",
     "create_ground_station_simulation_input",
     "create_satellite_simulation_input",
     "create_simulator_static_input",

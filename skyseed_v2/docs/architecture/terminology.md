@@ -17,9 +17,9 @@ package root.
 | StaticEmulatorCreationResult | Frozen three-field result containing Emulator, Skyseed ASes and ordinary ASes | `static_emulator.py` | entity parent, Simulator input or root convenience API | `skyseed_v2.static_emulator` |
 | SatelliteSimulationInput | Frozen static scalar data combined from one Satellite and its owning Orbit parameters | `simulator_input/satellite.py` | Satellite entity, SEED Node, runtime position or execution target | `skyseed_v2.simulator_input` |
 | GroundStationSimulationInput | Frozen static scalar data copied from one GroundStation | `simulator_input/ground_station.py` | GroundStation entity, SEED Router or execution target | `skyseed_v2.simulator_input` |
-| SimulatorStaticInput | Frozen deterministic aggregate of pure static inputs keyed by `NodeId` | `simulator_input/static_input.py` | AS traversal, Config, entity index, Registry, container inventory or runtime model | `skyseed_v2.simulator_input` |
-| NodeId | Stable logical node identity shared across Emulator packaging, Simulator data/state/plans and Compiler entity lookup | `node_id.py` | entity property or primary key, Registry key, container ID, Compose service, namespace, interface or Simulator-local number | `skyseed_v2.node_id` |
-| Simulator static-input generation | Direct functions sharing one supported-entity traversal and NodeId derivation to create inputs and the read-only Emulator node index | `simulator_input_generation.py` | Projector, Builder, Resolver class, input classmethod or Simulator behavior | `skyseed_v2.simulator_input_generation` |
+| SimulatorStaticInput | Frozen deterministic aggregate of pure static inputs keyed by `NodeId` | `simulator_input/static_input.py` | AS traversal, Config, entity/resource index, Registry, container inventory or runtime model | `skyseed_v2.simulator_input` |
+| NodeId | Pure stable logical node identity shared across Emulator packaging, Simulator data/state/plans and future Compiler owner-directed lookup | `node_id.py` | entity property, lookup service, Registry key, container ID, Compose service, namespace, interface or Simulator-local number | `skyseed_v2.node_id` |
+| Simulator static-input generation | Three direct functions sharing one private NodeId derivation to copy supported entities into pure inputs | `simulator_input_generation.py` | entity index, Projector, Builder, Resolver class, input classmethod or Simulator behavior | `skyseed_v2.simulator_input_generation` |
 | Compiler | SEED integration that lowers a rendered Emulator into Compose output | `seedemu_integration/skyseed_docker_compiler.py` | entity creator, Simulator execution compiler or materializer | `skyseed_v2.seedemu_integration` |
 | Launcher | Tool that materializes an already compiled Compose project | `materialization/compose_project_launcher.py` | entity service, Compiler, Runner or Simulator | `skyseed_v2.materialization` |
 | SkyseedAutonomousSystem | Owner of Shells and GroundStations plus the narrow SEED lifecycle extension | `seedemu_integration/skyseed_autonomous_system.py` | file facade or Simulator-input owner | `skyseed_v2.seedemu_integration` |
@@ -38,7 +38,9 @@ The file-driven flow is three explicit operations:
 immutable input types do not read Emulator entities or SEED objects. Do not
 reintroduce a stateless projection/conversion class or input classmethod.
 
-`NodeId` is a cross-layer contract, not an Emulator entity attribute and not a
-Simulator-private sequence number. The static input maps it to pure data; the
-Emulator node index maps the same IDs to the exact original entities. Future
-plans may cite `NodeId`, but no plan or Simulator runtime type exists yet.
+`NodeId` is a pure cross-layer identity value, not an Emulator entity
+attribute, lookup service or Simulator-private sequence number. Static input
+maps it only to pure data. No unified `NodeId → entity/service/container`
+mapping exists. A future Compiler will resolve ASN through Base, then call the
+actual AS/Shell/Orbit owners' narrow lookup methods. No plan, resolution path
+or Simulator runtime type exists yet.

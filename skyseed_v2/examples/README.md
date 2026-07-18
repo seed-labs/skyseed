@@ -56,8 +56,6 @@ v2 YAML
     -> StaticEmulatorCreationResult
     -> create_simulator_static_input(creation.skyseed_autonomous_systems)
     -> immutable SimulatorStaticInput
-    -> create_emulator_node_index(creation.skyseed_autonomous_systems)
-    -> validate equal NodeId sets
 ```
 
 The three operations are direct functions, not stateless service classes.
@@ -71,9 +69,9 @@ Both input styles converge at `SkyseedAutonomousSystem.create_shell`,
 immutable static-data boundary for future Simulator consumers; it is not a
 scenario, SEED Registry, container inventory or output-directory index.
 Entity traversal and conversion belong to `simulator_input_generation.py`;
-the same module also creates the read-only `NodeId → original entity` mapping
-for future Compiler lookup. The input package contains only immutable data and
-its pure-data lookup; it never receives the Emulator entity index.
+the input package contains only immutable data and its pure-data lookup. No
+public/global `NodeId → entity/service/container` mapping exists. Future
+Compiler lookup will call the existing Base/AS/Shell/Orbit owners directly.
 
 The `reference/` directory is excluded from the package and formal example
 path. It preserves offline historical investigation/conversion tooling only;
