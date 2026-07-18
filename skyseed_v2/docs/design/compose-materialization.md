@@ -4,7 +4,7 @@
 
 `ComposeProjectLauncher` is a small deployment/integration tool that
 materializes one already-generated Docker Compose project. Its placement is
-outside the Emulator domain model:
+outside the Emulator entity model:
 
 ```text
 Static scenario
@@ -17,9 +17,9 @@ Static scenario
 
 The Emulator constructs static entities and a scenario. The Compiler emits the
 single Compose output. The launcher starts and verifies that complete output.
-It does not belong to Descriptor, Catalog, Emulator, Simulator, dynamic
+It does not belong to Simulator static input, Emulator, Simulator, dynamic
 topology/planning, or satellite-network runtime semantics, and it is not shown
-in an Emulator domain class diagram.
+in an Emulator entity class diagram.
 
 A future execution Runner may call, wrap, or replace this tool. This slice does
 not decide that Runner contract and does not introduce a dynamic Runner.

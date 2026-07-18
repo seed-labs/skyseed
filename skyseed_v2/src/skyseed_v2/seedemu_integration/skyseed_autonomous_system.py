@@ -20,10 +20,11 @@ from skyseed_v2.entities.validation import validate_identifier
 class SkyseedAutonomousSystem(AutonomousSystem):
     """Own static Skyseed entities and integrate them with one SEED AS.
 
-    Layer: approved domain owner plus SEED integration. Handwritten callers or
+    Layer: approved entity owner plus SEED integration. Handwritten callers or
     the specification Applier create it; Base, routing layers and callers use
-    it. It is not a scenario facade or Descriptor factory. It is public from
-    ``skyseed_v2.seedemu_integration`` because ownership and SEED lifecycle meet here.
+    it. It is not a scenario facade or Simulator input factory. It is public
+    from ``skyseed_v2.seedemu_integration`` because ownership and SEED
+    lifecycle meet here.
     """
 
     def __init__(self, asn: int, subnet_template: str = "10.{}.0.0/16") -> None:

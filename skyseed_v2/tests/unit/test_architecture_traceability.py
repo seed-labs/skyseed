@@ -76,6 +76,7 @@ def test_current_api_mermaid_names_are_real_and_classified() -> None:
         "SatelliteBase": seedemu_integration.SatelliteBase,
         "SatelliteSimulationInput": simulator_input.SatelliteSimulationInput,
         "Shell": entities.Shell,
+        "SimulationNodeId": simulator_input.SimulationNodeId,
         "SimulatorStaticInput": simulator_input.SimulatorStaticInput,
         "SkyseedAutonomousSystem": seedemu_integration.SkyseedAutonomousSystem,
         "SkyseedDockerCompiler": seedemu_integration.SkyseedDockerCompiler,
@@ -133,12 +134,13 @@ def test_terminology_and_project_rules_cover_the_governance_contract() -> None:
         "Specification",
         "Loader",
         "Applier",
-        "Descriptor",
+        "SatelliteSimulationInput",
+        "GroundStationSimulationInput",
         "SimulatorStaticInput",
-        "Projector",
+        "SimulationNodeId",
         "Compiler",
         "Launcher",
-        "ApplyResult / BuildResult",
+        "ApplyResult",
     ):
         assert f"| {term} |" in terminology
 
@@ -175,15 +177,15 @@ def test_current_emulator_documents_have_no_known_stale_implementation_names() -
         assert "using its adjacent versioned" not in document
 
     api_document = API_DOCUMENT.read_text(encoding="utf-8")
-    for required_mapping in (
-        "Temporary design names and current implementation names",
-        "`createShell` / `createOrbit` / `createSatellite` / `createGroundStation`",
-        "`StaticEmulatorScenarioBuilder.build`",
-        "`StaticEmulatorSpecificationApplier.apply`",
-        "Responsibility preserved?",
-        "Design drift?",
+    for required_section in (
+        "Package ownership",
+        "Simulator static-input design",
+        "Public construction paths",
+        "Rename and removal record",
+        "API change summary",
+        "Review checklist",
     ):
-        assert required_mapping in api_document
+        assert required_section in api_document
 
 
 def test_operation_result_is_application_only() -> None:

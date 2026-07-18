@@ -2,9 +2,9 @@
 
 This handwritten example shows the complete public composition: two isolated
 Satellites, one GroundStation, one ordinary SEED AS/Network/Router, one IX, one
-explicit eBGP peering, the Catalog and the Compiler. `operator` is descriptive
-metadata only. No YAML facade, GS–Satellite link or dynamic Simulator field
-exists.
+explicit eBGP peering, `SimulatorStaticInput.from_autonomous_systems()` and the
+Compiler. `operator` is descriptive metadata only. No YAML facade,
+GS–Satellite link or dynamic Simulator field exists.
 
 Generate and validate from `skyseed_v2/`:
 

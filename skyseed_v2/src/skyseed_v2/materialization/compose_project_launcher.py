@@ -64,8 +64,8 @@ class ComposeServiceExpectations:
     """Classify expected final states for every Compose service.
 
     Layer: materialization integration value. Launcher callers create it and
-    `ComposeProjectLauncher` verifies it. It is not a Catalog, scenario or
-    runtime domain model and is public from the materialization module.
+    `ComposeProjectLauncher` verifies it. It is not an inventory service,
+    scenario or runtime entity model and is public from materialization.
     """
 
     long_running: tuple[str, ...]
@@ -112,8 +112,8 @@ class ComposeMaterializationResult:
     """Record evidence that one complete Compose project reached expected states.
 
     Layer: materialization operation result. `ComposeProjectLauncher` creates
-    it and integration/evidence callers read it. It is not a Catalog, domain
-    entity, deployment entity or Simulator result and is public only from the
+    it and integration/evidence callers read it. It is not an inventory,
+    Emulator entity, deployment entity or Simulator result and is public only from the
     materialization module.
     """
 

@@ -182,7 +182,26 @@ GPT 和 Codex 的聊天记录与记忆仅用于协助工作，不能替代仓库
 
 ---
 
-## 6. 本文件的使用
+## 6. 当前 v2 包边界
+
+当前 v2 静态 Emulator 的源码边界是：
+
+```text
+entities/              实体与紧密绑定的值对象
+simulator_input/       提供给未来 Simulator 的不可变静态输入
+seedemu_integration/   Skyseed 对外部 seedemu 的集成
+specifications/        按主题拆分的构造规格
+serialization/         版本化 YAML 读取
+application/           完整规格的应用编排
+materialization/       已编译 Compose 项目的启动工具
+```
+
+三个正式 example 分别展示直接 isolated 调用链、直接 complete 调用链和
+YAML 驱动的 large 调用链。当前包结构与公共 import 详见
+[`docs/architecture/emulator-public-construction-api.md`](./docs/architecture/emulator-public-construction-api.md)，
+Simulator 仍为 **NOT STARTED**。
+
+## 7. 本文件的使用
 
 本文件规定项目的基本设计与开发流程。
 

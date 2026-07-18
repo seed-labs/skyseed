@@ -146,7 +146,7 @@ def test_large_example_has_one_thin_file_application_path() -> None:
     )
     for required_explanation in (
         "only YAML example",
-        "not a domain entity",
+        "not an Emulator entity",
         "immutable Simulator input snapshot",
         "scenario, a SEED Registry",
         "container inventory",

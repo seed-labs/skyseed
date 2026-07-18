@@ -49,19 +49,19 @@ v2 YAML
     -> StaticEmulatorScenarioLoader.load
     -> immutable StaticEmulatorScenarioSpecification
     -> StaticEmulatorSpecificationApplier.apply
-    -> the same public domain create methods
-    -> SimulationEntityCatalog
+    -> the same public entity create methods
+    -> SimulatorStaticInput.from_autonomous_systems
 ```
 
 The Loader is a serialization adapter. The Applier is an optional application
-service for complete specifications, not a domain entity and not a required
+service for complete specifications, not an Emulator entity and not a required
 handwritten entrypoint. Multiple Shells remain a collection owned by an AS;
-there is no population or `Constellation` domain object.
+there is no population or `Constellation` entity.
 
 Both input styles converge at `SkyseedAutonomousSystem.create_shell`,
 `Shell.create_orbit`, `Orbit.create_satellite` and
-`SkyseedAutonomousSystem.create_ground_station`. `SimulationEntityCatalog` is
-the immutable Descriptor boundary for future Simulator consumers; it is not a
+`SkyseedAutonomousSystem.create_ground_station`. `SimulatorStaticInput` is the
+immutable static-data boundary for future Simulator consumers; it is not a
 scenario, SEED Registry, container inventory or output-directory index.
 
 The `reference/` directory is excluded from the package and formal example

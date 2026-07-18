@@ -35,7 +35,7 @@ class SimulatorStaticInput:
 
     Layer: immutable Emulator-to-Simulator boundary aggregate. Handwritten
     callers or the specification Applier create it; future Simulator code reads
-    it. It is not a Catalog service, builder, Registry view or runtime model.
+    it. It is not a lookup service, builder, Registry view or runtime model.
     It is public because it is the complete static Simulator input boundary.
     """
 

@@ -15,8 +15,8 @@ entity or nested builder chain.
 This is the only YAML example because the scale input is large data rather
 than teaching code. `StaticEmulatorScenarioLoader` is a serialization adapter,
 and `StaticEmulatorSpecificationApplier` is an optional application service,
-not a domain entity or mandatory facade. The resulting
-`SimulationEntityCatalog` is an immutable Descriptor snapshot; it is not the
+not an Emulator entity or mandatory facade. The resulting
+`SimulatorStaticInput` is an immutable Simulator input snapshot; it is not the
 scenario, a SEED Registry, a container inventory or a Compose directory.
 
 Compile and validate without starting 365 services:
