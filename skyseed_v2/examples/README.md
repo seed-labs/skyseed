@@ -50,7 +50,8 @@ v2 YAML
     -> immutable StaticEmulatorScenarioSpecification
     -> StaticEmulatorSpecificationApplier.apply
     -> the same public entity create methods
-    -> SimulatorStaticInput.from_autonomous_systems
+    -> application.create_simulator_static_input
+    -> immutable SimulatorStaticInput
 ```
 
 The Loader is a serialization adapter. The Applier is an optional application
@@ -63,6 +64,8 @@ Both input styles converge at `SkyseedAutonomousSystem.create_shell`,
 `SkyseedAutonomousSystem.create_ground_station`. `SimulatorStaticInput` is the
 immutable static-data boundary for future Simulator consumers; it is not a
 scenario, SEED Registry, container inventory or output-directory index.
+Entity traversal and conversion belong to application; the input package
+contains only immutable data and indexing behavior.
 
 The `reference/` directory is excluded from the package and formal example
 path. It preserves offline historical investigation/conversion tooling only;

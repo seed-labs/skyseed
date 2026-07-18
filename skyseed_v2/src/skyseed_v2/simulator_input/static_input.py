@@ -5,11 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Mapping, Self
-
-from seedemu.core import AutonomousSystem
-
-from skyseed_v2.seedemu_integration.skyseed_autonomous_system import SkyseedAutonomousSystem
+from typing import Mapping
 
 from .ground_station import GroundStationSimulationInput
 from .identity import (
@@ -33,10 +29,10 @@ class SimulatorStaticInput:
     It does not retain Emulator entities, SEED registries, containers, Compose
     settings, persistence objects or Simulator runtime state.
 
-    Layer: immutable Emulator-to-Simulator boundary aggregate. Handwritten
-    callers or the specification Applier create it; future Simulator code reads
+    Layer: immutable Emulator-to-Simulator boundary aggregate. Application
+    conversion or direct data callers create it; future Simulator code reads
     it. It is not a lookup service, builder, Registry view or runtime model.
-    It is public because it is the complete static Simulator input boundary.
+    It is public from simulator_input because it is the complete static input.
     """
 
     _satellites: tuple[SatelliteSimulationInput, ...]
@@ -96,46 +92,6 @@ class SimulatorStaticInput:
             "_by_node_id",
             MappingProxyType(by_node_id),
         )
-
-    @classmethod
-    def from_autonomous_systems(
-        cls,
-        autonomous_systems: AutonomousSystem | Iterable[AutonomousSystem],
-    ) -> Self:
-        """Copy static inputs from Skyseed AS objects without using Registry."""
-
-        candidates = cls._snapshot_autonomous_systems(autonomous_systems)
-        satellites: list[SatelliteSimulationInput] = []
-        ground_stations: list[GroundStationSimulationInput] = []
-        for autonomous_system in candidates:
-            if not isinstance(autonomous_system, AutonomousSystem):
-                raise TypeError(
-                    "autonomous_systems must contain AutonomousSystem values"
-                )
-            if not isinstance(autonomous_system, SkyseedAutonomousSystem):
-                continue
-            satellites.extend(
-                SatelliteSimulationInput.from_satellite(satellite)
-                for satellite in autonomous_system.satellites()
-            )
-            ground_stations.extend(
-                GroundStationSimulationInput.from_ground_station(ground_station)
-                for ground_station in autonomous_system.ground_stations()
-            )
-        return cls(satellites, ground_stations)
-
-    @staticmethod
-    def _snapshot_autonomous_systems(
-        autonomous_systems: AutonomousSystem | Iterable[AutonomousSystem],
-    ) -> tuple[AutonomousSystem, ...]:
-        if isinstance(autonomous_systems, AutonomousSystem):
-            return (autonomous_systems,)
-        try:
-            return tuple(autonomous_systems)
-        except TypeError as error:
-            raise TypeError(
-                "autonomous_systems must be an AutonomousSystem or iterable"
-            ) from error
 
     @staticmethod
     def _validate_input_types(

@@ -10,7 +10,9 @@ Its visible construction path is
 `StaticEmulatorScenarioLoader.load -> StaticEmulatorSpecificationApplier.apply`.
 The Applier directly calls the same public AS/Shell/Orbit entity creation
 methods shown by the handwritten examples; it does not introduce a population
-entity or nested builder chain.
+entity or nested builder chain. It then calls
+`application.create_simulator_static_input()` with only the constructed
+Skyseed AS values.
 
 This is the only YAML example because the scale input is large data rather
 than teaching code. `StaticEmulatorScenarioLoader` is a serialization adapter,

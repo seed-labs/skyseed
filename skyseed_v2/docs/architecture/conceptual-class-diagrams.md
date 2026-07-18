@@ -62,16 +62,23 @@ classDiagram
 with the same primary name under `entities/`. Splitting those files does not
 change ownership or create a parent above Shell.
 
-## Emulator → Simulator static input
+## Emulator → application conversion → Simulator static input
+
+```mermaid
+flowchart LR
+    SAT[Satellite] --> CS[application.create_satellite_simulation_input]
+    GS[GroundStation] --> CG[application.create_ground_station_simulation_input]
+    AS[Iterable of SkyseedAutonomousSystem] --> CA[application.create_simulator_static_input]
+    CA --> CS
+    CA --> CG
+    CS --> SI[SatelliteSimulationInput]
+    CG --> GI[GroundStationSimulationInput]
+    SI --> AGG[SimulatorStaticInput]
+    GI --> AGG
+```
 
 ```mermaid
 classDiagram
-    class Satellite {
-        <<Emulator entity + SEED Node>>
-    }
-    class GroundStation {
-        <<Emulator entity + SEED Router>>
-    }
     class SimulationNodeId {
         <<Simulator-input value>>
         +asn
@@ -80,31 +87,26 @@ classDiagram
     }
     class SatelliteSimulationInput {
         <<immutable Simulator input>>
-        +from_satellite(satellite)$
     }
     class GroundStationSimulationInput {
         <<immutable Simulator input>>
-        +from_ground_station(ground_station)$
     }
     class SimulatorStaticInput {
         <<immutable Simulator input aggregate>>
-        +from_autonomous_systems(autonomous_systems)$
         +get(node_id)
         +list_nodes() tuple
     }
 
-    SatelliteSimulationInput --> Satellite : copies values from
-    GroundStationSimulationInput --> GroundStation : copies values from
     SatelliteSimulationInput "1" *-- "1" SimulationNodeId : identifies
     GroundStationSimulationInput "1" *-- "1" SimulationNodeId : identifies
     SimulatorStaticInput "1" *-- "*" SatelliteSimulationInput : contains
     SimulatorStaticInput "1" *-- "*" GroundStationSimulationInput : contains
 ```
 
-The arrow direction is intentional: static input modules depend on entity
-types so their classmethods can copy values. Entity modules never depend on the
-input package. The copied objects retain no entity, Registry, container or
-Compose reference.
+The dependency direction is intentional: application conversion depends on
+entities, seedemu integration and `simulator_input`; the input package depends
+on none of those Emulator/SEED layers. The copied objects retain no entity,
+Registry, container or Compose reference.
 
 ## Specification, serialization and application
 
@@ -137,6 +139,7 @@ classDiagram
 
     StaticEmulatorScenarioLoader --> StaticEmulatorScenarioSpecification : creates
     StaticEmulatorSpecificationApplier --> StaticEmulatorScenarioSpecification : reads
+    StaticEmulatorSpecificationApplier --> SimulatorStaticInput : creates through application conversion
     StaticEmulatorSpecificationApplier --> StaticEmulatorApplyResult : returns
     StaticEmulatorApplyResult *-- Emulator : exposes
     StaticEmulatorApplyResult *-- SimulatorStaticInput : exposes

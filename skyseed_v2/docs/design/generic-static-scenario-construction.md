@@ -11,6 +11,7 @@ versioned YAML
 → immutable specifications
 → StaticEmulatorSpecificationApplier
 → public create/join methods
+→ application.create_simulator_static_input
 → SimulatorStaticInput
 → SkyseedDockerCompiler
 ```
@@ -39,7 +40,8 @@ Generated IDs are deterministic and independent of input order.
 `application/static_scenario_application.py` owns one heterogeneous operation:
 apply a complete validated specification through the same methods used by
 handwritten callers. It creates no alternate Shell/Orbit/Satellite hierarchy
-and introduces no population or constellation object.
+and introduces no population or constellation object. After entity creation,
+it calls the direct application-layer static-input conversion function.
 
 The result exposes the Emulator, Skyseed AS tuple, ordinary AS tuple and
 `SimulatorStaticInput`. No one existing entity truthfully owns all four values,

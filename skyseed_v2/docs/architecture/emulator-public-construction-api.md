@@ -25,7 +25,7 @@ SkyseedAutonomousSystem
 | `skyseed_v2.seedemu_integration` | Skyseed-owned extensions of external seedemu | `SkyseedAutonomousSystem`, `SatelliteBase`, `SkyseedDockerCompiler` |
 | `skyseed_v2.specifications` | Immutable construction inputs split by subject | all qualified `*Specification` types |
 | `skyseed_v2.serialization` | Versioned YAML parsing into specifications | `StaticEmulatorScenarioLoader` |
-| `skyseed_v2.application` | Application sequencing over public create/join methods | `StaticEmulatorSpecificationApplier`, `StaticEmulatorApplyResult` |
+| `skyseed_v2.application` | Application sequencing and entity-to-input conversion | `StaticEmulatorSpecificationApplier`, `StaticEmulatorApplyResult`, `create_satellite_simulation_input`, `create_ground_station_simulation_input`, `create_simulator_static_input` |
 | `skyseed_v2.materialization` | Launch an already compiled Compose project | `ComposeProjectLauncher` |
 
 These are ownership packages, not compatibility facades. The defining files
@@ -33,28 +33,33 @@ are discoverable from the primary class names.
 
 ## Simulator static-input design
 
-The boundary is a frozen scalar snapshot:
+The boundary is a frozen scalar snapshot with conversion owned by application:
 
 ```text
 Satellite
-  → SatelliteSimulationInput.from_satellite()
+  → application.create_satellite_simulation_input()
+  → SatelliteSimulationInput
 
 GroundStation
-  → GroundStationSimulationInput.from_ground_station()
+  → application.create_ground_station_simulation_input()
+  → GroundStationSimulationInput
 
-one or more AS objects
-  → SimulatorStaticInput.from_autonomous_systems()
+Iterable[SkyseedAutonomousSystem]
+  → application.create_simulator_static_input()
+  → SimulatorStaticInput
 ```
 
-The entity types never import `simulator_input`. Input conversion copies
-approved values and retains no entity reference. `SimulatorStaticInput`
-contains immutable tuples and a read-only logical-ID index; it retains no
-Registry, container, namespace, Compose, persistence or runtime Simulator
-object. Ordinary seedemu AS objects are accepted in a mixed input iterable and
-ignored because they own no supported Skyseed entities.
+The entity types never import `simulator_input`. The input package imports no
+entity, seedemu integration or upstream seedemu module. Application conversion
+copies approved values and retains no entity reference. The aggregate function
+accepts only Skyseed AS values and fails closed on ordinary SEED AS or unknown
+objects. `SimulatorStaticInput` receives copied data, validates and sorts it,
+rejects duplicate logical IDs and builds a read-only index; it neither
+traverses AS objects nor recognizes SEED. No input retains Registry, container,
+namespace, Compose, persistence or runtime Simulator objects.
 
-The direct classmethods replace copying-only conversion services. The
-multi-AS classmethod replaces a separately instantiated aggregate builder.
+The three direct functions replace both copying-only projector classes and the
+short-lived input classmethods without introducing another service class.
 
 ## Public construction paths
 
@@ -88,7 +93,8 @@ flowchart LR
     G --> X
     N --> X
     X --> P[explicit eBGP]
-    A --> I[SimulatorStaticInput.from_autonomous_systems]
+    A --> F[application.create_simulator_static_input]
+    F --> I[SimulatorStaticInput]
     B --> C[render + SkyseedDockerCompiler]
 ```
 
@@ -104,7 +110,8 @@ flowchart LR
     L --> S[StaticEmulatorScenarioSpecification]
     S --> A[StaticEmulatorSpecificationApplier.apply]
     A --> E[public entity create/join methods]
-    E --> I[SimulatorStaticInput.from_autonomous_systems]
+    E --> F[application.create_simulator_static_input]
+    F --> I[SimulatorStaticInput]
     A --> C[render + SkyseedDockerCompiler]
 ```
 
@@ -168,15 +175,12 @@ classDiagram
     }
     class SatelliteSimulationInput {
         <<immutable Simulator input>>
-        +from_satellite(satellite)$
     }
     class GroundStationSimulationInput {
         <<immutable Simulator input>>
-        +from_ground_station(ground_station)$
     }
     class SimulatorStaticInput {
         <<immutable Simulator input aggregate>>
-        +from_autonomous_systems(autonomous_systems)$
         +list_nodes() tuple
     }
     class SatelliteBase {
@@ -214,14 +218,13 @@ classDiagram
     Orbit *-- OrbitParameters : uses
     SkyseedAutonomousSystem "1" *-- "*" GroundStation : owns
     GroundStation *-- GroundStationLocation : uses
-    SatelliteSimulationInput --> Satellite : copies static values from
-    GroundStationSimulationInput --> GroundStation : copies static values from
     SatelliteSimulationInput *-- SimulationNodeId : identifies
     GroundStationSimulationInput *-- SimulationNodeId : identifies
     SimulatorStaticInput *-- SatelliteSimulationInput : contains
     SimulatorStaticInput *-- GroundStationSimulationInput : contains
     StaticEmulatorScenarioLoader --> StaticEmulatorScenarioSpecification : creates
     StaticEmulatorSpecificationApplier --> StaticEmulatorScenarioSpecification : reads
+    StaticEmulatorSpecificationApplier --> SimulatorStaticInput : creates through application conversion
     StaticEmulatorSpecificationApplier --> StaticEmulatorApplyResult : returns
     Emulator --> SkyseedDockerCompiler : compiles with
 ```
@@ -244,12 +247,19 @@ classDiagram
 from skyseed_v2 import (
     GroundStation,
     GroundStationLocation,
-    GroundStationSimulationInput,
     Orbit,
     OrbitParameters,
     Satellite,
-    SatelliteSimulationInput,
     Shell,
+)
+```
+
+Simulator static-input types are intentionally explicit subpackage imports:
+
+```python
+from skyseed_v2.simulator_input import (
+    GroundStationSimulationInput,
+    SatelliteSimulationInput,
     SimulationNodeId,
     SimulatorStaticInput,
 )
@@ -260,9 +270,10 @@ from skyseed_v2 import (
 | Previous name/path | Current name/path | Disposition |
 | --- | --- | --- |
 | per-entity `*Descriptor` types | per-entity `*SimulationInput` types | renamed to state consumer and direction |
-| stateless per-entity projector classes | `from_satellite()` / `from_ground_station()` | removed; conversion belongs to the input type |
+| stateless per-entity projector classes | direct `application.create_*_simulation_input()` functions | removed; conversion belongs to application without another class |
+| input `from_satellite()` / `from_ground_station()` classmethods | direct application conversion functions | removed so input types remain pure data |
 | entity-catalog aggregate | `SimulatorStaticInput` | renamed from collection metaphor to actual boundary role |
-| separate catalog builder | `SimulatorStaticInput.from_autonomous_systems()` | removed; one direct aggregate constructor |
+| separate catalog builder and aggregate classmethod | `application.create_simulator_static_input()` | removed; one direct fail-closed application function |
 | `domain/` | `entities/` | renamed because the objects also carry SEED capability |
 | `seed/` | `seedemu_integration/` | renamed to identify external integration ownership |
 | root scenario loader/application modules | `serialization/` and `application/` | moved to explicit responsibility packages |
@@ -273,8 +284,10 @@ No compatibility aliases remain for deleted classes or old import paths.
 ## API change summary
 
 - Entity `create_*` methods and ownership relations are unchanged.
-- Root imports keep entity/value types and expose the newly named static input
-  types; deleted boundary names are not aliased.
+- Root imports keep only the six entity/value types. Static input types are
+  imported from `skyseed_v2.simulator_input`; no root aliases remain.
+- Entity-to-input conversion functions are imported from
+  `skyseed_v2.application`.
 - Integration imports now come from `skyseed_v2.seedemu_integration`.
 - Loader and Applier imports now come from `skyseed_v2.serialization` and
   `skyseed_v2.application`.
@@ -287,5 +300,7 @@ No compatibility aliases remain for deleted classes or old import paths.
 - [ ] Entity ownership still matches AS → Shell → Orbit → Satellite and AS →
   GroundStation.
 - [ ] Static Simulator inputs contain no entity or runtime-resource reference.
+- [ ] `simulator_input` imports no entity, seedemu integration or upstream
+      seedemu module.
 - [ ] Current imports and filenames are understandable without source search.
 - [ ] Simulator remains NOT STARTED.

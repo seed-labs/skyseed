@@ -5,9 +5,10 @@ from __future__ import annotations
 from math import isfinite
 from typing import Mapping
 
+from skyseed_v2.identifier import validate_identifier
+
 from .orbit_parameters import OrbitParameters
 from .satellite import Satellite
-from .validation import validate_identifier
 
 
 class Orbit:

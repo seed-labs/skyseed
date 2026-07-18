@@ -1,3 +1,5 @@
+from dataclasses import fields
+
 from seedemu.core import Emulator
 
 from skyseed_v2.application import StaticEmulatorSpecificationApplier
@@ -112,6 +114,12 @@ def test_applier_supports_satellite_only_ground_only_and_multiple_skyseed_as() -
     ) == ("gs-a",)
     assert len(result.simulator_input.list_satellites()) == 1
     assert len(result.simulator_input.list_ground_stations()) == 1
+    assert tuple(field.name for field in fields(result)) == (
+        "emulator",
+        "skyseed_autonomous_systems",
+        "ordinary_autonomous_systems",
+        "simulator_input",
+    )
 
 
 def test_applier_calls_the_approved_public_entity_creation_methods(

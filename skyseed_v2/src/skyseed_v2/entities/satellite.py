@@ -8,8 +8,10 @@ from typing import Mapping
 
 from seedemu.core import Node, Scope, ScopeTier, ScopeType
 
+from skyseed_v2.identifier import validate_identifier
+
 from .orbit_parameters import OrbitParameters
-from .validation import _validate_angle, validate_identifier
+from .validation import _validate_angle
 
 
 SATELLITE_REGISTRY_TYPE = "satnode"
@@ -32,9 +34,9 @@ class Satellite(Node):
 
     Layer: approved Emulator entity plus SEED capability.
     `Orbit.create_satellite` creates it; its Orbit/AS, SEED lifecycle, Simulator
-    input conversion and Compiler use it. It is not a specification, container
-    or runtime topology state. It is root public because it is an approved
-    user-visible entity.
+    application conversion and Compiler use it. It is not a specification,
+    container or runtime topology state. It is root public because it is an
+    approved user-visible entity.
     """
 
     def __init__(

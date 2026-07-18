@@ -55,20 +55,21 @@ is why the package is named `entities`, not `domain`.
 
 ## 4. Emulator → Simulator static boundary
 
-The Emulator produces immutable input data through three direct constructors:
+Application produces immutable input data through three direct functions:
 
-- `SatelliteSimulationInput.from_satellite()`;
-- `GroundStationSimulationInput.from_ground_station()`;
-- `SimulatorStaticInput.from_autonomous_systems()`.
+- `create_satellite_simulation_input()`;
+- `create_ground_station_simulation_input()`;
+- `create_simulator_static_input()`.
 
 Each per-entity input copies only approved static scalars. The aggregate sorts
 by `SimulationNodeId.value`, rejects duplicate complete logical IDs and
 provides immutable typed query results. It does not retain entity, Registry,
 container, namespace, Compose, persistence or runtime Simulator objects.
 
-Dependencies point from `simulator_input` toward `entities`, never back from
-entities toward the boundary. Static input is data, not a facade over Emulator
-objects.
+Dependencies point from application toward `entities`,
+`seedemu_integration` and `simulator_input`. The input package itself imports
+none of those Emulator/SEED layers and uses only the neutral root identifier
+validator. Static input is data, not a facade over Emulator objects.
 
 ## 5. Construction inputs and application
 

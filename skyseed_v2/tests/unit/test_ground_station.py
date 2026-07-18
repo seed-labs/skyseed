@@ -4,6 +4,7 @@ import pytest
 from seedemu.core import Router
 
 import skyseed_v2
+from skyseed_v2.application import create_ground_station_simulation_input
 from skyseed_v2.entities import GroundStation, GroundStationLocation
 from skyseed_v2.seedemu_integration import SkyseedAutonomousSystem
 from skyseed_v2.simulator_input import (
@@ -64,7 +65,7 @@ def test_ground_station_as_rejects_duplicate_stable_ids() -> None:
 
 def test_ground_station_simulation_input_is_immutable_and_restricted() -> None:
     station = create_station()
-    simulation_input = GroundStationSimulationInput.from_ground_station(station)
+    simulation_input = create_ground_station_simulation_input(station)
 
     assert simulation_input == GroundStationSimulationInput(
         node_id=SimulationNodeId(151, "ground-station", "gs-1"),

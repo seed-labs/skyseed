@@ -6,7 +6,9 @@ from dataclasses import dataclass
 from hashlib import sha256
 from math import isfinite
 
-from ._validation import _identifier, _text
+from skyseed_v2.identifier import validate_identifier
+
+from ._validation import _text
 from .network import InternetExchangeAttachmentSpecification
 
 
@@ -62,7 +64,9 @@ class GroundStationSpecification:
             object.__setattr__(
                 self,
                 "ground_station_id",
-                _identifier(self.ground_station_id, "ground_station_id"),
+                validate_identifier(
+                    self.ground_station_id, "ground_station_id"
+                ),
             )
         else:
             object.__setattr__(

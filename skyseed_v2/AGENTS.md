@@ -27,3 +27,5 @@ Read `README.md`, `docs/CURRENT.md` and
   correction.
 - Do not start Simulator, dynamic topology, Runner or new cross-layer contract
   work without explicit authorization.
+- Keep `simulator_input` limited to immutable, seedemu-independent data types.
+  Entity traversal and entity-to-input conversion belong to `application`.

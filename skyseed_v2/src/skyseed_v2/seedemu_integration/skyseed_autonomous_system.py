@@ -14,7 +14,7 @@ from skyseed_v2.entities import (
     Satellite,
     Shell,
 )
-from skyseed_v2.entities.validation import validate_identifier
+from skyseed_v2.identifier import validate_identifier
 
 
 class SkyseedAutonomousSystem(AutonomousSystem):

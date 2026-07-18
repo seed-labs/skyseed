@@ -18,6 +18,8 @@ from skyseed_v2.specifications import (
     ground_station_id_for,
 )
 
+from .simulator_static_input import create_simulator_static_input
+
 
 __all__ = [
     "StaticEmulatorApplyResult",
@@ -90,7 +92,7 @@ class StaticEmulatorSpecificationApplier:
             skyseed_autonomous_systems,
             specification,
         )
-        simulator_input = SimulatorStaticInput.from_autonomous_systems(
+        simulator_input = create_simulator_static_input(
             skyseed_autonomous_systems
         )
         return StaticEmulatorApplyResult(

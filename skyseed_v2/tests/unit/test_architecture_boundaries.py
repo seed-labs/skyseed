@@ -1,11 +1,15 @@
 import ast
 import importlib.util
 import inspect
+import os
 from pathlib import Path
+from subprocess import run
+import sys
 
 import skyseed_v2
 from skyseed_v2 import simulator_input
-from skyseed_v2.entities import GroundStation, Satellite, validate_identifier
+from skyseed_v2.entities import GroundStation, Satellite
+from skyseed_v2.identifier import validate_identifier
 from skyseed_v2.seedemu_integration import SkyseedDockerCompiler
 from skyseed_v2.seedemu_integration.metadata import (
     SEED_METADATA_PREFIX,
@@ -57,7 +61,7 @@ def test_skyseed_as_owns_entities_but_not_simulator_input() -> None:
     )
 
 
-def test_simulator_input_dependencies_point_toward_emulator_entities() -> None:
+def test_simulator_input_has_only_data_layer_dependencies() -> None:
     from skyseed_v2.simulator_input import (
         ground_station,
         identity,
@@ -70,9 +74,23 @@ def test_simulator_input_dependencies_point_toward_emulator_entities() -> None:
     satellite_imports = imported_modules(satellite)
     ground_station_imports = imported_modules(ground_station)
 
-    assert "skyseed_v2.entities" in satellite_imports
-    assert "skyseed_v2.entities" in ground_station_imports
-    assert "skyseed_v2.entities.validation" in identity_imports
+    for imports in (
+        static_input_imports,
+        identity_imports,
+        satellite_imports,
+        ground_station_imports,
+    ):
+        for forbidden_prefix in (
+            "skyseed_v2.entities",
+            "skyseed_v2.seedemu_integration",
+            "seedemu",
+        ):
+            assert not any(
+                module == forbidden_prefix
+                or module.startswith(f"{forbidden_prefix}.")
+                for module in imports
+            )
+    assert "skyseed_v2.identifier" in identity_imports
     assert ".ground_station" not in satellite_imports
     assert ".satellite" not in ground_station_imports
     assert {name for name in static_input_imports if name.startswith(".")} == {
@@ -80,8 +98,31 @@ def test_simulator_input_dependencies_point_toward_emulator_entities() -> None:
         ".identity",
         ".satellite",
     }
-    assert "seedemu.core" in static_input_imports
-    assert "skyseed_v2.seedemu_integration.skyseed_autonomous_system" in static_input_imports
+
+
+def test_simulator_input_import_does_not_load_upstream_seedemu() -> None:
+    project_root = Path(__file__).resolve().parents[2]
+    script = """
+import builtins
+original_import = builtins.__import__
+def guarded_import(name, *args, **kwargs):
+    if name == 'seedemu' or name.startswith('seedemu.'):
+        raise AssertionError(f'unexpected seedemu import: {name}')
+    return original_import(name, *args, **kwargs)
+builtins.__import__ = guarded_import
+from skyseed_v2.simulator_input import SimulatorStaticInput
+assert SimulatorStaticInput().list_nodes() == ()
+"""
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = str(project_root / "src")
+    result = run(
+        (sys.executable, "-c", script),
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_static_input_has_no_registry_compiler_or_output_dependency() -> None:
@@ -89,8 +130,10 @@ def test_static_input_has_no_registry_compiler_or_output_dependency() -> None:
 
     static_input_imports = imported_modules(static_input)
 
-    assert "skyseed_v2.seedemu_integration.skyseed_autonomous_system" in static_input_imports
     for forbidden_dependency in (
+        "skyseed_v2.entities",
+        "skyseed_v2.seedemu_integration",
+        "seedemu",
         "skyseed_v2.seedemu_integration.skyseed_docker_compiler",
         "skyseed_v2.seedemu_integration.metadata",
         "seedemu.compiler",
@@ -133,12 +176,13 @@ def test_removed_and_deferred_boundary_apis_are_not_exported() -> None:
         assert importlib.util.find_spec(removed_module) is None
 
 
-def test_simulator_static_input_is_root_public_with_no_entity_back_dependency() -> None:
+def test_simulator_static_input_is_subpackage_public_with_no_entity_back_dependency() -> None:
     from skyseed_v2.simulator_input import SimulatorStaticInput
     from skyseed_v2.entities import ground_station, satellite
 
-    assert skyseed_v2.SimulatorStaticInput is SimulatorStaticInput
     assert "SimulatorStaticInput" in simulator_input.__all__
+    for input_name in simulator_input.__all__:
+        assert not hasattr(skyseed_v2, input_name)
     assert not any(
         "simulator_input" in module_name
         for module_name in imported_modules(satellite)
@@ -150,7 +194,7 @@ def test_simulator_static_input_is_root_public_with_no_entity_back_dependency() 
 
 
 def test_shared_validation_and_seed_metadata_have_explicit_owners() -> None:
-    assert validate_identifier.__module__ == "skyseed_v2.entities.validation"
+    assert validate_identifier.__module__ == "skyseed_v2.identifier"
     assert SEED_METADATA_PREFIX == "org.seedsecuritylabs.seedemu.meta."
     assert SKYSEED_METADATA_PREFIX == "skyseed."
 
@@ -229,7 +273,10 @@ def test_compose_materialization_is_outside_emulator_and_compiler_models() -> No
 
 
 def test_serialization_and_application_respect_package_boundaries() -> None:
-    from skyseed_v2.application import static_scenario_application
+    from skyseed_v2.application import (
+        simulator_static_input as simulator_static_input_application,
+        static_scenario_application,
+    )
     from skyseed_v2.entities import ground_station, satellite
     from skyseed_v2.serialization import static_emulator_yaml_loader
 
@@ -298,6 +345,21 @@ def test_serialization_and_application_respect_package_boundaries() -> None:
         "duplicate Satellites",
     ):
         assert forbidden not in application_source
+
+    conversion_imports = imported_modules(simulator_static_input_application)
+    for required_dependency in (
+        "skyseed_v2.entities",
+        "skyseed_v2.seedemu_integration",
+        "skyseed_v2.simulator_input",
+    ):
+        assert required_dependency in conversion_imports
+    conversion_source = Path(
+        inspect.getsourcefile(simulator_static_input_application)
+    ).read_text(encoding="utf-8")
+    assert not any(
+        isinstance(node, ast.ClassDef)
+        for node in ast.walk(ast.parse(conversion_source))
+    )
 
 
 def test_constellation_helper_never_became_a_domain_or_public_api() -> None:

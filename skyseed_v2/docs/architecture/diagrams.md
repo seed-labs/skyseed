@@ -14,10 +14,13 @@ flowchart LR
     SER[serialization]
     APP[application]
     MAT[materialization]
+    ID[identifier]
 
     SEED --> ENT
-    INPUT --> ENT
-    INPUT --> SEED
+    ENT --> ID
+    SEED --> ID
+    INPUT --> ID
+    SPEC --> ID
     SER --> SPEC
     APP --> SPEC
     APP --> ENT
@@ -25,8 +28,10 @@ flowchart LR
     APP --> INPUT
 ```
 
-There is no arrow from `entities` to `simulator_input`. `materialization` is
-independent of entities, static input and seedemu Compiler implementation.
+There is no arrow from `simulator_input` to entities, seedemu integration or
+upstream seedemu. `identifier` is the single neutral cross-layer identifier
+validator. `materialization` is independent of entities, static input and
+seedemu Compiler implementation.
 
 ## 2. Entity ownership
 
@@ -94,7 +99,8 @@ flowchart TD
     G --> IX
     R --> IX
     IX --> P[explicit eBGP]
-    A --> I[SimulatorStaticInput.from_autonomous_systems]
+    A --> F[application.create_simulator_static_input]
+    F --> I[SimulatorStaticInput]
     B --> C[Emulator.render → SkyseedDockerCompiler]
 ```
 
@@ -107,43 +113,30 @@ flowchart LR
     L --> SPEC[immutable specifications]
     SPEC --> APP[StaticEmulatorSpecificationApplier.apply]
     APP --> CREATE[public create/join methods]
-    CREATE --> INPUT[SimulatorStaticInput.from_autonomous_systems]
+    CREATE --> CONVERT[application.create_simulator_static_input]
+    CONVERT --> INPUT[immutable SimulatorStaticInput]
     APP --> COMP[render + SkyseedDockerCompiler]
 ```
 
 ## 6. Static Simulator-input boundary
 
 ```mermaid
-classDiagram
-    class Satellite {
-        <<Emulator entity + SEED Node>>
-    }
-    class GroundStation {
-        <<Emulator entity + SEED Router>>
-    }
-    class SatelliteSimulationInput {
-        <<immutable Simulator input>>
-        +from_satellite(satellite)$
-    }
-    class GroundStationSimulationInput {
-        <<immutable Simulator input>>
-        +from_ground_station(ground_station)$
-    }
-    class SimulatorStaticInput {
-        <<immutable Simulator input aggregate>>
-        +from_autonomous_systems(autonomous_systems)$
-    }
-    class SimulationNodeId {
-        <<Simulator-input value>>
-    }
-
-    SatelliteSimulationInput --> Satellite : copies
-    GroundStationSimulationInput --> GroundStation : copies
-    SatelliteSimulationInput *-- SimulationNodeId : identifies
-    GroundStationSimulationInput *-- SimulationNodeId : identifies
-    SimulatorStaticInput *-- SatelliteSimulationInput : contains
-    SimulatorStaticInput *-- GroundStationSimulationInput : contains
+flowchart LR
+    SAT[Satellite] --> CS[application.create_satellite_simulation_input]
+    GS[GroundStation] --> CG[application.create_ground_station_simulation_input]
+    AS[Iterable of SkyseedAutonomousSystem] --> CA[application.create_simulator_static_input]
+    CA --> CS
+    CA --> CG
+    CS --> SI[SatelliteSimulationInput + SimulationNodeId]
+    CG --> GI[GroundStationSimulationInput + SimulationNodeId]
+    SI --> INPUT[SimulatorStaticInput]
+    GI --> INPUT
+    INPUT --> SIM[future Simulator consumer boundary]
 ```
+
+`SimulatorStaticInput` performs type validation, deterministic sorting,
+duplicate-ID rejection, immutable snapshotting and read-only indexing only. It
+does not traverse AS objects or call entity conversion.
 
 ## 7. Compiler artifact and materialization
 

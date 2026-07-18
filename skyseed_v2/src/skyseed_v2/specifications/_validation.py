@@ -6,20 +6,6 @@ from ipaddress import IPv4Address, IPv4Network
 from math import isfinite
 
 
-def _identifier(value: str, field_name: str) -> str:
-    if not isinstance(value, str) or not value:
-        raise ValueError(f"{field_name} must be a non-empty string")
-    if not value[0].isalnum() or any(
-        not (character.isalnum() or character in "_.-")
-        for character in value
-    ):
-        raise ValueError(
-            f"{field_name} must start with an alphanumeric character and "
-            "contain only alphanumeric characters, '_', '.', or '-'"
-        )
-    return value
-
-
 def _text(value: str, field_name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field_name} must be a non-empty string")

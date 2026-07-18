@@ -53,26 +53,17 @@ The defining files are `entities/shell.py`, `entities/orbit.py`,
 
 ## 4. Static Simulator input
 
-`SatelliteSimulationInput.from_satellite()` copies the stable identity,
-ownership IDs and orbital scalars into a frozen object. The input does not
-retain the Satellite/Node, Registry, container, namespace, Compose service or
-runtime position.
+`application.create_satellite_simulation_input()` copies the stable identity,
+ownership IDs and orbital scalars into a frozen
+`SatelliteSimulationInput`. The input type itself does not import or read the
+Satellite/Node and retains no Registry, container, namespace, Compose service
+or runtime position.
 
 ```mermaid
-classDiagram
-    class Satellite {
-        <<Emulator entity + SEED Node>>
-    }
-    class SatelliteSimulationInput {
-        <<immutable Simulator input>>
-        +from_satellite(satellite)$
-    }
-    class SimulationNodeId {
-        <<Simulator-input value>>
-    }
-
-    SatelliteSimulationInput --> Satellite : copies static values from
-    SatelliteSimulationInput *-- SimulationNodeId : identifies
+flowchart LR
+    SAT[Satellite] --> CONVERT[application.create_satellite_simulation_input]
+    CONVERT --> INPUT[SatelliteSimulationInput]
+    INPUT --> ID[SimulationNodeId]
 ```
 
 ## 5. seedemu lifecycle and Compiler

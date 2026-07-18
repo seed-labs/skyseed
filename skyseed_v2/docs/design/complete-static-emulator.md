@@ -22,23 +22,22 @@ Compose service, persistence object or execution target.
 Construction is direct:
 
 ```python
-simulator_input = SimulatorStaticInput.from_autonomous_systems(
-    (skyseed_as, ordinary_as)
-)
+simulator_input = create_simulator_static_input((skyseed_as,))
 ```
 
-Ordinary AS objects are ignored because they expose no supported Skyseed
-entity input. Adding entities after construction does not mutate the existing
-snapshot.
+The application function accepts only `SkyseedAutonomousSystem` values;
+ordinary SEED AS objects fail closed rather than being silently ignored.
+Adding entities after construction does not mutate the existing snapshot.
 
 ## 3. Per-entity conversion
 
 ```python
-satellite_input = SatelliteSimulationInput.from_satellite(satellite)
-station_input = GroundStationSimulationInput.from_ground_station(station)
+satellite_input = create_satellite_simulation_input(satellite)
+station_input = create_ground_station_simulation_input(station)
 ```
 
-The immutable input types own this copying operation. There is no stateless
+Application owns this copying operation. The immutable input types contain
+data validation and aggregation behavior only; there is no stateless
 conversion class and no separately instantiated multi-AS builder.
 
 ## 4. Formal complete example
@@ -51,10 +50,11 @@ conversion class and no separately instantiated multi-AS builder.
 4. GroundStation construction and IX attachment;
 5. ordinary AS → Network → Router and IX attachment;
 6. explicit eBGP;
-7. `SimulatorStaticInput.from_autonomous_systems()`;
+7. `create_simulator_static_input((skyseed_as,))`;
 8. render and `SkyseedDockerCompiler`.
 
-It deliberately imports no YAML Loader or application service.
+It deliberately imports no YAML Loader or specification Applier. Its one
+application import is the direct static-input conversion function.
 
 ## 5. Identity and runtime separation
 

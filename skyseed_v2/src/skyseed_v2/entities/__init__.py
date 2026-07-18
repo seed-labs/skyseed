@@ -15,7 +15,6 @@ from .satellite import (
     SatelliteRole,
 )
 from .shell import Shell
-from .validation import validate_identifier
 
 __all__ = [
     "GROUND_STATION_REGISTRY_TYPE",
@@ -29,5 +28,4 @@ __all__ = [
     "Satellite",
     "SatelliteRole",
     "Shell",
-    "validate_identifier",
 ]

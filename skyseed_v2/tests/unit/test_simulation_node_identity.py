@@ -5,17 +5,22 @@ from typing import get_type_hints
 import pytest
 
 import skyseed_v2
+from skyseed_v2.application import (
+    create_ground_station_simulation_input,
+    create_satellite_simulation_input,
+)
 from skyseed_v2.simulator_input import (
     GroundStationSimulationInput,
     SatelliteSimulationInput,
     SimulationNodeId,
+    SimulatorStaticInput,
 )
 
 
 def test_simulation_node_id_is_stable_hashable_and_backend_independent() -> None:
     identity = SimulationNodeId(65001, "satellite", "shared-id")
 
-    assert skyseed_v2.SimulationNodeId is SimulationNodeId
+    assert not hasattr(skyseed_v2, "SimulationNodeId")
     assert identity.value == "65001/satellite/shared-id"
     assert hash(identity) == hash(SimulationNodeId(65001, "satellite", "shared-id"))
     assert {field.name for field in fields(identity)} == {
@@ -113,12 +118,15 @@ def test_simulation_inputs_reject_mismatched_logical_identities() -> None:
         )
 
 
-def test_input_constructors_accept_only_the_unique_entity() -> None:
+def test_application_converters_accept_only_the_unique_entity() -> None:
     assert tuple(
-        signature(SatelliteSimulationInput.from_satellite).parameters
+        signature(create_satellite_simulation_input).parameters
     ) == (
         "satellite",
     )
     assert tuple(
-        signature(GroundStationSimulationInput.from_ground_station).parameters
+        signature(create_ground_station_simulation_input).parameters
     ) == ("ground_station",)
+    assert not hasattr(SatelliteSimulationInput, "from_satellite")
+    assert not hasattr(GroundStationSimulationInput, "from_ground_station")
+    assert not hasattr(SimulatorStaticInput, "from_autonomous_systems")

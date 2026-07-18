@@ -7,3 +7,6 @@ documentation.
 
 Use `docs/CURRENT.md`, `docs/architecture/` and current source/tests for the
 active package layout and public API.
+
+The current dependency-boundary validation is recorded in
+`simulator-input-dependency-boundary-validation.md`.

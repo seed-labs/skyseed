@@ -43,24 +43,15 @@ classDiagram
 
 ## 3. Static Simulator input
 
-`GroundStationSimulationInput.from_ground_station()` copies logical identity,
-location and descriptive classification into a frozen object.
+`application.create_ground_station_simulation_input()` copies logical
+identity, location and descriptive classification into a frozen
+`GroundStationSimulationInput`.
 
 ```mermaid
-classDiagram
-    class GroundStation {
-        <<Emulator entity + SEED Router>>
-    }
-    class GroundStationSimulationInput {
-        <<immutable Simulator input>>
-        +from_ground_station(ground_station)$
-    }
-    class SimulationNodeId {
-        <<Simulator-input value>>
-    }
-
-    GroundStationSimulationInput --> GroundStation : copies static values from
-    GroundStationSimulationInput *-- SimulationNodeId : identifies
+flowchart LR
+    GS[GroundStation] --> CONVERT[application.create_ground_station_simulation_input]
+    CONVERT --> INPUT[GroundStationSimulationInput]
+    INPUT --> ID[SimulationNodeId]
 ```
 
 The input contains no Router reference, interface, Registry identity, border
@@ -78,7 +69,8 @@ logical entity remains recognizable.
 
 `examples/complete_static_emulator/main.py` directly shows GroundStation,
 ordinary Router/Network, IX, explicit eBGP, static Simulator input and
-compilation. It uses no YAML serialization or application facade.
+compilation. It uses no YAML serialization or specification Applier; the one
+application call is the direct static-input conversion function.
 
 ## 6. Deferred work
 

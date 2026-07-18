@@ -8,6 +8,7 @@ from yaml import compose as compose_yaml
 from yaml import safe_load
 from yaml.nodes import MappingNode, Node, SequenceNode
 
+from skyseed_v2.application import create_ground_station_simulation_input
 from skyseed_v2.entities import GroundStation, GroundStationLocation, OrbitParameters
 from skyseed_v2.seedemu_integration import (
     SATELLITE_REGISTRY_TYPE,
@@ -40,7 +41,7 @@ def build_rendered_ground_scenario():
         station_type="gateway",
         operator="Skyseed",
     )
-    input_before_ix = GroundStationSimulationInput.from_ground_station(station)
+    input_before_ix = create_ground_station_simulation_input(station)
     station.joinNetwork("ix100", "10.100.0.101")
 
     ground_as = base.createAutonomousSystem(65002)
@@ -125,7 +126,7 @@ def test_ground_station_uses_one_standard_rnode_and_border_router_instance() -> 
     assert registry.get("65001", "rnode", "gs-1") is station
     assert registry.get("65001", "brdnode", "gs-1") is station
     input_after_brd_registration = (
-        GroundStationSimulationInput.from_ground_station(station)
+        create_ground_station_simulation_input(station)
     )
     assert input_after_brd_registration == input_before_ix
     assert input_after_brd_registration.node_id == SimulationNodeId(

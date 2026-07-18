@@ -13,8 +13,9 @@
 
 ## Current objective
 
-Review and accept the package/import restructuring and the three traceable
-example call paths. This work does not authorize Simulator development.
+Review and accept the seedemu-independent Simulator static-input package,
+application-owned conversion functions and the three traceable example call
+paths. This work does not authorize Simulator development.
 
 ## Implemented package boundaries
 
@@ -29,10 +30,11 @@ skyseed_v2/
 └── materialization/          # Compose project launch tooling
 ```
 
-The root package exports only the six high-frequency entity/value types and
-the four stable Simulator-input types. Integration, specification,
-serialization, application and materialization types remain public from their
-owning packages.
+The root package exports only the six high-frequency entity/value types.
+Simulator-input, integration, specification, serialization, application and
+materialization APIs remain public from their owning packages. Root entity
+exports are resolved lazily so importing `skyseed_v2.simulator_input` does not
+load SEED-backed entities through package initialization.
 
 ## Confirmed entity and ownership model
 
@@ -54,18 +56,24 @@ SkyseedAutonomousSystem
 
 ## Emulator → Simulator static-input boundary
 
-- `SatelliteSimulationInput.from_satellite()` copies approved static scalar
-  values from one Satellite.
-- `GroundStationSimulationInput.from_ground_station()` copies approved static
-  scalar values from one GroundStation.
-- `SimulatorStaticInput.from_autonomous_systems()` collects supported inputs
-  from one or more Skyseed AS objects, ignores ordinary seedemu AS objects and
-  fails closed on duplicate `SimulationNodeId` values.
+- `application.create_satellite_simulation_input()` and
+  `application.create_ground_station_simulation_input()` copy approved static
+  scalar values from concrete Emulator entities.
+- `application.create_simulator_static_input()` accepts only an iterable of
+  `SkyseedAutonomousSystem` values, fails closed on every other value and
+  traverses the owned entities through the two direct conversion functions.
+- `SimulatorStaticInput` receives already copied input values, validates their
+  types, sorts deterministically, rejects duplicate `SimulationNodeId` values
+  and builds its read-only lookup index. It does not traverse or recognize AS
+  objects.
 - The resulting snapshot is frozen and deterministic. It retains no Emulator
   entity, Registry, container, namespace, Compose, persistence or runtime
   Simulator object.
 - The entities do not construct or retain `SimulationNodeId`; the input layer
   owns that boundary identity.
+- `simulator_input` imports only standard-library modules, its own data modules
+  and the neutral `skyseed_v2.identifier` validator. It has no entities,
+  seedemu-integration or upstream seedemu dependency.
 
 ## Construction paths
 
@@ -73,7 +81,7 @@ SkyseedAutonomousSystem
   → Satellite → SkyseedDockerCompiler`; no YAML, Loader or Applier.
 - `complete_static_emulator`: direct entity plus ordinary seedemu
   Network/Router/IX/eBGP construction, then
-  `SimulatorStaticInput.from_autonomous_systems()` and Compiler.
+  `application.create_simulator_static_input((skyseed_as,))` and Compiler.
 - `large_static_network`: YAML → specifications → application → entities →
   Simulator static input → Compiler. It remains compile/config-only.
 

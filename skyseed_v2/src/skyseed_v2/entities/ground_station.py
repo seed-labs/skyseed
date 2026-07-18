@@ -10,7 +10,7 @@ from typing import Mapping
 from seedemu.core import Router
 from seedemu.core.enums import NodeRole
 
-from .validation import validate_identifier
+from skyseed_v2.identifier import validate_identifier
 
 
 GROUND_STATION_REGISTRY_TYPE = "rnode"
@@ -53,9 +53,9 @@ class GroundStation(Router):
 
     Layer: approved Emulator entity plus SEED capability.
     `SkyseedAutonomousSystem.create_ground_station` creates it; its AS, routing
-    layers, Simulator input conversion and Compiler use it. It is not a
-    specification, ordinary Router or dynamic link state. It is root public
-    because it is an approved user-visible entity.
+    layers and Compiler use it. Application converts its static values. It is
+    not a specification, ordinary Router or dynamic link state. It is root
+    public because it is an approved user-visible entity.
     """
 
     def __init__(

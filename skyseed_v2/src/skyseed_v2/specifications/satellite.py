@@ -5,7 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import isfinite
 
-from ._validation import _angle, _identifier, _positive_integer
+from skyseed_v2.identifier import validate_identifier
+
+from ._validation import _angle, _positive_integer
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,7 +127,9 @@ class SatelliteSpecification:
 
     def __post_init__(self) -> None:
         object.__setattr__(
-            self, "satellite_id", _identifier(self.satellite_id, "satellite_id")
+            self,
+            "satellite_id",
+            validate_identifier(self.satellite_id, "satellite_id"),
         )
         if (
             not isinstance(self.index_in_orbit, int)
@@ -168,7 +172,7 @@ class OrbitSpecification:
 
     def __post_init__(self) -> None:
         object.__setattr__(
-            self, "orbit_id", _identifier(self.orbit_id, "orbit_id")
+            self, "orbit_id", validate_identifier(self.orbit_id, "orbit_id")
         )
         object.__setattr__(
             self,
@@ -212,7 +216,7 @@ class ShellSpecification:
 
     def __post_init__(self) -> None:
         object.__setattr__(
-            self, "shell_id", _identifier(self.shell_id, "shell_id")
+            self, "shell_id", validate_identifier(self.shell_id, "shell_id")
         )
         altitude = float(self.altitude_km)
         inclination = float(self.inclination_deg)

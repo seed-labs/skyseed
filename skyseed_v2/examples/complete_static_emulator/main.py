@@ -11,13 +11,14 @@ from seedemu.layers import Ebgp, Ibgp, Ospf, PeerRelationship, Routing
 from skyseed_v2 import (
     GroundStationLocation,
     OrbitParameters,
-    SimulatorStaticInput,
 )
+from skyseed_v2.application import create_simulator_static_input
 from skyseed_v2.seedemu_integration import (
     SatelliteBase,
     SkyseedAutonomousSystem,
     SkyseedDockerCompiler,
 )
+from skyseed_v2.simulator_input import SimulatorStaticInput
 
 
 EXAMPLE_ROOT = Path(__file__).resolve().parent
@@ -88,9 +89,7 @@ def build_emulator() -> tuple[
     for layer in (base, Routing(), ospf, ibgp, ebgp):
         emulator.addLayer(layer)
 
-    simulator_input = SimulatorStaticInput.from_autonomous_systems(
-        (skyseed_as, ground_as)
-    )
+    simulator_input = create_simulator_static_input((skyseed_as,))
     return emulator, skyseed_as, simulator_input
 
 

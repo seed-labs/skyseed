@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from typing import Iterable
 
+from skyseed_v2.identifier import validate_identifier
+
 from .orbit import Orbit
 from .orbit_parameters import OrbitParameters
 from .satellite import Satellite
-from .validation import validate_identifier
 
 
 class Shell:

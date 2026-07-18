@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from skyseed_v2.identifier import validate_identifier
+
 from ._validation import (
     _asn,
-    _identifier,
     _ipv4_address,
     _ipv4_network,
     _positive_integer,
@@ -46,7 +47,9 @@ class LocalNetworkAttachmentSpecification:
 
     def __post_init__(self) -> None:
         object.__setattr__(
-            self, "network_id", _identifier(self.network_id, "network_id")
+            self,
+            "network_id",
+            validate_identifier(self.network_id, "network_id"),
         )
         object.__setattr__(
             self, "address", _ipv4_address(self.address, "address")
@@ -87,7 +90,9 @@ class OrdinaryNetworkSpecification:
 
     def __post_init__(self) -> None:
         object.__setattr__(
-            self, "network_id", _identifier(self.network_id, "network_id")
+            self,
+            "network_id",
+            validate_identifier(self.network_id, "network_id"),
         )
         object.__setattr__(self, "prefix", _ipv4_network(self.prefix, "prefix"))
 
@@ -107,7 +112,7 @@ class OrdinaryRouterSpecification:
 
     def __post_init__(self) -> None:
         object.__setattr__(
-            self, "router_id", _identifier(self.router_id, "router_id")
+            self, "router_id", validate_identifier(self.router_id, "router_id")
         )
         network_attachments = tuple(self.network_attachments)
         ix_attachments = tuple(self.ix_attachments)
@@ -211,7 +216,7 @@ class EbgpRouterReferenceSpecification:
     def __post_init__(self) -> None:
         _asn(self.asn, "asn")
         object.__setattr__(
-            self, "router_id", _identifier(self.router_id, "router_id")
+            self, "router_id", validate_identifier(self.router_id, "router_id")
         )
 
 

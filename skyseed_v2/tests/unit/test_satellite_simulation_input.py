@@ -3,6 +3,7 @@ from dataclasses import FrozenInstanceError, fields
 import pytest
 from seedemu.core import Node
 
+from skyseed_v2.application import create_satellite_simulation_input
 from skyseed_v2.entities import OrbitParameters, Satellite, Shell
 from skyseed_v2.simulator_input import SatelliteSimulationInput, SimulationNodeId
 
@@ -22,7 +23,7 @@ def satellite() -> Satellite:
 def test_input_reads_stable_identity_from_the_unique_satellite() -> None:
     entity = satellite()
 
-    simulation_input = SatelliteSimulationInput.from_satellite(entity)
+    simulation_input = create_satellite_simulation_input(entity)
 
     assert isinstance(simulation_input, SatelliteSimulationInput)
     assert simulation_input.satellite_id == entity.satellite_id
@@ -37,7 +38,7 @@ def test_input_reads_stable_identity_from_the_unique_satellite() -> None:
 
 def test_input_contains_only_static_values_not_seed_or_container_objects() -> None:
     entity = satellite()
-    simulation_input = SatelliteSimulationInput.from_satellite(entity)
+    simulation_input = create_satellite_simulation_input(entity)
 
     assert {field.name for field in fields(simulation_input)} == {
         "satellite_id",

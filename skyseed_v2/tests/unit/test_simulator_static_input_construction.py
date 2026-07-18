@@ -1,9 +1,9 @@
 import pytest
 from seedemu.core import AutonomousSystem
 
+from skyseed_v2.application import create_simulator_static_input
 from skyseed_v2.entities import GroundStationLocation, OrbitParameters
 from skyseed_v2.seedemu_integration import SkyseedAutonomousSystem
-from skyseed_v2.simulator_input import SimulatorStaticInput
 
 
 def add_satellite(
@@ -48,10 +48,10 @@ def multi_as_inputs():
     return mixed_as, ground_station_as, satellite_as
 
 
-def test_constructor_collects_mixed_entity_kinds_from_multiple_as() -> None:
+def test_application_conversion_collects_mixed_entity_kinds_from_multiple_as() -> None:
     mixed_as, ground_station_as, satellite_as = multi_as_inputs()
 
-    simulator_input = SimulatorStaticInput.from_autonomous_systems(
+    simulator_input = create_simulator_static_input(
         (satellite_as, mixed_as, ground_station_as)
     )
 
@@ -63,49 +63,43 @@ def test_constructor_collects_mixed_entity_kinds_from_multiple_as() -> None:
     )
     assert len(simulator_input.list_satellites()) == 2
     assert len(simulator_input.list_ground_stations()) == 2
-    assert simulator_input == SimulatorStaticInput.from_autonomous_systems(
+    assert simulator_input == create_simulator_static_input(
         (mixed_as, ground_station_as, satellite_as)
     )
 
 
 @pytest.mark.parametrize("entity_kind", ["satellite", "ground-station"])
-def test_constructor_accepts_one_entity_kind_and_one_as(entity_kind: str) -> None:
+def test_application_conversion_accepts_one_entity_kind_and_one_as(
+    entity_kind: str,
+) -> None:
     autonomous_system = SkyseedAutonomousSystem(65001)
     if entity_kind == "satellite":
         add_satellite(autonomous_system, "entity-1")
     else:
         add_ground_station(autonomous_system, "entity-1")
 
-    simulator_input = SimulatorStaticInput.from_autonomous_systems(
-        autonomous_system
-    )
+    simulator_input = create_simulator_static_input((autonomous_system,))
 
     assert len(simulator_input.list_nodes()) == 1
     assert simulator_input.list_nodes()[0].node_id.entity_kind == entity_kind
 
 
-def test_constructor_ignores_ordinary_as_and_rejects_unknown_inputs() -> None:
+def test_application_conversion_rejects_ordinary_as_and_unknown_inputs() -> None:
     mixed_as, _, _ = multi_as_inputs()
     ordinary_as = AutonomousSystem(65004)
 
-    simulator_input = SimulatorStaticInput.from_autonomous_systems(
-        (ordinary_as, mixed_as)
-    )
-
-    assert len(simulator_input.list_nodes()) == 2
-    assert all(
-        node.node_id.asn == 65001 for node in simulator_input.list_nodes()
-    )
-    with pytest.raises(TypeError, match="AutonomousSystem"):
-        SimulatorStaticInput.from_autonomous_systems((mixed_as, object()))
+    with pytest.raises(TypeError, match="only SkyseedAutonomousSystem"):
+        create_simulator_static_input((ordinary_as, mixed_as))
+    with pytest.raises(TypeError, match="only SkyseedAutonomousSystem"):
+        create_simulator_static_input((mixed_as, object()))
+    with pytest.raises(TypeError, match="iterable"):
+        create_simulator_static_input(mixed_as)
 
 
 def test_static_input_is_a_snapshot_of_later_as_changes() -> None:
     autonomous_system = SkyseedAutonomousSystem(65001)
     orbit, original_satellite = add_satellite(autonomous_system, "satellite-0")
-    simulator_input = SimulatorStaticInput.from_autonomous_systems(
-        (autonomous_system,)
-    )
+    simulator_input = create_simulator_static_input((autonomous_system,))
 
     orbit.create_satellite(
         "satellite-1",
@@ -120,11 +114,9 @@ def test_static_input_is_a_snapshot_of_later_as_changes() -> None:
     assert simulator_input.list_ground_stations() == ()
 
 
-def test_constructor_fails_closed_when_the_same_as_is_collected_twice() -> None:
+def test_aggregate_fails_closed_when_the_same_as_is_collected_twice() -> None:
     autonomous_system = SkyseedAutonomousSystem(65001)
     add_satellite(autonomous_system, "satellite-0")
 
     with pytest.raises(ValueError, match="duplicate SimulationNodeId"):
-        SimulatorStaticInput.from_autonomous_systems(
-            (autonomous_system, autonomous_system)
-        )
+        create_simulator_static_input((autonomous_system, autonomous_system))

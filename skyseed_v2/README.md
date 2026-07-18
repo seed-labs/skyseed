@@ -188,11 +188,11 @@ GPT 和 Codex 的聊天记录与记忆仅用于协助工作，不能替代仓库
 
 ```text
 entities/              实体与紧密绑定的值对象
-simulator_input/       提供给未来 Simulator 的不可变静态输入
+simulator_input/       与 Emulator/SEED 解耦的不可变 Simulator 静态输入数据
 seedemu_integration/   Skyseed 对外部 seedemu 的集成
 specifications/        按主题拆分的构造规格
 serialization/         版本化 YAML 读取
-application/           完整规格的应用编排
+application/           完整规格编排与实体到 Simulator input 的直接转换
 materialization/       已编译 Compose 项目的启动工具
 ```
 
