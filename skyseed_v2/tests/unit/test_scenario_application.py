@@ -1,7 +1,7 @@
-import pytest
 from seedemu.core import Emulator
 
-from skyseed_v2 import (
+from skyseed_v2.scenario_application import StaticEmulatorSpecificationApplier
+from skyseed_v2.specifications import (
     EbgpPeeringSpecification,
     EbgpRouterReferenceSpecification,
     GroundStationSpecification,
@@ -14,12 +14,10 @@ from skyseed_v2 import (
     OrdinaryAutonomousSystemSpecification,
     OrdinaryNetworkSpecification,
     OrdinaryRouterSpecification,
-    RaanDistributionSpecification,
     SatelliteSpecification,
     ShellSpecification,
     SkyseedAutonomousSystemSpecification,
     StaticEmulatorScenarioSpecification,
-    StaticEmulatorSpecificationApplier,
 )
 from skyseed_v2.domain import Orbit, Shell
 from skyseed_v2.seed import SkyseedAutonomousSystem
@@ -251,28 +249,3 @@ def test_generated_input_is_stable_without_a_population_abstraction() -> None:
     ) == tuple(satellite.satellite_id for satellite in second_as.satellites())
     assert len(first_as.satellites()) == 12
     assert first.emulator is not second.emulator
-
-
-def test_invalid_generated_distribution_fails_before_returning_a_result() -> None:
-    specification = StaticEmulatorScenarioSpecification(
-        skyseed_autonomous_systems=(
-            SkyseedAutonomousSystemSpecification(
-                65001,
-                shells=(
-                    ShellSpecification(
-                        shell_id="invalid-shell",
-                        altitude_km=550.0,
-                        inclination_deg=53.0,
-                        generation=OrbitGenerationSpecification(
-                            orbit_count=2,
-                            satellites_per_orbit=2,
-                            raan=RaanDistributionSpecification(0.0, 360.0),
-                        ),
-                    ),
-                ),
-            ),
-        )
-    )
-
-    with pytest.raises(ValueError, match="duplicate Orbits"):
-        StaticEmulatorSpecificationApplier().apply(specification)

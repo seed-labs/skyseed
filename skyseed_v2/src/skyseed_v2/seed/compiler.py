@@ -229,7 +229,14 @@ class _SatelliteCompilerBoundary:
 
 
 class SkyseedDockerCompiler(Docker):
-    """The formal Docker compiler for Skyseed emulations."""
+    """Compile a rendered Skyseed Emulator into one Docker Compose artifact.
+
+    Layer: SEED integration. Examples or advanced callers create it after
+    entity construction; Emulator.compile and deployment tooling consume its
+    artifact. It is not an entity creator, specification Applier, materializer
+    or Simulator execution compiler. It is public from `skyseed_v2.seed`
+    because Satellite dispatch needs a narrow upstream Compiler extension.
+    """
 
     def __init__(
         self,

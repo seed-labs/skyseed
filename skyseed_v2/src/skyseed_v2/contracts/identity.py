@@ -16,7 +16,13 @@ _ENTITY_KINDS = frozenset(
 
 @dataclass(frozen=True, slots=True)
 class SimulationNodeId:
-    """Stable logical node identity independent of runtime resources."""
+    """Identify one Descriptor independently of runtime resources.
+
+    Layer: immutable value object in the approved cross-layer contract.
+    Projectors create it; Descriptors, Catalog and future Simulator consumers
+    use it. It is not a Registry, container, namespace or execution-target ID.
+    It is a stable root public type because both approved Descriptors share it.
+    """
 
     asn: int
     entity_kind: str

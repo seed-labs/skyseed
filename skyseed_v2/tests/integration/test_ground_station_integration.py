@@ -10,6 +10,7 @@ from yaml.nodes import MappingNode, Node, SequenceNode
 
 from skyseed_v2.contracts import SimulationNodeId
 from skyseed_v2.domain import GroundStation, GroundStationLocation, OrbitParameters
+from skyseed_v2.projection import GroundStationDescriptorProjector
 from skyseed_v2.seed import (
     SATELLITE_REGISTRY_TYPE,
     SatelliteBase,
@@ -37,7 +38,7 @@ def build_rendered_ground_scenario():
         station_type="gateway",
         operator="Skyseed",
     )
-    descriptor_before_ix = skyseed_as.ground_station_descriptors()[0]
+    descriptor_before_ix = GroundStationDescriptorProjector().project(station)
     station.joinNetwork("ix100", "10.100.0.101")
 
     ground_as = base.createAutonomousSystem(65002)
@@ -121,7 +122,9 @@ def test_ground_station_uses_one_standard_rnode_and_border_router_instance() -> 
     assert station_as.get_satellite("satellite-0") is not station
     assert registry.get("65001", "rnode", "gs-1") is station
     assert registry.get("65001", "brdnode", "gs-1") is station
-    descriptor_after_brd_registration = station_as.ground_station_descriptors()[0]
+    descriptor_after_brd_registration = GroundStationDescriptorProjector().project(
+        station
+    )
     assert descriptor_after_brd_registration == descriptor_before_ix
     assert descriptor_after_brd_registration.node_id == SimulationNodeId(
         65001, "ground-station", "gs-1"

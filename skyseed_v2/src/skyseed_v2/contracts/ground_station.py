@@ -9,7 +9,13 @@ from . import identity as _identity
 
 @dataclass(frozen=True, slots=True)
 class GroundStationDescriptor:
-    """Read-only projection of the static GroundStation contract."""
+    """Expose approved static GroundStation values across the Simulator boundary.
+
+    Layer: immutable cross-layer Descriptor. Its Projector creates it; Catalog
+    and future Simulator consumers read it. It is not a GroundStation, SEED
+    Router, Registry record or execution target. It is a stable root public
+    type because the approved boundary excludes mutable Router capability.
+    """
 
     node_id: _identity.SimulationNodeId
     ground_station_id: str

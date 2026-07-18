@@ -1,4 +1,8 @@
-"""Skyseed v2 static Emulator package."""
+"""Stable high-frequency domain values and cross-layer contracts.
+
+Application services, input specifications and integration adapters remain
+public from their owning submodules so imports preserve architectural origin.
+"""
 
 from .contracts import (
     GroundStationDescriptor,
@@ -14,72 +18,16 @@ from .domain import (
     Satellite,
     Shell,
 )
-from .catalog_builder import SimulationEntityCatalogBuilder
-from .scenario_loader import (
-    GROUND_STATIONS_SCHEMA_VERSION,
-    SCENARIO_SCHEMA_VERSION,
-    StaticEmulatorScenarioLoadError,
-    StaticEmulatorScenarioLoader,
-)
-from .scenario_application import (
-    StaticEmulatorApplyResult,
-    StaticEmulatorSpecificationApplier,
-)
-from .specifications import (
-    EbgpPeeringSpecification,
-    EbgpRouterReferenceSpecification,
-    GroundStationSpecification,
-    InOrbitPhaseDistributionSpecification,
-    InternetExchangeAttachmentSpecification,
-    InternetExchangeSpecification,
-    LocalNetworkAttachmentSpecification,
-    OrbitGenerationSpecification,
-    OrbitSpecification,
-    OrdinaryAutonomousSystemSpecification,
-    OrdinaryNetworkSpecification,
-    OrdinaryRouterSpecification,
-    RaanDistributionSpecification,
-    SatelliteSpecification,
-    ShellSpecification,
-    SkyseedAutonomousSystemSpecification,
-    StaticEmulatorScenarioSpecification,
-    ground_station_id_for,
-)
 
 __all__ = [
-    "EbgpPeeringSpecification",
-    "EbgpRouterReferenceSpecification",
-    "GROUND_STATIONS_SCHEMA_VERSION",
     "GroundStation",
     "GroundStationDescriptor",
     "GroundStationLocation",
-    "GroundStationSpecification",
-    "InOrbitPhaseDistributionSpecification",
-    "InternetExchangeAttachmentSpecification",
-    "InternetExchangeSpecification",
-    "LocalNetworkAttachmentSpecification",
     "Orbit",
-    "OrbitGenerationSpecification",
     "OrbitParameters",
-    "OrbitSpecification",
-    "OrdinaryAutonomousSystemSpecification",
-    "OrdinaryNetworkSpecification",
-    "OrdinaryRouterSpecification",
-    "RaanDistributionSpecification",
     "Satellite",
     "SatelliteDescriptor",
     "SimulationEntityCatalog",
-    "SimulationEntityCatalogBuilder",
     "SimulationNodeId",
-    "SCENARIO_SCHEMA_VERSION",
-    "SkyseedAutonomousSystemSpecification",
-    "SatelliteSpecification",
     "Shell",
-    "ShellSpecification",
-    "StaticEmulatorApplyResult",
-    "StaticEmulatorSpecificationApplier",
-    "StaticEmulatorScenarioLoadError",
-    "StaticEmulatorScenarioLoader",
-    "StaticEmulatorScenarioSpecification",
-    "ground_station_id_for",
 ]

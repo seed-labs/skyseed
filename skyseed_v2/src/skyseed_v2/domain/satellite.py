@@ -18,7 +18,12 @@ SATELLITE_ROLE_LABEL = "Satellite"
 
 
 class SatelliteRole(Enum):
-    """A Skyseed role distinct from every upstream SEED NodeRole."""
+    """Name the Satellite-only SEED integration role.
+
+    Layer: integration value. Satellite creates/uses it and Compiler metadata
+    observes it. It is not a domain entity or Simulator contract and is public
+    only from the domain submodule for integration inspection.
+    """
 
     SATELLITE = SATELLITE_ROLE_LABEL
 
@@ -34,7 +39,13 @@ def _validate_angle(value: float, field_name: str, *, inclusive_upper: bool = Fa
 
 @dataclass(frozen=True, slots=True)
 class OrbitParameters:
-    """Fixed parameters shared by every Satellite in one Orbit."""
+    """Hold fixed orbital values shared by Satellites in one Orbit.
+
+    Layer: domain value object. Handwritten callers or the specification
+    Applier create it; Orbit and Satellite expose it. It is not an Orbit,
+    trajectory or dynamic position. It is root public because direct entity
+    construction requires these validated values.
+    """
 
     altitude_km: float
     inclination_deg: float
@@ -56,7 +67,13 @@ class OrbitParameters:
 
 
 class Satellite(Node):
-    """The one Skyseed Satellite object and its SEED node capability."""
+    """Represent one Satellite and the same instance's SEED Node capability.
+
+    Layer: approved domain entity plus SEED capability. `Orbit.create_satellite`
+    creates it; its Orbit/AS, SEED lifecycle, Projector and Compiler use it. It
+    is not a Descriptor, specification, container or runtime topology state.
+    It is root public because it is an approved user-visible entity.
+    """
 
     def __init__(
         self,
@@ -172,7 +189,13 @@ class Satellite(Node):
 
 
 class Orbit:
-    """An Orbit owned by exactly one Shell."""
+    """Own the Satellites belonging to exactly one Shell Orbit.
+
+    Layer: approved domain entity. `Shell.create_orbit` creates it; handwritten
+    callers or the Applier call its Satellite creation methods. It is not an
+    input specification, trajectory service or population. It is root public
+    because it is the approved Satellite ownership entry point.
+    """
 
     def __init__(
         self,
@@ -301,7 +324,13 @@ class Orbit:
 
 
 class Shell:
-    """A Shell that exclusively owns its Orbits."""
+    """Own the Orbits belonging to one Skyseed AS Shell.
+
+    Layer: approved domain entity. `SkyseedAutonomousSystem.create_shell`
+    creates it; handwritten callers or the Applier create Orbits through it.
+    It is not a constellation, population or specification. It is root public
+    because it is the approved Orbit ownership entry point.
+    """
 
     def __init__(
         self,

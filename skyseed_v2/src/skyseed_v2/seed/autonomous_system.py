@@ -6,7 +6,6 @@ from typing import Mapping
 
 from seedemu.core import AutonomousSystem, Emulator, Router
 
-from skyseed_v2.contracts import GroundStationDescriptor, SatelliteDescriptor
 from skyseed_v2.domain import (
     GROUND_STATION_REGISTRY_TYPE,
     SATELLITE_REGISTRY_TYPE,
@@ -16,24 +15,22 @@ from skyseed_v2.domain import (
     Shell,
 )
 from skyseed_v2.domain.validation import validate_identifier
-from skyseed_v2.projection import (
-    GroundStationDescriptorProjector,
-    SatelliteDescriptorProjector,
-)
 
 
 class SkyseedAutonomousSystem(AutonomousSystem):
-    """One AS type owning any supported mix of static Skyseed entities."""
+    """Own static Skyseed entities and integrate them with one SEED AS.
+
+    Layer: approved domain owner plus SEED integration. Handwritten callers or
+    the specification Applier create it; Base, routing layers and callers use
+    it. It is not a scenario facade or Descriptor factory. It is public from
+    ``skyseed_v2.seed`` because ownership and SEED lifecycle meet here.
+    """
 
     def __init__(self, asn: int, subnet_template: str = "10.{}.0.0/16") -> None:
         super().__init__(asn, subnet_template)
         self._shells: dict[str, Shell] = {}
         self._satellite_ids: set[str] = set()
         self._ground_stations: dict[str, GroundStation] = {}
-        self._satellite_descriptor_projector = SatelliteDescriptorProjector()
-        self._ground_station_descriptor_projector = (
-            GroundStationDescriptorProjector()
-        )
 
     @property
     def shells(self) -> tuple[Shell, ...]:
@@ -71,12 +68,6 @@ class SkyseedAutonomousSystem(AutonomousSystem):
             if satellite.satellite_id == satellite_id:
                 return satellite
         raise KeyError(f"satellite {satellite_id!r} does not exist")
-
-    def satellite_descriptors(self) -> tuple[SatelliteDescriptor, ...]:
-        return tuple(
-            self._satellite_descriptor_projector.project(satellite)
-            for satellite in self.satellites()
-        )
 
     def create_ground_station(
         self,
@@ -124,12 +115,6 @@ class SkyseedAutonomousSystem(AutonomousSystem):
             raise KeyError(
                 f"ground station {ground_station_id!r} does not exist"
             ) from error
-
-    def ground_station_descriptors(self) -> tuple[GroundStationDescriptor, ...]:
-        return tuple(
-            self._ground_station_descriptor_projector.project(ground_station)
-            for ground_station in self.ground_stations()
-        )
 
     def getRouters(self) -> list[str]:
         return super().getRouters() + list(self._ground_stations)

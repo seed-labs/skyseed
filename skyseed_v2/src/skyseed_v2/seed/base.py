@@ -9,7 +9,13 @@ from skyseed_v2.domain import SATELLITE_REGISTRY_TYPE
 
 
 class SatelliteBase(Base):
-    """SEED Base Layer with explicit support for Skyseed Satellite nodes."""
+    """Extend the SEED Base Layer for first-class Satellite nodes.
+
+    Layer: SEED integration. Examples or the specification Applier create it;
+    Emulator render uses it. It is not a domain entity, scenario or Compiler.
+    It is public from `skyseed_v2.seed` because Satellite lifecycle requires a
+    Base integration hook unavailable in upstream SEED.
+    """
 
     def _prepare(self, emulator: Emulator) -> None:
         super()._prepare(emulator)

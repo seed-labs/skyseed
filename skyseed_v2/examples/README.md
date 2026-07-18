@@ -41,7 +41,8 @@ handwritten values
     -> SkyseedAutonomousSystem.create_ground_station (complete example)
 ```
 
-The scale example uses the one file-input path:
+Only the scale example uses YAML because hundreds of repeated input records are
+data rather than teaching code. It uses the one file-input path:
 
 ```text
 v2 YAML
@@ -56,6 +57,12 @@ The Loader is a serialization adapter. The Applier is an optional application
 service for complete specifications, not a domain entity and not a required
 handwritten entrypoint. Multiple Shells remain a collection owned by an AS;
 there is no population or `Constellation` domain object.
+
+Both input styles converge at `SkyseedAutonomousSystem.create_shell`,
+`Shell.create_orbit`, `Orbit.create_satellite` and
+`SkyseedAutonomousSystem.create_ground_station`. `SimulationEntityCatalog` is
+the immutable Descriptor boundary for future Simulator consumers; it is not a
+scenario, SEED Registry, container inventory or output-directory index.
 
 The `reference/` directory is excluded from the package and formal example
 path. It preserves offline historical investigation/conversion tooling only;

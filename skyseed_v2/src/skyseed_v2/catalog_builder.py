@@ -14,8 +14,19 @@ from skyseed_v2.projection import (
 from skyseed_v2.seed.autonomous_system import SkyseedAutonomousSystem
 
 
+__all__ = ["SimulationEntityCatalogBuilder"]
+
+
 class SimulationEntityCatalogBuilder:
-    """Build an immutable Catalog from one or more Emulator-owned AS objects."""
+    """Project Emulator-owned entities into one immutable Catalog.
+
+    Layer: application projection service. Handwritten callers or the
+    specification Applier create it; Catalog consumers use its output. It
+    reads existing Skyseed AS entities, delegates to Descriptor Projectors and
+    lets `SimulationEntityCatalog` enforce logical-ID uniqueness. It is not an
+    entity factory, Registry reader, Compiler or serializer. It remains public
+    from this submodule because no entity or Projector owns multi-AS assembly.
+    """
 
     def __init__(
         self,

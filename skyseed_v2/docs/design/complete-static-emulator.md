@@ -55,6 +55,8 @@ It delegates projection to the existing `SatelliteDescriptorProjector` and
 The Builder never reads Registry, Compiler output or Compose. Building before
 render is therefore valid, and later mutation of the source AS cannot alter an
 already-built Catalog snapshot.
+`SkyseedAutonomousSystem` itself does not hold Projectors or expose Descriptor
+creation conveniences, so application projection has one explicit owner.
 
 Multiple mixed, Satellite-only and GS-only AS instances are supported.
 Different ASNs may reuse an entity ID, and Satellite/GroundStation may reuse a
@@ -62,8 +64,8 @@ text ID in the same ASN, because the full logical ID remains distinct.
 
 ## 4. Formal complete example
 
-`examples/complete_static_emulator/main.py`, using its adjacent versioned
-`scenario.yaml`, builds:
+The handwritten `examples/complete_static_emulator/main.py` builds directly
+through public Skyseed and SEED APIs, with no YAML, Loader or Applier:
 
 ```text
 Skyseed AS 65001

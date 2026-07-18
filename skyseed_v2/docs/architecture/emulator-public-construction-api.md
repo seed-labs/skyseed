@@ -4,6 +4,35 @@ Status: **IMPLEMENTED, PENDING USER REVIEW**.
 
 The pre-refactor audit below was recorded at `fd83099` before implementation.
 
+## Review of `e83107c` recorded before corrections
+
+The implementation was re-traced from all three example entrypoints rather
+than accepted from the preceding report. Entity construction is correct and
+still reaches the four approved public create methods without a hidden factory
+or callback. Four traceability defects remain and are corrected in the review
+commit:
+
+1. the root package re-exports specifications, Loader, application services
+   and the operation result even though only advanced/file-driven callers use
+   them;
+2. `SkyseedAutonomousSystem` owns Descriptor Projectors and exposes two
+   Descriptor convenience methods, duplicating the independent projection
+   boundary used by `SimulationEntityCatalogBuilder`;
+3. `StaticEmulatorSpecificationApplier` rejects duplicate generated angular
+   distributions even though a specification is supposed to be fully
+   validated before application;
+4. older diagrams and slice documents contain unclassified types, the
+   temporary `create_ground_station(config)` signature, or obsolete small
+   example YAML descriptions.
+
+The corrections are deliberately narrow: application/specification types move
+to their owning-module public APIs, AS-level projection convenience is removed,
+generated-distribution validation moves to the immutable specification, and
+documentation is synchronized. No approved entity, Descriptor, Catalog field
+or public create method is renamed. The normative vocabulary is
+[`terminology.md`](./terminology.md), and project-level approval rules are in
+the repository-root `AGENTS.md`.
+
 This document records the bounded construction-path audit before code changes.
 It distinguishes approved domain ownership from immutable file input,
 application orchestration, SEED integration and operation results. The target
@@ -268,7 +297,7 @@ YAML
 
 `StaticEmulatorSpecificationApplier` has no Loader, Registry, Compiler,
 Docker, Compose or materialization dependency. It does not call another
-builder/factory/coordinator. Its private `_orbit_inputs` function performs
+builder/factory/coordinator. Its private `_expand_orbit_inputs` function performs
 only deterministic specification expansion before public entity methods are
 called.
 
@@ -295,7 +324,7 @@ flowchart TD
     AS --> CreateShell --> Shell --> CreateOrbit --> Orbit
     Orbit --> CreateSatellite --> Satellite
     AS --> CreateGS --> GS
-    AS --> Catalog
+    Catalog --> AS
     Emulator --> Render --> Compile
 ```
 
@@ -331,10 +360,20 @@ flowchart TD
 classDiagram
     direction LR
 
+    class Emulator {
+        <<external integration>>
+        +addLayer(layer)
+        +render()
+        +compile(compiler, output)
+    }
+    class SatelliteBase {
+        <<integration>>
+        +setAutonomousSystem(as)
+    }
     class SkyseedAutonomousSystem {
-        <<domain owner / SEED integration>>
+        <<domain owner + integration>>
         +create_shell(shell_id) Shell
-        +create_ground_station(...) GroundStation
+        +create_ground_station(id, location, ...) GroundStation
         +shells tuple
         +satellites() tuple
         +ground_stations() tuple
@@ -353,49 +392,88 @@ classDiagram
         +satellites tuple
     }
     class Satellite {
-        <<domain entity / SEED Node>>
+        <<domain entity + integration capability>>
     }
     class GroundStation {
-        <<domain entity / SEED Router>>
+        <<domain entity + integration capability>>
+    }
+    class OrbitParameters {
+        <<value object>>
+    }
+    class GroundStationLocation {
+        <<value object>>
     }
     class StaticEmulatorScenarioLoader {
         <<serialization adapter>>
         +load(path) StaticEmulatorScenarioSpecification
     }
     class StaticEmulatorScenarioSpecification {
-        <<immutable input specification>>
+        <<input specification>>
     }
     class StaticEmulatorSpecificationApplier {
         <<application service>>
         +apply(specification) StaticEmulatorApplyResult
     }
     class StaticEmulatorApplyResult {
-        <<operation result; no ownership>>
+        <<operation result>>
         +emulator
         +skyseed_autonomous_systems
         +ordinary_autonomous_systems
         +catalog
     }
     class SimulationEntityCatalogBuilder {
-        <<application projection service>>
+        <<application service>>
         +build(autonomous_systems) SimulationEntityCatalog
     }
+    class SatelliteDescriptorProjector {
+        <<application service>>
+        +project(satellite) SatelliteDescriptor
+    }
+    class GroundStationDescriptorProjector {
+        <<application service>>
+        +project(ground_station) GroundStationDescriptor
+    }
+    class SatelliteDescriptor {
+        <<cross-layer descriptor>>
+    }
+    class GroundStationDescriptor {
+        <<cross-layer descriptor>>
+    }
     class SimulationEntityCatalog {
-        <<immutable Simulator-facing contract>>
+        <<cross-layer contract>>
+    }
+    class SkyseedDockerCompiler {
+        <<integration>>
+    }
+    class ComposeProjectLauncher {
+        <<materialization integration>>
     }
 
+    Emulator --> SatelliteBase : renders Layer
+    SatelliteBase o-- SkyseedAutonomousSystem : contains through Base
     SkyseedAutonomousSystem "1" *-- "*" Shell : owns
     Shell "1" *-- "*" Orbit : owns
     Orbit "1" *-- "*" Satellite : owns
     SkyseedAutonomousSystem "1" *-- "*" GroundStation : owns
+    Orbit --> OrbitParameters : reads
+    GroundStation --> GroundStationLocation : reads
     StaticEmulatorScenarioLoader --> StaticEmulatorScenarioSpecification : returns
     StaticEmulatorSpecificationApplier --> StaticEmulatorScenarioSpecification : reads
-    StaticEmulatorSpecificationApplier --> SkyseedAutonomousSystem : calls public methods
+    StaticEmulatorSpecificationApplier --> SkyseedAutonomousSystem : calls create methods
+    StaticEmulatorSpecificationApplier --> Shell : calls create_orbit
+    StaticEmulatorSpecificationApplier --> Orbit : calls create_satellite
     StaticEmulatorSpecificationApplier --> SimulationEntityCatalogBuilder : delegates projection
     StaticEmulatorSpecificationApplier --> StaticEmulatorApplyResult : returns
     StaticEmulatorApplyResult --> SkyseedAutonomousSystem : references
     StaticEmulatorApplyResult --> SimulationEntityCatalog : references
-    SimulationEntityCatalogBuilder --> SimulationEntityCatalog : creates
+    SimulationEntityCatalogBuilder --> SatelliteDescriptorProjector : delegates
+    SimulationEntityCatalogBuilder --> GroundStationDescriptorProjector : delegates
+    SatelliteDescriptorProjector --> SatelliteDescriptor : produces
+    GroundStationDescriptorProjector --> GroundStationDescriptor : produces
+    SimulationEntityCatalogBuilder --> SimulationEntityCatalog : assembles
+    SimulationEntityCatalog *-- SatelliteDescriptor : contains
+    SimulationEntityCatalog *-- GroundStationDescriptor : contains
+    Emulator --> SkyseedDockerCompiler : compile after creation
 ```
 
 | Class/API | Type | Public method | Creates/returns | Calls next | Consumers |
@@ -412,11 +490,51 @@ classDiagram
 | `SatelliteBase` | SEED integration adapter | inherited Base API | SEED lifecycle | `SkyseedAutonomousSystem.registerNodes/configure` | all examples |
 | `SkyseedDockerCompiler` | SEED integration adapter | inherited Compiler API | Compose output | Satellite boundary + inherited Router Compiler | all examples |
 
-The immutable specification classes remain public input values. The Descriptor
-projectors remain module-level application services but are no longer repeated
-as root-package convenience exports. Registry constants, `SatelliteRole` and
-SEED adapters are exported from their owning `domain`/`seed` modules rather
-than duplicated at the package root.
+### Retained public-type proof
+
+| Type/family | What it is / layer | What it is not | Created by | Long-term consumers | Why another object cannot own it | Public exposure |
+| --- | --- | --- | --- | --- | --- | --- |
+| `Shell`, `Orbit`, `Satellite`, `GroundStation` | approved domain ownership/entity path | specifications, Descriptors or runtime topology | their approved parent create methods | handwritten/application callers and SEED lifecycle | ownership and entity capability must remain with the real objects | root |
+| `OrbitParameters`, `GroundStationLocation` | immutable domain values | dynamic position/trajectory services | handwritten callers or Applier | entities and Projectors | scalar validation does not belong to a mutable SEED Node | root |
+| all `*Specification` classes | immutable input specifications | entities, runtime scenario or deployment model | Loader or programmatic input callers | Applier | file/programmatic input must stay backend-independent | `skyseed_v2.specifications` only |
+| `StaticEmulatorScenarioLoader` | serialization adapter | factory, Applier or Compiler | file-input caller | specification callers | only this boundary owns YAML/schema/path errors | `skyseed_v2.scenario_loader` only |
+| `StaticEmulatorSpecificationApplier` | optional application service | entity, facade required by handwritten callers or lifecycle owner | file-input caller | large example and advanced file users | a complete heterogeneous specification needs ordered Skyseed/SEED calls | `skyseed_v2.scenario_application` only |
+| `StaticEmulatorApplyResult` | flat operation result | entity parent, Descriptor or Catalog entry | Applier | file-input caller | no existing object truthfully owns Emulator, both AS collections and Catalog | `skyseed_v2.scenario_application` only |
+| Descriptor Projectors | stateless application projection services | factories, serializers or Compiler hooks | CatalogBuilder or explicit caller | CatalogBuilder | entities must not depend on cross-layer contracts | `skyseed_v2.projection` only |
+| `SimulationEntityCatalogBuilder` | multi-AS application projection service | entity creator, Registry reader or serializer | handwritten caller or Applier | Catalog consumers | individual Projectors do not own multi-AS collection/assembly | `skyseed_v2.catalog_builder` only |
+| `SimulationNodeId`, Descriptors, `SimulationEntityCatalog` | approved immutable cross-layer contract | Registry/container/execution identities or scenario | Projectors/CatalogBuilder | future Simulator and current contract readers | mutable SEED entities cannot cross the restricted boundary | root |
+| `SatelliteBase`, `SkyseedAutonomousSystem`, `SkyseedDockerCompiler` | SEED integration, with AS also the approved entity owner | scenario facade, Descriptor factory or materializer | examples/Applier | Emulator/SEED lifecycle | upstream SEED lacks Satellite lifecycle/dispatch hooks | `skyseed_v2.seed` only |
+| `ComposeProjectLauncher` and materialization values/results | already-compiled Compose integration | Emulator model, Compiler, Runner or Simulator | tooling callers | materialization/evidence callers | process execution must remain outside entity/Compiler boundaries | `skyseed_v2.materialization` only |
+
+### Root export list
+
+The root package exports only ten stable, high-frequency types:
+`GroundStation`, `GroundStationLocation`, `Orbit`, `OrbitParameters`,
+`Satellite`, `Shell`, `GroundStationDescriptor`, `SatelliteDescriptor`,
+`SimulationEntityCatalog` and `SimulationNodeId`. Application services,
+operation results, Projectors, specifications, Loader and SEED/materialization
+integration types remain public only from their owning submodules. This makes
+their architectural origin visible at the import site.
+
+### Remaining naming questions retained for user judgment
+
+- `StaticEmulatorScenarioSpecification` uses `Scenario` only in a complete,
+  layer-qualified input name. `StaticEmulatorSpecification` would be shorter
+  but could be confused with its component specifications; no rename is made.
+- `SimulationEntityCatalogBuilder` contains `Builder`, but the fully qualified
+  name has one output and one responsibility. `SimulationEntityCatalogProjector`
+  would incorrectly imply that it projects one entity rather than assembling
+  multiple Projector outputs; no rename is made.
+- `StaticEmulatorApplyResult` remains a qualified operation-result name.
+  Returning an unlabelled tuple would hide the four meanings, while making it
+  private would expose a private return type from a public Applier. It is kept
+  module-public but removed from the root.
+- `SatelliteBase` is narrower in name than the complete static composition.
+  `SkyseedBase` is a possible future integration name, but the class's special
+  responsibility is still adding Satellite lifecycle support to upstream
+  Base; renaming it is not authorized in this review.
+
+These are naming-review notes, not adopted alternatives or design drift.
 
 ## Final example structures
 
@@ -430,17 +548,19 @@ compiles. It has no scenario file, Loader, Applier or population helper.
 ### `complete_static_emulator/main.py`
 
 Imports the same construction types plus `GroundStationLocation`, ordinary
-SEED routing layers and `SimulationEntityCatalogBuilder`. Its visible body
+SEED routing layers and `SimulationEntityCatalogBuilder` from its application
+submodule. Its visible body
 creates Satellites, GroundStation, IX, ordinary AS/Network/Router, eBGP and
 Catalog before render/compile. It has no scenario file or full-scene facade.
 
 ### `large_static_network/main.py`
 
-Imports only the Loader, specification Applier/result and Compiler from
-Skyseed. Its `apply_scenario_file` function contains exactly the two visible
-input steps. The main body obtains the Emulator/Catalog, prints direct counts,
-then renders and compiles. It defines no data class, reparses no Compose file
-and writes no second summary format.
+Imports Loader from `scenario_loader`, Applier/result from
+`scenario_application`, and Compiler from `seed`. Its `apply_scenario_file`
+function contains exactly the two visible input steps. The main body obtains
+the Emulator/Catalog, prints direct counts, then renders and compiles. It
+defines no data class, reparses no Compose file and writes no second summary
+format.
 
 ## Loader's complete responsibility
 
@@ -458,12 +578,12 @@ Catalog, Compiler, Registry, Docker or Compose objects.
   methods; handwritten users bypass it.
 - `StaticEmulatorApplyResult`: retained as a four-field flat operation result
   so the large caller receives the created Emulator, AS collections and
-  Catalog without a new ownership concept.
+  Catalog without a new ownership concept. It is no longer root-exported.
 - `SimulationEntityCatalogBuilder` and its projectors: retained because
   projecting domain objects into restricted immutable contracts is an
   independent application responsibility.
 - `StaticEmulatorScenarioLoader`: retained as the isolated serialization
-  adapter.
+  adapter; it is no longer root-exported.
 - `_compose_support.materialization_expectations`: retained as a large-example
   integration/evidence helper outside entity construction and outside
   `main.py`.
@@ -485,12 +605,24 @@ Catalog, Compiler, Registry, Docker or Compose objects.
 No new domain entity, Descriptor, Catalog member or Simulator contract was
 introduced.
 
+## Temporary design names and current implementation names
+
+| Temporary/historical design name | Current formal implementation | Reason | Responsibility preserved? | Design drift? |
+| --- | --- | --- | --- | --- |
+| `createShell` / `createOrbit` / `createSatellite` / `createGroundStation` | `create_shell` / `create_orbit` / `create_satellite` / `create_ground_station` | existing Python naming convention retained | yes | no; spelling-only design notation |
+| `Emulator.create_autonomous_system` | `SatelliteBase.createAutonomousSystem` or `setAutonomousSystem` | AS ownership is an upstream Base responsibility | yes | documentation correction; conceptual method was never implemented |
+| `SatelliteAutonomousSystem` and `GroundStationAutonomousSystem` | `SkyseedAutonomousSystem` | one AS owns either or both approved entity kinds | yes, unified | approved structural convergence |
+| `SatelliteDockerCompiler` | `SkyseedDockerCompiler` | Compiler scope is the whole Emulator, not one node kind | yes, broadened name only | approved naming convergence |
+| `StaticEmulatorScenarioBuilder.build` | `StaticEmulatorSpecificationApplier.apply` | state-free application of input is not a domain builder/facade | narrowed to sequencing | approved application-boundary correction |
+| `StaticEmulatorBuildResult` | `StaticEmulatorApplyResult` | the value reports an apply operation and owns no built hierarchy | yes, flattened | approved operation-result correction |
+| population builder/result names | no public replacement | loops did not represent an approved concept | entity creation remains in parent create methods | approved removal, not domain drift |
+
 ## Implementation validation
 
 Validation was repeated on the native Ubuntu 24 host after the refactor:
 
-- focused construction, boundary and example tests: `37 passed`;
-- full suite: `129 passed`, including the handwritten/file-driven equivalence
+- focused construction, boundary, terminology and example tests: `50 passed`;
+- full suite: `138 passed`, including the handwritten/file-driven equivalence
   test, which compares Catalog identities, owned entities, Registry rendering
   and compiled entity semantics;
 - `compileall`: pass;
@@ -504,12 +636,12 @@ Validation was repeated on the native Ubuntu 24 host after the refactor:
 - large file-driven example: generation and `docker compose config --quiet`
   pass without build/up; the normalized project has 365 services comprising
   348 Satellites, 12 GroundStations, two ordinary BorderRouters and three
-  helper services. All Satellite services use `network_mode: none`, the 362
-  entity services have build contexts, five networks are declared, and the
-  Catalog contains 360 descriptors;
+  helper services. All Satellite services use `network_mode: none`, all 365
+  services have build contexts (including the 362 entity services), five
+  networks are declared, and the Catalog contains 360 descriptors;
 - clean-cache wheel: 27 archive entries, 22 Python modules and zero
   `examples`/`tests`/`docs` or retired-builder paths. SHA-256 is
-  `135ed4841b0a7201c28b30de354f9a89455aca4ef94092d4c1ff37eabe8cd76a`.
+  `b242e41810b9937cb647787ec3c33139edf9bfb5942c03ea159c4c4b49ab14fa`.
 
 All three Compose projects, their networks and generated example output were
 removed after validation. Large was never built or started.

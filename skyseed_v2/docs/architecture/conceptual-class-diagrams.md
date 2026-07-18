@@ -33,14 +33,20 @@ classDiagram
     direction LR
 
     class Emulator {
-        <<approved direction>>
-        -autonomous_systems
-        +create_autonomous_system(asn)
-        +get_autonomous_system(asn)
+        <<external integration>>
+        +addLayer(layer)
+        +render()
+        +compile(compiler, output)
+    }
+
+    class SatelliteBase {
+        <<integration>>
+        +createAutonomousSystem(asn)
+        +setAutonomousSystem(autonomous_system)
     }
 
     class SkyseedAutonomousSystem {
-        <<implemented>>
+        <<domain owner + integration>>
         +getAsn()
         -shells
         -ground_stations
@@ -48,17 +54,15 @@ classDiagram
         +get_shell(shell_id)
         +satellites()
         +get_satellite(satellite_id)
-        +satellite_descriptors()
-        +create_ground_station(config)
+        +create_ground_station(id, location, station_type, operator)
         +get_ground_station(ground_station_id)
         +ground_stations()
-        +ground_station_descriptors()
         +registerNodes(emulator)
         +configure(emulator)
     }
 
     class Shell {
-        <<implemented>>
+        <<domain entity>>
         +shell_id
         -orbits
         +create_orbit(orbit_id, parameters)
@@ -68,19 +72,19 @@ classDiagram
     }
 
     class Orbit {
-        <<implemented>>
+        <<domain entity>>
         +orbit_id
         +shell_id
         +parameters
         -satellites
         +create_satellite(satellite_id, orbit_index, mean_anomaly_deg, payload)
-        +create_satellites(count, config)
+        +create_satellites(count, satellite_id_prefix, ...)
         +get_satellite(satellite_id)
         +satellites
     }
 
     class Satellite {
-        <<implemented>>
+        <<domain entity + integration capability>>
         +satellite_id
         +shell_id
         +orbit_id
@@ -88,7 +92,6 @@ classDiagram
         +orbit_parameters
         +mean_anomaly_deg
         +payload
-        +node_role
         +registry_type
         +scope()
         +addSoftware(software)
@@ -97,7 +100,7 @@ classDiagram
     }
 
     class GroundStation {
-        <<implemented / evolving>>
+        <<domain entity + integration capability>>
         +ground_station_id
         +location
         +station_type
@@ -109,31 +112,31 @@ classDiagram
         +setFile(path, content)
     }
 
-    class SeedNode {
-        <<SEED>>
+    class Node {
+        <<external integration>>
     }
 
-    class SeedRouter {
-        <<SEED>>
+    class Router {
+        <<external integration>>
     }
 
     class SatelliteDescriptorProjector {
-        <<implemented>>
+        <<application service>>
         +project(satellite)
     }
 
     class GroundStationDescriptorProjector {
-        <<implemented>>
+        <<application service>>
         +project(ground_station)
     }
 
     class SimulationEntityCatalogBuilder {
-        <<implemented>>
+        <<application service>>
         +build(autonomous_systems)
     }
 
     class SimulationEntityCatalog {
-        <<implemented>>
+        <<cross-layer contract>>
         -satellites
         -ground_stations
         +get(node_id)
@@ -145,7 +148,7 @@ classDiagram
     }
 
     class SatelliteDescriptor {
-        <<implemented immutable contract>>
+        <<cross-layer descriptor>>
         +node_id
         +satellite_id
         +shell_id
@@ -158,7 +161,7 @@ classDiagram
     }
 
     class GroundStationDescriptor {
-        <<implemented immutable contract>>
+        <<cross-layer descriptor>>
         +node_id
         +ground_station_id
         +latitude_deg
@@ -169,21 +172,22 @@ classDiagram
     }
 
     class SimulationNodeId {
-        <<public immutable logical identity>>
+        <<value object + cross-layer contract>>
         +asn
         +entity_kind
         +entity_id
         +value
     }
 
-    Emulator "1" o-- "*" SkyseedAutonomousSystem : manages
+    Emulator --> SatelliteBase : renders Layer
+    SatelliteBase "1" o-- "*" SkyseedAutonomousSystem : contains through Base
     SkyseedAutonomousSystem "1" *-- "*" Shell : owns
     Shell "1" *-- "*" Orbit : owns
     Orbit "1" *-- "*" Satellite : owns
-    SkyseedAutonomousSystem "1" o-- "*" GroundStation : manages
+    SkyseedAutonomousSystem "1" *-- "*" GroundStation : owns
 
-    Satellite --|> SeedNode
-    GroundStation --|> SeedRouter
+    Satellite --|> Node
+    GroundStation --|> Router
 
     SatelliteDescriptorProjector --> Satellite : reads
     SatelliteDescriptorProjector --> SatelliteDescriptor : produces
@@ -212,7 +216,7 @@ classDiagram
 - Descriptor 负责 Emulator–Simulator 只读边界；
 - 图中的 Satellite 与 GroundStation 两条静态对象、AS 生命周期和 Descriptor
   投影关系均有当前实现支撑；
-- `GroundStation` 直接继承 `SeedRouter` 已通过本轮标准 `rnode`、IX、Routing、
+- `GroundStation` 直接继承 SEED `Router` 已通过本轮标准 `rnode`、IX、Routing、
   eBGP、Compiler、容器和 InternetMap 真实运行验证，但仍是 evolving 边界；
 - `SimulationNodeId` 位于公共 `contracts.identity` 模块，Satellite 与
   GroundStation Descriptor 包含同一不可变逻辑身份。实体不 import 合同层；
@@ -222,8 +226,9 @@ classDiagram
   integration 层；
 - `SimulationEntityCatalog` 已实现为不可变、确定性 Descriptor 快照，以
   `SimulationNodeId` 作为统一身份并对重复完整 ID fail-closed；
-- `SimulationEntityCatalogBuilder` 支持一个或多个 Skyseed AS，委托既有
-  Projector；普通 SEED AS 被忽略，Registry 和 Compiler output 不参与构建；
+- `SimulationEntityCatalogBuilder` 是唯一的多 AS Descriptor 汇总服务，支持
+  一个或多个 Skyseed AS 并委托既有 Projector；AS 本身不投影 Descriptor，普通
+  SEED AS 被忽略，Registry 和 Compiler output 不参与构建；
 - UT 暂不进入该图。
 
 ### GroundStation implemented static direction
@@ -253,7 +258,7 @@ GroundStation/SEED Router。Descriptor 可包含稳定 ID、位置、必要分�
 软件、文件、启动命令、Docker/Compose 对象、可修改接口或 Emulator 生命周期
 方法。未来新增字段必须通过显式合同设计，而不是暴露完整 GroundStation。
 
-`GroundStation --|> SeedRouter` 已由当前静态纵向切片验证为合理的最小实现
+`GroundStation --|> Router` 已由当前静态纵向切片验证为合理的最小实现
 边界，但仍不是所有未来 GS 能力必须逐字遵守的铁则。卫星侧动态接口、更多
 Service 或更复杂路由能力必须在各自切片重新确认，不由本轮结果自动授权。
 

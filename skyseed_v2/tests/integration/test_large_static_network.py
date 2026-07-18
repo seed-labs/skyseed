@@ -11,7 +11,7 @@ from examples.large_static_network.main import (
     DEFAULT_SCENARIO,
     apply_scenario_file,
 )
-from skyseed_v2 import StaticEmulatorScenarioLoader
+from skyseed_v2.scenario_loader import StaticEmulatorScenarioLoader
 from skyseed_v2.seed import SkyseedDockerCompiler
 
 

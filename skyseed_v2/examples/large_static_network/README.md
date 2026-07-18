@@ -12,6 +12,13 @@ The Applier directly calls the same public AS/Shell/Orbit entity creation
 methods shown by the handwritten examples; it does not introduce a population
 entity or nested builder chain.
 
+This is the only YAML example because the scale input is large data rather
+than teaching code. `StaticEmulatorScenarioLoader` is a serialization adapter,
+and `StaticEmulatorSpecificationApplier` is an optional application service,
+not a domain entity or mandatory facade. The resulting
+`SimulationEntityCatalog` is an immutable Descriptor snapshot; it is not the
+scenario, a SEED Registry, a container inventory or a Compose directory.
+
 Compile and validate without starting 365 services:
 
 ```bash

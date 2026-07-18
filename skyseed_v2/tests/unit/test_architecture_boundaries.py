@@ -43,6 +43,19 @@ def test_domain_entities_do_not_depend_on_each_other_or_contracts() -> None:
     assert not hasattr(GroundStation, "runtime_reference")
 
 
+def test_skyseed_as_owns_entities_but_not_descriptor_projection() -> None:
+    from skyseed_v2.seed import autonomous_system
+
+    imports = imported_modules(autonomous_system)
+    assert not any("contracts" in module for module in imports)
+    assert not any("projection" in module for module in imports)
+    assert not hasattr(autonomous_system.SkyseedAutonomousSystem, "satellite_descriptors")
+    assert not hasattr(
+        autonomous_system.SkyseedAutonomousSystem,
+        "ground_station_descriptors",
+    )
+
+
 def test_contract_modules_have_only_the_approved_internal_dependencies() -> None:
     from skyseed_v2.contracts import catalog, ground_station, identity, satellite
 
@@ -95,6 +108,17 @@ def test_catalog_builder_has_no_registry_compiler_or_output_dependency() -> None
             or module_name.startswith(f"{forbidden_dependency}.")
             for module_name in builder_imports
         )
+    source = Path(inspect.getsourcefile(catalog_builder)).read_text(encoding="utf-8")
+    for forbidden in (
+        "getRegistry",
+        "create_shell",
+        "create_orbit",
+        "create_satellite",
+        "create_ground_station",
+        "StaticEmulatorScenarioLoader",
+        "SkyseedDockerCompiler",
+    ):
+        assert forbidden not in source
 
 
 def test_removed_and_deferred_contract_apis_are_not_exported() -> None:
@@ -110,14 +134,13 @@ def test_removed_and_deferred_contract_apis_are_not_exported() -> None:
     assert importlib.util.find_spec("skyseed_v2.contracts.runtime") is None
 
 
-def test_catalog_contract_and_builder_are_public_without_domain_backlinks() -> None:
+def test_catalog_contract_is_root_public_and_builder_has_explicit_owner() -> None:
     from skyseed_v2.contracts import SimulationEntityCatalog
     from skyseed_v2.domain import ground_station, satellite
 
     assert skyseed_v2.SimulationEntityCatalog is SimulationEntityCatalog
-    assert skyseed_v2.SimulationEntityCatalogBuilder.__module__ == (
-        "skyseed_v2.catalog_builder"
-    )
+    assert catalog_builder.__all__ == ["SimulationEntityCatalogBuilder"]
+    assert not hasattr(skyseed_v2, "SimulationEntityCatalogBuilder")
     assert not any(
         "catalog" in module_name for module_name in imported_modules(satellite)
     )
@@ -251,6 +274,8 @@ def test_scenario_loader_and_formal_examples_respect_application_boundaries() ->
         "registry.register",
         "validate_identifier",
         "SkyseedDockerCompiler",
+        "duplicate Orbits",
+        "duplicate Satellites",
     ):
         assert forbidden not in application_source
 
@@ -278,9 +303,17 @@ def test_constellation_helper_never_became_a_domain_or_public_api() -> None:
     ):
         assert importlib.util.find_spec(retired_module) is None
 
-    assert skyseed_v2.StaticEmulatorSpecificationApplier.__module__ == (
+    from skyseed_v2.scenario_application import (
+        StaticEmulatorApplyResult,
+        StaticEmulatorSpecificationApplier,
+    )
+
+    assert StaticEmulatorSpecificationApplier.__module__ == (
         "skyseed_v2.scenario_application"
     )
-    assert skyseed_v2.StaticEmulatorApplyResult.__module__ == (
+    assert StaticEmulatorApplyResult.__module__ == (
         "skyseed_v2.scenario_application"
     )
+    assert not hasattr(skyseed_v2, "StaticEmulatorSpecificationApplier")
+    assert not hasattr(skyseed_v2, "StaticEmulatorApplyResult")
+    assert not hasattr(contracts, "StaticEmulatorApplyResult")

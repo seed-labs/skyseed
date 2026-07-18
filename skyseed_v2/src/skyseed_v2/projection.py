@@ -14,8 +14,20 @@ from skyseed_v2.contracts.identity import (
 from skyseed_v2.domain import GroundStation, Satellite
 
 
+__all__ = [
+    "GroundStationDescriptorProjector",
+    "SatelliteDescriptorProjector",
+]
+
+
 class GroundStationDescriptorProjector:
-    """Project the unique GroundStation into its restricted contract."""
+    """Copy approved GroundStation scalars into its restricted Descriptor.
+
+    Layer: stateless application service. Catalog builders or explicit
+    projection callers create and use it. It is not an entity factory,
+    serializer or Compiler; it is public from this submodule because projection
+    is independent of both the entity and cross-layer contract.
+    """
 
     def project(self, ground_station: GroundStation) -> GroundStationDescriptor:
         if not isinstance(ground_station, GroundStation):
@@ -37,7 +49,13 @@ class GroundStationDescriptorProjector:
 
 
 class SatelliteDescriptorProjector:
-    """Project the unique Satellite into its restricted read-only contract."""
+    """Copy approved Satellite scalars into its restricted Descriptor.
+
+    Layer: stateless application service. Catalog builders or explicit
+    projection callers create and use it. It is not an entity factory,
+    serializer or Compiler; it is public from this submodule because projection
+    is independent of both the entity and cross-layer contract.
+    """
 
     def project(
         self,

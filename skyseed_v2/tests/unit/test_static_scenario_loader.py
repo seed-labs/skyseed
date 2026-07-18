@@ -4,10 +4,12 @@ from pathlib import Path
 import pytest
 from yaml import safe_dump, safe_load
 
-from skyseed_v2 import (
+from skyseed_v2.scenario_loader import (
     SCENARIO_SCHEMA_VERSION,
     StaticEmulatorScenarioLoadError,
     StaticEmulatorScenarioLoader,
+)
+from skyseed_v2.specifications import (
     StaticEmulatorScenarioSpecification,
 )
 
@@ -171,6 +173,12 @@ def test_unknown_schema_missing_field_and_unknown_field_fail_closed(
                 0
             ]["ix_attachments"][0].update(address="not-an-address"),
             "IPv4 address",
+        ),
+        (
+            lambda value: value["skyseed_autonomous_systems"][0]["shells"][0][
+                "generation"
+            ]["raan"].update(step_deg=360.0),
+            "duplicate Orbits",
         ),
     ),
 )

@@ -108,11 +108,14 @@ flowchart TD
     SkyseedAS --> StandardNode[Inherited Network / Host / Router]
     GroundStation --> GroundNetwork[SEED Ground Network]
 
-    Builder[SimulationEntityCatalogBuilder] --> SkyseedAS
+    SkyseedAS -->|read by| Builder[SimulationEntityCatalogBuilder<br/>application service]
     Satellite --> SatelliteProjector[SatelliteDescriptorProjector]
     GroundStation --> GroundProjector[GroundStationDescriptorProjector]
-    SatelliteProjector --> Catalog[SimulationEntityCatalog]
-    GroundProjector --> Catalog
+    SatelliteProjector --> SatelliteDescriptor[SatelliteDescriptor]
+    GroundProjector --> GroundDescriptor[GroundStationDescriptor]
+    Builder --> SatelliteProjector
+    Builder --> GroundProjector
+    Builder --> Catalog[SimulationEntityCatalog<br/>cross-layer contract]
 ```
 
 ## 5. Implemented isolated Satellite boundary
@@ -141,17 +144,31 @@ flowchart LR
 
 ```mermaid
 classDiagram
-    class Shell
-    class Orbit
-    class Satellite
-    class SeedNode
-    class SatelliteDescriptorProjector
-    class SatelliteDescriptor
-    class SimulationNodeId
+    class Shell {
+        <<domain entity>>
+    }
+    class Orbit {
+        <<domain entity>>
+    }
+    class Satellite {
+        <<domain entity + integration capability>>
+    }
+    class Node {
+        <<external integration>>
+    }
+    class SatelliteDescriptorProjector {
+        <<application service>>
+    }
+    class SatelliteDescriptor {
+        <<cross-layer descriptor>>
+    }
+    class SimulationNodeId {
+        <<value object + cross-layer contract>>
+    }
 
     Shell "1" *-- "*" Orbit
     Orbit "1" *-- "*" Satellite
-    Satellite --|> SeedNode
+    Satellite --|> Node
     SatelliteDescriptorProjector --> Satellite : reads restricted values
     SatelliteDescriptorProjector --> SatelliteDescriptor : produces
     SatelliteDescriptor "1" *-- "1" SimulationNodeId : identifies
@@ -168,7 +185,7 @@ Satellite(Node) -> SatelliteDescriptorProjector -> SatelliteDescriptor
 ```mermaid
 classDiagram
     class GroundStation {
-        <<implemented / evolving>>
+        <<domain entity + integration capability>>
         +ground_station_id
         +location
         +station_type
@@ -178,17 +195,17 @@ classDiagram
         +joinNetwork(network)
     }
 
-    class SeedRouter {
-        <<SEED>>
+    class Router {
+        <<external integration>>
     }
 
     class GroundStationDescriptorProjector {
-        <<implemented>>
+        <<application service>>
         +project(ground_station)
     }
 
     class GroundStationDescriptor {
-        <<implemented immutable contract>>
+        <<cross-layer descriptor>>
         +node_id
         +ground_station_id
         +latitude_deg
@@ -199,14 +216,14 @@ classDiagram
     }
 
     class SimulationNodeId {
-        <<public immutable logical identity>>
+        <<value object + cross-layer contract>>
         +asn
         +entity_kind
         +entity_id
         +value
     }
 
-    GroundStation --|> SeedRouter
+    GroundStation --|> Router
     GroundStationDescriptorProjector --> GroundStation : reads
     GroundStationDescriptorProjector --> GroundStationDescriptor : produces
     GroundStationDescriptor "1" *-- "1" SimulationNodeId : identifies
@@ -227,24 +244,34 @@ Registry、容器或执行目标身份。
 ```mermaid
 classDiagram
     class SkyseedAutonomousSystem {
-        <<implemented>>
+        <<domain owner + integration>>
         +create_shell(shell_id)
-        +create_ground_station(config)
+        +create_ground_station(id, location, station_type, operator)
         +createNetwork(name)
         +createHost(name)
         +createRouter(name)
     }
-    class Shell
-    class Orbit
-    class Satellite
-    class GroundStation
-    class StandardSeedNode
+    class Shell {
+        <<domain entity>>
+    }
+    class Orbit {
+        <<domain entity>>
+    }
+    class Satellite {
+        <<domain entity + integration capability>>
+    }
+    class GroundStation {
+        <<domain entity + integration capability>>
+    }
+    class Node {
+        <<external integration>>
+    }
 
     SkyseedAutonomousSystem "1" *-- "*" Shell
     Shell "1" *-- "*" Orbit
     Orbit "1" *-- "*" Satellite
-    SkyseedAutonomousSystem "1" o-- "*" GroundStation
-    SkyseedAutonomousSystem "1" o-- "*" StandardSeedNode
+    SkyseedAutonomousSystem "1" *-- "*" GroundStation
+    SkyseedAutonomousSystem "1" o-- "*" Node
 ```
 
 ```mermaid
@@ -257,6 +284,9 @@ flowchart LR
     Accumulator --> Compose
 ```
 
+Compiler 只读取已经完成构造并 render 的 Emulator/Registry 状态，产生 Compose
+artifact；它不创建 Shell、Orbit、Satellite 或 GroundStation。
+
 `SkyseedDockerCompiler` 是唯一的公开 Skyseed Docker Compiler。Satellite 的
 零接口特殊行为仍集中在内部边界；GroundStation 和普通 SEED 节点继续复用
 上游路径。不存在按旧节点种类命名的公开 Compiler 别名。
@@ -266,7 +296,7 @@ flowchart LR
 ```mermaid
 classDiagram
     class SimulationEntityCatalog {
-        <<implemented>>
+        <<cross-layer contract>>
         +get(node_id)
         +get_satellite(node_id_or_id)
         +get_ground_station(node_id_or_id)
@@ -275,14 +305,24 @@ classDiagram
         +list_nodes()
     }
     class SimulationEntityCatalogBuilder {
-        <<implemented>>
+        <<application service>>
         +build(autonomous_systems)
     }
-    class SkyseedAutonomousSystem
-    class SatelliteDescriptorProjector
-    class GroundStationDescriptorProjector
-    class SatelliteDescriptor
-    class GroundStationDescriptor
+    class SkyseedAutonomousSystem {
+        <<domain owner + integration>>
+    }
+    class SatelliteDescriptorProjector {
+        <<application service>>
+    }
+    class GroundStationDescriptorProjector {
+        <<application service>>
+    }
+    class SatelliteDescriptor {
+        <<cross-layer descriptor>>
+    }
+    class GroundStationDescriptor {
+        <<cross-layer descriptor>>
+    }
 
     SimulationEntityCatalog "1" *-- "*" SatelliteDescriptor
     SimulationEntityCatalog "1" *-- "*" GroundStationDescriptor
@@ -294,3 +334,22 @@ classDiagram
 
 Builder 不读取 SEED Registry 或 Compiler output；Catalog 不包含 AS、Node、Router、
 容器或可修改集合。普通 SEED AS 不会被解释成 Skyseed 实体。
+
+## 9. Compiler artifact and materialization boundary
+
+```mermaid
+flowchart LR
+    Emulator[Rendered Emulator<br/>domain + SEED integration]
+    Compiler[SkyseedDockerCompiler<br/>integration]
+    Compose[Compose artifact]
+    Launcher[ComposeProjectLauncher<br/>materialization integration]
+    Project[Running Compose project]
+
+    Emulator -->|compile; no entity creation| Compiler
+    Compiler -->|produces| Compose
+    Compose -->|consumed unchanged| Launcher
+    Launcher -->|materializes; outside domain| Project
+```
+
+`ComposeProjectLauncher` 不进入 Emulator 所有权图、Descriptor、Catalog 或
+Simulator 合同，也不反向调用 Loader、Applier 或 Compiler。

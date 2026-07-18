@@ -12,8 +12,8 @@ from skyseed_v2 import (
     GroundStationLocation,
     OrbitParameters,
     SimulationEntityCatalog,
-    SimulationEntityCatalogBuilder,
 )
+from skyseed_v2.catalog_builder import SimulationEntityCatalogBuilder
 from skyseed_v2.seed import (
     SatelliteBase,
     SkyseedAutonomousSystem,

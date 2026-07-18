@@ -34,9 +34,21 @@ from skyseed_v2.specifications import (
 SCENARIO_SCHEMA_VERSION = "skyseed-static-emulator/v1"
 GROUND_STATIONS_SCHEMA_VERSION = "skyseed-ground-stations/v1"
 
+__all__ = [
+    "GROUND_STATIONS_SCHEMA_VERSION",
+    "SCENARIO_SCHEMA_VERSION",
+    "StaticEmulatorScenarioLoadError",
+    "StaticEmulatorScenarioLoader",
+]
+
 
 class StaticEmulatorScenarioLoadError(ValueError):
-    """Fail-closed scenario parsing or validation error."""
+    """Report fail-closed file parsing or specification validation failure.
+
+    Layer: serialization adapter error. The Loader creates it and file-input
+    callers catch it. It is not a domain error, specification or runtime state;
+    it is public from this submodule as the stable Loader failure boundary.
+    """
 
 
 class _UniqueKeySafeLoader(SafeLoader):
@@ -114,7 +126,14 @@ def _fields(
 
 
 class StaticEmulatorScenarioLoader:
-    """Parse and validate one static v2 file into immutable specifications."""
+    """Parse one static v2 file into immutable validated specifications.
+
+    Layer: serialization adapter. File-driven callers create it and receive a
+    `StaticEmulatorScenarioSpecification`; the specification Applier is its
+    long-term downstream consumer. It is not an entity factory, Applier,
+    Registry adapter or Compiler. It is public from this submodule because
+    file input needs a stable fail-closed boundary.
+    """
 
     def load(self, scenario_file: Path) -> StaticEmulatorScenarioSpecification:
         path = Path(scenario_file).resolve()

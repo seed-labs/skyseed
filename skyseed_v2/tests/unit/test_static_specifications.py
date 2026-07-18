@@ -2,7 +2,7 @@ from dataclasses import FrozenInstanceError, fields
 
 import pytest
 
-from skyseed_v2 import (
+from skyseed_v2.specifications import (
     GroundStationSpecification,
     InOrbitPhaseDistributionSpecification,
     OrbitGenerationSpecification,
@@ -133,4 +133,19 @@ def test_invalid_and_duplicate_explicit_values_fail_closed() -> None:
             station_type="gateway",
             ground_station_id="gs-a",
             identity_key="also-specified",
+        )
+
+
+def test_generated_distributions_are_valid_before_application() -> None:
+    with pytest.raises(ValueError, match="duplicate Orbits"):
+        OrbitGenerationSpecification(
+            orbit_count=2,
+            satellites_per_orbit=2,
+            raan=RaanDistributionSpecification(0.0, 360.0),
+        )
+    with pytest.raises(ValueError, match="duplicate Satellites"):
+        OrbitGenerationSpecification(
+            orbit_count=2,
+            satellites_per_orbit=2,
+            phase=InOrbitPhaseDistributionSpecification(0.0, 360.0),
         )

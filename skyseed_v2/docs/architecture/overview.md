@@ -10,6 +10,10 @@ Detailed conceptual class diagrams with responsibilities, key attributes and
 methods are maintained in
 [conceptual-class-diagrams.md](./conceptual-class-diagrams.md).
 
+Public terminology and layer-qualified names are normative in
+[terminology.md](./terminology.md); repository-level approval and synchronization
+rules are in the root `AGENTS.md`.
+
 ## 2. System division
 
 系统分为两个主要部分：
@@ -111,6 +115,8 @@ Compiler 从 SEED 集成对象产生运行 metadata，不通过 Descriptor 获�
 Descriptor。Catalog 对 `SimulationNodeId` 做全局唯一性检查，以确定性顺序保存
 不可修改的 Descriptor tuple，并提供按完整逻辑 ID 或无歧义实体 ID 的查询。
 它不读取 Registry、Compiler output 或 Compose，也不定义持久化格式。
+`SkyseedAutonomousSystem` 不创建 Descriptor、不持有 Projector，也不依赖合同层；
+多 AS 投影汇总只有这一条 application 路径。
 
 同进程对象传递、文件序列化或跨进程传输只是这一合同的不同适配方式，不属于领域边界本身。
 

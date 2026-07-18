@@ -1,7 +1,7 @@
 import pytest
 from seedemu.core import AutonomousSystem
 
-from skyseed_v2 import SimulationEntityCatalogBuilder
+from skyseed_v2.catalog_builder import SimulationEntityCatalogBuilder
 from skyseed_v2.domain import GroundStationLocation, OrbitParameters
 from skyseed_v2.projection import (
     GroundStationDescriptorProjector,

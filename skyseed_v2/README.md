@@ -186,6 +186,11 @@ GPT 和 Codex 的聊天记录与记忆仅用于协助工作，不能替代仓库
 
 本文件规定项目的基本设计与开发流程。
 
+面向 Codex/agent 的长期工程约束集中在唯一的根级
+[`AGENTS.md`](./AGENTS.md)；公共命名的一词一义规则与类型分类见
+[`docs/architecture/terminology.md`](./docs/architecture/terminology.md)。二者是本
+文件的具体化，不建立平行架构。
+
 Codex 在开始新任务前应阅读并遵守本文件。
 
 除非任务明确要求，否则 Codex 不应自行修改本文件。流程需要调整时，应先由用户与 GPT 讨论确认，再写入仓库。

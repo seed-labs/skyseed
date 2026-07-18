@@ -8,6 +8,28 @@ from ipaddress import IPv4Address, IPv4Network
 from math import isfinite
 
 
+__all__ = [
+    "EbgpPeeringSpecification",
+    "EbgpRouterReferenceSpecification",
+    "GroundStationSpecification",
+    "InOrbitPhaseDistributionSpecification",
+    "InternetExchangeAttachmentSpecification",
+    "InternetExchangeSpecification",
+    "LocalNetworkAttachmentSpecification",
+    "OrbitGenerationSpecification",
+    "OrbitSpecification",
+    "OrdinaryAutonomousSystemSpecification",
+    "OrdinaryNetworkSpecification",
+    "OrdinaryRouterSpecification",
+    "RaanDistributionSpecification",
+    "SatelliteSpecification",
+    "ShellSpecification",
+    "SkyseedAutonomousSystemSpecification",
+    "StaticEmulatorScenarioSpecification",
+    "ground_station_id_for",
+]
+
+
 def _identifier(value: str, field_name: str) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError(f"{field_name} must be a non-empty string")
@@ -69,7 +91,12 @@ def _ipv4_network(value: str, field_name: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class RaanDistributionSpecification:
-    """Uniform right-ascension generation parameters for a Shell."""
+    """Specify uniform right-ascension input for generated Orbits.
+
+    Layer: immutable input specification. Loader or programmatic callers create
+    it; a Shell generation specification consumes it. It is not an Orbit or
+    runtime trajectory and is public only from the specifications module.
+    """
 
     start_deg: float = 0.0
     step_deg: float | None = None
@@ -85,7 +112,12 @@ class RaanDistributionSpecification:
 
 @dataclass(frozen=True, slots=True)
 class InOrbitPhaseDistributionSpecification:
-    """Uniform in-orbit phase and alternating plane offset parameters."""
+    """Specify uniform phase input for generated Satellites.
+
+    Layer: immutable input specification. Loader or programmatic callers create
+    it for `OrbitGenerationSpecification`; it is not Satellite state or a
+    runtime position model and is public only from the specifications module.
+    """
 
     start_deg: float = 0.0
     step_deg: float | None = None
@@ -110,7 +142,12 @@ class InOrbitPhaseDistributionSpecification:
 
 @dataclass(frozen=True, slots=True)
 class OrbitGenerationSpecification:
-    """Rules for generating every Orbit and Satellite in one Shell."""
+    """Validate deterministic Orbit/Satellite generation input for one Shell.
+
+    Layer: immutable input specification. Loader or programmatic callers create
+    it; the specification Applier expands it. It is not a population, factory
+    or domain owner and is public only from the specifications module.
+    """
 
     orbit_count: int
     satellites_per_orbit: int
@@ -128,11 +165,39 @@ class OrbitGenerationSpecification:
             raise TypeError(
                 "phase must be an InOrbitPhaseDistributionSpecification"
             )
+        raan_step = (
+            360.0 / self.orbit_count
+            if self.raan.step_deg is None
+            else self.raan.step_deg
+        )
+        raan_values = tuple(
+            (self.raan.start_deg + index * raan_step) % 360.0
+            for index in range(self.orbit_count)
+        )
+        if len({round(value, 10) for value in raan_values}) != len(raan_values):
+            raise ValueError("RAAN distribution generates duplicate Orbits")
+
+        phase_step = (
+            360.0 / self.satellites_per_orbit
+            if self.phase.step_deg is None
+            else self.phase.step_deg
+        )
+        phase_values = tuple(
+            (self.phase.start_deg + index * phase_step) % 360.0
+            for index in range(self.satellites_per_orbit)
+        )
+        if len({round(value, 10) for value in phase_values}) != len(phase_values):
+            raise ValueError("phase distribution generates duplicate Satellites")
 
 
 @dataclass(frozen=True, slots=True)
 class SatelliteSpecification:
-    """One explicitly specified Satellite within an Orbit."""
+    """Describe one explicit Satellite construction input within an Orbit.
+
+    Layer: immutable input specification. Loader or programmatic callers create
+    it; the Applier passes its values to `Orbit.create_satellite`. It is not a
+    Satellite entity or Descriptor and is public from the specifications module.
+    """
 
     satellite_id: str
     index_in_orbit: int
@@ -169,7 +234,12 @@ class SatelliteSpecification:
 
 @dataclass(frozen=True, slots=True)
 class OrbitSpecification:
-    """One explicitly specified Orbit and its explicit Satellites."""
+    """Describe one explicit Orbit and its Satellite construction inputs.
+
+    Layer: immutable input specification. It is created by input callers and
+    consumed by the Applier, not owned by a Shell and not a domain Orbit. It is
+    public from the specifications module for programmatic file-equivalent input.
+    """
 
     orbit_id: str
     right_ascension_deg: float
@@ -200,7 +270,12 @@ class OrbitSpecification:
 
 @dataclass(frozen=True, slots=True)
 class ShellSpecification:
-    """One static Shell, expressed by generation rules or explicit Orbits."""
+    """Describe one Shell through generation rules or explicit Orbit inputs.
+
+    Layer: immutable input specification. Loader or programmatic callers create
+    it; the Applier reads it before calling `create_shell`. It is not a Shell,
+    population or ownership layer and is public from the specifications module.
+    """
 
     shell_id: str
     altitude_km: float
@@ -238,7 +313,12 @@ class ShellSpecification:
 
 @dataclass(frozen=True, slots=True)
 class GroundStationSpecification:
-    """Static GroundStation data with explicit or generated logical identity."""
+    """Describe static GroundStation construction and IX attachment input.
+
+    Layer: immutable input specification. Loader or programmatic callers create
+    it; the Applier calls `create_ground_station`. It is not a GroundStation,
+    Descriptor or runtime service and is public from the specifications module.
+    """
 
     display_name: str
     latitude_deg: float
@@ -318,7 +398,12 @@ def ground_station_id_for(specification: GroundStationSpecification) -> str:
 
 @dataclass(frozen=True, slots=True)
 class InternetExchangeAttachmentSpecification:
-    """One static node attachment to an explicitly identified IX."""
+    """Describe one static node-to-IX attachment input.
+
+    Layer: immutable input specification. It is nested in node specifications
+    and consumed by the Applier; it is not a network interface or SEED object.
+    It is public from the specifications module for programmatic input.
+    """
 
     ix_id: int
     address: str
@@ -332,7 +417,12 @@ class InternetExchangeAttachmentSpecification:
 
 @dataclass(frozen=True, slots=True)
 class LocalNetworkAttachmentSpecification:
-    """One static ordinary-Router attachment to an AS-owned network."""
+    """Describe one ordinary Router attachment to an AS-owned network.
+
+    Layer: immutable input specification. Input callers create it and the
+    Applier passes it to public SEED join methods. It is not an interface or
+    Network entity and is public from the specifications module.
+    """
 
     network_id: str
     address: str
@@ -348,7 +438,12 @@ class LocalNetworkAttachmentSpecification:
 
 @dataclass(frozen=True, slots=True)
 class InternetExchangeSpecification:
-    """One static Internet exchange and its explicit peering prefix."""
+    """Describe one static Internet exchange construction input.
+
+    Layer: immutable input specification. Loader or programmatic callers create
+    it and the Applier calls the SEED Base API. It is not an IX entity or
+    lifecycle owner and is public from the specifications module.
+    """
 
     ix_id: int
     prefix: str
@@ -363,7 +458,12 @@ class InternetExchangeSpecification:
 
 @dataclass(frozen=True, slots=True)
 class OrdinaryNetworkSpecification:
-    """One ordinary-AS static IPv4 network."""
+    """Describe one ordinary-AS static IPv4 Network input.
+
+    Layer: immutable input specification. It is created by input callers and
+    consumed by the Applier's public SEED calls. It is not a SEED Network and
+    is public from the specifications module.
+    """
 
     network_id: str
     prefix: str
@@ -377,7 +477,12 @@ class OrdinaryNetworkSpecification:
 
 @dataclass(frozen=True, slots=True)
 class OrdinaryRouterSpecification:
-    """One ordinary SEED Router and its static network attachments."""
+    """Describe one ordinary SEED Router construction input.
+
+    Layer: immutable input specification. Input callers create it and the
+    Applier calls ordinary AS/Router methods. It is not a Router or integration
+    adapter and is public from the specifications module.
+    """
 
     router_id: str
     network_attachments: tuple[LocalNetworkAttachmentSpecification, ...] = ()
@@ -427,7 +532,12 @@ class OrdinaryRouterSpecification:
 
 @dataclass(frozen=True, slots=True)
 class OrdinaryAutonomousSystemSpecification:
-    """One ordinary ground AS with networks and Routers."""
+    """Describe one ordinary ground AS with Network and Router inputs.
+
+    Layer: immutable input specification. Loader or programmatic callers create
+    it and the Applier uses public SEED APIs. It is not an AutonomousSystem or
+    domain owner and is public from the specifications module.
+    """
 
     asn: int
     networks: tuple[OrdinaryNetworkSpecification, ...]
@@ -463,7 +573,12 @@ class OrdinaryAutonomousSystemSpecification:
 
 @dataclass(frozen=True, slots=True)
 class SkyseedAutonomousSystemSpecification:
-    """Static Shell and GroundStation inputs owned by one Skyseed AS."""
+    """Group Shell and GroundStation inputs for one future Skyseed AS.
+
+    Layer: immutable input specification. Input callers create it and the
+    Applier creates the real AS and owned entities. It is not an AS, scenario
+    facade or ownership layer and is public from the specifications module.
+    """
 
     asn: int
     shells: tuple[ShellSpecification, ...] = ()
@@ -508,7 +623,12 @@ class SkyseedAutonomousSystemSpecification:
 
 @dataclass(frozen=True, slots=True)
 class EbgpRouterReferenceSpecification:
-    """Logical reference to one statically declared Router-like node."""
+    """Identify one statically declared Router-like peering endpoint.
+
+    Layer: immutable input specification. It is created by input callers and
+    nested in an eBGP specification; it is not a Router, runtime locator or
+    Simulator identity and is public from the specifications module.
+    """
 
     asn: int
     router_id: str
@@ -522,7 +642,12 @@ class EbgpRouterReferenceSpecification:
 
 @dataclass(frozen=True, slots=True)
 class EbgpPeeringSpecification:
-    """One explicit static eBGP peering on an IX."""
+    """Describe one explicit static eBGP peering input on an IX.
+
+    Layer: immutable input specification. Input callers create it and the
+    Applier configures the SEED Ebgp Layer. It is not a session entity or
+    dynamic route and is public from the specifications module.
+    """
 
     ix_id: int
     first: EbgpRouterReferenceSpecification
@@ -555,7 +680,13 @@ class EbgpPeeringSpecification:
 
 @dataclass(frozen=True, slots=True)
 class StaticEmulatorScenarioSpecification:
-    """Immutable v2-owned input for one approved static Emulator scenario."""
+    """Contain one complete validated static Emulator construction input.
+
+    Layer: immutable input specification. The Loader or programmatic callers
+    create it; the specification Applier consumes it. It is not a runtime
+    scenario, domain parent, Emulator or deployment and is public from the
+    specifications module as the file/application boundary.
+    """
 
     skyseed_autonomous_systems: tuple[SkyseedAutonomousSystemSpecification, ...]
     internet_exchanges: tuple[InternetExchangeSpecification, ...] = ()

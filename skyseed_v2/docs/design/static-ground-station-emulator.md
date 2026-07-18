@@ -17,7 +17,7 @@ The object and contract boundary is:
 ```mermaid
 classDiagram
     class GroundStation {
-        <<implemented / evolving>>
+        <<domain entity + integration capability>>
         +ground_station_id
         +location
         +station_type
@@ -26,15 +26,15 @@ classDiagram
         +registry_type
         +joinNetwork(network)
     }
-    class SeedRouter {
-        <<SEED>>
+    class Router {
+        <<external integration>>
     }
     class GroundStationDescriptorProjector {
-        <<implemented>>
+        <<application service>>
         +project(ground_station)
     }
     class GroundStationDescriptor {
-        <<immutable contract>>
+        <<cross-layer descriptor>>
         +node_id
         +ground_station_id
         +latitude_deg
@@ -44,14 +44,14 @@ classDiagram
         +operator
     }
     class SimulationNodeId {
-        <<public immutable logical identity>>
+        <<value object + cross-layer contract>>
         +asn
         +entity_kind
         +entity_id
         +value
     }
 
-    GroundStation --|> SeedRouter
+    GroundStation --|> Router
     GroundStationDescriptorProjector --> GroundStation : reads approved values
     GroundStationDescriptorProjector --> GroundStationDescriptor : produces
     GroundStationDescriptor "1" *-- "1" SimulationNodeId : identifies

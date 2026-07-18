@@ -20,7 +20,14 @@ SimulationDescriptor = SatelliteDescriptor | GroundStationDescriptor
 
 @dataclass(frozen=True, slots=True, init=False)
 class SimulationEntityCatalog:
-    """Deterministic read-only snapshot of Simulator-facing entity contracts."""
+    """Hold the deterministic read-only Emulator-to-Simulator entity snapshot.
+
+    Layer: approved cross-layer contract. CatalogBuilder or explicit contract
+    callers create it; future Simulator code and current readers consume it.
+    It owns only immutable Descriptors and a logical-ID index, not entities,
+    Registry objects, containers, persistence or runtime state. It is a stable
+    root public type because it is the approved Emulator output boundary.
+    """
 
     _satellites: tuple[SatelliteDescriptor, ...]
     _ground_stations: tuple[GroundStationDescriptor, ...]

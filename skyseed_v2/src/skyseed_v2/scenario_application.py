@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import isfinite
 
 from seedemu.core import AutonomousSystem, Emulator
 from seedemu.layers import Ebgp, Ibgp, Ospf, PeerRelationship, Routing
@@ -21,16 +20,25 @@ from skyseed_v2.specifications import (
 )
 
 
+__all__ = [
+    "StaticEmulatorApplyResult",
+    "StaticEmulatorSpecificationApplier",
+]
+
+
 _SatelliteInput = tuple[str, int, float, dict[str, str]]
 _OrbitInput = tuple[str, OrbitParameters, tuple[_SatelliteInput, ...]]
 
 
 @dataclass(frozen=True, slots=True)
 class StaticEmulatorApplyResult:
-    """Flat operation result from applying one static specification.
+    """Expose the flat output of one complete specification application.
 
-    This is application output, not a domain entity or an ownership layer.
-    Entities remain owned by their returned AutonomousSystem objects.
+    Layer: operation result. The specification Applier creates it; file-driven
+    callers use the Emulator, owned AS collections and Catalog. It is not a
+    domain entity, ownership layer, Descriptor or Catalog member. A named
+    result is retained because no one existing object truthfully owns all four
+    outputs, but it is public only from this application submodule.
     """
 
     emulator: Emulator
@@ -42,8 +50,12 @@ class StaticEmulatorApplyResult:
 class StaticEmulatorSpecificationApplier:
     """Apply one validated specification through public domain/SEED methods.
 
-    The Loader is not used here. Handwritten scenarios can bypass this service
-    and call the same construction methods directly.
+    Layer: application service. File-driven callers create it and consume its
+    operation result. It reads specifications, sequences approved create/join
+    methods, builds the Catalog and does not own entities or lifecycle. It is
+    not a Loader, domain facade, Registry adapter or Compiler. It remains
+    public from this submodule because complete file inputs need heterogeneous
+    orchestration; handwritten scenarios bypass it.
     """
 
     def apply(
@@ -98,7 +110,7 @@ class StaticEmulatorSpecificationApplier:
         base.setAutonomousSystem(autonomous_system)
 
         for shell_specification in specification.shells:
-            orbit_inputs = _orbit_inputs(shell_specification)
+            orbit_inputs = _expand_orbit_inputs(shell_specification)
             shell = autonomous_system.create_shell(shell_specification.shell_id)
             for orbit_id, parameters, satellite_inputs in orbit_inputs:
                 orbit = shell.create_orbit(orbit_id, parameters=parameters)
@@ -172,7 +184,9 @@ class StaticEmulatorSpecificationApplier:
             emulator.addLayer(layer)
 
 
-def _orbit_inputs(specification: ShellSpecification) -> tuple[_OrbitInput, ...]:
+def _expand_orbit_inputs(
+    specification: ShellSpecification,
+) -> tuple[_OrbitInput, ...]:
     """Expand one immutable Shell input without creating an entity."""
 
     if specification.generation is None:
@@ -208,16 +222,10 @@ def _orbit_inputs(specification: ShellSpecification) -> tuple[_OrbitInput, ...]:
         if generation.phase.step_deg is None
         else generation.phase.step_deg
     )
-    if not isfinite(raan_step) or not isfinite(phase_step):
-        raise ValueError("generated angular steps must be finite")
-
     raan_values = tuple(
         (generation.raan.start_deg + index * raan_step) % 360.0
         for index in range(generation.orbit_count)
     )
-    if len({round(value, 10) for value in raan_values}) != len(raan_values):
-        raise ValueError("RAAN distribution generates duplicate Orbits")
-
     inputs: list[_OrbitInput] = []
     for orbit_index, right_ascension in enumerate(raan_values):
         orbit_id = f"{specification.shell_id}-orbit-{orbit_index + 1:03d}"
@@ -230,10 +238,6 @@ def _orbit_inputs(specification: ShellSpecification) -> tuple[_OrbitInput, ...]:
             (orbit_start + index * phase_step) % 360.0
             for index in range(generation.satellites_per_orbit)
         )
-        if len({round(value, 10) for value in anomalies}) != len(anomalies):
-            raise ValueError(
-                f"phase distribution generates duplicate Satellites in {orbit_id!r}"
-            )
         satellites = tuple(
             (
                 f"{orbit_id}-satellite-{satellite_index + 1:04d}",

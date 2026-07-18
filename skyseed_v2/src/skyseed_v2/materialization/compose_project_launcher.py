@@ -19,7 +19,12 @@ CommandRunner = Callable[[Sequence[str]], CompletedProcess[str]]
 
 
 class ComposeLaunchStrategy(str, Enum):
-    """Explicit Compose project startup strategy."""
+    """Select one explicit Compose project startup strategy.
+
+    Layer: materialization integration value. Launcher callers create/select it
+    and `ComposeProjectLauncher` consumes it. It is not fallback policy,
+    Compiler input or domain state and is public from the materialization module.
+    """
 
     SINGLE = "single"
     BATCHED = "batched"
@@ -56,7 +61,12 @@ def _service_tuple(values: Iterable[str], field_name: str) -> tuple[str, ...]:
 
 @dataclass(frozen=True, slots=True)
 class ComposeServiceExpectations:
-    """Explicit state classes for every service in one Compose project."""
+    """Classify expected final states for every Compose service.
+
+    Layer: materialization integration value. Launcher callers create it and
+    `ComposeProjectLauncher` verifies it. It is not a Catalog, scenario or
+    runtime domain model and is public from the materialization module.
+    """
 
     long_running: tuple[str, ...]
     successful_exit_helpers: tuple[str, ...] = ()
@@ -83,7 +93,13 @@ class ComposeServiceExpectations:
 
 @dataclass(frozen=True, slots=True)
 class ComposeBatchResult:
-    """One successfully materialized and verified sequential batch."""
+    """Record evidence for one explicitly requested sequential batch.
+
+    Layer: materialization operation result. `ComposeProjectLauncher` creates
+    it and tooling/evidence callers read it. It is not a domain entity,
+    Simulator result or default batching policy and is public only from the
+    materialization module.
+    """
 
     batch_index: int
     services: tuple[str, ...]
@@ -93,7 +109,13 @@ class ComposeBatchResult:
 
 @dataclass(frozen=True, slots=True)
 class ComposeMaterializationResult:
-    """Evidence that the complete expected Compose project reached its states."""
+    """Record evidence that one complete Compose project reached expected states.
+
+    Layer: materialization operation result. `ComposeProjectLauncher` creates
+    it and integration/evidence callers read it. It is not a Catalog, domain
+    entity, deployment entity or Simulator result and is public only from the
+    materialization module.
+    """
 
     compose_file: Path
     project_name: str
@@ -111,7 +133,12 @@ class ComposeMaterializationResult:
 
 
 class ComposeMaterializationError(RuntimeError):
-    """Fail-closed materialization error with optional batch context."""
+    """Report fail-closed Compose materialization failure with batch context.
+
+    Layer: materialization integration error. Launcher operations create it and
+    integration callers catch it. It is not domain/runtime state and is public
+    from the materialization module as the stable failure boundary.
+    """
 
     def __init__(
         self,
@@ -135,6 +162,11 @@ class _ServiceState:
 
 class ComposeProjectLauncher:
     """Materialize one complete Compose v2 project and verify its final state.
+
+    Layer: materialization integration. Tooling callers create it and consume
+    its operation result. It is not a domain entity, Compiler, Runner,
+    Simulator or recovery coordinator. It is public from the materialization
+    module because already-compiled project startup needs a bounded adapter.
 
     The default is one full-project Compose invocation with controlled
     internal parallelism. Batching is available only through an explicit

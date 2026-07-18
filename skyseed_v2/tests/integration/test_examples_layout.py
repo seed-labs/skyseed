@@ -122,6 +122,10 @@ def test_small_examples_show_public_construction_without_file_facades() -> None:
     assert ".createNetwork(" in complete_source
     assert ".createRouter(" in complete_source
     assert "SimulationEntityCatalogBuilder" in complete_source
+    assert (
+        "from skyseed_v2.catalog_builder import SimulationEntityCatalogBuilder"
+        in complete_source
+    )
     assert "SkyseedDockerCompiler" in complete_source
 
 
@@ -130,8 +134,23 @@ def test_large_example_has_one_thin_file_application_path() -> None:
 
     assert "StaticEmulatorScenarioLoader().load" in source
     assert "StaticEmulatorSpecificationApplier().apply" in source
+    assert "from skyseed_v2.scenario_loader import" in source
+    assert "from skyseed_v2.scenario_application import" in source
+    assert "from skyseed_v2 import" not in source
     assert "@dataclass" not in source
     assert "safe_load" not in source
     assert "scenario-summary.json" not in source
     assert "LargeStaticScenario" not in source
     assert "LargeStaticSummary" not in source
+
+    readme = (EXAMPLES_ROOT / "large_static_network/README.md").read_text(
+        encoding="utf-8"
+    )
+    for required_explanation in (
+        "only YAML example",
+        "not a domain entity",
+        "immutable Descriptor snapshot",
+        "scenario, a SEED Registry",
+        "container inventory",
+    ):
+        assert required_explanation in readme

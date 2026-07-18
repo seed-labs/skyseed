@@ -5,6 +5,7 @@ from seedemu.core.enums import NodeRole
 
 from skyseed_v2.contracts import SimulationNodeId
 from skyseed_v2.domain import OrbitParameters, Satellite, SatelliteRole
+from skyseed_v2.projection import SatelliteDescriptorProjector
 from skyseed_v2.seed import (
     SATELLITE_REGISTRY_TYPE,
     SatelliteBase,
@@ -84,7 +85,10 @@ def test_base_render_and_options_apply_to_the_orbit_satellite_instances() -> Non
 def test_descriptor_is_restricted_projection_of_registered_satellite() -> None:
     emulator, satellite_as, _, _ = build_rendered_emulator()
 
-    for descriptor in satellite_as.satellite_descriptors():
+    projector = SatelliteDescriptorProjector()
+    for descriptor in (
+        projector.project(satellite) for satellite in satellite_as.satellites()
+    ):
         satellite = satellite_as.get_satellite(descriptor.satellite_id)
         registered = emulator.getRegistry().get(
             "65000", SATELLITE_REGISTRY_TYPE, descriptor.satellite_id

@@ -19,7 +19,13 @@ GROUND_STATION_ROLE_LABEL = "GroundStation"
 
 @dataclass(frozen=True, slots=True)
 class GroundStationLocation:
-    """Geodetic location fixed for one static Emulator run."""
+    """Hold one GroundStation's geodetic values for a static Emulator run.
+
+    Layer: domain value object. Handwritten callers or the Applier create it;
+    GroundStation and its Projector read it. It is not a dynamic position or
+    visibility model. It is root public because direct GroundStation creation
+    requires this validated value.
+    """
 
     latitude_deg: float
     longitude_deg: float
@@ -43,7 +49,14 @@ class GroundStationLocation:
 
 
 class GroundStation(Router):
-    """The one user-visible GroundStation and its SEED Router capability."""
+    """Represent one GroundStation and the same instance's SEED Router capability.
+
+    Layer: approved domain entity plus SEED capability.
+    `SkyseedAutonomousSystem.create_ground_station` creates it; its AS, routing
+    layers, Projector and Compiler use it. It is not a Descriptor,
+    specification, ordinary Router or dynamic link state. It is root public
+    because it is an approved user-visible entity.
+    """
 
     def __init__(
         self,

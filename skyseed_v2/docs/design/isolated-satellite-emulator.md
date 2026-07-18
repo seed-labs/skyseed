@@ -23,10 +23,10 @@ Their correspondence and dependency direction are:
 
 ```mermaid
 flowchart LR
-    Satellite[Satellite / satnode] -->|approved scalar values| Projector[SatelliteDescriptorProjector]
-    Projector --> Descriptor[Immutable SatelliteDescriptor]
-    Satellite --|> SeedNode[SEED Node]
-    Descriptor -->|identified by| LogicalId[SimulationNodeId]
+    Satellite[Satellite<br/>domain entity + integration capability] -->|approved scalar values| Projector[SatelliteDescriptorProjector<br/>application service]
+    Projector --> Descriptor[SatelliteDescriptor<br/>cross-layer descriptor]
+    Satellite --|> SeedNode[SEED Node<br/>external integration]
+    Descriptor -->|identified by| LogicalId[SimulationNodeId<br/>value object + cross-layer contract]
 ```
 
 - `Satellite` is defined in `src/skyseed_v2/domain/satellite.py`. It directly
@@ -226,10 +226,10 @@ collision cannot create duplicate YAML keys or retain a Host identity.
 
 ## 9. Minimal executable scenario
 
-`examples/isolated_satellites/main.py` loads its adjacent v2 `scenario.yaml`
-and constructs one AS, one Shell, one Orbit, and two Satellites through the
-owning objects. See its local README for compile, run, inspection,
-visualization, and cleanup commands.
+`examples/isolated_satellites/main.py` is handwritten and constructs one AS,
+one Shell, one Orbit, and two Satellites directly through the owning objects.
+It has no YAML, Loader or Applier. See its local README for compile, run,
+inspection, visualization, and cleanup commands.
 
 ## 10. Deferred work
 

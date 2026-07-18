@@ -32,7 +32,10 @@ an example-local `skyseed-ground-stations/v1` file.
 The loader rejects unknown versions and fields, missing fields, duplicate YAML
 keys, invalid identifiers/ASN/angles/coordinates/prefixes, duplicate logical
 IDs, unresolved IX/Router/network references and external ground-station paths.
-It normalizes collection ordering before returning frozen specifications.
+It also rejects generated angular distributions that would create duplicate
+Orbits or Satellites, and normalizes collection ordering before returning
+frozen specifications. The Applier therefore receives fully validated input
+and does not repeat these checks.
 
 The contract deliberately excludes v1 commits and labels, epoch/time, current
 position, ISL, GS–Satellite links, Zone, dynamic routes, qdisc/BPF/MPLS,
@@ -66,7 +69,8 @@ Generated IDs are deterministic and independent of input mapping/order. The
 Applier contains no large-example counts and no historical-label branch. Its
 flat `StaticEmulatorApplyResult` is an operation result containing Emulator,
 AS collections and Catalog; it owns no entity and enters no Descriptor or
-Simulator contract.
+Simulator contract. Both the Applier and result are public only from
+`skyseed_v2.scenario_application`, not the root package.
 
 ## Domain vocabulary discipline
 
@@ -82,7 +86,9 @@ class diagram or Simulator input, its design must explicitly establish:
 
 Implementation convenience does not promote a name into the domain model. No
 approval framework or placeholder class is implied by this documentation
-rule.
+rule. The normative names and prohibited ambiguous bare terms are maintained
+in `docs/architecture/terminology.md`; the root `AGENTS.md` makes this approval
+gate part of the long-term project workflow.
 
 ## Self-contained formal examples
 

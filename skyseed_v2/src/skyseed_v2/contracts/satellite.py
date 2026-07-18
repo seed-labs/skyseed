@@ -9,7 +9,13 @@ from . import identity as _identity
 
 @dataclass(frozen=True, slots=True)
 class SatelliteDescriptor:
-    """Read-only Satellite projection for future Simulator consumers."""
+    """Expose approved static Satellite values across the Simulator boundary.
+
+    Layer: immutable cross-layer Descriptor. Its Projector creates it; Catalog
+    and future Simulator consumers read it. It is not a Satellite, SEED Node,
+    Registry record or runtime position. It is a stable root public type because
+    the approved boundary requires Satellite data without entity capability.
+    """
 
     node_id: _identity.SimulationNodeId
     satellite_id: str
