@@ -15,15 +15,20 @@ From `skyseed_v2/`:
 ```bash
 PYTHONPATH=src:. python examples/s4_scale_static_emulator.py \
   --output /tmp/skyseed-v2-s4-scale-static/output --override
-docker-compose -p skyseed_v2_s4_scale_static \
+docker compose --parallel 16 -p skyseed_v2_s4_scale_static \
   -f /tmp/skyseed-v2-s4-scale-static/output/docker-compose.yml config --quiet
-docker-compose -p skyseed_v2_s4_scale_static \
+DOCKER_BUILDKIT=0 docker compose --parallel 16 \
+  -p skyseed_v2_s4_scale_static \
   -f /tmp/skyseed-v2-s4-scale-static/output/docker-compose.yml build
 ```
 
-On the validated Docker Compose 1.27.4 host, one 365-service `up -d` fanout
-stalls inside the old client. Materialize the complete, unchanged service
-inventory with the generic bounded launcher and an explicit batch size:
+`DOCKER_BUILDKIT=0` is required by the validated Docker Engine 19.03 host; its
+Compose v2 default BuildKit path loses the derived images' startup command. It
+is a host compatibility setting, not a second Compiler output. Re-evaluate it
+after upgrading the Engine.
+
+Materialize the complete unchanged inventory with the default single-project
+Docker Compose v2 launcher and an explicit internal parallel limit:
 
 ```bash
 PYTHONPATH=src:. python - <<'PY'
@@ -39,42 +44,37 @@ result = ComposeProjectLauncher(
     compose_file=compose_file,
     project_name="skyseed_v2_s4_scale_static",
     expectations=materialization_expectations(compose_file),
-    batch_size=16,
+    parallel_limit=16,
 ).materialize()
 print(result)
 PY
 ```
 
-This is a Compose materialization optimization, not a smaller scenario,
-fallback, or alternate compilation path. The launcher uses the same one
-Compose file and project for every batch, verifies explicit long-running and
-successful-exit helper sets, and keeps all 365 declared services in scope.
-Batch size is configurable; 16 is only the value validated on this host.
+The default issues one full-project `docker compose up -d` and then verifies
+the explicit long-running/successful-exit helper sets. It is not a smaller
+scenario, fallback, or alternate compilation path. `parallel_limit=16` is the
+value validated on this host, not an automatically tuned constant. Explicit
+`strategy="batched"` with a configurable `batch_size` remains available only
+for compatibility and diagnosis; it is never selected after a single-mode
+failure.
 
 The deterministic summary is written to `scenario-summary.json`. Runtime
 acceptance additionally audits all Satellite containers, both peering GS,
 ordinary Routers, eBGP/ICMP and <http://127.0.0.1:8080/pro/map>.
 
 After collecting evidence, clean only this project and its locally built node
-images. On the old Compose client, resolve the same service list and remove it
-in bounded groups before `down`; do not use a global Docker prune:
+image tags; do not use a global Docker prune:
 
 ```bash
-compose_file=/tmp/skyseed-v2-s4-scale-static/output/docker-compose.yml
-project_name=skyseed_v2_s4_scale_static
-mapfile -t services < <(
-  docker-compose -p "$project_name" -f "$compose_file" config --services | sort
-)
-for ((offset=0; offset<${#services[@]}; offset+=16)); do
-  docker-compose -p "$project_name" -f "$compose_file" \
-    rm -f -s -v "${services[@]:offset:16}"
-done
-docker-compose -p "$project_name" -f "$compose_file" \
+docker compose --parallel 16 -p skyseed_v2_s4_scale_static \
+  -f /tmp/skyseed-v2-s4-scale-static/output/docker-compose.yml \
   down --remove-orphans
 ```
 
 The shared upstream Router/Base images and the named InternetMap image must be
-retained. The experiment output under `/tmp` may then be removed.
+retained. Resolve and validate only image tags prefixed with the exact Compose
+v2 project name before removing them. The experiment output under `/tmp` may
+then be removed.
 
 ## Complete static Emulator
 
@@ -88,11 +88,12 @@ From `skyseed_v2/`:
 ```bash
 PYTHONPATH=src python examples/complete_static_emulator.py \
   --output /tmp/skyseed-v2-complete-static-emulator/output --override
-docker-compose -p skyseed_v2_complete_static \
+docker compose --parallel 16 -p skyseed_v2_complete_static \
   -f /tmp/skyseed-v2-complete-static-emulator/output/docker-compose.yml config
-docker-compose -p skyseed_v2_complete_static \
+DOCKER_BUILDKIT=0 docker compose --parallel 16 \
+  -p skyseed_v2_complete_static \
   -f /tmp/skyseed-v2-complete-static-emulator/output/docker-compose.yml build
-docker-compose -p skyseed_v2_complete_static \
+docker compose --parallel 16 -p skyseed_v2_complete_static \
   -f /tmp/skyseed-v2-complete-static-emulator/output/docker-compose.yml up -d
 ```
 
@@ -109,15 +110,14 @@ Open <http://127.0.0.1:8080/pro/map> after startup. After manual acceptance,
 clean only this example's resources with:
 
 ```bash
-docker-compose -p skyseed_v2_complete_static \
+docker compose --parallel 16 -p skyseed_v2_complete_static \
   -f /tmp/skyseed-v2-complete-static-emulator/output/docker-compose.yml \
   down --remove-orphans
 docker image rm \
-  skyseed_v2_complete_static_satnode_65001_satellite-0:latest \
-  skyseed_v2_complete_static_satnode_65001_satellite-1:latest \
-  skyseed_v2_complete_static_brdnode_65001_gs-new-york:latest \
-  skyseed_v2_complete_static_brdnode_65002_ground-router:latest
-rm -rf /tmp/skyseed-v2-complete-static-emulator
+  skyseed_v2_complete_static-satnode_65001_satellite-0:latest \
+  skyseed_v2_complete_static-satnode_65001_satellite-1:latest \
+  skyseed_v2_complete_static-brdnode_65001_gs-new-york:latest \
+  skyseed_v2_complete_static-brdnode_65002_ground-router:latest
 ```
 
 The cleanup deliberately retains shared upstream and InternetMap images.
@@ -154,13 +154,13 @@ From `skyseed_v2/`:
 PYTHONPATH=src python3 examples/isolated_satellites.py \
   --output /tmp/skyseed-isolated-satellites
 cd /tmp/skyseed-isolated-satellites
-docker-compose config
-docker-compose build
-docker-compose up -d
+docker compose config
+DOCKER_BUILDKIT=0 docker compose build
+docker compose up -d
 ```
 
-This host currently provides Compose v1 as `docker-compose`. On a Compose v2
-host, use the equivalent `docker compose` commands.
+The validated Docker 19.03 host needs the shown classic-builder setting. A
+current Docker Engine should use its supported builder configuration.
 
 The two Satellite services use `network_mode: none`. The project default
 network is used only by the SEED build helper and runtime InternetMap service;
@@ -169,5 +169,5 @@ neither Satellite joins it. Open <http://127.0.0.1:8080/pro/map> after startup.
 Cleanup only this example's resources by using its Compose project directory:
 
 ```bash
-docker-compose down --remove-orphans
+docker compose down --remove-orphans
 ```

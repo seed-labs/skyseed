@@ -1,5 +1,10 @@
 # S4-Scale Bounded Compose Materialization Validation
 
+> This document preserves the explicit Docker Compose 1.27.4 fixed-batch
+> validation. Fixed batching is now an optional tooling mode. The supported
+> Docker Compose v2 single-invocation default is validated in
+> `docs/evidence/s4-scale-compose-v2-single-materialization-validation.md`.
+
 ## 1. Scope and result
 
 Validation date: 2026-07-17 (America/New_York)

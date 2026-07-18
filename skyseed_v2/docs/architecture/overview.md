@@ -282,19 +282,21 @@ excluding UT: COMPLETE**。这不会启动 Simulator、UT、动态链路或运�
 ```text
 Emulator:                     构建静态实体和场景
     -> SkyseedDockerCompiler: 生成唯一 Compose output
-    -> ComposeProjectLauncher: 有界、分批物化完整 Compose project
+    -> ComposeProjectLauncher: 通过 Docker Compose v2 物化完整 project
 ```
 
 `ComposeProjectLauncher` 位于 `skyseed_v2.materialization`，不属于 Emulator
 领域对象、Descriptor、Catalog、Simulator 或动态 Topology/Planner。它接收已生成
-的 Compose 文件、project name、可配置 batch size，以及调用者显式给出的长期
-运行/成功退出 helper 服务集合；按确定性顺序启动完整清单并 fail-closed 核验
-项目最终状态。它不调用 Compiler、不修改或重写 Compose、不缩减服务、不自动
-调 batch size，也不实现重试/恢复框架。
+的 Compose 文件、project name、可配置 `parallel_limit`，以及调用者显式给出的
+长期运行/成功退出 helper 服务集合。默认只发出一次完整项目的
+`docker compose --parallel N ... up -d`，随后 fail-closed 核验最终完整清单。它
+不调用 Compiler、不修改或重写 Compose、不缩减服务、不自动调参，也不实现
+重试/恢复框架；Compose v2 缺失或失败时不会回退到 v1。
 
-Compose 1.27.4 在 365-service 一次性大扇出中发生客户端阻塞，而同一文件、同一
-project、完整清单按批物化成功；因此该工具是 Compose materialization
-optimization，不是 fallback 或第二条成功路径。未来 Runner 是否调用、封装或
-替换它仍未决定，本轮没有开始动态 Runner 或 Simulator。详细合同与实验证据见
+Compose 1.27.4 在 365-service 一次性大扇出中发生客户端阻塞；Compose v2.40.2
+则用同一文件、同一 project 和 `parallel_limit=16` 完成了单次完整物化。固定
+分批能力仍以显式 `strategy=batched` 保留为兼容/诊断工具，绝不是自动 fallback
+或第二条默认路径。未来 Runner 是否调用、封装或替换它仍未决定，本轮没有开始
+动态 Runner 或 Simulator。详细合同与实验证据见
 `docs/design/compose-materialization.md` 和
-`docs/evidence/s4-scale-batched-compose-materialization-validation.md`。
+`docs/evidence/s4-scale-compose-v2-single-materialization-validation.md`。

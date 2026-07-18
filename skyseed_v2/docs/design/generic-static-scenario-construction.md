@@ -125,14 +125,15 @@ slice.
 
 ## Compose materialization boundary
 
-The scale scene is compiled exactly once into one Compose output. Bounded
-startup of that complete project is owned by the separate
+The scale scene is compiled exactly once into one Compose output. Startup of
+that complete project is owned by the separate
 `ComposeProjectLauncher` integration tool under `skyseed_v2.materialization`,
 not by these specifications, builders, Catalog, Emulator, or Compiler. The
-caller supplies the exact long-running/helper classification and batch size;
-the launcher keeps one project/file, starts a deterministic complete inventory
-and verifies expected final states fail-closed.
+caller supplies the exact long-running/helper classification and Compose v2
+parallel limit. The launcher keeps one project/file, defaults to one complete
+project invocation, and verifies expected final states fail-closed. Fixed
+batching remains available only as an explicitly selected tooling mode.
 
 The design and formal scale evidence are recorded in
 `docs/design/compose-materialization.md` and
-`docs/evidence/s4-scale-batched-compose-materialization-validation.md`.
+`docs/evidence/s4-scale-compose-v2-single-materialization-validation.md`.

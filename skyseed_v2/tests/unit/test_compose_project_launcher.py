@@ -7,6 +7,7 @@ from subprocess import CompletedProcess
 import pytest
 
 from skyseed_v2.materialization import (
+    ComposeLaunchStrategy,
     ComposeMaterializationError,
     ComposeProjectLauncher,
     ComposeServiceExpectations,
@@ -24,6 +25,9 @@ class FakeComposeRuntime:
         omit_from_final: str | None = None,
         extra_final_service: str | None = None,
         mutate_compose_after_up_batch: int | None = None,
+        compose_version: str = "2.40.2",
+        version_returncode: int = 0,
+        expected_parallel_limit: int = 16,
     ) -> None:
         self.declared_services = declared_services
         self.expectations = expectations
@@ -32,6 +36,9 @@ class FakeComposeRuntime:
         self.omit_from_final = omit_from_final
         self.extra_final_service = extra_final_service
         self.mutate_compose_after_up_batch = mutate_compose_after_up_batch
+        self.compose_version = compose_version
+        self.version_returncode = version_returncode
+        self.expected_parallel_limit = expected_parallel_limit
         self.commands: list[tuple[str, ...]] = []
         self.up_batches: list[tuple[str, ...]] = []
         self.states: dict[str, tuple[str, int]] = {}
@@ -39,15 +46,27 @@ class FakeComposeRuntime:
     def __call__(self, command) -> CompletedProcess[str]:
         command = tuple(command)
         self.commands.append(command)
-        if command[0] == "docker-compose":
-            action = command[5]
+        if command[:4] == ("docker", "compose", "version", "--short"):
+            return self._completed(
+                command,
+                returncode=self.version_returncode,
+                stdout=f"{self.compose_version}\n",
+                stderr="compose plugin unavailable" if self.version_returncode else "",
+            )
+        if command[:2] == ("docker", "compose"):
+            assert command[2:4] == (
+                "--parallel",
+                str(self.expected_parallel_limit),
+            )
+            action = command[8]
             if action == "config":
                 return self._completed(command, stdout="\n".join(self.declared_services))
             if action == "up":
-                services = command[7:]
-                self.up_batches.append(services)
+                requested_services = command[10:]
+                self.up_batches.append(requested_services)
                 if self.fail_up_batch == len(self.up_batches):
                     return self._completed(command, returncode=17, stderr="up failed")
+                services = requested_services or self.declared_services
                 for service in services:
                     if service in self.expectations.long_running:
                         state = (
@@ -59,10 +78,10 @@ class FakeComposeRuntime:
                         state = ("exited", 0)
                     self.states[service] = state
                 if self.mutate_compose_after_up_batch == len(self.up_batches):
-                    Path(command[4]).write_text("changed: true\n")
+                    Path(command[7]).write_text("changed: true\n")
                 return self._completed(command)
             if action == "ps":
-                requested = command[8:]
+                requested = command[11:]
                 services = tuple(self.states) if not requested else requested
                 if not requested and self.omit_from_final is not None:
                     services = tuple(
@@ -132,17 +151,122 @@ def launcher(
     *,
     batch_size: int,
     expected: ComposeServiceExpectations,
+    strategy: ComposeLaunchStrategy = ComposeLaunchStrategy.BATCHED,
+    parallel_limit: int = 16,
     verification_attempts: int = 1,
 ) -> ComposeProjectLauncher:
     return ComposeProjectLauncher(
         compose_file=compose_file(tmp_path),
         project_name="test_project",
         expectations=expected,
+        strategy=strategy,
+        parallel_limit=parallel_limit,
         batch_size=batch_size,
         command_runner=runtime,
         verification_attempts=verification_attempts,
         verification_interval_seconds=0,
     )
+
+
+def test_default_strategy_is_one_compose_v2_full_project_invocation(
+    tmp_path: Path,
+) -> None:
+    expected = expectations()
+    runtime = FakeComposeRuntime(
+        declared_services=("node-c", "helper", "node-a", "node-b"),
+        expectations=expected,
+    )
+
+    result = ComposeProjectLauncher(
+        compose_file=compose_file(tmp_path),
+        project_name="test_project",
+        expectations=expected,
+        command_runner=runtime,
+        verification_attempts=1,
+        verification_interval_seconds=0,
+    ).materialize()
+
+    assert runtime.up_batches == [()]
+    assert result.strategy is ComposeLaunchStrategy.SINGLE
+    assert result.parallel_limit == 16
+    assert result.batch_size is None
+    assert result.batches == ()
+    assert result.compose_version == "2.40.2"
+    assert result.declared_services == expected.all_services
+
+
+def test_parallel_limit_is_forwarded_to_compose_v2(tmp_path: Path) -> None:
+    expected = expectations(("node-a",), ())
+    runtime = FakeComposeRuntime(
+        declared_services=expected.all_services,
+        expectations=expected,
+        expected_parallel_limit=7,
+    )
+
+    result = launcher(
+        tmp_path,
+        runtime,
+        batch_size=3,
+        expected=expected,
+        strategy=ComposeLaunchStrategy.SINGLE,
+        parallel_limit=7,
+    ).materialize()
+
+    assert result.parallel_limit == 7
+    assert any(command[2:4] == ("--parallel", "7") for command in runtime.commands)
+
+
+def test_missing_or_unsupported_compose_v2_fails_without_v1_fallback(
+    tmp_path: Path,
+) -> None:
+    expected = expectations(("node-a",), ())
+    missing = FakeComposeRuntime(
+        declared_services=expected.all_services,
+        expectations=expected,
+        version_returncode=1,
+    )
+    with pytest.raises(ComposeMaterializationError, match="version check failed"):
+        launcher(
+            tmp_path / "missing",
+            missing,
+            batch_size=1,
+            expected=expected,
+        ).materialize()
+    assert missing.commands == [("docker", "compose", "version", "--short")]
+
+    unsupported = FakeComposeRuntime(
+        declared_services=expected.all_services,
+        expectations=expected,
+        compose_version="1.29.2",
+    )
+    with pytest.raises(ComposeMaterializationError, match="unsupported version"):
+        launcher(
+            tmp_path / "unsupported",
+            unsupported,
+            batch_size=1,
+            expected=expected,
+        ).materialize()
+    assert not any(command[0] == "docker-compose" for command in unsupported.commands)
+
+
+def test_single_invocation_failure_is_propagated_without_batched_retry(
+    tmp_path: Path,
+) -> None:
+    expected = expectations()
+    runtime = FakeComposeRuntime(
+        declared_services=expected.all_services,
+        expectations=expected,
+        fail_up_batch=1,
+    )
+    with pytest.raises(ComposeMaterializationError, match="single full-project up"):
+        launcher(
+            tmp_path,
+            runtime,
+            batch_size=2,
+            expected=expected,
+            strategy=ComposeLaunchStrategy.SINGLE,
+        ).materialize()
+    assert runtime.up_batches == [()]
 
 
 def test_service_order_is_deterministic_and_tail_batch_is_preserved(
@@ -297,13 +421,16 @@ def test_all_batches_use_one_project_and_one_compose_file(tmp_path: Path) -> Non
     result = materializer.materialize()
 
     compose_prefixes = {
-        command[:6]
+        command[:9]
         for command in runtime.commands
-        if command[0] == "docker-compose"
+        if command[:2] == ("docker", "compose") and len(command) > 8
     }
     assert compose_prefixes == {
         (
-            "docker-compose",
+            "docker",
+            "compose",
+            "--parallel",
+            "16",
             "-p",
             "test_project",
             "-f",
@@ -311,7 +438,10 @@ def test_all_batches_use_one_project_and_one_compose_file(tmp_path: Path) -> Non
             "config",
         ),
         (
-            "docker-compose",
+            "docker",
+            "compose",
+            "--parallel",
+            "16",
             "-p",
             "test_project",
             "-f",
@@ -319,7 +449,10 @@ def test_all_batches_use_one_project_and_one_compose_file(tmp_path: Path) -> Non
             "up",
         ),
         (
-            "docker-compose",
+            "docker",
+            "compose",
+            "--parallel",
+            "16",
             "-p",
             "test_project",
             "-f",
@@ -410,7 +543,7 @@ def test_compose_file_drift_stops_before_a_later_batch(tmp_path: Path) -> None:
 
 
 def test_materializer_does_not_import_or_call_compiler() -> None:
-    from inspect import getsource, getsourcefile
+    from inspect import getsourcefile
 
     from skyseed_v2.materialization import compose_project_launcher
 
@@ -419,4 +552,5 @@ def test_materializer_does_not_import_or_call_compiler() -> None:
     assert ".compile(" not in source
     assert "yaml" not in source
     assert "write_" not in source
-    assert "docker-compose" in getsource(ComposeProjectLauncher)
+    assert '"compose"' in source
+    assert "compose_executable" not in source

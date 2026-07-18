@@ -2,6 +2,7 @@
 
 from .compose_project_launcher import (
     ComposeBatchResult,
+    ComposeLaunchStrategy,
     ComposeMaterializationError,
     ComposeMaterializationResult,
     ComposeProjectLauncher,
@@ -10,6 +11,7 @@ from .compose_project_launcher import (
 
 __all__ = [
     "ComposeBatchResult",
+    "ComposeLaunchStrategy",
     "ComposeMaterializationError",
     "ComposeMaterializationResult",
     "ComposeProjectLauncher",

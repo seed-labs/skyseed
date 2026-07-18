@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from hashlib import sha256
 from json import JSONDecodeError, loads
 from math import isfinite
 from pathlib import Path
+from re import fullmatch
 from subprocess import CompletedProcess, run
 from time import monotonic, sleep
 from typing import Callable, Iterable, Sequence
@@ -14,6 +16,13 @@ from typing import Callable, Iterable, Sequence
 
 Command = tuple[str, ...]
 CommandRunner = Callable[[Sequence[str]], CompletedProcess[str]]
+
+
+class ComposeLaunchStrategy(str, Enum):
+    """Explicit Compose project startup strategy."""
+
+    SINGLE = "single"
+    BATCHED = "batched"
 
 
 def _default_command_runner(command: Sequence[str]) -> CompletedProcess[str]:
@@ -78,6 +87,7 @@ class ComposeBatchResult:
 
     batch_index: int
     services: tuple[str, ...]
+    compose_cli_elapsed_seconds: float
     elapsed_seconds: float
 
 
@@ -87,12 +97,16 @@ class ComposeMaterializationResult:
 
     compose_file: Path
     project_name: str
-    batch_size: int
+    compose_version: str
+    strategy: ComposeLaunchStrategy
+    parallel_limit: int
+    batch_size: int | None
     compose_sha256: str
     declared_services: tuple[str, ...]
     long_running_services: tuple[str, ...]
     successful_exit_helpers: tuple[str, ...]
     batches: tuple[ComposeBatchResult, ...]
+    compose_cli_elapsed_seconds: float
     total_elapsed_seconds: float
 
 
@@ -120,11 +134,12 @@ class _ServiceState:
 
 
 class ComposeProjectLauncher:
-    """Materialize all services from one Compose file in bounded batches.
+    """Materialize one complete Compose v2 project and verify its final state.
 
-    This tool neither compiles nor edits Compose. The caller must explicitly
-    classify every declared service as long-running or a successful-exit
-    helper.
+    The default is one full-project Compose invocation with controlled
+    internal parallelism. Batching is available only through an explicit
+    strategy. This tool neither compiles nor edits Compose, and never falls
+    back to the legacy ``docker-compose`` executable.
     """
 
     def __init__(
@@ -133,9 +148,10 @@ class ComposeProjectLauncher:
         compose_file: Path,
         project_name: str,
         expectations: ComposeServiceExpectations,
-        batch_size: int,
+        strategy: ComposeLaunchStrategy | str = ComposeLaunchStrategy.SINGLE,
+        parallel_limit: int = 16,
+        batch_size: int = 16,
         command_runner: CommandRunner | None = None,
-        compose_executable: str = "docker-compose",
         docker_executable: str = "docker",
         verification_attempts: int = 40,
         verification_interval_seconds: float = 0.25,
@@ -147,6 +163,16 @@ class ComposeProjectLauncher:
             raise ValueError("compose_file must identify an existing file")
         if not isinstance(expectations, ComposeServiceExpectations):
             raise TypeError("expectations must be ComposeServiceExpectations")
+        try:
+            normalized_strategy = ComposeLaunchStrategy(strategy)
+        except (TypeError, ValueError) as error:
+            raise ValueError("strategy must be 'single' or 'batched'") from error
+        if (
+            not isinstance(parallel_limit, int)
+            or isinstance(parallel_limit, bool)
+            or parallel_limit <= 0
+        ):
+            raise ValueError("parallel_limit must be a positive integer")
         if (
             not isinstance(batch_size, int)
             or isinstance(batch_size, bool)
@@ -172,11 +198,10 @@ class ComposeProjectLauncher:
         self._compose_file = path.resolve()
         self._project_name = _non_empty_text(project_name, "project_name")
         self._expectations = expectations
+        self._strategy = normalized_strategy
+        self._parallel_limit = parallel_limit
         self._batch_size = batch_size
         self._runner = command_runner or _default_command_runner
-        self._compose_executable = _non_empty_text(
-            compose_executable, "compose_executable"
-        )
         self._docker_executable = _non_empty_text(
             docker_executable, "docker_executable"
         )
@@ -188,24 +213,89 @@ class ComposeProjectLauncher:
     def materialize(self) -> ComposeMaterializationResult:
         """Start every declared service once and verify the complete project."""
 
+        compose_version = self._compose_version()
         compose_digest = self._compose_digest()
         declared_services = self._declared_services()
         self._validate_expectations(declared_services)
 
         materialization_started = self._clock()
+        if self._strategy is ComposeLaunchStrategy.SINGLE:
+            cli_started = self._clock()
+            self._assert_compose_digest(compose_digest, None, ())
+            self._execute(
+                self._compose_command("up", "-d"),
+                context="single full-project up",
+                services=declared_services,
+            )
+            compose_cli_elapsed = self._clock() - cli_started
+            self._wait_for_expected_states(
+                declared_services,
+                declared_services=declared_services,
+                batch_index=None,
+                batch_services=(),
+                final=True,
+            )
+            self._assert_compose_digest(compose_digest, None, ())
+            batch_results: list[ComposeBatchResult] = []
+        else:
+            batch_results, compose_cli_elapsed = self._materialize_batches(
+                declared_services,
+                compose_digest,
+            )
+            self._wait_for_expected_states(
+                declared_services,
+                declared_services=declared_services,
+                batch_index=None,
+                batch_services=(),
+                final=True,
+            )
+            self._assert_compose_digest(compose_digest, None, ())
+
+        total_elapsed = self._clock() - materialization_started
+        return ComposeMaterializationResult(
+            compose_file=self._compose_file,
+            project_name=self._project_name,
+            compose_version=compose_version,
+            strategy=self._strategy,
+            parallel_limit=self._parallel_limit,
+            batch_size=(
+                self._batch_size
+                if self._strategy is ComposeLaunchStrategy.BATCHED
+                else None
+            ),
+            compose_sha256=compose_digest,
+            declared_services=declared_services,
+            long_running_services=self._expectations.long_running,
+            successful_exit_helpers=(
+                self._expectations.successful_exit_helpers
+            ),
+            batches=tuple(batch_results),
+            compose_cli_elapsed_seconds=compose_cli_elapsed,
+            total_elapsed_seconds=total_elapsed,
+        )
+
+    def _materialize_batches(
+        self,
+        declared_services: tuple[str, ...],
+        compose_digest: str,
+    ) -> tuple[list[ComposeBatchResult], float]:
         completed: set[str] = set()
         batch_results: list[ComposeBatchResult] = []
+        compose_cli_elapsed = 0.0
         for offset in range(0, len(declared_services), self._batch_size):
             services = declared_services[offset : offset + self._batch_size]
             batch_index = offset // self._batch_size + 1
             batch_started = self._clock()
             self._assert_compose_digest(compose_digest, batch_index, services)
+            cli_started = self._clock()
             self._execute(
                 self._compose_command("up", "-d", *services),
                 context=f"batch {batch_index} up",
                 batch_index=batch_index,
                 services=services,
             )
+            batch_cli_elapsed = self._clock() - cli_started
+            compose_cli_elapsed += batch_cli_elapsed
             completed.update(services)
             self._wait_for_expected_states(
                 tuple(sorted(completed)),
@@ -219,31 +309,25 @@ class ComposeProjectLauncher:
                 ComposeBatchResult(
                     batch_index=batch_index,
                     services=services,
+                    compose_cli_elapsed_seconds=batch_cli_elapsed,
                     elapsed_seconds=self._clock() - batch_started,
                 )
             )
+        return batch_results, compose_cli_elapsed
 
-        self._wait_for_expected_states(
-            declared_services,
-            declared_services=declared_services,
-            batch_index=None,
-            batch_services=(),
-            final=True,
+    def _compose_version(self) -> str:
+        result = self._execute(
+            (self._docker_executable, "compose", "version", "--short"),
+            context="Docker Compose v2 version check",
         )
-        self._assert_compose_digest(compose_digest, None, ())
-        return ComposeMaterializationResult(
-            compose_file=self._compose_file,
-            project_name=self._project_name,
-            batch_size=self._batch_size,
-            compose_sha256=compose_digest,
-            declared_services=declared_services,
-            long_running_services=self._expectations.long_running,
-            successful_exit_helpers=(
-                self._expectations.successful_exit_helpers
-            ),
-            batches=tuple(batch_results),
-            total_elapsed_seconds=self._clock() - materialization_started,
-        )
+        version = result.stdout.strip().removeprefix("v")
+        match = fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:[-+].*)?", version)
+        if match is None or int(match.group(1)) < 2:
+            raise ComposeMaterializationError(
+                "Docker Compose v2 version check returned an unsupported version: "
+                f"{result.stdout.strip()!r}"
+            )
+        return version
 
     def _compose_digest(self) -> str:
         try:
@@ -472,7 +556,10 @@ class ComposeProjectLauncher:
 
     def _compose_command(self, *arguments: str) -> Command:
         return (
-            self._compose_executable,
+            self._docker_executable,
+            "compose",
+            "--parallel",
+            str(self._parallel_limit),
             "-p",
             self._project_name,
             "-f",

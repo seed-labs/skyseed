@@ -1,128 +1,164 @@
-# Bounded Compose Project Materialization
+# Docker Compose v2 Project Materialization
 
 ## Scope and placement
 
-`ComposeProjectLauncher` is a small deployment/integration tool for bounded
-materialization of one already-generated Docker Compose project. Its placement
-is deliberately outside the Emulator domain model:
+`ComposeProjectLauncher` is a small deployment/integration tool that
+materializes one already-generated Docker Compose project. Its placement is
+outside the Emulator domain model:
 
 ```text
 Static scenario
     -> SkyseedDockerCompiler
     -> one generated Compose project
     -> ComposeProjectLauncher
+    -> Docker Compose v2
     -> Docker containers
 ```
 
-The Emulator constructs static entities and the scenario. The Compiler emits
-the single Compose output. The launcher starts and verifies the complete
-project in bounded sequential batches. It does not belong to Descriptor,
-Catalog, Emulator, Simulator, dynamic topology/planning, or satellite-network
-runtime semantics. It is consequently implemented under
-`skyseed_v2.materialization` and is not shown in an Emulator domain class
-diagram.
+The Emulator constructs static entities and a scenario. The Compiler emits the
+single Compose output. The launcher starts and verifies that complete output.
+It does not belong to Descriptor, Catalog, Emulator, Simulator, dynamic
+topology/planning, or satellite-network runtime semantics, and it is not shown
+in an Emulator domain class diagram.
 
-A future execution Runner may call this tool, wrap it, or replace it. This
-slice does not choose that Runner design and does not introduce a dynamic
-Runner.
+A future execution Runner may call, wrap, or replace this tool. This slice does
+not decide that Runner contract and does not introduce a dynamic Runner.
 
-## Input contract
+## Input and command contract
 
 The caller supplies:
 
-- the path of an existing Compose file;
+- an existing Compose file;
 - one explicit Compose project name;
-- a positive, configurable `batch_size`;
+- a positive `parallel_limit`, defaulting to 16;
 - an explicit partition of every declared service into `long_running` or
-  `successful_exit_helpers`.
+  `successful_exit_helpers`;
+- optionally, the explicit `batched` strategy and a positive `batch_size`.
 
-The launcher discovers the service inventory with `docker-compose -p
-<project> -f <file> config --services`, rejects an empty or duplicate result,
-and sorts the names before partitioning them. Thus batch membership is stable
-and independent of the order returned by Compose. The caller's two state
-classes must be disjoint and must exactly cover the declared inventory;
-unknown and unclassified services fail closed.
+The only supported CLI is Docker Compose v2 through `docker compose`. The
+launcher first executes `docker compose version --short`, requires a parseable
+major version of at least 2, and fails closed if the plugin is absent, the
+command fails, or the version is unsupported. It never invokes the legacy
+`docker-compose` executable and never falls back to it.
 
-Service classification is evidence owned by the caller, not a name heuristic
-inside the generic launcher. The S4-scale example classifies the two generated
-SEED image-cache services from their existing `dummies/` build Dockerfiles and
-classifies the remaining scenario nodes and InternetMap as long-running. The
-generic launcher does not know S4, node roles, or SEED naming conventions.
+All project operations share this centralized prefix:
 
-## Materialization and verification contract
+```text
+docker compose --parallel <parallel_limit> -p <project> -f <compose-file>
+```
 
-The launcher computes the SHA-256 of the existing Compose file before startup.
-For every sequential batch it:
+The launcher discovers services from that exact project/file, rejects an empty
+or duplicate result, and sorts names before any optional batching. The caller's
+two state classes must be disjoint and exactly cover the declared inventory;
+unknown and unclassified services fail closed. Classification is caller-owned
+evidence, not a service-name heuristic inside the generic launcher. The scale
+example identifies the two generated SEED image-cache helpers from their
+existing `dummies/` build Dockerfiles and classifies all scenario nodes and
+InternetMap as long-running.
 
-1. verifies that the same file still has the same digest;
-2. executes `docker-compose -p <project> -f <file> up -d <batch services>`;
-3. stops immediately if that command fails;
-4. checks all services completed so far for an expected state;
-5. verifies the Compose digest again;
-6. records the one-based batch index, exact service tuple, and elapsed time.
+## Default single-invocation strategy
 
-After the tail batch it performs one full-project state and inventory audit.
-Every long-running service must be running; every successful-exit helper must
-be exited with status zero. Missing, duplicate, extra, abnormally exited, or
-still-unclassified project services are errors. A transient `created` state is
-polled only within a fixed verification bound; it is not accepted as success.
+The formal default is:
 
-Project scope is not inferred from global Docker state. State discovery uses
-the same Compose project and file to obtain container IDs, then verifies the
-exact Compose project/service labels returned by `docker inspect`. The
-launcher never invokes the Compiler, writes Compose, produces another output,
-edits a service, drops a declared service, changes batch size automatically,
-or uses a second project.
+```text
+one Docker Compose v2 full-project up
+    + controlled Compose internal parallelism
+    + one strict final inventory/state audit
+```
 
-## Fail-closed boundary
+After service discovery and expectation validation, the launcher computes the
+Compose SHA-256 and executes exactly one:
 
-`ComposeMaterializationError` retains the failing batch index and exact batch
-services when applicable. A failed middle batch prevents all later `up`
-commands. Partial earlier success is never returned as full materialization
-success. There is no automatic per-service retry, batch-size fallback,
-alternate Compose file, or global cleanup.
+```text
+docker compose --parallel <N> -p <project> -f <file> up -d
+```
 
-Cleanup is a separate caller-owned operation and must remain bounded to the
-named project and its exact generated image tags. A future execution layer may
-define supervised retry and idempotent recovery; those contracts are not
-pre-designed here.
+No service subset is appended. A non-zero command result is returned as a
+`ComposeMaterializationError`; it does not trigger batching, another parallel
+limit, a second project, v1, or another Compose output. On success, the
+launcher polls within a fixed verification bound and requires every expected
+long-running service to be running and every helper to have exited zero. It
+rejects missing, duplicate, extra, created-at-timeout, or abnormally exited
+services. The Compose digest must remain unchanged.
 
-## Why batching is retained
+The result records the Compose version, selected strategy and parallel limit,
+Compose CLI elapsed time, and the time from the `up` call through final stable
+verification. `parallel_limit` is configurable; 16 is a validated starting
+value, not an automatically tuned or universally optimal value.
 
-The 2026-07-17 S4-scale validation environment uses Docker Compose 1.27.4. An
-unchanged 365-service project's one-shot `up -d` previously blocked in the
-client after creating only 50 project containers. The same Compose file, same
-project, and complete 365-service inventory then materialized successfully in
-explicit batches of 16. The bounded-launcher revalidation started the same
-full-scale scene directly in 23 batches without first attempting a monolithic
-`up` and without a fallback path.
+## Explicit batched tooling mode
 
-There is also historical v1 evidence for bounded startup. The v1 option
-`--compose-satellite-batch-size` has default `12` in
-`skyseed_v1/src/skyseed_v1/runtime/experiment.py` at the
-`compose_satellite_batch_size` option declaration, and the accepted S4 command
-recorded in `skyseed_v1/docs/migration/stage7_acceptance_ZH.md` did not override
-that default. It is therefore reasonable to infer that the accepted historical
-run used approximately 12 Satellite services per stage. This is supporting
-operational evidence only; no v1 startup control flow or Runner architecture is
-copied into v2.
+`strategy=ComposeLaunchStrategy.BATCHED` retains the earlier sequential batch
+helper for compatibility, diagnosis, and explicit use on special machines. It
+uses the same file, project, version gate, `parallel_limit`, service
+classification, digest checks, and strict final audit. `batch_size` is
+configurable and service membership is deterministic, including a
+non-divisible tail.
 
-These observations establish batching as a Compose materialization
-optimization, not a reduced experiment and not a backup success path. They do
-not prove that 12 or 16 is universally optimal. Batch size remains an explicit
-configuration value; automatic tuning is outside this slice.
+Each batch stops fail-closed on command or state failure and records its index,
+exact services, Compose CLI time, and time through verification. No later batch
+runs after a failure. This mode is never selected automatically and is not a
+fallback from the default single strategy.
+
+## State and project-scope verification
+
+Project scope is not guessed from global Docker state. State discovery uses
+the same Compose project/file to obtain container IDs, followed by
+`docker inspect`. Every returned container must carry the exact project label
+and one unique service label. A helper may be `created` or briefly `running`
+while polling, but only `exited` with status zero is success. A long-running
+service succeeds only in `running` state.
+
+The launcher never calls the Compiler, writes Compose, produces another
+output, edits a service, drops a declared service, retries a service, changes a
+parallel/batch setting, or performs cleanup. Cleanup remains caller-owned and
+must be bounded to the named project, its project-labelled networks, and exact
+generated image tags.
+
+## Why the default changed and batching remains
+
+The historical validation host used Docker Compose 1.27.4. Its one-shot
+365-service `up -d` stopped making progress after creating 50 containers, even
+with `COMPOSE_PARALLEL_LIMIT=8`. The same complete file/project subsequently
+started through 23 explicit service batches. A later formal launcher run also
+passed in 23 batches, but repeated a v1 CLI call and cumulative project-state
+audit for every batch.
+
+Docker Compose v2.40.2 instead completed the same 365-service project through
+one `up -d` invocation with `--parallel 16`, followed by one final strict audit.
+That establishes v2 single-project materialization as the supported default
+and removes fixed batching from the normal plan. It does not prove that every
+v2/Engine combination or parallel value will have the same performance.
+
+The old batch evidence remains useful as an explicit diagnostic capability.
+It is not a smaller experiment, Emulator design, dynamic Runner design, or
+hidden success path.
+
+## Docker 19.03 build compatibility boundary
+
+On this validation host, Compose v2's default BuildKit path against Docker
+Engine 19.03 produced derived images whose final `Config.Cmd`/`Entrypoint` was
+empty. The seven-service smoke therefore failed closed before any scale run.
+Rebuilding the same unchanged Compose file with `DOCKER_BUILDKIT=0` preserved
+the existing Dockerfile startup commands and passed all runtime checks. The
+formal scale build used that one explicit compatibility setting and verified
+all 362 node image commands before `up`.
+
+This is an environment-specific build compatibility requirement, not a second
+Compiler path or a scenario change. It should be re-evaluated when the old
+Engine is upgraded; the launcher itself neither builds images nor chooses a
+builder.
 
 ## Validation boundary
 
-Contract tests use a fake command runner and cover deterministic ordering,
-configurable and non-divisible batches, empty/duplicate/unknown inventories,
-middle-batch stop behavior, one project/file throughout, accepted helper exit
-zero, rejected long-running exit, missing/extra final services, and Compose
-file drift. They also prove that no Compiler call or second Compose write is
-part of the launcher.
+Fake-subprocess contract tests cover Compose v2 command construction,
+`--parallel`, missing/unsupported v2 fail-closed behavior, absence of v1
+fallback, the default one-call strategy, explicit configurable batching,
+stable ordering and tail batches, one project/file, command failure
+propagation, helper/long-running states, missing/extra services, Compose drift,
+and absence of Compiler or output creation.
 
-The real validation used one generated Compose file with 365 services, a batch
-size of 16, and a full final result of 363 running services plus two successful
-exit helpers. Container, routing, ICMP, InternetMap, per-batch timing, and
-bounded cleanup evidence is recorded in
+The real seven-service smoke and formal 365-service result are recorded in
+`docs/evidence/s4-scale-compose-v2-single-materialization-validation.md`.
+The previous v1 batched run remains historical evidence in
 `docs/evidence/s4-scale-batched-compose-materialization-validation.md`.

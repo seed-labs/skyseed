@@ -5,6 +5,9 @@
 > reference commit pin, per-batch timings and single-output materialization is
 > recorded in
 > `docs/evidence/s4-scale-batched-compose-materialization-validation.md`.
+> The current supported default and final Compose v2 single-invocation result
+> are recorded in
+> `docs/evidence/s4-scale-compose-v2-single-materialization-validation.md`.
 
 ## 1. Scope and result
 
