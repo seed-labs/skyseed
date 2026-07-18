@@ -1,4 +1,4 @@
-"""Private validation helpers shared by static input specifications."""
+"""Private validation helpers shared by static Config values."""
 
 from __future__ import annotations
 

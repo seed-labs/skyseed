@@ -4,13 +4,13 @@ from pathlib import Path
 import pytest
 from yaml import safe_dump, safe_load
 
-from skyseed_v2.serialization import (
+from skyseed_v2.configuration import (
     SCENARIO_SCHEMA_VERSION,
-    StaticEmulatorScenarioLoadError,
-    StaticEmulatorScenarioLoader,
+    StaticEmulatorConfigLoadError,
+    load_static_emulator_config,
 )
-from skyseed_v2.specifications import (
-    StaticEmulatorScenarioSpecification,
+from skyseed_v2.configuration import (
+    StaticEmulatorConfig,
 )
 
 
@@ -95,14 +95,14 @@ def write_payload(tmp_path: Path, payload: dict, name: str = "scenario.yaml") ->
     return path
 
 
-def test_valid_scenario_loads_only_immutable_generic_specifications(
+def test_valid_yaml_loads_only_immutable_static_config(
     tmp_path: Path,
 ) -> None:
-    result = StaticEmulatorScenarioLoader().load(
+    result = load_static_emulator_config(
         write_payload(tmp_path, valid_payload())
     )
 
-    assert isinstance(result, StaticEmulatorScenarioSpecification)
+    assert isinstance(result, StaticEmulatorConfig)
     assert result.skyseed_autonomous_systems[0].asn == 65001
     assert result.skyseed_autonomous_systems[0].shells[0].generation.orbit_count == 2
     assert result.skyseed_autonomous_systems[0].ground_stations[0].operator == (
@@ -123,22 +123,22 @@ def test_unknown_schema_missing_field_and_unknown_field_fail_closed(
 ) -> None:
     unknown_version = valid_payload()
     unknown_version["schema_version"] = "skyseed-static-emulator/v99"
-    with pytest.raises(StaticEmulatorScenarioLoadError, match="unsupported"):
-        StaticEmulatorScenarioLoader().load(
+    with pytest.raises(StaticEmulatorConfigLoadError, match="unsupported"):
+        load_static_emulator_config(
             write_payload(tmp_path, unknown_version, "version.yaml")
         )
 
     missing = valid_payload()
     del missing["skyseed_autonomous_systems"][0]["shells"][0]["altitude_km"]
-    with pytest.raises(StaticEmulatorScenarioLoadError, match="missing required"):
-        StaticEmulatorScenarioLoader().load(
+    with pytest.raises(StaticEmulatorConfigLoadError, match="missing required"):
+        load_static_emulator_config(
             write_payload(tmp_path, missing, "missing.yaml")
         )
 
     dynamic = valid_payload()
     dynamic["epoch_utc"] = "2030-01-01T00:00:00Z"
-    with pytest.raises(StaticEmulatorScenarioLoadError, match="unknown fields"):
-        StaticEmulatorScenarioLoader().load(
+    with pytest.raises(StaticEmulatorConfigLoadError, match="unknown fields"):
+        load_static_emulator_config(
             write_payload(tmp_path, dynamic, "dynamic.yaml")
         )
 
@@ -185,8 +185,8 @@ def test_unknown_schema_missing_field_and_unknown_field_fail_closed(
 def test_invalid_static_values_fail_closed(tmp_path: Path, mutate, message: str) -> None:
     payload = valid_payload()
     mutate(payload)
-    with pytest.raises(StaticEmulatorScenarioLoadError, match=message):
-        StaticEmulatorScenarioLoader().load(write_payload(tmp_path, payload))
+    with pytest.raises(StaticEmulatorConfigLoadError, match=message):
+        load_static_emulator_config(write_payload(tmp_path, payload))
 
 
 def test_duplicate_logical_ids_and_yaml_keys_fail_closed(tmp_path: Path) -> None:
@@ -194,8 +194,8 @@ def test_duplicate_logical_ids_and_yaml_keys_fail_closed(tmp_path: Path) -> None
     duplicate["skyseed_autonomous_systems"][0]["shells"].append(
         duplicate["skyseed_autonomous_systems"][0]["shells"][0].copy()
     )
-    with pytest.raises(StaticEmulatorScenarioLoadError, match="duplicate shell_id"):
-        StaticEmulatorScenarioLoader().load(
+    with pytest.raises(StaticEmulatorConfigLoadError, match="duplicate shell_id"):
+        load_static_emulator_config(
             write_payload(tmp_path, duplicate, "logical.yaml")
         )
 
@@ -206,8 +206,8 @@ def test_duplicate_logical_ids_and_yaml_keys_fail_closed(tmp_path: Path) -> None
         "skyseed_autonomous_systems: []\n",
         encoding="utf-8",
     )
-    with pytest.raises(StaticEmulatorScenarioLoadError, match="valid YAML"):
-        StaticEmulatorScenarioLoader().load(duplicate_key)
+    with pytest.raises(StaticEmulatorConfigLoadError, match="valid YAML"):
+        load_static_emulator_config(duplicate_key)
 
 
 def test_external_ground_station_file_is_scoped_versioned_and_required(
@@ -231,20 +231,20 @@ def test_external_ground_station_file_is_scoped_versioned_and_required(
     )
     scenario_file = write_payload(tmp_path, payload)
 
-    loaded = StaticEmulatorScenarioLoader().load(scenario_file)
+    loaded = load_static_emulator_config(scenario_file)
     assert loaded.skyseed_autonomous_systems[0].ground_stations[0].ground_station_id == (
         "gs-a"
     )
 
     stations_file.unlink()
-    with pytest.raises(StaticEmulatorScenarioLoadError, match="cannot read"):
-        StaticEmulatorScenarioLoader().load(scenario_file)
+    with pytest.raises(StaticEmulatorConfigLoadError, match="cannot read"):
+        load_static_emulator_config(scenario_file)
 
     payload["skyseed_autonomous_systems"][0][
         "ground_stations_file"
     ] = "../outside.yaml"
-    with pytest.raises(StaticEmulatorScenarioLoadError, match="example root"):
-        StaticEmulatorScenarioLoader().load(
+    with pytest.raises(StaticEmulatorConfigLoadError, match="example root"):
+        load_static_emulator_config(
             write_payload(tmp_path, payload, "outside-reference.yaml")
         )
 
@@ -257,10 +257,10 @@ def test_sequence_and_mapping_order_do_not_change_the_result(tmp_path: Path) -> 
     second_payload["ordinary_autonomous_systems"].reverse()
     second_payload["ebgp_peerings"].reverse()
 
-    first = StaticEmulatorScenarioLoader().load(
+    first = load_static_emulator_config(
         write_payload(tmp_path, first_payload, "first.yaml")
     )
-    second = StaticEmulatorScenarioLoader().load(
+    second = load_static_emulator_config(
         write_payload(tmp_path, second_payload, "second.yaml")
     )
     assert first == second

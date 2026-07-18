@@ -1,7 +1,7 @@
 """Stable high-frequency Emulator entities and entity-bound values.
 
-Application services, input specifications and integration adapters remain
-public from their owning submodules so imports preserve architectural origin.
+Configuration, operation functions and integration adapters remain public
+from their owning modules so imports preserve architectural origin.
 """
 
 from __future__ import annotations

@@ -6,8 +6,7 @@ from typing import Iterable
 
 from skyseed_v2.identifier import validate_identifier
 
-from .orbit import Orbit
-from .orbit_parameters import OrbitParameters
+from .orbit import Orbit, OrbitParameters
 from .satellite import Satellite
 
 
@@ -15,8 +14,8 @@ class Shell:
     """Own the Orbits belonging to one Skyseed AS Shell.
 
     Layer: approved Emulator entity. `SkyseedAutonomousSystem.create_shell`
-    creates it; handwritten callers or the Applier create Orbits through it. It
-    is not a constellation, population or specification. It is root public
+    creates it; callers or static Emulator creation build Orbits through it. It
+    is not a constellation, population or Config. It is root public
     because it is the approved Orbit ownership entry point.
     """
 

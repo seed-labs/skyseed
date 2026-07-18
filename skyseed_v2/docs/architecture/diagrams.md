@@ -10,9 +10,9 @@ flowchart LR
     ENT[entities]
     SEED[seedemu_integration]
     INPUT[simulator_input]
-    SPEC[specifications]
-    SER[serialization]
-    APP[application]
+    CONFIG[configuration]
+    CREATE[static_emulator]
+    GENERATE[simulator_input_generation]
     MAT[materialization]
     ID[identifier]
 
@@ -20,12 +20,13 @@ flowchart LR
     ENT --> ID
     SEED --> ID
     INPUT --> ID
-    SPEC --> ID
-    SER --> SPEC
-    APP --> SPEC
-    APP --> ENT
-    APP --> SEED
-    APP --> INPUT
+    CONFIG --> ID
+    CREATE --> CONFIG
+    CREATE --> ENT
+    CREATE --> SEED
+    GENERATE --> ENT
+    GENERATE --> SEED
+    GENERATE --> INPUT
 ```
 
 There is no arrow from `simulator_input` to entities, seedemu integration or
@@ -48,7 +49,11 @@ classDiagram
     }
     class Orbit {
         <<Emulator entity>>
+        +parameters OrbitParameters
         +create_satellite(...) Satellite
+    }
+    class OrbitParameters {
+        <<entity-bound value>>
     }
     class Satellite {
         <<Emulator entity + SEED Node>>
@@ -60,6 +65,7 @@ classDiagram
     SkyseedAutonomousSystem "1" *-- "*" Shell : owns
     Shell "1" *-- "*" Orbit : owns
     Orbit "1" *-- "*" Satellite : owns
+    Orbit "1" *-- "1" OrbitParameters : owns
     SkyseedAutonomousSystem "1" *-- "*" GroundStation : owns
 ```
 
@@ -99,7 +105,7 @@ flowchart TD
     G --> IX
     R --> IX
     IX --> P[explicit eBGP]
-    A --> F[application.create_simulator_static_input]
+    A --> F[create_simulator_static_input]
     F --> I[SimulatorStaticInput]
     B --> C[Emulator.render → SkyseedDockerCompiler]
 ```
@@ -109,22 +115,24 @@ flowchart TD
 ```mermaid
 flowchart LR
     YAML[scenario.yaml + ground_stations.yaml]
-    YAML --> L[StaticEmulatorScenarioLoader.load]
-    L --> SPEC[immutable specifications]
-    SPEC --> APP[StaticEmulatorSpecificationApplier.apply]
-    APP --> CREATE[public create/join methods]
-    CREATE --> CONVERT[application.create_simulator_static_input]
+    YAML --> L[load_static_emulator_config]
+    L --> CONFIG[immutable StaticEmulatorConfig]
+    CONFIG --> CREATE[create_static_emulator]
+    CREATE --> ENTITIES[public create/join methods]
+    CREATE --> RESULT[StaticEmulatorCreationResult]
+    RESULT --> CONVERT[create_simulator_static_input]
     CONVERT --> INPUT[immutable SimulatorStaticInput]
-    APP --> COMP[render + SkyseedDockerCompiler]
+    RESULT --> COMP[render + SkyseedDockerCompiler]
 ```
 
 ## 6. Static Simulator-input boundary
 
 ```mermaid
 flowchart LR
-    SAT[Satellite] --> CS[application.create_satellite_simulation_input]
-    GS[GroundStation] --> CG[application.create_ground_station_simulation_input]
-    AS[Iterable of SkyseedAutonomousSystem] --> CA[application.create_simulator_static_input]
+    SAT[Satellite] --> CS[create_satellite_simulation_input]
+    ORBIT[OrbitParameters] --> CS
+    GS[GroundStation] --> CG[create_ground_station_simulation_input]
+    AS[Iterable of SkyseedAutonomousSystem] --> CA[create_simulator_static_input]
     CA --> CS
     CA --> CG
     CS --> SI[SatelliteSimulationInput + SimulationNodeId]

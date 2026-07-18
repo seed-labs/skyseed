@@ -7,19 +7,18 @@ experiment, but neither `S4` nor v1 is part of the scenario's identity,
 contract or runtime path.
 
 Its visible construction path is
-`StaticEmulatorScenarioLoader.load -> StaticEmulatorSpecificationApplier.apply`.
-The Applier directly calls the same public AS/Shell/Orbit entity creation
-methods shown by the handwritten examples; it does not introduce a population
-entity or nested builder chain. It then calls
-`application.create_simulator_static_input()` with only the constructed
-Skyseed AS values.
+`load_static_emulator_config(path) -> create_static_emulator(config) ->
+create_simulator_static_input(creation.skyseed_autonomous_systems)`.
+The creation function directly calls the same public AS/Shell/Orbit entity
+creation methods shown by the handwritten examples; it does not introduce a
+population entity or nested builder chain. Simulator input is a separate
+explicit step and receives only the constructed Skyseed AS values.
 
 This is the only YAML example because the scale input is large data rather
-than teaching code. `StaticEmulatorScenarioLoader` is a serialization adapter,
-and `StaticEmulatorSpecificationApplier` is an optional application service,
-not an Emulator entity or mandatory facade. The resulting
+than teaching code. Loading, creation and Simulator-input generation are
+direct functions, not an Emulator entity or mandatory facade. The resulting
 `SimulatorStaticInput` is an immutable Simulator input snapshot; it is not the
-scenario, a SEED Registry, a container inventory or a Compose directory.
+Config, a SEED Registry, a container inventory or a Compose directory.
 
 Compile and validate without starting 365 services:
 

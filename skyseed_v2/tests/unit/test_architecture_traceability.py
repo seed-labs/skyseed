@@ -6,15 +6,14 @@ from seedemu.core import Emulator
 
 import skyseed_v2
 from skyseed_v2 import (
+    configuration,
     entities,
     materialization,
-    application,
-    serialization,
     seedemu_integration,
     simulator_input,
-    specifications,
 )
 from skyseed_v2.materialization import ComposeProjectLauncher
+from skyseed_v2 import static_emulator
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -25,11 +24,10 @@ TERMINOLOGY = PROJECT_ROOT / "docs/architecture/terminology.md"
 PUBLIC_MODULES = (
     entities,
     materialization,
-    application,
-    serialization,
     seedemu_integration,
     simulator_input,
-    specifications,
+    configuration,
+    static_emulator,
 )
 
 
@@ -47,7 +45,7 @@ def test_formal_public_classes_declare_layer_boundary_and_public_reason() -> Non
             docstring = inspect.getdoc(class_type)
             assert docstring is not None, class_type
             assert "Layer:" in docstring, class_type
-            assert "not " in docstring, class_type
+            assert re.search(r"\bnot\b", docstring), class_type
             assert "public" in docstring.lower(), class_type
 
 
@@ -80,14 +78,10 @@ def test_current_api_mermaid_names_are_real_and_classified() -> None:
         "SimulatorStaticInput": simulator_input.SimulatorStaticInput,
         "SkyseedAutonomousSystem": seedemu_integration.SkyseedAutonomousSystem,
         "SkyseedDockerCompiler": seedemu_integration.SkyseedDockerCompiler,
-        "StaticEmulatorApplyResult": application.StaticEmulatorApplyResult,
-        "StaticEmulatorScenarioLoader": serialization.StaticEmulatorScenarioLoader,
-        "StaticEmulatorScenarioSpecification": (
-            specifications.StaticEmulatorScenarioSpecification
+        "StaticEmulatorCreationResult": (
+            static_emulator.StaticEmulatorCreationResult
         ),
-        "StaticEmulatorSpecificationApplier": (
-            application.StaticEmulatorSpecificationApplier
-        ),
+        "StaticEmulatorConfig": configuration.StaticEmulatorConfig,
     }
     assert names == set(expected_types)
     assert all(inspect.isclass(value) for value in expected_types.values())
@@ -131,16 +125,16 @@ def test_terminology_and_project_rules_cover_the_governance_contract() -> None:
         "Orbit",
         "Satellite",
         "GroundStation",
-        "Specification",
-        "Loader",
-        "Applier",
+        "StaticEmulatorConfig",
+        "load_static_emulator_config",
+        "create_static_emulator",
         "SatelliteSimulationInput",
         "GroundStationSimulationInput",
         "SimulatorStaticInput",
         "SimulationNodeId",
         "Compiler",
         "Launcher",
-        "ApplyResult",
+        "StaticEmulatorCreationResult",
     ):
         assert f"| {term} |" in terminology
 
@@ -188,11 +182,26 @@ def test_current_emulator_documents_have_no_known_stale_implementation_names() -
         assert required_section in api_document
 
 
-def test_operation_result_is_application_only() -> None:
-    result_type = application.StaticEmulatorApplyResult
-    assert result_type.__module__ == (
-        "skyseed_v2.application.static_scenario_application"
-    )
+def test_creation_result_is_operation_module_only() -> None:
+    result_type = static_emulator.StaticEmulatorCreationResult
+    assert result_type.__module__ == "skyseed_v2.static_emulator"
     assert not hasattr(skyseed_v2, result_type.__name__)
     assert not hasattr(entities, result_type.__name__)
     assert not hasattr(simulator_input, result_type.__name__)
+
+
+def test_direct_file_driven_call_chain_is_documented() -> None:
+    document = API_DOCUMENT.read_text(encoding="utf-8")
+    for operation in (
+        "load_static_emulator_config(path)",
+        "create_static_emulator(config)",
+        "create_simulator_static_input(creation.skyseed_autonomous_systems)",
+    ):
+        assert operation in document
+    for retired in (
+        "StaticEmulatorScenarioLoader",
+        "StaticScenarioApplier",
+        "StaticEmulatorSpecificationApplier",
+        "StaticEmulatorApplyResult",
+    ):
+        assert retired not in document

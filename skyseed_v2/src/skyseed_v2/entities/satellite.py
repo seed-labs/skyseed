@@ -10,7 +10,6 @@ from seedemu.core import Node, Scope, ScopeTier, ScopeType
 
 from skyseed_v2.identifier import validate_identifier
 
-from .orbit_parameters import OrbitParameters
 from .validation import _validate_angle
 
 
@@ -34,7 +33,7 @@ class Satellite(Node):
 
     Layer: approved Emulator entity plus SEED capability.
     `Orbit.create_satellite` creates it; its Orbit/AS, SEED lifecycle, Simulator
-    application conversion and Compiler use it. It is not a specification,
+    input generation and Compiler use it. It is not a Config,
     container or runtime topology state. It is root public because it is an
     approved user-visible entity.
     """
@@ -46,7 +45,6 @@ class Satellite(Node):
         shell_id: str,
         orbit_id: str,
         orbit_index: int,
-        orbit_parameters: OrbitParameters,
         mean_anomaly_deg: float,
         asn: int,
         payload: Mapping[str, str] | None = None,
@@ -56,7 +54,6 @@ class Satellite(Node):
             shell_id=shell_id,
             orbit_id=orbit_id,
             orbit_index=orbit_index,
-            orbit_parameters=orbit_parameters,
             mean_anomaly_deg=mean_anomaly_deg,
             payload=payload or {},
         )
@@ -70,7 +67,6 @@ class Satellite(Node):
         shell_id: str,
         orbit_id: str,
         orbit_index: int,
-        orbit_parameters: OrbitParameters,
         mean_anomaly_deg: float,
         payload: Mapping[str, str],
     ) -> None:
@@ -79,8 +75,6 @@ class Satellite(Node):
         self._orbit_id = validate_identifier(orbit_id, "orbit_id")
         if not isinstance(orbit_index, int) or orbit_index < 0:
             raise ValueError("orbit_index must be a non-negative integer")
-        if not isinstance(orbit_parameters, OrbitParameters):
-            raise TypeError("orbit_parameters must be an OrbitParameters value")
         copied_payload = dict(payload)
         if any(
             not isinstance(key, str) or not isinstance(value, str)
@@ -89,7 +83,6 @@ class Satellite(Node):
             raise TypeError("payload keys and values must be strings")
 
         self._orbit_index = orbit_index
-        self._orbit_parameters = orbit_parameters
         self._mean_anomaly_deg = _validate_angle(
             mean_anomaly_deg, "mean_anomaly_deg"
         )
@@ -122,10 +115,6 @@ class Satellite(Node):
     @property
     def orbit_index(self) -> int:
         return self._orbit_index
-
-    @property
-    def orbit_parameters(self) -> OrbitParameters:
-        return self._orbit_parameters
 
     @property
     def mean_anomaly_deg(self) -> float:

@@ -21,8 +21,8 @@ GROUND_STATION_ROLE_LABEL = "GroundStation"
 class GroundStationLocation:
     """Hold one GroundStation's geodetic values for a static Emulator run.
 
-    Layer: entity-bound value object. Handwritten callers or the Applier create
-    it; GroundStation and Simulator input conversion read it. It is not a
+    Layer: entity-bound value object. Handwritten callers or static Emulator
+    creation build it; GroundStation and input generation read it. It is not a
     dynamic position or visibility model. It is root public because direct
     GroundStation creation requires this validated value.
     """
@@ -54,7 +54,7 @@ class GroundStation(Router):
     Layer: approved Emulator entity plus SEED capability.
     `SkyseedAutonomousSystem.create_ground_station` creates it; its AS, routing
     layers and Compiler use it. Application converts its static values. It is
-    not a specification, ordinary Router or dynamic link state. It is root
+    not a Config, ordinary Router or dynamic link state. It is root
     public because it is an approved user-visible entity.
     """
 

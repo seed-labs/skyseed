@@ -27,14 +27,48 @@ def test_root_exports_only_high_frequency_entities_and_values() -> None:
         "Shell",
     }
     for module_owned_name in (
-        "GroundStationSpecification",
+        "GroundStationConfig",
         "GroundStationSimulationInput",
         "SatelliteSimulationInput",
         "SimulationNodeId",
         "SimulatorStaticInput",
-        "StaticEmulatorApplyResult",
-        "StaticEmulatorScenarioLoader",
-        "StaticEmulatorScenarioSpecification",
-        "StaticEmulatorSpecificationApplier",
+        "StaticEmulatorCreationResult",
+        "load_static_emulator_config",
+        "StaticEmulatorConfig",
+        "create_static_emulator",
     ):
         assert not hasattr(package, module_owned_name)
+
+
+def test_configuration_exports_only_config_names_without_old_type_aliases() -> None:
+    configuration = importlib.import_module("skyseed_v2.configuration")
+
+    expected_config_names = {
+        "EbgpPeeringConfig",
+        "EbgpRouterReferenceConfig",
+        "GroundStationConfig",
+        "InOrbitPhaseDistributionConfig",
+        "InternetExchangeAttachmentConfig",
+        "InternetExchangeConfig",
+        "LocalNetworkAttachmentConfig",
+        "NetworkConfig",
+        "OrbitConfig",
+        "OrbitGenerationConfig",
+        "OrdinaryAutonomousSystemConfig",
+        "RaanDistributionConfig",
+        "RouterConfig",
+        "SatelliteConfig",
+        "ShellConfig",
+        "SkyseedAutonomousSystemConfig",
+        "StaticEmulatorConfig",
+    }
+    assert expected_config_names <= set(configuration.__all__)
+    for retired_name in (
+        "GroundStationSpecification",
+        "OrbitSpecification",
+        "SatelliteSpecification",
+        "ShellSpecification",
+        "StaticEmulatorScenarioSpecification",
+        "StaticEmulatorScenarioLoader",
+    ):
+        assert not hasattr(configuration, retired_name)

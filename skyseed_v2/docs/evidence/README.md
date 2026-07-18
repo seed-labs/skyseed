@@ -8,5 +8,6 @@ documentation.
 Use `docs/CURRENT.md`, `docs/architecture/` and current source/tests for the
 active package layout and public API.
 
-The current dependency-boundary validation is recorded in
-`simulator-input-dependency-boundary-validation.md`.
+The current domain-data ownership and file-configuration API validation is
+recorded in
+`domain-data-and-file-configuration-api-convergence-validation.md`.

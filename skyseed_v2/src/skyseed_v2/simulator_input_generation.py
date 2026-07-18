@@ -1,10 +1,10 @@
-"""Convert constructed Emulator entities to immutable Simulator input data."""
+"""Generate immutable Simulator input from constructed Emulator entities."""
 
 from __future__ import annotations
 
 from collections.abc import Iterable
 
-from skyseed_v2.entities import GroundStation, Satellite
+from skyseed_v2.entities import GroundStation, OrbitParameters, Satellite
 from skyseed_v2.seedemu_integration import SkyseedAutonomousSystem
 from skyseed_v2.simulator_input import (
     GroundStationSimulationInput,
@@ -20,12 +20,14 @@ from skyseed_v2.simulator_input.identity import (
 
 def create_satellite_simulation_input(
     satellite: Satellite,
+    orbit_parameters: OrbitParameters,
 ) -> SatelliteSimulationInput:
-    """Copy approved static scalar values from one Emulator Satellite."""
+    """Combine one Satellite's values with its owning Orbit's parameters."""
 
     if not isinstance(satellite, Satellite):
         raise TypeError("satellite must be a Satellite")
-    parameters = satellite.orbit_parameters
+    if not isinstance(orbit_parameters, OrbitParameters):
+        raise TypeError("orbit_parameters must be an OrbitParameters value")
     return SatelliteSimulationInput(
         node_id=SimulationNodeId(
             asn=satellite.getAsn(),
@@ -36,9 +38,9 @@ def create_satellite_simulation_input(
         shell_id=satellite.shell_id,
         orbit_id=satellite.orbit_id,
         orbit_index=satellite.orbit_index,
-        altitude_km=parameters.altitude_km,
-        inclination_deg=parameters.inclination_deg,
-        right_ascension_deg=parameters.right_ascension_deg,
+        altitude_km=orbit_parameters.altitude_km,
+        inclination_deg=orbit_parameters.inclination_deg,
+        right_ascension_deg=orbit_parameters.right_ascension_deg,
         mean_anomaly_deg=satellite.mean_anomaly_deg,
     )
 
@@ -88,9 +90,11 @@ def create_simulator_static_input(
         )
 
     satellites = tuple(
-        create_satellite_simulation_input(satellite)
+        create_satellite_simulation_input(satellite, orbit.parameters)
         for autonomous_system in autonomous_systems
-        for satellite in autonomous_system.satellites()
+        for shell in autonomous_system.shells
+        for orbit in shell.orbits
+        for satellite in orbit.satellites
     )
     ground_stations = tuple(
         create_ground_station_simulation_input(ground_station)

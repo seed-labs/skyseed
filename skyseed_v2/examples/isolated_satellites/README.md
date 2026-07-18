@@ -2,7 +2,7 @@
 
 This handwritten example directly constructs the approved
 `SkyseedAutonomousSystem -> Shell -> Orbit -> Satellite` hierarchy and compiles
-two no-network Satellite services. It uses no YAML, Loader, scenario facade,
+two no-network Satellite services. It uses no YAML, file-configuration facade,
 population helper or dynamic Simulator input.
 
 From `skyseed_v2/`:

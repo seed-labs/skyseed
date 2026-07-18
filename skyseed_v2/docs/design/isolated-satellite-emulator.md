@@ -33,6 +33,7 @@ classDiagram
     }
     class Orbit {
         <<Emulator entity>>
+        +parameters OrbitParameters
         +create_satellite(...) Satellite
     }
     class Satellite {
@@ -45,23 +46,26 @@ classDiagram
     SkyseedAutonomousSystem "1" *-- "*" Shell : owns
     Shell "1" *-- "*" Orbit : owns
     Orbit "1" *-- "*" Satellite : owns
-    Orbit *-- OrbitParameters : uses
+    Orbit "1" *-- "1" OrbitParameters : owns
 ```
 
-The defining files are `entities/shell.py`, `entities/orbit.py`,
-`entities/satellite.py` and `entities/orbit_parameters.py`.
+The defining files are `entities/shell.py`, `entities/orbit.py` and
+`entities/satellite.py`. `OrbitParameters` is defined beside its sole owner in
+`orbit.py`; Satellite retains no copy of the shared orbital values.
 
 ## 4. Static Simulator input
 
-`application.create_satellite_simulation_input()` copies the stable identity,
-ownership IDs and orbital scalars into a frozen
+`create_satellite_simulation_input(satellite, orbit.parameters)` combines the
+Satellite's stable identity/own values with its owning Orbit's common orbital
+scalars into a frozen
 `SatelliteSimulationInput`. The input type itself does not import or read the
 Satellite/Node and retains no Registry, container, namespace, Compose service
 or runtime position.
 
 ```mermaid
 flowchart LR
-    SAT[Satellite] --> CONVERT[application.create_satellite_simulation_input]
+    SAT[Satellite] --> CONVERT[create_satellite_simulation_input]
+    OP[owning OrbitParameters] --> CONVERT
     CONVERT --> INPUT[SatelliteSimulationInput]
     INPUT --> ID[SimulationNodeId]
 ```
@@ -87,7 +91,7 @@ Emulator → SatelliteBase → SkyseedAutonomousSystem
 → Shell → Orbit → Satellite → render → SkyseedDockerCompiler
 ```
 
-It contains no YAML, Loader, Application service or static Simulator aggregate,
+It contains no YAML, file-configuration operation or static Simulator aggregate,
 keeping the basic entity call chain directly visible.
 
 ## 7. Deferred work

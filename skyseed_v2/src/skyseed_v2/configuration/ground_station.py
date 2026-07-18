@@ -1,4 +1,4 @@
-"""Immutable GroundStation construction specifications."""
+"""Immutable GroundStation construction Config values."""
 
 from __future__ import annotations
 
@@ -9,16 +9,17 @@ from math import isfinite
 from skyseed_v2.identifier import validate_identifier
 
 from ._validation import _text
-from .network import InternetExchangeAttachmentSpecification
+from .network import InternetExchangeAttachmentConfig
 
 
 @dataclass(frozen=True, slots=True)
-class GroundStationSpecification:
+class GroundStationConfig:
     """Describe static GroundStation construction and IX attachment input.
 
-    Layer: immutable input specification. Loader or programmatic callers create
-    it; the Applier calls `create_ground_station`. It is not a GroundStation,
-    Simulator input or runtime service and is public from specifications.
+    Layer: immutable Config. `load_static_emulator_config` or programmatic
+    callers create it; `create_static_emulator` calls
+    `create_ground_station`. It is not a GroundStation, Simulator input or
+    runtime service and is public from configuration.
     """
 
     display_name: str
@@ -29,7 +30,7 @@ class GroundStationSpecification:
     station_type: str
     ground_station_id: str | None = None
     identity_key: str | None = None
-    ix_attachments: tuple[InternetExchangeAttachmentSpecification, ...] = ()
+    ix_attachments: tuple[InternetExchangeAttachmentConfig, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -75,12 +76,12 @@ class GroundStationSpecification:
 
         attachments = tuple(self.ix_attachments)
         if any(
-            not isinstance(item, InternetExchangeAttachmentSpecification)
+            not isinstance(item, InternetExchangeAttachmentConfig)
             for item in attachments
         ):
             raise TypeError(
                 "ix_attachments must contain "
-                "InternetExchangeAttachmentSpecification values"
+                "InternetExchangeAttachmentConfig values"
             )
         if len({item.ix_id for item in attachments}) != len(attachments):
             raise ValueError("ix_attachments contains a duplicate ix_id")
@@ -91,13 +92,13 @@ class GroundStationSpecification:
         )
 
 
-def ground_station_id_for(specification: GroundStationSpecification) -> str:
+def ground_station_id_for(config: GroundStationConfig) -> str:
     """Resolve one v2-native stable ID without using input order or SEED state."""
 
-    if not isinstance(specification, GroundStationSpecification):
-        raise TypeError("specification must be a GroundStationSpecification")
-    if specification.ground_station_id is not None:
-        return specification.ground_station_id
-    assert specification.identity_key is not None
-    digest = sha256(specification.identity_key.encode("utf-8")).hexdigest()[:20]
+    if not isinstance(config, GroundStationConfig):
+        raise TypeError("config must be a GroundStationConfig")
+    if config.ground_station_id is not None:
+        return config.ground_station_id
+    assert config.identity_key is not None
+    digest = sha256(config.identity_key.encode("utf-8")).hexdigest()[:20]
     return f"ground-station-{digest}"

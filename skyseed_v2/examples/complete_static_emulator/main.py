@@ -12,7 +12,7 @@ from skyseed_v2 import (
     GroundStationLocation,
     OrbitParameters,
 )
-from skyseed_v2.application import create_simulator_static_input
+from skyseed_v2.simulator_input_generation import create_simulator_static_input
 from skyseed_v2.seedemu_integration import (
     SatelliteBase,
     SkyseedAutonomousSystem,

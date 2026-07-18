@@ -3,10 +3,11 @@ from pathlib import Path
 from yaml import safe_load
 
 from examples.complete_static_emulator.main import build_emulator
-from skyseed_v2.application import StaticEmulatorSpecificationApplier
-from skyseed_v2.serialization import StaticEmulatorScenarioLoader
-from skyseed_v2.specifications import StaticEmulatorScenarioSpecification
+from skyseed_v2.static_emulator import create_static_emulator
+from skyseed_v2.configuration import load_static_emulator_config
+from skyseed_v2.configuration import StaticEmulatorConfig
 from skyseed_v2.seedemu_integration import SkyseedDockerCompiler
+from skyseed_v2.simulator_input_generation import create_simulator_static_input
 
 
 FIXTURE = Path(__file__).parents[1] / "fixtures/complete_equivalent.yaml"
@@ -37,12 +38,15 @@ def test_handwritten_and_file_inputs_share_entity_and_compiler_semantics(
 ) -> None:
     manual_emulator, manual_as, manual_simulator_input = build_emulator()
 
-    specification = StaticEmulatorScenarioLoader().load(FIXTURE)
-    assert isinstance(specification, StaticEmulatorScenarioSpecification)
-    file_result = StaticEmulatorSpecificationApplier().apply(specification)
+    config = load_static_emulator_config(FIXTURE)
+    assert isinstance(config, StaticEmulatorConfig)
+    file_result = create_static_emulator(config)
     file_as = file_result.skyseed_autonomous_systems[0]
+    file_simulator_input = create_simulator_static_input(
+        file_result.skyseed_autonomous_systems
+    )
 
-    assert manual_simulator_input == file_result.simulator_input
+    assert manual_simulator_input == file_simulator_input
     assert tuple(
         satellite.satellite_id for satellite in manual_as.satellites()
     ) == tuple(satellite.satellite_id for satellite in file_as.satellites())

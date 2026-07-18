@@ -24,9 +24,9 @@ The source packages make those responsibilities explicit:
 entities/
 seedemu_integration/
 simulator_input/
-specifications/
-serialization/
-application/
+configuration/
+static_emulator.py
+simulator_input_generation.py
 materialization/
 ```
 
@@ -53,9 +53,13 @@ Each object is unique across user construction, AS ownership, Registry
 registration and compilation. The integration-bearing nature of these objects
 is why the package is named `entities`, not `domain`.
 
+`OrbitParameters` is defined beside and owned by `Orbit`. Satellite retains no
+Orbit reference and no copy of altitude, inclination or right ascension.
+
 ## 4. Emulator → Simulator static boundary
 
-Application produces immutable input data through three direct functions:
+`simulator_input_generation.py` produces immutable input data through three
+direct functions:
 
 - `create_satellite_simulation_input()`;
 - `create_ground_station_simulation_input()`;
@@ -66,24 +70,26 @@ by `SimulationNodeId.value`, rejects duplicate complete logical IDs and
 provides immutable typed query results. It does not retain entity, Registry,
 container, namespace, Compose, persistence or runtime Simulator objects.
 
-Dependencies point from application toward `entities`,
+Dependencies point from the generation module toward `entities`,
 `seedemu_integration` and `simulator_input`. The input package itself imports
 none of those Emulator/SEED layers and uses only the neutral root identifier
 validator. Static input is data, not a facade over Emulator objects.
 
-## 5. Construction inputs and application
+## 5. Configuration and creation
 
-`specifications/` contains frozen backend-independent construction inputs:
+`configuration/` contains frozen backend-independent Config values:
 
-- `satellite.py`: generated and explicit Shell/Orbit/Satellite input;
-- `ground_station.py`: GroundStation input and stable-ID derivation;
-- `network.py`: Network, Router, IX attachment, ordinary AS and eBGP input;
-- `scenario.py`: Skyseed AS and complete static scenario input.
+- `satellite.py`: generated and explicit Shell/Orbit/Satellite Config;
+- `ground_station.py`: GroundStation Config and stable-ID derivation;
+- `network.py`: Network, Router, IX attachment, ordinary AS and eBGP Config;
+- `static_emulator.py`: Skyseed AS and complete static Emulator Config;
+- `yaml.py`: strict versioned YAML reading.
 
-`serialization.StaticEmulatorScenarioLoader` is the strict versioned YAML
-adapter. `application.StaticEmulatorSpecificationApplier` sequences public
-entity and seedemu create/join calls and returns the Emulator, AS collections
-and static Simulator input. Handwritten callers bypass both packages.
+`load_static_emulator_config(path)` returns one `StaticEmulatorConfig`.
+`create_static_emulator(config)` sequences public entity and seedemu
+create/join calls, returning only the Emulator and both AS collections.
+`create_simulator_static_input(...)` is a separate explicit operation.
+Handwritten callers bypass the file-driven operations.
 
 ## 6. seedemu integration
 
@@ -108,8 +114,8 @@ Compiler model ownership; it never recompiles or rewrites the project.
 - `isolated_satellites`: direct entity construction and compile.
 - `complete_static_emulator`: direct entities plus ordinary Network/Router,
   IX, eBGP, Simulator static input and compile.
-- `large_static_network`: YAML → specifications → application → entities →
-  static Simulator input → compile. This example remains compile/config-only.
+- `large_static_network`: YAML → Config → Emulator creation → static Simulator
+  input generation → compile. This example remains compile/config-only.
 
 The examples are executable architecture records; their calls lead directly
 to the owning public methods.

@@ -1,23 +1,54 @@
-"""Orbit ownership and Satellite construction."""
+"""Orbit parameters, ownership and Satellite construction."""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from math import isfinite
 from typing import Mapping
 
 from skyseed_v2.identifier import validate_identifier
 
-from .orbit_parameters import OrbitParameters
 from .satellite import Satellite
+from .validation import _validate_angle
+
+
+@dataclass(frozen=True, slots=True)
+class OrbitParameters:
+    """Hold fixed orbital values owned by one Orbit.
+
+    Layer: entity-bound value object. Handwritten callers or static Emulator
+    creation build it; Orbit owns it and Simulator-input generation reads it.
+    It is not an Orbit, Satellite field, trajectory or dynamic position. It is
+    root public because direct Orbit construction requires these values.
+    """
+
+    altitude_km: float
+    inclination_deg: float
+    right_ascension_deg: float
+
+    def __post_init__(self) -> None:
+        altitude = float(self.altitude_km)
+        inclination = float(self.inclination_deg)
+        right_ascension = _validate_angle(
+            self.right_ascension_deg, "right_ascension_deg"
+        )
+        if not isfinite(altitude) or altitude <= 0.0:
+            raise ValueError("altitude_km must be a positive finite number")
+        if not isfinite(inclination) or not 0.0 <= inclination <= 180.0:
+            raise ValueError("inclination_deg must be between 0 and 180")
+        object.__setattr__(self, "altitude_km", altitude)
+        object.__setattr__(self, "inclination_deg", inclination)
+        object.__setattr__(self, "right_ascension_deg", right_ascension)
 
 
 class Orbit:
     """Own the Satellites belonging to exactly one Shell Orbit.
 
     Layer: approved Emulator entity. `Shell.create_orbit` creates it;
-    handwritten callers or the Applier call its Satellite creation methods. It
-    is not an input specification, trajectory service or population. It is root
-    public because it is the approved Satellite ownership entry point.
+    handwritten callers or static Emulator creation call its Satellite methods.
+    It owns one OrbitParameters value and all Satellites in the Orbit. It is not
+    a Config, trajectory service or population. It is root public because it is
+    the approved Satellite ownership entry point.
     """
 
     def __init__(
@@ -30,6 +61,8 @@ class Orbit:
     ) -> None:
         self._orbit_id = validate_identifier(orbit_id, "orbit_id")
         self._shell_id = validate_identifier(shell_id, "shell_id")
+        if not isinstance(parameters, OrbitParameters):
+            raise TypeError("parameters must be an OrbitParameters value")
         self._parameters = parameters
         self._satellite_ids = satellite_ids
         self._asn = asn
@@ -87,7 +120,6 @@ class Orbit:
             shell_id=self.shell_id,
             orbit_id=self.orbit_id,
             orbit_index=orbit_index,
-            orbit_parameters=self.parameters,
             mean_anomaly_deg=mean_anomaly_deg,
             asn=self._asn,
             payload=payload or {},
@@ -123,7 +155,7 @@ class Orbit:
         if not isfinite(step):
             raise ValueError("mean_anomaly_step_deg must be finite")
 
-        specifications = []
+        planned_satellites = []
         for offset in range(count):
             orbit_index = start_index + offset
             satellite_id = validate_identifier(
@@ -132,10 +164,12 @@ class Orbit:
             mean_anomaly = (
                 float(mean_anomaly_start_deg) + offset * step
             ) % 360.0
-            specifications.append((satellite_id, orbit_index, mean_anomaly))
+            planned_satellites.append(
+                (satellite_id, orbit_index, mean_anomaly)
+            )
 
-        candidate_ids = [item[0] for item in specifications]
-        candidate_indices = [item[1] for item in specifications]
+        candidate_ids = [item[0] for item in planned_satellites]
+        candidate_indices = [item[1] for item in planned_satellites]
         if len(set(candidate_ids)) != len(candidate_ids) or any(
             satellite_id in self._satellite_ids
             for satellite_id in candidate_ids
@@ -151,5 +185,5 @@ class Orbit:
                 mean_anomaly_deg=mean_anomaly,
                 payload=payload,
             )
-            for satellite_id, orbit_index, mean_anomaly in specifications
+            for satellite_id, orbit_index, mean_anomaly in planned_satellites
         )

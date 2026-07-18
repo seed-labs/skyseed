@@ -1,4 +1,4 @@
-"""Immutable complete static Emulator scenario specifications."""
+"""Immutable complete static Emulator Config values."""
 
 from __future__ import annotations
 
@@ -6,41 +6,41 @@ from dataclasses import dataclass
 from ipaddress import IPv4Address, IPv4Network
 
 from ._validation import _asn
-from .ground_station import GroundStationSpecification, ground_station_id_for
+from .ground_station import GroundStationConfig, ground_station_id_for
 from .network import (
-    EbgpPeeringSpecification,
-    InternetExchangeAttachmentSpecification,
-    InternetExchangeSpecification,
-    OrdinaryAutonomousSystemSpecification,
+    EbgpPeeringConfig,
+    InternetExchangeAttachmentConfig,
+    InternetExchangeConfig,
+    OrdinaryAutonomousSystemConfig,
 )
-from .satellite import ShellSpecification
+from .satellite import ShellConfig
 
 
 @dataclass(frozen=True, slots=True)
-class SkyseedAutonomousSystemSpecification:
+class SkyseedAutonomousSystemConfig:
     """Group Shell and GroundStation inputs for one future Skyseed AS.
 
-    Layer: immutable input specification. Input callers create it and the
-    Applier creates the real AS and owned entities. It is not an AS, scenario
-    facade or ownership layer and is public from specifications.
+    Layer: immutable Config. Input callers create it and the
+    `create_static_emulator` creates the real AS and owned entities. It is not
+    an AS, facade or ownership layer and is public from configuration.
     """
 
     asn: int
-    shells: tuple[ShellSpecification, ...] = ()
-    ground_stations: tuple[GroundStationSpecification, ...] = ()
+    shells: tuple[ShellConfig, ...] = ()
+    ground_stations: tuple[GroundStationConfig, ...] = ()
 
     def __post_init__(self) -> None:
         _asn(self.asn, "asn")
         shells = tuple(self.shells)
         stations = tuple(self.ground_stations)
-        if any(not isinstance(item, ShellSpecification) for item in shells):
-            raise TypeError("shells must contain ShellSpecification values")
+        if any(not isinstance(item, ShellConfig) for item in shells):
+            raise TypeError("shells must contain ShellConfig values")
         if any(
-            not isinstance(item, GroundStationSpecification)
+            not isinstance(item, GroundStationConfig)
             for item in stations
         ):
             raise TypeError(
-                "ground_stations must contain GroundStationSpecification values"
+                "ground_stations must contain GroundStationConfig values"
             )
         if not shells and not stations:
             raise ValueError(
@@ -72,23 +72,23 @@ class SkyseedAutonomousSystemSpecification:
 
 
 @dataclass(frozen=True, slots=True)
-class StaticEmulatorScenarioSpecification:
+class StaticEmulatorConfig:
     """Contain one complete validated static Emulator construction input.
 
-    Layer: immutable input specification. The Loader or programmatic callers
-    create it; the specification Applier consumes it. It is not a runtime
-    scenario, entity parent, Emulator or deployment and is public from
-    specifications as the serialization/application boundary.
+    Layer: immutable Config. `load_static_emulator_config` or programmatic
+    callers create it; `create_static_emulator` consumes it. It is not runtime
+    state, an entity parent, an Emulator or deployment. It is public from
+    configuration as the complete file/programmatic input.
     """
 
     skyseed_autonomous_systems: tuple[
-        SkyseedAutonomousSystemSpecification, ...
+        SkyseedAutonomousSystemConfig, ...
     ]
-    internet_exchanges: tuple[InternetExchangeSpecification, ...] = ()
+    internet_exchanges: tuple[InternetExchangeConfig, ...] = ()
     ordinary_autonomous_systems: tuple[
-        OrdinaryAutonomousSystemSpecification, ...
+        OrdinaryAutonomousSystemConfig, ...
     ] = ()
-    ebgp_peerings: tuple[EbgpPeeringSpecification, ...] = ()
+    ebgp_peerings: tuple[EbgpPeeringConfig, ...] = ()
 
     def __post_init__(self) -> None:
         skyseed_ases = tuple(self.skyseed_autonomous_systems)
@@ -96,45 +96,45 @@ class StaticEmulatorScenarioSpecification:
         ordinary_ases = tuple(self.ordinary_autonomous_systems)
         peerings = tuple(self.ebgp_peerings)
         if not skyseed_ases or any(
-            not isinstance(item, SkyseedAutonomousSystemSpecification)
+            not isinstance(item, SkyseedAutonomousSystemConfig)
             for item in skyseed_ases
         ):
             raise ValueError(
                 "skyseed_autonomous_systems must contain at least one "
-                "SkyseedAutonomousSystemSpecification"
+                "SkyseedAutonomousSystemConfig"
             )
         if any(
-            not isinstance(item, InternetExchangeSpecification)
+            not isinstance(item, InternetExchangeConfig)
             for item in exchanges
         ):
             raise TypeError(
                 "internet_exchanges must contain "
-                "InternetExchangeSpecification values"
+                "InternetExchangeConfig values"
             )
         if any(
-            not isinstance(item, OrdinaryAutonomousSystemSpecification)
+            not isinstance(item, OrdinaryAutonomousSystemConfig)
             for item in ordinary_ases
         ):
             raise TypeError(
                 "ordinary_autonomous_systems must contain "
-                "OrdinaryAutonomousSystemSpecification values"
+                "OrdinaryAutonomousSystemConfig values"
             )
         if any(
-            not isinstance(item, EbgpPeeringSpecification)
+            not isinstance(item, EbgpPeeringConfig)
             for item in peerings
         ):
             raise TypeError(
-                "ebgp_peerings must contain EbgpPeeringSpecification values"
+                "ebgp_peerings must contain EbgpPeeringConfig values"
             )
 
         asns = [item.asn for item in (*skyseed_ases, *ordinary_ases)]
         if len(set(asns)) != len(asns):
-            raise ValueError("scenario contains a duplicate ASN")
+            raise ValueError("config contains a duplicate ASN")
         if len({item.ix_id for item in exchanges}) != len(exchanges):
-            raise ValueError("scenario contains a duplicate ix_id")
+            raise ValueError("config contains a duplicate ix_id")
         peering_keys = [item.sort_key for item in peerings]
         if len(set(peering_keys)) != len(peering_keys):
-            raise ValueError("scenario contains a duplicate eBGP peering")
+            raise ValueError("config contains a duplicate eBGP peering")
 
         object.__setattr__(
             self,
@@ -248,7 +248,7 @@ class StaticEmulatorScenarioSpecification:
     @classmethod
     def _validate_ix_attachment(
         cls,
-        attachment: InternetExchangeAttachmentSpecification,
+        attachment: InternetExchangeAttachmentConfig,
         exchanges: dict[int, IPv4Network],
         ix_addresses: dict[int, set[IPv4Address]],
         node_id: str,

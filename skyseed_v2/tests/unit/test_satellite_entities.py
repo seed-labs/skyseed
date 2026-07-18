@@ -45,7 +45,9 @@ def test_orbit_creates_and_queries_satellite() -> None:
     assert satellite.shell_id == "shell-1"
     assert satellite.orbit_id == "orbit-1"
     assert satellite.orbit_index == 7
-    assert satellite.orbit_parameters == parameters()
+    assert orbit.parameters == parameters()
+    assert not hasattr(satellite, "orbit_parameters")
+    assert not hasattr(satellite, "_orbit_parameters")
     assert satellite.payload == {"profile": "test"}
     assert isinstance(satellite, Satellite)
     assert isinstance(satellite, Node)

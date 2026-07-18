@@ -5,8 +5,8 @@ Read `README.md`, `docs/CURRENT.md` and
 
 - Obtain explicit user approval before adding a concept to the public API,
   entity diagrams, Simulator-input boundary or future Simulator.
-- Classify every new class as Emulator entity, value object, input
-  specification, application service, operation result, integration adapter
+- Classify every new class as Emulator entity, value object, immutable Config,
+  Simulator input, operation result, integration adapter
   or internal helper. Record its owner, creator, consumers and why an existing
   type cannot carry the responsibility.
 - Do not promote implementation convenience into a domain concept. Keep
@@ -28,4 +28,5 @@ Read `README.md`, `docs/CURRENT.md` and
 - Do not start Simulator, dynamic topology, Runner or new cross-layer contract
   work without explicit authorization.
 - Keep `simulator_input` limited to immutable, seedemu-independent data types.
-  Entity traversal and entity-to-input conversion belong to `application`.
+  Entity traversal and entity-to-input conversion belong to the direct
+  functions in `simulator_input_generation.py`.

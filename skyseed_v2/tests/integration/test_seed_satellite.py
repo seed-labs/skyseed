@@ -3,7 +3,7 @@ import pytest
 from seedemu.core import Emulator, Node
 from seedemu.core.enums import NodeRole
 
-from skyseed_v2.application import create_satellite_simulation_input
+from skyseed_v2.simulator_input_generation import create_simulator_static_input
 from skyseed_v2.entities import OrbitParameters, Satellite, SatelliteRole
 from skyseed_v2.seedemu_integration import (
     SATELLITE_REGISTRY_TYPE,
@@ -85,10 +85,9 @@ def test_base_render_and_options_apply_to_the_orbit_satellite_instances() -> Non
 def test_simulation_input_is_a_static_copy_of_registered_satellite() -> None:
     emulator, satellite_as, _, _ = build_rendered_emulator()
 
-    for simulation_input in (
-        create_satellite_simulation_input(satellite)
-        for satellite in satellite_as.satellites()
-    ):
+    for simulation_input in create_simulator_static_input(
+        (satellite_as,)
+    ).list_satellites():
         satellite = satellite_as.get_satellite(simulation_input.satellite_id)
         registered = emulator.getRegistry().get(
             "65000", SATELLITE_REGISTRY_TYPE, simulation_input.satellite_id

@@ -46,26 +46,27 @@ data rather than teaching code. It uses the one file-input path:
 
 ```text
 v2 YAML
-    -> StaticEmulatorScenarioLoader.load
-    -> immutable StaticEmulatorScenarioSpecification
-    -> StaticEmulatorSpecificationApplier.apply
+    -> load_static_emulator_config(path)
+    -> immutable StaticEmulatorConfig
+    -> create_static_emulator(config)
     -> the same public entity create methods
-    -> application.create_simulator_static_input
+    -> StaticEmulatorCreationResult
+    -> create_simulator_static_input(creation.skyseed_autonomous_systems)
     -> immutable SimulatorStaticInput
 ```
 
-The Loader is a serialization adapter. The Applier is an optional application
-service for complete specifications, not an Emulator entity and not a required
-handwritten entrypoint. Multiple Shells remain a collection owned by an AS;
-there is no population or `Constellation` entity.
+The three operations are direct functions, not stateless service classes.
+`create_static_emulator` does not generate Simulator input. Multiple Shells
+remain a collection owned by an AS; there is no population or `Constellation`
+entity.
 
 Both input styles converge at `SkyseedAutonomousSystem.create_shell`,
 `Shell.create_orbit`, `Orbit.create_satellite` and
 `SkyseedAutonomousSystem.create_ground_station`. `SimulatorStaticInput` is the
 immutable static-data boundary for future Simulator consumers; it is not a
 scenario, SEED Registry, container inventory or output-directory index.
-Entity traversal and conversion belong to application; the input package
-contains only immutable data and indexing behavior.
+Entity traversal and conversion belong to `simulator_input_generation.py`;
+the input package contains only immutable data and indexing behavior.
 
 The `reference/` directory is excluded from the package and formal example
 path. It preserves offline historical investigation/conversion tooling only;

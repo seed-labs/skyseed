@@ -110,8 +110,8 @@ def test_small_examples_show_public_construction_without_file_facades() -> None:
     complete_source = Path(complete.__file__).read_text(encoding="utf-8")
 
     for source in (isolated_source, complete_source):
-        assert "StaticEmulatorScenarioLoader" not in source
-        assert "StaticEmulatorSpecificationApplier" not in source
+        assert "load_static_emulator_config" not in source
+        assert "create_static_emulator" not in source
         assert "scenario.yaml" not in source
         assert ".create_shell(" in source
         assert ".create_orbit(" in source
@@ -132,13 +132,17 @@ def test_small_examples_show_public_construction_without_file_facades() -> None:
     assert "SkyseedDockerCompiler" in complete_source
 
 
-def test_large_example_has_one_thin_file_application_path() -> None:
+def test_large_example_shows_load_create_and_input_generation_directly() -> None:
     source = Path(large.__file__).read_text(encoding="utf-8")
 
-    assert "StaticEmulatorScenarioLoader().load" in source
-    assert "StaticEmulatorSpecificationApplier().apply" in source
-    assert "from skyseed_v2.serialization import" in source
-    assert "from skyseed_v2.application import" in source
+    assert "load_static_emulator_config" in source
+    assert "create_static_emulator" in source
+    assert "create_simulator_static_input" in source
+    assert "from skyseed_v2.configuration import" in source
+    assert "from skyseed_v2.static_emulator import" in source
+    assert "from skyseed_v2.simulator_input_generation import" in source
+    assert "from skyseed_v2.application import" not in source
+    assert "from skyseed_v2.serialization import" not in source
     assert "from skyseed_v2 import" not in source
     assert "@dataclass" not in source
     assert "safe_load" not in source
@@ -153,7 +157,7 @@ def test_large_example_has_one_thin_file_application_path() -> None:
         "only YAML example",
         "not an Emulator entity",
         "immutable Simulator input snapshot",
-        "scenario, a SEED Registry",
+        "Config, a SEED Registry",
         "container inventory",
     ):
         assert required_explanation in readme

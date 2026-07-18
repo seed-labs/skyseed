@@ -5,7 +5,7 @@ from typing import get_type_hints
 import pytest
 
 import skyseed_v2
-from skyseed_v2.application import (
+from skyseed_v2.simulator_input_generation import (
     create_ground_station_simulation_input,
     create_satellite_simulation_input,
 )
@@ -118,11 +118,12 @@ def test_simulation_inputs_reject_mismatched_logical_identities() -> None:
         )
 
 
-def test_application_converters_accept_only_the_unique_entity() -> None:
+def test_input_generators_accept_only_the_data_needed_for_each_snapshot() -> None:
     assert tuple(
         signature(create_satellite_simulation_input).parameters
     ) == (
         "satellite",
+        "orbit_parameters",
     )
     assert tuple(
         signature(create_ground_station_simulation_input).parameters

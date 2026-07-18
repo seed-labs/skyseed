@@ -1,4 +1,4 @@
-"""Immutable Shell, Orbit, and Satellite construction specifications."""
+"""Immutable Shell, Orbit, and Satellite construction Config values."""
 
 from __future__ import annotations
 
@@ -11,12 +11,12 @@ from ._validation import _angle, _positive_integer
 
 
 @dataclass(frozen=True, slots=True)
-class RaanDistributionSpecification:
+class RaanDistributionConfig:
     """Specify uniform right-ascension input for generated Orbits.
 
-    Layer: immutable input specification. Loader or programmatic callers create
-    it; a Shell generation specification consumes it. It is not an Orbit or
-    runtime trajectory and is public from the specifications package.
+    Layer: immutable Config. `load_static_emulator_config` or programmatic
+    callers create it; a Shell generation config consumes it. It is not an
+    Orbit or runtime trajectory and is public from configuration.
     """
 
     start_deg: float = 0.0
@@ -32,12 +32,12 @@ class RaanDistributionSpecification:
 
 
 @dataclass(frozen=True, slots=True)
-class InOrbitPhaseDistributionSpecification:
+class InOrbitPhaseDistributionConfig:
     """Specify uniform phase input for generated Satellites.
 
-    Layer: immutable input specification. Loader or programmatic callers create
-    it for `OrbitGenerationSpecification`; it is not Satellite state or a
-    runtime position model and is public from the specifications package.
+    Layer: immutable Config. `load_static_emulator_config` or programmatic
+    callers create it for `OrbitGenerationConfig`; it is not Satellite state
+    or a runtime position model and is public from configuration.
     """
 
     start_deg: float = 0.0
@@ -62,29 +62,29 @@ class InOrbitPhaseDistributionSpecification:
 
 
 @dataclass(frozen=True, slots=True)
-class OrbitGenerationSpecification:
+class OrbitGenerationConfig:
     """Validate deterministic Orbit/Satellite generation input for one Shell.
 
-    Layer: immutable input specification. Loader or programmatic callers create
-    it; the specification Applier expands it. It is not a population, factory
-    or entity owner and is public from the specifications package.
+    Layer: immutable Config. `load_static_emulator_config` or programmatic
+    callers create it; `create_static_emulator` expands it. It is not a
+    population, factory or entity owner and is public from configuration.
     """
 
     orbit_count: int
     satellites_per_orbit: int
-    raan: RaanDistributionSpecification = RaanDistributionSpecification()
-    phase: InOrbitPhaseDistributionSpecification = (
-        InOrbitPhaseDistributionSpecification()
+    raan: RaanDistributionConfig = RaanDistributionConfig()
+    phase: InOrbitPhaseDistributionConfig = (
+        InOrbitPhaseDistributionConfig()
     )
 
     def __post_init__(self) -> None:
         _positive_integer(self.orbit_count, "orbit_count")
         _positive_integer(self.satellites_per_orbit, "satellites_per_orbit")
-        if not isinstance(self.raan, RaanDistributionSpecification):
-            raise TypeError("raan must be a RaanDistributionSpecification")
-        if not isinstance(self.phase, InOrbitPhaseDistributionSpecification):
+        if not isinstance(self.raan, RaanDistributionConfig):
+            raise TypeError("raan must be a RaanDistributionConfig")
+        if not isinstance(self.phase, InOrbitPhaseDistributionConfig):
             raise TypeError(
-                "phase must be an InOrbitPhaseDistributionSpecification"
+                "phase must be an InOrbitPhaseDistributionConfig"
             )
         raan_step = (
             360.0 / self.orbit_count
@@ -112,12 +112,13 @@ class OrbitGenerationSpecification:
 
 
 @dataclass(frozen=True, slots=True)
-class SatelliteSpecification:
+class SatelliteConfig:
     """Describe one explicit Satellite construction input within an Orbit.
 
-    Layer: immutable input specification. Loader or programmatic callers create
-    it; the Applier passes its values to `Orbit.create_satellite`. It is not a
-    Satellite entity or Simulator input and is public from specifications.
+    Layer: immutable Config. `load_static_emulator_config` or programmatic
+    callers create it; `create_static_emulator` passes its values to
+    `Orbit.create_satellite`. It is not a Satellite entity or Simulator input
+    and is public from configuration.
     """
 
     satellite_id: str
@@ -158,17 +159,17 @@ class SatelliteSpecification:
 
 
 @dataclass(frozen=True, slots=True)
-class OrbitSpecification:
+class OrbitConfig:
     """Describe one explicit Orbit and its Satellite construction inputs.
 
-    Layer: immutable input specification. Input callers create it and the
-    Applier consumes it; it is not owned by a Shell and not an Emulator Orbit.
-    It is public for programmatic file-equivalent input.
+    Layer: immutable Config. Input callers create it and the
+    `create_static_emulator` consumes it; it is not owned by a Shell and is not
+    an Emulator Orbit. It is public for programmatic file-equivalent input.
     """
 
     orbit_id: str
     right_ascension_deg: float
-    satellites: tuple[SatelliteSpecification, ...]
+    satellites: tuple[SatelliteConfig, ...]
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -181,11 +182,11 @@ class OrbitSpecification:
         )
         satellites = tuple(self.satellites)
         if not satellites:
-            raise ValueError("satellites must contain at least one specification")
+            raise ValueError("satellites must contain at least one config")
         if any(
-            not isinstance(item, SatelliteSpecification) for item in satellites
+            not isinstance(item, SatelliteConfig) for item in satellites
         ):
-            raise TypeError("satellites must contain SatelliteSpecification values")
+            raise TypeError("satellites must contain SatelliteConfig values")
         ids = [item.satellite_id for item in satellites]
         indices = [item.index_in_orbit for item in satellites]
         if len(set(ids)) != len(ids):
@@ -200,19 +201,20 @@ class OrbitSpecification:
 
 
 @dataclass(frozen=True, slots=True)
-class ShellSpecification:
+class ShellConfig:
     """Describe one Shell through generation rules or explicit Orbit inputs.
 
-    Layer: immutable input specification. Loader or programmatic callers create
-    it; the Applier reads it before calling `create_shell`. It is not a Shell,
-    population or ownership layer and is public from specifications.
+    Layer: immutable Config. `load_static_emulator_config` or programmatic
+    callers create it; `create_static_emulator` reads it before calling
+    `create_shell`. It is not a Shell, population or ownership layer and is
+    public from configuration.
     """
 
     shell_id: str
     altitude_km: float
     inclination_deg: float
-    generation: OrbitGenerationSpecification | None = None
-    orbits: tuple[OrbitSpecification, ...] = ()
+    generation: OrbitGenerationConfig | None = None
+    orbits: tuple[OrbitConfig, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -229,11 +231,11 @@ class ShellSpecification:
 
         orbits = tuple(self.orbits)
         if self.generation is not None and not isinstance(
-            self.generation, OrbitGenerationSpecification
+            self.generation, OrbitGenerationConfig
         ):
-            raise TypeError("generation must be an OrbitGenerationSpecification")
-        if any(not isinstance(item, OrbitSpecification) for item in orbits):
-            raise TypeError("orbits must contain OrbitSpecification values")
+            raise TypeError("generation must be an OrbitGenerationConfig")
+        if any(not isinstance(item, OrbitConfig) for item in orbits):
+            raise TypeError("orbits must contain OrbitConfig values")
         if (self.generation is None) == (not orbits):
             raise ValueError(
                 "specify exactly one of generation or explicit orbits"

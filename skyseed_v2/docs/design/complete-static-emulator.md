@@ -25,18 +25,21 @@ Construction is direct:
 simulator_input = create_simulator_static_input((skyseed_as,))
 ```
 
-The application function accepts only `SkyseedAutonomousSystem` values;
+The aggregate generation function accepts only `SkyseedAutonomousSystem` values;
 ordinary SEED AS objects fail closed rather than being silently ignored.
 Adding entities after construction does not mutate the existing snapshot.
 
 ## 3. Per-entity conversion
 
 ```python
-satellite_input = create_satellite_simulation_input(satellite)
+satellite_input = create_satellite_simulation_input(
+    satellite,
+    orbit.parameters,
+)
 station_input = create_ground_station_simulation_input(station)
 ```
 
-Application owns this copying operation. The immutable input types contain
+`simulator_input_generation.py` owns this copying operation. The immutable input types contain
 data validation and aggregation behavior only; there is no stateless
 conversion class and no separately instantiated multi-AS builder.
 
@@ -53,8 +56,8 @@ conversion class and no separately instantiated multi-AS builder.
 7. `create_simulator_static_input((skyseed_as,))`;
 8. render and `SkyseedDockerCompiler`.
 
-It deliberately imports no YAML Loader or specification Applier. Its one
-application import is the direct static-input conversion function.
+It deliberately imports no file-configuration operation. Its one
+cross-layer import is the direct static-input generation function.
 
 ## 5. Identity and runtime separation
 

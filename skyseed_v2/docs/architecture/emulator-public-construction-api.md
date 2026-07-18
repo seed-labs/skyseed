@@ -2,11 +2,9 @@
 
 ## Status and scope
 
-The static Emulator construction API and package layout are implemented. This
-document records the current code after the package-structure review. It does
-not define or start Simulator behavior.
-
-The ownership model is unchanged:
+The static Emulator construction API, domain-data ownership and file-driven
+configuration boundary are implemented. Simulator remains **NOT STARTED**.
+No entity relationship or Emulator behavior changed:
 
 ```text
 SkyseedAutonomousSystem
@@ -18,48 +16,60 @@ SkyseedAutonomousSystem
 
 ## Package ownership
 
-| Package | Responsibility | Main public imports |
+| Path | Responsibility | Main public imports |
 | --- | --- | --- |
 | `skyseed_v2.entities` | Emulator entities and tightly bound values | `Shell`, `Orbit`, `OrbitParameters`, `Satellite`, `GroundStation`, `GroundStationLocation` |
+| `skyseed_v2.configuration` | Frozen Config values and versioned YAML loading | qualified `*Config` values, `load_static_emulator_config` |
+| `skyseed_v2.static_emulator` | Config-to-Emulator creation operation | `create_static_emulator`, `StaticEmulatorCreationResult` |
+| `skyseed_v2.simulator_input_generation` | Entity traversal and entity-to-input copying | three `create_*_simulation_input` / aggregate functions |
 | `skyseed_v2.simulator_input` | Immutable static data supplied to the future Simulator | `SatelliteSimulationInput`, `GroundStationSimulationInput`, `SimulationNodeId`, `SimulatorStaticInput` |
 | `skyseed_v2.seedemu_integration` | Skyseed-owned extensions of external seedemu | `SkyseedAutonomousSystem`, `SatelliteBase`, `SkyseedDockerCompiler` |
-| `skyseed_v2.specifications` | Immutable construction inputs split by subject | all qualified `*Specification` types |
-| `skyseed_v2.serialization` | Versioned YAML parsing into specifications | `StaticEmulatorScenarioLoader` |
-| `skyseed_v2.application` | Application sequencing and entity-to-input conversion | `StaticEmulatorSpecificationApplier`, `StaticEmulatorApplyResult`, `create_satellite_simulation_input`, `create_ground_station_simulation_input`, `create_simulator_static_input` |
 | `skyseed_v2.materialization` | Launch an already compiled Compose project | `ComposeProjectLauncher` |
 
-These are ownership packages, not compatibility facades. The defining files
-are discoverable from the primary class names.
+These are ownership modules, not compatibility facades. The package root
+still exposes only the six high-frequency entity/value names.
+
+## Domain-data ownership
+
+`OrbitParameters` is defined beside `Orbit` in `entities/orbit.py`. One Orbit
+owns one frozen value containing altitude, inclination and right ascension.
+Every Satellite in that Orbit shares those values through ownership; the
+Satellite does not copy them and does not retain an Orbit reference.
+
+`Satellite` owns only its identity, Shell/Orbit identifiers, index, mean
+anomaly, payload and inherited SEED Node capability. `GroundStationLocation`
+remains beside GroundStation because it is similarly bound to that entity and
+is not shared by a separate owner.
 
 ## Simulator static-input design
 
-The boundary is a frozen scalar snapshot with conversion owned by application:
+The input package contains pure immutable data. Conversion and traversal live
+outside it:
 
 ```text
-Satellite
-  → application.create_satellite_simulation_input()
+Satellite + owning OrbitParameters
+  → create_satellite_simulation_input(satellite, orbit_parameters)
   → SatelliteSimulationInput
 
 GroundStation
-  → application.create_ground_station_simulation_input()
+  → create_ground_station_simulation_input(ground_station)
   → GroundStationSimulationInput
 
 Iterable[SkyseedAutonomousSystem]
-  → application.create_simulator_static_input()
+  → create_simulator_static_input(skyseed_autonomous_systems)
   → SimulatorStaticInput
 ```
 
-The entity types never import `simulator_input`. The input package imports no
-entity, seedemu integration or upstream seedemu module. Application conversion
-copies approved values and retains no entity reference. The aggregate function
-accepts only Skyseed AS values and fails closed on ordinary SEED AS or unknown
-objects. `SimulatorStaticInput` receives copied data, validates and sorts it,
-rejects duplicate logical IDs and builds a read-only index; it neither
-traverses AS objects nor recognizes SEED. No input retains Registry, container,
-namespace, Compose, persistence or runtime Simulator objects.
+The aggregate function accepts only `SkyseedAutonomousSystem` values, then
+traverses AS → Shell → Orbit → Satellite. That traversal is where the owning
+Orbit's parameters and each Satellite's own fields are combined. Ground
+Stations are copied directly from each AS. Ordinary SEED ASes and unknown
+objects fail closed.
 
-The three direct functions replace both copying-only projector classes and the
-short-lived input classmethods without introducing another service class.
+`SimulatorStaticInput` receives already copied values, validates their types,
+sorts deterministically, rejects duplicate logical IDs and builds a read-only
+index. It does not traverse entities. No input retains an entity, Registry,
+container, namespace, Compose, persistence or runtime Simulator object.
 
 ## Public construction paths
 
@@ -77,8 +87,8 @@ flowchart LR
     E -->|render + compile| C[SkyseedDockerCompiler]
 ```
 
-`examples/isolated_satellites/main.py` contains this path directly. It imports
-no specification, serialization or application type.
+`examples/isolated_satellites/main.py` shows this path directly and contains no
+YAML/configuration flow.
 
 ### Handwritten complete path
 
@@ -93,31 +103,42 @@ flowchart LR
     G --> X
     N --> X
     X --> P[explicit eBGP]
-    A --> F[application.create_simulator_static_input]
-    F --> I[SimulatorStaticInput]
+    A -->|create_simulator_static_input| I[SimulatorStaticInput]
     B --> C[render + SkyseedDockerCompiler]
 ```
 
-`examples/complete_static_emulator/main.py` shows Satellite, GroundStation,
+`examples/complete_static_emulator/main.py` exposes Satellite, GroundStation,
 ordinary Router/Network, IX, eBGP, static Simulator input and Compiler in one
-file without YAML or application orchestration.
+file. Only `(skyseed_as,)` enters static-input generation.
 
 ### File-driven large path
 
 ```mermaid
 flowchart LR
-    Y[versioned YAML] --> L[StaticEmulatorScenarioLoader.load]
-    L --> S[StaticEmulatorScenarioSpecification]
-    S --> A[StaticEmulatorSpecificationApplier.apply]
-    A --> E[public entity create/join methods]
-    E --> F[application.create_simulator_static_input]
+    Y[versioned YAML] -->|load_static_emulator_config| C[StaticEmulatorConfig]
+    C -->|create_static_emulator| R[StaticEmulatorCreationResult]
+    R --> E[Emulator entities and layers]
+    R -->|skyseed_autonomous_systems| F[create_simulator_static_input]
     F --> I[SimulatorStaticInput]
-    A --> C[render + SkyseedDockerCompiler]
+    E --> K[render + SkyseedDockerCompiler]
 ```
 
-`examples/large_static_network/main.py` is the only formal YAML example. The
-Loader owns serialization; the Applier owns heterogeneous sequencing. Neither
-is required for handwritten construction.
+The exact public sequence is:
+
+`load_static_emulator_config(path)` → `create_static_emulator(config)` →
+`create_simulator_static_input(creation.skyseed_autonomous_systems)`.
+
+```python
+config = load_static_emulator_config(path)
+creation = create_static_emulator(config)
+simulator_input = create_simulator_static_input(
+    creation.skyseed_autonomous_systems
+)
+```
+
+`create_static_emulator(config)` creates only Emulator entities and layers.
+Its result has exactly `emulator`, `skyseed_autonomous_systems` and
+`ordinary_autonomous_systems`; static-input generation is visibly separate.
 
 ## Implemented class and API map
 
@@ -133,8 +154,6 @@ classDiagram
         <<entity owner + integration>>
         +create_shell(shell_id) Shell
         +create_ground_station(...) GroundStation
-        +satellites() tuple
-        +ground_stations() tuple
     }
     class Shell {
         <<Emulator entity>>
@@ -142,8 +161,8 @@ classDiagram
     }
     class Orbit {
         <<Emulator entity>>
+        +parameters OrbitParameters
         +create_satellite(...) Satellite
-        +create_satellites(...) tuple
     }
     class OrbitParameters {
         <<entity-bound value>>
@@ -154,7 +173,7 @@ classDiagram
     class Satellite {
         <<Emulator entity + SEED Node>>
         +satellite_id
-        +orbit_parameters
+        +mean_anomaly_deg
     }
     class GroundStationLocation {
         <<entity-bound value>>
@@ -166,6 +185,15 @@ classDiagram
         <<Emulator entity + SEED Router>>
         +ground_station_id
         +location
+    }
+    class StaticEmulatorConfig {
+        <<immutable configuration>>
+    }
+    class StaticEmulatorCreationResult {
+        <<operation result>>
+        +emulator
+        +skyseed_autonomous_systems
+        +ordinary_autonomous_systems
     }
     class SimulationNodeId {
         <<Simulator-input value>>
@@ -189,22 +217,6 @@ classDiagram
     class SkyseedDockerCompiler {
         <<seedemu integration>>
     }
-    class StaticEmulatorScenarioSpecification {
-        <<input specification>>
-    }
-    class StaticEmulatorScenarioLoader {
-        <<serialization adapter>>
-        +load(path) StaticEmulatorScenarioSpecification
-    }
-    class StaticEmulatorSpecificationApplier {
-        <<application service>>
-        +apply(specification) StaticEmulatorApplyResult
-    }
-    class StaticEmulatorApplyResult {
-        <<operation result>>
-        +emulator
-        +simulator_input
-    }
     class ComposeProjectLauncher {
         <<materialization integration>>
         +launch(...) result
@@ -214,30 +226,27 @@ classDiagram
     SatelliteBase *-- SkyseedAutonomousSystem : contains
     SkyseedAutonomousSystem "1" *-- "*" Shell : owns
     Shell "1" *-- "*" Orbit : owns
+    Orbit "1" *-- "1" OrbitParameters : owns
     Orbit "1" *-- "*" Satellite : owns
-    Orbit *-- OrbitParameters : uses
     SkyseedAutonomousSystem "1" *-- "*" GroundStation : owns
-    GroundStation *-- GroundStationLocation : uses
+    GroundStation "1" *-- "1" GroundStationLocation : owns
     SatelliteSimulationInput *-- SimulationNodeId : identifies
     GroundStationSimulationInput *-- SimulationNodeId : identifies
     SimulatorStaticInput *-- SatelliteSimulationInput : contains
     SimulatorStaticInput *-- GroundStationSimulationInput : contains
-    StaticEmulatorScenarioLoader --> StaticEmulatorScenarioSpecification : creates
-    StaticEmulatorSpecificationApplier --> StaticEmulatorScenarioSpecification : reads
-    StaticEmulatorSpecificationApplier --> SimulatorStaticInput : creates through application conversion
-    StaticEmulatorSpecificationApplier --> StaticEmulatorApplyResult : returns
+    StaticEmulatorCreationResult --> Emulator : returns
+    StaticEmulatorCreationResult --> SkyseedAutonomousSystem : returns
     Emulator --> SkyseedDockerCompiler : compiles with
 ```
 
 ### Retained public-type proof
 
 - Entities correspond to user-visible ownership and creation points.
-- Entity-bound values are required by direct constructors.
-- Static input types are the explicit, immutable future-Simulator boundary.
-- Loader and Applier remain outside the root because handwritten callers do
-  not need them.
-- `StaticEmulatorApplyResult` remains application-only because no existing
-  object owns all returned values.
+- Entity-bound values are required by direct construction.
+- Config values make file/programmatic construction explicit and immutable.
+- Static input types are the immutable future-Simulator boundary.
+- `StaticEmulatorCreationResult` is module-public because the creation
+  operation returns three independently owned values; it is not a root export.
 - `ComposeProjectLauncher` remains outside Emulator construction and Compiler
   behavior.
 
@@ -254,53 +263,53 @@ from skyseed_v2 import (
 )
 ```
 
-Simulator static-input types are intentionally explicit subpackage imports:
+Static-input types and operations use explicit owner imports:
 
 ```python
-from skyseed_v2.simulator_input import (
-    GroundStationSimulationInput,
-    SatelliteSimulationInput,
-    SimulationNodeId,
-    SimulatorStaticInput,
-)
+from skyseed_v2.configuration import load_static_emulator_config
+from skyseed_v2.static_emulator import create_static_emulator
+from skyseed_v2.simulator_input_generation import create_simulator_static_input
+from skyseed_v2.simulator_input import SimulatorStaticInput
 ```
 
 ## Rename and removal record
 
-| Previous name/path | Current name/path | Disposition |
+| Previous name/path | Current name/path | Reason/disposition |
 | --- | --- | --- |
-| per-entity `*Descriptor` types | per-entity `*SimulationInput` types | renamed to state consumer and direction |
-| stateless per-entity projector classes | direct `application.create_*_simulation_input()` functions | removed; conversion belongs to application without another class |
-| input `from_satellite()` / `from_ground_station()` classmethods | direct application conversion functions | removed so input types remain pure data |
-| entity-catalog aggregate | `SimulatorStaticInput` | renamed from collection metaphor to actual boundary role |
-| separate catalog builder and aggregate classmethod | `application.create_simulator_static_input()` | removed; one direct fail-closed application function |
-| `domain/` | `entities/` | renamed because the objects also carry SEED capability |
-| `seed/` | `seedemu_integration/` | renamed to identify external integration ownership |
-| root scenario loader/application modules | `serialization/` and `application/` | moved to explicit responsibility packages |
-| monolithic specifications module | `specifications/{satellite,ground_station,network,scenario}.py` | split by input family |
+| `Satellite.orbit_parameters` / `_orbit_parameters` | removed | shared data belongs to the owning Orbit |
+| `entities/orbit_parameters.py` | `entities/orbit.py` | the value and its sole owner are tightly bound |
+| `*Specification` | one-to-one `*Config` | names the actual role without DDD/input ambiguity |
+| `specifications/` | `configuration/` | makes the file/programmatic boundary discoverable |
+| stateless YAML reader class | `load_static_emulator_config(path)` | one direct operation needs no public class |
+| stateless Config application class | `create_static_emulator(config)` | one direct operation needs no public class |
+| four-field apply result | `StaticEmulatorCreationResult` | creation has only three outputs; Simulator input is separate |
+| `application/simulator_static_input.py` | `simulator_input_generation.py` | direct cross-layer functions, no abstract application package |
+| `application/static_scenario_application.py` | `static_emulator.py` | file name follows the operation it implements |
+| `serialization/static_emulator_yaml_loader.py` | `configuration/yaml.py` | YAML reading belongs with Config values |
+| per-entity projector classes | direct `create_*_simulation_input` functions | no state or reusable abstraction existed |
+| input `from_*` classmethods | direct generation functions | input types remain pure data |
 
-No compatibility aliases remain for deleted classes or old import paths.
+No compatibility aliases remain for deleted classes, types or old imports.
 
 ## API change summary
 
-- Entity `create_*` methods and ownership relations are unchanged.
-- Root imports keep only the six entity/value types. Static input types are
-  imported from `skyseed_v2.simulator_input`; no root aliases remain.
-- Entity-to-input conversion functions are imported from
-  `skyseed_v2.application`.
-- Integration imports now come from `skyseed_v2.seedemu_integration`.
-- Loader and Applier imports now come from `skyseed_v2.serialization` and
-  `skyseed_v2.application`.
-- Specification package imports remain `skyseed_v2.specifications`; defining
-  modules are now discoverable by subject.
+- Entity ownership remains AS → Shell → Orbit → Satellite and AS →
+  GroundStation. Entity `create_*` behavior is unchanged.
+- `Satellite` construction no longer accepts or stores `OrbitParameters`.
+- All `*Specification` imports change one-to-one to `*Config` from
+  `skyseed_v2.configuration`.
+- File loading is a function import from `skyseed_v2.configuration`.
+- Emulator creation and Simulator-input generation are two separate direct
+  module imports and calls.
+- Root exports remain the same six entity/value names.
 
 ## Review checklist
 
+- [ ] Orbit alone owns common orbital parameters.
 - [ ] The three examples expose the intended call chains.
-- [ ] Entity ownership still matches AS → Shell → Orbit → Satellite and AS →
-  GroundStation.
 - [ ] Static Simulator inputs contain no entity or runtime-resource reference.
 - [ ] `simulator_input` imports no entity, seedemu integration or upstream
       seedemu module.
-- [ ] Current imports and filenames are understandable without source search.
+- [ ] `StaticEmulatorCreationResult` has exactly three fields.
+- [ ] No old class, type or import alias survives.
 - [ ] Simulator remains NOT STARTED.

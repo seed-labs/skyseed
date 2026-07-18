@@ -28,6 +28,7 @@ classDiagram
     }
     class Orbit {
         <<Emulator entity>>
+        +parameters OrbitParameters
         +create_satellite(...) Satellite
         +create_satellites(...) tuple
     }
@@ -52,7 +53,7 @@ classDiagram
     SkyseedAutonomousSystem "1" *-- "*" Shell : owns
     Shell "1" *-- "*" Orbit : owns
     Orbit "1" *-- "*" Satellite : owns
-    Orbit *-- OrbitParameters : uses
+    Orbit "1" *-- "1" OrbitParameters : owns
     SkyseedAutonomousSystem "1" *-- "*" GroundStation : owns
     GroundStation *-- GroundStationLocation : uses
     Emulator --> SkyseedDockerCompiler : compiles with
@@ -62,13 +63,14 @@ classDiagram
 with the same primary name under `entities/`. Splitting those files does not
 change ownership or create a parent above Shell.
 
-## Emulator → application conversion → Simulator static input
+## Emulator → direct generation → Simulator static input
 
 ```mermaid
 flowchart LR
-    SAT[Satellite] --> CS[application.create_satellite_simulation_input]
-    GS[GroundStation] --> CG[application.create_ground_station_simulation_input]
-    AS[Iterable of SkyseedAutonomousSystem] --> CA[application.create_simulator_static_input]
+    SAT[Satellite] --> CS[create_satellite_simulation_input]
+    OP[owning OrbitParameters] --> CS
+    GS[GroundStation] --> CG[create_ground_station_simulation_input]
+    AS[Iterable of SkyseedAutonomousSystem] --> CA[create_simulator_static_input]
     CA --> CS
     CA --> CG
     CS --> SI[SatelliteSimulationInput]
@@ -103,51 +105,38 @@ classDiagram
     SimulatorStaticInput "1" *-- "*" GroundStationSimulationInput : contains
 ```
 
-The dependency direction is intentional: application conversion depends on
-entities, seedemu integration and `simulator_input`; the input package depends
-on none of those Emulator/SEED layers. The copied objects retain no entity,
-Registry, container or Compose reference.
+The dependency direction is intentional: `simulator_input_generation` depends
+on entities, seedemu integration and `simulator_input`; the input package
+depends on none of those Emulator/SEED layers. The copied objects retain no
+entity, Registry, container or Compose reference.
 
-## Specification, serialization and application
+## Configuration, Emulator creation and input generation
 
 ```mermaid
 classDiagram
-    class StaticEmulatorScenarioSpecification {
-        <<immutable input specification>>
+    class StaticEmulatorConfig {
+        <<immutable configuration>>
     }
-    class StaticEmulatorScenarioLoader {
-        <<YAML serialization adapter>>
-        +load(path) StaticEmulatorScenarioSpecification
-    }
-    class StaticEmulatorSpecificationApplier {
-        <<application service>>
-        +apply(specification) StaticEmulatorApplyResult
-    }
-    class StaticEmulatorApplyResult {
+    class StaticEmulatorCreationResult {
         <<operation result>>
         +emulator
         +skyseed_autonomous_systems
         +ordinary_autonomous_systems
-        +simulator_input
-    }
-    class SimulatorStaticInput {
-        <<immutable Simulator input aggregate>>
     }
     class Emulator {
         <<upstream seedemu>>
     }
 
-    StaticEmulatorScenarioLoader --> StaticEmulatorScenarioSpecification : creates
-    StaticEmulatorSpecificationApplier --> StaticEmulatorScenarioSpecification : reads
-    StaticEmulatorSpecificationApplier --> SimulatorStaticInput : creates through application conversion
-    StaticEmulatorSpecificationApplier --> StaticEmulatorApplyResult : returns
-    StaticEmulatorApplyResult *-- Emulator : exposes
-    StaticEmulatorApplyResult *-- SimulatorStaticInput : exposes
+    StaticEmulatorConfig --> StaticEmulatorCreationResult : create_static_emulator
+    StaticEmulatorCreationResult *-- Emulator : exposes
 ```
 
-The Loader is a file adapter. The Applier sequences existing public
-construction calls. Neither type is an entity, ownership level or facade
-required by handwritten examples.
+`load_static_emulator_config(path)` creates Config values.
+`create_static_emulator(config)` sequences existing public construction calls
+and returns only the three creation outputs. A separate
+`create_simulator_static_input(creation.skyseed_autonomous_systems)` call
+generates the immutable Simulator input. None is an entity or ownership level,
+and handwritten examples do not require the file-driven operations.
 
 ## Materialization boundary
 

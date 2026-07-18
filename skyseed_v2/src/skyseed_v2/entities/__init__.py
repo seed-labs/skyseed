@@ -6,8 +6,7 @@ from .ground_station import (
     GroundStation,
     GroundStationLocation,
 )
-from .orbit import Orbit
-from .orbit_parameters import OrbitParameters
+from .orbit import Orbit, OrbitParameters
 from .satellite import (
     SATELLITE_REGISTRY_TYPE,
     SATELLITE_ROLE_LABEL,

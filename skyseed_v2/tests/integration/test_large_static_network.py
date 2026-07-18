@@ -7,15 +7,23 @@ from yaml.nodes import MappingNode, Node, SequenceNode
 from examples.large_static_network._compose_support import (
     materialization_expectations,
 )
-from examples.large_static_network.main import (
-    DEFAULT_SCENARIO,
-    apply_scenario_file,
-)
-from skyseed_v2.serialization import StaticEmulatorScenarioLoader
+from examples.large_static_network.main import DEFAULT_SCENARIO
+from skyseed_v2.configuration import load_static_emulator_config
 from skyseed_v2.seedemu_integration import SkyseedDockerCompiler
+from skyseed_v2.simulator_input_generation import create_simulator_static_input
+from skyseed_v2.static_emulator import create_static_emulator
 
 
 METADATA_PREFIX = "org.seedsecuritylabs.seedemu.meta."
+
+
+def create_large_static_emulator():
+    config = load_static_emulator_config(DEFAULT_SCENARIO)
+    creation = create_static_emulator(config)
+    simulator_input = create_simulator_static_input(
+        creation.skyseed_autonomous_systems
+    )
+    return config, creation, simulator_input
 
 
 def node_files(node) -> dict[str, str]:
@@ -36,9 +44,8 @@ def assert_no_duplicate_yaml_keys(node: Node, path: str = "$") -> None:
 
 
 def test_large_static_entities_and_simulator_input_are_deterministic() -> None:
-    specification = StaticEmulatorScenarioLoader().load(DEFAULT_SCENARIO)
-    first = apply_scenario_file()
-    second = apply_scenario_file()
+    config, first, first_input = create_large_static_emulator()
+    _, second, second_input = create_large_static_emulator()
     first_as = first.skyseed_autonomous_systems[0]
     second_as = second.skyseed_autonomous_systems[0]
 
@@ -47,11 +54,9 @@ def test_large_static_entities_and_simulator_input_are_deterministic() -> None:
     assert len(first_as.satellites()) == 348
     assert len(first_as.ground_stations()) == 12
     assert len(first.ordinary_autonomous_systems) == 2
-    assert len(specification.internet_exchanges) == 2
-    assert len(specification.ebgp_peerings) == 2
-    assert len(first.simulator_input.list_nodes()) == 360
-    first_input = first.simulator_input
-    second_input = second.simulator_input
+    assert len(config.internet_exchanges) == 2
+    assert len(config.ebgp_peerings) == 2
+    assert len(first_input.list_nodes()) == 360
     assert len({node.node_id for node in first_input.list_nodes()}) == 360
     assert tuple(node.node_id for node in first_input.list_nodes()) == tuple(
         node.node_id for node in second_input.list_nodes()
@@ -67,7 +72,7 @@ def test_large_static_entities_and_simulator_input_are_deterministic() -> None:
 def test_large_static_compose_inventory_and_static_routing(
     tmp_path: Path,
 ) -> None:
-    result = apply_scenario_file()
+    _, result, _ = create_large_static_emulator()
     output = tmp_path / "output"
     result.emulator.render()
     result.emulator.compile(

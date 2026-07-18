@@ -1,7 +1,7 @@
 import pytest
 from seedemu.core import AutonomousSystem
 
-from skyseed_v2.application import create_simulator_static_input
+from skyseed_v2.simulator_input_generation import create_simulator_static_input
 from skyseed_v2.entities import GroundStationLocation, OrbitParameters
 from skyseed_v2.seedemu_integration import SkyseedAutonomousSystem
 
@@ -48,7 +48,7 @@ def multi_as_inputs():
     return mixed_as, ground_station_as, satellite_as
 
 
-def test_application_conversion_collects_mixed_entity_kinds_from_multiple_as() -> None:
+def test_static_input_generation_collects_mixed_kinds_from_multiple_as() -> None:
     mixed_as, ground_station_as, satellite_as = multi_as_inputs()
 
     simulator_input = create_simulator_static_input(
@@ -69,7 +69,7 @@ def test_application_conversion_collects_mixed_entity_kinds_from_multiple_as() -
 
 
 @pytest.mark.parametrize("entity_kind", ["satellite", "ground-station"])
-def test_application_conversion_accepts_one_entity_kind_and_one_as(
+def test_static_input_generation_accepts_one_entity_kind_and_one_as(
     entity_kind: str,
 ) -> None:
     autonomous_system = SkyseedAutonomousSystem(65001)
@@ -84,7 +84,7 @@ def test_application_conversion_accepts_one_entity_kind_and_one_as(
     assert simulator_input.list_nodes()[0].node_id.entity_kind == entity_kind
 
 
-def test_application_conversion_rejects_ordinary_as_and_unknown_inputs() -> None:
+def test_static_input_generation_rejects_ordinary_as_and_unknown_inputs() -> None:
     mixed_as, _, _ = multi_as_inputs()
     ordinary_as = AutonomousSystem(65004)
 

@@ -21,7 +21,7 @@ class SkyseedAutonomousSystem(AutonomousSystem):
     """Own static Skyseed entities and integrate them with one SEED AS.
 
     Layer: approved entity owner plus SEED integration. Handwritten callers or
-    the specification Applier create it; Base, routing layers and callers use
+    static Emulator creation build it; Base, routing layers and callers use
     it. It is not a scenario facade or Simulator input factory. It is public
     from ``skyseed_v2.seedemu_integration`` because ownership and SEED
     lifecycle meet here.

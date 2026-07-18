@@ -11,7 +11,7 @@ from skyseed_v2.entities import SATELLITE_REGISTRY_TYPE
 class SatelliteBase(Base):
     """Extend the SEED Base Layer for first-class Satellite nodes.
 
-    Layer: SEED integration. Examples or the specification Applier create it;
+    Layer: SEED integration. Examples or static Emulator creation build it;
     Emulator render uses it. It is not a domain entity, scenario or Compiler.
     It is public from `skyseed_v2.seedemu_integration` because Satellite lifecycle requires a
     Base integration hook unavailable in upstream SEED.

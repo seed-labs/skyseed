@@ -19,12 +19,12 @@ from examples.reference.v1_reference_snapshot import (
     V1ReferenceSnapshotAudit,
     validate_v1_reference_snapshot,
 )
-from skyseed_v2.specifications import (
-    GroundStationSpecification,
-    InOrbitPhaseDistributionSpecification,
-    OrbitGenerationSpecification,
-    RaanDistributionSpecification,
-    ShellSpecification,
+from skyseed_v2.configuration import (
+    GroundStationConfig,
+    InOrbitPhaseDistributionConfig,
+    OrbitGenerationConfig,
+    RaanDistributionConfig,
+    ShellConfig,
 )
 
 
@@ -37,8 +37,8 @@ ANGLE_TOLERANCE_DEG = 0.00002
 class ReferenceStaticScenarioSpecifications:
     """Typed output of the reference-only translation boundary."""
 
-    shell: ShellSpecification
-    ground_stations: tuple[GroundStationSpecification, ...]
+    shell: ShellConfig
+    ground_stations: tuple[GroundStationConfig, ...]
 
 
 def _read_json(path: Path) -> Any:
@@ -160,7 +160,7 @@ class V1StaticInputAdapter:
         *,
         reference_shell_label: str,
         logical_shell_id: str,
-    ) -> ShellSpecification:
+    ) -> ShellConfig:
         shell_label = _text(reference_shell_label, "reference_shell_label").upper()
         payload = _required_mapping(
             _read_json(self._orbit_catalog_path), "orbit catalog"
@@ -284,18 +284,18 @@ class V1StaticInputAdapter:
                     "orbit catalog does not follow one alternating phase offset"
                 )
 
-        return ShellSpecification(
+        return ShellConfig(
             shell_id=logical_shell_id,
             altitude_km=round(_mean_motion_to_altitude_km(mean_motion), 6),
             inclination_deg=inclination,
-            generation=OrbitGenerationSpecification(
+            generation=OrbitGenerationConfig(
                 orbit_count=orbit_count,
                 satellites_per_orbit=satellites_per_plane,
-                raan=RaanDistributionSpecification(
+                raan=RaanDistributionConfig(
                     start_deg=first_raan % 360.0,
                     step_deg=raan_step,
                 ),
-                phase=InOrbitPhaseDistributionSpecification(
+                phase=InOrbitPhaseDistributionConfig(
                     start_deg=plane_starts[0],
                     step_deg=phase_step,
                     alternating_orbit_offset_deg=alternating_offset,
@@ -308,7 +308,7 @@ class V1StaticInputAdapter:
         *,
         operator: str,
         station_type: str,
-    ) -> tuple[GroundStationSpecification, ...]:
+    ) -> tuple[GroundStationConfig, ...]:
         normalized_operator = _text(operator, "ground station operator")
         normalized_station_type = _text(
             station_type, "ground station type"
@@ -327,7 +327,7 @@ class V1StaticInputAdapter:
                 raise ValueError(f"duplicate gateway catalog id: {source_id}")
             catalog_by_id[source_id] = entry
 
-        specifications: list[GroundStationSpecification] = []
+        specifications: list[GroundStationConfig] = []
         selected_source_ids: set[str] = set()
         for raw_binding in raw_bindings:
             binding = _required_mapping(raw_binding, "gateway binding entry")
@@ -372,7 +372,7 @@ class V1StaticInputAdapter:
                 )
             )
             specifications.append(
-                GroundStationSpecification(
+                GroundStationConfig(
                     display_name=display_name,
                     latitude_deg=latitude,
                     longitude_deg=longitude,
