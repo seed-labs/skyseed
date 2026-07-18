@@ -14,11 +14,12 @@ docker compose --parallel 16 \
   -f examples/complete_static_emulator/output/docker-compose.yml config --quiet
 ```
 
-The validated Docker 19.03 host requires `DOCKER_BUILDKIT=0` for its classic
-builder compatibility. A modern Docker host should use its supported default:
+The Compiler expresses locally built SEED base images as Compose `service:`
+additional build contexts, so a maintained Docker installation can use its
+default BuildKit builder directly:
 
 ```bash
-DOCKER_BUILDKIT=0 docker compose --parallel 16 \
+docker compose --parallel 16 \
   -p skyseed_v2_complete_static_emulator \
   -f examples/complete_static_emulator/output/docker-compose.yml build
 docker compose --parallel 16 \

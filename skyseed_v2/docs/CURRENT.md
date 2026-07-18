@@ -9,15 +9,16 @@ Large static network compile validation: PASS
 Compose v2 migration: COMPLETE
 Compose v2 materialization tooling: COMPLETE
 Fixed batching: optional tooling mode
+Native Ubuntu 24.04 migration acceptance: PASS
 
-Migration baseline: READY
+Migration baseline: VALIDATED
 
 Simulator: NOT STARTED
 
 ## Current objective
 
-Review the self-contained Emulator examples and native-Linux migration
-baseline. Await explicit approval before selecting another objective.
+Review the completed native Ubuntu 24.04 migration acceptance. Await explicit
+approval before selecting another objective.
 
 ## Implementation status
 
@@ -27,11 +28,10 @@ materialization tooling.
 
 ## Current workflow step
 
-The large static example is now driven only by example-local v2 data and is
-validated through object construction, Catalog, Compiler and Compose config.
-This closeout deliberately does not repeat the 365-service build/up. A minimal
-complete example supplies the current runtime regression. Do not start dynamic
-Satellite networking, Runner design or Simulator work automatically.
+The restored native workspace passed compile, test, wheel, formal static
+example, minimal runtime and medium runtime acceptance. The large static
+example remains compile/config-only and was not built or started. Do not start
+dynamic Satellite networking, Runner design or Simulator work automatically.
 
 ## Confirmed direction
 
@@ -79,7 +79,8 @@ Satellite networking, Runner design or Simulator work automatically.
 - `ComposeProjectLauncher` is a small integration-layer materialization tool outside the Emulator, Descriptor/Catalog, Compiler and Simulator domains. It consumes one existing Compose output/project, an explicit long-running/helper partition and configurable Compose v2 parallel limit. Its default issues one full-project `docker compose up`, then fail-closed verifies the final complete inventory without recompiling or rewriting Compose.
 - Legacy `docker-compose` is not a Skyseed success path. The launcher requires Compose v2 and never falls back. Fixed batching remains available only through explicit `strategy=batched`, with configurable batch size, for compatibility and diagnosis.
 - Formal revalidation used Compose v2.40.2 and `parallel_limit=16`: one `up` materialized all 365 services, ending with 363 running services and two helpers exited zero. Full v2 evidence is recorded in `docs/evidence/s4-scale-compose-v2-single-materialization-validation.md`; the v1 fixed-batch run remains historical evidence in `docs/evidence/s4-scale-batched-compose-materialization-validation.md`.
-- Docker Engine 19.03 requires the documented `DOCKER_BUILDKIT=0` build compatibility setting on this host; the launcher itself does not build or select a builder. This introduced no second Compiler output or scene change.
+- The old Docker 19.03 builder setting remains historical baseline evidence only. On the native Ubuntu 24.04 host, `SkyseedDockerCompiler` declares local SEED image dependencies with Compose `service:` additional build contexts; default BuildKit build, minimal runtime and medium runtime acceptance all pass without selecting a legacy builder.
+- Native Ubuntu 24.04 validation uses Docker Engine 29.6.2, the plugin-based `docker compose` CLI reporting v5.3.1, Buildx 0.35.0, Python 3.12.3 and pinned SEED `61acdf4c9699b25b06843ec4aad747108b05924e`. Full evidence and the reusable medium scenario are under `docs/migration/`.
 - No epoch, position computation, dynamic link, RuntimeNodeReference or runtime resource locator was introduced. Dynamic Satellite-network reproduction remains unstarted.
 
 ## Open design questions
@@ -114,10 +115,10 @@ explicitly choosing any dynamic Satellite-network or Simulator objective.
 - Static ground-network integration at scale: PASS
 - Simulator: not started
 - UT: outside current Emulator core
-- Migration baseline: READY
+- Migration baseline: VALIDATED
+- Native Ubuntu 24.04 migration acceptance: PASS
 
-Static Emulator core excluding UT: COMPLETE. Formal examples no longer have a
-runtime v1 reference dependency; native-Linux migration can start from the
-baseline recorded in `docs/migration/native-linux-baseline.md`. Current
-validation evidence is in
-`docs/evidence/emulator-self-contained-migration-validation.md`.
+Static Emulator core excluding UT: COMPLETE. Formal examples have no runtime
+historical-reference dependency. The source baseline remains recorded in
+`docs/migration/native-linux-baseline.md`; the completed new-host acceptance
+is recorded in `docs/migration/native-linux-ubuntu-24-validation.md`.

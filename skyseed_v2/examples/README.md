@@ -53,7 +53,8 @@ The `reference/` directory is excluded from the package and formal example
 path. It preserves offline historical investigation/conversion tooling only;
 no formal example imports or reads it.
 
-See each experiment's README for exact commands. On the currently validated
-Docker 19.03 host, image builds require `DOCKER_BUILDKIT=0`; a modern native
-Linux host should use its supported Docker Engine and Compose v2 defaults
-first.
+See each experiment's README for exact commands. `SkyseedDockerCompiler`
+declares locally built SEED base images as Compose `service:` additional build
+contexts, and the active examples use the maintained Docker Engine BuildKit
+and plugin-based `docker compose` defaults directly. They do not select the
+legacy builder.

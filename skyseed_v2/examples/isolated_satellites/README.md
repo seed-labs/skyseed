@@ -14,11 +14,13 @@ docker compose --parallel 16 \
   -f examples/isolated_satellites/output/docker-compose.yml config --quiet
 ```
 
-On the validated Docker 19.03 host, build with `DOCKER_BUILDKIT=0`. A modern
-native Linux host should first use its normal supported Docker builder:
+The Compiler declares each locally built SEED base image as a Compose
+`service:` additional build context. The maintained Docker BuildKit path is
+therefore the normal build path; no legacy-builder environment setting is
+required:
 
 ```bash
-DOCKER_BUILDKIT=0 docker compose --parallel 16 \
+docker compose --parallel 16 \
   -p skyseed_v2_isolated_satellites \
   -f examples/isolated_satellites/output/docker-compose.yml build
 docker compose --parallel 16 \
