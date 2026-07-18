@@ -1,32 +1,240 @@
-# Skyseed v2 Engineering Rules
+# Skyseed v2 Engineering and Architecture Rules
 
-Read `README.md`, `docs/CURRENT.md` and
-`docs/architecture/terminology.md` before changing architecture or public API.
+本文件只保存长期适用的工程与架构治理规则。开始工作前阅读
+`README.md`、`docs/CURRENT.md` 和 `docs/architecture/terminology.md`。
 
-- Obtain explicit user approval before adding a concept to the public API,
-  entity diagrams, Simulator-input boundary or future Simulator.
-- Classify every new class as Emulator entity, value object, immutable Config,
-  Simulator input, operation result, integration adapter
-  or internal helper. Record its owner, creator, consumers and why an existing
-  type cannot carry the responsibility.
-- Do not promote implementation convenience into a domain concept. Keep
-  helpers and operation results module-internal by default; expose one only
-  when a stable external consumer requires it.
-- Give every public term one qualified meaning. Do not use bare ambiguous
-  nouns such as Scenario, Catalog, Builder, Population, Result, Context,
-  Manager, Coordinator, Factory or State without a documented qualifier.
-- Keep examples traceable: a reader must reach the real public entity-creation
-  method in a small number of explicit jumps. Do not hide duplicated or complex
-  construction behind a facade.
-- Update code, exports, docstrings, class/call diagrams, terminology, CURRENT,
-  tests and validation records together whenever an architectural name or
-  boundary changes.
-- When design text and implementation differ, record the temporary design
-  name, current formal name, reason for the change, whether responsibility is
-  preserved and whether the difference is approved drift or a documentation
-  correction.
-- Do not start Simulator, dynamic topology, Runner or new cross-layer contract
-  work without explicit authorization.
-- Keep `simulator_input` limited to immutable, seedemu-independent data types.
-  Entity traversal and entity-to-input conversion belong to the direct
-  functions in `simulator_input_generation.py`.
+当前阶段和下一目标只记录在 `docs/CURRENT.md`；每轮批准范围和排除
+范围以该轮任务 Prompt 为准。不得把当前提交、分支、阶段状态、临时
+候选设计或具体收尾任务写入本文件。
+
+## 1. 标准纵向开发流程
+
+每个功能切片按以下顺序推进：
+
+```text
+调查事实
+→ 明确设计与所有权
+→ 冻结本切片公共合同
+→ 实现
+→ 自动测试
+→ 架构增量审计
+→ 最小 example 人工审核
+→ 文档、类图和术语同步
+→ 接受并冻结该切片
+→ 下一切片
+```
+
+测试通过不能单独代表切片完成。调查、合同冻结、架构审计、人工可读
+入口和文档同步都是接受条件。
+
+## 2. 已批准范围内的实现自主权
+
+在本轮已经批准的公共合同和架构边界内，可以自行决定：
+
+- 私有函数和私有 helper；
+- 局部变量和内部算法；
+- 测试 fixture 与测试辅助代码；
+- 不改变语义的机械整理；
+- 已批准接口内部的实现细节。
+
+这些实现细节默认不进入根公共 API、跨层合同、领域类图或项目术语
+表。实现便利不能自然升级为公共或领域概念。
+
+## 3. 公共架构变更必须先申请
+
+新增或改变下列内容且尚未包含在本轮批准范围内时，必须暂停有争议
+部分、提出设计问题并等待明确批准：
+
+- 公共类、公共函数或公共枚举；
+- 实体的重要属性语义；
+- 数据所有权；
+- 父子关系或包含关系；
+- 跨层输入和输出；
+- 根包 export；
+- 顶层模块或目录边界；
+- 正式执行路径；
+- 新运行模式或 fallback；
+- 类图中的主体类或重要关系；
+- Emulator、Simulator、Compiler、Runner、Materialization 之间的职责。
+
+禁止先提交实现，再在完成报告中解释新概念。与争议无关且已经批准
+的工作可以继续，但争议部分必须停留在提案状态。
+
+## 4. 架构变更提案格式
+
+发现需要新的公共概念时，先提交以下提案：
+
+```text
+候选名称：
+
+它是什么：
+
+它不是什么：
+
+所属层：
+
+谁创建：
+
+谁拥有：
+
+谁使用：
+
+长期消费者：
+
+现有类型为什么不能承担：
+
+不增加它的替代方案：
+
+公共 API 影响：
+
+依赖方向影响：
+
+类图和 example 影响：
+
+建议纳入当前切片还是后续切片：
+```
+
+未获批准前，不得将候选概念加入正式代码、公共 API、术语表或当前
+架构图。
+
+## 5. 使用批准范围，不使用机械数量限制
+
+不规定“每轮最多新增几个类或属性”。每轮必须明确：
+
+```text
+本轮批准新增或修改：
+- ...
+
+本轮明确不包含：
+- ...
+```
+
+批准类型内部符合既定语义的普通字段可以直接实现。若字段引入新的
+所有权、生命周期、依赖、运行资源或跨层知识，则属于公共架构变化，
+必须先申请。
+
+## 6. Architecture Delta
+
+每轮完成报告必须包含独立的 `Architecture Delta` 章节，至少检查：
+
+- 新增、删除、重命名的公共类型；
+- 新增或修改的公共方法；
+- 重要属性变化；
+- 数据所有权变化；
+- 父子关系变化；
+- 模块依赖变化；
+- 根 export 变化；
+- 顶层目录变化；
+- 跨层合同变化；
+- 正式执行路径变化；
+- 类图变化；
+- example 调用链变化。
+
+如果没有变化，明确写：
+
+```text
+Architecture Delta: none
+```
+
+## 7. Example 是人类审核入口
+
+每个切片应提供最小 example、调用片段或等价入口，使读者能够回答：
+
+```text
+输入是什么？
+调用哪个方法？
+返回什么？
+谁拥有返回对象？
+下一步传给谁？
+```
+
+关键调用应通过少量跳转到达真实实现。不得使用多层 facade、Builder、
+Manager、Context、Coordinator 或 Factory 链掩盖真实职责。
+
+## 8. 命名与概念治理
+
+公共名称应尽量一词一义。避免没有完整限定语义的泛词：
+
+```text
+Scenario
+Catalog
+Builder
+Population
+Result
+Context
+Manager
+Coordinator
+State
+Service
+```
+
+如确需使用，名称和文档必须明确其唯一含义和所属层。每个公共类型的
+说明至少回答：它是什么、它不是什么、谁创建、谁使用。
+
+私有 helper 和操作结果默认保持内部，除非存在明确、长期的公共消费
+者。不得为了目录分类制造空壳层，也不得用 facade 隐藏不清晰的调用
+链。
+
+跨层稳定身份必须只有一套权威派生规则。不同消费者需要从同一实体
+集合建立数据快照和反向索引时，必须验证两边身份集合一致；不得由下游
+通过显示名称、容器名称、服务名称或其他字符串重新猜测。缺失、重复、
+类型不符或实体集合不一致时必须 fail-closed。
+
+## 9. 文档与实现同步
+
+公共类、方法、属性、所有权或模块边界变化时，必须按影响同步更新：
+
+- Mermaid 类图；
+- 调用流程图；
+- 模块依赖图；
+- 公共 API 清单；
+- 术语表；
+- example README；
+- 验证记录；
+- `docs/CURRENT.md` 中受影响的阶段描述。
+
+设计阶段临时命名与正式实现不一致时，记录：
+
+```text
+设计临时名
+→ 当前正式名
+→ 改名原因
+→ 职责是否保持
+```
+
+类图用于发现架构漂移，不只是展示结果。
+
+## 10. 历史实现调查边界
+
+调查旧实现时，只提取：
+
+- 事实、参数、算法和公式；
+- 时间基准和实验规模；
+- 已验证行为；
+- 性能与失败经验。
+
+不得直接迁移：
+
+- 类名或目录结构；
+- helper 调用链；
+- 内部 dict 或文件格式；
+- 历史控制流；
+- fallback；
+- 特定实验 hack。
+
+调查结果必须先转化为当前架构的设计与合同，再进入实现。
+
+## 11. 切片接受条件
+
+一个切片只有同时满足以下条件，才可作为下一切片的冻结输入：
+
+- 功能测试通过；
+- Architecture Delta 已审核；
+- 最小 example 可理解；
+- 公共类型和数据所有权已确认；
+- 类图、术语和相关文档同步；
+- 未经批准的概念已删除、内部化或暂停；
+- 工作区 clean。
+
+后续若需要改变已冻结合同，必须作为新的显式架构变更提出，不能顺带
+修改。
