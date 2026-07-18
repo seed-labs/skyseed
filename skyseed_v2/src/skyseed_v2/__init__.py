@@ -4,7 +4,7 @@ Application services, input specifications and integration adapters remain
 public from their owning submodules so imports preserve architectural origin.
 """
 
-from .domain import (
+from .entities import (
     GroundStation,
     GroundStationLocation,
     Orbit,

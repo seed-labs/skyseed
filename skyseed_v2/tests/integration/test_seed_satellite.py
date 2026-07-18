@@ -3,7 +3,7 @@ import pytest
 from seedemu.core import Emulator, Node
 from seedemu.core.enums import NodeRole
 
-from skyseed_v2.domain import OrbitParameters, Satellite, SatelliteRole
+from skyseed_v2.entities import OrbitParameters, Satellite, SatelliteRole
 from skyseed_v2.seed import (
     SATELLITE_REGISTRY_TYPE,
     SatelliteBase,

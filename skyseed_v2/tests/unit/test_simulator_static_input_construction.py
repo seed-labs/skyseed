@@ -1,7 +1,7 @@
 import pytest
 from seedemu.core import AutonomousSystem
 
-from skyseed_v2.domain import GroundStationLocation, OrbitParameters
+from skyseed_v2.entities import GroundStationLocation, OrbitParameters
 from skyseed_v2.seed import SkyseedAutonomousSystem
 from skyseed_v2.simulator_input import SimulatorStaticInput
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Self
 
-from skyseed_v2.domain import Satellite
+from skyseed_v2.entities import Satellite
 
 from . import identity as _identity
 

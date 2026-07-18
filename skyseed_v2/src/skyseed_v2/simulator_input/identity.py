@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from skyseed_v2.domain.validation import validate_identifier
+from skyseed_v2.entities.validation import validate_identifier
 
 
 SATELLITE_ENTITY_KIND = "satellite"

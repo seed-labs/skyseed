@@ -1,6 +1,6 @@
 from seedemu.core import Emulator
 
-from skyseed_v2.domain import GroundStationLocation, OrbitParameters
+from skyseed_v2.entities import GroundStationLocation, OrbitParameters
 from skyseed_v2.seed import SatelliteBase, SkyseedAutonomousSystem
 
 

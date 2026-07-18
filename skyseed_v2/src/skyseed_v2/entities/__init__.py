@@ -1,4 +1,4 @@
-"""Static Emulator domain objects."""
+"""Static Emulator entities and their closely bound value objects."""
 
 from .ground_station import (
     GROUND_STATION_REGISTRY_TYPE,
@@ -6,15 +6,15 @@ from .ground_station import (
     GroundStation,
     GroundStationLocation,
 )
+from .orbit import Orbit
+from .orbit_parameters import OrbitParameters
 from .satellite import (
     SATELLITE_REGISTRY_TYPE,
     SATELLITE_ROLE_LABEL,
-    Orbit,
-    OrbitParameters,
     Satellite,
     SatelliteRole,
-    Shell,
 )
+from .shell import Shell
 from .validation import validate_identifier
 
 __all__ = [

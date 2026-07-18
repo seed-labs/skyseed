@@ -4,7 +4,7 @@ import pytest
 from seedemu.core import Router
 
 import skyseed_v2
-from skyseed_v2.domain import GroundStation, GroundStationLocation
+from skyseed_v2.entities import GroundStation, GroundStationLocation
 from skyseed_v2.seed import SkyseedAutonomousSystem
 from skyseed_v2.simulator_input import (
     GroundStationSimulationInput,

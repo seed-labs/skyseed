@@ -6,7 +6,7 @@ from seedemu.core import Emulator
 
 import skyseed_v2
 from skyseed_v2 import (
-    domain,
+    entities,
     materialization,
     scenario_application,
     scenario_loader,
@@ -23,7 +23,7 @@ API_DOCUMENT = (
 )
 TERMINOLOGY = PROJECT_ROOT / "docs/architecture/terminology.md"
 PUBLIC_MODULES = (
-    domain,
+    entities,
     materialization,
     scenario_application,
     scenario_loader,
@@ -65,17 +65,17 @@ def test_current_api_mermaid_names_are_real_and_classified() -> None:
     expected_types = {
         "ComposeProjectLauncher": ComposeProjectLauncher,
         "Emulator": Emulator,
-        "GroundStation": domain.GroundStation,
+        "GroundStation": entities.GroundStation,
         "GroundStationSimulationInput": (
             simulator_input.GroundStationSimulationInput
         ),
-        "GroundStationLocation": domain.GroundStationLocation,
-        "Orbit": domain.Orbit,
-        "OrbitParameters": domain.OrbitParameters,
-        "Satellite": domain.Satellite,
+        "GroundStationLocation": entities.GroundStationLocation,
+        "Orbit": entities.Orbit,
+        "OrbitParameters": entities.OrbitParameters,
+        "Satellite": entities.Satellite,
         "SatelliteBase": seed.SatelliteBase,
         "SatelliteSimulationInput": simulator_input.SatelliteSimulationInput,
-        "Shell": domain.Shell,
+        "Shell": entities.Shell,
         "SimulatorStaticInput": simulator_input.SimulatorStaticInput,
         "SkyseedAutonomousSystem": seed.SkyseedAutonomousSystem,
         "SkyseedDockerCompiler": seed.SkyseedDockerCompiler,
@@ -190,5 +190,5 @@ def test_operation_result_is_application_only() -> None:
     result_type = scenario_application.StaticEmulatorApplyResult
     assert result_type.__module__ == "skyseed_v2.scenario_application"
     assert not hasattr(skyseed_v2, result_type.__name__)
-    assert not hasattr(domain, result_type.__name__)
+    assert not hasattr(entities, result_type.__name__)
     assert not hasattr(simulator_input, result_type.__name__)

@@ -1,7 +1,7 @@
 import pytest
 from seedemu.core import Node
 
-from skyseed_v2.domain import OrbitParameters, Satellite, Shell
+from skyseed_v2.entities import OrbitParameters, Satellite, Shell
 
 
 def parameters() -> OrbitParameters:

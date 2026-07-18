@@ -10,7 +10,7 @@ from typing import Mapping
 from seedemu.core import Router
 from seedemu.core.enums import NodeRole
 
-from skyseed_v2.domain.validation import validate_identifier
+from .validation import validate_identifier
 
 
 GROUND_STATION_REGISTRY_TYPE = "rnode"
@@ -21,10 +21,10 @@ GROUND_STATION_ROLE_LABEL = "GroundStation"
 class GroundStationLocation:
     """Hold one GroundStation's geodetic values for a static Emulator run.
 
-    Layer: domain value object. Handwritten callers or the Applier create it;
-    GroundStation and its Projector read it. It is not a dynamic position or
-    visibility model. It is root public because direct GroundStation creation
-    requires this validated value.
+    Layer: entity-bound value object. Handwritten callers or the Applier create
+    it; GroundStation and Simulator input conversion read it. It is not a
+    dynamic position or visibility model. It is root public because direct
+    GroundStation creation requires this validated value.
     """
 
     latitude_deg: float
@@ -51,9 +51,9 @@ class GroundStationLocation:
 class GroundStation(Router):
     """Represent one GroundStation and the same instance's SEED Router capability.
 
-    Layer: approved domain entity plus SEED capability.
+    Layer: approved Emulator entity plus SEED capability.
     `SkyseedAutonomousSystem.create_ground_station` creates it; its AS, routing
-    layers, Projector and Compiler use it. It is not a Descriptor,
+    layers, Simulator input conversion and Compiler use it. It is not a
     specification, ordinary Router or dynamic link state. It is root public
     because it is an approved user-visible entity.
     """

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Self
 
-from skyseed_v2.domain import GroundStation
+from skyseed_v2.entities import GroundStation
 
 from . import identity as _identity
 

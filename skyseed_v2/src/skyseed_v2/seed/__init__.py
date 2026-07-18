@@ -3,7 +3,7 @@
 from .autonomous_system import SkyseedAutonomousSystem
 from .base import SatelliteBase
 from .compiler import SkyseedDockerCompiler
-from skyseed_v2.domain import (
+from skyseed_v2.entities import (
     GROUND_STATION_REGISTRY_TYPE,
     GROUND_STATION_ROLE_LABEL,
     SATELLITE_REGISTRY_TYPE,

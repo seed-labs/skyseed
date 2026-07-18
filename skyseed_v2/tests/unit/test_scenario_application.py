@@ -19,7 +19,7 @@ from skyseed_v2.specifications import (
     SkyseedAutonomousSystemSpecification,
     StaticEmulatorScenarioSpecification,
 )
-from skyseed_v2.domain import Orbit, Shell
+from skyseed_v2.entities import Orbit, Shell
 from skyseed_v2.seed import SkyseedAutonomousSystem
 
 

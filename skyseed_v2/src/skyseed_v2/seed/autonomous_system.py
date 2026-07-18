@@ -6,7 +6,7 @@ from typing import Mapping
 
 from seedemu.core import AutonomousSystem, Emulator, Router
 
-from skyseed_v2.domain import (
+from skyseed_v2.entities import (
     GROUND_STATION_REGISTRY_TYPE,
     SATELLITE_REGISTRY_TYPE,
     GroundStation,
@@ -14,7 +14,7 @@ from skyseed_v2.domain import (
     Satellite,
     Shell,
 )
-from skyseed_v2.domain.validation import validate_identifier
+from skyseed_v2.entities.validation import validate_identifier
 
 
 class SkyseedAutonomousSystem(AutonomousSystem):

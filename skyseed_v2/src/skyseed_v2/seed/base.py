@@ -5,7 +5,7 @@ from __future__ import annotations
 from seedemu.core import Emulator, Node, Scope, ScopeTier
 from seedemu.layers.Base import Base, BaseFileTemplates
 
-from skyseed_v2.domain import SATELLITE_REGISTRY_TYPE
+from skyseed_v2.entities import SATELLITE_REGISTRY_TYPE
 
 
 class SatelliteBase(Base):

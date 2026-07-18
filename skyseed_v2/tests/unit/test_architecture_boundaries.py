@@ -5,7 +5,7 @@ from pathlib import Path
 
 import skyseed_v2
 from skyseed_v2 import simulator_input
-from skyseed_v2.domain import GroundStation, Satellite, validate_identifier
+from skyseed_v2.entities import GroundStation, Satellite, validate_identifier
 from skyseed_v2.seed import SkyseedDockerCompiler
 from skyseed_v2.seed.metadata import (
     SEED_METADATA_PREFIX,
@@ -29,13 +29,13 @@ def imported_modules(module) -> set[str]:
 
 
 def test_domain_entities_do_not_depend_on_each_other_or_simulator_input() -> None:
-    from skyseed_v2.domain import ground_station, satellite
+    from skyseed_v2.entities import ground_station, satellite
 
     satellite_imports = imported_modules(satellite)
     ground_station_imports = imported_modules(ground_station)
 
-    assert "skyseed_v2.domain.ground_station" not in satellite_imports
-    assert "skyseed_v2.domain.satellite" not in ground_station_imports
+    assert "skyseed_v2.entities.ground_station" not in satellite_imports
+    assert "skyseed_v2.entities.satellite" not in ground_station_imports
     assert not any("simulator_input" in module for module in satellite_imports)
     assert not any("simulator_input" in module for module in ground_station_imports)
     assert not hasattr(Satellite, "runtime_reference")
@@ -67,9 +67,9 @@ def test_simulator_input_dependencies_point_toward_emulator_entities() -> None:
     satellite_imports = imported_modules(satellite)
     ground_station_imports = imported_modules(ground_station)
 
-    assert "skyseed_v2.domain" in satellite_imports
-    assert "skyseed_v2.domain" in ground_station_imports
-    assert "skyseed_v2.domain.validation" in identity_imports
+    assert "skyseed_v2.entities" in satellite_imports
+    assert "skyseed_v2.entities" in ground_station_imports
+    assert "skyseed_v2.entities.validation" in identity_imports
     assert ".ground_station" not in satellite_imports
     assert ".satellite" not in ground_station_imports
     assert {name for name in static_input_imports if name.startswith(".")} == {
@@ -132,7 +132,7 @@ def test_removed_and_deferred_boundary_apis_are_not_exported() -> None:
 
 def test_simulator_static_input_is_root_public_with_no_entity_back_dependency() -> None:
     from skyseed_v2.simulator_input import SimulatorStaticInput
-    from skyseed_v2.domain import ground_station, satellite
+    from skyseed_v2.entities import ground_station, satellite
 
     assert skyseed_v2.SimulatorStaticInput is SimulatorStaticInput
     assert "SimulatorStaticInput" in simulator_input.__all__
@@ -147,7 +147,7 @@ def test_simulator_static_input_is_root_public_with_no_entity_back_dependency() 
 
 
 def test_shared_validation_and_seed_metadata_have_explicit_owners() -> None:
-    assert validate_identifier.__module__ == "skyseed_v2.domain.validation"
+    assert validate_identifier.__module__ == "skyseed_v2.entities.validation"
     assert SEED_METADATA_PREFIX == "org.seedsecuritylabs.seedemu.meta."
     assert SKYSEED_METADATA_PREFIX == "skyseed."
 
@@ -202,7 +202,7 @@ def test_compose_materialization_is_outside_emulator_and_compiler_models() -> No
     forbidden_prefixes = (
         "seedemu",
         "skyseed_v2.simulator_input",
-        "skyseed_v2.domain",
+        "skyseed_v2.entities",
         "skyseed_v2.seed",
     )
     assert not any(
@@ -214,14 +214,14 @@ def test_compose_materialization_is_outside_emulator_and_compiler_models() -> No
 
 def test_scenario_loader_and_formal_examples_respect_application_boundaries() -> None:
     from skyseed_v2 import scenario_application, scenario_loader
-    from skyseed_v2.domain import ground_station, satellite
+    from skyseed_v2.entities import ground_station, satellite
 
     loader_imports = imported_modules(scenario_loader)
     assert "skyseed_v2.specifications" in loader_imports
     for forbidden_prefix in (
         "seedemu",
         "skyseed_v2.seed",
-        "skyseed_v2.domain",
+        "skyseed_v2.entities",
         "skyseed_v2.materialization",
         "skyseed_v2.simulator_input",
     ):

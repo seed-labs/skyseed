@@ -19,7 +19,7 @@ from seedemu.compiler import Docker, Platform
 from seedemu.compiler.Docker import DockerCompilerFileTemplates
 from seedemu.core import Emulator
 
-from skyseed_v2.domain import (
+from skyseed_v2.entities import (
     GROUND_STATION_REGISTRY_TYPE,
     GROUND_STATION_ROLE_LABEL,
     SATELLITE_REGISTRY_TYPE,
