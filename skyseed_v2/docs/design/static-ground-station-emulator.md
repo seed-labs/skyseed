@@ -51,12 +51,14 @@ identity, location and descriptive classification into a frozen
 flowchart LR
     GS[GroundStation] --> CONVERT[create_ground_station_simulation_input]
     CONVERT --> INPUT[GroundStationSimulationInput]
-    INPUT --> ID[SimulationNodeId]
+    INPUT --> ID[NodeId]
 ```
 
 The input contains no Router reference, interface, Registry identity, border
 state, container, Compose or execution-target data. Joining an IX and border
 registration do not alter a previously created input snapshot.
+GroundStation does not store `NodeId`; generation derives it from ASN,
+ground-station kind and `ground_station_id`.
 
 ## 4. Routing and Compiler boundary
 
@@ -69,9 +71,9 @@ logical entity remains recognizable.
 
 `examples/complete_static_emulator/main.py` directly shows GroundStation,
 ordinary Router/Network, IX, explicit eBGP, static Simulator input and
-compilation. It uses no YAML Config loading or static Emulator creation
-operation; the one cross-layer call is the direct static-input generation
-function.
+the read-only Emulator node index before compilation. It uses no YAML Config
+loading or static Emulator creation operation; both cross-layer outputs are
+generated directly from `(skyseed_as,)` and their NodeId sets are compared.
 
 ## 6. Deferred work
 

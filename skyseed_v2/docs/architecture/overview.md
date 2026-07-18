@@ -23,6 +23,7 @@ The source packages make those responsibilities explicit:
 ```text
 entities/
 seedemu_integration/
+node_id.py
 simulator_input/
 configuration/
 static_emulator.py
@@ -58,22 +59,33 @@ Orbit reference and no copy of altitude, inclination or right ascension.
 
 ## 4. Emulator → Simulator static boundary
 
-`simulator_input_generation.py` produces immutable input data through three
-direct functions:
+`simulator_input_generation.py` produces immutable input data and the
+Compiler-facing entity lookup through four direct functions:
 
 - `create_satellite_simulation_input()`;
 - `create_ground_station_simulation_input()`;
-- `create_simulator_static_input()`.
+- `create_simulator_static_input()`;
+- `create_emulator_node_index()`.
 
-Each per-entity input copies only approved static scalars. The aggregate sorts
-by `SimulationNodeId.value`, rejects duplicate complete logical IDs and
-provides immutable typed query results. It does not retain entity, Registry,
-container, namespace, Compose, persistence or runtime Simulator objects.
+One private traversal covers only AS → Shell → Orbit → Satellite and AS →
+GroundStation. One private derivation rule constructs
+`NodeId(asn, entity_kind, entity_id)` for both outputs. Each per-entity input
+copies only approved static scalars. The aggregate sorts by `NodeId.value`,
+rejects duplicate complete logical IDs and provides immutable typed query
+results. It does not retain entity, Registry, container, namespace, Compose,
+persistence or runtime Simulator objects.
+
+The separate read-only Emulator node index maps each same `NodeId` to the exact
+original Satellite or GroundStation instance. It contains no runtime-resource
+address. Satellite and GroundStation do not have a `node_id` property because
+the value identifies a node at a cross-layer boundary rather than inside the
+Emulator entity model.
 
 Dependencies point from the generation module toward `entities`,
-`seedemu_integration` and `simulator_input`. The input package itself imports
-none of those Emulator/SEED layers and uses only the neutral root identifier
-validator. Static input is data, not a facade over Emulator objects.
+`seedemu_integration`, `node_id` and `simulator_input`. The input package itself
+imports none of the Emulator/SEED layers and uses only neutral `node_id`.
+`node_id` in turn uses the root identifier validator. Static input is data,
+not a facade over Emulator objects.
 
 ## 5. Configuration and creation
 
@@ -104,25 +116,35 @@ The package is not a vendored seedemu copy and not data seeding code.
 
 ## 7. Compiler and materialization
 
-`SkyseedDockerCompiler` lowers one rendered Emulator to an existing Compose
-project. `ComposeProjectLauncher` consumes that artifact using plugin-based
-Compose v2. Materialization is outside entities, static Simulator input and
-Compiler model ownership; it never recompiles or rewrites the project.
+`SkyseedDockerCompiler` lowers one rendered Emulator to a Compose project.
+After all current generators finish, the formal example entrypoint adds
+project-scoped `output/start.sh` and `output/cleanup.sh`. The former validates
+and starts the exact generated project; the latter stops it without deleting
+the output. `ComposeProjectLauncher` remains the programmatic, state-verifying
+consumer of the same Compose artifact. Materialization is outside entities,
+static Simulator input and Compiler model ownership.
 
 ## 8. Formal examples
 
-- `isolated_satellites`: direct entity construction and compile.
+- `isolated_satellites`: direct entity construction, compile and generated
+  output controls.
 - `complete_static_emulator`: direct entities plus ordinary Network/Router,
-  IX, eBGP, Simulator static input and compile.
+  IX, eBGP, Simulator static input, Emulator node index, identity-set
+  validation, compile and generated output controls.
 - `large_static_network`: YAML → Config → Emulator creation → static Simulator
-  input generation → compile. This example remains compile/config-only.
+  input and Emulator node index generation → identity-set validation → compile
+  → generated output controls. Validation remains compile/config-only until a
+  user explicitly runs `output/start.sh`.
 
 The examples are executable architecture records; their calls lead directly
 to the owning public methods.
 
 ## 9. Deferred boundaries
 
-No current type resolves `SimulationNodeId` to execution resources, computes
-positions or visibility, selects links, plans routes, emits BPF changes or runs
-a Simulator. These are future design questions, not hidden responsibilities of
-the static input or Compiler.
+Future Simulator state and plans will cite `NodeId`. A future Compiler-side
+update path must resolve each ID through the Emulator node index and fail closed
+on missing/duplicate IDs, wrong node kind or mismatched entity sets; it must
+not parse names to guess nodes. No plan/update type currently exists, and no
+current code resolves `NodeId` to containers, services, interfaces or other
+runtime resources, computes positions or visibility, selects links, plans
+routes, emits BPF changes or runs a Simulator.

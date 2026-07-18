@@ -4,8 +4,9 @@ import pytest
 from seedemu.core import Node
 
 from skyseed_v2.simulator_input_generation import create_satellite_simulation_input
+from skyseed_v2.node_id import NodeId
 from skyseed_v2.entities import OrbitParameters, Satellite, Shell
-from skyseed_v2.simulator_input import SatelliteSimulationInput, SimulationNodeId
+from skyseed_v2.simulator_input import SatelliteSimulationInput
 
 
 def satellite() -> tuple[Satellite, OrbitParameters]:
@@ -33,7 +34,7 @@ def test_input_reads_stable_identity_from_the_unique_satellite() -> None:
 
     assert isinstance(simulation_input, SatelliteSimulationInput)
     assert simulation_input.satellite_id == entity.satellite_id
-    assert simulation_input.node_id == SimulationNodeId(
+    assert simulation_input.node_id == NodeId(
         65000, "satellite", entity.satellite_id
     )
     assert simulation_input.node_id.entity_id == simulation_input.satellite_id

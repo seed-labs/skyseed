@@ -9,10 +9,10 @@ from examples.complete_static_emulator.main import (
     simulator_input_summary,
     main,
 )
+from skyseed_v2.node_id import NodeId
 from skyseed_v2.simulator_input import (
     GroundStationSimulationInput,
     SatelliteSimulationInput,
-    SimulationNodeId,
 )
 from skyseed_v2.seedemu_integration import SkyseedDockerCompiler
 
@@ -54,7 +54,7 @@ def test_complete_example_input_matches_registry_and_compiler_output(
     assert simulator_input_summary(simulator_input) == (
         "Simulator input summary: 2 SatelliteSimulationInput, "
         "1 GroundStationSimulationInput, "
-        "3 unique SimulationNodeId",
+        "3 unique NodeId",
         "- 65001/ground-station/gs-new-york",
         "- 65001/satellite/satellite-0",
         "- 65001/satellite/satellite-1",
@@ -65,7 +65,7 @@ def test_complete_example_input_matches_registry_and_compiler_output(
         for item in simulator_input.list_nodes()
     )
     assert all(
-        isinstance(item.node_id, SimulationNodeId)
+        isinstance(item.node_id, NodeId)
         for item in simulator_input.list_nodes()
     )
 
@@ -80,10 +80,10 @@ def test_complete_example_input_matches_registry_and_compiler_output(
     assert registry.get("65001", "rnode", "gs-new-york") is ground_station
     assert registry.get("65001", "brdnode", "gs-new-york") is ground_station
     assert simulator_input.get_satellite(
-        SimulationNodeId(65001, "satellite", "satellite-0")
+        NodeId(65001, "satellite", "satellite-0")
     ).satellite_id == skyseed_as.get_satellite("satellite-0").satellite_id
     assert simulator_input.get_ground_station(
-        SimulationNodeId(65001, "ground-station", "gs-new-york")
+        NodeId(65001, "ground-station", "gs-new-york")
     ).ground_station_id == ground_station.ground_station_id
 
     output = tmp_path / "output"
@@ -123,7 +123,7 @@ def test_complete_example_input_matches_registry_and_compiler_output(
         }
 
     assert "SimulatorStaticInput" not in compose_text
-    assert "SimulationNodeId" not in compose_text
+    assert "NodeId" not in compose_text
     assert "runtime_node" not in compose_text
     assert "RuntimeNodeReference" not in compose_text
 
@@ -145,6 +145,6 @@ def test_complete_example_cli_creates_a_new_output_parent(
     assert (
         "Simulator input summary: 2 SatelliteSimulationInput, "
         "1 GroundStationSimulationInput, "
-        "3 unique SimulationNodeId"
+        "3 unique NodeId"
         in capsys.readouterr().out
     )

@@ -5,24 +5,27 @@ from typing import get_type_hints
 import pytest
 
 import skyseed_v2
+from skyseed_v2.entities import GroundStation, Orbit, Satellite
 from skyseed_v2.simulator_input_generation import (
     create_ground_station_simulation_input,
     create_satellite_simulation_input,
 )
+from skyseed_v2.node_id import NodeId
 from skyseed_v2.simulator_input import (
     GroundStationSimulationInput,
     SatelliteSimulationInput,
-    SimulationNodeId,
     SimulatorStaticInput,
 )
+from skyseed_v2.seedemu_integration import SkyseedAutonomousSystem
 
 
-def test_simulation_node_id_is_stable_hashable_and_backend_independent() -> None:
-    identity = SimulationNodeId(65001, "satellite", "shared-id")
+def test_node_id_is_stable_hashable_and_backend_independent() -> None:
+    identity = NodeId(65001, "satellite", "shared-id")
 
+    assert not hasattr(skyseed_v2, "NodeId")
     assert not hasattr(skyseed_v2, "SimulationNodeId")
     assert identity.value == "65001/satellite/shared-id"
-    assert hash(identity) == hash(SimulationNodeId(65001, "satellite", "shared-id"))
+    assert hash(identity) == hash(NodeId(65001, "satellite", "shared-id"))
     assert {field.name for field in fields(identity)} == {
         "asn",
         "entity_kind",
@@ -40,10 +43,10 @@ def test_simulation_node_id_is_stable_hashable_and_backend_independent() -> None
         identity.entity_id = "changed"
 
 
-def test_simulation_node_id_kind_and_asn_participate_in_identity() -> None:
-    satellite = SimulationNodeId(65001, "satellite", "shared-id")
-    station = SimulationNodeId(65001, "ground-station", "shared-id")
-    other_as = SimulationNodeId(65002, "satellite", "shared-id")
+def test_node_id_kind_and_asn_participate_in_identity() -> None:
+    satellite = NodeId(65001, "satellite", "shared-id")
+    station = NodeId(65001, "ground-station", "shared-id")
+    other_as = NodeId(65002, "satellite", "shared-id")
 
     assert satellite != station
     assert satellite != other_as
@@ -51,29 +54,29 @@ def test_simulation_node_id_kind_and_asn_participate_in_identity() -> None:
 
 
 @pytest.mark.parametrize("asn", [0, -1, True, 1.5, "65001"])
-def test_simulation_node_id_rejects_invalid_asn(asn) -> None:
+def test_node_id_rejects_invalid_asn(asn) -> None:
     with pytest.raises(ValueError, match="asn"):
-        SimulationNodeId(asn, "satellite", "satellite-0")
+        NodeId(asn, "satellite", "satellite-0")
 
 
 @pytest.mark.parametrize("kind", ["", "satnode", "rnode", "router", None, []])
-def test_simulation_node_id_rejects_unapproved_kind(kind) -> None:
+def test_node_id_rejects_unapproved_kind(kind) -> None:
     with pytest.raises(ValueError, match="entity_kind"):
-        SimulationNodeId(65001, kind, "shared-id")
+        NodeId(65001, kind, "shared-id")
 
 
 @pytest.mark.parametrize("entity_id", ["", " invalid", "bad/id", None])
-def test_simulation_node_id_rejects_invalid_entity_id(entity_id) -> None:
+def test_node_id_rejects_invalid_entity_id(entity_id) -> None:
     with pytest.raises(ValueError, match="entity_id"):
-        SimulationNodeId(65001, "satellite", entity_id)
+        NodeId(65001, "satellite", entity_id)
 
 
 def test_simulation_inputs_use_the_shared_logical_identity() -> None:
     satellite_hints = get_type_hints(SatelliteSimulationInput)
     ground_station_hints = get_type_hints(GroundStationSimulationInput)
 
-    assert satellite_hints["node_id"] is SimulationNodeId
-    assert ground_station_hints["node_id"] is SimulationNodeId
+    assert satellite_hints["node_id"] is NodeId
+    assert ground_station_hints["node_id"] is NodeId
 
 
 def test_simulation_inputs_reject_mismatched_logical_identities() -> None:
@@ -98,22 +101,22 @@ def test_simulation_inputs_reject_mismatched_logical_identities() -> None:
 
     with pytest.raises(ValueError, match="satellite"):
         SatelliteSimulationInput(
-            node_id=SimulationNodeId(65001, "ground-station", "satellite-0"),
+            node_id=NodeId(65001, "ground-station", "satellite-0"),
             **satellite_values,
         )
     with pytest.raises(ValueError, match="satellite_id"):
         SatelliteSimulationInput(
-            node_id=SimulationNodeId(65001, "satellite", "satellite-1"),
+            node_id=NodeId(65001, "satellite", "satellite-1"),
             **satellite_values,
         )
     with pytest.raises(ValueError, match="ground-station"):
         GroundStationSimulationInput(
-            node_id=SimulationNodeId(65001, "satellite", "gs-1"),
+            node_id=NodeId(65001, "satellite", "gs-1"),
             **ground_station_values,
         )
     with pytest.raises(ValueError, match="ground_station_id"):
         GroundStationSimulationInput(
-            node_id=SimulationNodeId(65001, "ground-station", "gs-2"),
+            node_id=NodeId(65001, "ground-station", "gs-2"),
             **ground_station_values,
         )
 
@@ -131,3 +134,14 @@ def test_input_generators_accept_only_the_data_needed_for_each_snapshot() -> Non
     assert not hasattr(SatelliteSimulationInput, "from_satellite")
     assert not hasattr(GroundStationSimulationInput, "from_ground_station")
     assert not hasattr(SimulatorStaticInput, "from_autonomous_systems")
+
+
+def test_emulator_entities_do_not_hold_or_accept_node_id() -> None:
+    assert not hasattr(Satellite, "node_id")
+    assert not hasattr(GroundStation, "node_id")
+    assert "node_id" not in signature(Satellite).parameters
+    assert "node_id" not in signature(GroundStation).parameters
+    assert "node_id" not in signature(Orbit.create_satellite).parameters
+    assert "node_id" not in signature(
+        SkyseedAutonomousSystem.create_ground_station
+    ).parameters

@@ -11,3 +11,9 @@ active package layout and public API.
 The current domain-data ownership and file-configuration API validation is
 recorded in
 `domain-data-and-file-configuration-api-convergence-validation.md`.
+
+The current formal-example generation/start boundary is recorded in
+`generated-example-output-controls-validation.md`.
+
+The current cross-layer logical identity and Emulator node-index validation is
+recorded in `node-id-and-emulator-node-index-validation.md`.

@@ -5,31 +5,27 @@ This handwritten example directly constructs the approved
 two no-network Satellite services. It uses no YAML, file-configuration facade,
 population helper or dynamic Simulator input.
 
-From `skyseed_v2/`:
+From `skyseed_v2/`, generate the complete output first:
 
 ```bash
-examples/isolated_satellites/start.sh --override
-docker compose --parallel 16 \
-  -p skyseed_v2_isolated_satellites \
-  -f examples/isolated_satellites/output/docker-compose.yml config --quiet
+python3 -m examples.isolated_satellites.main --override
 ```
+
+The generated output contains `docker-compose.yml`, build contexts and its own
+controls. Start the experiment with:
+
+```bash
+examples/isolated_satellites/output/start.sh
+```
+
+The generated controls use the exact Compose project
+`skyseed_v2_isolated_satellites`.
 
 The Compiler declares each locally built SEED base image as a Compose
-`service:` additional build context. The maintained Docker BuildKit path is
-therefore the normal build path; no legacy-builder environment setting is
-required:
+`service:` additional build context. The generated start script uses the
+maintained BuildKit/Compose v2 path. Cleanup stops only this exact project and
+keeps the generated output:
 
 ```bash
-docker compose --parallel 16 \
-  -p skyseed_v2_isolated_satellites \
-  -f examples/isolated_satellites/output/docker-compose.yml build
-docker compose --parallel 16 \
-  -p skyseed_v2_isolated_satellites \
-  -f examples/isolated_satellites/output/docker-compose.yml up -d
-```
-
-Cleanup is scoped to this project and output:
-
-```bash
-examples/isolated_satellites/cleanup.sh
+examples/isolated_satellites/output/cleanup.sh
 ```

@@ -2,11 +2,11 @@ from dataclasses import FrozenInstanceError, fields, replace
 
 import pytest
 
+from skyseed_v2.node_id import NodeId
 from skyseed_v2.simulator_input import (
     GroundStationSimulationInput,
     SatelliteSimulationInput,
     SimulatorStaticInput,
-    SimulationNodeId,
 )
 
 
@@ -17,7 +17,7 @@ def satellite_input(
     mean_anomaly_deg: float = 0.0,
 ) -> SatelliteSimulationInput:
     return SatelliteSimulationInput(
-        node_id=SimulationNodeId(asn, "satellite", entity_id),
+        node_id=NodeId(asn, "satellite", entity_id),
         satellite_id=entity_id,
         shell_id=f"shell-{asn}",
         orbit_id=f"orbit-{asn}",
@@ -34,7 +34,7 @@ def ground_station_input(
     entity_id: str,
 ) -> GroundStationSimulationInput:
     return GroundStationSimulationInput(
-        node_id=SimulationNodeId(asn, "ground-station", entity_id),
+        node_id=NodeId(asn, "ground-station", entity_id),
         ground_station_id=entity_id,
         latitude_deg=40.0,
         longitude_deg=-74.0,
@@ -81,8 +81,8 @@ def test_static_input_queries_fail_explicitly_for_missing_mismatched_or_ambiguou
     )
 
     with pytest.raises(KeyError, match="not found"):
-        simulator_input.get(SimulationNodeId(65003, "satellite", "missing"))
-    with pytest.raises(TypeError, match="SimulationNodeId"):
+        simulator_input.get(NodeId(65003, "satellite", "missing"))
+    with pytest.raises(TypeError, match="NodeId"):
         simulator_input.get("shared")
     with pytest.raises(TypeError, match="not a satellite"):
         simulator_input.get_satellite(station.node_id)
@@ -92,7 +92,7 @@ def test_static_input_queries_fail_explicitly_for_missing_mismatched_or_ambiguou
         simulator_input.get_ground_station("missing")
     with pytest.raises(ValueError, match="ambiguous"):
         simulator_input.get_satellite("shared")
-    with pytest.raises(TypeError, match="SimulationNodeId or string"):
+    with pytest.raises(TypeError, match="NodeId or string"):
         simulator_input.get_satellite(65001)
 
 
@@ -125,9 +125,9 @@ def test_static_input_rejects_every_duplicate_logical_node_id_without_overwrite(
     original = satellite_input(65001, "satellite-0")
     changed = replace(original, mean_anomaly_deg=90.0)
 
-    with pytest.raises(ValueError, match="duplicate SimulationNodeId"):
+    with pytest.raises(ValueError, match="duplicate NodeId"):
         SimulatorStaticInput((original, original))
-    with pytest.raises(ValueError, match="duplicate SimulationNodeId"):
+    with pytest.raises(ValueError, match="duplicate NodeId"):
         SimulatorStaticInput((original, changed))
 
 

@@ -67,8 +67,12 @@ flowchart LR
     SAT[Satellite] --> CONVERT[create_satellite_simulation_input]
     OP[owning OrbitParameters] --> CONVERT
     CONVERT --> INPUT[SatelliteSimulationInput]
-    INPUT --> ID[SimulationNodeId]
+    INPUT --> ID[NodeId]
 ```
+
+The `NodeId` is derived only by the cross-layer generation operation; it is not
+stored by Satellite. The isolated formal example intentionally does not invoke
+this boundary.
 
 ## 5. seedemu lifecycle and Compiler
 

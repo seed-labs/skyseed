@@ -7,13 +7,14 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Mapping
 
+from skyseed_v2.node_id import NodeId
+
 from .ground_station import GroundStationSimulationInput
-from .identity import (
-    GROUND_STATION_ENTITY_KIND,
-    SATELLITE_ENTITY_KIND,
-    SimulationNodeId,
-)
 from .satellite import SatelliteSimulationInput
+
+
+_SATELLITE_ENTITY_KIND = "satellite"
+_GROUND_STATION_ENTITY_KIND = "ground-station"
 
 
 SimulationEntityInput = (
@@ -38,7 +39,7 @@ class SimulatorStaticInput:
     _satellites: tuple[SatelliteSimulationInput, ...]
     _ground_stations: tuple[GroundStationSimulationInput, ...]
     _nodes: tuple[SimulationEntityInput, ...]
-    _by_node_id: Mapping[SimulationNodeId, SimulationEntityInput] = field(
+    _by_node_id: Mapping[NodeId, SimulationEntityInput] = field(
         repr=False,
         compare=False,
         hash=False,
@@ -59,11 +60,11 @@ class SimulatorStaticInput:
                 key=lambda simulation_input: simulation_input.node_id.value,
             )
         )
-        by_node_id: dict[SimulationNodeId, SimulationEntityInput] = {}
+        by_node_id: dict[NodeId, SimulationEntityInput] = {}
         for simulation_input in ordered_nodes:
             if simulation_input.node_id in by_node_id:
                 raise ValueError(
-                    "duplicate SimulationNodeId: "
+                    "duplicate NodeId: "
                     f"{simulation_input.node_id.value}"
                 )
             by_node_id[simulation_input.node_id] = simulation_input
@@ -114,52 +115,52 @@ class SimulatorStaticInput:
                 "GroundStationSimulationInput values"
             )
 
-    def get(self, node_id: SimulationNodeId) -> SimulationEntityInput:
+    def get(self, node_id: NodeId) -> SimulationEntityInput:
         """Return one static entity input by its complete logical identity."""
 
-        if not isinstance(node_id, SimulationNodeId):
-            raise TypeError("node_id must be a SimulationNodeId")
+        if not isinstance(node_id, NodeId):
+            raise TypeError("node_id must be a NodeId")
         try:
             return self._by_node_id[node_id]
         except KeyError as error:
-            raise KeyError(f"SimulationNodeId not found: {node_id.value}") from error
+            raise KeyError(f"NodeId not found: {node_id.value}") from error
 
     def get_satellite(
         self,
-        node_id_or_id: SimulationNodeId | str,
+        node_id_or_id: NodeId | str,
     ) -> SatelliteSimulationInput:
         """Return one Satellite input by logical ID or unambiguous entity ID."""
 
         return self._get_typed(
             node_id_or_id,
-            entity_kind=SATELLITE_ENTITY_KIND,
+            entity_kind=_SATELLITE_ENTITY_KIND,
             simulation_inputs=self._satellites,
             input_type=SatelliteSimulationInput,
         )
 
     def get_ground_station(
         self,
-        node_id_or_id: SimulationNodeId | str,
+        node_id_or_id: NodeId | str,
     ) -> GroundStationSimulationInput:
         """Return one GroundStation input by ID or unambiguous entity ID."""
 
         return self._get_typed(
             node_id_or_id,
-            entity_kind=GROUND_STATION_ENTITY_KIND,
+            entity_kind=_GROUND_STATION_ENTITY_KIND,
             simulation_inputs=self._ground_stations,
             input_type=GroundStationSimulationInput,
         )
 
     def _get_typed(
         self,
-        node_id_or_id: SimulationNodeId | str,
+        node_id_or_id: NodeId | str,
         *,
         entity_kind: str,
         simulation_inputs: tuple[SimulationEntityInput, ...],
         input_type: type[SatelliteSimulationInput]
         | type[GroundStationSimulationInput],
     ) -> SimulationEntityInput:
-        if isinstance(node_id_or_id, SimulationNodeId):
+        if isinstance(node_id_or_id, NodeId):
             if node_id_or_id.entity_kind != entity_kind:
                 raise TypeError(
                     f"{node_id_or_id.value} is not a {entity_kind} identity"
@@ -172,7 +173,7 @@ class SimulatorStaticInput:
             return simulation_input
 
         if not isinstance(node_id_or_id, str):
-            raise TypeError("node_id_or_id must be a SimulationNodeId or string")
+            raise TypeError("node_id_or_id must be a NodeId or string")
         matches = tuple(
             simulation_input
             for simulation_input in simulation_inputs
@@ -183,7 +184,7 @@ class SimulatorStaticInput:
         if len(matches) > 1:
             raise ValueError(
                 f"ambiguous {entity_kind} entity ID {node_id_or_id!r}; "
-                "use SimulationNodeId"
+                "use NodeId"
             )
         return matches[0]
 

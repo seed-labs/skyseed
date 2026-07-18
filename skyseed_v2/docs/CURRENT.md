@@ -9,14 +9,17 @@
 - Compose v2 migration and materialization tooling: **COMPLETE**
 - Native Ubuntu 24.04 migration acceptance: **PASS**
 - Package structure, naming and Simulator static-input boundary: **IMPLEMENTED**
+- Cross-layer NodeId and Emulator node index contract: **IMPLEMENTED**
+- Generated example output controls: **IMPLEMENTED**
 - Simulator: **NOT STARTED**
 
 ## Current objective
 
-Accept the clarified domain-data ownership and direct file-configuration API.
-Orbit owns shared orbital parameters, Satellite owns only per-Satellite data,
-and the file-driven path is three explicit function calls. This work does not
-authorize Simulator development.
+Accept the unified Emulator–Simulator–Compiler logical-node identity contract:
+static Simulator data and the Compiler-facing Emulator entity index are built
+from the same Skyseed entity collection and deterministic `NodeId` rule. This
+work does not authorize Simulator algorithms, plans, runtime updates or
+resource-resolution implementation.
 
 ## Implemented package boundaries
 
@@ -26,7 +29,8 @@ skyseed_v2/
 ├── simulator_input/          # immutable future-Simulator static inputs
 ├── seedemu_integration/      # Skyseed-owned seedemu extensions
 ├── configuration/            # immutable Config values and YAML loading
-├── simulator_input_generation.py # entity traversal and snapshot creation
+├── node_id.py                # neutral cross-layer logical node identity
+├── simulator_input_generation.py # entity traversal, input and node index
 ├── static_emulator.py        # Config-to-Emulator creation operation
 └── materialization/          # Compose project launch tooling
 ```
@@ -65,47 +69,69 @@ SkyseedAutonomousSystem
   static scalar values.
 - `simulator_input_generation.create_ground_station_simulation_input()` copies
   approved scalar values from one GroundStation.
-- `simulator_input_generation.create_simulator_static_input()` accepts only an iterable of
-  `SkyseedAutonomousSystem` values, fails closed on every other value and
-  traverses the owned entities through the two direct conversion functions.
+- `simulator_input_generation.create_simulator_static_input()` and
+  `create_emulator_node_index()` accept only an iterable of
+  `SkyseedAutonomousSystem` values, fail closed on every other value and share
+  one private AS → Shell → Orbit → Satellite / AS → GroundStation traversal.
 - `SimulatorStaticInput` receives already copied input values, validates their
-  types, sorts deterministically, rejects duplicate `SimulationNodeId` values
+  types, sorts deterministically, rejects duplicate `NodeId` values
   and builds its read-only lookup index. It does not traverse or recognize AS
   objects.
 - The resulting snapshot is frozen and deterministic. It retains no Emulator
   entity, Registry, container, namespace, Compose, persistence or runtime
   Simulator object.
-- The entities do not construct or retain `SimulationNodeId`; the input layer
-  owns that boundary identity.
+- `NodeId(asn, entity_kind, entity_id)` is defined in the neutral
+  `skyseed_v2.node_id` module and deterministically derived only in
+  `simulator_input_generation.py`.
+- Satellite and GroundStation do not construct, accept or retain `NodeId`;
+  the value belongs to the Emulator–Simulator–Compiler cross-layer contract.
+- `create_emulator_node_index()` returns a read-only mapping from those same
+  IDs to the exact original Satellite/GroundStation instances. It stores no
+  Registry, container, service, namespace or interface information.
 - `simulator_input` imports only standard-library modules, its own data modules
-  and the neutral `skyseed_v2.identifier` validator. It has no entities,
-  seedemu-integration or upstream seedemu dependency.
+  and neutral `skyseed_v2.node_id`; `node_id` uses the general identifier
+  validator. Neither has an entities, seedemu-integration or upstream seedemu
+  dependency.
 
 ## Construction paths
 
 - `isolated_satellites`: direct `Emulator → SatelliteBase → AS → Shell → Orbit
-  → Satellite → SkyseedDockerCompiler`; no YAML or file-driven operations.
+  → Satellite → SkyseedDockerCompiler → output controls`; no YAML or
+  file-driven construction operations.
 - `complete_static_emulator`: direct entity plus ordinary seedemu
   Network/Router/IX/eBGP construction, then
-  `create_simulator_static_input((skyseed_as,))` and Compiler.
+  static input + Emulator node index generation, identity-set validation,
+  Compiler and output controls.
 - `large_static_network`: YAML → `load_static_emulator_config(path)` →
   `create_static_emulator(config)` →
-  `create_simulator_static_input(creation.skyseed_autonomous_systems)` →
-  Compiler. It remains compile/config-only.
+  static input + Emulator node index generation → identity-set validation →
+  Compiler → output controls. Its acceptance baseline remains
+  compile/config-only; generated start is an explicit user action.
+
+Every formal Python entrypoint generates `output/start.sh` and
+`output/cleanup.sh` after the Compose artifact is complete. Source-level shell
+wrappers no longer generate the experiment. The generated start validates the
+exact Compose file and runs `up -d --build`; cleanup runs scoped
+`down --remove-orphans` and retains the output.
 
 `StaticEmulatorCreationResult` has exactly three fields: the Emulator, the
-Skyseed AS tuple and the ordinary AS tuple. Simulator input is deliberately a
-separate third-stage result.
+Skyseed AS tuple and the ordinary AS tuple. Simulator input and the Emulator
+node index are deliberately separate cross-layer generation outputs.
 
 ## Deferred work
 
 - Simulator time, position, visibility, topology, planning and execution.
 - Dynamic GroundStation–Satellite links and service selection.
-- Runtime resource resolution from `SimulationNodeId`.
+- Compiler consumption of future plans and lowering from `NodeId` to runtime
+  resource operations.
 - UT integration and any new entity kind at the static-input boundary.
+- Any future split or composition of Emulator and Simulator generator
+  entrypoints; no placeholder or filename contract exists yet.
 
-None of these are implied by the package refactor. No epoch, dynamic topology,
-Runner, runtime resource locator or Simulator implementation exists.
+Future plans must reference `NodeId`; a Compiler will look up the real entity
+through the current index rather than guess from strings. No plan type,
+Compiler update path, epoch, dynamic topology, Runner, runtime resource locator
+or Simulator implementation exists.
 
 ## Acceptance state
 

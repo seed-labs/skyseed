@@ -7,6 +7,7 @@ from pathlib import Path
 
 from seedemu.core import Emulator
 
+from examples._compose_project_scripts import write_compose_project_scripts
 from skyseed_v2 import OrbitParameters
 from skyseed_v2.seedemu_integration import (
     SatelliteBase,
@@ -68,9 +69,11 @@ def main() -> None:
         str(arguments.output),
         override=arguments.override,
     )
+    write_compose_project_scripts(arguments.output, COMPOSE_PROJECT_NAME)
 
     satellites = satellite_as.satellites()
     print(f"compiled {len(satellites)} Satellites to {arguments.output}")
+    print(f"start with {arguments.output / 'start.sh'}")
     for satellite in satellites:
         print(f"- {satellite.satellite_id}")
 

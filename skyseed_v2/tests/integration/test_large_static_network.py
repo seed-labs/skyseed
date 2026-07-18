@@ -10,7 +10,10 @@ from examples.large_static_network._compose_support import (
 from examples.large_static_network.main import DEFAULT_SCENARIO
 from skyseed_v2.configuration import load_static_emulator_config
 from skyseed_v2.seedemu_integration import SkyseedDockerCompiler
-from skyseed_v2.simulator_input_generation import create_simulator_static_input
+from skyseed_v2.simulator_input_generation import (
+    create_emulator_node_index,
+    create_simulator_static_input,
+)
 from skyseed_v2.static_emulator import create_static_emulator
 
 
@@ -58,6 +61,12 @@ def test_large_static_entities_and_simulator_input_are_deterministic() -> None:
     assert len(config.ebgp_peerings) == 2
     assert len(first_input.list_nodes()) == 360
     assert len({node.node_id for node in first_input.list_nodes()}) == 360
+    first_node_index = create_emulator_node_index(
+        first.skyseed_autonomous_systems
+    )
+    assert set(first_node_index) == {
+        node.node_id for node in first_input.list_nodes()
+    }
     assert tuple(node.node_id for node in first_input.list_nodes()) == tuple(
         node.node_id for node in second_input.list_nodes()
     )

@@ -70,19 +70,23 @@ flowchart LR
     SAT[Satellite] --> CS[create_satellite_simulation_input]
     OP[owning OrbitParameters] --> CS
     GS[GroundStation] --> CG[create_ground_station_simulation_input]
-    AS[Iterable of SkyseedAutonomousSystem] --> CA[create_simulator_static_input]
-    CA --> CS
-    CA --> CG
+    AS[Iterable of SkyseedAutonomousSystem] --> WALK[shared private traversal]
+    WALK --> DERIVE[one private NodeId derivation]
+    DERIVE --> CA[create_simulator_static_input]
+    DERIVE --> CI[create_emulator_node_index]
     CS --> SI[SatelliteSimulationInput]
     CG --> GI[GroundStationSimulationInput]
+    CA --> SI
+    CA --> GI
     SI --> AGG[SimulatorStaticInput]
     GI --> AGG
+    CI --> IDX[read-only Mapping NodeId to original entity]
 ```
 
 ```mermaid
 classDiagram
-    class SimulationNodeId {
-        <<Simulator-input value>>
+    class NodeId {
+        <<cross-layer contract value>>
         +asn
         +entity_kind
         +entity_id
@@ -99,16 +103,18 @@ classDiagram
         +list_nodes() tuple
     }
 
-    SatelliteSimulationInput "1" *-- "1" SimulationNodeId : identifies
-    GroundStationSimulationInput "1" *-- "1" SimulationNodeId : identifies
+    SatelliteSimulationInput "1" *-- "1" NodeId : identifies
+    GroundStationSimulationInput "1" *-- "1" NodeId : identifies
     SimulatorStaticInput "1" *-- "*" SatelliteSimulationInput : contains
     SimulatorStaticInput "1" *-- "*" GroundStationSimulationInput : contains
 ```
 
 The dependency direction is intentional: `simulator_input_generation` depends
-on entities, seedemu integration and `simulator_input`; the input package
-depends on none of those Emulator/SEED layers. The copied objects retain no
-entity, Registry, container or Compose reference.
+on entities, seedemu integration, neutral `node_id` and `simulator_input`; the
+input package depends on none of the Emulator/SEED layers. The copied objects
+retain no entity, Registry, container or Compose reference. The node index is
+not a new class: it is a read-only Mapping from the same IDs to the exact
+original Satellite/GroundStation instances.
 
 ## Configuration, Emulator creation and input generation
 
@@ -135,8 +141,10 @@ classDiagram
 `create_static_emulator(config)` sequences existing public construction calls
 and returns only the three creation outputs. A separate
 `create_simulator_static_input(creation.skyseed_autonomous_systems)` call
-generates the immutable Simulator input. None is an entity or ownership level,
-and handwritten examples do not require the file-driven operations.
+generates the immutable Simulator input; `create_emulator_node_index(...)`
+generates the Compiler-facing lookup from the same entity collection. None is
+an entity or ownership level, and handwritten examples do not require the
+file-driven operations.
 
 ## Materialization boundary
 

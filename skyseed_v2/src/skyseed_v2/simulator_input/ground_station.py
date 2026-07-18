@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from . import identity as _identity
+from skyseed_v2.node_id import NodeId
+
+
+_GROUND_STATION_ENTITY_KIND = "ground-station"
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,7 +20,7 @@ class GroundStationSimulationInput:
     simulator_input package because it is the explicit GroundStation input.
     """
 
-    node_id: _identity.SimulationNodeId
+    node_id: NodeId
     ground_station_id: str
     latitude_deg: float
     longitude_deg: float
@@ -26,9 +29,9 @@ class GroundStationSimulationInput:
     operator: str
 
     def __post_init__(self) -> None:
-        if not isinstance(self.node_id, _identity.SimulationNodeId):
-            raise TypeError("node_id must be a SimulationNodeId")
-        if self.node_id.entity_kind != _identity.GROUND_STATION_ENTITY_KIND:
+        if not isinstance(self.node_id, NodeId):
+            raise TypeError("node_id must be a NodeId")
+        if self.node_id.entity_kind != _GROUND_STATION_ENTITY_KIND:
             raise ValueError(
                 "GroundStationSimulationInput node_id kind must be ground-station"
             )

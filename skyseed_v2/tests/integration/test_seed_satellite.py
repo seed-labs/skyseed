@@ -4,13 +4,14 @@ from seedemu.core import Emulator, Node
 from seedemu.core.enums import NodeRole
 
 from skyseed_v2.simulator_input_generation import create_simulator_static_input
+from skyseed_v2.node_id import NodeId
 from skyseed_v2.entities import OrbitParameters, Satellite, SatelliteRole
 from skyseed_v2.seedemu_integration import (
     SATELLITE_REGISTRY_TYPE,
     SatelliteBase,
     SkyseedAutonomousSystem,
 )
-from skyseed_v2.simulator_input import SatelliteSimulationInput, SimulationNodeId
+from skyseed_v2.simulator_input import SatelliteSimulationInput
 
 
 def build_rendered_emulator():
@@ -94,7 +95,7 @@ def test_simulation_input_is_a_static_copy_of_registered_satellite() -> None:
         )
         assert registered is satellite
         assert simulation_input.satellite_id == satellite.satellite_id
-        assert simulation_input.node_id == SimulationNodeId(
+        assert simulation_input.node_id == NodeId(
             asn=satellite.getAsn(),
             entity_kind="satellite",
             entity_id=satellite.satellite_id,

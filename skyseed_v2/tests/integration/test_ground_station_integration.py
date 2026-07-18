@@ -10,6 +10,7 @@ from yaml.nodes import MappingNode, Node, SequenceNode
 
 from skyseed_v2.simulator_input_generation import create_ground_station_simulation_input
 from skyseed_v2.entities import GroundStation, GroundStationLocation, OrbitParameters
+from skyseed_v2.node_id import NodeId
 from skyseed_v2.seedemu_integration import (
     SATELLITE_REGISTRY_TYPE,
     SatelliteBase,
@@ -18,7 +19,6 @@ from skyseed_v2.seedemu_integration import (
 )
 from skyseed_v2.simulator_input import (
     GroundStationSimulationInput,
-    SimulationNodeId,
 )
 
 
@@ -129,7 +129,7 @@ def test_ground_station_uses_one_standard_rnode_and_border_router_instance() -> 
         create_ground_station_simulation_input(station)
     )
     assert input_after_brd_registration == input_before_ix
-    assert input_after_brd_registration.node_id == SimulationNodeId(
+    assert input_after_brd_registration.node_id == NodeId(
         65001, "ground-station", "gs-1"
     )
     assert "rnode" not in input_after_brd_registration.node_id.value

@@ -1,7 +1,9 @@
 from pathlib import Path
 from subprocess import run
 
+import pytest
 import skyseed_v2
+from examples._compose_project_scripts import write_compose_project_scripts
 from examples.complete_static_emulator import main as complete
 from examples.isolated_satellites import main as isolated
 from examples.large_static_network import main as large
@@ -25,7 +27,7 @@ EXPERIMENTS = {
 }
 
 
-def test_formal_examples_own_data_output_scripts_and_unique_projects() -> None:
+def test_formal_examples_generate_controls_into_unique_project_outputs() -> None:
     project_names = []
     for name, (module, expected_project) in EXPERIMENTS.items():
         root = EXAMPLES_ROOT / name
@@ -33,13 +35,18 @@ def test_formal_examples_own_data_output_scripts_and_unique_projects() -> None:
         assert module.DEFAULT_OUTPUT == root / "output"
         assert module.COMPOSE_PROJECT_NAME == expected_project
         project_names.append(module.COMPOSE_PROJECT_NAME)
-        for required in ("main.py", "README.md", "start.sh", "cleanup.sh"):
+        for required in ("main.py", "README.md"):
             assert (root / required).is_file()
+        assert not (root / "start.sh").exists()
+        assert not (root / "cleanup.sh").exists()
 
         readme = (root / "README.md").read_text(encoding="utf-8")
-        assert f"examples/{name}/start.sh" in readme
-        assert f"examples/{name}/cleanup.sh" in readme
+        assert f"python3 -m examples.{name}.main" in readme
+        assert f"examples/{name}/output/start.sh" in readme
+        assert f"examples/{name}/output/cleanup.sh" in readme
         assert expected_project in readme
+        source = Path(module.__file__).read_text(encoding="utf-8")
+        assert "write_compose_project_scripts(" in source
 
     assert len(set(project_names)) == len(project_names)
     for module, name in (
@@ -55,12 +62,21 @@ def test_formal_examples_own_data_output_scripts_and_unique_projects() -> None:
     assert "examples/*/output/" in (PROJECT_ROOT / ".gitignore").read_text()
 
 
-def test_example_shell_scripts_are_thin_scoped_and_syntax_valid() -> None:
+def test_generated_shell_scripts_are_scoped_executable_and_syntax_valid(
+    tmp_path: Path,
+) -> None:
     for name, (_, project_name) in EXPERIMENTS.items():
-        root = EXAMPLES_ROOT / name
-        start = root / "start.sh"
-        cleanup = root / "cleanup.sh"
+        output = tmp_path / name / "output"
+        output.mkdir(parents=True)
+        (output / "docker-compose.yml").write_text(
+            "services: {}\n",
+            encoding="utf-8",
+        )
+        write_compose_project_scripts(output, project_name)
+        start = output / "start.sh"
+        cleanup = output / "cleanup.sh"
         for script in (start, cleanup):
+            assert script.stat().st_mode & 0o111
             result = run(
                 ("bash", "-n", str(script)),
                 check=False,
@@ -71,14 +87,29 @@ def test_example_shell_scripts_are_thin_scoped_and_syntax_valid() -> None:
 
         start_text = start.read_text(encoding="utf-8")
         cleanup_text = cleanup.read_text(encoding="utf-8")
-        assert "python3 -m" in start_text
-        assert "docker" not in start_text
-        assert "scenario.yaml" not in start_text
+        assert "config --quiet" in start_text
+        assert "up -d --build" in start_text
+        assert 'COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"' in start_text
+        assert project_name in start_text
         assert project_name in cleanup_text
-        assert 'OUTPUT_DIR="$SCRIPT_DIR/output"' in cleanup_text
         assert "down --remove-orphans" in cleanup_text
         assert "prune" not in cleanup_text
         assert "docker image" not in cleanup_text
+        assert "find " not in cleanup_text
+
+
+def test_output_script_generation_fails_closed_on_incomplete_output(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="docker-compose.yml"):
+        write_compose_project_scripts(tmp_path, "skyseed_v2_test")
+
+    (tmp_path / "docker-compose.yml").write_text(
+        "services: {}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="project_name"):
+        write_compose_project_scripts(tmp_path, "invalid project")
 
 
 def test_formal_examples_and_package_have_no_v1_or_constellation_path() -> None:
@@ -109,6 +140,14 @@ def test_small_examples_show_public_construction_without_file_facades() -> None:
     isolated_source = Path(isolated.__file__).read_text(encoding="utf-8")
     complete_source = Path(complete.__file__).read_text(encoding="utf-8")
 
+    for forbidden_boundary in (
+        "NodeId",
+        "SimulatorStaticInput",
+        "create_simulator_static_input",
+        "create_emulator_node_index",
+    ):
+        assert forbidden_boundary not in isolated_source
+
     for source in (isolated_source, complete_source):
         assert "load_static_emulator_config" not in source
         assert "create_static_emulator" not in source
@@ -123,6 +162,8 @@ def test_small_examples_show_public_construction_without_file_facades() -> None:
     assert ".createRouter(" in complete_source
     assert "SimulatorStaticInput" in complete_source
     assert "create_simulator_static_input" in complete_source
+    assert "create_emulator_node_index" in complete_source
+    assert "set(emulator_node_index)" in complete_source
     assert "from skyseed_v2.simulator_input import SimulatorStaticInput" in (
         complete_source
     )
@@ -138,6 +179,8 @@ def test_large_example_shows_load_create_and_input_generation_directly() -> None
     assert "load_static_emulator_config" in source
     assert "create_static_emulator" in source
     assert "create_simulator_static_input" in source
+    assert "create_emulator_node_index" in source
+    assert "set(emulator_node_index)" in source
     assert "from skyseed_v2.configuration import" in source
     assert "from skyseed_v2.static_emulator import" in source
     assert "from skyseed_v2.simulator_input_generation import" in source

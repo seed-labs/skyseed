@@ -1,4 +1,4 @@
-"""Backend-independent logical identities for Simulator static inputs."""
+"""Stable logical node identity shared across Skyseed layers."""
 
 from __future__ import annotations
 
@@ -7,21 +7,23 @@ from dataclasses import dataclass
 from skyseed_v2.identifier import validate_identifier
 
 
-SATELLITE_ENTITY_KIND = "satellite"
-GROUND_STATION_ENTITY_KIND = "ground-station"
+_SATELLITE_ENTITY_KIND = "satellite"
+_GROUND_STATION_ENTITY_KIND = "ground-station"
 _ENTITY_KINDS = frozenset(
-    {SATELLITE_ENTITY_KIND, GROUND_STATION_ENTITY_KIND}
+    {_SATELLITE_ENTITY_KIND, _GROUND_STATION_ENTITY_KIND}
 )
 
 
 @dataclass(frozen=True, slots=True)
-class SimulationNodeId:
-    """Identify one static Simulator input independently of runtime resources.
+class NodeId:
+    """Identify one logical node across Emulator, Simulator and Compiler.
 
-    Layer: immutable Emulator-to-Simulator boundary value. Simulation input
-    types create and use it; future Simulator readers may use it for lookup. It
-    is not a Registry, container or execution-target identity. It is public
-    because every supported static entity input shares this identity scheme.
+    Layer: neutral cross-layer contract value. Simulator-input generation
+    creates it; static inputs, future Simulator state and plans, and the
+    Compiler-side Emulator node index use it. It is not an Emulator entity
+    property, Registry key, container ID, Compose service, namespace,
+    interface name or Simulator-local sequence number. It is public from this
+    direct module because multiple architectural layers share the contract.
     """
 
     asn: int
@@ -52,3 +54,6 @@ class SimulationNodeId:
     @property
     def value(self) -> str:
         return f"{self.asn}/{self.entity_kind}/{self.entity_id}"
+
+
+__all__ = ["NodeId"]

@@ -9,6 +9,7 @@ from skyseed_v2 import (
     configuration,
     entities,
     materialization,
+    node_id,
     seedemu_integration,
     simulator_input,
 )
@@ -24,6 +25,7 @@ TERMINOLOGY = PROJECT_ROOT / "docs/architecture/terminology.md"
 PUBLIC_MODULES = (
     entities,
     materialization,
+    node_id,
     seedemu_integration,
     simulator_input,
     configuration,
@@ -74,7 +76,7 @@ def test_current_api_mermaid_names_are_real_and_classified() -> None:
         "SatelliteBase": seedemu_integration.SatelliteBase,
         "SatelliteSimulationInput": simulator_input.SatelliteSimulationInput,
         "Shell": entities.Shell,
-        "SimulationNodeId": simulator_input.SimulationNodeId,
+        "NodeId": node_id.NodeId,
         "SimulatorStaticInput": simulator_input.SimulatorStaticInput,
         "SkyseedAutonomousSystem": seedemu_integration.SkyseedAutonomousSystem,
         "SkyseedDockerCompiler": seedemu_integration.SkyseedDockerCompiler,
@@ -131,7 +133,7 @@ def test_terminology_and_project_rules_cover_the_governance_contract() -> None:
         "SatelliteSimulationInput",
         "GroundStationSimulationInput",
         "SimulatorStaticInput",
-        "SimulationNodeId",
+        "NodeId",
         "Compiler",
         "Launcher",
         "StaticEmulatorCreationResult",
@@ -140,16 +142,21 @@ def test_terminology_and_project_rules_cover_the_governance_contract() -> None:
 
     rules = (PROJECT_ROOT / "AGENTS.md").read_text(encoding="utf-8")
     for required_rule in (
-        "explicit user approval",
-        "Classify every new class",
-        "one qualified meaning",
-        "examples traceable",
-        "Do not hide",
-        "Update code, exports, docstrings, class/call diagrams",
-        "design text and implementation differ",
-        "Do not start Simulator",
+        "标准纵向开发流程",
+        "已批准范围内的实现自主权",
+        "公共架构变更必须先申请",
+        "架构变更提案格式",
+        "Architecture Delta",
+        "Example 是人类审核入口",
+        "命名与概念治理",
+        "历史实现调查边界",
+        "切片接受条件",
+        "本轮批准新增或修改",
+        "本轮明确不包含",
     ):
         assert required_rule in rules
+    assert "Do not start Simulator" not in rules
+    assert "simulator_input_generation.py" not in rules
 
 
 def test_current_emulator_documents_have_no_known_stale_implementation_names() -> None:
@@ -196,6 +203,7 @@ def test_direct_file_driven_call_chain_is_documented() -> None:
         "load_static_emulator_config(path)",
         "create_static_emulator(config)",
         "create_simulator_static_input(creation.skyseed_autonomous_systems)",
+        "create_emulator_node_index(creation.skyseed_autonomous_systems)",
     ):
         assert operation in document
     for retired in (

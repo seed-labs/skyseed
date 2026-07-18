@@ -64,19 +64,19 @@ def test_skyseed_as_owns_entities_but_not_simulator_input() -> None:
 def test_simulator_input_has_only_data_layer_dependencies() -> None:
     from skyseed_v2.simulator_input import (
         ground_station,
-        identity,
         satellite,
         static_input,
     )
+    from skyseed_v2 import node_id
 
     static_input_imports = imported_modules(static_input)
-    identity_imports = imported_modules(identity)
+    node_id_imports = imported_modules(node_id)
     satellite_imports = imported_modules(satellite)
     ground_station_imports = imported_modules(ground_station)
 
     for imports in (
         static_input_imports,
-        identity_imports,
+        node_id_imports,
         satellite_imports,
         ground_station_imports,
     ):
@@ -90,14 +90,14 @@ def test_simulator_input_has_only_data_layer_dependencies() -> None:
                 or module.startswith(f"{forbidden_prefix}.")
                 for module in imports
             )
-    assert "skyseed_v2.identifier" in identity_imports
+    assert "skyseed_v2.identifier" in node_id_imports
     assert ".ground_station" not in satellite_imports
     assert ".satellite" not in ground_station_imports
     assert {name for name in static_input_imports if name.startswith(".")} == {
         ".ground_station",
-        ".identity",
         ".satellite",
     }
+    assert "skyseed_v2.node_id" in static_input_imports
 
 
 def test_simulator_input_import_does_not_load_upstream_seedemu() -> None:
@@ -110,7 +110,11 @@ def guarded_import(name, *args, **kwargs):
         raise AssertionError(f'unexpected seedemu import: {name}')
     return original_import(name, *args, **kwargs)
 builtins.__import__ = guarded_import
+from skyseed_v2.node_id import NodeId
 from skyseed_v2.simulator_input import SimulatorStaticInput
+assert NodeId(65001, 'satellite', 'satellite-0').value == (
+    '65001/satellite/satellite-0'
+)
 assert SimulatorStaticInput().list_nodes() == ()
 """
     environment = dict(os.environ)
@@ -168,6 +172,7 @@ def test_removed_and_deferred_boundary_apis_are_not_exported() -> None:
         assert not hasattr(skyseed_v2, forbidden_name)
 
     assert importlib.util.find_spec("skyseed_v2.simulator_input.runtime") is None
+    assert importlib.util.find_spec("skyseed_v2.simulator_input.identity") is None
     for removed_module in (
         "skyseed_v2.contracts",
         "skyseed_v2.projection",
@@ -294,14 +299,14 @@ def test_configuration_creation_and_input_generation_respect_boundaries() -> Non
 
     from skyseed_v2.simulator_input import (
         ground_station as ground_station_input,
-        identity,
         satellite as satellite_input,
         static_input,
     )
+    from skyseed_v2 import node_id
 
     for input_module in (
         static_input,
-        identity,
+        node_id,
         satellite_input,
         ground_station_input,
     ):
@@ -347,6 +352,7 @@ def test_configuration_creation_and_input_generation_respect_boundaries() -> Non
     generation_imports = imported_modules(simulator_input_generation)
     for required_dependency in (
         "skyseed_v2.entities",
+        "skyseed_v2.node_id",
         "skyseed_v2.seedemu_integration",
         "skyseed_v2.simulator_input",
     ):
@@ -370,6 +376,9 @@ def test_configuration_creation_and_input_generation_respect_boundaries() -> Non
         isinstance(node, ast.ClassDef)
         for node in ast.walk(ast.parse(generation_source))
     )
+    assert "def _derive_node_id(" in generation_source
+    assert ".split(" not in generation_source
+    assert "getName(" not in generation_source
 
 
 def test_constellation_helper_never_became_a_domain_or_public_api() -> None:

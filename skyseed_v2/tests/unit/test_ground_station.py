@@ -6,10 +6,10 @@ from seedemu.core import Router
 import skyseed_v2
 from skyseed_v2.simulator_input_generation import create_ground_station_simulation_input
 from skyseed_v2.entities import GroundStation, GroundStationLocation
+from skyseed_v2.node_id import NodeId
 from skyseed_v2.seedemu_integration import SkyseedAutonomousSystem
 from skyseed_v2.simulator_input import (
     GroundStationSimulationInput,
-    SimulationNodeId,
 )
 
 
@@ -68,7 +68,7 @@ def test_ground_station_simulation_input_is_immutable_and_restricted() -> None:
     simulation_input = create_ground_station_simulation_input(station)
 
     assert simulation_input == GroundStationSimulationInput(
-        node_id=SimulationNodeId(151, "ground-station", "gs-1"),
+        node_id=NodeId(151, "ground-station", "gs-1"),
         ground_station_id="gs-1",
         latitude_deg=40.0,
         longitude_deg=-74.0,

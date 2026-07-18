@@ -1,9 +1,13 @@
 import pytest
 from seedemu.core import AutonomousSystem
 
-from skyseed_v2.simulator_input_generation import create_simulator_static_input
 from skyseed_v2.entities import GroundStationLocation, OrbitParameters
+from skyseed_v2.node_id import NodeId
 from skyseed_v2.seedemu_integration import SkyseedAutonomousSystem
+from skyseed_v2.simulator_input_generation import (
+    create_emulator_node_index,
+    create_simulator_static_input,
+)
 
 
 def add_satellite(
@@ -68,6 +72,36 @@ def test_static_input_generation_collects_mixed_kinds_from_multiple_as() -> None
     )
 
 
+def test_static_input_and_emulator_index_share_ids_and_original_instances() -> None:
+    mixed_as, ground_station_as, satellite_as = multi_as_inputs()
+    autonomous_systems = (mixed_as, ground_station_as, satellite_as)
+
+    simulator_input = create_simulator_static_input(autonomous_systems)
+    emulator_node_index = create_emulator_node_index(autonomous_systems)
+
+    assert {
+        simulation_input.node_id
+        for simulation_input in simulator_input.list_nodes()
+    } == set(emulator_node_index)
+    assert emulator_node_index[
+        NodeId(65001, "satellite", "shared")
+    ] is mixed_as.get_satellite("shared")
+    assert emulator_node_index[
+        NodeId(65001, "ground-station", "shared")
+    ] is mixed_as.get_ground_station("shared")
+    assert emulator_node_index[
+        NodeId(65002, "ground-station", "shared")
+    ] is ground_station_as.get_ground_station("shared")
+    assert emulator_node_index[
+        NodeId(65003, "satellite", "shared")
+    ] is satellite_as.get_satellite("shared")
+
+    with pytest.raises(TypeError):
+        emulator_node_index[NodeId(65001, "satellite", "new")] = object()
+    with pytest.raises(KeyError):
+        emulator_node_index["65001/satellite/shared"]
+
+
 @pytest.mark.parametrize("entity_kind", ["satellite", "ground-station"])
 def test_static_input_generation_accepts_one_entity_kind_and_one_as(
     entity_kind: str,
@@ -94,6 +128,12 @@ def test_static_input_generation_rejects_ordinary_as_and_unknown_inputs() -> Non
         create_simulator_static_input((mixed_as, object()))
     with pytest.raises(TypeError, match="iterable"):
         create_simulator_static_input(mixed_as)
+    with pytest.raises(TypeError, match="only SkyseedAutonomousSystem"):
+        create_emulator_node_index((ordinary_as, mixed_as))
+    with pytest.raises(TypeError, match="only SkyseedAutonomousSystem"):
+        create_emulator_node_index((mixed_as, object()))
+    with pytest.raises(TypeError, match="iterable"):
+        create_emulator_node_index(mixed_as)
 
 
 def test_static_input_is_a_snapshot_of_later_as_changes() -> None:
@@ -118,5 +158,17 @@ def test_aggregate_fails_closed_when_the_same_as_is_collected_twice() -> None:
     autonomous_system = SkyseedAutonomousSystem(65001)
     add_satellite(autonomous_system, "satellite-0")
 
-    with pytest.raises(ValueError, match="duplicate SimulationNodeId"):
+    with pytest.raises(ValueError, match="duplicate NodeId"):
         create_simulator_static_input((autonomous_system, autonomous_system))
+    with pytest.raises(ValueError, match="duplicate NodeId"):
+        create_emulator_node_index((autonomous_system, autonomous_system))
+
+
+def test_generation_fails_closed_on_an_unsupported_owned_object() -> None:
+    autonomous_system = SkyseedAutonomousSystem(65001)
+    autonomous_system._shells["unsupported"] = object()
+
+    with pytest.raises(TypeError, match="unsupported Shell"):
+        create_simulator_static_input((autonomous_system,))
+    with pytest.raises(TypeError, match="unsupported Shell"):
+        create_emulator_node_index((autonomous_system,))

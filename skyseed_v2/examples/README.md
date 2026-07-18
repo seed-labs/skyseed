@@ -8,28 +8,31 @@ example owns v2 YAML:
 examples/
 ├── isolated_satellites/
 │   ├── main.py
-│   ├── README.md
-│   ├── start.sh
-│   └── cleanup.sh
+│   └── README.md
 ├── complete_static_emulator/
 │   ├── main.py
-│   ├── README.md
-│   ├── start.sh
-│   └── cleanup.sh
+│   └── README.md
 └── large_static_network/
     ├── main.py
     ├── scenario.yaml
     ├── ground_stations.yaml
-    ├── README.md
-    ├── start.sh
-    └── cleanup.sh
+    └── README.md
 ```
 
-`output/` is the default beneath each experiment and is ignored by Git.
-Project names are fixed and distinct. Each `start.sh` only executes its local
-Python entrypoint; it is not a Runner. Each `cleanup.sh` uses that experiment's
-exact Compose project/file and removes only its local output. No script uses a
-global Docker prune, shared-image deletion, recovery logic or hidden fallback.
+Running an example's Python entrypoint generates its ignored `output/`:
+
+```text
+main.py
+    → output/docker-compose.yml and build contexts
+    → output/start.sh
+    → output/cleanup.sh
+```
+
+Project names are fixed and distinct. Generated `start.sh` validates the exact
+Compose file and starts that project with `up -d --build`. Generated
+`cleanup.sh` runs project-scoped `down --remove-orphans` and keeps the output
+available for inspection or another start. Neither script is a Runner, and no
+script uses global prune, shared-image deletion, recovery logic or fallback.
 
 The small examples expose the real public ownership path directly:
 
@@ -53,6 +56,8 @@ v2 YAML
     -> StaticEmulatorCreationResult
     -> create_simulator_static_input(creation.skyseed_autonomous_systems)
     -> immutable SimulatorStaticInput
+    -> create_emulator_node_index(creation.skyseed_autonomous_systems)
+    -> validate equal NodeId sets
 ```
 
 The three operations are direct functions, not stateless service classes.
@@ -66,7 +71,9 @@ Both input styles converge at `SkyseedAutonomousSystem.create_shell`,
 immutable static-data boundary for future Simulator consumers; it is not a
 scenario, SEED Registry, container inventory or output-directory index.
 Entity traversal and conversion belong to `simulator_input_generation.py`;
-the input package contains only immutable data and indexing behavior.
+the same module also creates the read-only `NodeId → original entity` mapping
+for future Compiler lookup. The input package contains only immutable data and
+its pure-data lookup; it never receives the Emulator entity index.
 
 The `reference/` directory is excluded from the package and formal example
 path. It preserves offline historical investigation/conversion tooling only;

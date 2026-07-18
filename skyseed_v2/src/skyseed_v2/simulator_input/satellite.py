@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from . import identity as _identity
+from skyseed_v2.node_id import NodeId
+
+
+_SATELLITE_ENTITY_KIND = "satellite"
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,7 +20,7 @@ class SatelliteSimulationInput:
     simulator_input package because it is the explicit static Satellite input.
     """
 
-    node_id: _identity.SimulationNodeId
+    node_id: NodeId
     satellite_id: str
     shell_id: str
     orbit_id: str
@@ -28,9 +31,9 @@ class SatelliteSimulationInput:
     mean_anomaly_deg: float
 
     def __post_init__(self) -> None:
-        if not isinstance(self.node_id, _identity.SimulationNodeId):
-            raise TypeError("node_id must be a SimulationNodeId")
-        if self.node_id.entity_kind != _identity.SATELLITE_ENTITY_KIND:
+        if not isinstance(self.node_id, NodeId):
+            raise TypeError("node_id must be a NodeId")
+        if self.node_id.entity_kind != _SATELLITE_ENTITY_KIND:
             raise ValueError(
                 "SatelliteSimulationInput node_id kind must be satellite"
             )

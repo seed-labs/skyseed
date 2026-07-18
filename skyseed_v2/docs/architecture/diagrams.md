@@ -14,25 +14,28 @@ flowchart LR
     CREATE[static_emulator]
     GENERATE[simulator_input_generation]
     MAT[materialization]
+    NODEID[node_id]
     ID[identifier]
 
     SEED --> ENT
     ENT --> ID
     SEED --> ID
-    INPUT --> ID
+    NODEID --> ID
+    INPUT --> NODEID
     CONFIG --> ID
     CREATE --> CONFIG
     CREATE --> ENT
     CREATE --> SEED
     GENERATE --> ENT
     GENERATE --> SEED
+    GENERATE --> NODEID
     GENERATE --> INPUT
 ```
 
 There is no arrow from `simulator_input` to entities, seedemu integration or
-upstream seedemu. `identifier` is the single neutral cross-layer identifier
-validator. `materialization` is independent of entities, static input and
-seedemu Compiler implementation.
+upstream seedemu. `node_id` is the neutral cross-layer logical identity and
+uses the general `identifier` validator. `materialization` is independent of
+entities, static input and seedemu Compiler implementation.
 
 ## 2. Entity ownership
 
@@ -107,6 +110,10 @@ flowchart TD
     IX --> P[explicit eBGP]
     A --> F[create_simulator_static_input]
     F --> I[SimulatorStaticInput]
+    A --> N[create_emulator_node_index]
+    N --> M[read-only NodeId to entity Mapping]
+    I --> V[validate equal NodeId sets]
+    M --> V
     B --> C[Emulator.render → SkyseedDockerCompiler]
 ```
 
@@ -122,6 +129,10 @@ flowchart LR
     CREATE --> RESULT[StaticEmulatorCreationResult]
     RESULT --> CONVERT[create_simulator_static_input]
     CONVERT --> INPUT[immutable SimulatorStaticInput]
+    RESULT --> INDEX[create_emulator_node_index]
+    INDEX --> MAPPING[read-only NodeId to entity Mapping]
+    INPUT --> VALIDATE[validate equal NodeId sets]
+    MAPPING --> VALIDATE
     RESULT --> COMP[render + SkyseedDockerCompiler]
 ```
 
@@ -129,32 +140,44 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    SAT[Satellite] --> CS[create_satellite_simulation_input]
-    ORBIT[OrbitParameters] --> CS
-    GS[GroundStation] --> CG[create_ground_station_simulation_input]
-    AS[Iterable of SkyseedAutonomousSystem] --> CA[create_simulator_static_input]
-    CA --> CS
-    CA --> CG
-    CS --> SI[SatelliteSimulationInput + SimulationNodeId]
-    CG --> GI[GroundStationSimulationInput + SimulationNodeId]
+    AS[Iterable of SkyseedAutonomousSystem] --> WALK[shared private entity traversal]
+    SAT[Satellite + OrbitParameters] --> WALK
+    GS[GroundStation] --> WALK
+    WALK --> DERIVE[one private NodeId derivation]
+    DERIVE --> CA[create_simulator_static_input]
+    DERIVE --> CI[create_emulator_node_index]
+    CA --> SI[SatelliteSimulationInput + NodeId]
+    CA --> GI[GroundStationSimulationInput + NodeId]
     SI --> INPUT[SimulatorStaticInput]
     GI --> INPUT
+    CI --> INDEX[read-only NodeId to original entity Mapping]
     INPUT --> SIM[future Simulator consumer boundary]
+    SIM -. future plan cites NodeId .-> INDEX
+    INDEX -. future Compiler lookup .-> COMP[real Emulator entity]
 ```
 
 `SimulatorStaticInput` performs type validation, deterministic sorting,
 duplicate-ID rejection, immutable snapshotting and read-only indexing only. It
-does not traverse AS objects or call entity conversion.
+does not traverse AS objects or call entity conversion. The separate Emulator
+node index contains the exact original entities, while the input contains no
+entity reference. The dashed path documents the future NodeId contract only;
+no Simulator, plan or Compiler update path is implemented.
 
-## 7. Compiler artifact and materialization
+## 7. Generated experiment artifact and materialization
 
 ```mermaid
 flowchart LR
     E[rendered Emulator] --> C[SkyseedDockerCompiler]
     C --> D[docker-compose.yml + build contexts]
+    D --> F[example output finalization]
+    F --> S[output/start.sh + output/cleanup.sh]
+    S --> H[human start / cleanup]
     D --> L[ComposeProjectLauncher]
     L --> P[docker compose v2 project]
+    H --> P
 ```
 
-`ComposeProjectLauncher` never reconstructs entities, reads Simulator input or
-recompiles the Emulator.
+The Python entrypoint finalizes controls only after the current output is
+complete. Generated scripts use the exact Compose file/project and never
+reconstruct entities. `ComposeProjectLauncher` remains the programmatic,
+state-verifying materialization adapter; it never recompiles the Emulator.

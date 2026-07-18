@@ -7,12 +7,12 @@ materializes one already-generated Docker Compose project. Its placement is
 outside the Emulator entity model:
 
 ```text
-Static scenario
+Emulator generation
     -> SkyseedDockerCompiler
     -> one generated Compose project
-    -> ComposeProjectLauncher
-    -> Docker Compose v2
-    -> Docker containers
+    -> generated output/start.sh (human entry)
+       or ComposeProjectLauncher (programmatic verified entry)
+    -> Docker Compose v2 containers
 ```
 
 The Emulator constructs static entities and a scenario. The Compiler emits the
@@ -23,6 +23,32 @@ in an Emulator entity class diagram.
 
 A future execution Runner may call, wrap, or replace this tool. This slice does
 not decide that Runner contract and does not introduce a dynamic Runner.
+
+## Generated human controls
+
+Each formal example's Python entrypoint finalizes the complete current output
+with two executable controls beside `docker-compose.yml`:
+
+```text
+output/start.sh
+    -> docker compose config --quiet
+    -> docker compose up -d --build
+
+output/cleanup.sh
+    -> docker compose down --remove-orphans
+```
+
+Both scripts use the exact generated file, a fixed example-specific project
+name and Compose parallel limit 16. Cleanup retains the output for inspection
+or restart. Source-level shell wrappers do not generate the project; the
+Python entrypoint is the generation boundary.
+
+These scripts are the minimal human execution path. They do not perform the
+strict service-state classification and final-state audit provided by
+`ComposeProjectLauncher`. The shared script writer is private example tooling,
+not a public deployment type, Runner or Simulator contract. It runs only after
+all currently implemented output generators finish, leaving future generator
+composition undecided.
 
 ## Input and command contract
 

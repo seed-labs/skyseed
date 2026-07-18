@@ -5,9 +5,13 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from examples._compose_project_scripts import write_compose_project_scripts
 from skyseed_v2.configuration import load_static_emulator_config
 from skyseed_v2.seedemu_integration import SkyseedDockerCompiler
-from skyseed_v2.simulator_input_generation import create_simulator_static_input
+from skyseed_v2.simulator_input_generation import (
+    create_emulator_node_index,
+    create_simulator_static_input,
+)
 from skyseed_v2.static_emulator import create_static_emulator
 
 
@@ -30,6 +34,17 @@ def main() -> None:
     simulator_input = create_simulator_static_input(
         creation.skyseed_autonomous_systems
     )
+    emulator_node_index = create_emulator_node_index(
+        creation.skyseed_autonomous_systems
+    )
+    simulator_node_ids = {
+        simulation_input.node_id
+        for simulation_input in simulator_input.list_nodes()
+    }
+    if simulator_node_ids != set(emulator_node_index):
+        raise ValueError(
+            "SimulatorStaticInput NodeIds do not match Emulator node index"
+        )
     satellite_count = sum(
         len(autonomous_system.satellites())
         for autonomous_system in creation.skyseed_autonomous_systems
@@ -52,7 +67,9 @@ def main() -> None:
         str(arguments.output),
         override=arguments.override,
     )
+    write_compose_project_scripts(arguments.output, COMPOSE_PROJECT_NAME)
     print(f"compiled large static network to {arguments.output}")
+    print(f"start with {arguments.output / 'start.sh'}")
 
 
 if __name__ == "__main__":

@@ -14,6 +14,8 @@ versioned YAML
 → StaticEmulatorCreationResult
 → create_simulator_static_input(creation.skyseed_autonomous_systems)
 → SimulatorStaticInput
+→ create_emulator_node_index(creation.skyseed_autonomous_systems)
+→ validate equal NodeId sets
 → SkyseedDockerCompiler
 ```
 
@@ -49,6 +51,11 @@ The caller separately invokes
 `create_simulator_static_input(creation.skyseed_autonomous_systems)`. This
 makes the Emulator → Simulator static-data boundary visible and keeps Config
 creation independent of future Simulator data.
+
+The caller also invokes
+`create_emulator_node_index(creation.skyseed_autonomous_systems)` and checks
+that its keys equal every input `NodeId`. Both operations share the one entity
+traversal and identity rule, while only the index retains original entities.
 
 ## Formal examples and materialization
 
