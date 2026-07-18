@@ -5,11 +5,11 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from skyseed_v2.scenario_application import (
+from skyseed_v2.application import (
     StaticEmulatorApplyResult,
     StaticEmulatorSpecificationApplier,
 )
-from skyseed_v2.scenario_loader import StaticEmulatorScenarioLoader
+from skyseed_v2.serialization import StaticEmulatorScenarioLoader
 from skyseed_v2.seedemu_integration import SkyseedDockerCompiler
 
 

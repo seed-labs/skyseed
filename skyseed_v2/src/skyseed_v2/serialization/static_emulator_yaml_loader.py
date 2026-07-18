@@ -46,7 +46,7 @@ class StaticEmulatorScenarioLoadError(ValueError):
     """Report fail-closed file parsing or specification validation failure.
 
     Layer: serialization adapter error. The Loader creates it and file-input
-    callers catch it. It is not a domain error, specification or runtime state;
+    callers catch it. It is not an entity error, specification or runtime state;
     it is public from this submodule as the stable Loader failure boundary.
     """
 

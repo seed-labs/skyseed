@@ -8,8 +8,8 @@ import skyseed_v2
 from skyseed_v2 import (
     entities,
     materialization,
-    scenario_application,
-    scenario_loader,
+    application,
+    serialization,
     seedemu_integration,
     simulator_input,
     specifications,
@@ -25,8 +25,8 @@ TERMINOLOGY = PROJECT_ROOT / "docs/architecture/terminology.md"
 PUBLIC_MODULES = (
     entities,
     materialization,
-    scenario_application,
-    scenario_loader,
+    application,
+    serialization,
     seedemu_integration,
     simulator_input,
     specifications,
@@ -79,13 +79,13 @@ def test_current_api_mermaid_names_are_real_and_classified() -> None:
         "SimulatorStaticInput": simulator_input.SimulatorStaticInput,
         "SkyseedAutonomousSystem": seedemu_integration.SkyseedAutonomousSystem,
         "SkyseedDockerCompiler": seedemu_integration.SkyseedDockerCompiler,
-        "StaticEmulatorApplyResult": scenario_application.StaticEmulatorApplyResult,
-        "StaticEmulatorScenarioLoader": scenario_loader.StaticEmulatorScenarioLoader,
+        "StaticEmulatorApplyResult": application.StaticEmulatorApplyResult,
+        "StaticEmulatorScenarioLoader": serialization.StaticEmulatorScenarioLoader,
         "StaticEmulatorScenarioSpecification": (
             specifications.StaticEmulatorScenarioSpecification
         ),
         "StaticEmulatorSpecificationApplier": (
-            scenario_application.StaticEmulatorSpecificationApplier
+            application.StaticEmulatorSpecificationApplier
         ),
     }
     assert names == set(expected_types)
@@ -187,8 +187,10 @@ def test_current_emulator_documents_have_no_known_stale_implementation_names() -
 
 
 def test_operation_result_is_application_only() -> None:
-    result_type = scenario_application.StaticEmulatorApplyResult
-    assert result_type.__module__ == "skyseed_v2.scenario_application"
+    result_type = application.StaticEmulatorApplyResult
+    assert result_type.__module__ == (
+        "skyseed_v2.application.static_scenario_application"
+    )
     assert not hasattr(skyseed_v2, result_type.__name__)
     assert not hasattr(entities, result_type.__name__)
     assert not hasattr(simulator_input, result_type.__name__)

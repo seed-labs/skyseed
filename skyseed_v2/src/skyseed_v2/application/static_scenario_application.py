@@ -35,7 +35,7 @@ class StaticEmulatorApplyResult:
 
     Layer: operation result. The specification Applier creates it; file-driven
     callers use the Emulator, owned AS collections and Simulator input. It is
-    not a domain entity, ownership layer or Simulator input member. A named
+    not an Emulator entity, ownership layer or Simulator input member. A named
     result is retained because no one existing object truthfully owns all four
     outputs, but it is public only from this application submodule.
     """
@@ -47,13 +47,13 @@ class StaticEmulatorApplyResult:
 
 
 class StaticEmulatorSpecificationApplier:
-    """Apply one validated specification through public domain/SEED methods.
+    """Apply one validated specification through public entity/SEED methods.
 
     Layer: application service. File-driven callers create it and consume its
     operation result. It reads specifications, sequences approved create/join
     methods, builds the static Simulator input and does not own entities or
-    lifecycle. It is
-    not a Loader, domain facade, Registry adapter or Compiler. It remains
+    lifecycle. It is not a Loader, entity facade, Registry adapter or Compiler.
+    It remains
     public from this submodule because complete file inputs need heterogeneous
     orchestration; handwritten scenarios bypass it.
     """

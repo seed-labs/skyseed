@@ -15,8 +15,8 @@ class GroundStationSimulationInput:
     """Contain only static GroundStation values needed beyond the Emulator.
 
     Layer: immutable Emulator-to-Simulator boundary input. Its classmethod
-    copies one GroundStation and future Simulator code reads the result. It is
-    not an Emulator entity, SEED Router or execution target. It is public
+    copies one GroundStation and future Simulator code reads the result. It is not an
+    Emulator entity, SEED Router or execution target. It is public
     because it is the explicit static GroundStation input for the Simulator.
     """
 

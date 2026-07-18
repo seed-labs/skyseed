@@ -132,8 +132,8 @@ def test_large_example_has_one_thin_file_application_path() -> None:
 
     assert "StaticEmulatorScenarioLoader().load" in source
     assert "StaticEmulatorSpecificationApplier().apply" in source
-    assert "from skyseed_v2.scenario_loader import" in source
-    assert "from skyseed_v2.scenario_application import" in source
+    assert "from skyseed_v2.serialization import" in source
+    assert "from skyseed_v2.application import" in source
     assert "from skyseed_v2 import" not in source
     assert "@dataclass" not in source
     assert "safe_load" not in source

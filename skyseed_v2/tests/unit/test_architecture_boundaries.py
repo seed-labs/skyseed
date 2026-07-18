@@ -176,26 +176,39 @@ def test_private_upstream_accumulator_has_one_source_access_point() -> None:
 
 
 def test_generic_static_specifications_are_backend_and_v1_independent() -> None:
-    from skyseed_v2 import specifications
-
-    imports = imported_modules(specifications)
-    assert not any(
-        module == "seedemu"
-        or module.startswith("seedemu.")
-        or module == "skyseed_v1"
-        or module.startswith("skyseed_v1.")
-        for module in imports
+    from skyseed_v2.specifications import (
+        _validation,
+        ground_station,
+        network,
+        satellite,
+        scenario,
     )
-    source = Path(inspect.getsourcefile(specifications)).read_text()
-    for forbidden in (
-        "epoch_utc",
-        "simulation_start_time",
-        "current_position",
-        "visibility",
-        "RuntimeNodeReference",
-        "resource_locator",
+
+    for specification_module in (
+        _validation,
+        ground_station,
+        network,
+        satellite,
+        scenario,
     ):
-        assert forbidden not in source
+        imports = imported_modules(specification_module)
+        assert not any(
+            module == "seedemu"
+            or module.startswith("seedemu.")
+            or module == "skyseed_v1"
+            or module.startswith("skyseed_v1.")
+            for module in imports
+        )
+        source = Path(inspect.getsourcefile(specification_module)).read_text()
+        for forbidden in (
+            "epoch_utc",
+            "simulation_start_time",
+            "current_position",
+            "visibility",
+            "RuntimeNodeReference",
+            "resource_locator",
+        ):
+            assert forbidden not in source
 
 
 def test_compose_materialization_is_outside_emulator_and_compiler_models() -> None:
@@ -215,11 +228,12 @@ def test_compose_materialization_is_outside_emulator_and_compiler_models() -> No
     )
 
 
-def test_scenario_loader_and_formal_examples_respect_application_boundaries() -> None:
-    from skyseed_v2 import scenario_application, scenario_loader
+def test_serialization_and_application_respect_package_boundaries() -> None:
+    from skyseed_v2.application import static_scenario_application
     from skyseed_v2.entities import ground_station, satellite
+    from skyseed_v2.serialization import static_emulator_yaml_loader
 
-    loader_imports = imported_modules(scenario_loader)
+    loader_imports = imported_modules(static_emulator_yaml_loader)
     assert "skyseed_v2.specifications" in loader_imports
     for forbidden_prefix in (
         "seedemu",
@@ -248,7 +262,7 @@ def test_scenario_loader_and_formal_examples_respect_application_boundaries() ->
         ground_station_input,
     ):
         assert not any(
-            "scenario_loader" in module
+            "serialization" in module
             for module in imported_modules(input_module)
         )
     for domain_module in (satellite, ground_station):
@@ -257,12 +271,12 @@ def test_scenario_loader_and_formal_examples_respect_application_boundaries() ->
             for module in imported_modules(domain_module)
         )
 
-    application_imports = imported_modules(scenario_application)
+    application_imports = imported_modules(static_scenario_application)
     assert "skyseed_v2.specifications" in application_imports
     assert "skyseed_v2.seedemu_integration" in application_imports
     assert "skyseed_v2.simulator_input" in application_imports
     for forbidden_prefix in (
-        "skyseed_v2.scenario_loader",
+        "skyseed_v2.serialization",
         "skyseed_v2.materialization",
         "yaml",
         "docker",
@@ -273,7 +287,7 @@ def test_scenario_loader_and_formal_examples_respect_application_boundaries() ->
             for module in application_imports
         )
     application_source = Path(
-        inspect.getsourcefile(scenario_application)
+        inspect.getsourcefile(static_scenario_application)
     ).read_text(encoding="utf-8")
     for forbidden in (
         "getRegistry",
@@ -309,16 +323,16 @@ def test_constellation_helper_never_became_a_domain_or_public_api() -> None:
     ):
         assert importlib.util.find_spec(retired_module) is None
 
-    from skyseed_v2.scenario_application import (
+    from skyseed_v2.application import (
         StaticEmulatorApplyResult,
         StaticEmulatorSpecificationApplier,
     )
 
     assert StaticEmulatorSpecificationApplier.__module__ == (
-        "skyseed_v2.scenario_application"
+        "skyseed_v2.application.static_scenario_application"
     )
     assert StaticEmulatorApplyResult.__module__ == (
-        "skyseed_v2.scenario_application"
+        "skyseed_v2.application.static_scenario_application"
     )
     assert not hasattr(skyseed_v2, "StaticEmulatorSpecificationApplier")
     assert not hasattr(skyseed_v2, "StaticEmulatorApplyResult")

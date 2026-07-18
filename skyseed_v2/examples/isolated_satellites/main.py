@@ -1,4 +1,4 @@
-"""Construct two isolated Satellites with the public domain API."""
+"""Construct two isolated Satellites with the public entity API."""
 
 from __future__ import annotations
 

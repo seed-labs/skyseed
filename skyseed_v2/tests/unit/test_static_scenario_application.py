@@ -1,6 +1,6 @@
 from seedemu.core import Emulator
 
-from skyseed_v2.scenario_application import StaticEmulatorSpecificationApplier
+from skyseed_v2.application import StaticEmulatorSpecificationApplier
 from skyseed_v2.specifications import (
     EbgpPeeringSpecification,
     EbgpRouterReferenceSpecification,

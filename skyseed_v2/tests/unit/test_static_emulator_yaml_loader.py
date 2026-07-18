@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from yaml import safe_dump, safe_load
 
-from skyseed_v2.scenario_loader import (
+from skyseed_v2.serialization import (
     SCENARIO_SCHEMA_VERSION,
     StaticEmulatorScenarioLoadError,
     StaticEmulatorScenarioLoader,

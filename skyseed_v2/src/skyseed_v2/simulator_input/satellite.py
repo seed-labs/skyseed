@@ -15,8 +15,8 @@ class SatelliteSimulationInput:
     """Contain only static Satellite values needed beyond the Emulator.
 
     Layer: immutable Emulator-to-Simulator boundary input. Its classmethod
-    copies one Satellite and future Simulator code reads the result. It is not
-    an Emulator entity, SEED Node or runtime position. It is public because it
+    copies one Satellite and future Simulator code reads the result. It is not an
+    Emulator entity, SEED Node or runtime position. It is public because it
     is the explicit static Satellite input accepted by the future Simulator.
     """
 
