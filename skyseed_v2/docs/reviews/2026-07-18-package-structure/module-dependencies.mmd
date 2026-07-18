@@ -1,0 +1,119 @@
+flowchart LR
+    %% Actual imports at commit 0ebd3c6a69e50e8e2cfefb4229558bc213c16510.
+    %% Arrows point from importing module to imported module/layer.
+
+    Root["skyseed_v2.__init__<br/>public facade"]
+
+    subgraph Domain["current entities/domain"]
+        DomainInit["domain.__init__"]
+        Satellite["domain.satellite"]
+        GroundStation["domain.ground_station"]
+        Validation["domain.validation"]
+    end
+
+    subgraph Boundary["current simulator-facing contracts"]
+        ContractsInit["contracts.__init__"]
+        Identity["contracts.identity"]
+        SatDescriptor["contracts.satellite"]
+        GSDescriptor["contracts.ground_station"]
+        Catalog["contracts.catalog"]
+    end
+
+    Specs["specifications"]
+    Loader["scenario_loader<br/>YAML serialization"]
+
+    subgraph Application["current root application modules"]
+        Applier["scenario_application"]
+        Projection["projection"]
+        CatalogBuilder["catalog_builder"]
+    end
+
+    subgraph SeedIntegration["current seedemu integration"]
+        SeedInit["seed.__init__"]
+        AS["seed.autonomous_system"]
+        Base["seed.base"]
+        Compiler["seed.compiler"]
+        Metadata["seed.metadata"]
+        Asset["seed.assets patch"]
+    end
+
+    subgraph Materialization["materialization"]
+        MatInit["materialization.__init__"]
+        Launcher["materialization.compose_project_launcher"]
+    end
+
+    Seedemu["external seedemu"]
+    YAML["external PyYAML"]
+    Compose["external docker compose CLI"]
+
+    Iso["example: isolated_satellites"]
+    Complete["example: complete_static_emulator"]
+    Large["example: large_static_network"]
+
+    Root --> ContractsInit
+    Root --> DomainInit
+
+    DomainInit --> Satellite
+    DomainInit --> GroundStation
+    DomainInit --> Validation
+    Satellite --> Validation
+    GroundStation --> Validation
+    Satellite --> Seedemu
+    GroundStation --> Seedemu
+
+    ContractsInit --> Identity
+    ContractsInit --> SatDescriptor
+    ContractsInit --> GSDescriptor
+    ContractsInit --> Catalog
+    Identity -->|current cross-layer helper import| Validation
+    SatDescriptor --> Identity
+    GSDescriptor --> Identity
+    Catalog --> Identity
+    Catalog --> SatDescriptor
+    Catalog --> GSDescriptor
+
+    Loader --> Specs
+    Loader --> YAML
+
+    Projection --> DomainInit
+    Projection --> ContractsInit
+    Projection --> Identity
+    CatalogBuilder --> Projection
+    CatalogBuilder --> ContractsInit
+    CatalogBuilder --> AS
+    CatalogBuilder --> Seedemu
+    Applier --> Specs
+    Applier --> DomainInit
+    Applier --> ContractsInit
+    Applier --> CatalogBuilder
+    Applier --> SeedInit
+    Applier --> Seedemu
+
+    SeedInit --> AS
+    SeedInit --> Base
+    SeedInit --> Compiler
+    SeedInit --> DomainInit
+    AS --> DomainInit
+    AS --> Validation
+    AS --> Seedemu
+    Base --> DomainInit
+    Base --> Seedemu
+    Compiler --> DomainInit
+    Compiler --> Metadata
+    Compiler --> Asset
+    Compiler --> YAML
+    Compiler --> Seedemu
+
+    MatInit --> Launcher
+    Launcher -->|subprocess; no Python import of Compiler| Compose
+
+    Iso --> Root
+    Iso --> SeedInit
+    Iso --> Seedemu
+    Complete --> Root
+    Complete --> CatalogBuilder
+    Complete --> SeedInit
+    Complete --> Seedemu
+    Large --> Loader
+    Large --> Applier
+    Large --> SeedInit

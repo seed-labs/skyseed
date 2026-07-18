@@ -1,0 +1,107 @@
+Skyseed v2 package-structure review source tree
+Commit: 0ebd3c6a69e50e8e2cfefb4229558bc213c16510
+Counts are physical lines from the current commit.
+
+TREE
+----
+AGENTS.md
+docs/
+  CURRENT.md
+  architecture/
+    conceptual-class-diagrams.md
+    diagrams.md
+    emulator-public-construction-api.md
+    terminology.md
+examples/
+  complete_static_emulator/
+    README.md
+    main.py
+  isolated_satellites/
+    README.md
+    main.py
+  large_static_network/
+    README.md
+    main.py
+  reference/
+    README.md
+pyproject.toml
+src/
+  skyseed_v2/
+    __init__.py
+    catalog_builder.py
+    contracts/
+      __init__.py
+      catalog.py
+      ground_station.py
+      identity.py
+      satellite.py
+    domain/
+      __init__.py
+      ground_station.py
+      satellite.py
+      validation.py
+    materialization/
+      __init__.py
+      compose_project_launcher.py
+    projection.py
+    scenario_application.py
+    scenario_loader.py
+    seed/
+      __init__.py
+      assets/
+        internet_map_none_network_patch.sh
+      autonomous_system.py
+      base.py
+      compiler.py
+      metadata.py
+    specifications.py
+tests/
+  integration/
+    test_compiler_output.py
+    test_complete_static_emulator.py
+    test_construction_path_equivalence.py
+    test_examples_layout.py
+    test_ground_station_integration.py
+    test_large_static_network.py
+    test_seed_satellite.py
+    test_unified_skyseed_as.py
+  test_package_import.py
+  unit/
+    test_architecture_boundaries.py
+    test_architecture_traceability.py
+    test_catalog_builder.py
+    test_compose_project_launcher.py
+    test_ground_station.py
+    test_satellite_domain.py
+    test_satellite_projection.py
+    test_scenario_application.py
+    test_simulation_entity_catalog.py
+    test_simulation_node_identity.py
+    test_static_scenario_loader.py
+    test_static_specifications.py
+
+PYTHON FILE INVENTORY
+---------------------
+path | lines | public classes | public functions | multiple important public classes | exported surface(s)
+src/skyseed_v2/__init__.py | 33 | - | - | no | not re-exported; defining module only
+src/skyseed_v2/catalog_builder.py | 81 | SimulationEntityCatalogBuilder | - | no | skyseed_v2.catalog_builder
+src/skyseed_v2/contracts/__init__.py | 13 | - | - | no | not re-exported; defining module only
+src/skyseed_v2/contracts/catalog.py | 190 | SimulationEntityCatalog | - | no | skyseed_v2, skyseed_v2.contracts, skyseed_v2.contracts.catalog
+src/skyseed_v2/contracts/ground_station.py | 36 | GroundStationDescriptor | - | no | skyseed_v2, skyseed_v2.contracts, skyseed_v2.contracts.ground_station
+src/skyseed_v2/contracts/identity.py | 54 | SimulationNodeId | - | no | skyseed_v2, skyseed_v2.contracts, skyseed_v2.contracts.identity
+src/skyseed_v2/contracts/satellite.py | 36 | SatelliteDescriptor | - | no | skyseed_v2, skyseed_v2.contracts, skyseed_v2.contracts.satellite
+src/skyseed_v2/domain/__init__.py | 33 | - | - | no | not re-exported; defining module only
+src/skyseed_v2/domain/ground_station.py | 130 | GroundStationLocation, GroundStation | - | yes | skyseed_v2, skyseed_v2.domain, skyseed_v2.domain.ground_station
+src/skyseed_v2/domain/satellite.py | 385 | SatelliteRole, OrbitParameters, Satellite, Orbit, Shell | - | yes | skyseed_v2, skyseed_v2.domain, skyseed_v2.domain.satellite
+src/skyseed_v2/domain/validation.py | 18 | - | validate_identifier | no | skyseed_v2.domain, skyseed_v2.domain.validation
+src/skyseed_v2/materialization/__init__.py | 19 | - | - | no | not re-exported; defining module only
+src/skyseed_v2/materialization/compose_project_launcher.py | 630 | ComposeLaunchStrategy, ComposeServiceExpectations, ComposeBatchResult, ComposeMaterializationResult, ComposeMaterializationError, ComposeProjectLauncher | - | yes | skyseed_v2.materialization, skyseed_v2.materialization.compose_project_launcher
+src/skyseed_v2/projection.py | 81 | GroundStationDescriptorProjector, SatelliteDescriptorProjector | - | yes | skyseed_v2.projection
+src/skyseed_v2/scenario_application.py | 261 | StaticEmulatorApplyResult, StaticEmulatorSpecificationApplier | - | yes | skyseed_v2.scenario_application
+src/skyseed_v2/scenario_loader.py | 632 | StaticEmulatorScenarioLoadError, StaticEmulatorScenarioLoader | - | yes | skyseed_v2.scenario_loader
+src/skyseed_v2/seed/__init__.py | 21 | - | - | no | not re-exported; defining module only
+src/skyseed_v2/seed/autonomous_system.py | 180 | SkyseedAutonomousSystem | - | no | skyseed_v2.seed, skyseed_v2.seed.autonomous_system
+src/skyseed_v2/seed/base.py | 46 | SatelliteBase | - | no | skyseed_v2.seed, skyseed_v2.seed.base
+src/skyseed_v2/seed/compiler.py | 514 | SkyseedDockerCompiler | - | no | skyseed_v2.seed, skyseed_v2.seed.compiler
+src/skyseed_v2/seed/metadata.py | 13 | - | skyseed_metadata_key | no | skyseed_v2.seed.metadata
+src/skyseed_v2/specifications.py | 867 | RaanDistributionSpecification, InOrbitPhaseDistributionSpecification, OrbitGenerationSpecification, SatelliteSpecification, OrbitSpecification, ShellSpecification, GroundStationSpecification, InternetExchangeAttachmentSpecification, LocalNetworkAttachmentSpecification, InternetExchangeSpecification, OrdinaryNetworkSpecification, OrdinaryRouterSpecification, OrdinaryAutonomousSystemSpecification, SkyseedAutonomousSystemSpecification, EbgpRouterReferenceSpecification, EbgpPeeringSpecification, StaticEmulatorScenarioSpecification | ground_station_id_for | yes | skyseed_v2.specifications
