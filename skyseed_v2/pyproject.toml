@@ -17,7 +17,7 @@ test = ["pytest>=7"]
 where = ["src"]
 
 [tool.setuptools.package-data]
-"skyseed_v2.seed" = ["assets/*.sh"]
+"skyseed_v2.seedemu_integration" = ["assets/*.sh"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

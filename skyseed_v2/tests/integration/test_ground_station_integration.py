@@ -9,7 +9,7 @@ from yaml import safe_load
 from yaml.nodes import MappingNode, Node, SequenceNode
 
 from skyseed_v2.entities import GroundStation, GroundStationLocation, OrbitParameters
-from skyseed_v2.seed import (
+from skyseed_v2.seedemu_integration import (
     SATELLITE_REGISTRY_TYPE,
     SatelliteBase,
     SkyseedAutonomousSystem,

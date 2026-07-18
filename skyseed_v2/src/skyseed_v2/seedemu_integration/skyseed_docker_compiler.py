@@ -27,7 +27,7 @@ from skyseed_v2.entities import (
     GroundStation,
     Satellite,
 )
-from skyseed_v2.seed.metadata import (
+from skyseed_v2.seedemu_integration.metadata import (
     SEED_METADATA_PREFIX,
     skyseed_metadata_key,
 )
@@ -234,7 +234,7 @@ class SkyseedDockerCompiler(Docker):
     Layer: SEED integration. Examples or advanced callers create it after
     entity construction; Emulator.compile and deployment tooling consume its
     artifact. It is not an entity creator, specification Applier, materializer
-    or Simulator execution compiler. It is public from `skyseed_v2.seed`
+    or Simulator execution compiler. It is public from `skyseed_v2.seedemu_integration`
     because Satellite dispatch needs a narrow upstream Compiler extension.
     """
 
@@ -333,7 +333,7 @@ class SkyseedDockerCompiler(Docker):
         (context / "Dockerfile").write_text(
             INTERNET_MAP_DOCKERFILE, encoding="utf-8"
         )
-        patch_resource = files("skyseed_v2.seed").joinpath(
+        patch_resource = files("skyseed_v2.seedemu_integration").joinpath(
             "assets/internet_map_none_network_patch.sh"
         )
         with patch_resource.open("rb") as patch_input:

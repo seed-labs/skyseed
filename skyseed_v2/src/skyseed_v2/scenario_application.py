@@ -8,7 +8,7 @@ from seedemu.core import AutonomousSystem, Emulator
 from seedemu.layers import Ebgp, Ibgp, Ospf, PeerRelationship, Routing
 
 from skyseed_v2.entities import GroundStationLocation, OrbitParameters
-from skyseed_v2.seed import SatelliteBase, SkyseedAutonomousSystem
+from skyseed_v2.seedemu_integration import SatelliteBase, SkyseedAutonomousSystem
 from skyseed_v2.simulator_input import SimulatorStaticInput
 from skyseed_v2.specifications import (
     OrdinaryAutonomousSystemSpecification,

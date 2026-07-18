@@ -10,7 +10,7 @@ from skyseed_v2.scenario_application import (
     StaticEmulatorSpecificationApplier,
 )
 from skyseed_v2.scenario_loader import StaticEmulatorScenarioLoader
-from skyseed_v2.seed import SkyseedDockerCompiler
+from skyseed_v2.seedemu_integration import SkyseedDockerCompiler
 
 
 EXAMPLE_ROOT = Path(__file__).resolve().parent

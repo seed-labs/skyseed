@@ -10,7 +10,7 @@ from skyseed_v2 import (
     materialization,
     scenario_application,
     scenario_loader,
-    seed,
+    seedemu_integration,
     simulator_input,
     specifications,
 )
@@ -27,7 +27,7 @@ PUBLIC_MODULES = (
     materialization,
     scenario_application,
     scenario_loader,
-    seed,
+    seedemu_integration,
     simulator_input,
     specifications,
 )
@@ -73,12 +73,12 @@ def test_current_api_mermaid_names_are_real_and_classified() -> None:
         "Orbit": entities.Orbit,
         "OrbitParameters": entities.OrbitParameters,
         "Satellite": entities.Satellite,
-        "SatelliteBase": seed.SatelliteBase,
+        "SatelliteBase": seedemu_integration.SatelliteBase,
         "SatelliteSimulationInput": simulator_input.SatelliteSimulationInput,
         "Shell": entities.Shell,
         "SimulatorStaticInput": simulator_input.SimulatorStaticInput,
-        "SkyseedAutonomousSystem": seed.SkyseedAutonomousSystem,
-        "SkyseedDockerCompiler": seed.SkyseedDockerCompiler,
+        "SkyseedAutonomousSystem": seedemu_integration.SkyseedAutonomousSystem,
+        "SkyseedDockerCompiler": seedemu_integration.SkyseedDockerCompiler,
         "StaticEmulatorApplyResult": scenario_application.StaticEmulatorApplyResult,
         "StaticEmulatorScenarioLoader": scenario_loader.StaticEmulatorScenarioLoader,
         "StaticEmulatorScenarioSpecification": (

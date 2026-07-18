@@ -1,8 +1,8 @@
 """SEED integration for static Skyseed entities."""
 
-from .autonomous_system import SkyseedAutonomousSystem
-from .base import SatelliteBase
-from .compiler import SkyseedDockerCompiler
+from .satellite_base import SatelliteBase
+from .skyseed_autonomous_system import SkyseedAutonomousSystem
+from .skyseed_docker_compiler import SkyseedDockerCompiler
 from skyseed_v2.entities import (
     GROUND_STATION_REGISTRY_TYPE,
     GROUND_STATION_ROLE_LABEL,

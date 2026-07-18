@@ -4,7 +4,7 @@ from seedemu.core import Emulator, Node
 from seedemu.core.enums import NodeRole
 
 from skyseed_v2.entities import OrbitParameters, Satellite, SatelliteRole
-from skyseed_v2.seed import (
+from skyseed_v2.seedemu_integration import (
     SATELLITE_REGISTRY_TYPE,
     SatelliteBase,
     SkyseedAutonomousSystem,

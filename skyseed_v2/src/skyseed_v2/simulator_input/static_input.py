@@ -9,7 +9,7 @@ from typing import Mapping, Self
 
 from seedemu.core import AutonomousSystem
 
-from skyseed_v2.seed.autonomous_system import SkyseedAutonomousSystem
+from skyseed_v2.seedemu_integration.skyseed_autonomous_system import SkyseedAutonomousSystem
 
 from .ground_station import GroundStationSimulationInput
 from .identity import (

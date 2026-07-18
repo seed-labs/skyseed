@@ -6,7 +6,7 @@ from examples.complete_static_emulator.main import build_emulator
 from skyseed_v2.scenario_application import StaticEmulatorSpecificationApplier
 from skyseed_v2.scenario_loader import StaticEmulatorScenarioLoader
 from skyseed_v2.specifications import StaticEmulatorScenarioSpecification
-from skyseed_v2.seed import SkyseedDockerCompiler
+from skyseed_v2.seedemu_integration import SkyseedDockerCompiler
 
 
 FIXTURE = Path(__file__).parents[1] / "fixtures/complete_equivalent.yaml"

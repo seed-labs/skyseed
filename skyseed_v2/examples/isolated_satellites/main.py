@@ -8,7 +8,7 @@ from pathlib import Path
 from seedemu.core import Emulator
 
 from skyseed_v2 import OrbitParameters
-from skyseed_v2.seed import (
+from skyseed_v2.seedemu_integration import (
     SatelliteBase,
     SkyseedAutonomousSystem,
     SkyseedDockerCompiler,

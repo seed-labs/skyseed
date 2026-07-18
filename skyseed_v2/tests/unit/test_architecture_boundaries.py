@@ -6,8 +6,8 @@ from pathlib import Path
 import skyseed_v2
 from skyseed_v2 import simulator_input
 from skyseed_v2.entities import GroundStation, Satellite, validate_identifier
-from skyseed_v2.seed import SkyseedDockerCompiler
-from skyseed_v2.seed.metadata import (
+from skyseed_v2.seedemu_integration import SkyseedDockerCompiler
+from skyseed_v2.seedemu_integration.metadata import (
     SEED_METADATA_PREFIX,
     SKYSEED_METADATA_PREFIX,
 )
@@ -43,13 +43,16 @@ def test_domain_entities_do_not_depend_on_each_other_or_simulator_input() -> Non
 
 
 def test_skyseed_as_owns_entities_but_not_simulator_input() -> None:
-    from skyseed_v2.seed import autonomous_system
+    from skyseed_v2.seedemu_integration import skyseed_autonomous_system
 
-    imports = imported_modules(autonomous_system)
+    imports = imported_modules(skyseed_autonomous_system)
     assert not any("simulator_input" in module for module in imports)
-    assert not hasattr(autonomous_system.SkyseedAutonomousSystem, "simulator_input")
     assert not hasattr(
-        autonomous_system.SkyseedAutonomousSystem,
+        skyseed_autonomous_system.SkyseedAutonomousSystem,
+        "simulator_input",
+    )
+    assert not hasattr(
+        skyseed_autonomous_system.SkyseedAutonomousSystem,
         "simulator_static_input",
     )
 
@@ -78,7 +81,7 @@ def test_simulator_input_dependencies_point_toward_emulator_entities() -> None:
         ".satellite",
     }
     assert "seedemu.core" in static_input_imports
-    assert "skyseed_v2.seed.autonomous_system" in static_input_imports
+    assert "skyseed_v2.seedemu_integration.skyseed_autonomous_system" in static_input_imports
 
 
 def test_static_input_has_no_registry_compiler_or_output_dependency() -> None:
@@ -86,10 +89,10 @@ def test_static_input_has_no_registry_compiler_or_output_dependency() -> None:
 
     static_input_imports = imported_modules(static_input)
 
-    assert "skyseed_v2.seed.autonomous_system" in static_input_imports
+    assert "skyseed_v2.seedemu_integration.skyseed_autonomous_system" in static_input_imports
     for forbidden_dependency in (
-        "skyseed_v2.seed.compiler",
-        "skyseed_v2.seed.metadata",
+        "skyseed_v2.seedemu_integration.skyseed_docker_compiler",
+        "skyseed_v2.seedemu_integration.metadata",
         "seedemu.compiler",
         "docker",
     ):
@@ -153,7 +156,7 @@ def test_shared_validation_and_seed_metadata_have_explicit_owners() -> None:
 
 
 def test_retired_as_and_compiler_names_have_no_aliases() -> None:
-    import skyseed_v2.seed as seed_integration
+    import skyseed_v2.seedemu_integration as seed_integration
 
     for retired_name in (
         "SatelliteAutonomousSystem",
@@ -203,7 +206,7 @@ def test_compose_materialization_is_outside_emulator_and_compiler_models() -> No
         "seedemu",
         "skyseed_v2.simulator_input",
         "skyseed_v2.entities",
-        "skyseed_v2.seed",
+        "skyseed_v2.seedemu_integration",
     )
     assert not any(
         module == prefix or module.startswith(f"{prefix}.")
@@ -220,7 +223,7 @@ def test_scenario_loader_and_formal_examples_respect_application_boundaries() ->
     assert "skyseed_v2.specifications" in loader_imports
     for forbidden_prefix in (
         "seedemu",
-        "skyseed_v2.seed",
+        "skyseed_v2.seedemu_integration",
         "skyseed_v2.entities",
         "skyseed_v2.materialization",
         "skyseed_v2.simulator_input",
@@ -256,7 +259,7 @@ def test_scenario_loader_and_formal_examples_respect_application_boundaries() ->
 
     application_imports = imported_modules(scenario_application)
     assert "skyseed_v2.specifications" in application_imports
-    assert "skyseed_v2.seed" in application_imports
+    assert "skyseed_v2.seedemu_integration" in application_imports
     assert "skyseed_v2.simulator_input" in application_imports
     for forbidden_prefix in (
         "skyseed_v2.scenario_loader",

@@ -12,7 +12,7 @@ from examples.large_static_network.main import (
     apply_scenario_file,
 )
 from skyseed_v2.scenario_loader import StaticEmulatorScenarioLoader
-from skyseed_v2.seed import SkyseedDockerCompiler
+from skyseed_v2.seedemu_integration import SkyseedDockerCompiler
 
 
 METADATA_PREFIX = "org.seedsecuritylabs.seedemu.meta."

@@ -20,7 +20,7 @@ from skyseed_v2.specifications import (
     StaticEmulatorScenarioSpecification,
 )
 from skyseed_v2.entities import Orbit, Shell
-from skyseed_v2.seed import SkyseedAutonomousSystem
+from skyseed_v2.seedemu_integration import SkyseedAutonomousSystem
 
 
 def explicit_shell(shell_id: str, satellite_id: str) -> ShellSpecification:

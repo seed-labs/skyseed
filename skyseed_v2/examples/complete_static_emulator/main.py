@@ -13,7 +13,7 @@ from skyseed_v2 import (
     OrbitParameters,
     SimulatorStaticInput,
 )
-from skyseed_v2.seed import (
+from skyseed_v2.seedemu_integration import (
     SatelliteBase,
     SkyseedAutonomousSystem,
     SkyseedDockerCompiler,

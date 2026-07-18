@@ -14,7 +14,7 @@ from skyseed_v2.simulator_input import (
     SatelliteSimulationInput,
     SimulationNodeId,
 )
-from skyseed_v2.seed import SkyseedDockerCompiler
+from skyseed_v2.seedemu_integration import SkyseedDockerCompiler
 
 
 METADATA_PREFIX = "org.seedsecuritylabs.seedemu.meta."

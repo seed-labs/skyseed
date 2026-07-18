@@ -1,7 +1,7 @@
 from seedemu.core import Emulator
 
 from skyseed_v2.entities import GroundStationLocation, OrbitParameters
-from skyseed_v2.seed import SatelliteBase, SkyseedAutonomousSystem
+from skyseed_v2.seedemu_integration import SatelliteBase, SkyseedAutonomousSystem
 
 
 def test_one_as_owns_satellite_ground_station_and_standard_seed_objects() -> None:

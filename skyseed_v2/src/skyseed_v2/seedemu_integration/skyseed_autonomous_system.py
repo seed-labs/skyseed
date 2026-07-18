@@ -23,7 +23,7 @@ class SkyseedAutonomousSystem(AutonomousSystem):
     Layer: approved domain owner plus SEED integration. Handwritten callers or
     the specification Applier create it; Base, routing layers and callers use
     it. It is not a scenario facade or Descriptor factory. It is public from
-    ``skyseed_v2.seed`` because ownership and SEED lifecycle meet here.
+    ``skyseed_v2.seedemu_integration`` because ownership and SEED lifecycle meet here.
     """
 
     def __init__(self, asn: int, subnet_template: str = "10.{}.0.0/16") -> None:
