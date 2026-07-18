@@ -2,138 +2,106 @@
 
 ## Scope
 
-This slice adds generic static construction for constellations and ground
-stations, then exercises it with an S4-scale container experiment. S4 is only a
-scale and input-data label. It is not a default scenario, compatibility mode,
-domain API, or claim that the dynamic v1 experiment has been reproduced.
-
-The implemented path is:
+The static Emulator accepts versioned, v2-owned scenario data and constructs
+only already-approved static entities. The formal path is:
 
 ```text
-reference-only external data adapter
-        -> immutable v2 specifications
-        -> application builders
-        -> current Shell / Orbit / Satellite / GroundStation APIs
-        -> SimulationEntityCatalog and SkyseedDockerCompiler
+example-local v2 YAML
+        -> StaticEmulatorScenarioLoader
+        -> immutable generic specifications
+        -> StaticEmulatorScenarioBuilder
+        -> SkyseedAutonomousSystem -> Shell -> Orbit -> Satellite
+                                 \-> GroundStation
+        -> SimulationEntityCatalog
+        -> SkyseedDockerCompiler
 ```
 
-No core package module imports v1, understands a v1 JSON shape, or stores a v1
-path. The executable reference adapter lives under `examples/reference/` and is
-excluded from the wheel.
+No formal example imports reference tooling or reads `skyseed_v1`. Historical
+v1 adapters remain under `examples/reference/` only for offline investigation
+or one-way conversion; they are not a supported scenario format or success
+path and are excluded from the wheel.
 
-## Immutable specifications
+## Versioned v2 scenario contract
 
-`skyseed_v2.specifications` is backend-independent and contains no SEED import.
-It defines:
+`StaticEmulatorScenarioLoader` reads `skyseed-static-emulator/v1` YAML. A
+scenario contains Skyseed AS, Shell generation or explicit Orbit/Satellite
+specifications, optional GroundStations, ordinary AS/Network/Router values,
+IX attachments and explicit eBGP peerings. A scenario may explicitly reference
+an example-local `skyseed-ground-stations/v1` file.
 
-- `ShellSpecification`, using exactly one of a generic generation rule or
-  explicit `OrbitSpecification` values;
-- `OrbitGenerationSpecification`, `RaanDistributionSpecification` and
-  `InOrbitPhaseDistributionSpecification`;
-- explicit `OrbitSpecification` and `SatelliteSpecification` values;
-- `GroundStationSpecification`, with either an explicit v2 ID or a stable
-  identity-generation key.
+The loader rejects unknown versions and fields, missing fields, duplicate YAML
+keys, invalid identifiers/ASN/angles/coordinates/prefixes, duplicate logical
+IDs, unresolved IX/Router/network references and external ground-station paths.
+It normalizes collection ordering before returning frozen specifications.
 
-The specifications contain only static Emulator data. They do not contain an
-epoch, simulation start time, position, visibility, link, Zone, topology slice,
-resource locator, runtime node reference, UT, BPF, MPLS or qdisc field.
+The contract deliberately excludes v1 commits and labels, epoch/time, current
+position, ISL, GS–Satellite links, Zone, dynamic routes, qdisc/BPF/MPLS,
+container/Compose names and runtime locators. `operator` is descriptive only;
+it does not select ASN, node type, routing or Compiler behavior.
 
-## Builders and identity
+## Application builders and approved ownership
 
-`ConstellationBuilder` and `GroundStationBuilder` are application services. The
-domain entities remain responsible only for their own invariants and SEED node
-capabilities; the Compiler does not construct domain objects.
+`ShellPopulationBuilder` is a deterministic application helper that expands
+one or more `ShellSpecification` values through the owning
+`SkyseedAutonomousSystem`. It returns the Shell, Orbit and Satellite objects
+created through the existing ownership APIs. It is not a domain entity and
+does not introduce a parent above Shell.
 
-Generated constellation IDs use the v2 rule:
+The approved hierarchy remains:
 
 ```text
-<shell-id>-orbit-<one-based orbit number, zero padded>
-<orbit-id>-satellite-<one-based satellite number, zero padded>
+SkyseedAutonomousSystem
+└── Shell
+    └── Orbit
+        └── Satellite
 ```
 
-A generated GroundStation ID is `ground-station-` plus the first 20 hexadecimal
-digits of SHA-256 over its explicit identity key. The experiment adapter builds
-that key from normalized operator, display name, location and elevation values,
-not from list position. Explicit IDs remain supported by the general
-specification.
+Several Shells are only a collection owned by an AS or scenario. They do not
+form a `Constellation` entity, identity, Descriptor, Catalog entry or Simulator
+contract. `GroundStationBuilder` has the equivalent narrow application role
+for GroundStations. `StaticEmulatorScenarioBuilder` coordinates those helpers,
+ordinary SEED ground objects and approved Layers, then delegates Catalog
+projection to the existing Catalog builder.
 
-The builders snapshot and sort specifications, preflight every candidate ID,
-and mutate the owning `SkyseedAutonomousSystem` only after validation. The same
-input therefore produces the same entity IDs independently of iterable order.
-The same rules work for arbitrary positive sizes, multiple Shells and repeated
-use with independent Skyseed AS instances. They do not contain the numbers 348
-or 12 and do not branch on S4.
+Generated IDs are deterministic and independent of input mapping/order. No
+builder contains the large example's counts or branches on a historical S4
+label.
 
-## Reference adapter
+## Domain vocabulary discipline
 
-`examples/reference/v1_static_input_adapter.py` is experiment tooling. It reads
-the committed S1-S5 orbit catalog and selected gateway files, validates their
-historical shapes, and immediately translates them into v2 specifications.
+Before a new noun enters public API, contracts, a Descriptor, Catalog, domain
+class diagram or Simulator input, its design must explicitly establish:
 
-The adapter pins the selected snapshot to full monorepo commit
-`ad331b9c15e3a5fb522af9ff18a06434f99c0860`. A narrow companion validator
-requires that commit to be an ancestor of the current HEAD and proves that the
-three actual worktree files have the exact Git blob IDs stored at that commit
-before parsing them. Missing commits/files, non-descendant history and content
-drift fail closed. The earlier investigation reference
-`06b19eb718a79a9113ee95bc045f10953c1d8ab7` is its ancestor and has identical
-blobs for all three selected files; the pin difference therefore records a
-newer monorepo documentation point, not different scenario data.
+1. the real domain concept it represents;
+2. its relationship to existing objects;
+3. its long-term consumer;
+4. whether it is only a helper, builder result or application service;
+5. the alternative that avoids introducing it; and
+6. explicit user approval.
 
-For the current experiment it derives one 6-orbit, 58-satellite-per-orbit Shell
-with 560 km altitude, 97.6 degree inclination, uniform 60 degree RAAN spacing,
-uniform in-orbit spacing and the alternating plane phase offset. It selects 12
-catalog GroundStations and sets the descriptive operator to `Starlink`.
+Implementation convenience does not promote a name into the domain model. No
+approval framework or placeholder class is implied by this documentation
+rule.
 
-The adapter intentionally discards historical node IDs, epoch values, service
-`/32` values, IX/upstream bindings and every dynamic field. Its output is not a
-new supported file format.
+## Self-contained formal examples
 
-## Scale experiment ground network
+Each formal experiment owns its `main.py`, versioned data, README, thin
+`start.sh`, scoped `cleanup.sh` and ignored `output/` directory. The large
+static network owns exactly the 12 GroundStation records it needs; it does not
+copy the historical 250-item source catalog.
 
-`examples/s4_scale_static_emulator.py` creates:
+`large_static_network` currently describes one Shell, six Orbits, 348 isolated
+Satellites, 12 GroundStations, two ordinary ground AS, two IX and two explicit
+eBGP peerings. Those are example data values, not framework defaults or a
+claim that dynamic v1 behavior has been reproduced.
 
-- one generic Shell, six Orbits and 348 isolated Satellites in AS65000;
-- 12 GroundStations in the same Skyseed AS;
-- two real SEED IX networks, with six GS memberships on each IX;
-- ordinary AS65101 and AS65102, each with one Router and one explicit service
-  network;
-- one explicitly router-bound eBGP session per IX.
+## Materialization boundary
 
-Only one selected GS on each IX has an eBGP session. The other ten GS retain
-only their explicitly declared IX membership; they receive no dummy,
-management, satellite-side or historical service network. OSPF and iBGP are
-masked for AS65000. The ordinary ground Routers continue through the unmodified
-SEED Router path.
+The examples compile one normal Skyseed Compose output. The existing
+`ComposeProjectLauncher` remains an integration helper for one already-built
+project, with Compose v2 single invocation as default and explicit fixed
+batching as optional tooling. It is not extended in this slice.
 
-The two test prefixes are `10.210.0.0/24` and `10.220.0.0/24`. They are new,
-clear ground test networks and are unrelated to the ambiguous historical
-service `/32` values.
-
-## What successful validation proves
-
-The scale run can prove that current v2 constructs, catalogs, compiles and
-materializes hundreds of isolated Satellite containers together with multiple
-GroundStations and a small real static ground Internet. Runtime checks cover
-container state, NetworkMode, interfaces, BGP, learned prefixes, ICMP and
-InternetMap graph facts.
-
-It does not prove dynamic orbit propagation, time advancement, ISL,
-GS-Satellite connectivity, Zone/G/Z routing, UT behavior, Simulator planning or
-v1 experiment equivalence. None of those capabilities is implemented by this
-slice.
-
-## Compose materialization boundary
-
-The scale scene is compiled exactly once into one Compose output. Startup of
-that complete project is owned by the separate
-`ComposeProjectLauncher` integration tool under `skyseed_v2.materialization`,
-not by these specifications, builders, Catalog, Emulator, or Compiler. The
-caller supplies the exact long-running/helper classification and Compose v2
-parallel limit. The launcher keeps one project/file, defaults to one complete
-project invocation, and verifies expected final states fail-closed. Fixed
-batching remains available only as an explicitly selected tooling mode.
-
-The design and formal scale evidence are recorded in
-`docs/design/compose-materialization.md` and
-`docs/evidence/s4-scale-compose-v2-single-materialization-validation.md`.
+These tools may later be used underneath `Runner.initialize()`. They are not a
+separate top-level architecture, Simulator, or current Runner, and provide no
+automatic recovery, reconciliation, dynamic tuning or restart policy.

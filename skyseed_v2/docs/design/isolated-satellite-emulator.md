@@ -226,9 +226,10 @@ collision cannot create duplicate YAML keys or retain a Host identity.
 
 ## 9. Minimal executable scenario
 
-`examples/isolated_satellites.py` constructs one AS, one Shell, one Orbit, and
-two Satellites through the owning objects. See `examples/README.md` for compile,
-run, inspection, visualization, and cleanup commands.
+`examples/isolated_satellites/main.py` loads its adjacent v2 `scenario.yaml`
+and constructs one AS, one Shell, one Orbit, and two Satellites through the
+owning objects. See its local README for compile, run, inspection,
+visualization, and cleanup commands.
 
 ## 10. Deferred work
 

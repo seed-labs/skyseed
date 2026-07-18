@@ -5,7 +5,7 @@ from yaml import compose as compose_yaml
 from yaml import safe_load
 from yaml.nodes import MappingNode, Node, SequenceNode
 
-from examples.s4_scale_static_emulator import (
+from examples.large_static_network.main import (
     build_scenario,
     compile_scenario,
     materialization_expectations,
@@ -32,7 +32,7 @@ def assert_no_duplicate_yaml_keys(node: Node, path: str = "$") -> None:
             assert_no_duplicate_yaml_keys(child, f"{path}[{index}]")
 
 
-def test_s4_scale_domain_and_catalog_are_deterministic() -> None:
+def test_large_static_domain_and_catalog_are_deterministic() -> None:
     first = build_scenario()
     second = build_scenario()
 
@@ -44,19 +44,23 @@ def test_s4_scale_domain_and_catalog_are_deterministic() -> None:
     assert first.summary.ix_count == 2
     assert first.summary.ebgp_peering_count == 2
     assert first.summary.catalog_node_count == 360
-    assert len({node.node_id for node in first.catalog.list_nodes()}) == 360
-    assert tuple(node.node_id for node in first.catalog.list_nodes()) == tuple(
-        node.node_id for node in second.catalog.list_nodes()
+    first_catalog = first.construction.catalog
+    second_catalog = second.construction.catalog
+    assert len({node.node_id for node in first_catalog.list_nodes()}) == 360
+    assert tuple(node.node_id for node in first_catalog.list_nodes()) == tuple(
+        node.node_id for node in second_catalog.list_nodes()
     )
-    assert tuple(
-        satellite.satellite_id for satellite in first.constellation.satellites
-    ) == tuple(
-        satellite.satellite_id for satellite in second.constellation.satellites
+    first_satellites = first.construction.shell_population.satellites
+    second_satellites = second.construction.shell_population.satellites
+    assert tuple(satellite.satellite_id for satellite in first_satellites) == tuple(
+        satellite.satellite_id for satellite in second_satellites
     )
-    assert all(satellite.getInterfaces() == [] for satellite in first.constellation.satellites)
+    assert all(satellite.getInterfaces() == [] for satellite in first_satellites)
 
 
-def test_s4_scale_compose_inventory_and_static_routing(tmp_path: Path) -> None:
+def test_large_static_compose_inventory_and_static_routing(
+    tmp_path: Path,
+) -> None:
     scenario = build_scenario()
     output = tmp_path / "output"
     summary, _ = compile_scenario(
@@ -78,7 +82,10 @@ def test_s4_scale_compose_inventory_and_static_routing(tmp_path: Path) -> None:
         labels = service.get("labels", {})
         if labels.get(f"{METADATA_PREFIX}type") == "satnode":
             satellite_services.append(service)
-        elif labels.get(f"{METADATA_PREFIX}skyseed.entity_type") == "GroundStation":
+        elif (
+            labels.get(f"{METADATA_PREFIX}skyseed.entity_type")
+            == "GroundStation"
+        ):
             ground_station_services.append(service)
         elif labels.get(f"{METADATA_PREFIX}nodename") in {
             "ground-a-router",
@@ -95,13 +102,19 @@ def test_s4_scale_compose_inventory_and_static_routing(tmp_path: Path) -> None:
         service.get("network_mode") == "none" and "networks" not in service
         for service in satellite_services
     )
-    assert all(len(service.get("networks", {})) == 1 for service in ground_station_services)
+    assert all(
+        len(service.get("networks", {})) == 1
+        for service in ground_station_services
+    )
     station_networks = [
         next(iter(service["networks"])) for service in ground_station_services
     ]
     assert station_networks.count("net_ix_ix100") == 6
     assert station_networks.count("net_ix_ix101") == 6
-    assert all(len(service.get("networks", {})) == 2 for service in ordinary_router_services)
+    assert all(
+        len(service.get("networks", {})) == 2
+        for service in ordinary_router_services
+    )
     assert "seedemu_internet_map" in compose["services"]
     assert "198.18." not in compose_text
     for forbidden in (
@@ -112,20 +125,20 @@ def test_s4_scale_compose_inventory_and_static_routing(tmp_path: Path) -> None:
         "current_position",
         "visibility",
         "gs_satellite_link",
+        "skyseed_v1",
+        "reference_shell_label",
     ):
         assert forbidden not in compose_text
 
-    selected_ids = {
-        station.ground_station_id for station in scenario.peering_ground_stations
-    }
-    for station in scenario.ground_stations.ground_stations:
+    stations = scenario.construction.ground_station_population.ground_stations
+    bgp_station_count = 0
+    for station in stations:
         bird = node_files(station)["/etc/bird/bird.conf"]
         assert "protocol ospf" not in bird
-        assert bird.count("protocol bgp ") == (
-            1 if station.ground_station_id in selected_ids else 0
-        )
+        bgp_station_count += bird.count("protocol bgp ")
         assert len(station.getInterfaces()) == 1
-    for router in scenario.ground_routers:
+    assert bgp_station_count == 2
+    for router in scenario.construction.ground_routers:
         bird = node_files(router)["/etc/bird/bird.conf"]
         assert "protocol ospf" in bird
         assert bird.count("protocol bgp ") == 1
@@ -135,9 +148,9 @@ def test_s4_scale_compose_inventory_and_static_routing(tmp_path: Path) -> None:
     assert report["summary"]["compose_service_count"] == 365
     assert report["semantics"] == {
         "dynamic_satellite_network": False,
-        "historical_service_prefixes_imported": False,
-        "reference_epoch_in_emulator": False,
-        "s4_is_scale_reference_only": True,
+        "historical_labels_imported": False,
+        "simulation_time_in_emulator": False,
+        "v2_owned_static_input": True,
     }
     expected_services = materialization_expectations(
         output / "docker-compose.yml"

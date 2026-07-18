@@ -145,7 +145,8 @@ interface. Unlike isolated Satellites, it does not use `network_mode: none`.
 
 ## 7. Formal example
 
-`examples/static_ground_station.py` builds:
+`examples/complete_static_emulator/main.py` builds the current self-contained
+minimal scenario:
 
 ```text
 Skyseed AS 65001

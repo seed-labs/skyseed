@@ -191,3 +191,48 @@ def test_compose_materialization_is_outside_emulator_and_compiler_models() -> No
         for module in imports
         for prefix in forbidden_prefixes
     )
+
+
+def test_scenario_loader_and_formal_examples_respect_application_boundaries() -> None:
+    from skyseed_v2 import scenario_loader
+    from skyseed_v2.domain import ground_station, satellite
+
+    loader_imports = imported_modules(scenario_loader)
+    assert "skyseed_v2.specifications" in loader_imports
+    for forbidden_prefix in (
+        "seedemu",
+        "skyseed_v2.seed",
+        "skyseed_v2.domain",
+        "skyseed_v2.materialization",
+        "skyseed_v2.catalog_builder",
+    ):
+        assert not any(
+            module == forbidden_prefix
+            or module.startswith(f"{forbidden_prefix}.")
+            for module in loader_imports
+        )
+
+    for contract_module in (
+        contracts.catalog,
+        contracts.identity,
+        contracts.satellite,
+        contracts.ground_station,
+    ):
+        assert not any(
+            "scenario_loader" in module
+            for module in imported_modules(contract_module)
+        )
+    for domain_module in (satellite, ground_station):
+        assert not any(
+            "scenario" in module or "yaml" in module
+            for module in imported_modules(domain_module)
+        )
+
+
+def test_constellation_helper_never_became_a_domain_or_public_api() -> None:
+    assert not hasattr(skyseed_v2, "Constellation")
+    assert not hasattr(skyseed_v2, "ConstellationBuilder")
+    assert not hasattr(skyseed_v2, "ConstellationBuildResult")
+    assert skyseed_v2.ShellPopulationBuilder.__module__ == (
+        "skyseed_v2.shell_population_builder"
+    )

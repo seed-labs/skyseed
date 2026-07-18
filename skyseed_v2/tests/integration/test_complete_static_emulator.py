@@ -4,8 +4,7 @@ from yaml import compose as compose_yaml
 from yaml import safe_load
 from yaml.nodes import MappingNode, Node, SequenceNode
 
-from examples.complete_static_emulator import (
-    build_catalog,
+from examples.complete_static_emulator.main import (
     build_emulator,
     catalog_summary,
     main,
@@ -49,8 +48,11 @@ def assert_no_duplicate_yaml_keys(node: Node, path: str = "$") -> None:
 def test_complete_example_catalog_matches_registry_and_compiler_output(
     tmp_path: Path,
 ) -> None:
-    emulator, skyseed_as, ground_as, ground_station, _ = build_emulator()
-    catalog = build_catalog((skyseed_as, ground_as))
+    result = build_emulator()
+    emulator = result.emulator
+    skyseed_as = result.skyseed_autonomous_systems[0]
+    ground_station = result.ground_station_population.ground_stations[0]
+    catalog = result.catalog
 
     assert catalog_summary(catalog) == (
         "Catalog summary: 2 SatelliteDescriptor, 1 GroundStationDescriptor, "

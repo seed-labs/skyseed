@@ -1,7 +1,7 @@
 import pytest
 
 from skyseed_v2 import (
-    ConstellationBuilder,
+    ShellPopulationBuilder,
     InOrbitPhaseDistributionSpecification,
     OrbitGenerationSpecification,
     OrbitSpecification,
@@ -40,7 +40,7 @@ def test_builder_supports_arbitrary_reasonable_generated_scales(
     orbit_count: int,
     satellites_per_orbit: int,
 ) -> None:
-    result = ConstellationBuilder().build(
+    result = ShellPopulationBuilder().build(
         SkyseedAutonomousSystem(65000),
         generated_shell(
             "scale-shell",
@@ -59,10 +59,10 @@ def test_builder_supports_arbitrary_reasonable_generated_scales(
 
 def test_generated_ids_and_angles_are_stable_and_not_input_order_dependent() -> None:
     specifications = (generated_shell("shell-b"), generated_shell("shell-a"))
-    first = ConstellationBuilder().build(
+    first = ShellPopulationBuilder().build(
         SkyseedAutonomousSystem(65000), specifications
     )
-    second = ConstellationBuilder().build(
+    second = ShellPopulationBuilder().build(
         SkyseedAutonomousSystem(65000), reversed(specifications)
     )
 
@@ -98,8 +98,12 @@ def test_builder_supports_explicit_orbits_and_multiple_as_instances() -> None:
             ),
         ),
     )
-    first = ConstellationBuilder().build(SkyseedAutonomousSystem(65000), explicit)
-    second = ConstellationBuilder().build(SkyseedAutonomousSystem(65001), explicit)
+    first = ShellPopulationBuilder().build(
+        SkyseedAutonomousSystem(65000), explicit
+    )
+    second = ShellPopulationBuilder().build(
+        SkyseedAutonomousSystem(65001), explicit
+    )
 
     assert tuple(satellite.satellite_id for satellite in first.satellites) == (
         "explicit-sat-a",
@@ -118,7 +122,7 @@ def test_preflight_rejects_collisions_before_mutating_the_as() -> None:
     autonomous_system.create_shell("existing-shell")
 
     with pytest.raises(ValueError, match="already exists"):
-        ConstellationBuilder().build(
+        ShellPopulationBuilder().build(
             autonomous_system,
             (generated_shell("new-shell"), generated_shell("existing-shell")),
         )
@@ -142,5 +146,5 @@ def test_generated_distribution_rejects_duplicate_angles_without_mutation() -> N
     )
 
     with pytest.raises(ValueError, match="duplicate Orbits"):
-        ConstellationBuilder().build(autonomous_system, specification)
+        ShellPopulationBuilder().build(autonomous_system, specification)
     assert autonomous_system.shells == ()

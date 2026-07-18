@@ -3,24 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from hashlib import sha256
 from typing import Iterable
 
 from skyseed_v2.domain import GroundStation, GroundStationLocation
 from skyseed_v2.seed.autonomous_system import SkyseedAutonomousSystem
-from skyseed_v2.specifications import GroundStationSpecification
-
-
-def ground_station_id_for(specification: GroundStationSpecification) -> str:
-    """Resolve one v2-native stable ID without using input order or SEED state."""
-
-    if not isinstance(specification, GroundStationSpecification):
-        raise TypeError("specification must be a GroundStationSpecification")
-    if specification.ground_station_id is not None:
-        return specification.ground_station_id
-    assert specification.identity_key is not None
-    digest = sha256(specification.identity_key.encode("utf-8")).hexdigest()[:20]
-    return f"ground-station-{digest}"
+from skyseed_v2.specifications import (
+    GroundStationSpecification,
+    ground_station_id_for,
+)
 
 
 @dataclass(frozen=True, slots=True)

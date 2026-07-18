@@ -3,31 +3,35 @@
 ## Current phase
 
 Static Emulator core excluding UT: COMPLETE
-Generic constellation and GS construction: COMPLETE
-S4-scale static materialization: PASS
+Generic static scenario loading: COMPLETE
+Examples self-contained and reorganized: COMPLETE
+Large static network compile validation: PASS
 Compose v2 migration: COMPLETE
-S4-scale single-invocation materialization: PASS
+Compose v2 materialization tooling: COMPLETE
 Fixed batching: optional tooling mode
+
+Migration baseline: READY
 
 Simulator: NOT STARTED
 
 ## Current objective
 
-The Docker Compose v2 materialization closeout is complete. Await explicit
-approval before selecting another objective.
+Review the self-contained Emulator examples and native-Linux migration
+baseline. Await explicit approval before selecting another objective.
 
 ## Implementation status
 
-Complete for generic static construction, S4-scale validation and Docker
-Compose v2 single-project materialization.
+Complete for versioned v2 static scenario loading, reorganized self-contained
+examples, large static compile/config validation and Docker Compose v2
+materialization tooling.
 
 ## Current workflow step
 
-The formal scale experiment has passed one Docker Compose v2 full-project
-invocation with controlled parallelism, strict inventory, routing, ICMP and
-InternetMap validation through one Compose output and one project. Its project
-resources and generated output are cleaned. Do not start dynamic Satellite
-networking, Runner design or Simulator work automatically.
+The large static example is now driven only by example-local v2 data and is
+validated through object construction, Catalog, Compiler and Compose config.
+This closeout deliberately does not repeat the 365-service build/up. A minimal
+complete example supplies the current runtime regression. Do not start dynamic
+Satellite networking, Runner design or Simulator work automatically.
 
 ## Confirmed direction
 
@@ -61,16 +65,16 @@ networking, Runner design or Simulator work automatically.
 - `SkyseedAutonomousSystem` is the only public Skyseed AS type. One instance can own Satellites, GroundStations and inherited ordinary SEED objects, while multiple instances remain independent.
 - `SkyseedDockerCompiler` is the only public Skyseed Docker Compiler. Satellite special handling remains in `_SatelliteCompilerBoundary`; GroundStation and ordinary nodes use the inherited SEED path.
 - Shared identifier validation is owned by `domain.validation`; SEED metadata names are owned by `seed.metadata`.
-- The formal `complete_static_emulator.py` example puts two isolated Satellites and one GroundStation in the same Skyseed AS, builds a three-node Catalog, gives GroundStation one IX interface, explicitly disables/masks GS-AS internal routing, establishes one eBGP session to an ordinary ground AS, and creates no GS–Satellite link.
+- The formal `examples/complete_static_emulator/` experiment puts two isolated Satellites and one GroundStation in the same Skyseed AS, builds a three-node Catalog, gives GroundStation one IX interface, explicitly disables/masks GS-AS internal routing, establishes one eBGP session to an ordinary ground AS, and creates no GS–Satellite link.
 - GroundStation uses the inherited standard Router Compiler path. Skyseed only replaces its metadata by key so InternetMap sees `GroundStation` with `type=rnode`; no GS-specific dispatch or private accumulator access was added.
 - Runtime validation proved forwarding, established eBGP, packet-level ground reachability, one GS ground edge, and two unchanged Satellite vertices with zero Satellite edges.
 - Automated and manual complete Emulator validation is recorded in `docs/evidence/complete-static-emulator-validation.md`. Its formal runtime resources and generated temporary output have been cleaned.
 - The v1 S4 investigation is recorded in `docs/reference/v1/s4-static-scenario-investigation.md`. It treats v1 only as a historical static-fact source and does not make S4 a permanent Emulator default.
-- Immutable backend-independent specifications and application builders now construct arbitrary positive static constellation sizes, multiple Shells and GroundStations without S4-specific domain APIs.
+- Immutable backend-independent specifications and application builders now construct arbitrary positive static Satellite populations, multiple Shells and GroundStations without a Constellation entity or S4-specific domain API.
 - Generated Orbit/Satellite IDs are derived from v2 Shell hierarchy and ordinal position; generated GS IDs are stable hashes of explicit semantic identity keys. They are deterministic, order-independent and do not preserve v1 IDs.
 - The v1 JSON-shape adapter is isolated under `examples/reference/`, immediately returns v2 specifications and is excluded from the wheel. The core package contains no v1 import or file-shape dependency.
 - The reference adapter pins `ad331b9c15e3a5fb522af9ff18a06434f99c0860` and fail-closed verifies ancestry plus the exact Git blobs of its three selected files before loading. The investigation commit `06b19eb718a79a9113ee95bc045f10953c1d8ab7` is its ancestor and has the same three blobs and key S4 inputs.
-- The formal `s4_scale_static_emulator.py` experiment uses the reference S4 scale to build one Shell, six Orbits, 348 isolated Satellites, 12 descriptive `operator=Starlink` GroundStations, two ordinary ground ASes, two IXes and two explicit eBGP peerings. It is not a permanent default or v1 compatibility mode.
+- The formal `examples/large_static_network/` experiment reads only adjacent v2 YAML and builds one Shell, six Orbits, 348 isolated Satellites, 12 descriptive `operator=Starlink` GroundStations, two ordinary ground ASes, two IXes and two explicit eBGP peerings. It has no runtime v1 input or permanent S4 semantic.
 - The scale Catalog contains 360 Satellite/GS Descriptors; the compiled Compose contains 365 services. Runtime validation proved 348 no-network Satellite containers, 12 one-IX GS, two learned external prefixes, packet reachability and 348 zero-edge Satellite InternetMap vertices.
 - `ComposeProjectLauncher` is a small integration-layer materialization tool outside the Emulator, Descriptor/Catalog, Compiler and Simulator domains. It consumes one existing Compose output/project, an explicit long-running/helper partition and configurable Compose v2 parallel limit. Its default issues one full-project `docker compose up`, then fail-closed verifies the final complete inventory without recompiling or rewriting Compose.
 - Legacy `docker-compose` is not a Skyseed success path. The launcher requires Compose v2 and never falls back. Fixed batching remains available only through explicit `strategy=batched`, with configurable batch size, for compatibility and diagnosis.
@@ -101,14 +105,19 @@ explicitly choosing any dynamic Satellite-network or Simulator objective.
 - Automated Emulator integration: PASS
 - Manual InternetMap visual acceptance: PASS
 - S4 static-scenario investigation: completed
-- Generic constellation and GS construction: completed
-- S4-scale static materialization: PASS
+- Generic static scenario loading: completed
+- Examples self-contained and reorganized: completed
+- Large static network compile validation: PASS
 - Compose v2 migration: complete
-- S4-scale single-invocation materialization: PASS
+- Compose v2 materialization tooling: complete
 - Fixed batching: optional tooling mode
 - Static ground-network integration at scale: PASS
 - Simulator: not started
 - UT: outside current Emulator core
+- Migration baseline: READY
 
-Static Emulator core excluding UT: COMPLETE. The formal Compose v2
-single-invocation experiment was fully audited and cleaned up on 2026-07-18.
+Static Emulator core excluding UT: COMPLETE. Formal examples no longer have a
+runtime v1 reference dependency; native-Linux migration can start from the
+baseline recorded in `docs/migration/native-linux-baseline.md`. Current
+validation evidence is in
+`docs/evidence/emulator-self-contained-migration-validation.md`.

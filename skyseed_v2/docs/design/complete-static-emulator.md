@@ -62,7 +62,8 @@ text ID in the same ASN, because the full logical ID remains distinct.
 
 ## 4. Formal complete example
 
-`examples/complete_static_emulator.py` builds:
+`examples/complete_static_emulator/main.py`, using its adjacent versioned
+`scenario.yaml`, builds:
 
 ```text
 Skyseed AS 65001

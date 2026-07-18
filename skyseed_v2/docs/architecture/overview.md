@@ -268,7 +268,7 @@ import，也不依赖 `contracts` 或 Compiler metadata 细节。`satnode`、`rn
 - Catalog 构造对完整 `SimulationNodeId` 重复 fail-closed，不静默覆盖；
 - Catalog 顺序仅由 `SimulationNodeId.value` 决定，不受 AS 或实体遍历顺序影响；
 - 构建后的 AS 变化不影响既有 Catalog；
-- 正式 `complete_static_emulator.py` 示例同时生成 Catalog、编译真实混合场景并
+- 正式 `examples/complete_static_emulator/` 实验同时生成 Catalog、编译真实混合场景并
   启用 InternetMap。
 
 自动化 Emulator 集成验收与人工浏览器视觉验收均已完成，正式运行环境也已按

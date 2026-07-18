@@ -1,0 +1,17 @@
+schema_version: skyseed-static-emulator/v1
+skyseed_autonomous_systems:
+  - asn: 65000
+    shells:
+      - shell_id: shell-1
+        altitude_km: 550.0
+        inclination_deg: 53.0
+        orbits:
+          - orbit_id: orbit-1
+            right_ascension_deg: 15.0
+            satellites:
+              - satellite_id: satellite-0
+                index_in_orbit: 0
+                mean_anomaly_deg: 0.0
+              - satellite_id: satellite-1
+                index_in_orbit: 1
+                mean_anomaly_deg: 180.0

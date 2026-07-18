@@ -115,6 +115,11 @@ parallel/batch setting, or performs cleanup. Cleanup remains caller-owned and
 must be bounded to the named project, its project-labelled networks, and exact
 generated image tags.
 
+This integration helper may later sit below `Runner.initialize()`. It is not a
+top-level runtime architecture, a current Runner, or part of Simulator. This
+slice does not add automatic recovery, missing-service reconciliation,
+runtime restart policy, or dynamic batch tuning.
+
 ## Why the default changed and batching remains
 
 The historical validation host used Docker Compose 1.27.4. Its one-shot

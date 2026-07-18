@@ -1,0 +1,67 @@
+schema_version: skyseed-static-emulator/v1
+skyseed_autonomous_systems:
+  - asn: 65000
+    shells:
+      - shell_id: large-shell
+        altitude_km: 560.0
+        inclination_deg: 97.6
+        generation:
+          orbit_count: 6
+          satellites_per_orbit: 58
+          raan:
+            start_deg: 0.0
+            step_deg: 60.0
+          phase:
+            start_deg: 0.0
+            step_deg: 6.206896551724138
+            alternating_orbit_offset_deg: 3.103448
+    ground_stations_file: ground_stations.yaml
+internet_exchanges:
+  - ix_id: 100
+    prefix: 10.100.0.0/24
+    route_server: false
+  - ix_id: 101
+    prefix: 10.101.0.0/24
+    route_server: false
+ordinary_autonomous_systems:
+  - asn: 65101
+    networks:
+      - network_id: service-net
+        prefix: 10.210.0.0/24
+    routers:
+      - router_id: ground-a-router
+        network_attachments:
+          - network_id: service-net
+            address: 10.210.0.254
+        ix_attachments:
+          - ix_id: 100
+            address: 10.100.0.254
+  - asn: 65102
+    networks:
+      - network_id: service-net
+        prefix: 10.220.0.0/24
+    routers:
+      - router_id: ground-b-router
+        network_attachments:
+          - network_id: service-net
+            address: 10.220.0.254
+        ix_attachments:
+          - ix_id: 101
+            address: 10.101.0.254
+ebgp_peerings:
+  - ix_id: 100
+    first:
+      asn: 65000
+      router_id: ground-station-06d6349a92742a2d9fce
+    second:
+      asn: 65101
+      router_id: ground-a-router
+    relationship: unfiltered
+  - ix_id: 101
+    first:
+      asn: 65000
+      router_id: ground-station-248d0c844a96df6f4728
+    second:
+      asn: 65102
+      router_id: ground-b-router
+    relationship: unfiltered

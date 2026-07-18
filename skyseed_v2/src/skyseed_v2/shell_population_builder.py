@@ -1,4 +1,4 @@
-"""Application builder for deterministic static constellation construction."""
+"""Application helper for deterministic static Shell population."""
 
 from __future__ import annotations
 
@@ -16,8 +16,8 @@ from skyseed_v2.specifications import (
 
 
 @dataclass(frozen=True, slots=True)
-class ConstellationBuildResult:
-    """Entities created from one immutable specification snapshot."""
+class ShellPopulationBuildResult:
+    """Shell, Orbit and Satellite entities created by one helper call."""
 
     shells: tuple[Shell, ...]
     orbits: tuple[Orbit, ...]
@@ -45,14 +45,14 @@ class _ShellPlan:
     orbits: tuple[_OrbitPlan, ...]
 
 
-class ConstellationBuilder:
-    """Create Shell/Orbit/Satellite entities outside domain and Compiler code."""
+class ShellPopulationBuilder:
+    """Populate approved Shell/Orbit/Satellite entities through their AS."""
 
     def build(
         self,
         autonomous_system: SkyseedAutonomousSystem,
         specifications: ShellSpecification | Iterable[ShellSpecification],
-    ) -> ConstellationBuildResult:
+    ) -> ShellPopulationBuildResult:
         if not isinstance(autonomous_system, SkyseedAutonomousSystem):
             raise TypeError("autonomous_system must be a SkyseedAutonomousSystem")
         if isinstance(specifications, ShellSpecification):
@@ -96,7 +96,7 @@ class ConstellationBuilder:
                             payload=dict(satellite_plan.payload_items),
                         )
                     )
-        return ConstellationBuildResult(
+        return ShellPopulationBuildResult(
             shells=tuple(shells),
             orbits=tuple(orbits),
             satellites=tuple(satellites),
@@ -156,7 +156,7 @@ class ConstellationBuilder:
                 right_ascension_deg=orbit.right_ascension_deg,
             ),
             satellites=tuple(
-                ConstellationBuilder._explicit_satellite_plan(satellite)
+                ShellPopulationBuilder._explicit_satellite_plan(satellite)
                 for satellite in orbit.satellites
             ),
         )
