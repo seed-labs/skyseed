@@ -15,24 +15,23 @@ def test_package_exposes_no_retired_satellite_node_alias() -> None:
     assert not hasattr(seed_integration, "SatelliteNode")
 
 
-def test_root_exports_only_stable_domain_values_and_contracts() -> None:
+def test_root_exports_only_stable_entities_and_simulator_inputs() -> None:
     package = importlib.import_module("skyseed_v2")
 
     assert set(package.__all__) == {
         "GroundStation",
-        "GroundStationDescriptor",
+        "GroundStationSimulationInput",
         "GroundStationLocation",
         "Orbit",
         "OrbitParameters",
         "Satellite",
-        "SatelliteDescriptor",
+        "SatelliteSimulationInput",
         "Shell",
-        "SimulationEntityCatalog",
+        "SimulatorStaticInput",
         "SimulationNodeId",
     }
     for module_owned_name in (
         "GroundStationSpecification",
-        "SimulationEntityCatalogBuilder",
         "StaticEmulatorApplyResult",
         "StaticEmulatorScenarioLoader",
         "StaticEmulatorScenarioSpecification",

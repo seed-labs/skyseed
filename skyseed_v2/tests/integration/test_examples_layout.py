@@ -121,11 +121,9 @@ def test_small_examples_show_public_construction_without_file_facades() -> None:
     assert ".createAutonomousSystem(" in complete_source
     assert ".createNetwork(" in complete_source
     assert ".createRouter(" in complete_source
-    assert "SimulationEntityCatalogBuilder" in complete_source
-    assert (
-        "from skyseed_v2.catalog_builder import SimulationEntityCatalogBuilder"
-        in complete_source
-    )
+    assert "SimulatorStaticInput" in complete_source
+    assert "SimulatorStaticInput.from_autonomous_systems" in complete_source
+    assert "catalog_builder" not in complete_source
     assert "SkyseedDockerCompiler" in complete_source
 
 
@@ -149,7 +147,7 @@ def test_large_example_has_one_thin_file_application_path() -> None:
     for required_explanation in (
         "only YAML example",
         "not a domain entity",
-        "immutable Descriptor snapshot",
+        "immutable Simulator input snapshot",
         "scenario, a SEED Registry",
         "container inventory",
     ):

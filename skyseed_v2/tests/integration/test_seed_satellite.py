@@ -3,14 +3,13 @@ import pytest
 from seedemu.core import Emulator, Node
 from seedemu.core.enums import NodeRole
 
-from skyseed_v2.contracts import SimulationNodeId
 from skyseed_v2.domain import OrbitParameters, Satellite, SatelliteRole
-from skyseed_v2.projection import SatelliteDescriptorProjector
 from skyseed_v2.seed import (
     SATELLITE_REGISTRY_TYPE,
     SatelliteBase,
     SkyseedAutonomousSystem,
 )
+from skyseed_v2.simulator_input import SatelliteSimulationInput, SimulationNodeId
 
 
 def build_rendered_emulator():
@@ -82,26 +81,26 @@ def test_base_render_and_options_apply_to_the_orbit_satellite_instances() -> Non
         assert "/interface_setup" in files
 
 
-def test_descriptor_is_restricted_projection_of_registered_satellite() -> None:
+def test_simulation_input_is_a_static_copy_of_registered_satellite() -> None:
     emulator, satellite_as, _, _ = build_rendered_emulator()
 
-    projector = SatelliteDescriptorProjector()
-    for descriptor in (
-        projector.project(satellite) for satellite in satellite_as.satellites()
+    for simulation_input in (
+        SatelliteSimulationInput.from_satellite(satellite)
+        for satellite in satellite_as.satellites()
     ):
-        satellite = satellite_as.get_satellite(descriptor.satellite_id)
+        satellite = satellite_as.get_satellite(simulation_input.satellite_id)
         registered = emulator.getRegistry().get(
-            "65000", SATELLITE_REGISTRY_TYPE, descriptor.satellite_id
+            "65000", SATELLITE_REGISTRY_TYPE, simulation_input.satellite_id
         )
         assert registered is satellite
-        assert descriptor.satellite_id == satellite.satellite_id
-        assert descriptor.node_id == SimulationNodeId(
+        assert simulation_input.satellite_id == satellite.satellite_id
+        assert simulation_input.node_id == SimulationNodeId(
             asn=satellite.getAsn(),
             entity_kind="satellite",
             entity_id=satellite.satellite_id,
         )
-        assert not isinstance(descriptor.node_id, Node)
-        assert "satnode" not in descriptor.node_id.value
+        assert not isinstance(simulation_input.node_id, Node)
+        assert "satnode" not in simulation_input.node_id.value
 
 
 def test_as_rejects_duplicate_shell_and_satellite_ids_across_shells() -> None:

@@ -4,8 +4,7 @@ import inspect
 from pathlib import Path
 
 import skyseed_v2
-from skyseed_v2 import contracts
-from skyseed_v2 import catalog_builder
+from skyseed_v2 import simulator_input
 from skyseed_v2.domain import GroundStation, Satellite, validate_identifier
 from skyseed_v2.seed import SkyseedDockerCompiler
 from skyseed_v2.seed.metadata import (
@@ -29,7 +28,7 @@ def imported_modules(module) -> set[str]:
     return modules
 
 
-def test_domain_entities_do_not_depend_on_each_other_or_contracts() -> None:
+def test_domain_entities_do_not_depend_on_each_other_or_simulator_input() -> None:
     from skyseed_v2.domain import ground_station, satellite
 
     satellite_imports = imported_modules(satellite)
@@ -37,66 +36,57 @@ def test_domain_entities_do_not_depend_on_each_other_or_contracts() -> None:
 
     assert "skyseed_v2.domain.ground_station" not in satellite_imports
     assert "skyseed_v2.domain.satellite" not in ground_station_imports
-    assert not any("contracts" in module for module in satellite_imports)
-    assert not any("contracts" in module for module in ground_station_imports)
+    assert not any("simulator_input" in module for module in satellite_imports)
+    assert not any("simulator_input" in module for module in ground_station_imports)
     assert not hasattr(Satellite, "runtime_reference")
     assert not hasattr(GroundStation, "runtime_reference")
 
 
-def test_skyseed_as_owns_entities_but_not_descriptor_projection() -> None:
+def test_skyseed_as_owns_entities_but_not_simulator_input() -> None:
     from skyseed_v2.seed import autonomous_system
 
     imports = imported_modules(autonomous_system)
-    assert not any("contracts" in module for module in imports)
-    assert not any("projection" in module for module in imports)
-    assert not hasattr(autonomous_system.SkyseedAutonomousSystem, "satellite_descriptors")
+    assert not any("simulator_input" in module for module in imports)
+    assert not hasattr(autonomous_system.SkyseedAutonomousSystem, "simulator_input")
     assert not hasattr(
         autonomous_system.SkyseedAutonomousSystem,
-        "ground_station_descriptors",
+        "simulator_static_input",
     )
 
 
-def test_contract_modules_have_only_the_approved_internal_dependencies() -> None:
-    from skyseed_v2.contracts import catalog, ground_station, identity, satellite
+def test_simulator_input_dependencies_point_toward_emulator_entities() -> None:
+    from skyseed_v2.simulator_input import (
+        ground_station,
+        identity,
+        satellite,
+        static_input,
+    )
 
-    catalog_imports = imported_modules(catalog)
+    static_input_imports = imported_modules(static_input)
     identity_imports = imported_modules(identity)
     satellite_imports = imported_modules(satellite)
     ground_station_imports = imported_modules(ground_station)
 
-    for module_imports in (
-        catalog_imports,
-        identity_imports,
-        satellite_imports,
-        ground_station_imports,
-    ):
-        assert not any(
-            module_name == "skyseed_v2.seed"
-            or module_name.startswith("skyseed_v2.seed.")
-            or module_name == "seedemu"
-            or module_name.startswith("seedemu.")
-            for module_name in module_imports
-        )
-
-    assert {name for name in satellite_imports if name.startswith(".")} == {
-        ".identity"
-    }
-    assert {
-        name for name in ground_station_imports if name.startswith(".")
-    } == {".identity"}
+    assert "skyseed_v2.domain" in satellite_imports
+    assert "skyseed_v2.domain" in ground_station_imports
+    assert "skyseed_v2.domain.validation" in identity_imports
     assert ".ground_station" not in satellite_imports
     assert ".satellite" not in ground_station_imports
-    assert {name for name in catalog_imports if name.startswith(".")} == {
+    assert {name for name in static_input_imports if name.startswith(".")} == {
         ".ground_station",
         ".identity",
         ".satellite",
     }
+    assert "seedemu.core" in static_input_imports
+    assert "skyseed_v2.seed.autonomous_system" in static_input_imports
 
 
-def test_catalog_builder_has_no_registry_compiler_or_output_dependency() -> None:
-    builder_imports = imported_modules(catalog_builder)
+def test_static_input_has_no_registry_compiler_or_output_dependency() -> None:
+    from skyseed_v2.simulator_input import static_input
 
-    assert "skyseed_v2.seed.autonomous_system" in builder_imports
+    static_input_imports = imported_modules(static_input)
+
+    assert "skyseed_v2.seed.autonomous_system" in static_input_imports
     for forbidden_dependency in (
         "skyseed_v2.seed.compiler",
         "skyseed_v2.seed.metadata",
@@ -106,9 +96,9 @@ def test_catalog_builder_has_no_registry_compiler_or_output_dependency() -> None
         assert not any(
             module_name == forbidden_dependency
             or module_name.startswith(f"{forbidden_dependency}.")
-            for module_name in builder_imports
+            for module_name in static_input_imports
         )
-    source = Path(inspect.getsourcefile(catalog_builder)).read_text(encoding="utf-8")
+    source = Path(inspect.getsourcefile(static_input)).read_text(encoding="utf-8")
     for forbidden in (
         "getRegistry",
         "create_shell",
@@ -121,31 +111,37 @@ def test_catalog_builder_has_no_registry_compiler_or_output_dependency() -> None
         assert forbidden not in source
 
 
-def test_removed_and_deferred_contract_apis_are_not_exported() -> None:
+def test_removed_and_deferred_boundary_apis_are_not_exported() -> None:
     for forbidden_name in (
         "RuntimeNodeReference",
         "SeedRegistryLocator",
         "RuntimeNodeResolver",
         "ExecutionTargetRef",
     ):
-        assert not hasattr(contracts, forbidden_name)
+        assert not hasattr(simulator_input, forbidden_name)
         assert not hasattr(skyseed_v2, forbidden_name)
 
-    assert importlib.util.find_spec("skyseed_v2.contracts.runtime") is None
+    assert importlib.util.find_spec("skyseed_v2.simulator_input.runtime") is None
+    for removed_module in (
+        "skyseed_v2.contracts",
+        "skyseed_v2.projection",
+        "skyseed_v2.catalog_builder",
+    ):
+        assert importlib.util.find_spec(removed_module) is None
 
 
-def test_catalog_contract_is_root_public_and_builder_has_explicit_owner() -> None:
-    from skyseed_v2.contracts import SimulationEntityCatalog
+def test_simulator_static_input_is_root_public_with_no_entity_back_dependency() -> None:
+    from skyseed_v2.simulator_input import SimulatorStaticInput
     from skyseed_v2.domain import ground_station, satellite
 
-    assert skyseed_v2.SimulationEntityCatalog is SimulationEntityCatalog
-    assert catalog_builder.__all__ == ["SimulationEntityCatalogBuilder"]
-    assert not hasattr(skyseed_v2, "SimulationEntityCatalogBuilder")
+    assert skyseed_v2.SimulatorStaticInput is SimulatorStaticInput
+    assert "SimulatorStaticInput" in simulator_input.__all__
     assert not any(
-        "catalog" in module_name for module_name in imported_modules(satellite)
+        "simulator_input" in module_name
+        for module_name in imported_modules(satellite)
     )
     assert not any(
-        "catalog" in module_name
+        "simulator_input" in module_name
         for module_name in imported_modules(ground_station)
     )
 
@@ -205,7 +201,7 @@ def test_compose_materialization_is_outside_emulator_and_compiler_models() -> No
     imports = imported_modules(compose_project_launcher)
     forbidden_prefixes = (
         "seedemu",
-        "skyseed_v2.contracts",
+        "skyseed_v2.simulator_input",
         "skyseed_v2.domain",
         "skyseed_v2.seed",
     )
@@ -227,7 +223,7 @@ def test_scenario_loader_and_formal_examples_respect_application_boundaries() ->
         "skyseed_v2.seed",
         "skyseed_v2.domain",
         "skyseed_v2.materialization",
-        "skyseed_v2.catalog_builder",
+        "skyseed_v2.simulator_input",
     ):
         assert not any(
             module == forbidden_prefix
@@ -235,15 +231,22 @@ def test_scenario_loader_and_formal_examples_respect_application_boundaries() ->
             for module in loader_imports
         )
 
-    for contract_module in (
-        contracts.catalog,
-        contracts.identity,
-        contracts.satellite,
-        contracts.ground_station,
+    from skyseed_v2.simulator_input import (
+        ground_station as ground_station_input,
+        identity,
+        satellite as satellite_input,
+        static_input,
+    )
+
+    for input_module in (
+        static_input,
+        identity,
+        satellite_input,
+        ground_station_input,
     ):
         assert not any(
             "scenario_loader" in module
-            for module in imported_modules(contract_module)
+            for module in imported_modules(input_module)
         )
     for domain_module in (satellite, ground_station):
         assert not any(
@@ -254,7 +257,7 @@ def test_scenario_loader_and_formal_examples_respect_application_boundaries() ->
     application_imports = imported_modules(scenario_application)
     assert "skyseed_v2.specifications" in application_imports
     assert "skyseed_v2.seed" in application_imports
-    assert "skyseed_v2.catalog_builder" in application_imports
+    assert "skyseed_v2.simulator_input" in application_imports
     for forbidden_prefix in (
         "skyseed_v2.scenario_loader",
         "skyseed_v2.materialization",
@@ -316,4 +319,4 @@ def test_constellation_helper_never_became_a_domain_or_public_api() -> None:
     )
     assert not hasattr(skyseed_v2, "StaticEmulatorSpecificationApplier")
     assert not hasattr(skyseed_v2, "StaticEmulatorApplyResult")
-    assert not hasattr(contracts, "StaticEmulatorApplyResult")
+    assert not hasattr(simulator_input, "StaticEmulatorApplyResult")

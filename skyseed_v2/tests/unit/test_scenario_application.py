@@ -110,8 +110,8 @@ def test_applier_supports_satellite_only_ground_only_and_multiple_skyseed_as() -
     assert tuple(
         station.ground_station_id for station in station_as.ground_stations()
     ) == ("gs-a",)
-    assert len(result.catalog.list_satellites()) == 1
-    assert len(result.catalog.list_ground_stations()) == 1
+    assert len(result.simulator_input.list_satellites()) == 1
+    assert len(result.simulator_input.list_ground_stations()) == 1
 
 
 def test_applier_calls_the_approved_public_entity_creation_methods(
@@ -213,7 +213,7 @@ def test_applier_supports_ground_network_ix_and_explicit_ebgp() -> None:
     assert len(skyseed_as.shells) == 1
     assert len(skyseed_as.shells[0].orbits) == 1
     assert len(skyseed_as.satellites()) == 1
-    assert len(result.catalog.list_nodes()) == 2
+    assert len(result.simulator_input.list_nodes()) == 2
     assert station.getInterfaces()[0].getNet().getName() == "ix100"
     assert "neighbor 10.100.0.254 as 65002" in station_bird
     assert "protocol ospf" not in station_bird
@@ -238,8 +238,8 @@ def test_generated_input_is_stable_without_a_population_abstraction() -> None:
     second_as = second.skyseed_autonomous_systems[0]
 
     assert tuple(
-        descriptor.node_id for descriptor in first.catalog.list_nodes()
-    ) == tuple(descriptor.node_id for descriptor in second.catalog.list_nodes())
+        item.node_id for item in first.simulator_input.list_nodes()
+    ) == tuple(item.node_id for item in second.simulator_input.list_nodes())
     assert tuple(shell.shell_id for shell in first_as.shells) == (
         "shell-a",
         "shell-b",

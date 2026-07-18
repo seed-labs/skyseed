@@ -4,10 +4,12 @@ import pytest
 from seedemu.core import Router
 
 import skyseed_v2
-from skyseed_v2.contracts import GroundStationDescriptor, SimulationNodeId
 from skyseed_v2.domain import GroundStation, GroundStationLocation
-from skyseed_v2.projection import GroundStationDescriptorProjector
 from skyseed_v2.seed import SkyseedAutonomousSystem
+from skyseed_v2.simulator_input import (
+    GroundStationSimulationInput,
+    SimulationNodeId,
+)
 
 
 def create_station() -> GroundStation:
@@ -60,11 +62,11 @@ def test_ground_station_as_rejects_duplicate_stable_ids() -> None:
         station_as.createRouter("gs-1")
 
 
-def test_ground_station_descriptor_is_immutable_and_restricted() -> None:
+def test_ground_station_simulation_input_is_immutable_and_restricted() -> None:
     station = create_station()
-    descriptor = GroundStationDescriptorProjector().project(station)
+    simulation_input = GroundStationSimulationInput.from_ground_station(station)
 
-    assert descriptor == GroundStationDescriptor(
+    assert simulation_input == GroundStationSimulationInput(
         node_id=SimulationNodeId(151, "ground-station", "gs-1"),
         ground_station_id="gs-1",
         latitude_deg=40.0,
@@ -74,9 +76,12 @@ def test_ground_station_descriptor_is_immutable_and_restricted() -> None:
         operator="Skyseed",
     )
     with pytest.raises(FrozenInstanceError):
-        descriptor.operator = "changed"
-    assert not isinstance(descriptor.node_id, Router)
-    assert descriptor.node_id.entity_id == descriptor.ground_station_id
+        simulation_input.operator = "changed"
+    assert not isinstance(simulation_input.node_id, Router)
+    assert (
+        simulation_input.node_id.entity_id
+        == simulation_input.ground_station_id
+    )
     for forbidden_attribute in (
         "runtime_node",
         "registry",
@@ -88,8 +93,8 @@ def test_ground_station_descriptor_is_immutable_and_restricted() -> None:
         "container_config",
         "namespace",
     ):
-        assert not hasattr(descriptor, forbidden_attribute)
-    assert {field.name for field in fields(descriptor)} == {
+        assert not hasattr(simulation_input, forbidden_attribute)
+    assert {field.name for field in fields(simulation_input)} == {
         "node_id",
         "ground_station_id",
         "latitude_deg",

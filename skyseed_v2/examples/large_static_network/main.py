@@ -48,7 +48,7 @@ def main() -> None:
     print(
         f"constructed {satellite_count} Satellites, "
         f"{ground_station_count} GroundStations and "
-        f"{len(result.catalog.list_nodes())} Catalog entries"
+        f"{len(result.simulator_input.list_nodes())} static Simulator inputs"
     )
 
     result.emulator.render()

@@ -35,7 +35,7 @@ def assert_no_duplicate_yaml_keys(node: Node, path: str = "$") -> None:
             assert_no_duplicate_yaml_keys(child, f"{path}[{index}]")
 
 
-def test_large_static_domain_and_catalog_are_deterministic() -> None:
+def test_large_static_entities_and_simulator_input_are_deterministic() -> None:
     specification = StaticEmulatorScenarioLoader().load(DEFAULT_SCENARIO)
     first = apply_scenario_file()
     second = apply_scenario_file()
@@ -49,12 +49,12 @@ def test_large_static_domain_and_catalog_are_deterministic() -> None:
     assert len(first.ordinary_autonomous_systems) == 2
     assert len(specification.internet_exchanges) == 2
     assert len(specification.ebgp_peerings) == 2
-    assert len(first.catalog.list_nodes()) == 360
-    first_catalog = first.catalog
-    second_catalog = second.catalog
-    assert len({node.node_id for node in first_catalog.list_nodes()}) == 360
-    assert tuple(node.node_id for node in first_catalog.list_nodes()) == tuple(
-        node.node_id for node in second_catalog.list_nodes()
+    assert len(first.simulator_input.list_nodes()) == 360
+    first_input = first.simulator_input
+    second_input = second.simulator_input
+    assert len({node.node_id for node in first_input.list_nodes()}) == 360
+    assert tuple(node.node_id for node in first_input.list_nodes()) == tuple(
+        node.node_id for node in second_input.list_nodes()
     )
     first_satellites = first_as.satellites()
     second_satellites = second_as.satellites()

@@ -11,9 +11,8 @@ from seedemu.layers import Ebgp, Ibgp, Ospf, PeerRelationship, Routing
 from skyseed_v2 import (
     GroundStationLocation,
     OrbitParameters,
-    SimulationEntityCatalog,
+    SimulatorStaticInput,
 )
-from skyseed_v2.catalog_builder import SimulationEntityCatalogBuilder
 from skyseed_v2.seed import (
     SatelliteBase,
     SkyseedAutonomousSystem,
@@ -29,7 +28,7 @@ COMPOSE_PROJECT_NAME = "skyseed_v2_complete_static_emulator"
 def build_emulator() -> tuple[
     Emulator,
     SkyseedAutonomousSystem,
-    SimulationEntityCatalog,
+    SimulatorStaticInput,
 ]:
     """Show how public Skyseed entities compose with ordinary SEED objects."""
 
@@ -89,20 +88,24 @@ def build_emulator() -> tuple[
     for layer in (base, Routing(), ospf, ibgp, ebgp):
         emulator.addLayer(layer)
 
-    catalog = SimulationEntityCatalogBuilder().build((skyseed_as, ground_as))
-    return emulator, skyseed_as, catalog
+    simulator_input = SimulatorStaticInput.from_autonomous_systems(
+        (skyseed_as, ground_as)
+    )
+    return emulator, skyseed_as, simulator_input
 
 
-def catalog_summary(catalog: SimulationEntityCatalog) -> tuple[str, ...]:
-    satellites = catalog.list_satellites()
-    ground_stations = catalog.list_ground_stations()
-    nodes = catalog.list_nodes()
+def simulator_input_summary(
+    simulator_input: SimulatorStaticInput,
+) -> tuple[str, ...]:
+    satellites = simulator_input.list_satellites()
+    ground_stations = simulator_input.list_ground_stations()
+    nodes = simulator_input.list_nodes()
     return (
-        "Catalog summary: "
-        f"{len(satellites)} SatelliteDescriptor, "
-        f"{len(ground_stations)} GroundStationDescriptor, "
+        "Simulator input summary: "
+        f"{len(satellites)} SatelliteSimulationInput, "
+        f"{len(ground_stations)} GroundStationSimulationInput, "
         f"{len(nodes)} unique SimulationNodeId",
-        *(f"- {descriptor.node_id.value}" for descriptor in nodes),
+        *(f"- {simulation_input.node_id.value}" for simulation_input in nodes),
     )
 
 
@@ -113,8 +116,8 @@ def main() -> None:
     parser.add_argument("--no-internet-map", action="store_true")
     arguments = parser.parse_args()
 
-    emulator, _, catalog = build_emulator()
-    for line in catalog_summary(catalog):
+    emulator, _, simulator_input = build_emulator()
+    for line in simulator_input_summary(simulator_input):
         print(line)
     arguments.output.parent.mkdir(parents=True, exist_ok=True)
     emulator.render()

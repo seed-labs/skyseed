@@ -1,15 +1,9 @@
-"""Stable high-frequency domain values and cross-layer contracts.
+"""Stable high-frequency entities and Simulator static inputs.
 
 Application services, input specifications and integration adapters remain
 public from their owning submodules so imports preserve architectural origin.
 """
 
-from .contracts import (
-    GroundStationDescriptor,
-    SatelliteDescriptor,
-    SimulationEntityCatalog,
-    SimulationNodeId,
-)
 from .domain import (
     GroundStation,
     GroundStationLocation,
@@ -18,16 +12,22 @@ from .domain import (
     Satellite,
     Shell,
 )
+from .simulator_input import (
+    GroundStationSimulationInput,
+    SatelliteSimulationInput,
+    SimulationNodeId,
+    SimulatorStaticInput,
+)
 
 __all__ = [
     "GroundStation",
-    "GroundStationDescriptor",
+    "GroundStationSimulationInput",
     "GroundStationLocation",
     "Orbit",
     "OrbitParameters",
     "Satellite",
-    "SatelliteDescriptor",
-    "SimulationEntityCatalog",
+    "SatelliteSimulationInput",
     "SimulationNodeId",
+    "SimulatorStaticInput",
     "Shell",
 ]

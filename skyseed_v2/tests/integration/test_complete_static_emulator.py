@@ -6,12 +6,12 @@ from yaml.nodes import MappingNode, Node, SequenceNode
 
 from examples.complete_static_emulator.main import (
     build_emulator,
-    catalog_summary,
+    simulator_input_summary,
     main,
 )
-from skyseed_v2.contracts import (
-    GroundStationDescriptor,
-    SatelliteDescriptor,
+from skyseed_v2.simulator_input import (
+    GroundStationSimulationInput,
+    SatelliteSimulationInput,
     SimulationNodeId,
 )
 from skyseed_v2.seed import SkyseedDockerCompiler
@@ -45,27 +45,28 @@ def assert_no_duplicate_yaml_keys(node: Node, path: str = "$") -> None:
             assert_no_duplicate_yaml_keys(child, f"{path}[{index}]")
 
 
-def test_complete_example_catalog_matches_registry_and_compiler_output(
+def test_complete_example_input_matches_registry_and_compiler_output(
     tmp_path: Path,
 ) -> None:
-    emulator, skyseed_as, catalog = build_emulator()
+    emulator, skyseed_as, simulator_input = build_emulator()
     ground_station = skyseed_as.get_ground_station("gs-new-york")
 
-    assert catalog_summary(catalog) == (
-        "Catalog summary: 2 SatelliteDescriptor, 1 GroundStationDescriptor, "
+    assert simulator_input_summary(simulator_input) == (
+        "Simulator input summary: 2 SatelliteSimulationInput, "
+        "1 GroundStationSimulationInput, "
         "3 unique SimulationNodeId",
         "- 65001/ground-station/gs-new-york",
         "- 65001/satellite/satellite-0",
         "- 65001/satellite/satellite-1",
     )
-    assert len(catalog.list_nodes()) == 3
+    assert len(simulator_input.list_nodes()) == 3
     assert all(
-        isinstance(descriptor, (SatelliteDescriptor, GroundStationDescriptor))
-        for descriptor in catalog.list_nodes()
+        isinstance(item, (SatelliteSimulationInput, GroundStationSimulationInput))
+        for item in simulator_input.list_nodes()
     )
     assert all(
-        isinstance(descriptor.node_id, SimulationNodeId)
-        for descriptor in catalog.list_nodes()
+        isinstance(item.node_id, SimulationNodeId)
+        for item in simulator_input.list_nodes()
     )
 
     emulator.render()
@@ -78,10 +79,10 @@ def test_complete_example_catalog_matches_registry_and_compiler_output(
     )
     assert registry.get("65001", "rnode", "gs-new-york") is ground_station
     assert registry.get("65001", "brdnode", "gs-new-york") is ground_station
-    assert catalog.get_satellite(
+    assert simulator_input.get_satellite(
         SimulationNodeId(65001, "satellite", "satellite-0")
     ).satellite_id == skyseed_as.get_satellite("satellite-0").satellite_id
-    assert catalog.get_ground_station(
+    assert simulator_input.get_ground_station(
         SimulationNodeId(65001, "ground-station", "gs-new-york")
     ).ground_station_id == ground_station.ground_station_id
 
@@ -121,7 +122,7 @@ def test_complete_example_catalog_matches_registry_and_compiler_output(
             dependency: f"service:{dependency}",
         }
 
-    assert "SimulationEntityCatalog" not in compose_text
+    assert "SimulatorStaticInput" not in compose_text
     assert "SimulationNodeId" not in compose_text
     assert "runtime_node" not in compose_text
     assert "RuntimeNodeReference" not in compose_text
@@ -142,7 +143,8 @@ def test_complete_example_cli_creates_a_new_output_parent(
 
     assert (output / "docker-compose.yml").is_file()
     assert (
-        "Catalog summary: 2 SatelliteDescriptor, 1 GroundStationDescriptor, "
+        "Simulator input summary: 2 SatelliteSimulationInput, "
+        "1 GroundStationSimulationInput, "
         "3 unique SimulationNodeId"
         in capsys.readouterr().out
     )

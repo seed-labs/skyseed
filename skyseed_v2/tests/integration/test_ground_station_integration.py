@@ -8,14 +8,16 @@ from yaml import compose as compose_yaml
 from yaml import safe_load
 from yaml.nodes import MappingNode, Node, SequenceNode
 
-from skyseed_v2.contracts import SimulationNodeId
 from skyseed_v2.domain import GroundStation, GroundStationLocation, OrbitParameters
-from skyseed_v2.projection import GroundStationDescriptorProjector
 from skyseed_v2.seed import (
     SATELLITE_REGISTRY_TYPE,
     SatelliteBase,
     SkyseedAutonomousSystem,
     SkyseedDockerCompiler,
+)
+from skyseed_v2.simulator_input import (
+    GroundStationSimulationInput,
+    SimulationNodeId,
 )
 
 
@@ -38,7 +40,7 @@ def build_rendered_ground_scenario():
         station_type="gateway",
         operator="Skyseed",
     )
-    descriptor_before_ix = GroundStationDescriptorProjector().project(station)
+    input_before_ix = GroundStationSimulationInput.from_ground_station(station)
     station.joinNetwork("ix100", "10.100.0.101")
 
     ground_as = base.createAutonomousSystem(65002)
@@ -61,7 +63,7 @@ def build_rendered_ground_scenario():
         station,
         ground_router,
         satellites,
-        descriptor_before_ix,
+        input_before_ix,
     )
 
 
@@ -110,7 +112,7 @@ def raw_service_text(compose_text: str, service_name: str) -> str:
 
 
 def test_ground_station_uses_one_standard_rnode_and_border_router_instance() -> None:
-    emulator, station_as, station, _, _, descriptor_before_ix = (
+    emulator, station_as, station, _, _, input_before_ix = (
         build_rendered_ground_scenario()
     )
     registry = emulator.getRegistry()
@@ -122,15 +124,15 @@ def test_ground_station_uses_one_standard_rnode_and_border_router_instance() -> 
     assert station_as.get_satellite("satellite-0") is not station
     assert registry.get("65001", "rnode", "gs-1") is station
     assert registry.get("65001", "brdnode", "gs-1") is station
-    descriptor_after_brd_registration = GroundStationDescriptorProjector().project(
-        station
+    input_after_brd_registration = (
+        GroundStationSimulationInput.from_ground_station(station)
     )
-    assert descriptor_after_brd_registration == descriptor_before_ix
-    assert descriptor_after_brd_registration.node_id == SimulationNodeId(
+    assert input_after_brd_registration == input_before_ix
+    assert input_after_brd_registration.node_id == SimulationNodeId(
         65001, "ground-station", "gs-1"
     )
-    assert "rnode" not in descriptor_after_brd_registration.node_id.value
-    assert "brdnode" not in descriptor_after_brd_registration.node_id.value
+    assert "rnode" not in input_after_brd_registration.node_id.value
+    assert "brdnode" not in input_after_brd_registration.node_id.value
     assert station.isBorderRouter()
     assert len(station.getInterfaces()) == 1
     assert station.getInterfaces()[0].getNet().getName() == "ix100"

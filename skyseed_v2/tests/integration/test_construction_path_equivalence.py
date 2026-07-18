@@ -35,14 +35,14 @@ def entity_semantics(compose: dict) -> dict[str, dict]:
 def test_handwritten_and_file_inputs_share_entity_and_compiler_semantics(
     tmp_path: Path,
 ) -> None:
-    manual_emulator, manual_as, manual_catalog = build_emulator()
+    manual_emulator, manual_as, manual_simulator_input = build_emulator()
 
     specification = StaticEmulatorScenarioLoader().load(FIXTURE)
     assert isinstance(specification, StaticEmulatorScenarioSpecification)
     file_result = StaticEmulatorSpecificationApplier().apply(specification)
     file_as = file_result.skyseed_autonomous_systems[0]
 
-    assert manual_catalog == file_result.catalog
+    assert manual_simulator_input == file_result.simulator_input
     assert tuple(
         satellite.satellite_id for satellite in manual_as.satellites()
     ) == tuple(satellite.satellite_id for satellite in file_as.satellites())

@@ -1,4 +1,4 @@
-"""Backend-independent logical identities exposed to future Simulator code."""
+"""Backend-independent logical identities for Simulator static inputs."""
 
 from __future__ import annotations
 
@@ -16,12 +16,12 @@ _ENTITY_KINDS = frozenset(
 
 @dataclass(frozen=True, slots=True)
 class SimulationNodeId:
-    """Identify one Descriptor independently of runtime resources.
+    """Identify one static Simulator input independently of runtime resources.
 
-    Layer: immutable value object in the approved cross-layer contract.
-    Projectors create it; Descriptors, Catalog and future Simulator consumers
-    use it. It is not a Registry, container, namespace or execution-target ID.
-    It is a stable root public type because both approved Descriptors share it.
+    Layer: immutable Emulator-to-Simulator boundary value. Simulation input
+    types create and use it; future Simulator readers may use it for lookup. It
+    is not a Registry, container or execution-target identity. It is public
+    because every supported static entity input shares this identity scheme.
     """
 
     asn: int

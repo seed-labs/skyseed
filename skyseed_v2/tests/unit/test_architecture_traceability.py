@@ -5,10 +5,16 @@ from pathlib import Path
 from seedemu.core import Emulator
 
 import skyseed_v2
-from skyseed_v2 import catalog_builder, contracts, domain, projection, seed
-from skyseed_v2 import scenario_application, scenario_loader, specifications
+from skyseed_v2 import (
+    domain,
+    materialization,
+    scenario_application,
+    scenario_loader,
+    seed,
+    simulator_input,
+    specifications,
+)
 from skyseed_v2.materialization import ComposeProjectLauncher
-from skyseed_v2 import materialization
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -17,14 +23,12 @@ API_DOCUMENT = (
 )
 TERMINOLOGY = PROJECT_ROOT / "docs/architecture/terminology.md"
 PUBLIC_MODULES = (
-    catalog_builder,
-    contracts,
     domain,
     materialization,
-    projection,
     scenario_application,
     scenario_loader,
     seed,
+    simulator_input,
     specifications,
 )
 
@@ -62,22 +66,17 @@ def test_current_api_mermaid_names_are_real_and_classified() -> None:
         "ComposeProjectLauncher": ComposeProjectLauncher,
         "Emulator": Emulator,
         "GroundStation": domain.GroundStation,
-        "GroundStationDescriptor": contracts.GroundStationDescriptor,
-        "GroundStationDescriptorProjector": (
-            projection.GroundStationDescriptorProjector
+        "GroundStationSimulationInput": (
+            simulator_input.GroundStationSimulationInput
         ),
         "GroundStationLocation": domain.GroundStationLocation,
         "Orbit": domain.Orbit,
         "OrbitParameters": domain.OrbitParameters,
         "Satellite": domain.Satellite,
         "SatelliteBase": seed.SatelliteBase,
-        "SatelliteDescriptor": contracts.SatelliteDescriptor,
-        "SatelliteDescriptorProjector": projection.SatelliteDescriptorProjector,
+        "SatelliteSimulationInput": simulator_input.SatelliteSimulationInput,
         "Shell": domain.Shell,
-        "SimulationEntityCatalog": contracts.SimulationEntityCatalog,
-        "SimulationEntityCatalogBuilder": (
-            catalog_builder.SimulationEntityCatalogBuilder
-        ),
+        "SimulatorStaticInput": simulator_input.SimulatorStaticInput,
         "SkyseedAutonomousSystem": seed.SkyseedAutonomousSystem,
         "SkyseedDockerCompiler": seed.SkyseedDockerCompiler,
         "StaticEmulatorApplyResult": scenario_application.StaticEmulatorApplyResult,
@@ -135,7 +134,7 @@ def test_terminology_and_project_rules_cover_the_governance_contract() -> None:
         "Loader",
         "Applier",
         "Descriptor",
-        "SimulationEntityCatalog",
+        "SimulatorStaticInput",
         "Projector",
         "Compiler",
         "Launcher",
@@ -192,4 +191,4 @@ def test_operation_result_is_application_only() -> None:
     assert result_type.__module__ == "skyseed_v2.scenario_application"
     assert not hasattr(skyseed_v2, result_type.__name__)
     assert not hasattr(domain, result_type.__name__)
-    assert not hasattr(contracts, result_type.__name__)
+    assert not hasattr(simulator_input, result_type.__name__)

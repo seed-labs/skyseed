@@ -7,10 +7,9 @@ from dataclasses import dataclass
 from seedemu.core import AutonomousSystem, Emulator
 from seedemu.layers import Ebgp, Ibgp, Ospf, PeerRelationship, Routing
 
-from skyseed_v2.catalog_builder import SimulationEntityCatalogBuilder
-from skyseed_v2.contracts import SimulationEntityCatalog
 from skyseed_v2.domain import GroundStationLocation, OrbitParameters
 from skyseed_v2.seed import SatelliteBase, SkyseedAutonomousSystem
+from skyseed_v2.simulator_input import SimulatorStaticInput
 from skyseed_v2.specifications import (
     OrdinaryAutonomousSystemSpecification,
     ShellSpecification,
@@ -35,8 +34,8 @@ class StaticEmulatorApplyResult:
     """Expose the flat output of one complete specification application.
 
     Layer: operation result. The specification Applier creates it; file-driven
-    callers use the Emulator, owned AS collections and Catalog. It is not a
-    domain entity, ownership layer, Descriptor or Catalog member. A named
+    callers use the Emulator, owned AS collections and Simulator input. It is
+    not a domain entity, ownership layer or Simulator input member. A named
     result is retained because no one existing object truthfully owns all four
     outputs, but it is public only from this application submodule.
     """
@@ -44,7 +43,7 @@ class StaticEmulatorApplyResult:
     emulator: Emulator
     skyseed_autonomous_systems: tuple[SkyseedAutonomousSystem, ...]
     ordinary_autonomous_systems: tuple[AutonomousSystem, ...]
-    catalog: SimulationEntityCatalog
+    simulator_input: SimulatorStaticInput
 
 
 class StaticEmulatorSpecificationApplier:
@@ -52,7 +51,8 @@ class StaticEmulatorSpecificationApplier:
 
     Layer: application service. File-driven callers create it and consume its
     operation result. It reads specifications, sequences approved create/join
-    methods, builds the Catalog and does not own entities or lifecycle. It is
+    methods, builds the static Simulator input and does not own entities or
+    lifecycle. It is
     not a Loader, domain facade, Registry adapter or Compiler. It remains
     public from this submodule because complete file inputs need heterogeneous
     orchestration; handwritten scenarios bypass it.
@@ -90,14 +90,14 @@ class StaticEmulatorSpecificationApplier:
             skyseed_autonomous_systems,
             specification,
         )
-        catalog = SimulationEntityCatalogBuilder().build(
+        simulator_input = SimulatorStaticInput.from_autonomous_systems(
             skyseed_autonomous_systems
         )
         return StaticEmulatorApplyResult(
             emulator=emulator,
             skyseed_autonomous_systems=skyseed_autonomous_systems,
             ordinary_autonomous_systems=ordinary_autonomous_systems,
-            catalog=catalog,
+            simulator_input=simulator_input,
         )
 
     @staticmethod
