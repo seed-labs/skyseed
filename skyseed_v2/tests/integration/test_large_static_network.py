@@ -11,7 +11,7 @@ from examples.large_static_network.main import DEFAULT_SCENARIO
 from skyseed_v2.configuration import load_static_emulator_config
 from skyseed_v2.seedemu_integration import SkyseedDockerCompiler
 from skyseed_v2.simulator_input_generation import create_simulator_static_input
-from skyseed_v2.static_emulator import create_static_emulator
+from skyseed_v2.static_emulator_creation import create_static_emulator
 
 
 METADATA_PREFIX = "org.seedsecuritylabs.seedemu.meta."

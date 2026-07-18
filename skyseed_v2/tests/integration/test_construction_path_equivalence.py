@@ -3,7 +3,7 @@ from pathlib import Path
 from yaml import safe_load
 
 from examples.complete_static_emulator.main import build_emulator
-from skyseed_v2.static_emulator import create_static_emulator
+from skyseed_v2.static_emulator_creation import create_static_emulator
 from skyseed_v2.configuration import load_static_emulator_config
 from skyseed_v2.configuration import StaticEmulatorConfig
 from skyseed_v2.seedemu_integration import SkyseedDockerCompiler

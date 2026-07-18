@@ -26,7 +26,7 @@ seedemu_integration/
 node_id.py
 simulator_input/
 configuration/
-static_emulator.py
+static_emulator_creation.py
 simulator_input_generation.py
 materialization/
 ```
@@ -92,11 +92,13 @@ not a facade over Emulator objects.
 - `satellite.py`: generated and explicit Shell/Orbit/Satellite Config;
 - `ground_station.py`: GroundStation Config and stable-ID derivation;
 - `network.py`: Network, Router, IX attachment, ordinary AS and eBGP Config;
-- `static_emulator.py`: Skyseed AS and complete static Emulator Config;
+- `configuration/static_emulator.py`: Skyseed AS and complete static Emulator
+  Config;
 - `yaml.py`: strict versioned YAML reading.
 
 `load_static_emulator_config(path)` returns one `StaticEmulatorConfig`.
-`create_static_emulator(config)` sequences public entity and seedemu
+`static_emulator_creation.py` owns `create_static_emulator(config)`, which
+sequences public entity and seedemu
 create/join calls, returning only the Emulator and both AS collections.
 `create_simulator_static_input(...)` is a separate explicit operation.
 Handwritten callers bypass the file-driven operations.

@@ -36,9 +36,11 @@ construction-input type has a one-to-one `*Config` name; no old alias remains.
 
 ## Emulator creation
 
-`static_emulator.py` exposes `create_static_emulator(config)`. The function
-uses the same public entity and seedemu methods as handwritten callers. It
-creates no alternate hierarchy and no population/constellation object.
+`static_emulator_creation.py` exposes `create_static_emulator(config)`. The
+function uses the same public entity and seedemu methods as handwritten
+callers. It creates no alternate hierarchy and no population/constellation
+object. The operation-specific module name distinguishes it from
+`configuration/static_emulator.py`, which contains only Config values.
 
 `StaticEmulatorCreationResult` exposes exactly the Emulator, Skyseed AS tuple
 and ordinary AS tuple. It deliberately has no Simulator-input field.

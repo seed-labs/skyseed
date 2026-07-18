@@ -11,7 +11,7 @@ flowchart LR
     SEED[seedemu_integration]
     INPUT[simulator_input]
     CONFIG[configuration]
-    CREATE[static_emulator]
+    CREATE[static_emulator_creation]
     GENERATE[simulator_input_generation]
     MAT[materialization]
     NODEID[node_id]

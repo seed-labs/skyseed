@@ -283,7 +283,10 @@ def test_compose_materialization_is_outside_emulator_and_compiler_models() -> No
 
 
 def test_configuration_creation_and_input_generation_respect_boundaries() -> None:
-    from skyseed_v2 import simulator_input_generation, static_emulator
+    from skyseed_v2 import (
+        simulator_input_generation,
+        static_emulator_creation,
+    )
     from skyseed_v2.configuration import yaml as config_yaml
     from skyseed_v2.entities import ground_station, satellite
 
@@ -325,7 +328,7 @@ def test_configuration_creation_and_input_generation_respect_boundaries() -> Non
             for module in imported_modules(entity_module)
         )
 
-    creation_imports = imported_modules(static_emulator)
+    creation_imports = imported_modules(static_emulator_creation)
     assert "skyseed_v2.configuration" in creation_imports
     assert "skyseed_v2.entities" in creation_imports
     assert "skyseed_v2.seedemu_integration" in creation_imports
@@ -342,7 +345,7 @@ def test_configuration_creation_and_input_generation_respect_boundaries() -> Non
             for module in creation_imports
         )
     creation_source = Path(
-        inspect.getsourcefile(static_emulator)
+        inspect.getsourcefile(static_emulator_creation)
     ).read_text(encoding="utf-8")
     for forbidden in (
         "getRegistry",
@@ -364,7 +367,7 @@ def test_configuration_creation_and_input_generation_respect_boundaries() -> Non
         assert required_dependency in generation_imports
     for forbidden_dependency in (
         "skyseed_v2.configuration",
-        "skyseed_v2.static_emulator",
+        "skyseed_v2.static_emulator_creation",
         "skyseed_v2.materialization",
         "yaml",
         "docker",
@@ -411,13 +414,19 @@ def test_constellation_helper_never_became_a_domain_or_public_api() -> None:
     ):
         assert importlib.util.find_spec(retired_module) is None
 
-    from skyseed_v2.static_emulator import (
+    from skyseed_v2.static_emulator_creation import (
         StaticEmulatorCreationResult,
         create_static_emulator,
     )
 
-    assert create_static_emulator.__module__ == "skyseed_v2.static_emulator"
-    assert StaticEmulatorCreationResult.__module__ == "skyseed_v2.static_emulator"
+    assert (
+        create_static_emulator.__module__
+        == "skyseed_v2.static_emulator_creation"
+    )
+    assert (
+        StaticEmulatorCreationResult.__module__
+        == "skyseed_v2.static_emulator_creation"
+    )
     assert not hasattr(skyseed_v2, "create_static_emulator")
     assert not hasattr(skyseed_v2, "StaticEmulatorCreationResult")
     assert not hasattr(simulator_input, "StaticEmulatorCreationResult")
@@ -438,9 +447,10 @@ def test_retired_file_boundary_packages_and_public_classes_are_absent() -> None:
     project_package = Path(inspect.getsourcefile(skyseed_v2)).parent
     for retired_package in ("application", "serialization", "specifications"):
         assert not (project_package / retired_package).exists()
+    assert importlib.util.find_spec("skyseed_v2.static_emulator") is None
 
     import skyseed_v2.configuration as configuration
-    import skyseed_v2.static_emulator as static_emulator
+    import skyseed_v2.static_emulator_creation as static_emulator_creation
 
     for retired_name in (
         "StaticEmulatorScenarioLoader",
@@ -448,4 +458,4 @@ def test_retired_file_boundary_packages_and_public_classes_are_absent() -> None:
         "StaticScenarioApplyResult",
     ):
         assert not hasattr(configuration, retired_name)
-        assert not hasattr(static_emulator, retired_name)
+        assert not hasattr(static_emulator_creation, retired_name)

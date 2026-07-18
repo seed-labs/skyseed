@@ -31,7 +31,7 @@ skyseed_v2/
 ├── configuration/            # immutable Config values and YAML loading
 ├── node_id.py                # neutral cross-layer logical node identity
 ├── simulator_input_generation.py # entity traversal and pure input generation
-├── static_emulator.py        # Config-to-Emulator creation operation
+├── static_emulator_creation.py # Config-to-Emulator creation operation
 └── materialization/          # Compose project launch tooling
 ```
 

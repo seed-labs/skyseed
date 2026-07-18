@@ -14,7 +14,7 @@ from skyseed_v2 import (
     simulator_input,
 )
 from skyseed_v2.materialization import ComposeProjectLauncher
-from skyseed_v2 import static_emulator
+from skyseed_v2 import static_emulator_creation
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -29,7 +29,7 @@ PUBLIC_MODULES = (
     seedemu_integration,
     simulator_input,
     configuration,
-    static_emulator,
+    static_emulator_creation,
 )
 
 
@@ -81,7 +81,7 @@ def test_current_api_mermaid_names_are_real_and_classified() -> None:
         "SkyseedAutonomousSystem": seedemu_integration.SkyseedAutonomousSystem,
         "SkyseedDockerCompiler": seedemu_integration.SkyseedDockerCompiler,
         "StaticEmulatorCreationResult": (
-            static_emulator.StaticEmulatorCreationResult
+            static_emulator_creation.StaticEmulatorCreationResult
         ),
         "StaticEmulatorConfig": configuration.StaticEmulatorConfig,
     }
@@ -190,8 +190,8 @@ def test_current_emulator_documents_have_no_known_stale_implementation_names() -
 
 
 def test_creation_result_is_operation_module_only() -> None:
-    result_type = static_emulator.StaticEmulatorCreationResult
-    assert result_type.__module__ == "skyseed_v2.static_emulator"
+    result_type = static_emulator_creation.StaticEmulatorCreationResult
+    assert result_type.__module__ == "skyseed_v2.static_emulator_creation"
     assert not hasattr(skyseed_v2, result_type.__name__)
     assert not hasattr(entities, result_type.__name__)
     assert not hasattr(simulator_input, result_type.__name__)

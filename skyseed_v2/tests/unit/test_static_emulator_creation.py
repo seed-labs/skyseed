@@ -2,7 +2,7 @@ from dataclasses import fields
 
 from seedemu.core import Emulator
 
-from skyseed_v2.static_emulator import create_static_emulator
+from skyseed_v2.static_emulator_creation import create_static_emulator
 from skyseed_v2.configuration import (
     EbgpPeeringConfig,
     EbgpRouterReferenceConfig,

@@ -12,6 +12,9 @@ The current domain-data ownership and file-configuration API validation is
 recorded in
 `domain-data-and-file-configuration-api-convergence-validation.md`.
 
+The current Config-to-Emulator operation module-path validation is recorded in
+`static-emulator-creation-module-rename-validation.md`.
+
 The current formal-example generation/start boundary is recorded in
 `generated-example-output-controls-validation.md`.
 

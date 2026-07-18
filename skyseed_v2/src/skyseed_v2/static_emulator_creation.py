@@ -35,7 +35,8 @@ class StaticEmulatorCreationResult:
     Layer: operation result. `create_static_emulator` creates it; file-driven
     callers use the Emulator and both AS collections. It is not an Emulator
     entity, ownership layer, Config or Simulator input. It is public from
-    `skyseed_v2.static_emulator` because no existing object owns all outputs.
+    `skyseed_v2.static_emulator_creation` because no existing object owns all
+    outputs.
     """
 
     emulator: Emulator

@@ -20,7 +20,7 @@ SkyseedAutonomousSystem
 | --- | --- | --- |
 | `skyseed_v2.entities` | Emulator entities and tightly bound values | `Shell`, `Orbit`, `OrbitParameters`, `Satellite`, `GroundStation`, `GroundStationLocation` |
 | `skyseed_v2.configuration` | Frozen Config values and versioned YAML loading | qualified `*Config` values, `load_static_emulator_config` |
-| `skyseed_v2.static_emulator` | Config-to-Emulator creation operation | `create_static_emulator`, `StaticEmulatorCreationResult` |
+| `skyseed_v2.static_emulator_creation` | Config-to-Emulator creation operation | `create_static_emulator`, `StaticEmulatorCreationResult` |
 | `skyseed_v2.node_id` | Neutral Emulator–Simulator–Compiler logical identity contract | `NodeId` |
 | `skyseed_v2.simulator_input_generation` | Shared NodeId derivation, supported-entity traversal and pure input copying | three input-generation functions |
 | `skyseed_v2.simulator_input` | Immutable static data supplied to the future Simulator | `SatelliteSimulationInput`, `GroundStationSimulationInput`, `SimulatorStaticInput` |
@@ -315,7 +315,7 @@ Static-input types and operations use explicit owner imports:
 ```python
 from skyseed_v2.configuration import load_static_emulator_config
 from skyseed_v2.node_id import NodeId
-from skyseed_v2.static_emulator import create_static_emulator
+from skyseed_v2.static_emulator_creation import create_static_emulator
 from skyseed_v2.simulator_input_generation import create_simulator_static_input
 from skyseed_v2.simulator_input import SimulatorStaticInput
 ```
@@ -332,7 +332,8 @@ from skyseed_v2.simulator_input import SimulatorStaticInput
 | stateless Config application class | `create_static_emulator(config)` | one direct operation needs no public class |
 | four-field apply result | `StaticEmulatorCreationResult` | creation has only three outputs; Simulator input is separate |
 | `application/simulator_static_input.py` | `simulator_input_generation.py` | direct cross-layer functions, no abstract application package |
-| `application/static_scenario_application.py` | `static_emulator.py` | file name follows the operation it implements |
+| `application/static_scenario_application.py` | `static_emulator_creation.py` | direct operation needs no abstract application package |
+| `static_emulator.py` | `static_emulator_creation.py` | distinguishes entity creation from `configuration/static_emulator.py`, which defines only Config values |
 | `serialization/static_emulator_yaml_loader.py` | `configuration/yaml.py` | YAML reading belongs with Config values |
 | per-entity projector classes | direct `create_*_simulation_input` functions | no state or reusable abstraction existed |
 | input `from_*` classmethods | direct generation functions | input types remain pure data |
