@@ -20,9 +20,10 @@ SATELLITE_ROLE_LABEL = "Satellite"
 class SatelliteRole(Enum):
     """Name the Satellite-only SEED integration role.
 
-    Layer: integration value. Satellite creates and uses it; Compiler metadata
-    observes it. It is not an Emulator entity or Simulator input and is public
-    only from the entities package for integration inspection.
+    Layer: integration value. Satellite creates and uses it;
+    SkyseedDockerCompiler metadata observes it. It is not an Emulator entity
+    or Simulator input and is public only from the entities package for
+    integration inspection.
     """
 
     SATELLITE = SATELLITE_ROLE_LABEL
@@ -33,7 +34,7 @@ class Satellite(Node):
 
     Layer: approved Emulator entity plus SEED capability.
     `Orbit.create_satellite` creates it; its Orbit/AS, SEED lifecycle, Simulator
-    input generation and Compiler use it. It is not a Config,
+    input generation and SkyseedDockerCompiler use it. It is not a Config,
     container or runtime topology state. It is root public because it is an
     approved user-visible entity.
     """

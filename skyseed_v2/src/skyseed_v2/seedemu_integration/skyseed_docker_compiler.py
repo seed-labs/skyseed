@@ -1,4 +1,4 @@
-"""Docker Compiler extension for first-class, explicitly isolated Satellites."""
+"""Docker/Compose compiler extension for explicitly isolated Satellites."""
 
 from __future__ import annotations
 
@@ -234,8 +234,9 @@ class SkyseedDockerCompiler(Docker):
     Layer: SEED integration. Examples or advanced callers create it after
     entity construction; Emulator.compile and deployment tooling consume its
     artifact. It is not an entity creator, Config interpreter, materializer
-    or Simulator execution compiler. It is public from `skyseed_v2.seedemu_integration`
-    because Satellite dispatch needs a narrow upstream Compiler extension.
+    or Simulator execution compiler. It is public from
+    `skyseed_v2.seedemu_integration` because Satellite dispatch needs a narrow
+    upstream Docker compiler extension.
     """
 
     def __init__(

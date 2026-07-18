@@ -11,7 +11,7 @@ from skyseed_v2.seedemu_integration import (
     SatelliteBase,
     SkyseedAutonomousSystem,
 )
-from skyseed_v2.simulator_input import SatelliteSimulationInput
+from skyseed_v2.simulator.static_input import SatelliteSimulationInput
 
 
 def build_rendered_emulator():

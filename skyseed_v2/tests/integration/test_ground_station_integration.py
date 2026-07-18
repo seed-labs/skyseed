@@ -17,7 +17,7 @@ from skyseed_v2.seedemu_integration import (
     SkyseedAutonomousSystem,
     SkyseedDockerCompiler,
 )
-from skyseed_v2.simulator_input import (
+from skyseed_v2.simulator.static_input import (
     GroundStationSimulationInput,
 )
 

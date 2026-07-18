@@ -21,10 +21,10 @@ examples/isolated_satellites/output/start.sh
 The generated controls use the exact Compose project
 `skyseed_v2_isolated_satellites`.
 
-The Compiler declares each locally built SEED base image as a Compose
-`service:` additional build context. The generated start script uses the
-maintained BuildKit/Compose v2 path. Cleanup stops only this exact project and
-keeps the generated output:
+`SkyseedDockerCompiler` declares each locally built SEED base image as a
+Compose `service:` additional build context. The generated start script uses
+the maintained BuildKit/Compose v2 path. Cleanup stops only this exact project
+and keeps the generated output:
 
 ```bash
 examples/isolated_satellites/output/cleanup.sh

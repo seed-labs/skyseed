@@ -43,14 +43,23 @@ def test_root_exports_only_high_frequency_entities_and_values() -> None:
 
 def test_identity_and_generation_exports_stay_with_their_owner_modules() -> None:
     node_id = importlib.import_module("skyseed_v2.node_id")
-    simulator_input = importlib.import_module("skyseed_v2.simulator_input")
+    simulator = importlib.import_module("skyseed_v2.simulator")
+    simulator_static_input = importlib.import_module(
+        "skyseed_v2.simulator.static_input"
+    )
     generation = importlib.import_module(
         "skyseed_v2.simulator_input_generation"
     )
 
     assert node_id.__all__ == ["NodeId"]
-    assert "NodeId" not in simulator_input.__all__
-    assert "SimulationNodeId" not in simulator_input.__all__
+    assert simulator.__all__ == []
+    assert "NodeId" not in simulator_static_input.__all__
+    assert "SimulationNodeId" not in simulator_static_input.__all__
+    assert set(simulator_static_input.__all__) == {
+        "GroundStationSimulationInput",
+        "SatelliteSimulationInput",
+        "SimulatorStaticInput",
+    }
     assert set(generation.__all__) == {
         "create_ground_station_simulation_input",
         "create_satellite_simulation_input",

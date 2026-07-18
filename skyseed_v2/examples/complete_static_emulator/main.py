@@ -19,7 +19,7 @@ from skyseed_v2.seedemu_integration import (
     SkyseedAutonomousSystem,
     SkyseedDockerCompiler,
 )
-from skyseed_v2.simulator_input import SimulatorStaticInput
+from skyseed_v2.simulator.static_input import SimulatorStaticInput
 
 
 EXAMPLE_ROOT = Path(__file__).resolve().parent

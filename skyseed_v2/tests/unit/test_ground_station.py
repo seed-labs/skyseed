@@ -8,7 +8,7 @@ from skyseed_v2.simulator_input_generation import create_ground_station_simulati
 from skyseed_v2.entities import GroundStation, GroundStationLocation
 from skyseed_v2.node_id import NodeId
 from skyseed_v2.seedemu_integration import SkyseedAutonomousSystem
-from skyseed_v2.simulator_input import (
+from skyseed_v2.simulator.static_input import (
     GroundStationSimulationInput,
 )
 

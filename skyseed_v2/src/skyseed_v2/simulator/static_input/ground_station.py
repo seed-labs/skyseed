@@ -14,10 +14,11 @@ _GROUND_STATION_ENTITY_KIND = "ground-station"
 class GroundStationSimulationInput:
     """Contain only static GroundStation values needed beyond the Emulator.
 
-    Layer: immutable Emulator-to-Simulator boundary input. Application
-    conversion creates it and future Simulator code reads it. It is not an
-    Emulator entity, SEED Router or execution target. It is public from the
-    simulator_input package because it is the explicit GroundStation input.
+    Layer: immutable Simulator static-input contract. The external input
+    generation adapter creates it and future Simulator code reads it. It is not
+    an Emulator entity, SEED Router or execution target. It is public from the
+    Simulator static-input package because it is the explicit GroundStation
+    input contract.
     """
 
     node_id: NodeId

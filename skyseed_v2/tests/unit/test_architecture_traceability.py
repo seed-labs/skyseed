@@ -11,9 +11,9 @@ from skyseed_v2 import (
     materialization,
     node_id,
     seedemu_integration,
-    simulator_input,
 )
 from skyseed_v2.materialization import ComposeProjectLauncher
+from skyseed_v2.simulator import static_input as simulator_static_input
 from skyseed_v2 import static_emulator_creation
 
 
@@ -27,7 +27,7 @@ PUBLIC_MODULES = (
     materialization,
     node_id,
     seedemu_integration,
-    simulator_input,
+    simulator_static_input,
     configuration,
     static_emulator_creation,
 )
@@ -67,17 +67,19 @@ def test_current_api_mermaid_names_are_real_and_classified() -> None:
         "Emulator": Emulator,
         "GroundStation": entities.GroundStation,
         "GroundStationSimulationInput": (
-            simulator_input.GroundStationSimulationInput
+            simulator_static_input.GroundStationSimulationInput
         ),
         "GroundStationLocation": entities.GroundStationLocation,
         "Orbit": entities.Orbit,
         "OrbitParameters": entities.OrbitParameters,
         "Satellite": entities.Satellite,
         "SatelliteBase": seedemu_integration.SatelliteBase,
-        "SatelliteSimulationInput": simulator_input.SatelliteSimulationInput,
+        "SatelliteSimulationInput": (
+            simulator_static_input.SatelliteSimulationInput
+        ),
         "Shell": entities.Shell,
         "NodeId": node_id.NodeId,
-        "SimulatorStaticInput": simulator_input.SimulatorStaticInput,
+        "SimulatorStaticInput": simulator_static_input.SimulatorStaticInput,
         "SkyseedAutonomousSystem": seedemu_integration.SkyseedAutonomousSystem,
         "SkyseedDockerCompiler": seedemu_integration.SkyseedDockerCompiler,
         "StaticEmulatorCreationResult": (
@@ -134,7 +136,8 @@ def test_terminology_and_project_rules_cover_the_governance_contract() -> None:
         "GroundStationSimulationInput",
         "SimulatorStaticInput",
         "NodeId",
-        "Compiler",
+        "SkyseedDockerCompiler",
+        "SimulationPlanCompiler",
         "Launcher",
         "StaticEmulatorCreationResult",
     ):
@@ -157,6 +160,22 @@ def test_terminology_and_project_rules_cover_the_governance_contract() -> None:
         assert required_rule in rules
     assert "Do not start Simulator" not in rules
     assert "simulator_input_generation.py" not in rules
+
+
+def test_compilation_stages_have_distinct_current_architecture_terms() -> None:
+    terminology = TERMINOLOGY.read_text(encoding="utf-8")
+    assert "| SkyseedDockerCompiler |" in terminology
+    assert "| SimulationPlanCompiler |" in terminology
+    assert "| Compiler |" not in terminology
+
+    for relative in (
+        "docs/CURRENT.md",
+        "docs/architecture/diagrams.md",
+        "docs/architecture/emulator-public-construction-api.md",
+    ):
+        document = (PROJECT_ROOT / relative).read_text(encoding="utf-8")
+        assert "SkyseedDockerCompiler" in document
+        assert "SimulationPlanCompiler" in document
 
 
 def test_current_emulator_documents_have_no_known_stale_implementation_names() -> None:
@@ -194,7 +213,7 @@ def test_creation_result_is_operation_module_only() -> None:
     assert result_type.__module__ == "skyseed_v2.static_emulator_creation"
     assert not hasattr(skyseed_v2, result_type.__name__)
     assert not hasattr(entities, result_type.__name__)
-    assert not hasattr(simulator_input, result_type.__name__)
+    assert not hasattr(simulator_static_input, result_type.__name__)
 
 
 def test_direct_file_driven_call_chain_is_documented() -> None:

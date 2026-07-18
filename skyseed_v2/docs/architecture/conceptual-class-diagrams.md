@@ -2,8 +2,10 @@
 
 ## Status
 
-These diagrams describe only implemented Skyseed v2 code. Simulator runtime
-types are deliberately absent because Simulator is **NOT STARTED**.
+These class diagrams describe only implemented Skyseed v2 code. The Simulator
+static-input contract is **AVAILABLE**; Simulator algorithms, engine,
+Simulation Plan and `SimulationPlanCompiler` runtime types are deliberately
+absent because they are **NOT STARTED**.
 
 ## Emulator entities and seedemu integration
 
@@ -113,11 +115,12 @@ classDiagram
 ```
 
 The dependency direction is intentional: `simulator_input_generation` depends
-on entities, seedemu integration, neutral `node_id` and `simulator_input`; the
-input package depends on none of the Emulator/SEED layers. The copied objects
-retain no entity, Registry, container or Compose reference. `NodeId` is a pure
-value with no resolution method, and there is no public/global mapping from it
-to Emulator entities or runtime resources.
+on entities, seedemu integration, neutral `node_id` and
+`simulator.static_input`; the Simulator-owned input package depends on none of
+the Emulator/SEED layers. The copied objects retain no entity, Registry,
+container or Compose reference. `NodeId` is a pure value with no resolution
+method, and there is no public/global mapping from it to Emulator entities or
+runtime resources.
 
 ## Configuration, Emulator creation and input generation
 
@@ -147,11 +150,13 @@ and returns only the three creation outputs. A separate
 generates the immutable Simulator input. None is an entity or ownership level,
 and handwritten examples do not require the file-driven operations.
 
-Future Compiler resolution will reuse the implemented owner methods rather
-than add an index: Base `getAutonomousSystem(asn)`, Skyseed AS
+Future `SimulationPlanCompiler` resolution will reuse the implemented owner
+methods rather than add an index: Base `getAutonomousSystem(asn)`, Skyseed AS
 `get_satellite()` / `get_ground_station()` / `get_shell()`, Shell
-`get_orbit()` and Orbit `get_satellite()`. No Compiler resolution path exists
-yet.
+`get_orbit()` and Orbit `get_satellite()`. No plan-compilation resolution path
+exists yet. This future stage is independent from the implemented
+`SkyseedDockerCompiler`, which lowers only the rendered static Emulator/SEED
+model to Docker/Compose deployment configuration.
 
 ## Materialization boundary
 
@@ -175,4 +180,5 @@ classDiagram
 ```
 
 The launcher consumes an existing Compose artifact. It is outside entity
-construction, Simulator static input and Compiler lowering.
+construction, Simulator static input, `SkyseedDockerCompiler` lowering and
+future `SimulationPlanCompiler` lowering.

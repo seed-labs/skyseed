@@ -15,8 +15,9 @@ Emulator generation
     -> Docker Compose v2 containers
 ```
 
-The Emulator constructs static entities and a scenario. The Compiler emits the
-single Compose output. The launcher starts and verifies that complete output.
+The Emulator constructs static entities and a scenario.
+`SkyseedDockerCompiler` emits the single Compose output. The launcher starts
+and verifies that complete output.
 It does not belong to Simulator static input, Emulator, Simulator, dynamic
 topology/planning, or satellite-network runtime semantics, and it is not shown
 in an Emulator entity class diagram.
@@ -135,8 +136,9 @@ and one unique service label. A helper may be `created` or briefly `running`
 while polling, but only `exited` with status zero is success. A long-running
 service succeeds only in `running` state.
 
-The launcher never calls the Compiler, writes Compose, produces another
-output, edits a service, drops a declared service, retries a service, changes a
+The launcher never calls `SkyseedDockerCompiler`, writes Compose, produces
+another output, edits a service, drops a declared service, retries a service,
+changes a
 parallel/batch setting, or performs cleanup. Cleanup remains caller-owned and
 must be bounded to the named project, its project-labelled networks, and exact
 generated image tags.
@@ -176,7 +178,8 @@ formal scale build used that one explicit compatibility setting and verified
 all 362 node image commands before `up`.
 
 This is an environment-specific build compatibility requirement, not a second
-Compiler path or a scenario change. It should be re-evaluated when the old
+`SkyseedDockerCompiler` path or a scenario change. It should be re-evaluated
+when the old
 Engine is upgraded; the launcher itself neither builds images nor chooses a
 builder.
 
@@ -187,7 +190,7 @@ Fake-subprocess contract tests cover Compose v2 command construction,
 fallback, the default one-call strategy, explicit configurable batching,
 stable ordering and tail batches, one project/file, command failure
 propagation, helper/long-running states, missing/extra services, Compose drift,
-and absence of Compiler or output creation.
+and absence of `SkyseedDockerCompiler` or output creation.
 
 The real seven-service smoke and formal 365-service result are recorded in
 `docs/evidence/s4-scale-compose-v2-single-materialization-validation.md`.

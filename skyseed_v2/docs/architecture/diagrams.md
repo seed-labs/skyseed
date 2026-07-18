@@ -1,7 +1,8 @@
 # Current Architecture Diagrams
 
-All diagrams on this page reflect implemented code. Simulator remains
-**NOT STARTED**; the right-hand box is only a consumer boundary.
+Solid implemented nodes and arrows reflect current code. The Simulator static
+input contract is **AVAILABLE**; dashed Simulator, Simulation Plan and
+`SimulationPlanCompiler` nodes are future boundaries, not implementations.
 
 ## 1. Package dependency direction
 
@@ -9,7 +10,7 @@ All diagrams on this page reflect implemented code. Simulator remains
 flowchart LR
     ENT[entities]
     SEED[seedemu_integration]
-    INPUT[simulator_input]
+    INPUT[simulator/static_input]
     CONFIG[configuration]
     CREATE[static_emulator_creation]
     GENERATE[simulator_input_generation]
@@ -32,10 +33,10 @@ flowchart LR
     GENERATE --> INPUT
 ```
 
-There is no arrow from `simulator_input` to entities, seedemu integration or
-upstream seedemu. `node_id` is the neutral cross-layer logical identity and
+There is no arrow from `simulator/static_input` to entities, seedemu integration
+or upstream seedemu. `node_id` is the neutral cross-layer logical identity and
 uses the general `identifier` validator. `materialization` is independent of
-entities, static input and seedemu Compiler implementation.
+entities, static input and the `SkyseedDockerCompiler` implementation.
 
 ## 2. Entity ownership
 
@@ -147,8 +148,9 @@ flowchart LR
     SI --> INPUT[SimulatorStaticInput]
     GI --> INPUT
     INPUT --> SIM[future Simulator consumer boundary]
-    SIM -. future plan cites NodeId .-> COMP[future Compiler plan consumer]
-    COMP -. NodeId.asn .-> BASE[SatelliteBase.getAutonomousSystem]
+    SIM -. produces .-> PLAN[future Simulation Plan citing NodeId]
+    PLAN -. consumed by .-> PLANCOMP[future SimulationPlanCompiler]
+    PLANCOMP -. NodeId.asn .-> BASE[SatelliteBase.getAutonomousSystem]
     BASE -. require Skyseed AS .-> OWNER[SkyseedAutonomousSystem]
     OWNER -. kind + entity_id .-> ENTITY[Satellite or GroundStation]
 ```
@@ -157,10 +159,32 @@ flowchart LR
 duplicate-ID rejection, immutable snapshotting and read-only indexing only. It
 does not traverse AS objects or call entity conversion and contains no entity
 reference. No unified NodeId-to-entity/resource mapping exists. The dashed
-path documents future owner-directed Compiler calls only; no Simulator, plan,
-resolution or Compiler update path is implemented.
+path documents future owner-directed `SimulationPlanCompiler` calls only; no
+Simulator algorithm, plan, resolution or plan-compilation update path is
+implemented.
 
-## 7. Generated experiment artifact and materialization
+## 7. Independent compilation stages
+
+```mermaid
+flowchart TD
+    E[Emulator / SEED static model]
+    E --> ADAPT[create_simulator_static_input]
+    ADAPT --> INPUT[SimulatorStaticInput]
+    INPUT -. future constructor input .-> SIM[future Simulator]
+    SIM -. produces .-> PLAN[future Simulation Plan]
+    PLAN -. compiles with .-> PLANCOMP[future SimulationPlanCompiler]
+    PLANCOMP -. produces .-> UPDATE[concrete dynamic network update plan]
+
+    E --> DOCKER[SkyseedDockerCompiler]
+    DOCKER --> DEPLOY[Dockerfile / Compose / services / networks]
+```
+
+`SkyseedDockerCompiler ≠ SimulationPlanCompiler`. The implemented static
+deployment compiler and the future plan compiler have different inputs,
+outputs, ownership and lifecycles; they have no inheritance relationship or
+shared public parent.
+
+## 8. Generated experiment artifact and materialization
 
 ```mermaid
 flowchart LR

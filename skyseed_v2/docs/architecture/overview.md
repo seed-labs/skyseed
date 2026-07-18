@@ -2,9 +2,10 @@
 
 ## 1. Status
 
-The static Emulator core, static input boundary, formal examples and Compose
-materialization tooling are implemented. Simulator, dynamic topology,
-planning, Runner and UT are not implemented in the current main slice.
+The static Emulator core, Simulator-owned static input contract, formal
+examples and Compose materialization tooling are implemented. Simulator
+algorithms and engine, dynamic topology, planning, Runner and UT are not
+implemented in the current main slice.
 
 ## 2. System division
 
@@ -15,8 +16,9 @@ The Emulator owns:
 - static Skyseed entities and ownership;
 - narrow seedemu lifecycle integration;
 - static Network, Router, IX and routing-layer construction;
-- compilation into a Compose artifact;
-- immutable static data exported for future Simulator consumption.
+- static deployment compilation into a Compose artifact;
+- approved entity facts copied by an external adapter for future Simulator
+  consumption.
 
 The source packages make those responsibilities explicit:
 
@@ -24,7 +26,8 @@ The source packages make those responsibilities explicit:
 entities/
 seedemu_integration/
 node_id.py
-simulator_input/
+simulator/
+└── static_input/
 configuration/
 static_emulator_creation.py
 simulator_input_generation.py
@@ -33,9 +36,11 @@ materialization/
 
 ### Simulator
 
-Future Simulator work may own time, positions, visibility, topology, semantic
-planning, backend planning, execution and observation. None of those concepts
-is implemented or authorized by the current package refactor.
+The Simulator already owns its pure static-input contract under
+`simulator/static_input/`. Future Simulator work may own time, positions,
+visibility, topology, semantic planning, execution and observation. None of
+those algorithms or engine concepts is implemented or authorized by the
+current package refactor.
 
 ## 3. Static entity ownership
 
@@ -79,11 +84,13 @@ GroundStation do not have a `node_id` property because the value identifies a
 node at a cross-layer boundary rather than inside the Emulator entity model.
 `NodeId` is a pure value and exposes no lookup or resource method.
 
-Dependencies point from the generation module toward `entities`,
-`seedemu_integration`, `node_id` and `simulator_input`. The input package itself
-imports none of the Emulator/SEED layers and uses only neutral `node_id`.
-`node_id` in turn uses the root identifier validator. Static input is data,
-not a facade over Emulator objects.
+Dependencies point from the generation adapter toward `entities`,
+`seedemu_integration`, `node_id` and `simulator.static_input`. The
+Simulator-owned input package itself imports none of the Emulator/SEED layers
+and uses only neutral `node_id`. `node_id` in turn uses the root identifier
+validator. Static input is data, not a facade over Emulator objects. A future
+Simulator receives that completed input and never invokes the entity-aware
+adapter itself.
 
 ## 5. Configuration and creation
 
@@ -114,7 +121,7 @@ Handwritten callers bypass the file-driven operations.
 
 The package is not a vendored seedemu copy and not data seeding code.
 
-## 7. Compiler and materialization
+## 7. Compilation stages and materialization
 
 `SkyseedDockerCompiler` lowers one rendered Emulator to a Compose project.
 After all current generators finish, the formal example entrypoint adds
@@ -122,25 +129,34 @@ project-scoped `output/start.sh` and `output/cleanup.sh`. The former validates
 and starts the exact generated project; the latter stops it without deleting
 the output. `ComposeProjectLauncher` remains the programmatic, state-verifying
 consumer of the same Compose artifact. Materialization is outside entities,
-static Simulator input and Compiler model ownership.
+static Simulator input and both compilation stages.
+
+The reserved future name `SimulationPlanCompiler` refers to a separate stage
+that would lower an abstract Simulation Plan into concrete dynamic network
+update operations. It is not implemented, does not inherit from
+`SkyseedDockerCompiler` and has no shared public parent. Static Docker/Compose
+compilation does not consume Simulation Plans.
 
 ## 8. Formal examples
 
-- `isolated_satellites`: direct entity construction, compile and generated
-  output controls.
+- `isolated_satellites`: direct entity construction,
+  `SkyseedDockerCompiler` and generated output controls.
 - `complete_static_emulator`: direct entities plus ordinary Network/Router,
-  IX, eBGP, Simulator static input, compile and generated output controls.
+  IX, eBGP, Simulator static input, `SkyseedDockerCompiler` and generated
+  output controls.
 - `large_static_network`: YAML → Config → Emulator creation → static Simulator
-  input generation → compile → generated output controls. Validation remains
-  compile/config-only until a user explicitly runs `output/start.sh`.
+  input generation → `SkyseedDockerCompiler` → generated output controls.
+  Validation remains Docker/Compose compile/config-only until a user explicitly
+  runs `output/start.sh`.
 
 The examples are executable architecture records; their calls lead directly
 to the owning public methods.
 
 ## 9. Deferred boundaries
 
-Future Simulator state and plans will cite `NodeId`. A future Compiler-side
-path will call `SatelliteBase.getAutonomousSystem(node_id.asn)`, require a
+Future Simulator state and plans will cite `NodeId`. A future
+`SimulationPlanCompiler` path will call
+`SatelliteBase.getAutonomousSystem(node_id.asn)`, require a
 `SkyseedAutonomousSystem`, then dispatch the supported kind to
 `get_satellite(node_id.entity_id)` or
 `get_ground_station(node_id.entity_id)`. More specific hierarchical lookup can

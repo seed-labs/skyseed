@@ -17,7 +17,7 @@ from skyseed_v2.simulator_input_generation import (
     create_satellite_simulation_input,
 )
 from skyseed_v2.node_id import NodeId
-from skyseed_v2.simulator_input import (
+from skyseed_v2.simulator.static_input import (
     GroundStationSimulationInput,
     SatelliteSimulationInput,
     SimulatorStaticInput,

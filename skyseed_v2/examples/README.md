@@ -69,9 +69,11 @@ Both input styles converge at `SkyseedAutonomousSystem.create_shell`,
 immutable static-data boundary for future Simulator consumers; it is not a
 scenario, SEED Registry, container inventory or output-directory index.
 Entity traversal and conversion belong to `simulator_input_generation.py`;
-the input package contains only immutable data and its pure-data lookup. No
-public/global `NodeId → entity/service/container` mapping exists. Future
-Compiler lookup will call the existing Base/AS/Shell/Orbit owners directly.
+the Simulator-owned `skyseed_v2.simulator.static_input` package contains only
+immutable data and its pure-data lookup. No public/global
+`NodeId → entity/service/container` mapping exists. Future
+`SimulationPlanCompiler` lookup will call the existing Base/AS/Shell/Orbit
+owners directly.
 
 The `reference/` directory is excluded from the package and formal example
 path. It preserves offline historical investigation/conversion tooling only;

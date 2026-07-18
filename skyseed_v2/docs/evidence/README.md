@@ -15,6 +15,10 @@ recorded in
 The current Config-to-Emulator operation module-path validation is recorded in
 `static-emulator-creation-module-rename-validation.md`.
 
+The current Simulator static-input ownership and two-stage compilation
+terminology validation is recorded in
+`simulator-static-input-ownership-and-compiler-terminology-validation.md`.
+
 The current formal-example generation/start boundary is recorded in
 `generated-example-output-controls-validation.md`.
 

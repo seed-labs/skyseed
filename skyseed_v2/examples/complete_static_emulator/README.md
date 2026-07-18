@@ -2,7 +2,8 @@
 
 This handwritten example shows the complete public composition: two isolated
 Satellites, one GroundStation, one ordinary SEED AS/Network/Router, one IX, one
-explicit eBGP peering, immutable Simulator static input and the Compiler.
+explicit eBGP peering, immutable Simulator static input and
+`SkyseedDockerCompiler`.
 Static input is produced explicitly with
 `create_simulator_static_input((skyseed_as,))`. The ordinary AS is not passed
 to that fail-closed boundary. No NodeId-to-entity mapping or resolution path is
@@ -15,9 +16,9 @@ Generate the complete output from `skyseed_v2/`:
 python3 -m examples.complete_static_emulator.main --override
 ```
 
-The Compiler expresses locally built SEED base images as Compose `service:`
-additional build contexts, so a maintained Docker installation can use its
-default BuildKit builder directly. Start the generated project with:
+`SkyseedDockerCompiler` expresses locally built SEED base images as Compose
+`service:` additional build contexts, so a maintained Docker installation can
+use its default BuildKit builder directly. Start the generated project with:
 
 ```bash
 examples/complete_static_emulator/output/start.sh

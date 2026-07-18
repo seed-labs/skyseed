@@ -55,7 +55,8 @@
 - 正式执行路径；
 - 新运行模式或 fallback；
 - 类图中的主体类或重要关系；
-- Emulator、Simulator、Compiler、Runner、Materialization 之间的职责。
+- Emulator、Simulator、`SkyseedDockerCompiler`、`SimulationPlanCompiler`、
+  Runner、Materialization 之间的职责。
 
 禁止先提交实现，再在完成报告中解释新概念。与争议无关且已经批准
 的工作可以继续，但争议部分必须停留在提案状态。
@@ -180,6 +181,22 @@ Service
 编译结果和运行资源的全局索引，也不得由下游通过显示名称、容器名称、
 服务名称或其他字符串重新猜测。缺失、重复、类型不符或所有者不匹配时
 必须 fail-closed。
+
+架构记录和公共合同必须区分两个独立编译阶段：
+
+- `SkyseedDockerCompiler` 将 Emulator/SEED 静态模型降低为 Docker、
+  Compose、service 和 network 等静态部署配置；
+- `SimulationPlanCompiler` 将 Simulator 产生的抽象 Simulation Plan 降低为
+  具体动态网络更新操作计划。
+
+二者不得合并、互相继承、共享无真实需求的模糊公共父类，或互相承担对方
+职责。新增或实现 `SimulationPlanCompiler` 仍须作为公共架构变更单独审批。
+文档在可能同时涉及两阶段时不得使用无完整限定语义的单独 `Compiler`。
+
+Simulator 静态输入类型在语义上属于 Simulator，并且只能依赖中性纯值和
+自身数据类型。了解 Emulator 实体结构的输入生成适配代码必须位于
+Simulator 核心之外；Simulator 接收已生成的纯输入，不反向读取 Emulator、
+SEED Node 或 Registry。
 
 ## 9. 文档与实现同步
 

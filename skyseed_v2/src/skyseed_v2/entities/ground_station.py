@@ -53,9 +53,9 @@ class GroundStation(Router):
 
     Layer: approved Emulator entity plus SEED capability.
     `SkyseedAutonomousSystem.create_ground_station` creates it; its AS, routing
-    layers and Compiler use it. Application converts its static values. It is
-    not a Config, ordinary Router or dynamic link state. It is root
-    public because it is an approved user-visible entity.
+    layers and SkyseedDockerCompiler use it. Input generation copies its static
+    values. It is not a Config, ordinary Router or dynamic link state. It is
+    root public because it is an approved user-visible entity.
     """
 
     def __init__(

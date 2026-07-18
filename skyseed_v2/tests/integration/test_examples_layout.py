@@ -164,8 +164,9 @@ def test_small_examples_show_public_construction_without_file_facades() -> None:
     assert "create_simulator_static_input" in complete_source
     assert "create_emulator_node_index" not in complete_source
     assert "emulator_node_index" not in complete_source
-    assert "from skyseed_v2.simulator_input import SimulatorStaticInput" in (
-        complete_source
+    assert (
+        "from skyseed_v2.simulator.static_input import SimulatorStaticInput"
+        in complete_source
     )
     assert "(skyseed_as,)" in complete_source
     assert "ground_as)" not in complete_source

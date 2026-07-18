@@ -10,7 +10,7 @@ from examples.complete_static_emulator.main import (
     main,
 )
 from skyseed_v2.node_id import NodeId
-from skyseed_v2.simulator_input import (
+from skyseed_v2.simulator.static_input import (
     GroundStationSimulationInput,
     SatelliteSimulationInput,
 )

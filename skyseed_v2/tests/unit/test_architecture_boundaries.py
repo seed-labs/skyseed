@@ -7,10 +7,10 @@ from subprocess import run
 import sys
 
 import skyseed_v2
-from skyseed_v2 import simulator_input
 from skyseed_v2.entities import GroundStation, Satellite
 from skyseed_v2.identifier import validate_identifier
 from skyseed_v2.seedemu_integration import SkyseedDockerCompiler
+from skyseed_v2.simulator import static_input as simulator_static_input
 from skyseed_v2.seedemu_integration.metadata import (
     SEED_METADATA_PREFIX,
     SKYSEED_METADATA_PREFIX,
@@ -32,7 +32,7 @@ def imported_modules(module) -> set[str]:
     return modules
 
 
-def test_peer_entities_do_not_depend_on_each_other_or_simulator_input() -> None:
+def test_peer_entities_do_not_depend_on_simulator_static_input() -> None:
     from skyseed_v2.entities import ground_station, satellite
 
     satellite_imports = imported_modules(satellite)
@@ -40,17 +40,21 @@ def test_peer_entities_do_not_depend_on_each_other_or_simulator_input() -> None:
 
     assert "skyseed_v2.entities.ground_station" not in satellite_imports
     assert "skyseed_v2.entities.satellite" not in ground_station_imports
-    assert not any("simulator_input" in module for module in satellite_imports)
-    assert not any("simulator_input" in module for module in ground_station_imports)
+    assert not any(
+        "skyseed_v2.simulator" in module for module in satellite_imports
+    )
+    assert not any(
+        "skyseed_v2.simulator" in module for module in ground_station_imports
+    )
     assert not hasattr(Satellite, "runtime_reference")
     assert not hasattr(GroundStation, "runtime_reference")
 
 
-def test_skyseed_as_owns_entities_but_not_simulator_input() -> None:
+def test_skyseed_as_owns_entities_but_not_simulator_static_input() -> None:
     from skyseed_v2.seedemu_integration import skyseed_autonomous_system
 
     imports = imported_modules(skyseed_autonomous_system)
-    assert not any("simulator_input" in module for module in imports)
+    assert not any("skyseed_v2.simulator" in module for module in imports)
     assert not hasattr(
         skyseed_autonomous_system.SkyseedAutonomousSystem,
         "simulator_input",
@@ -61,8 +65,8 @@ def test_skyseed_as_owns_entities_but_not_simulator_input() -> None:
     )
 
 
-def test_simulator_input_has_only_data_layer_dependencies() -> None:
-    from skyseed_v2.simulator_input import (
+def test_simulator_static_input_has_only_data_layer_dependencies() -> None:
+    from skyseed_v2.simulator.static_input import (
         ground_station,
         satellite,
         static_input,
@@ -100,7 +104,7 @@ def test_simulator_input_has_only_data_layer_dependencies() -> None:
     assert "skyseed_v2.node_id" in static_input_imports
 
 
-def test_simulator_input_import_does_not_load_upstream_seedemu() -> None:
+def test_simulator_static_input_import_does_not_load_upstream_seedemu() -> None:
     project_root = Path(__file__).resolve().parents[2]
     script = """
 import builtins
@@ -111,7 +115,7 @@ def guarded_import(name, *args, **kwargs):
     return original_import(name, *args, **kwargs)
 builtins.__import__ = guarded_import
 from skyseed_v2.node_id import NodeId
-from skyseed_v2.simulator_input import SimulatorStaticInput
+from skyseed_v2.simulator.static_input import SimulatorStaticInput
 assert NodeId(65001, 'satellite', 'satellite-0').value == (
     '65001/satellite/satellite-0'
 )
@@ -129,8 +133,8 @@ assert SimulatorStaticInput().list_nodes() == ()
     assert result.returncode == 0, result.stderr
 
 
-def test_static_input_has_no_registry_compiler_or_output_dependency() -> None:
-    from skyseed_v2.simulator_input import static_input
+def test_static_input_has_no_registry_compilation_or_output_dependency() -> None:
+    from skyseed_v2.simulator.static_input import static_input
 
     static_input_imports = imported_modules(static_input)
 
@@ -157,6 +161,7 @@ def test_static_input_has_no_registry_compiler_or_output_dependency() -> None:
         "create_ground_station",
         "load_static_emulator_config",
         "SkyseedDockerCompiler",
+        "SimulationPlanCompiler",
     ):
         assert forbidden not in source
 
@@ -172,12 +177,37 @@ def test_removed_and_deferred_boundary_apis_are_not_exported() -> None:
         "NodeResolverManager",
         "GlobalNodeRegistry",
     ):
-        assert not hasattr(simulator_input, forbidden_name)
+        assert not hasattr(simulator_static_input, forbidden_name)
         assert not hasattr(skyseed_v2, forbidden_name)
 
-    assert importlib.util.find_spec("skyseed_v2.simulator_input.runtime") is None
-    assert importlib.util.find_spec("skyseed_v2.simulator") is None
-    assert importlib.util.find_spec("skyseed_v2.simulator_input.identity") is None
+    import skyseed_v2.simulator as simulator
+
+    for forbidden_name in ("Simulator", "Topology", "SimulationPlanCompiler"):
+        assert not hasattr(simulator, forbidden_name)
+        assert not hasattr(skyseed_v2, forbidden_name)
+    project_package = Path(inspect.getsourcefile(skyseed_v2)).parent
+    assert not any(
+        path.name in {
+            "simulation_plan_compiler.py",
+            "topology.py",
+            "engine.py",
+        }
+        for path in project_package.rglob("*.py")
+    )
+    assert not any(
+        isinstance(node, ast.ClassDef)
+        and node.name in {"Simulator", "Topology", "SimulationPlanCompiler"}
+        for path in project_package.rglob("*.py")
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+    )
+    assert importlib.util.find_spec("skyseed_v2.simulator.runtime") is None
+    assert importlib.util.find_spec("skyseed_v2.simulator.engine") is None
+    assert (
+        importlib.util.find_spec("skyseed_v2.simulator.static_input.identity")
+        is None
+    )
+    assert importlib.util.find_spec("skyseed_v2.simulator_input") is None
+    assert importlib.util.find_spec("skyseed_v2.simulation_plan_compiler") is None
     for removed_module in (
         "skyseed_v2.contracts",
         "skyseed_v2.projection",
@@ -186,19 +216,23 @@ def test_removed_and_deferred_boundary_apis_are_not_exported() -> None:
         assert importlib.util.find_spec(removed_module) is None
 
 
-def test_simulator_static_input_is_subpackage_public_with_no_entity_back_dependency() -> None:
-    from skyseed_v2.simulator_input import SimulatorStaticInput
+def test_simulator_static_input_is_public_without_entity_back_dependency() -> None:
+    from skyseed_v2.simulator.static_input import SimulatorStaticInput
     from skyseed_v2.entities import ground_station, satellite
 
-    assert "SimulatorStaticInput" in simulator_input.__all__
-    for input_name in simulator_input.__all__:
+    assert "SimulatorStaticInput" in simulator_static_input.__all__
+    assert (
+        SimulatorStaticInput.__module__
+        == "skyseed_v2.simulator.static_input.static_input"
+    )
+    for input_name in simulator_static_input.__all__:
         assert not hasattr(skyseed_v2, input_name)
     assert not any(
-        "simulator_input" in module_name
+        "skyseed_v2.simulator" in module_name
         for module_name in imported_modules(satellite)
     )
     assert not any(
-        "simulator_input" in module_name
+        "skyseed_v2.simulator" in module_name
         for module_name in imported_modules(ground_station)
     )
 
@@ -265,13 +299,13 @@ def test_static_configuration_is_backend_and_v1_independent() -> None:
             assert forbidden not in source
 
 
-def test_compose_materialization_is_outside_emulator_and_compiler_models() -> None:
+def test_compose_materialization_is_outside_emulator_and_compilation_models() -> None:
     from skyseed_v2.materialization import compose_project_launcher
 
     imports = imported_modules(compose_project_launcher)
     forbidden_prefixes = (
         "seedemu",
-        "skyseed_v2.simulator_input",
+        "skyseed_v2.simulator",
         "skyseed_v2.entities",
         "skyseed_v2.seedemu_integration",
     )
@@ -297,7 +331,7 @@ def test_configuration_creation_and_input_generation_respect_boundaries() -> Non
         "skyseed_v2.seedemu_integration",
         "skyseed_v2.entities",
         "skyseed_v2.materialization",
-        "skyseed_v2.simulator_input",
+        "skyseed_v2.simulator",
     ):
         assert not any(
             module == forbidden_prefix
@@ -305,7 +339,7 @@ def test_configuration_creation_and_input_generation_respect_boundaries() -> Non
             for module in yaml_imports
         )
 
-    from skyseed_v2.simulator_input import (
+    from skyseed_v2.simulator.static_input import (
         ground_station as ground_station_input,
         satellite as satellite_input,
         static_input,
@@ -333,7 +367,7 @@ def test_configuration_creation_and_input_generation_respect_boundaries() -> Non
     assert "skyseed_v2.entities" in creation_imports
     assert "skyseed_v2.seedemu_integration" in creation_imports
     for forbidden_prefix in (
-        "skyseed_v2.simulator_input",
+        "skyseed_v2.simulator",
         "skyseed_v2.simulator_input_generation",
         "skyseed_v2.materialization",
         "yaml",
@@ -362,7 +396,7 @@ def test_configuration_creation_and_input_generation_respect_boundaries() -> Non
         "skyseed_v2.entities",
         "skyseed_v2.node_id",
         "skyseed_v2.seedemu_integration",
-        "skyseed_v2.simulator_input",
+        "skyseed_v2.simulator.static_input",
     ):
         assert required_dependency in generation_imports
     for forbidden_dependency in (
@@ -429,7 +463,7 @@ def test_constellation_helper_never_became_a_domain_or_public_api() -> None:
     )
     assert not hasattr(skyseed_v2, "create_static_emulator")
     assert not hasattr(skyseed_v2, "StaticEmulatorCreationResult")
-    assert not hasattr(simulator_input, "StaticEmulatorCreationResult")
+    assert not hasattr(simulator_static_input, "StaticEmulatorCreationResult")
 
 
 def test_orbit_parameters_have_one_entity_module_owner() -> None:

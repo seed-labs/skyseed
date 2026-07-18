@@ -60,12 +60,12 @@ registration do not alter a previously created input snapshot.
 GroundStation does not store `NodeId`; generation derives it from ASN,
 ground-station kind and `ground_station_id`.
 
-## 4. Routing and Compiler boundary
+## 4. Routing and SkyseedDockerCompiler boundary
 
 The complete example disables and masks OSPF/iBGP for the Skyseed AS and adds
 one explicit eBGP peering to an ordinary ground AS. GroundStation uses the
-ordinary Router Compiler path; Skyseed only normalizes metadata keys so the
-logical entity remains recognizable.
+ordinary Router Docker-compilation path; Skyseed only normalizes metadata keys
+so the logical entity remains recognizable.
 
 ## 5. Formal example
 

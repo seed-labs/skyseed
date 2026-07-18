@@ -15,7 +15,7 @@ positions, visibility, links, routing or Simulator execution.
 - inherits seedemu `Node`;
 - is registered as `satnode` with role `Satellite`;
 - receives Base options and render files;
-- is handled by the Satellite Compiler boundary.
+- is handled by the internal Satellite static-deployment compiler boundary.
 
 There is no parallel Satellite node wrapper.
 
@@ -74,13 +74,14 @@ The `NodeId` is derived only by the cross-layer generation operation; it is not
 stored by Satellite. The isolated formal example intentionally does not invoke
 this boundary.
 
-## 5. seedemu lifecycle and Compiler
+## 5. seedemu lifecycle and SkyseedDockerCompiler
 
 `SatelliteBase` integrates first-class Satellite nodes into the Base lifecycle.
 `SkyseedAutonomousSystem` registers the unique instances. The internal
 `_SatelliteCompilerBoundary` validates `satnode` identity and emits an
-explicitly isolated service. `SkyseedDockerCompiler` is the only public
-Compiler type.
+explicitly isolated service. `SkyseedDockerCompiler` is the implemented public
+static Docker/Compose deployment compiler type; it has no relationship to the
+reserved future `SimulationPlanCompiler` concept.
 
 Satellite services use `network_mode: none`, have no Compose network
 attachment and expose only loopback until a future dynamic design explicitly

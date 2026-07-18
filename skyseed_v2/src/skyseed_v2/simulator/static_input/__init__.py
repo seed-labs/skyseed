@@ -1,4 +1,4 @@
-"""Immutable static data exported from the Emulator to the Simulator."""
+"""Immutable static input contracts owned by the future Simulator."""
 
 from .ground_station import GroundStationSimulationInput
 from .satellite import SatelliteSimulationInput

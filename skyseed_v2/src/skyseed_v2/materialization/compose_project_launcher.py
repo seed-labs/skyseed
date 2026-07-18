@@ -23,7 +23,8 @@ class ComposeLaunchStrategy(str, Enum):
 
     Layer: materialization integration value. Launcher callers create/select it
     and `ComposeProjectLauncher` consumes it. It is not fallback policy,
-    Compiler input or domain state and is public from the materialization module.
+    compilation-stage input or domain state and is public from the
+    materialization module.
     """
 
     SINGLE = "single"
@@ -164,7 +165,7 @@ class ComposeProjectLauncher:
     """Materialize one complete Compose v2 project and verify its final state.
 
     Layer: materialization integration. Tooling callers create it and consume
-    its operation result. It is not a domain entity, Compiler, Runner,
+    its operation result. It is not a domain entity, compilation stage, Runner,
     Simulator or recovery coordinator. It is public from the materialization
     module because already-compiled project startup needs a bounded adapter.
 

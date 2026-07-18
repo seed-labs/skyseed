@@ -1,4 +1,4 @@
-"""Generate immutable Simulator input from constructed Emulator entities."""
+"""Adapt constructed Emulator entities into Simulator-owned static input."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from skyseed_v2.entities import (
 )
 from skyseed_v2.node_id import NodeId
 from skyseed_v2.seedemu_integration import SkyseedAutonomousSystem
-from skyseed_v2.simulator_input import (
+from skyseed_v2.simulator.static_input import (
     GroundStationSimulationInput,
     SatelliteSimulationInput,
     SimulatorStaticInput,

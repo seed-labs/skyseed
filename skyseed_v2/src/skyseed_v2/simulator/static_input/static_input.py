@@ -1,4 +1,4 @@
-"""Immutable aggregate of static data exported by the Emulator."""
+"""Immutable aggregate of Simulator-owned static input data."""
 
 from __future__ import annotations
 
@@ -30,10 +30,11 @@ class SimulatorStaticInput:
     It does not retain Emulator entities, SEED registries, containers, Compose
     settings, persistence objects or Simulator runtime state.
 
-    Layer: immutable Emulator-to-Simulator boundary aggregate. Application
-    conversion or direct data callers create it; future Simulator code reads
-    it. It is not a lookup service, builder, Registry view or runtime model.
-    It is public from simulator_input because it is the complete static input.
+    Layer: immutable Simulator static-input aggregate. The external input
+    generation adapter or direct data callers create it; future Simulator code
+    reads it. It is not a lookup service, builder, Registry view or runtime
+    model. It is public from `simulator.static_input` because it is the complete
+    Simulator-owned static input contract.
     """
 
     _satellites: tuple[SatelliteSimulationInput, ...]

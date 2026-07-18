@@ -16,15 +16,15 @@ _ENTITY_KINDS = frozenset(
 
 @dataclass(frozen=True, slots=True)
 class NodeId:
-    """Identify one logical node across Emulator, Simulator and Compiler.
+    """Identify one logical node across Emulator and Simulator-facing stages.
 
     Layer: neutral cross-layer contract value. Simulator-input generation
     creates it; static inputs, future Simulator state and plans, and the
-    Compiler's future owner-directed lookup process use it. It is not an
-    Emulator entity property, lookup service, Registry key, container ID,
-    Compose service, namespace, interface name or Simulator-local sequence
-    number. It is public from this direct module because multiple
-    architectural layers share the contract.
+    future SimulationPlanCompiler owner-directed lookup process use it. It is
+    not an Emulator entity property, lookup service, Registry key, container
+    ID, Compose service, namespace, interface name or Simulator-local sequence
+    number. It is public from this direct module because multiple architectural
+    layers share the contract.
     """
 
     asn: int

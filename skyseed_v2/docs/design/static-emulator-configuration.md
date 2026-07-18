@@ -52,9 +52,9 @@ The caller separately invokes
 makes the Emulator → Simulator static-data boundary visible and keeps Config
 creation independent of future Simulator data.
 
-No NodeId-to-entity mapping is generated. Future Compiler lookup will follow
-the existing Base/AS/Shell/Orbit owner methods on demand and remains outside
-this configuration and input-generation flow.
+No NodeId-to-entity mapping is generated. Future `SimulationPlanCompiler`
+lookup will follow the existing Base/AS/Shell/Orbit owner methods on demand and
+remains outside this configuration and input-generation flow.
 
 ## Formal examples and materialization
 
@@ -63,6 +63,6 @@ The isolated and complete examples remain handwritten. Only
 rather than teaching code. The example compiles and validates Compose output;
 it does not build or start 365 services.
 
-Compose materialization consumes Compiler output separately. Configuration
-loading and Emulator creation never launch containers, and materialization
-does not load Config or reconstruct entities.
+Compose materialization consumes `SkyseedDockerCompiler` output separately.
+Configuration loading and Emulator creation never launch containers, and
+materialization does not load Config or reconstruct entities.
