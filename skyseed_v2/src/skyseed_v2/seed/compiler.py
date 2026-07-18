@@ -11,7 +11,9 @@ from re import sub
 from shutil import copyfileobj
 from typing import Dict, Iterable
 
+from yaml import compose as compose_yaml
 from yaml import safe_dump, safe_load
+from yaml.nodes import MappingNode, ScalarNode
 
 from seedemu.compiler import Docker, Platform
 from seedemu.compiler.Docker import DockerCompilerFileTemplates
@@ -294,6 +296,7 @@ class SkyseedDockerCompiler(Docker):
             service = self._satellite_compiler.compile(node)
             self._append_upstream_service(service)
         super()._doCompile(emulator)
+        self._add_buildkit_image_dependencies()
         self._remove_empty_top_level_networks()
 
     def _append_upstream_service(self, service: str) -> None:
@@ -336,6 +339,160 @@ class SkyseedDockerCompiler(Docker):
             asn=-1,
             port_forwarding=f"{self._skyseed_internet_map_port}:8080/tcp",
         )
+
+    def _add_buildkit_image_dependencies(self) -> None:
+        """Declare SEED base-image builds as native BuildKit contexts.
+
+        Upstream SEED models its locally built base images only with runtime
+        ``depends_on`` entries. BuildKit resolves every ``FROM`` concurrently,
+        so it otherwise tries to pull those local image names from a registry.
+        Compose ``service:`` additional contexts express the same dependency
+        as a build graph without changing the generated images or node model.
+        """
+
+        compose_path = Path("docker-compose.yml")
+        compose_text = compose_path.read_text(encoding="utf-8")
+        compose = safe_load(compose_text)
+        services = compose.get("services")
+        if not isinstance(services, dict):
+            raise RuntimeError("compiled Compose must contain services")
+
+        document = compose_yaml(compose_text)
+        if not isinstance(document, MappingNode):
+            raise RuntimeError("compiled Compose must be a YAML mapping")
+        services_node = next(
+            (
+                value_node
+                for key_node, value_node in document.value
+                if key_node.value == "services"
+            ),
+            None,
+        )
+        if not isinstance(services_node, MappingNode):
+            raise RuntimeError("compiled Compose services must be a YAML mapping")
+        raw_services: dict[str, MappingNode] = {}
+        for key_node, value_node in services_node.value:
+            if key_node.value in raw_services or not isinstance(
+                value_node, MappingNode
+            ):
+                raise RuntimeError(
+                    "compiled Compose contains a duplicate or invalid raw service"
+                )
+            raw_services[key_node.value] = value_node
+
+        buildable_images = {
+            name
+            for name, service in services.items()
+            if isinstance(name, str)
+            and isinstance(service, dict)
+            and service.get("image") == name
+            and isinstance(service.get("build"), (str, dict))
+        }
+        replacements: list[tuple[int, int, str]] = []
+        for service_name, service in services.items():
+            if not isinstance(service_name, str) or not isinstance(service, dict):
+                raise RuntimeError("compiled Compose contains an invalid service")
+            dependencies = service.get("depends_on", ())
+            if isinstance(dependencies, dict):
+                dependency_names = tuple(dependencies)
+            elif isinstance(dependencies, list):
+                dependency_names = tuple(dependencies)
+            else:
+                dependency_names = ()
+            image_dependencies = tuple(
+                dependency
+                for dependency in dependency_names
+                if dependency in buildable_images
+            )
+            if not image_dependencies:
+                continue
+
+            build = service.get("build")
+            if isinstance(build, dict):
+                existing_contexts = build.get("additional_contexts")
+                expected_contexts = {
+                    dependency: f"service:{dependency}"
+                    for dependency in image_dependencies
+                }
+                if existing_contexts == expected_contexts:
+                    continue
+                raise RuntimeError(
+                    f"service {service_name!r} has unsupported pre-existing "
+                    "build settings"
+                )
+            if not isinstance(build, str):
+                raise RuntimeError(
+                    f"service {service_name!r} depends on a locally built "
+                    "image but has no build context"
+                )
+
+            dockerfile_path = Path(build) / "Dockerfile"
+            dockerfile_text = dockerfile_path.read_text(encoding="utf-8")
+            referenced_images: set[str] = set()
+            for line in dockerfile_text.splitlines():
+                tokens = line.split()
+                if not tokens or tokens[0].upper() != "FROM":
+                    continue
+                image = next(
+                    (token for token in tokens[1:] if not token.startswith("--")),
+                    None,
+                )
+                if image is not None:
+                    referenced_images.add(image)
+            missing = set(image_dependencies) - referenced_images
+            if missing:
+                raise RuntimeError(
+                    f"service {service_name!r} declares local image dependencies "
+                    f"not used by its Dockerfile: {sorted(missing)}"
+                )
+
+            raw_service = raw_services.get(service_name)
+            if raw_service is None:
+                raise RuntimeError(
+                    f"cannot locate raw Compose service {service_name!r}"
+                )
+            raw_build_entries = [
+                (key_node, value_node)
+                for key_node, value_node in raw_service.value
+                if key_node.value == "build"
+            ]
+            if len(raw_build_entries) != 1:
+                raise RuntimeError(
+                    f"cannot locate the unique raw build entry for service "
+                    f"{service_name!r}"
+                )
+            build_key, build_value = raw_build_entries[0]
+            if not isinstance(build_value, ScalarNode) or build_value.value != build:
+                raise RuntimeError(
+                    f"service {service_name!r} has an unsupported raw build value"
+                )
+            child_indent = " " * (build_key.start_mark.column + 4)
+            value_indent = " " * (build_key.start_mark.column + 8)
+            raw_context = compose_text[
+                build_value.start_mark.index:build_value.end_mark.index
+            ]
+            context_lines = "".join(
+                f"{value_indent}{dependency}: service:{dependency}\n"
+                for dependency in image_dependencies
+            )
+            build_mapping = (
+                ":\n"
+                f"{child_indent}context: {raw_context}\n"
+                f"{child_indent}additional_contexts:\n"
+                f"{context_lines}"
+            )
+            replacements.append(
+                (
+                    build_key.end_mark.index,
+                    build_value.end_mark.index,
+                    build_mapping,
+                )
+            )
+
+        for start, end, replacement in sorted(replacements, reverse=True):
+            compose_text = compose_text[:start] + replacement + compose_text[end:]
+
+        compose_path.write_text(compose_text, encoding="utf-8")
 
     def _remove_empty_top_level_networks(self) -> None:
         """Remove upstream's invalid ``networks: null`` without inventing a net."""

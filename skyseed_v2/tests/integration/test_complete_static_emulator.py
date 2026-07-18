@@ -114,6 +114,15 @@ def test_complete_example_catalog_matches_registry_and_compiler_output(
     assert list(station_service["networks"]) == ["net_ix_ix100"]
     assert station_labels[f"{METADATA_PREFIX}role"] == "GroundStation"
     assert station_labels[f"{METADATA_PREFIX}type"] == "rnode"
+    for service_name in (
+        "brdnode_65001_gs-new-york",
+        "brdnode_65002_ground-router",
+    ):
+        service = compose["services"][service_name]
+        dependency = service["depends_on"][0]
+        assert service["build"]["additional_contexts"] == {
+            dependency: f"service:{dependency}",
+        }
 
     assert "SimulationEntityCatalog" not in compose_text
     assert "SimulationNodeId" not in compose_text

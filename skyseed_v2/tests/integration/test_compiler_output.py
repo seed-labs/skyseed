@@ -102,6 +102,22 @@ def test_satellite_services_are_explicitly_networkless(tmp_path) -> None:
         assert "networks" not in service
 
 
+def test_satellite_builds_declare_native_buildkit_image_dependencies(
+    tmp_path,
+) -> None:
+    _, _, compose, _, _ = compile_two_satellites(tmp_path / "output")
+
+    for service_name, service in satellite_services(compose).items():
+        dependency = service["depends_on"][0]
+        assert compose["services"][dependency]["image"] == dependency
+        assert service["build"] == {
+            "context": f"./{service_name}",
+            "additional_contexts": {
+                dependency: f"service:{dependency}",
+            },
+        }
+
+
 def test_compiler_emits_unique_satellite_metadata_in_raw_compose(tmp_path) -> None:
     _, _, compose, compose_text, _ = compile_two_satellites(
         tmp_path / "output", conflicting_metadata=True
