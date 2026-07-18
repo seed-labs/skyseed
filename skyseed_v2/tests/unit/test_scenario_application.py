@@ -1,22 +1,28 @@
+import pytest
 from seedemu.core import Emulator
 
 from skyseed_v2 import (
     EbgpPeeringSpecification,
     EbgpRouterReferenceSpecification,
     GroundStationSpecification,
+    InOrbitPhaseDistributionSpecification,
     InternetExchangeAttachmentSpecification,
     InternetExchangeSpecification,
     LocalNetworkAttachmentSpecification,
+    OrbitGenerationSpecification,
     OrbitSpecification,
     OrdinaryAutonomousSystemSpecification,
     OrdinaryNetworkSpecification,
     OrdinaryRouterSpecification,
+    RaanDistributionSpecification,
     SatelliteSpecification,
     ShellSpecification,
     SkyseedAutonomousSystemSpecification,
-    StaticEmulatorScenarioBuilder,
     StaticEmulatorScenarioSpecification,
+    StaticEmulatorSpecificationApplier,
 )
+from skyseed_v2.domain import Orbit, Shell
+from skyseed_v2.seed import SkyseedAutonomousSystem
 
 
 def explicit_shell(shell_id: str, satellite_id: str) -> ShellSpecification:
@@ -35,6 +41,21 @@ def explicit_shell(shell_id: str, satellite_id: str) -> ShellSpecification:
                         mean_anomaly_deg=0.0,
                     ),
                 ),
+            ),
+        ),
+    )
+
+
+def generated_shell(shell_id: str) -> ShellSpecification:
+    return ShellSpecification(
+        shell_id=shell_id,
+        altitude_km=560.0,
+        inclination_deg=97.6,
+        generation=OrbitGenerationSpecification(
+            orbit_count=2,
+            satellites_per_orbit=3,
+            phase=InOrbitPhaseDistributionSpecification(
+                alternating_orbit_offset_deg=5.0
             ),
         ),
     )
@@ -62,7 +83,7 @@ def ground_station(
     )
 
 
-def test_builder_supports_satellite_only_ground_only_and_multiple_skyseed_as() -> None:
+def test_applier_supports_satellite_only_ground_only_and_multiple_skyseed_as() -> None:
     specification = StaticEmulatorScenarioSpecification(
         skyseed_autonomous_systems=(
             SkyseedAutonomousSystemSpecification(
@@ -76,29 +97,64 @@ def test_builder_supports_satellite_only_ground_only_and_multiple_skyseed_as() -
         )
     )
 
-    result = StaticEmulatorScenarioBuilder().build(specification)
+    result = StaticEmulatorSpecificationApplier().apply(specification)
+    satellite_as, station_as = result.skyseed_autonomous_systems
 
     assert isinstance(result.emulator, Emulator)
     assert tuple(
         autonomous_system.getAsn()
         for autonomous_system in result.skyseed_autonomous_systems
     ) == (65001, 65002)
-    assert tuple(shell.shell_id for shell in result.shell_population.shells) == (
-        "shell-a",
-    )
+    assert tuple(shell.shell_id for shell in satellite_as.shells) == ("shell-a",)
     assert tuple(
-        satellite.satellite_id
-        for satellite in result.shell_population.satellites
+        satellite.satellite_id for satellite in satellite_as.satellites()
     ) == ("satellite-a",)
     assert tuple(
-        station.ground_station_id
-        for station in result.ground_station_population.ground_stations
+        station.ground_station_id for station in station_as.ground_stations()
     ) == ("gs-a",)
     assert len(result.catalog.list_satellites()) == 1
     assert len(result.catalog.list_ground_stations()) == 1
 
 
-def test_builder_supports_mixed_as_ground_network_ix_and_explicit_ebgp() -> None:
+def test_applier_calls_the_approved_public_entity_creation_methods(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+
+    def record(cls, method_name: str) -> None:
+        original = getattr(cls, method_name)
+
+        def wrapper(self, *args, **kwargs):
+            calls.append(f"{cls.__name__}.{method_name}")
+            return original(self, *args, **kwargs)
+
+        monkeypatch.setattr(cls, method_name, wrapper)
+
+    record(SkyseedAutonomousSystem, "create_shell")
+    record(Shell, "create_orbit")
+    record(Orbit, "create_satellite")
+    record(SkyseedAutonomousSystem, "create_ground_station")
+
+    specification = StaticEmulatorScenarioSpecification(
+        skyseed_autonomous_systems=(
+            SkyseedAutonomousSystemSpecification(
+                65001,
+                shells=(explicit_shell("shell-a", "satellite-a"),),
+                ground_stations=(ground_station("gs-a"),),
+            ),
+        )
+    )
+    StaticEmulatorSpecificationApplier().apply(specification)
+
+    assert calls == [
+        "SkyseedAutonomousSystem.create_shell",
+        "Shell.create_orbit",
+        "Orbit.create_satellite",
+        "SkyseedAutonomousSystem.create_ground_station",
+    ]
+
+
+def test_applier_supports_ground_network_ix_and_explicit_ebgp() -> None:
     specification = StaticEmulatorScenarioSpecification(
         skyseed_autonomous_systems=(
             SkyseedAutonomousSystemSpecification(
@@ -144,10 +200,11 @@ def test_builder_supports_mixed_as_ground_network_ix_and_explicit_ebgp() -> None
         ),
     )
 
-    result = StaticEmulatorScenarioBuilder().build(specification)
+    result = StaticEmulatorSpecificationApplier().apply(specification)
     result.emulator.render()
-    station = result.ground_station_population.ground_stations[0]
-    router = result.ground_routers[0]
+    skyseed_as = result.skyseed_autonomous_systems[0]
+    station = skyseed_as.get_ground_station("gs-a")
+    router = result.ordinary_autonomous_systems[0].getRouter("ground-router")
     station_bird = {
         file.get()[0]: file.get()[1] for file in station.getFiles()
     }["/etc/bird/bird.conf"]
@@ -155,9 +212,9 @@ def test_builder_supports_mixed_as_ground_network_ix_and_explicit_ebgp() -> None
         "/etc/bird/bird.conf"
     ]
 
-    assert len(result.shell_population.shells) == 1
-    assert len(result.shell_population.orbits) == 1
-    assert len(result.shell_population.satellites) == 1
+    assert len(skyseed_as.shells) == 1
+    assert len(skyseed_as.shells[0].orbits) == 1
+    assert len(skyseed_as.satellites()) == 1
     assert len(result.catalog.list_nodes()) == 2
     assert station.getInterfaces()[0].getNet().getName() == "ix100"
     assert "neighbor 10.100.0.254 as 65002" in station_bird
@@ -166,28 +223,56 @@ def test_builder_supports_mixed_as_ground_network_ix_and_explicit_ebgp() -> None
     assert "protocol ospf" in router_bird
 
 
-def test_same_input_rebuilds_the_same_static_identity_and_catalog_order() -> None:
+def test_generated_input_is_stable_without_a_population_abstraction() -> None:
     specification = StaticEmulatorScenarioSpecification(
         skyseed_autonomous_systems=(
             SkyseedAutonomousSystemSpecification(
                 65001,
-                shells=(
-                    explicit_shell("shell-b", "satellite-b"),
-                    explicit_shell("shell-a", "satellite-a"),
-                ),
+                shells=(generated_shell("shell-b"), generated_shell("shell-a")),
                 ground_stations=(ground_station("gs-a"),),
             ),
         )
     )
 
-    first = StaticEmulatorScenarioBuilder().build(specification)
-    second = StaticEmulatorScenarioBuilder().build(specification)
+    first = StaticEmulatorSpecificationApplier().apply(specification)
+    second = StaticEmulatorSpecificationApplier().apply(specification)
+    first_as = first.skyseed_autonomous_systems[0]
+    second_as = second.skyseed_autonomous_systems[0]
 
     assert tuple(
         descriptor.node_id for descriptor in first.catalog.list_nodes()
     ) == tuple(descriptor.node_id for descriptor in second.catalog.list_nodes())
-    assert tuple(shell.shell_id for shell in first.shell_population.shells) == (
+    assert tuple(shell.shell_id for shell in first_as.shells) == (
         "shell-a",
         "shell-b",
     )
+    assert tuple(
+        satellite.satellite_id for satellite in first_as.satellites()
+    ) == tuple(satellite.satellite_id for satellite in second_as.satellites())
+    assert len(first_as.satellites()) == 12
     assert first.emulator is not second.emulator
+
+
+def test_invalid_generated_distribution_fails_before_returning_a_result() -> None:
+    specification = StaticEmulatorScenarioSpecification(
+        skyseed_autonomous_systems=(
+            SkyseedAutonomousSystemSpecification(
+                65001,
+                shells=(
+                    ShellSpecification(
+                        shell_id="invalid-shell",
+                        altitude_km=550.0,
+                        inclination_deg=53.0,
+                        generation=OrbitGenerationSpecification(
+                            orbit_count=2,
+                            satellites_per_orbit=2,
+                            raan=RaanDistributionSpecification(0.0, 360.0),
+                        ),
+                    ),
+                ),
+            ),
+        )
+    )
+
+    with pytest.raises(ValueError, match="duplicate Orbits"):
+        StaticEmulatorSpecificationApplier().apply(specification)

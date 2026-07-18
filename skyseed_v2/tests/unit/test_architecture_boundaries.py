@@ -194,7 +194,7 @@ def test_compose_materialization_is_outside_emulator_and_compiler_models() -> No
 
 
 def test_scenario_loader_and_formal_examples_respect_application_boundaries() -> None:
-    from skyseed_v2 import scenario_loader
+    from skyseed_v2 import scenario_application, scenario_loader
     from skyseed_v2.domain import ground_station, satellite
 
     loader_imports = imported_modules(scenario_loader)
@@ -228,11 +228,59 @@ def test_scenario_loader_and_formal_examples_respect_application_boundaries() ->
             for module in imported_modules(domain_module)
         )
 
+    application_imports = imported_modules(scenario_application)
+    assert "skyseed_v2.specifications" in application_imports
+    assert "skyseed_v2.seed" in application_imports
+    assert "skyseed_v2.catalog_builder" in application_imports
+    for forbidden_prefix in (
+        "skyseed_v2.scenario_loader",
+        "skyseed_v2.materialization",
+        "yaml",
+        "docker",
+    ):
+        assert not any(
+            module == forbidden_prefix
+            or module.startswith(f"{forbidden_prefix}.")
+            for module in application_imports
+        )
+    application_source = Path(
+        inspect.getsourcefile(scenario_application)
+    ).read_text(encoding="utf-8")
+    for forbidden in (
+        "getRegistry",
+        "registry.register",
+        "validate_identifier",
+        "SkyseedDockerCompiler",
+    ):
+        assert forbidden not in application_source
+
 
 def test_constellation_helper_never_became_a_domain_or_public_api() -> None:
-    assert not hasattr(skyseed_v2, "Constellation")
-    assert not hasattr(skyseed_v2, "ConstellationBuilder")
-    assert not hasattr(skyseed_v2, "ConstellationBuildResult")
-    assert skyseed_v2.ShellPopulationBuilder.__module__ == (
-        "skyseed_v2.shell_population_builder"
+    for forbidden_name in (
+        "Constellation",
+        "ConstellationBuilder",
+        "ConstellationBuildResult",
+        "SatellitePopulation",
+        "GroundStationPopulation",
+        "ShellPopulationBuilder",
+        "ShellPopulationBuildResult",
+        "GroundStationBuilder",
+        "GroundStationBuildResult",
+        "StaticEmulatorScenarioBuilder",
+        "StaticEmulatorBuildResult",
+    ):
+        assert not hasattr(skyseed_v2, forbidden_name)
+
+    for retired_module in (
+        "skyseed_v2.shell_population_builder",
+        "skyseed_v2.ground_station_builder",
+        "skyseed_v2.static_scenario_builder",
+    ):
+        assert importlib.util.find_spec(retired_module) is None
+
+    assert skyseed_v2.StaticEmulatorSpecificationApplier.__module__ == (
+        "skyseed_v2.scenario_application"
+    )
+    assert skyseed_v2.StaticEmulatorApplyResult.__module__ == (
+        "skyseed_v2.scenario_application"
     )

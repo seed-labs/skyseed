@@ -6,6 +6,12 @@ two explicit eBGP peerings. The size was historically informed by an older
 experiment, but neither `S4` nor v1 is part of the scenario's identity,
 contract or runtime path.
 
+Its visible construction path is
+`StaticEmulatorScenarioLoader.load -> StaticEmulatorSpecificationApplier.apply`.
+The Applier directly calls the same public AS/Shell/Orbit entity creation
+methods shown by the handwritten examples; it does not introduce a population
+entity or nested builder chain.
+
 Compile and validate without starting 365 services:
 
 ```bash

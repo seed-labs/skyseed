@@ -10,6 +10,7 @@ Compose v2 migration: COMPLETE
 Compose v2 materialization tooling: COMPLETE
 Fixed batching: optional tooling mode
 Native Ubuntu 24.04 migration acceptance: PASS
+Emulator public construction API: IMPLEMENTED, PENDING USER REVIEW
 
 Migration baseline: VALIDATED
 
@@ -17,21 +18,23 @@ Simulator: NOT STARTED
 
 ## Current objective
 
-Review the completed native Ubuntu 24.04 migration acceptance. Await explicit
-approval before selecting another objective.
+Review the three example entrypoints and the Emulator public construction API.
+Await explicit user approval before marking this API complete or selecting
+another objective.
 
 ## Implementation status
 
-Complete for versioned v2 static scenario loading, reorganized self-contained
-examples, large static compile/config validation and Docker Compose v2
-materialization tooling.
+Implemented for direct handwritten construction, versioned v2 specification
+application, large static compile/config validation and Docker Compose
+materialization tooling. Public construction API review is pending.
 
 ## Current workflow step
 
-The restored native workspace passed compile, test, wheel, formal static
-example, minimal runtime and medium runtime acceptance. The large static
-example remains compile/config-only and was not built or started. Do not start
-dynamic Satellite networking, Runner design or Simulator work automatically.
+The two small examples now show the public domain/SEED construction methods
+directly; only the large example uses Loader → specification → Applier. The
+large scene remains compile/config-only. Review the implementation and call
+maps before authorizing another slice. Do not start dynamic Satellite
+networking, Runner design or Simulator work automatically.
 
 ## Confirmed direction
 
@@ -70,7 +73,7 @@ dynamic Satellite networking, Runner design or Simulator work automatically.
 - Runtime validation proved forwarding, established eBGP, packet-level ground reachability, one GS ground edge, and two unchanged Satellite vertices with zero Satellite edges.
 - Automated and manual complete Emulator validation is recorded in `docs/evidence/complete-static-emulator-validation.md`. Its formal runtime resources and generated temporary output have been cleaned.
 - The v1 S4 investigation is recorded in `docs/reference/v1/s4-static-scenario-investigation.md`. It treats v1 only as a historical static-fact source and does not make S4 a permanent Emulator default.
-- Immutable backend-independent specifications and application builders now construct arbitrary positive static Satellite populations, multiple Shells and GroundStations without a Constellation entity or S4-specific domain API.
+- Immutable backend-independent specifications plus one explicitly application-level `StaticEmulatorSpecificationApplier` construct arbitrary positive static collections through the same public AS/Shell/Orbit methods as handwritten code. Population builders/results are removed; no population or Constellation entity exists.
 - Generated Orbit/Satellite IDs are derived from v2 Shell hierarchy and ordinal position; generated GS IDs are stable hashes of explicit semantic identity keys. They are deterministic, order-independent and do not preserve v1 IDs.
 - The v1 JSON-shape adapter is isolated under `examples/reference/`, immediately returns v2 specifications and is excluded from the wheel. The core package contains no v1 import or file-shape dependency.
 - The reference adapter pins `ad331b9c15e3a5fb522af9ff18a06434f99c0860` and fail-closed verifies ancestry plus the exact Git blobs of its three selected files before loading. The investigation commit `06b19eb718a79a9113ee95bc045f10953c1d8ab7` is its ancestor and has the same three blobs and key S4 inputs.
@@ -94,8 +97,9 @@ dynamic Satellite networking, Runner design or Simulator work automatically.
 
 ## Next single objective
 
-No next slice is authorized. Review the completed static scale evidence before
-explicitly choosing any dynamic Satellite-network or Simulator objective.
+No next slice is authorized. Review the three example entrypoints, public
+create methods, Loader and specification Applier using
+`docs/architecture/emulator-public-construction-api.md`.
 
 ## Acceptance state
 
@@ -117,8 +121,12 @@ explicitly choosing any dynamic Satellite-network or Simulator objective.
 - UT: outside current Emulator core
 - Migration baseline: VALIDATED
 - Native Ubuntu 24.04 migration acceptance: PASS
+- Emulator public construction API: IMPLEMENTED, PENDING USER REVIEW
 
 Static Emulator core excluding UT: COMPLETE. Formal examples have no runtime
 historical-reference dependency. The source baseline remains recorded in
 `docs/migration/native-linux-baseline.md`; the completed new-host acceptance
-is recorded in `docs/migration/native-linux-ubuntu-24-validation.md`.
+is recorded in `docs/migration/native-linux-ubuntu-24-validation.md`. Public
+construction API implementation and the manual review checklist are recorded
+in `docs/architecture/emulator-public-construction-api.md`; user approval is
+still pending.

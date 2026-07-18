@@ -1,15 +1,18 @@
-from json import loads
 from pathlib import Path
 
 from yaml import compose as compose_yaml
 from yaml import safe_load
 from yaml.nodes import MappingNode, Node, SequenceNode
 
-from examples.large_static_network.main import (
-    build_scenario,
-    compile_scenario,
+from examples.large_static_network._compose_support import (
     materialization_expectations,
 )
+from examples.large_static_network.main import (
+    DEFAULT_SCENARIO,
+    apply_scenario_file,
+)
+from skyseed_v2 import StaticEmulatorScenarioLoader
+from skyseed_v2.seed import SkyseedDockerCompiler
 
 
 METADATA_PREFIX = "org.seedsecuritylabs.seedemu.meta."
@@ -33,25 +36,28 @@ def assert_no_duplicate_yaml_keys(node: Node, path: str = "$") -> None:
 
 
 def test_large_static_domain_and_catalog_are_deterministic() -> None:
-    first = build_scenario()
-    second = build_scenario()
+    specification = StaticEmulatorScenarioLoader().load(DEFAULT_SCENARIO)
+    first = apply_scenario_file()
+    second = apply_scenario_file()
+    first_as = first.skyseed_autonomous_systems[0]
+    second_as = second.skyseed_autonomous_systems[0]
 
-    assert first.summary.shell_count == 1
-    assert first.summary.orbit_count == 6
-    assert first.summary.satellite_count == 348
-    assert first.summary.ground_station_count == 12
-    assert first.summary.ordinary_as_count == 2
-    assert first.summary.ix_count == 2
-    assert first.summary.ebgp_peering_count == 2
-    assert first.summary.catalog_node_count == 360
-    first_catalog = first.construction.catalog
-    second_catalog = second.construction.catalog
+    assert len(first_as.shells) == 1
+    assert sum(len(shell.orbits) for shell in first_as.shells) == 6
+    assert len(first_as.satellites()) == 348
+    assert len(first_as.ground_stations()) == 12
+    assert len(first.ordinary_autonomous_systems) == 2
+    assert len(specification.internet_exchanges) == 2
+    assert len(specification.ebgp_peerings) == 2
+    assert len(first.catalog.list_nodes()) == 360
+    first_catalog = first.catalog
+    second_catalog = second.catalog
     assert len({node.node_id for node in first_catalog.list_nodes()}) == 360
     assert tuple(node.node_id for node in first_catalog.list_nodes()) == tuple(
         node.node_id for node in second_catalog.list_nodes()
     )
-    first_satellites = first.construction.shell_population.satellites
-    second_satellites = second.construction.shell_population.satellites
+    first_satellites = first_as.satellites()
+    second_satellites = second_as.satellites()
     assert tuple(satellite.satellite_id for satellite in first_satellites) == tuple(
         satellite.satellite_id for satellite in second_satellites
     )
@@ -61,13 +67,12 @@ def test_large_static_domain_and_catalog_are_deterministic() -> None:
 def test_large_static_compose_inventory_and_static_routing(
     tmp_path: Path,
 ) -> None:
-    scenario = build_scenario()
+    result = apply_scenario_file()
     output = tmp_path / "output"
-    summary, _ = compile_scenario(
-        scenario,
-        output,
-        override=False,
-        internet_map_enabled=True,
+    result.emulator.render()
+    result.emulator.compile(
+        SkyseedDockerCompiler(internet_map_enabled=True),
+        str(output),
     )
     compose_text = (output / "docker-compose.yml").read_text()
     compose = safe_load(compose_text)
@@ -93,8 +98,7 @@ def test_large_static_compose_inventory_and_static_routing(
         }:
             ordinary_router_services.append(service)
 
-    assert summary.compose_service_count == 365
-    assert summary.compose_file_size_bytes == len(compose_text.encode())
+    assert len(compose["services"]) == 365
     assert len(satellite_services) == 348
     assert len(ground_station_services) == 12
     assert len(ordinary_router_services) == 2
@@ -130,7 +134,11 @@ def test_large_static_compose_inventory_and_static_routing(
     ):
         assert forbidden not in compose_text
 
-    stations = scenario.construction.ground_station_population.ground_stations
+    stations = tuple(
+        station
+        for autonomous_system in result.skyseed_autonomous_systems
+        for station in autonomous_system.ground_stations()
+    )
     bgp_station_count = 0
     for station in stations:
         bird = node_files(station)["/etc/bird/bird.conf"]
@@ -138,20 +146,13 @@ def test_large_static_compose_inventory_and_static_routing(
         bgp_station_count += bird.count("protocol bgp ")
         assert len(station.getInterfaces()) == 1
     assert bgp_station_count == 2
-    for router in scenario.construction.ground_routers:
-        bird = node_files(router)["/etc/bird/bird.conf"]
-        assert "protocol ospf" in bird
-        assert bird.count("protocol bgp ") == 1
-
-    report = loads((output / "scenario-summary.json").read_text())
-    assert report["summary"]["catalog_node_count"] == 360
-    assert report["summary"]["compose_service_count"] == 365
-    assert report["semantics"] == {
-        "dynamic_satellite_network": False,
-        "historical_labels_imported": False,
-        "simulation_time_in_emulator": False,
-        "v2_owned_static_input": True,
-    }
+    for autonomous_system in result.ordinary_autonomous_systems:
+        for router_name in autonomous_system.getRouters():
+            bird = node_files(autonomous_system.getRouter(router_name))[
+                "/etc/bird/bird.conf"
+            ]
+            assert "protocol ospf" in bird
+            assert bird.count("protocol bgp ") == 1
     expected_services = materialization_expectations(
         output / "docker-compose.yml"
     )

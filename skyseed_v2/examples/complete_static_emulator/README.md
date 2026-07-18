@@ -1,9 +1,10 @@
 # Complete Static Emulator
 
-This is the minimal complete self-contained v2 scene: two isolated
-Satellites, one GroundStation, one ordinary Router, one IX and one explicit
-eBGP peering. `operator` is descriptive metadata only. No GS–Satellite link or
-dynamic Simulator field exists.
+This handwritten example shows the complete public composition: two isolated
+Satellites, one GroundStation, one ordinary SEED AS/Network/Router, one IX, one
+explicit eBGP peering, the Catalog and the Compiler. `operator` is descriptive
+metadata only. No YAML facade, GS–Satellite link or dynamic Simulator field
+exists.
 
 Generate and validate from `skyseed_v2/`:
 

@@ -30,17 +30,10 @@ def test_formal_examples_own_data_output_scripts_and_unique_projects() -> None:
     for name, (module, expected_project) in EXPERIMENTS.items():
         root = EXAMPLES_ROOT / name
         assert module.EXAMPLE_ROOT == root
-        assert module.DEFAULT_SCENARIO == root / "scenario.yaml"
         assert module.DEFAULT_OUTPUT == root / "output"
         assert module.COMPOSE_PROJECT_NAME == expected_project
         project_names.append(module.COMPOSE_PROJECT_NAME)
-        for required in (
-            "main.py",
-            "scenario.yaml",
-            "README.md",
-            "start.sh",
-            "cleanup.sh",
-        ):
+        for required in ("main.py", "README.md", "start.sh", "cleanup.sh"):
             assert (root / required).is_file()
 
         readme = (root / "README.md").read_text(encoding="utf-8")
@@ -49,6 +42,15 @@ def test_formal_examples_own_data_output_scripts_and_unique_projects() -> None:
         assert expected_project in readme
 
     assert len(set(project_names)) == len(project_names)
+    for module, name in (
+        (isolated, "isolated_satellites"),
+        (complete, "complete_static_emulator"),
+    ):
+        assert not hasattr(module, "DEFAULT_SCENARIO")
+        assert not (EXAMPLES_ROOT / name / "scenario.yaml").exists()
+    assert large.DEFAULT_SCENARIO == (
+        EXAMPLES_ROOT / "large_static_network/scenario.yaml"
+    )
     assert (EXAMPLES_ROOT / "large_static_network/ground_stations.yaml").is_file()
     assert "examples/*/output/" in (PROJECT_ROOT / ".gitignore").read_text()
 
@@ -101,3 +103,35 @@ def test_formal_examples_and_package_have_no_v1_or_constellation_path() -> None:
     assert not hasattr(skyseed_v2, "ConstellationBuilder")
     assert not hasattr(skyseed_v2, "ConstellationBuildResult")
     assert not (PROJECT_ROOT / "src/skyseed_v2/constellation_builder.py").exists()
+
+
+def test_small_examples_show_public_construction_without_file_facades() -> None:
+    isolated_source = Path(isolated.__file__).read_text(encoding="utf-8")
+    complete_source = Path(complete.__file__).read_text(encoding="utf-8")
+
+    for source in (isolated_source, complete_source):
+        assert "StaticEmulatorScenarioLoader" not in source
+        assert "StaticEmulatorSpecificationApplier" not in source
+        assert "scenario.yaml" not in source
+        assert ".create_shell(" in source
+        assert ".create_orbit(" in source
+        assert ".create_satellite(" in source
+
+    assert ".create_ground_station(" in complete_source
+    assert ".createAutonomousSystem(" in complete_source
+    assert ".createNetwork(" in complete_source
+    assert ".createRouter(" in complete_source
+    assert "SimulationEntityCatalogBuilder" in complete_source
+    assert "SkyseedDockerCompiler" in complete_source
+
+
+def test_large_example_has_one_thin_file_application_path() -> None:
+    source = Path(large.__file__).read_text(encoding="utf-8")
+
+    assert "StaticEmulatorScenarioLoader().load" in source
+    assert "StaticEmulatorSpecificationApplier().apply" in source
+    assert "@dataclass" not in source
+    assert "safe_load" not in source
+    assert "scenario-summary.json" not in source
+    assert "LargeStaticScenario" not in source
+    assert "LargeStaticSummary" not in source

@@ -2,14 +2,14 @@
 
 ## Scope
 
-The static Emulator accepts versioned, v2-owned scenario data and constructs
-only already-approved static entities. The formal path is:
+The large static Emulator example accepts versioned, v2-owned scenario data
+and constructs only already-approved static entities. Its file path is:
 
 ```text
 example-local v2 YAML
         -> StaticEmulatorScenarioLoader
         -> immutable generic specifications
-        -> StaticEmulatorScenarioBuilder
+        -> StaticEmulatorSpecificationApplier.apply
         -> SkyseedAutonomousSystem -> Shell -> Orbit -> Satellite
                                  \-> GroundStation
         -> SimulationEntityCatalog
@@ -39,13 +39,12 @@ position, ISL, GS–Satellite links, Zone, dynamic routes, qdisc/BPF/MPLS,
 container/Compose names and runtime locators. `operator` is descriptive only;
 it does not select ASN, node type, routing or Compiler behavior.
 
-## Application builders and approved ownership
+## Specification application and approved ownership
 
-`ShellPopulationBuilder` is a deterministic application helper that expands
-one or more `ShellSpecification` values through the owning
-`SkyseedAutonomousSystem`. It returns the Shell, Orbit and Satellite objects
-created through the existing ownership APIs. It is not a domain entity and
-does not introduce a parent above Shell.
+`StaticEmulatorSpecificationApplier` is the one optional application service
+for applying a complete immutable specification. It directly expands
+`ShellSpecification` values and calls the public ownership methods; it does
+not delegate entity creation through another builder/factory layer.
 
 The approved hierarchy remains:
 
@@ -56,16 +55,18 @@ SkyseedAutonomousSystem
         └── Satellite
 ```
 
-Several Shells are only a collection owned by an AS or scenario. They do not
-form a `Constellation` entity, identity, Descriptor, Catalog entry or Simulator
-contract. `GroundStationBuilder` has the equivalent narrow application role
-for GroundStations. `StaticEmulatorScenarioBuilder` coordinates those helpers,
-ordinary SEED ground objects and approved Layers, then delegates Catalog
-projection to the existing Catalog builder.
+Several Shells are only a collection owned by an AS. They do not form a
+population or `Constellation` entity, identity, Descriptor, Catalog entry or
+Simulator contract. The Applier invokes
+`SkyseedAutonomousSystem.create_ground_station` directly for GroundStations,
+uses ordinary SEED methods for ground topology, and delegates only read-only
+Catalog projection to the existing Catalog builder.
 
-Generated IDs are deterministic and independent of input mapping/order. No
-builder contains the large example's counts or branches on a historical S4
-label.
+Generated IDs are deterministic and independent of input mapping/order. The
+Applier contains no large-example counts and no historical-label branch. Its
+flat `StaticEmulatorApplyResult` is an operation result containing Emulator,
+AS collections and Catalog; it owns no entity and enters no Descriptor or
+Simulator contract.
 
 ## Domain vocabulary discipline
 
@@ -85,10 +86,11 @@ rule.
 
 ## Self-contained formal examples
 
-Each formal experiment owns its `main.py`, versioned data, README, thin
-`start.sh`, scoped `cleanup.sh` and ignored `output/` directory. The large
-static network owns exactly the 12 GroundStation records it needs; it does not
-copy the historical 250-item source catalog.
+Each formal experiment owns its `main.py`, README, thin `start.sh`, scoped
+`cleanup.sh` and ignored `output/` directory. The isolated and complete
+teaching examples are handwritten and use no YAML. The large static network
+alone owns versioned scenario data, including exactly the 12 GroundStation
+records it needs.
 
 `large_static_network` currently describes one Shell, six Orbits, 348 isolated
 Satellites, 12 GroundStations, two ordinary ground AS, two IX and two explicit

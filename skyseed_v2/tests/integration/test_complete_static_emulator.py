@@ -48,11 +48,8 @@ def assert_no_duplicate_yaml_keys(node: Node, path: str = "$") -> None:
 def test_complete_example_catalog_matches_registry_and_compiler_output(
     tmp_path: Path,
 ) -> None:
-    result = build_emulator()
-    emulator = result.emulator
-    skyseed_as = result.skyseed_autonomous_systems[0]
-    ground_station = result.ground_station_population.ground_stations[0]
-    catalog = result.catalog
+    emulator, skyseed_as, catalog = build_emulator()
+    ground_station = skyseed_as.get_ground_station("gs-new-york")
 
     assert catalog_summary(catalog) == (
         "Catalog summary: 2 SatelliteDescriptor, 1 GroundStationDescriptor, "

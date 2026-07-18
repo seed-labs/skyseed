@@ -222,6 +222,8 @@ class Orbit:
         mean_anomaly_deg: float,
         payload: Mapping[str, str] | None = None,
     ) -> Satellite:
+        """Create and own one Satellite with the Orbit's AS identity."""
+
         satellite_id = validate_identifier(satellite_id, "satellite_id")
         if satellite_id in self._satellite_ids:
             raise ValueError(f"satellite_id {satellite_id!r} already exists")
@@ -257,7 +259,7 @@ class Orbit:
         mean_anomaly_step_deg: float | None = None,
         payload: Mapping[str, str] | None = None,
     ) -> tuple[Satellite, ...]:
-        """Atomically create a deterministic batch of Satellites."""
+        """Plan a deterministic batch, then delegate each entity creation."""
 
         if not isinstance(count, int) or count <= 0:
             raise ValueError("count must be a positive integer")
@@ -324,6 +326,8 @@ class Shell:
     def create_orbit(
         self, orbit_id: str, *, parameters: OrbitParameters
     ) -> Orbit:
+        """Create and own one Orbit through the public domain entry point."""
+
         orbit_id = validate_identifier(orbit_id, "orbit_id")
         if orbit_id in self._orbits:
             raise ValueError(

@@ -1,9 +1,9 @@
 # Isolated Satellites
 
-This self-contained v2 example loads `scenario.yaml`, constructs one approved
-`SkyseedAutonomousSystem -> Shell -> Orbit -> Satellite` hierarchy, and
-compiles two no-network Satellite services. It has no v1 or dynamic Simulator
-input.
+This handwritten example directly constructs the approved
+`SkyseedAutonomousSystem -> Shell -> Orbit -> Satellite` hierarchy and compiles
+two no-network Satellite services. It uses no YAML, Loader, scenario facade,
+population helper or dynamic Simulator input.
 
 From `skyseed_v2/`:
 

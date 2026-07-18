@@ -40,6 +40,8 @@ class SkyseedAutonomousSystem(AutonomousSystem):
         return tuple(self._shells.values())
 
     def create_shell(self, shell_id: str) -> Shell:
+        """Create and own one Shell through the public domain entry point."""
+
         shell_id = validate_identifier(shell_id, "shell_id")
         if shell_id in self._shells:
             raise ValueError(f"shell_id {shell_id!r} already exists")
@@ -87,6 +89,8 @@ class SkyseedAutonomousSystem(AutonomousSystem):
         service_config: Mapping[str, str] | None = None,
         routing_backend: str = "bird",
     ) -> GroundStation:
+        """Create and own one GroundStation through the public domain entry point."""
+
         ground_station_id = validate_identifier(
             ground_station_id, "ground_station_id"
         )

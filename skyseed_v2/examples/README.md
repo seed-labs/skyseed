@@ -1,19 +1,18 @@
 # Self-Contained Skyseed v2 Examples
 
-Every formal experiment owns its v2 scenario data, thin entrypoint, scoped
-cleanup and ignored output directory:
+Every formal experiment owns a thin entrypoint, scoped cleanup and ignored
+output directory. The two teaching examples are handwritten; only the scale
+example owns v2 YAML:
 
 ```text
 examples/
 ├── isolated_satellites/
 │   ├── main.py
-│   ├── scenario.yaml
 │   ├── README.md
 │   ├── start.sh
 │   └── cleanup.sh
 ├── complete_static_emulator/
 │   ├── main.py
-│   ├── scenario.yaml
 │   ├── README.md
 │   ├── start.sh
 │   └── cleanup.sh
@@ -32,22 +31,31 @@ Python entrypoint; it is not a Runner. Each `cleanup.sh` uses that experiment's
 exact Compose project/file and removes only its local output. No script uses a
 global Docker prune, shared-image deletion, recovery logic or hidden fallback.
 
-The formal examples all follow one input path:
+The small examples expose the real public ownership path directly:
 
 ```text
-example-local v2 YAML
-    -> StaticEmulatorScenarioLoader
-    -> immutable generic specifications
-    -> StaticEmulatorScenarioBuilder
-    -> SkyseedAutonomousSystem -> Shell -> Orbit -> Satellite
-                             \-> GroundStation
-    -> SimulationEntityCatalog
-    -> SkyseedDockerCompiler
+handwritten values
+    -> SkyseedAutonomousSystem.create_shell
+    -> Shell.create_orbit
+    -> Orbit.create_satellite
+    -> SkyseedAutonomousSystem.create_ground_station (complete example)
 ```
 
-The loader and builder are application services, not domain entities. Multiple
-Shells are merely a collection owned by an AS/scenario; there is no
-`Constellation` domain object.
+The scale example uses the one file-input path:
+
+```text
+v2 YAML
+    -> StaticEmulatorScenarioLoader.load
+    -> immutable StaticEmulatorScenarioSpecification
+    -> StaticEmulatorSpecificationApplier.apply
+    -> the same public domain create methods
+    -> SimulationEntityCatalog
+```
+
+The Loader is a serialization adapter. The Applier is an optional application
+service for complete specifications, not a domain entity and not a required
+handwritten entrypoint. Multiple Shells remain a collection owned by an AS;
+there is no population or `Constellation` domain object.
 
 The `reference/` directory is excluded from the package and formal example
 path. It preserves offline historical investigation/conversion tooling only;
