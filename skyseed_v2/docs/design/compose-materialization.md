@@ -22,8 +22,9 @@ It does not belong to Simulator static input, Emulator, Simulator, dynamic
 topology/planning, or satellite-network runtime semantics, and it is not shown
 in an Emulator entity class diagram.
 
-A future execution Runner may call, wrap, or replace this tool. This slice does
-not decide that Runner contract and does not introduce a dynamic Runner.
+A future conceptual `SimulationRunner` may call, wrap, or replace this tool.
+This slice does not decide that execution contract and does not introduce a
+dynamic executor.
 
 ## Generated human controls
 
@@ -47,9 +48,9 @@ Python entrypoint is the generation boundary.
 These scripts are the minimal human execution path. They do not perform the
 strict service-state classification and final-state audit provided by
 `ComposeProjectLauncher`. The shared script writer is private example tooling,
-not a public deployment type, Runner or Simulator contract. It runs only after
-all currently implemented output generators finish, leaving future generator
-composition undecided.
+not a public deployment type, `SimulationRunner` or Simulator contract. It
+runs only after all currently implemented output generators finish, leaving
+future generator composition undecided.
 
 ## Input and command contract
 
@@ -143,10 +144,11 @@ parallel/batch setting, or performs cleanup. Cleanup remains caller-owned and
 must be bounded to the named project, its project-labelled networks, and exact
 generated image tags.
 
-This integration helper may later sit below `Runner.initialize()`. It is not a
-top-level runtime architecture, a current Runner, or part of Simulator. This
-slice does not add automatic recovery, missing-service reconciliation,
-runtime restart policy, or dynamic batch tuning.
+This integration helper may later sit below a conceptual
+`SimulationRunner.initialize()`. It is not a top-level runtime architecture, a
+currently implemented `SimulationRunner`, or part of Simulator. This slice
+does not add automatic recovery, missing-service reconciliation, runtime
+restart policy, or dynamic batch tuning.
 
 ## Why the default changed and batching remains
 
@@ -164,7 +166,7 @@ and removes fixed batching from the normal plan. It does not prove that every
 v2/Engine combination or parallel value will have the same performance.
 
 The old batch evidence remains useful as an explicit diagnostic capability.
-It is not a smaller experiment, Emulator design, dynamic Runner design, or
+It is not a smaller experiment, Emulator design, dynamic-execution design, or
 hidden success path.
 
 ## Docker 19.03 build compatibility boundary

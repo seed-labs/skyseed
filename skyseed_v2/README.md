@@ -137,9 +137,11 @@ Conceptual diagram 不是实现任务清单或公共 API 冻结清单。不得�
 来匹配图；每个切片只冻结本轮需要的公共概念。图中的候选对象可随获批
 纵向切片修改、拆分、合并或重命名，不能只因尚未实现就删除。
 
-Planner、Compiler 和 Runner 不得形成隐式重规划、后端 fallback 或第二条
-成功路径。v1 只能围绕当前切片做定向事实调查，不能整体迁移。测试 PASS
-也不能替代真实执行证据。
+Planner、限定职责的 Compiler 和 conceptual `SimulationRunner` 不得形成
+隐式重规划、后端 fallback 或第二条成功路径。静态项目启动者是
+`ComposeProjectLauncher`，不承担 conceptual `SimulationRunner` 职责。
+v1 只能围绕当前切片做定向事实调查，不能整体迁移。测试 PASS 也不能
+替代真实执行证据。
 
 ### 接受不等于测试通过
 

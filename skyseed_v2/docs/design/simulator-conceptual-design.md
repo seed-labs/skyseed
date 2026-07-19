@@ -1,142 +1,241 @@
-# Simulator Conceptual Design Baseline
+# Simulator Top-Level Conceptual Design
 
 ## Status and purpose
 
-This document restores the Simulator design space that had already been
-discussed but was compressed or removed while the corresponding code was still
-unimplemented. It is a conceptual baseline for later vertical slices, not an
-implementation specification, public API freeze or instruction to create empty
-types.
+This record synchronizes the approved top-level boundary before the first
+Simulator vertical-slice investigation. It is not an implementation
+specification, public API freeze or instruction to create placeholder types.
 
 The status labels used here are:
 
-- **implemented**: present in the current repository;
-- **approved direction**: an accepted responsibility or dependency direction;
-- **conceptual candidate**: a name or object useful for exploring later slices;
-- **open question**: requires design and explicit approval in the relevant
-  slice;
-- **retired/corrected**: an earlier description that over-compressed or
-  misrepresented the design.
+- **implemented**: present in the current repository and accepted by the
+  completed slices;
+- **approved direction**: an accepted ownership, responsibility or dependency
+  direction that later slices must start from;
+- **conceptual/open**: a useful future concept whose final name, shape,
+  visibility or detailed contract still requires investigation and approval;
+- **retired/corrected**: an earlier description that no longer represents the
+  approved direction.
 
-Candidate names in this document, including `Simulator`, `Topology`,
-`SemanticPlanner`, `BackendPlanner`, `ExecutionCompiler` and `Runner`, are not
-final public names. The canonical conceptual class maps are in
-[`../architecture/conceptual-class-diagrams.md`](../architecture/conceptual-class-diagrams.md#simulator-future-conceptual-map).
+Only the first status describes current code. In particular, `Simulator`,
+`SimulationTimeline`, `Topology`, `Planning`, every Slice and Planner, the
+dynamic `ExecutionCompiler`, `ExecutableBundle` and `SimulationRunner` are not
+implemented or frozen public contracts.
 
-## Current implemented foundation
+The canonical top-level boundary map is in
+[`../architecture/conceptual-class-diagrams.md`](../architecture/conceptual-class-diagrams.md#simulator-future-conceptual-boundary-map).
+
+## Implemented foundation
 
 The following foundation is **implemented**:
 
 - `NodeId`;
-- `SatelliteSimulationInput`;
-- `GroundStationSimulationInput`;
-- `SimulatorStaticInput`;
+- `SatelliteSimulationInput`, `GroundStationSimulationInput` and
+  `SimulatorStaticInput`;
 - the entity-aware functions in `simulator_input_generation.py`;
 - the static Emulator domain model;
-- `SkyseedDockerCompiler` and its Docker/Compose static-deployment lowering;
-- `ComposeProjectLauncher`, which consumes an already compiled Compose
-  project.
+- `SkyseedDockerCompiler`, which lowers that static model to Docker/Compose;
+- `ComposeProjectLauncher`, which launches and verifies an already compiled
+  Compose project.
 
-No Simulator engine, dynamic Topology, Planner, dynamic execution compiler,
-Runner or Observation subsystem is implemented by this baseline.
+The `*SimulationInput` values are receiving-side boundary contracts. Their
+package placement does not make them the Simulator's complete or long-lived
+domain model.
 
-## Overall responsibility and dependency direction
+## Emulator to Simulator construction boundary
 
-The following relationship is an **approved direction**:
+The boundary data has this **approved direction**:
 
 ```text
-Emulator static domain model
-        │
-        ├── simulator_input_generation
-        │           │
-        │           ▼
-        │   SimulatorStaticInput
-        │           │
-        │           ▼
-        │      future Simulator
-        │
-        └── SkyseedDockerCompiler
-                    │
-                    ▼
-          Docker / Compose static deployment
-                    │
-                    ▼
-          ComposeProjectLauncher
+Emulator entities
+→ simulator_input_generation
+→ immutable boundary data
+→ Simulator construction
+→ Simulator-owned domain objects
 ```
 
-The candidate dynamic-simulation decomposition is:
+`SimulatorStaticInput` and the related `*SimulationInput` values carry
+immutable static facts from Emulator to Simulator. They do not represent the
+complete internal network world after construction. The future Simulator will
+use satellite, orbit, Shell and GroundStation facts, together with user
+parameters, to materialize domain structures owned by its own subsystems.
+
+The input-generation adapter alone understands both Emulator entities and
+Simulator input types. The input values retain no Emulator entity, SEED Node,
+Registry, container, namespace or Compose reference. A future Simulator must
+not call back into the Emulator or depend directly on
+`simulator_input_generation.py`.
+
+The following shape is explicitly not the future direction:
 
 ```text
-SimulatorStaticInput
-        │
-        ▼
 Simulator
-        │
-        ├── Zone / Timeline
-        ├── Topology
-        ├── Planning
-        ├── ExecutionCompiler
-        ├── Runner
-        └── Observation
+└── one increasingly large SimulatorInput
+    ├── satellites
+    ├── orbits
+    ├── timeline
+    ├── policies
+    └── every other concern
 ```
 
-Within that direction:
+Whether `SimulatorStaticInput` should later be renamed, and whether Simu
+should introduce distinct Shell, Orbit, Satellite and GroundStation types, are
+**conceptual/open** questions for the first vertical slice. This synchronization
+does not rename code or reserve replacement names.
 
-- `Simulator` is a candidate top-level coordination shell, not the owner of
-  every algorithm.
-- `Topology` is a candidate internal coordination shell, not a mega-class.
-- Zone semantics are independent of Topology. Topology queries Zone semantics;
-  it does not copy or own a Zone map.
-- `SkyseedDockerCompiler` belongs only to the implemented static deployment
-  chain.
-- `ExecutionCompiler` is a candidate in the dynamic execution chain.
-- The two compiler roles have no required common parent and occur at different
-  lifecycle stages.
-- `ComposeProjectLauncher` is not the dynamic Runner.
+## Simulator composition root and facade
 
-These responsibility and dependency directions are approved; the candidate
-objects, their final names, visibility, methods and module placement remain
-subject to later slice-level design.
+The top-level ownership relation is an **approved direction**:
 
-## Topology decomposition
+```text
+Simulator
+├── SimulationTimeline
+├── Topology
+└── Planning
+```
 
-The conceptual Topology map preserves these **approved directions**:
+`Simulator` is the Simu-side composition root and user-facing facade. It will:
 
-1. Topology coordinates; it does not personally implement orbit propagation,
-   visibility, connection selection or routing algorithms.
-2. Position calculation, candidate discovery, connection selection and route
-   generation are separate responsibilities.
-3. A candidate connection is not a selected connection.
-4. `ConnectionSlice` represents selected logical connections at one instant.
-5. The authoritative tendency for `RouteSlice` is node-local forwarding
-   state.
-6. A complete end-to-end path tends to be a derived query rather than
-   authoritative stored state.
-7. `ConnectionSlice`, `RouteSlice` and `TopologySlice` tend to be immutable
-   after generation.
+- consume the boundary data and user parameters required for construction;
+- create and own one `SimulationTimeline`;
+- create and own one `Topology`;
+- create and own one `Planning` subsystem;
+- coordinate their lifecycles;
+- expose a small set of stable top-level operations.
 
-The following are **conceptual candidates**, not frozen contracts:
-`SimulationTimeline`, `ZoneModel`, `PositionModel`, `ConnectionModel`,
-`ConnectionCandidateSet`, `ConnectionSlice`, `RouteModel`, `RouteSlice`,
-`TopologySlice`, `SliceStore`, `TopologyDiffer` and `TopologyDifference`.
+`Simulator` is not merely a data packet retaining an `input` field. It
+materializes and owns its domain graph. It also does not personally implement:
 
-The following remain **open questions**:
+- orbit propagation;
+- Zone geometry;
+- connection-candidate discovery or connection selection;
+- route calculation;
+- Slice comparison;
+- semantic or backend planning;
+- backend-operation compilation;
+- dynamic execution.
 
-- whether `SliceStore`, `PositionModel` and `ConnectionCandidateSet` should be
-  public types at all;
-- how an initial empty state or `slice0` should be represented;
-- whether continuous operation, a sliding window or ahead-of-time calculation
-  is needed;
-- whether `PositionModel` exists independently and whether it is internal to
-  Topology;
-- whether `ConnectionModel` should be split further;
-- the precise time, slice identity, retention and comparison contracts;
-- final names, ownership, module placement and public exposure for every
-  candidate.
+The exact constructor, facade operations, lifecycle and module placement are
+still **conceptual/open**.
 
-## Two-level planning and dynamic execution
+## SimulationTimeline ownership
 
-The candidate dynamic chain is:
+`SimulationTimeline` is owned by `Simulator` beside `Topology`; it is not owned
+by Topology or by an individual Slice. It conceptually expresses:
+
+- `start_time`;
+- an optional `end_time`;
+- a default Slice interval;
+- a bounded or continuing time range.
+
+Topology creates state for one explicit instant through the conceptual entry:
+
+```text
+Topology.create_slice(timestamp, previous_slice?)
+```
+
+A continuous Slice sequence is therefore Simulator coordination over the
+Timeline and repeated calls to the single-instant Topology entry. The method
+name and parameters are illustrative, not frozen API. Continuing execution,
+lookahead, sliding windows and stopping mechanisms remain **conceptual/open**.
+
+## Topology aggregate and facade
+
+Topology is the aggregate root for the Simu-owned static network world and
+dynamic topology state. Its approved ownership direction is:
+
+```text
+Simulator
+└── Topology
+    ├── Shell
+    ├── Orbit
+    ├── Satellite
+    ├── GroundStation
+    ├── future Zone definitions
+    ├── future TopologySlice states
+    └── internal models and indexes
+```
+
+The names and representations of the nested objects remain open, but their
+information has one authoritative owner or manager: Topology. This corrects
+the earlier description that kept Zone definitions independent of Topology.
+
+Topology is a thin coordination shell. It establishes its own static domain
+structures, exposes stable query operations, coordinates the internal objects
+that actually own data or algorithms, creates and manages future
+`TopologySlice` states, and provides the future Slice-comparison facade. It
+must not become a mega-class containing all propagation, connection, routing
+and comparison algorithms.
+
+An outer facade and an internal implementation may intentionally expose
+similar operations:
+
+```text
+Planning
+→ Topology.compare_slices(left, right)
+→ internal TopologyDiffer.compare(left, right)
+```
+
+There must be only one authoritative comparison algorithm. The Topology
+operation delegates to it so callers do not depend on internal objects or data
+structures. Whether an independently named `TopologyDiffer` exists is
+**conceptual/open**.
+
+## Planning dependency on Topology
+
+The dependency is one-way:
+
+```text
+Topology
+→ produces TopologySlice / TopologyDifference
+
+Planning
+→ consumes Topology public results
+→ may query the Topology read-only facade when necessary
+```
+
+Topology does not depend on Planning. Planning neither owns, copies nor
+modifies Satellite, Orbit, Shell, GroundStation, Zone definitions or Topology
+indexes.
+
+The preferred information path is:
+
+```text
+TopologySlice A + TopologySlice B
+→ Topology.compare_slices(...)
+→ TopologyDifference
+→ Planning
+```
+
+Information necessary to describe the change belongs in
+`TopologyDifference`, expressed through stable logical identities such as
+`NodeId`, Zone IDs and Connection IDs. When planning genuinely needs stable
+static facts, it may use conceptual read-only facade queries such as:
+
+```text
+Topology.get_node_kind(node_id)
+Topology.get_satellite(node_id)
+Topology.get_orbit(orbit_id)
+```
+
+Those methods are examples, not frozen contracts. Later slices must decide
+whether such queries return domain entities or dedicated read-only views.
+Planning must not access Topology dictionaries, indexes or nested objects;
+depend on raw `SimulatorStaticInput`; recompute Topology; or change an
+authoritative `TopologySlice` to accommodate backend execution cost.
+
+The core boundary is:
+
+```text
+Topology decides what the authoritative network state should be.
+
+Planning decides how to transition from one authoritative state to another.
+```
+
+## Two planning levels
+
+The following chain is an **approved direction**, while all names and fields
+remain **conceptual/open**:
 
 ```text
 TopologyDifference
@@ -144,170 +243,82 @@ TopologyDifference
 → SemanticTransitionPlan
 → BackendPlanner
 → BackendExecutionPlan
+```
+
+`Planning` is the coordinating shell; its internal Planners own the concrete
+algorithms. `SemanticTransitionPlan` describes backend-neutral network
+meaning. `BackendExecutionPlan` describes one backend's operations,
+dependencies, batching, barriers, serial/parallel relations, failure behavior
+and cleanup behavior.
+
+BPF and Linux MPLS execution plans may have fundamentally different forms.
+A BackendPlanner must not recompute Topology or disguise failure through a
+different-backend fallback.
+
+## Static deployment and dynamic execution
+
+The two chains have different inputs, outputs, lifecycles and execution
+semantics.
+
+The **implemented** static deployment chain is:
+
+```text
+Emulator / SEED static model
+→ SkyseedDockerCompiler
+→ compiled Docker / Compose project
+→ ComposeProjectLauncher
+```
+
+`SkyseedDockerCompiler` compiles the static deployment environment.
+`ComposeProjectLauncher` launches and verifies the compiled project; it is not
+an Emulator execution service or a dynamic-simulation executor.
+
+The **conceptual/open** dynamic execution chain is:
+
+```text
+BackendExecutionPlan
 → ExecutionCompiler
 → ExecutableBundle
-→ Runner
+→ SimulationRunner
 ```
 
-This chain records an **approved direction**: cross-backend network semantics
-and backend-specific execution strategy are different planning levels. It does
-not require their two Plan forms to share a schema, parent type or lifecycle.
+`ExecutionCompiler` only lowers an already determined backend plan.
+`SimulationRunner` only executes the resulting bundle. Neither stage may
+re-plan, recompute Topology, select another backend or hide a failure with a
+fallback path.
 
-### SemanticPlanner
+`SkyseedDockerCompiler`, `ComposeProjectLauncher`, `ExecutionCompiler` and
+`SimulationRunner` are external application/infrastructure services acting on
+domain models or planning results. Emulator and Simulator do not own them as
+domain state. A future Simulator facade may invoke them without changing that
+ownership.
 
-`SemanticPlanner` is a **conceptual candidate** responsible for turning a raw
-`TopologyDifference` into backend-neutral network changes. It may express:
+No common `Compiler`, `EmulatorRunner` or generic `Runner` abstraction is
+approved. Such an abstraction would require later independent evidence; name
+symmetry alone is insufficient.
 
-- logical connection enablement, disablement or parameter changes;
-- changes to node-local forwarding semantics;
-- G/Z, FEC, anchor or logical-next-hop changes.
+## Open questions and next investigation
 
-It does not express BPF maps or generations, tc attachment, Linux routes,
-namespaces, shell commands, or backend batching and barrier details.
+When formally started, the first vertical slice's fact phase will investigate
+the materialization relationship among Simulator, Topology and the
+Emulator-to-Simulator boundary data. It may then inspect relevant prior
+behavior in a targeted way. This record authorizes neither that investigation
+nor implementation.
 
-### SemanticTransitionPlan
+Later design must still decide:
 
-`SemanticTransitionPlan` is a **conceptual candidate** describing what the
-network must change semantically. It is neither a directly executable plan nor
-a low-level operation schema shared by every backend.
+- whether existing input types are renamed;
+- whether Simu uses distinct Shell, Orbit, Satellite and GroundStation types;
+- the smallest stable Simulator construction and facade contracts;
+- precise Timeline, timestamp, Slice identity, retention and comparison
+  contracts;
+- continuous operation, lookahead, sliding-window and stopping semantics;
+- Zone representation and geometry delegation;
+- the internal propagation, connection, route, index and comparison objects;
+- whether Topology queries return entities or dedicated read-only views;
+- exact semantic and backend plan schemas and supported backends;
+- `ExecutableBundle` contents and dynamic-execution resource resolution;
+- final names, visibility, module placement and root exports.
 
-### BackendPlanner and BackendExecutionPlan
-
-`BackendPlanner` is a **conceptual interface candidate** that turns a
-`SemanticTransitionPlan` into one explicitly selected backend's
-`BackendExecutionPlan`. It is responsible for:
-
-- capability support;
-- backend operations;
-- batching and dependencies;
-- parallel and serial constraints;
-- barriers and synchronization;
-- preload and activation;
-- failure policy;
-- cleanup or rollback policy.
-
-A BackendPlanner must not recompute Topology, silently change the semantic
-plan, or disguise success by falling back to another backend.
-
-A candidate BPF execution plan may contain BPF map writes, generation preload,
-generation-visibility proof, active-generation flip, tc-BPF attach/detach,
-map-only/delta-attach/bootstrap classification, per-node batches, preload and
-activation barriers, serial/parallel relations, failure and cleanup behavior,
-and old-generation reclamation. None belongs in `SemanticTransitionPlan`.
-
-A candidate Linux MPLS execution plan may instead contain interface and qdisc
-operations, MPLS/LFIB routes, neighbor or next-hop updates, Netlink or
-namespace operations, its own ordering and lock constraints, and its own
-cleanup and failure semantics. A shared schema must not force a Linux plan to
-pretend to be a BPF plan or vice versa.
-
-`BpfBackendPlanner`, `LinuxMplsBackendPlanner` and `IpRoutingBackendPlanner`
-are illustrative **conceptual candidates** only. Supported backends and the
-BackendPlanner extension boundary remain **open questions**.
-
-### ExecutionCompiler
-
-`ExecutionCompiler` is a **conceptual candidate** that only lowers an already
-approved `BackendExecutionPlan` into an `ExecutableBundle` that a Runner can
-consume directly. It does not re-plan, re-select a backend, recompute Topology,
-or change batching, barriers or serial/parallel semantics.
-
-### Runner
-
-`Runner` is a **conceptual candidate** that only executes an
-`ExecutableBundle`. It does not decide what the network should change, select
-a backend, repeat planning, silently fall back at runtime, or manufacture a
-different plan because execution is difficult.
-
-### Observation
-
-`Observation` is a **conceptual candidate** that records compile evidence,
-operation start and end, success and failure, time, state transitions, cleanup
-results and audit facts. It does not make Planner or Runner control decisions.
-
-## Design evolution
-
-### First stage
-
-The initial model was close to:
-
-```text
-TopologyDifference
-→ backend-aware Planner
-→ backend-specific actions
-→ Compiler
-→ Runner
-```
-
-That stage already recognized that IP routing, Linux MPLS and BPF require
-different actions; BPF introduces maps, generations, preload, attachment,
-synchronization and cleanup; and each backend may impose different batching,
-parallel and serial rules.
-
-### Second stage
-
-To avoid binding all network semantics directly to one backend, the model was
-refined to:
-
-```text
-TopologyDifference
-→ SemanticPlanner
-→ SemanticTransitionPlan
-→ BackendPlanner
-→ BackendExecutionPlan
-→ ExecutionCompiler
-→ ExecutableBundle
-→ Runner
-```
-
-The first plan level preserves stable cross-backend network semantics. The
-second owns fully backend-specific execution strategy. They intentionally need
-not have the same structure.
-
-### Retired/corrected compression
-
-The earlier wording:
-
-```text
-abstract Simulation Plan
-→ SimulationPlanCompiler
-→ concrete dynamic operations
-```
-
-is **retired/corrected** as an over-compressed description, not the one
-approved master contract. It conflated semantic network planning,
-backend-specific implementation planning and executable-form compilation.
-`SimulationPlanCompiler` therefore remains only a historical shorthand in
-documents that explain the correction; it is not a frozen future public name.
-
-## Slice governance
-
-The conceptual diagrams preserve design space; they are not implementation
-task lists. A later vertical slice may refine, rename, split, merge or remove
-candidates when its real contract is approved. It must not create empty classes
-to make the diagram look implemented, and it freezes only the public concepts
-needed for that slice.
-
-The current vertical-slice workflow and approval gates are normative in
-[`../../AGENTS.md`](../../AGENTS.md#1-标准纵向开发流程). In particular, a
-passing test suite is not a substitute for real execution evidence; v1 may be
-investigated only in a targeted way; and Planner, Compiler and Runner must not
-form hidden alternative success paths.
-
-## Remaining architecture questions
-
-In addition to the Topology questions above, later slices must decide:
-
-- the smallest public Simulator operation and its lifecycle;
-- Zone and Timeline representations and ownership;
-- exact semantic-difference and semantic-plan contracts;
-- backend selection, capability and extension contracts;
-- `ExecutableBundle` contents and ownership;
-- Runner initialization and its relationship, if any, to static
-  materialization;
-- resource resolution below logical `NodeId` owner lookup;
-- Observation persistence, querying and audit boundaries;
-- which candidates remain private implementation details;
-- all final public names and exports.
-
-No answer to these questions is implied by this recovery slice.
+No Simulator implementation, placeholder, public export, compiler, executor or
+runtime path is created or authorized by this documentation synchronization.

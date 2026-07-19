@@ -5,8 +5,8 @@
 Static Emulator configuration loading and construction are implemented. The
 public file path is one direct chain; it creates the upstream
 `seedemu.core.Emulator`, not a wrapper or Skyseed-specific Emulator subtype.
-The Simulator static-input contract is **AVAILABLE** while Simulator algorithms
-and engine remain **NOT STARTED**.
+The Simulator static-input contract is **IMPLEMENTED** while Simulator
+algorithms and engine remain **NOT STARTED**.
 
 ## Package ownership
 
@@ -18,7 +18,7 @@ and engine remain **NOT STARTED**.
 | `skyseed_v2.seedemu_integration` | Skyseed extensions of upstream seedemu | `SkyseedAutonomousSystem`, `SatelliteBase`, `SkyseedDockerCompiler` |
 | `skyseed_v2.node_id` | Neutral logical identity | `NodeId` |
 | `skyseed_v2.simulator_input_generation` | Entity traversal and pure input copying | three input-generation functions |
-| `skyseed_v2.simulator.static_input` | Simulator-owned immutable static input | three input types |
+| `skyseed_v2.simulator.static_input` | receiving-side immutable cross-layer boundary input | three input types |
 | `skyseed_v2.materialization` | Launch an already compiled Compose project | `ComposeProjectLauncher` |
 
 The root package still exports only the six high-frequency entity/value names.
@@ -59,7 +59,7 @@ relations therefore remain distinct even though the unchanged v1 YAML nests
 
 `SimulatorStaticInput` contains copied immutable values only. The adapter
 accepts an iterable of `SkyseedAutonomousSystem`, walks the real ownership tree
-and derives `NodeId`; the Simulator-owned input package never imports Config,
+and derives `NodeId`; the receiving-side input package never imports Config,
 entities or seedemu.
 
 The file-driven caller obtains the AS collection from its real owner:
@@ -82,14 +82,23 @@ resolver or runtime updater exists.
 ## Static deployment and conceptual dynamic execution stages
 
 ```text
-rendered Emulator → SkyseedDockerCompiler → Docker/Compose static deployment
+rendered Emulator
+  → SkyseedDockerCompiler
+  → compiled Docker/Compose project
+  → ComposeProjectLauncher
 
 future TopologyDifference
-  → SemanticPlanner → BackendPlanner → ExecutionCompiler → Runner
+  → SemanticPlanner
+  → SemanticTransitionPlan
+  → BackendPlanner
+  → BackendExecutionPlan
+  → ExecutionCompiler
+  → ExecutableBundle
+  → SimulationRunner
 ```
 
 `SkyseedDockerCompiler` is implemented and does not read Config. The dynamic
-names are conceptual candidates. `SimulationPlanCompiler` remains only the
+names are conceptual/open. `SimulationPlanCompiler` remains only the
 retired/corrected label for a formerly over-compressed dynamic chain.
 
 ## Public construction paths

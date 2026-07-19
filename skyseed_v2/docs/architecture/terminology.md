@@ -19,14 +19,14 @@ package root.
 | EbgpRouterReference | Frozen reference to one declared Router-like eBGP endpoint | `configuration/ground_network.py` | Router entity, global locator or Simulator identity | `skyseed_v2.configuration` |
 | load_static_emulator_config | Direct function that validates versioned YAML and returns `StaticEmulatorConfig` | `configuration/yaml.py` | entity factory, `SkyseedDockerCompiler` or Registry reader | `skyseed_v2.configuration` |
 | create_static_emulator | Stateless function that creates and directly returns an upstream Emulator from `StaticEmulatorConfig` | `static_emulator.py` | result wrapper, Emulator subclass, Simulator-input generation or `SkyseedDockerCompiler` | `skyseed_v2.static_emulator` |
-| SatelliteSimulationInput | Simulator-owned frozen static scalar data combined from one Satellite and its owning Orbit parameters | `simulator/static_input/satellite.py` | Satellite entity, SEED Node, runtime position or execution target | `skyseed_v2.simulator.static_input` |
-| GroundStationSimulationInput | Simulator-owned frozen static scalar data copied from one GroundStation | `simulator/static_input/ground_station.py` | GroundStation entity, SEED Router or execution target | `skyseed_v2.simulator.static_input` |
-| SimulatorStaticInput | Simulator-owned frozen deterministic aggregate of pure static inputs keyed by `NodeId` | `simulator/static_input/static_input.py` | AS traversal, Config, entity/resource index, Registry, container inventory or runtime model | `skyseed_v2.simulator.static_input` |
+| SatelliteSimulationInput | Receiving-side frozen boundary data combining approved static facts from one Emulator Satellite and its owning Orbit parameters | `simulator/static_input/satellite.py` | Simu Satellite domain object, SEED Node, runtime position or execution target | `skyseed_v2.simulator.static_input` |
+| GroundStationSimulationInput | Receiving-side frozen boundary data copying approved static facts from one Emulator GroundStation | `simulator/static_input/ground_station.py` | Simu GroundStation domain object, SEED Router or execution target | `skyseed_v2.simulator.static_input` |
+| SimulatorStaticInput | Frozen deterministic cross-layer construction boundary aggregating pure static inputs by `NodeId` | `simulator/static_input/static_input.py` | complete or long-lived Simulator domain model, AS traversal, policy bag, entity/resource index, Registry or container inventory | `skyseed_v2.simulator.static_input` |
 | NodeId | Pure stable logical node identity shared across Emulator packaging, Simulator data/state/plans and future dynamic-execution owner-directed lookup | `node_id.py` | entity property, lookup service, Registry key, container ID, Compose service, namespace, interface or Simulator-local number | `skyseed_v2.node_id` |
 | Simulator static-input generation | Three direct functions sharing one private NodeId derivation to copy supported entities into pure inputs | `simulator_input_generation.py` | entity index, Projector, Builder, Resolver class, input classmethod or Simulator behavior | `skyseed_v2.simulator_input_generation` |
 | SkyseedDockerCompiler | Implemented SEED integration that lowers a rendered Emulator/SEED static model into Dockerfile and Compose deployment configuration | `seedemu_integration/skyseed_docker_compiler.py` | entity creator, dynamic execution compiler, runtime updater or materializer | `skyseed_v2.seedemu_integration` |
 | SimulationPlanCompiler | **Retired/corrected** shorthand for the over-compressed `abstract Simulation Plan → compiler → concrete dynamic operations` description; retained only to explain the correction | not implemented | frozen future public contract, semantic Planner, BackendPlanner, conceptual `ExecutionCompiler`, `SkyseedDockerCompiler` or shared compiler parent | not implemented |
-| Launcher | Tool that materializes an already compiled Compose project | `materialization/compose_project_launcher.py` | entity service, either compilation stage, Runner or Simulator | `skyseed_v2.materialization` |
+| ComposeProjectLauncher | Implemented application/infrastructure service that launches and verifies an already compiled Compose project | `materialization/compose_project_launcher.py` | Emulator execution service, dynamic `SimulationRunner`, compiler, Simulator domain state or generic Launcher abstraction | `skyseed_v2.materialization` |
 | SkyseedAutonomousSystem | Owner of Shells and GroundStations plus the narrow SEED lifecycle extension | `seedemu_integration/skyseed_autonomous_system.py` | file facade or Simulator-input owner | `skyseed_v2.seedemu_integration` |
 | SatelliteBase | SEED Base Layer integration and real AS owner; provides the narrow Skyseed-AS collection query | `seedemu_integration/satellite_base.py` | Emulator entity, file configuration, global index or Simulator adapter | `skyseed_v2.seedemu_integration` |
 
@@ -61,12 +61,16 @@ current public API.
 
 | Concept or relationship | Status | Meaning at this baseline |
 | --- | --- | --- |
-| `NodeId`, `SatelliteSimulationInput`, `GroundStationSimulationInput`, `SimulatorStaticInput`, Simulator input-generation functions | **implemented** | Current immutable static-input foundation |
+| `NodeId`, `SatelliteSimulationInput`, `GroundStationSimulationInput`, `SimulatorStaticInput`, Simulator input-generation functions | **implemented** | Current immutable Emulator-to-Simulator boundary foundation; input values are construction material, not the long-lived Simu domain model |
 | Static chain: Emulator → `SkyseedDockerCompiler` → Docker/Compose → `ComposeProjectLauncher` | **implemented** | Static deployment and materialization lifecycle |
-| `Simulator` and `Topology` as coordination shells; Zone independent from Topology | **approved direction** | Responsibility/ownership direction, not a class/API freeze |
-| Semantic planning → backend planning → executable-form lowering → Runner | **approved direction** | Separate network meaning, backend strategy, lowering and execution stages |
-| `Simulator`, `SimulationTimeline`, `ZoneModel`, `Topology`, `Planning`, topology models/slices/store/differ, both Planner levels, backend planners/plans, `ExecutionCompiler`, `ExecutableBundle`, `Runner`, `Observation` | **conceptual candidate** | Names and objects available for later slice design; none is implemented |
-| Final public names, visibility, module placement, slice/time/state contracts, backend set and Runner/materialization relationship | **open question** | Must be designed and approved per vertical slice |
+| Emulator entities → input generation → immutable boundary data → Simulator construction → Simulator-owned domain objects | **approved direction** | Boundary input materializes a separate Simu domain graph; it does not grow into one all-purpose input aggregate |
+| `Simulator` owns `SimulationTimeline`, `Topology` and `Planning` | **approved direction** | Simulator is the Simu composition root and facade; these three peer subsystems are its domain state |
+| `Topology` owns/manages Simu Shell, Orbit, Satellite, GroundStation, future Zone definitions, future Slice states and internal indexes | **approved direction** | Topology is the static-network and dynamic-topology aggregate root plus a thin query/comparison facade, not a mega-class |
+| `Topology` produces authoritative state; `Planning` consumes public results and plans transitions | **approved direction** | Topology never depends on Planning; Planning does not own or modify Topology data and may query only a read-only Topology facade |
+| `TopologyDifference` → `SemanticPlanner` → `SemanticTransitionPlan` → `BackendPlanner` → `BackendExecutionPlan` | **approved direction** | Backend-neutral meaning and backend-specific execution strategy are separate planning levels |
+| Dynamic chain: `BackendExecutionPlan` → `ExecutionCompiler` → `ExecutableBundle` → `SimulationRunner` | **approved direction** | Lowering and execution remain separate from both planning and the implemented static deployment chain |
+| `Simulator`, `SimulationTimeline`, `Topology`, `Planning`, topology domain objects/slices/difference helpers, both Planner levels, backend plans, `ExecutionCompiler`, `ExecutableBundle`, `SimulationRunner` | **conceptual/open** | None is implemented; the approved arrows do not freeze final names, types, fields, visibility or module placement |
+| Input renaming, separate Simu entity types, precise time/slice/state contracts, Topology query return forms, backend set, executable bundle and continuing-run semantics | **conceptual/open** | Must be investigated and approved by the relevant vertical slice |
 | `SimulationPlanCompiler` as the one future dynamic master stage | **retired/corrected** | Over-compressed semantic planning, backend planning and execution compilation |
 
 `SemanticTransitionPlan` describes only backend-neutral network meaning.
@@ -74,4 +78,6 @@ current public API.
 batching, barriers, failure and cleanup policy. The two candidate plan forms do
 not share a required schema or parent. `ExecutionCompiler` is only a
 conceptual label for lowering an approved backend plan; its final public name
-is not decided.
+is not decided. `SimulationRunner` is the qualified conceptual label for the
+dynamic executor; current architecture records do not use an unqualified
+`Runner`, `EmulatorRunner` or a shared Compiler/Runner family.

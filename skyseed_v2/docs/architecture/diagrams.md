@@ -1,10 +1,9 @@
 # Current Architecture Diagrams
 
 Solid implemented nodes and arrows reflect current code. The Simulator static
-input contract is **AVAILABLE**; dashed Simulator/dynamic nodes are conceptual
-boundaries, not implementations or frozen public APIs. The full restored maps
-are in
-[`conceptual-class-diagrams.md`](conceptual-class-diagrams.md#simulator-future-conceptual-map).
+input contract is **IMPLEMENTED**; dashed Simulator/dynamic nodes are conceptual
+boundaries, not implementations or frozen public APIs. The top-level map is in
+[`conceptual-class-diagrams.md`](conceptual-class-diagrams.md#simulator-future-conceptual-boundary-map).
 
 ## 1. Package dependency direction
 
@@ -151,9 +150,13 @@ flowchart LR
     CA --> GI[GroundStationSimulationInput + NodeId]
     SI --> INPUT[SimulatorStaticInput]
     GI --> INPUT
-    INPUT --> SIM[future Simulator consumer boundary]
-    SIM -. produces .-> PLAN[future Simulation Plan citing NodeId]
-    PLAN -. future approved boundary .-> DYNAMIC[dynamic execution resolution]
+    INPUT --> SIM[future Simulator construction]
+    SIM -. owns .-> TIMELINE[future SimulationTimeline]
+    SIM -. owns .-> TOPOLOGY[future Topology]
+    SIM -. owns .-> PLANNING[future Planning]
+    TOPOLOGY -. creates and compares .-> SLICE[future Slice / Difference citing NodeId]
+    SLICE -. consumed by .-> PLANNING
+    PLANNING -. later approved plan .-> DYNAMIC[dynamic execution resolution]
     DYNAMIC -.->|NodeId.asn| BASE[SatelliteBase.getAutonomousSystem]
     BASE -. require Skyseed AS .-> OWNER[SkyseedAutonomousSystem]
     OWNER -. kind + entity_id .-> ENTITY[Satellite or GroundStation]
@@ -162,9 +165,11 @@ flowchart LR
 `SimulatorStaticInput` performs type validation, deterministic sorting,
 duplicate-ID rejection, immutable snapshotting and read-only indexing only. It
 does not traverse AS objects or call entity conversion and contains no entity
-reference. No unified NodeId-to-entity/resource mapping exists. The dashed
-path documents future owner-directed execution-boundary calls only; no
-Simulator algorithm, plan, resolution or dynamic update path is implemented.
+reference. It is construction boundary data, not the future Simulator's
+long-lived domain graph. No unified NodeId-to-entity/resource mapping exists.
+The dashed paths show approved ownership direction and future owner-directed
+execution-boundary calls only; none of the Simulator, Timeline, Topology,
+Planning, Slice, plan, resolution or dynamic update structures is implemented.
 
 ## 7. Static deployment and conceptual dynamic execution chains
 
@@ -174,12 +179,14 @@ flowchart TD
     E --> ADAPT[create_simulator_static_input]
     ADAPT --> INPUT[SimulatorStaticInput]
     INPUT -. future constructor input .-> SIM[future Simulator]
-    SIM -. produces .-> DIFF[future TopologyDifference]
-    DIFF -. semantic planning .-> SEM[future SemanticTransitionPlan]
-    SEM -. backend planning .-> BACK[future BackendExecutionPlan]
+    SIM -. owns .-> TOP[future Topology]
+    SIM -. owns .-> PLAN[future Planning]
+    TOP -. compares authoritative slices .-> DIFF[future TopologyDifference]
+    DIFF -. SemanticPlanner .-> SEM[future SemanticTransitionPlan]
+    SEM -. BackendPlanner .-> BACK[future BackendExecutionPlan]
     BACK -. lowered by .-> EXEC[future ExecutionCompiler]
     EXEC -. creates .-> BUNDLE[future ExecutableBundle]
-    BUNDLE -. consumed by .-> RUN[future Runner]
+    BUNDLE -. consumed by .-> RUN[future SimulationRunner]
 
     E --> DOCKER[SkyseedDockerCompiler]
     DOCKER --> DEPLOY[Dockerfile / Compose / services / networks]
@@ -189,7 +196,7 @@ flowchart TD
 The implemented static deployment compiler and the conceptual dynamic
 `ExecutionCompiler` have different inputs, outputs, ownership and lifecycles;
 they have no inheritance relationship or required shared public parent.
-`ComposeProjectLauncher` is not the future Runner. The old
+`ComposeProjectLauncher` is not the conceptual `SimulationRunner`. The old
 `SimulationPlanCompiler` label is retained only as a **retired/corrected**
 over-compression of semantic planning, backend planning and executable-form
 compilation, not as a frozen master contract.

@@ -2,11 +2,11 @@
 
 ## 1. Status
 
-The static Emulator core, Simulator-owned static input contract, formal
-examples and Compose materialization tooling are implemented. Simulator
-algorithms and engine, dynamic topology, planning, Runner and UT are not
-implemented in the current main slice. Their restored conceptual maps preserve
-future responsibility directions but do not freeze public APIs.
+The static Emulator core, receiving-side Simulator static-input contract,
+formal examples and Compose materialization tooling are implemented.
+Simulator algorithms and engine, dynamic topology, planning,
+`SimulationRunner` and UT are not implemented. Their conceptual maps preserve
+approved future responsibility directions but do not freeze public APIs.
 
 ## 2. System division
 
@@ -37,14 +37,25 @@ materialization/
 
 ### Simulator
 
-The Simulator already owns its pure static-input contract under
-`simulator/static_input/`. Future Simulator work may own time, positions,
-visibility, topology, semantic planning, execution and observation. None of
-those algorithms or engine concepts is implemented by the current repository.
-The approved direction uses a thin Simulator coordination shell, keeps Zone
-independent from the Topology coordination shell, and separates semantic
-planning, backend planning, executable-form compilation, execution and
-observation. Candidate names and public contracts remain open.
+The receiving-side immutable boundary types are implemented under
+`simulator/static_input/`; they are construction data rather than the complete
+or long-lived Simu domain model. The approved construction direction is:
+
+```text
+Emulator entities
+→ simulator_input_generation
+→ immutable boundary data
+→ Simulator construction
+→ Simulator-owned domain objects
+```
+
+The future `Simulator` is the Simu composition root and facade. It creates and
+owns peer `SimulationTimeline`, `Topology` and `Planning` subsystems.
+`Topology` uniquely owns or manages the Simu static network world, future Zone
+definitions, dynamic Slice state and its internal indexes. `Planning` consumes
+Topology's public results and may use a read-only Topology facade, but never
+owns or modifies Topology data. None of these classes, algorithms or engine
+concepts is implemented; exact contracts and public names remain open.
 
 ## 3. Static entity ownership
 
@@ -90,10 +101,11 @@ node at a cross-layer boundary rather than inside the Emulator entity model.
 
 Dependencies point from the generation adapter toward `entities`,
 `seedemu_integration`, `node_id` and `simulator.static_input`. The
-Simulator-owned input package itself imports none of the Emulator/SEED layers
+receiving-side input package itself imports none of the Emulator/SEED layers
 and uses only neutral `node_id`. `node_id` in turn uses the root identifier
-validator. Static input is data, not a facade over Emulator objects. A future
-Simulator receives that completed input and never invokes the entity-aware
+validator. Static input is data, not a facade over Emulator objects or a
+long-lived Simulator domain graph. A future Simulator receives that completed
+input, materializes its own domain objects and never invokes the entity-aware
 adapter itself.
 
 ## 5. Configuration and creation
@@ -130,7 +142,7 @@ Handwritten callers bypass the file-driven operations.
 
 The package is not a vendored seedemu copy and not data seeding code.
 
-## 7. Compilation stages and materialization
+## 7. Static deployment and dynamic execution
 
 `SkyseedDockerCompiler` lowers one rendered Emulator to a Compose project.
 After all current generators finish, the formal example entrypoint adds
@@ -140,14 +152,36 @@ the output. `ComposeProjectLauncher` remains the programmatic, state-verifying
 consumer of the same Compose artifact. Materialization is outside entities,
 static Simulator input and both compilation stages.
 
-The conceptual dynamic chain distinguishes backend-neutral semantic planning,
-backend-specific execution planning, executable-form lowering and Runner
-execution. `ExecutionCompiler` is a candidate label for the lowering step; it
-is not implemented, does not inherit from `SkyseedDockerCompiler` and has no
-required shared public parent. The earlier `SimulationPlanCompiler` wording is
-retired/corrected as an over-compressed description of those three separate
-responsibilities. Static Docker/Compose compilation does not consume dynamic
-plans, and `ComposeProjectLauncher` is not a dynamic Runner.
+The implemented static chain is:
+
+```text
+Emulator / SEED static model
+→ SkyseedDockerCompiler
+→ compiled Docker / Compose project
+→ ComposeProjectLauncher
+```
+
+The conceptual/open dynamic chain is:
+
+```text
+BackendExecutionPlan
+→ ExecutionCompiler
+→ ExecutableBundle
+→ SimulationRunner
+```
+
+Before dynamic lowering, a `SemanticPlanner` and a `BackendPlanner` have
+separate responsibility for backend-neutral meaning and backend-specific
+execution strategy. `ExecutionCompiler` only lowers an approved backend plan;
+`SimulationRunner` only executes its bundle. They do not re-plan, recompute
+Topology, select another backend or hide failure with fallback.
+
+The two chains have distinct inputs, outputs, lifecycles and execution
+semantics. Their services are external to Emulator and Simulator domain state,
+have no required common compiler/executor parent, and remain separate even if
+a future Simulator facade invokes them. `ComposeProjectLauncher` is not
+`SimulationRunner`. The earlier `SimulationPlanCompiler` wording is
+retired/corrected as an over-compressed description.
 
 ## 8. Formal examples
 
@@ -182,5 +216,5 @@ emits BPF changes or runs a Simulator.
 
 The detailed status labels, design evolution and open questions are in
 [`../design/simulator-conceptual-design.md`](../design/simulator-conceptual-design.md).
-The three restored conceptual class maps are in
-[`conceptual-class-diagrams.md`](conceptual-class-diagrams.md#simulator-future-conceptual-map).
+The top-level conceptual class map is in
+[`conceptual-class-diagrams.md`](conceptual-class-diagrams.md#simulator-future-conceptual-boundary-map).

@@ -33,8 +33,9 @@ Simulator conceptual diagrams 用于保存长期职责边界和待细化的设�
 实现修改、拆分、合并或重命名 conceptual 对象，不能只因尚未实现就从图中
 删除它们。
 
-Planner、Compiler 和 Runner 必须保持一条明确的批准路径，不得形成隐式
-重规划、后端 fallback 或其他成功路径。测试 PASS 不替代真实执行证据。
+Planner、限定职责的 Compiler 和 conceptual `SimulationRunner` 必须保持一条
+明确的批准路径，不得形成隐式重规划、后端 fallback 或其他成功路径。测试
+PASS 不替代真实执行证据。
 
 ## 2. 已批准范围内的实现自主权
 
@@ -70,8 +71,8 @@ Planner、Compiler 和 Runner 必须保持一条明确的批准路径，不得�
 - 新运行模式或 fallback；
 - 类图中的主体类或重要关系；
 - Emulator、Simulator、Topology、SemanticPlanner、BackendPlanner、
-  `SkyseedDockerCompiler`、conceptual `ExecutionCompiler`、Runner、
-  Observation、Materialization 之间的职责。
+  `SkyseedDockerCompiler`、conceptual `ExecutionCompiler`、
+  `SimulationRunner`、Observation、Materialization 之间的职责。
 
 禁止先提交实现，再在完成报告中解释新概念。与争议无关且已经批准
 的工作可以继续，但争议部分必须停留在提案状态。
@@ -203,7 +204,7 @@ Service
   Compose、service 和 network 等静态部署配置；
 - 动态链的 approved direction 先区分后端中立的网络语义规划与
   后端特定的执行规划，再由 conceptual `ExecutionCompiler` 降低已经
-  批准的后端执行计划，交给 Runner 执行。
+  批准的后端执行计划，交给 conceptual `SimulationRunner` 执行。
 
 `SkyseedDockerCompiler` 与 conceptual `ExecutionCompiler` 不得合并、互相
 继承、共享无真实需求的模糊公共父类，或互相承担对方职责。旧的
@@ -211,12 +212,15 @@ Service
 operations` 是 retired/corrected 的过度压缩描述：它混合了网络语义规划、
 后端实现规划和执行形式编译，不再是已批准的唯一主合同。所有动态类型和
 最终公开名称仍须作为公共架构变更逐片审批。文档在可能同时涉及两条链时
-不得使用无完整限定语义的单独 `Compiler`。
+不得使用无完整限定语义的单独 `Compiler` 或 `Runner`，也不得仅为名称
+对称创建共同父类。当前动态执行者的 conceptual 限定名是
+`SimulationRunner`；`ComposeProjectLauncher` 不承担该职责。
 
-Simulator 静态输入类型在语义上属于 Simulator，并且只能依赖中性纯值和
-自身数据类型。了解 Emulator 实体结构的输入生成适配代码必须位于
-Simulator 核心之外；Simulator 接收已生成的纯输入，不反向读取 Emulator、
-SEED Node 或 Registry。
+Simulator 静态输入类型是接收侧定义的跨层边界数据，只能依赖中性纯值和
+自身数据类型；它们不是 Simulator 内部长久使用的完整领域模型。了解
+Emulator 实体结构的输入生成适配代码必须位于 Simulator 核心之外；
+Simulator 接收已生成的纯输入，不反向读取 Emulator、SEED Node 或
+Registry。
 
 ## 9. 文档与实现同步
 

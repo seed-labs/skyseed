@@ -11,24 +11,25 @@
 - Package structure, naming and Simulator static-input boundary: **IMPLEMENTED**
 - Pure cross-layer NodeId and owner-directed lookup contract: **IMPLEMENTED**
 - Generated example output controls: **IMPLEMENTED**
-- Simulator static input contract: **AVAILABLE**
+- Simulator static input contract: **IMPLEMENTED**
 - Simulator algorithms and engine: **NOT STARTED**
 
 ## Current objective
 
-Preserve the implemented Emulator–Simulator logical-node identity and static
-input contracts while the restored future Simulator design baseline awaits
-architecture review. The restored baseline is conceptual/open: it authorizes
-no Simulator algorithm, Topology, Planner, dynamic compiler, Runner, backend,
-public export or runtime implementation.
+After this design synchronization is reviewed, the first Simulator vertical
+slice will begin with a fact investigation into how immutable
+Emulator-to-Simulator boundary data will materialize Simulator-owned and
+Topology-owned domain objects. No investigation or implementation is started
+by this record. The Simulator/Timeline/Topology/Planning structure below is an
+approved direction or conceptual/open design, not current code.
 
 ## Implemented package boundaries
 
 ```text
 skyseed_v2/
 ├── entities/                 # Shell, Orbit, Satellite, GroundStation
-├── simulator/                # Simulator-owned contracts; no engine
-│   └── static_input/         # immutable Simulator static input types
+├── simulator/                # receiving-side Simulator contracts; no engine
+│   └── static_input/         # immutable cross-layer boundary input types
 ├── seedemu_integration/      # Skyseed-owned seedemu extensions
 ├── configuration/            # immutable Config/auxiliary values and YAML loading
 ├── node_id.py                # neutral cross-layer logical node identity
@@ -80,9 +81,10 @@ SkyseedAutonomousSystem
   and builds its read-only lookup index. It does not traverse or recognize AS
   objects.
 - `SatelliteSimulationInput`, `GroundStationSimulationInput` and
-  `SimulatorStaticInput` are owned semantically and structurally by
-  `skyseed_v2.simulator.static_input`. This available contract does not imply a
-  Simulator engine.
+  `SimulatorStaticInput` are implemented in the receiving-side
+  `skyseed_v2.simulator.static_input` package. They are immutable cross-layer
+  construction data, not the complete or long-lived Simu domain model. This
+  implemented contract does not imply a Simulator engine.
 - The resulting snapshot is frozen and deterministic. It retains no Emulator
   entity, Registry, container, namespace, Compose, persistence or runtime
   Simulator object.
@@ -144,57 +146,61 @@ remains the Config-to-Emulator operation module.
 
 ## Static deployment and conceptual dynamic execution stages
 
-- `SkyseedDockerCompiler` is the implemented seedemu integration that lowers a
-  rendered Emulator/SEED static model to Dockerfiles, Compose services and
-  networks.
-- The approved dynamic direction distinguishes backend-neutral semantic
-  planning, backend-specific execution planning, executable-form lowering and
-  execution. `ExecutionCompiler` is only the current conceptual diagram label
-  for the lowering step; no such type, module, interface or implementation
-  exists and its final public name is open.
-- The static compiler and conceptual dynamic compiler have different inputs,
-  outputs, ownership and lifecycles. They do not inherit from one another and
-  have no required shared public parent.
+- The implemented static chain is `Emulator / SEED static model →
+  SkyseedDockerCompiler → compiled Docker / Compose project →
+  ComposeProjectLauncher`.
+- The conceptual/open dynamic chain is `BackendExecutionPlan →
+  ExecutionCompiler → ExecutableBundle → SimulationRunner`. No type, module,
+  interface or implementation in that chain exists, and final public names
+  remain open.
+- The static and dynamic chains have different inputs, outputs, ownership,
+  lifecycles and execution semantics. Their compiler and launcher/executor
+  roles do not inherit from one another and have no required shared public
+  parents.
 - `abstract Simulation Plan → SimulationPlanCompiler → concrete dynamic
   operations` is **retired/corrected** as an over-compressed description. It
   mixed semantic planning, backend planning and executable-form compilation;
   `SimulationPlanCompiler` is not a frozen future public contract.
+- `SkyseedDockerCompiler`, `ComposeProjectLauncher`, conceptual
+  `ExecutionCompiler` and conceptual `SimulationRunner` are external
+  application/infrastructure services, not Emulator or Simulator domain state.
 
 ## Simulator future design baseline
 
 The following are **approved directions**, not implementations:
 
-- the implemented static Emulator model feeds both
-  `simulator_input_generation → SimulatorStaticInput → future Simulator` and
-  the independent `SkyseedDockerCompiler → Docker/Compose →
-  ComposeProjectLauncher` path;
-- a future `Simulator` coordinates Zone/Timeline, Topology, Planning, dynamic
-  compilation, Runner and Observation responsibilities instead of absorbing
-  every algorithm;
-- Topology is a coordination shell, Zone remains independent from it, and
-  candidate discovery differs from connection selection;
-- semantic network planning precedes backend-specific execution planning;
-- an execution compiler only lowers an approved backend plan and a Runner only
-  executes the resulting bundle;
-- `ComposeProjectLauncher` is not the dynamic Runner.
+- Emulator entities become immutable boundary data through
+  `simulator_input_generation`; Simulator construction uses that data and user
+  parameters to materialize its own domain objects.
+- `Simulator` is the Simu composition root and facade. It creates and owns
+  peer `SimulationTimeline`, `Topology` and `Planning` subsystems.
+- `SimulationTimeline` owns time-range intent; Simulator passes explicit
+  timestamps to Topology's conceptual single-Slice creation entry.
+- `Topology` owns or manages Simu Shell, Orbit, Satellite, GroundStation,
+  future Zone definitions, future Slice states and internal indexes. It
+  exposes thin query and Slice-comparison facades while internal objects own
+  the algorithms.
+- Topology produces authoritative state and differences. Planning consumes
+  those public results, may use a read-only Topology facade when necessary,
+  and does not own, modify or recompute Topology data.
+- Semantic planning precedes backend-specific execution planning; only then
+  may conceptual dynamic lowering and execution occur.
 
-`Simulator`, `SimulationTimeline`, `ZoneModel`, `Topology`, the position,
-connection, routing, slice/difference/store objects, both Planner levels,
-backend-specific planners/plans, `ExecutionCompiler`, `ExecutableBundle`,
-`Runner` and `Observation` are **conceptual candidates**. None is implemented
-or a frozen public name.
-
-Public visibility, final naming, time/slice semantics, state retention,
-position and connection decomposition, supported backends, execution-bundle
-shape, Runner/materialization relationship and Observation ownership remain
-**open questions**. The full baseline is
+All mentioned Simulator, Timeline, Topology, Planning, Slice, difference,
+Planner, plan, dynamic compiler, bundle and `SimulationRunner` structures are
+**conceptual/open**. None is implemented or a frozen public name. Input
+renaming, distinct Simu entity types, exact facade/query return types,
+time/Slice/retention/continuing-run semantics, internal algorithm objects,
+backends and executable-bundle shape remain open questions. The full baseline
+is
 [`design/simulator-conceptual-design.md`](design/simulator-conceptual-design.md),
-and the restored Mermaid maps are in
-[`architecture/conceptual-class-diagrams.md`](architecture/conceptual-class-diagrams.md#simulator-future-conceptual-map).
+and the Mermaid map is in
+[`architecture/conceptual-class-diagrams.md`](architecture/conceptual-class-diagrams.md#simulator-future-conceptual-boundary-map).
 
 ## Deferred work
 
-- Simulator time, position, visibility, topology, planning and execution.
+- Simulator construction, time, position, visibility, topology, planning and
+  execution.
 - Dynamic GroundStation–Satellite links and service selection.
 - Future dynamic planning/execution consumption of `NodeId` and lowering to
   runtime resource operations.
@@ -206,14 +212,15 @@ Future plans must reference `NodeId`; the later approved execution boundary
 must resolve its ASN through the Base owner and call the resulting Skyseed
 AS/entity owners' narrow query methods rather than guess from strings or retain
 a global index. No plan type, plan-compilation resolution/update path, epoch,
-dynamic topology, Runner, runtime resource locator or Simulator engine exists.
+dynamic topology, `SimulationRunner`, runtime resource locator or Simulator
+engine exists.
 
 ## Acceptance state
 
 - Satellite slice: completed
 - GroundStation slice: completed
 - Unified AS and logical identity: completed
-- Simulator static input contract: available
+- Simulator static input contract: implemented
 - Static Emulator configuration construction: completed
 - Examples and public import paths: implemented
 - Native Ubuntu 24.04 migration baseline: validated

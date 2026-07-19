@@ -3,7 +3,7 @@
 ## Status
 
 The first diagrams describe implemented Skyseed v2 code. The later
-`Simulator future conceptual map` restores approved responsibility directions,
+`Simulator future conceptual boundary map` records approved responsibility directions,
 conceptual candidates and open questions even though the corresponding code is
 **NOT STARTED**.
 
@@ -123,7 +123,7 @@ classDiagram
 
 The dependency direction is intentional: `simulator_input_generation` depends
 on entities, seedemu integration, neutral `node_id` and
-`simulator.static_input`; the Simulator-owned input package depends on none of
+`simulator.static_input`; the receiving-side input package depends on none of
 the Emulator/SEED layers. The copied objects retain no entity, Registry,
 container or Compose reference. `NodeId` is a pure value with no resolution
 method, and there is no public/global mapping from it to Emulator entities or
@@ -192,367 +192,111 @@ classDiagram
 
 The launcher consumes an existing Compose artifact. It is outside entity
 construction, Simulator static input, `SkyseedDockerCompiler` lowering and
-the conceptual dynamic planning/execution chain. It is not a dynamic Runner.
+the conceptual dynamic planning/execution chain. It is not the conceptual
+`SimulationRunner`.
 
-## Simulator future conceptual map
+## Simulator future conceptual boundary map
 
-### Simulator coordination boundary
+This is a conceptual boundary map, not an implementation inventory. Only the
+nodes explicitly marked implemented exist in the repository. Internal
+Satellite, Orbit, Shell, Zone and Slice details will be refined by later
+vertical slices. The first coming investigation concerns how construction
+material is transformed into Simulator- and Topology-owned domain objects.
 
 ```mermaid
 classDiagram
 direction LR
-
-class Emulator {
-  <<implemented>>
-  static domain model
-}
-
-class SimulatorInputGeneration {
-  <<implemented>>
-  copy stable scalar data
-}
-
-class SimulatorStaticInput {
-  <<implemented>>
-  immutable pure simulator input
-}
-
-class SkyseedDockerCompiler {
-  <<implemented>>
-  compile static SEED model
-}
-
-class ComposeProjectLauncher {
-  <<implemented>>
-  launch compiled compose project
-}
 
 class Simulator {
-  <<conceptual coordinator>>
-  coordinate simulation subsystems
-}
-
-class ZoneModel {
-  <<conceptual candidate>>
+  <<conceptual top-level facade>>
 }
 
 class SimulationTimeline {
-  <<conceptual candidate>>
+  <<conceptual/open>>
 }
 
 class Topology {
-  <<conceptual coordinator>>
+  <<conceptual aggregate root>>
 }
 
 class Planning {
-  <<conceptual coordinator>>
-}
-
-class ExecutionCompiler {
-  <<conceptual candidate>>
-}
-
-class Runner {
-  <<conceptual candidate>>
-}
-
-class Observation {
-  <<conceptual candidate>>
-}
-
-Emulator --> SimulatorInputGeneration : source entities
-SimulatorInputGeneration --> SimulatorStaticInput : builds
-SimulatorStaticInput --> Simulator : future input
-
-Emulator --> SkyseedDockerCompiler : static SEED model
-SkyseedDockerCompiler --> ComposeProjectLauncher : compiled project
-
-Simulator o-- ZoneModel : coordinates
-Simulator o-- SimulationTimeline : coordinates
-Simulator o-- Topology : coordinates
-Simulator o-- Planning : coordinates
-Simulator --> ExecutionCompiler : invokes
-Simulator --> Runner : invokes
-Simulator --> Observation : records through
-```
-
-`Simulator` and all of the dynamic subsystems in this diagram are not
-implemented. `SimulatorStaticInput`, `NodeId` and the functions in
-`simulator_input_generation.py` are implemented. The diagram records long-term
-responsibility boundaries; it does not require every candidate to become a
-public class. `SkyseedDockerCompiler` and `ComposeProjectLauncher` remain on the
-independent static deployment path.
-
-### Topology coordination shell and internal layers
-
-```mermaid
-classDiagram
-direction TB
-
-class SimulatorStaticInput {
-  <<implemented>>
-}
-
-class SimulationTimeline {
-  <<conceptual candidate>>
-  start_time
-  end_time
-  slice_interval
-}
-
-class ZoneModel {
-  <<conceptual candidate>>
-  find_zone_ids(position)
-  select_authoritative_zone(...)
-}
-
-class Topology {
-  <<conceptual coordinator>>
-  generate_slice(timestamp)
-  get_slice(slice_id)
-  compare_slices(left_id, right_id)
-}
-
-class PositionModel {
-  <<conceptual responsibility>>
-  calculate spatial state
-}
-
-class ConnectionModel {
-  <<conceptual candidate>>
-  find_candidates(...)
-  select_connections(...)
-  build_connection_slice(...)
-}
-
-class RouteModel {
-  <<conceptual candidate>>
-  calculate_routes(...)
-  build_route_slice(...)
-}
-
-class ConnectionCandidateSet {
-  <<conceptual candidate>>
-}
-
-class ConnectionSlice {
-  <<conceptual candidate>>
-  slice_id
-  timestamp
-  immutable selected connections
-}
-
-class RouteSlice {
-  <<conceptual candidate>>
-  immutable node-local forwarding state
-  derive_path(...)
+  <<conceptual aggregate root>>
 }
 
 class TopologySlice {
-  <<conceptual candidate>>
-  slice_id
-  timestamp
-}
-
-class SliceStore {
-  <<conceptual candidate>>
-  save(slice)
-  get(slice_id)
-  remove(slice_id)
-}
-
-class TopologyDiffer {
-  <<conceptual candidate>>
-  compare(left, right)
+  <<future immutable state>>
 }
 
 class TopologyDifference {
-  <<conceptual candidate>>
-  connection_changes
-  route_changes
-}
-
-SimulatorStaticInput --> Topology : static entities
-SimulationTimeline --> Topology : timestamps
-ZoneModel --> Topology : zone semantics
-
-Topology o-- PositionModel : coordinates
-Topology o-- ConnectionModel : coordinates
-Topology o-- RouteModel : coordinates
-Topology o-- SliceStore : delegates storage
-Topology --> TopologyDiffer : delegates comparison
-
-PositionModel --> ConnectionModel : spatial state
-ConnectionModel --> ConnectionCandidateSet : discovers
-ConnectionCandidateSet --> ConnectionModel : selected by policy
-ConnectionModel --> ConnectionSlice : creates
-
-ConnectionSlice --> RouteModel : selected topology
-ZoneModel --> RouteModel : G/Z semantics
-RouteModel --> RouteSlice : creates
-
-TopologySlice *-- ConnectionSlice
-TopologySlice *-- RouteSlice
-
-Topology --> TopologySlice : creates
-SliceStore o-- TopologySlice : stores
-TopologyDiffer --> TopologyDifference : creates
-TopologySlice --> TopologyDiffer : compared by
-```
-
-The map preserves these boundaries and uncertainties:
-
-1. `Topology` is a coordination shell. It does not personally implement orbit,
-   visibility, connection-selection or routing algorithms.
-2. Position calculation, candidate relations, connection selection and route
-   generation are different responsibilities.
-3. A candidate connection is not a selected connection.
-4. `ConnectionSlice` stores selected logical connections at one instant.
-5. The authoritative state of `RouteSlice` tends toward node-local forwarding
-   state.
-6. A complete end-to-end path tends to be a derived query, not authoritative
-   storage.
-7. `ConnectionSlice`, `RouteSlice` and `TopologySlice` tend to be immutable
-   after generation.
-8. Whether `SliceStore`, `PositionModel` and `ConnectionCandidateSet` become
-   public classes is an open question.
-9. An initial empty state or `slice0`, continuous operation, sliding windows
-   and ahead-of-time computation are candidate designs, not frozen contracts.
-10. Whether `PositionModel` exists independently, whether it is internal to
-    Topology, and whether `ConnectionModel` should be split further must be
-    decided again in the relevant vertical slice.
-
-Zone remains independent of Topology: Topology queries Zone semantics and does
-not copy or own a Zone map.
-
-### Two-level Planner, Compiler and Runner
-
-```mermaid
-classDiagram
-direction LR
-
-class TopologySlice {
-  <<conceptual candidate>>
-}
-
-class TopologyDiffer {
-  <<conceptual candidate>>
-}
-
-class TopologyDifference {
-  <<conceptual candidate>>
-  connection_changes
-  route_changes
-}
-
-class Planning {
-  <<conceptual coordinator>>
+  <<future immutable change>>
 }
 
 class SemanticPlanner {
-  <<conceptual candidate>>
-  plan(topology_difference)
-}
-
-class SemanticTransitionPlan {
-  <<conceptual candidate>>
-  backend-neutral network changes
+  <<conceptual/open>>
 }
 
 class BackendPlanner {
-  <<conceptual interface>>
-  plan(semantic_plan, backend_context)
+  <<conceptual/open>>
 }
 
-class BpfBackendPlanner {
-  <<conceptual candidate>>
-}
-
-class LinuxMplsBackendPlanner {
-  <<conceptual candidate>>
-}
-
-class IpRoutingBackendPlanner {
-  <<conceptual candidate>>
+class SemanticTransitionPlan {
+  <<conceptual/open>>
 }
 
 class BackendExecutionPlan {
-  <<conceptual candidate>>
-  backend-specific operations
-  dependencies
-  batching
-  barriers
-  failure policy
-  cleanup policy
+  <<conceptual/open>>
+}
+
+class SkyseedDockerCompiler {
+  <<implemented static deployment compiler>>
+}
+
+class ComposeProjectLauncher {
+  <<implemented static project launcher>>
 }
 
 class ExecutionCompiler {
-  <<conceptual candidate>>
-  compile(backend_execution_plan)
+  <<future dynamic compiler>>
 }
 
 class ExecutableBundle {
-  <<conceptual candidate>>
-  immutable executable inputs
+  <<future immutable execution input>>
 }
 
-class Runner {
-  <<conceptual candidate>>
-  execute(bundle)
+class SimulationRunner {
+  <<future dynamic executor>>
 }
 
-class Observation {
-  <<conceptual candidate>>
-  record facts and results
-}
+Simulator *-- SimulationTimeline
+Simulator *-- Topology
+Simulator *-- Planning
 
-TopologySlice --> TopologyDiffer : compared by
-TopologyDiffer --> TopologyDifference : creates
+Topology --> TopologySlice : creates
+TopologySlice --> TopologyDifference : compared through Topology facade
 
-Planning o-- SemanticPlanner : coordinates
-Planning o-- BackendPlanner : selects
+Planning o-- SemanticPlanner
+Planning o-- BackendPlanner
 
-TopologyDifference --> SemanticPlanner : input
-SemanticPlanner --> SemanticTransitionPlan : creates
+TopologyDifference --> SemanticPlanner
+SemanticPlanner --> SemanticTransitionPlan
+SemanticTransitionPlan --> BackendPlanner
+BackendPlanner --> BackendExecutionPlan
 
-SemanticTransitionPlan --> BackendPlanner : input
-BackendPlanner --> BackendExecutionPlan : creates
+BackendExecutionPlan --> ExecutionCompiler
+ExecutionCompiler --> ExecutableBundle
+ExecutableBundle --> SimulationRunner
 
-BackendPlanner <|-- BpfBackendPlanner
-BackendPlanner <|-- LinuxMplsBackendPlanner
-BackendPlanner <|-- IpRoutingBackendPlanner
-
-BackendExecutionPlan --> ExecutionCompiler : lowered by
-ExecutionCompiler --> ExecutableBundle : creates
-ExecutableBundle --> Runner : consumed by
-
-Runner --> Observation : execution events
-ExecutionCompiler --> Observation : compile evidence
+SkyseedDockerCompiler --> ComposeProjectLauncher : static deployment chain
 ```
 
-`SemanticPlanner` turns raw topology differences into backend-neutral network
-changes, such as logical-link and node-local forwarding-semantic changes. It
-does not express BPF maps/generations, tc attachment, Linux routes, namespaces,
-commands, batches or backend barriers. `SemanticTransitionPlan` says what the
-network must change semantically; it is neither directly executable nor a
-shared low-level backend schema.
+`NodeId`, the `*SimulationInput` values and the functions in
+`simulator_input_generation.py` are also implemented, but are omitted from the
+map to keep the lifecycle boundary legible. They form immutable cross-layer
+construction data, not the Simulator's long-lived domain model. `Simulator`
+will create and own its domain objects from that data and user parameters.
 
-`BackendPlanner` selects operations, batching, dependencies, serial/parallel
-rules, barriers, preload/activation, failure behavior and cleanup/rollback for
-one explicit backend. It must not recompute Topology, alter the semantic plan
-or silently fall back to another backend. BPF and Linux MPLS plans may have
-entirely different operation forms and synchronization rules; neither is
-forced to imitate the other.
-
-`ExecutionCompiler` only lowers the approved backend plan to an immutable
-executable bundle. It does not re-plan, re-select a backend, recompute Topology
-or change the plan's batching/barrier/concurrency semantics. `Runner` only
-executes that bundle and must not decide network intent, choose a backend,
-re-plan or manufacture a fallback plan. `Observation` records compile and
-execution evidence, timing, state transitions, failures, cleanup and audit
-facts; it makes no Planner or Runner control decision.
-
-Every dynamic type in this map is a conceptual candidate rather than a current
-implementation or frozen public API. Detailed BPF/Linux examples, design
-evolution and open questions are preserved in the
-[Simulator conceptual design baseline](../design/simulator-conceptual-design.md).
+`Simulator`, `SimulationTimeline`, `Topology`, `Planning`, both Planners, the
+Slice and plan objects, `ExecutionCompiler`, `ExecutableBundle` and
+`SimulationRunner` are unimplemented conceptual/open structures. The
+composition and dependency arrows record approved directions; they do not
+freeze names, methods, fields, modules or public visibility.
