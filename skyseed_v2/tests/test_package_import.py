@@ -33,6 +33,7 @@ def test_root_exports_only_high_frequency_entities_and_values() -> None:
         "NodeId",
         "SimulationNodeId",
         "SimulatorStaticInput",
+        "EmulatorStaticInput",
         "StaticEmulatorCreationResult",
         "load_static_emulator_config",
         "StaticEmulatorConfig",
@@ -52,7 +53,17 @@ def test_identity_and_generation_exports_stay_with_their_owner_modules() -> None
     )
 
     assert node_id.__all__ == ["NodeId"]
-    assert simulator.__all__ == []
+    assert set(simulator.__all__) == {
+        "GroundStation",
+        "Orbit",
+        "Satellite",
+        "Shell",
+        "SimulationDefinition",
+        "SimulationTimeline",
+        "Simulator",
+        "SkyseedAutonomousSystem",
+        "Topology",
+    }
     assert "NodeId" not in simulator_static_input.__all__
     assert "SimulationNodeId" not in simulator_static_input.__all__
     assert set(simulator_static_input.__all__) == {
@@ -66,6 +77,18 @@ def test_identity_and_generation_exports_stay_with_their_owner_modules() -> None
         "create_simulator_static_input",
     }
     assert not hasattr(generation, "create_emulator_node_index")
+    assert not hasattr(simulator_static_input, "EmulatorStaticInput")
+    assert not hasattr(generation, "create_emulator_static_input")
+
+    package = importlib.import_module("skyseed_v2")
+    for simulator_owned_name in (
+        "SimulationDefinition",
+        "SimulationTimeline",
+        "Simulator",
+        "SkyseedAutonomousSystem",
+        "Topology",
+    ):
+        assert not hasattr(package, simulator_owned_name)
 
 
 def test_configuration_exports_precise_config_and_auxiliary_value_names() -> None:

@@ -10,7 +10,9 @@ examples/
 │   ├── main.py
 │   └── README.md
 ├── complete_static_emulator/
+│   ├── emu.py
 │   ├── main.py
+│   ├── simu.py
 │   └── README.md
 └── large_static_network/
     ├── main.py
@@ -62,21 +64,40 @@ v2 YAML
 
 The loading, creation and input-generation operations are direct functions,
 not stateless service classes. `create_static_emulator` returns the actual
-upstream Emulator and does not generate Simulator input. Multiple Shells
+upstream Emulator and does not generate Simulator static input. Multiple Shells
 remain a collection owned by an AS; there is no population or `Constellation`
 entity.
 
 Both input styles converge at `SkyseedAutonomousSystem.create_shell`,
 `Shell.create_orbit`, `Orbit.create_satellite` and
 `SkyseedAutonomousSystem.create_ground_station`. `SimulatorStaticInput` is the
-immutable static-data boundary for future Simulator consumers; it is not a
+immutable static-data boundary consumed by Simulator construction; it is not a
 scenario, SEED Registry, container inventory or output-directory index.
 Entity traversal and conversion belong to `simulator_input_generation.py`;
-the Simulator-owned `skyseed_v2.simulator.static_input` package contains only
+the receiving-side `skyseed_v2.simulator.static_input` package contains only
 immutable data and its pure-data lookup. No public/global
 `NodeId → entity/service/container` mapping exists. Any future
 dynamic-execution lookup will call the existing Base/AS/Shell/Orbit owners
 directly.
+
+`complete_static_emulator/emu.py` is the shared construction helper and returns
+only the upstream Emulator. `main.py` reuses it as a pure render/compile
+entrypoint. `simu.py` independently reuses it as the canonical external
+assembly entrypoint, queries all Skyseed AS values from `SatelliteBase`, and
+then shows the Simulator-side flow directly:
+
+```text
+create_simulator_static_input(...)
+→ SimulationTimeline
+→ SimulationDefinition
+→ Simulator
+→ explicit create_topology()
+→ read-only Topology facade queries
+```
+
+It creates no dynamic Slice and does not render or compile deployment output.
+For an unbounded Timeline it displays only a fixed prefix and never consumes
+the infinite iterator in full.
 
 The `reference/` directory is excluded from the package and formal example
 path. It preserves offline historical investigation/conversion tooling only;

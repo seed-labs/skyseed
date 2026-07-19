@@ -13,17 +13,18 @@ SatelliteBase.get_skyseed_autonomous_systems() ->
 create_simulator_static_input(skyseed_autonomous_systems)`.
 The creation function directly calls the same public AS/Shell/Orbit entity
 creation methods shown by the handwritten examples; it does not introduce a
-population entity or nested builder chain. Simulator input is a separate
+population entity or nested builder chain. Simulator static input is a separate
 explicit step and receives only the constructed Skyseed AS values.
 No NodeId-to-entity mapping is created. Any future dynamic-execution lookup
-remains a separate, owner-directed concern and is not Simulator input.
+remains a separate, owner-directed concern and is not Simulator static input.
 
 This is the only YAML example because the scale input is large data rather
 than teaching code. Loading, creation and Simulator-input generation are
 direct functions, not an Emulator subclass, result wrapper or mandatory
 facade. The resulting
-`SimulatorStaticInput` is an immutable Simulator input snapshot; it is not the
-Config, a SEED Registry, a container inventory or a Compose directory.
+`SimulatorStaticInput` is immutable static input consumed by Simulator
+construction; it is not Config, a SEED Registry, a container inventory or a
+Compose directory.
 
 Generate and validate without starting 365 services:
 

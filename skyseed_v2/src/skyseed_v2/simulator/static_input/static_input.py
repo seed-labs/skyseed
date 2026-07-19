@@ -1,4 +1,4 @@
-"""Immutable aggregate of Simulator-owned static input data."""
+"""Immutable aggregate of static facts projected from the Emulator."""
 
 from __future__ import annotations
 
@@ -30,11 +30,12 @@ class SimulatorStaticInput:
     It does not retain Emulator entities, SEED registries, containers, Compose
     settings, persistence objects or Simulator runtime state.
 
-    Layer: immutable Simulator static-input aggregate. The external input
-    generation adapter or direct data callers create it; future Simulator code
-    reads it. It is not a lookup service, builder, Registry view or runtime
-    model. It is public from `simulator.static_input` because it is the complete
-    Simulator-owned static input contract.
+    Layer: immutable Emulator-to-Simulator boundary aggregate. The external
+    input-generation adapter or direct data callers create it; Simulator
+    construction reads it. It is not a lookup service, builder, Registry view
+    or long-lived Simulator model. It is public from `simulator.static_input`
+    because it is the complete static boundary contract projected from the
+    Emulator.
     """
 
     _satellites: tuple[SatelliteSimulationInput, ...]
@@ -128,66 +129,44 @@ class SimulatorStaticInput:
 
     def get_satellite(
         self,
-        node_id_or_id: NodeId | str,
+        node_id: NodeId,
     ) -> SatelliteSimulationInput:
-        """Return one Satellite input by logical ID or unambiguous entity ID."""
+        """Return one Satellite input by its complete logical identity."""
 
         return self._get_typed(
-            node_id_or_id,
+            node_id,
             entity_kind=_SATELLITE_ENTITY_KIND,
-            simulation_inputs=self._satellites,
             input_type=SatelliteSimulationInput,
         )
 
     def get_ground_station(
         self,
-        node_id_or_id: NodeId | str,
+        node_id: NodeId,
     ) -> GroundStationSimulationInput:
-        """Return one GroundStation input by ID or unambiguous entity ID."""
+        """Return one GroundStation input by its complete logical identity."""
 
         return self._get_typed(
-            node_id_or_id,
+            node_id,
             entity_kind=_GROUND_STATION_ENTITY_KIND,
-            simulation_inputs=self._ground_stations,
             input_type=GroundStationSimulationInput,
         )
 
     def _get_typed(
         self,
-        node_id_or_id: NodeId | str,
+        node_id: NodeId,
         *,
         entity_kind: str,
-        simulation_inputs: tuple[SimulationEntityInput, ...],
         input_type: type[SatelliteSimulationInput]
         | type[GroundStationSimulationInput],
     ) -> SimulationEntityInput:
-        if isinstance(node_id_or_id, NodeId):
-            if node_id_or_id.entity_kind != entity_kind:
-                raise TypeError(
-                    f"{node_id_or_id.value} is not a {entity_kind} identity"
-                )
-            simulation_input = self.get(node_id_or_id)
-            if not isinstance(simulation_input, input_type):
-                raise TypeError(
-                    f"{node_id_or_id.value} does not identify a {entity_kind}"
-                )
-            return simulation_input
-
-        if not isinstance(node_id_or_id, str):
-            raise TypeError("node_id_or_id must be a NodeId or string")
-        matches = tuple(
-            simulation_input
-            for simulation_input in simulation_inputs
-            if simulation_input.node_id.entity_id == node_id_or_id
-        )
-        if not matches:
-            raise KeyError(f"{entity_kind} not found: {node_id_or_id}")
-        if len(matches) > 1:
-            raise ValueError(
-                f"ambiguous {entity_kind} entity ID {node_id_or_id!r}; "
-                "use NodeId"
-            )
-        return matches[0]
+        if not isinstance(node_id, NodeId):
+            raise TypeError("node_id must be a NodeId")
+        if node_id.entity_kind != entity_kind:
+            raise TypeError(f"{node_id.value} is not a {entity_kind} identity")
+        simulation_input = self.get(node_id)
+        if not isinstance(simulation_input, input_type):
+            raise TypeError(f"{node_id.value} does not identify a {entity_kind}")
+        return simulation_input
 
     def list_satellites(self) -> tuple[SatelliteSimulationInput, ...]:
         return self._satellites

@@ -2,7 +2,7 @@ from pathlib import Path
 
 from yaml import safe_load
 
-from examples.complete_static_emulator.main import build_emulator
+from examples.complete_static_emulator.emu import build_emulator
 from skyseed_v2.static_emulator import create_static_emulator
 from skyseed_v2.configuration import (
     EbgpPeeringConfig,
@@ -123,7 +123,14 @@ def complete_programmatic_config() -> StaticEmulatorConfig:
 def test_handwritten_and_file_inputs_share_entity_and_compiler_semantics(
     tmp_path: Path,
 ) -> None:
-    manual_emulator, manual_as, manual_simulator_input = build_emulator()
+    manual_emulator = build_emulator()
+    manual_base = manual_emulator.getLayer("Base")
+    assert isinstance(manual_base, SatelliteBase)
+    manual_autonomous_systems = manual_base.get_skyseed_autonomous_systems()
+    manual_as = manual_autonomous_systems[0]
+    manual_simulator_input = create_simulator_static_input(
+        manual_autonomous_systems
+    )
 
     config = load_static_emulator_config(FIXTURE)
     assert isinstance(config, StaticEmulatorConfig)

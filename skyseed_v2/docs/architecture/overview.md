@@ -3,10 +3,10 @@
 ## 1. Status
 
 The static Emulator core, receiving-side Simulator static-input contract,
-formal examples and Compose materialization tooling are implemented.
-Simulator algorithms and engine, dynamic topology, planning,
-`SimulationRunner` and UT are not implemented. Their conceptual maps preserve
-approved future responsibility directions but do not freeze public APIs.
+Simulator Slice 1 composition/time/static Topology, formal examples and
+Compose materialization tooling are implemented. Position, dynamic topology,
+Planning, `SimulationRunner` and UT are not implemented. Their conceptual maps
+preserve approved future responsibility directions but do not freeze APIs.
 
 ## 2. System division
 
@@ -18,7 +18,7 @@ The Emulator owns:
 - narrow seedemu lifecycle integration;
 - static Network, Router, IX and routing-layer construction;
 - static deployment compilation into a Compose artifact;
-- approved entity facts copied by an external adapter for future Simulator
+- approved entity facts copied by an external adapter for Simulator
   consumption.
 
 The source packages make those responsibilities explicit:
@@ -39,7 +39,7 @@ materialization/
 
 The receiving-side immutable boundary types are implemented under
 `simulator/static_input/`; they are construction data rather than the complete
-or long-lived Simu domain model. The approved construction direction is:
+or long-lived Simu domain model. Slice 1 implements this construction direction:
 
 ```text
 Emulator entities
@@ -49,13 +49,24 @@ Emulator entities
 → Simulator-owned domain objects
 ```
 
-The future `Simulator` is the Simu composition root and facade. It creates and
-owns peer `SimulationTimeline`, `Topology` and `Planning` subsystems.
-`Topology` uniquely owns or manages the Simu static network world, future Zone
-definitions, dynamic Slice state and its internal indexes. `Planning` consumes
-Topology's public results and may use a read-only Topology facade, but never
-owns or modifies Topology data. None of these classes, algorithms or engine
-concepts is implemented; exact contracts and public names remain open.
+`SimulationDefinition(static_input, timeline)` is the immutable construction
+input. `Simulator` retains it, exposes the same Timeline instance and explicitly
+materializes at most one Topology. Creation is atomic and does not occur in the
+constructor. Topology owns a distinct immutable object tree:
+
+```text
+Topology
+└── SkyseedAutonomousSystem
+    ├── GroundStation
+    └── Shell
+        └── Orbit
+            └── Satellite
+```
+
+Topology stores only its AS tuple, immutable ASN index and unified immutable
+`NodeId` node index. Shell and Orbit facade queries delegate down the owner
+chain. Planning, Zones, dynamic Slice state and related algorithms remain
+conceptual; no speculative Satellite-parent reverse lookup is present.
 
 ## 3. Static entity ownership
 
@@ -91,7 +102,8 @@ GroundStation. One private derivation rule constructs
 `NodeId(asn, entity_kind, entity_id)` for all input-generation paths. Each per-entity input
 copies only approved static scalars. The aggregate sorts by `NodeId.value`,
 rejects duplicate complete logical IDs and provides immutable typed query
-results. It does not retain entity, Registry, container, namespace, Compose,
+results only for complete `NodeId` values. It does not scan local string IDs or
+retain entity, Registry, container, namespace, Compose,
 persistence or runtime Simulator objects.
 
 No global or public `NodeId → entity` mapping exists. Satellite and
@@ -104,9 +116,10 @@ Dependencies point from the generation adapter toward `entities`,
 receiving-side input package itself imports none of the Emulator/SEED layers
 and uses only neutral `node_id`. `node_id` in turn uses the root identifier
 validator. Static input is data, not a facade over Emulator objects or a
-long-lived Simulator domain graph. A future Simulator receives that completed
-input, materializes its own domain objects and never invokes the entity-aware
-adapter itself.
+long-lived Simulator domain graph. Simulator receives that completed input
+through its Definition, materializes its own domain objects and never invokes
+the entity-aware adapter itself. Simulator core imports none of the Emulator
+entities, seedemu integration, upstream seedemu or the generation adapter.
 
 ## 5. Configuration and creation
 
@@ -187,9 +200,14 @@ retired/corrected as an over-compressed description.
 
 - `isolated_satellites`: direct entity construction,
   `SkyseedDockerCompiler` and generated output controls.
-- `complete_static_emulator`: direct entities plus ordinary Network/Router,
-  IX, eBGP, Simulator static input, `SkyseedDockerCompiler` and generated
-  output controls.
+- `complete_static_emulator/emu.py`: shared construction helper returning only
+  the upstream Emulator.
+- `complete_static_emulator/main.py`: pure Emulator render/compile entrypoint;
+  it creates no Simulator input.
+- `complete_static_emulator/simu.py`: external assembly entrypoint that reuses
+  `emu.py`, queries Skyseed AS values from `SatelliteBase`, adapts them into
+  `SimulatorStaticInput`, creates the Definition/Simulator and materializes the
+  initial static Topology.
 - `large_static_network`: YAML → Config → Emulator creation → static Simulator
   input generation → `SkyseedDockerCompiler` → generated output controls.
   Validation remains Docker/Compose compile/config-only until a user explicitly
@@ -212,7 +230,7 @@ kind, and duplicate ownership; it must not build a global index or parse names
 to guess nodes. No plan/resolution/update type currently exists, and no current
 code resolves `NodeId` to containers, services, interfaces or other runtime
 resources, computes positions or visibility, selects links, plans routes,
-emits BPF changes or runs a Simulator.
+emits BPF changes or executes a dynamic simulation.
 
 The detailed status labels, design evolution and open questions are in
 [`../design/simulator-conceptual-design.md`](../design/simulator-conceptual-design.md).

@@ -1,8 +1,8 @@
 # Current Architecture Diagrams
 
-Solid implemented nodes and arrows reflect current code. The Simulator static
-input contract is **IMPLEMENTED**; dashed Simulator/dynamic nodes are conceptual
-boundaries, not implementations or frozen public APIs. The top-level map is in
+Solid implemented nodes and arrows reflect current code. Simulator Slice 1 is
+**IMPLEMENTED**; dashed Planning/dynamic nodes are conceptual boundaries, not
+implementations or frozen public APIs. The top-level map is in
 [`conceptual-class-diagrams.md`](conceptual-class-diagrams.md#simulator-future-conceptual-boundary-map).
 
 ## 1. Package dependency direction
@@ -12,6 +12,7 @@ flowchart LR
     ENT[entities]
     SEED[seedemu_integration]
     INPUT[simulator/static_input]
+    CORE[simulator core]
     CONFIG[configuration]
     CREATE[static_emulator]
     GENERATE[simulator_input_generation]
@@ -24,6 +25,8 @@ flowchart LR
     SEED --> ID
     NODEID --> ID
     INPUT --> NODEID
+    CORE --> INPUT
+    CORE --> NODEID
     CONFIG --> ID
     CREATE --> CONFIG
     CREATE --> ENT
@@ -34,8 +37,10 @@ flowchart LR
     GENERATE --> INPUT
 ```
 
-There is no arrow from `simulator/static_input` to entities, seedemu integration
-or upstream seedemu. `node_id` is the neutral cross-layer logical identity and
+There is no arrow from `simulator` core or `simulator/static_input` to entities,
+seedemu integration, upstream seedemu or `simulator_input_generation`. The
+external generation adapter alone points to both the Emulator side and the
+Simulator boundary. `node_id` is the neutral cross-layer logical identity and
 uses the general `identifier` validator. `materialization` is independent of
 entities, static input and the `SkyseedDockerCompiler` implementation.
 
@@ -107,18 +112,28 @@ sequenceDiagram
 
 ```mermaid
 flowchart TD
-    A[SkyseedAutonomousSystem]
-    A --> S[Shell → Orbit → Satellites]
-    A --> G[GroundStation]
-    B[SatelliteBase] --> IX[Internet exchange]
-    B --> R[ordinary AS → Network → Router]
-    G --> IX
-    R --> IX
-    IX --> P[explicit eBGP]
-    A --> F[create_simulator_static_input]
-    F --> I[SimulatorStaticInput]
-    B --> C[Emulator.render → SkyseedDockerCompiler]
+    EMU[emu.py] --> BUILD[build_emulator]
+    BUILD --> UP[upstream Emulator]
+
+    MAIN[main.py] --> BUILD
+    MAIN --> RENDER[Emulator render and SkyseedDockerCompiler]
+
+    SIMU[simu.py external assembly] --> BUILD
+    SIMU --> BASE[query SatelliteBase-owned Skyseed AS]
+    UP --> BASE
+    BASE --> ADAPT[create_simulator_static_input]
+    ADAPT --> INPUT[SimulatorStaticInput]
+    INPUT --> DEF[SimulationDefinition]
+    TIMELINE[SimulationTimeline] --> DEF
+    DEF --> SIM[Simulator]
+    SIM --> TOP[Topology]
 ```
+
+`emu.py` only constructs and returns the Emulator. `main.py` is the pure
+Emulator render/compile entrypoint. `simu.py` is the external assembly entrypoint
+that crosses from the Emulator side, through the thin adapter, to the Simulator
+side; it does not import `main.py`. Simulator core never imports back across
+that boundary.
 
 ## 5. File-driven large call chain
 
@@ -150,10 +165,13 @@ flowchart LR
     CA --> GI[GroundStationSimulationInput + NodeId]
     SI --> INPUT[SimulatorStaticInput]
     GI --> INPUT
-    INPUT --> SIM[future Simulator construction]
-    SIM -. owns .-> TIMELINE[future SimulationTimeline]
-    SIM -. owns .-> TOPOLOGY[future Topology]
-    SIM -. owns .-> PLANNING[future Planning]
+    INPUT --> DEF[SimulationDefinition.static_input]
+    TIMELINE[SimulationTimeline] --> DEF
+    DEF --> SIM[Simulator construction]
+    SIM --> TOPOLOGY[Topology materialization]
+    TOPOLOGY --> DOMAIN[immutable AS → Shell → Orbit → Satellite tree]
+    TOPOLOGY --> GSOWN[AS-owned GroundStation objects]
+    SIM -. future ownership .-> PLANNING[future Planning]
     TOPOLOGY -. creates and compares .-> SLICE[future Slice / Difference citing NodeId]
     SLICE -. consumed by .-> PLANNING
     PLANNING -. later approved plan .-> DYNAMIC[dynamic execution resolution]
@@ -163,13 +181,15 @@ flowchart LR
 ```
 
 `SimulatorStaticInput` performs type validation, deterministic sorting,
-duplicate-ID rejection, immutable snapshotting and read-only indexing only. It
+duplicate-ID rejection, immutable input copying and read-only indexing only. It
 does not traverse AS objects or call entity conversion and contains no entity
-reference. It is construction boundary data, not the future Simulator's
-long-lived domain graph. No unified NodeId-to-entity/resource mapping exists.
-The dashed paths show approved ownership direction and future owner-directed
-execution-boundary calls only; none of the Simulator, Timeline, Topology,
-Planning, Slice, plan, resolution or dynamic update structures is implemented.
+reference. Its lookups require `NodeId`; no local string-ID fallback exists. It
+is construction boundary data, not the Simulator's long-lived domain graph.
+The implemented Topology has one private unified `NodeId` index over its own
+static nodes, never Emulator entities or runtime resources. Simulator,
+Timeline, Definition, Topology and the static domain objects are implemented;
+the dashed Planning, Slice, plan, resolution and dynamic-update structures are
+not.
 
 ## 7. Static deployment and conceptual dynamic execution chains
 
@@ -178,8 +198,9 @@ flowchart TD
     E[Emulator / SEED static model]
     E --> ADAPT[create_simulator_static_input]
     ADAPT --> INPUT[SimulatorStaticInput]
-    INPUT -. future constructor input .-> SIM[future Simulator]
-    SIM -. owns .-> TOP[future Topology]
+    INPUT --> DEF[SimulationDefinition]
+    DEF --> SIM[Simulator]
+    SIM --> TOP[Topology]
     SIM -. owns .-> PLAN[future Planning]
     TOP -. compares authoritative slices .-> DIFF[future TopologyDifference]
     DIFF -. SemanticPlanner .-> SEM[future SemanticTransitionPlan]

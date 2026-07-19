@@ -1,4 +1,4 @@
-"""Immutable static input contracts owned by the future Simulator."""
+"""Immutable Emulator-to-Simulator static boundary contracts."""
 
 from .ground_station import GroundStationSimulationInput
 from .satellite import SatelliteSimulationInput

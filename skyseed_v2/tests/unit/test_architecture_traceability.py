@@ -5,6 +5,7 @@ from pathlib import Path
 from seedemu.core import Emulator
 
 import skyseed_v2
+import skyseed_v2.simulator as simulator_core
 from skyseed_v2 import (
     configuration,
     entities,
@@ -30,6 +31,7 @@ PUBLIC_MODULES = (
     simulator_static_input,
     configuration,
     static_emulator,
+    simulator_core,
 )
 
 
@@ -135,7 +137,7 @@ def test_terminology_and_project_rules_cover_the_governance_contract() -> None:
         "NodeId",
         "SkyseedDockerCompiler",
         "SimulationPlanCompiler",
-        "Launcher",
+        "ComposeProjectLauncher",
     ):
         assert f"| {term} |" in terminology
 

@@ -1,4 +1,4 @@
-"""Read Config, create the Emulator and generate its Simulator static input."""
+"""Read Config, create the Emulator and generate its static boundary input."""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ def main() -> None:
     print(
         f"constructed {satellite_count} Satellites, "
         f"{ground_station_count} GroundStations and "
-        f"{len(simulator_input.list_nodes())} static Simulator inputs"
+        f"{len(simulator_input.list_nodes())} Simulator static inputs"
     )
 
     emulator.render()

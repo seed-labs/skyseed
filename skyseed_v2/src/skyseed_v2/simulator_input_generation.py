@@ -1,4 +1,4 @@
-"""Adapt constructed Emulator entities into Simulator-owned static input."""
+"""Project constructed Emulator entities into immutable boundary input."""
 
 from __future__ import annotations
 

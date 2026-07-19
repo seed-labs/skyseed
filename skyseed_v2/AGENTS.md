@@ -220,7 +220,11 @@ Simulator 静态输入类型是接收侧定义的跨层边界数据，只能依�
 自身数据类型；它们不是 Simulator 内部长久使用的完整领域模型。了解
 Emulator 实体结构的输入生成适配代码必须位于 Simulator 核心之外；
 Simulator 接收已生成的纯输入，不反向读取 Emulator、SEED Node 或
-Registry。
+Registry。该正式边界类型名是 `SimulatorStaticInput`，生成入口是
+`create_simulator_static_input(...)`，`SimulationDefinition` 通过
+`static_input` 字段接收它；不得为此前审计中的错误名称保留兼容 alias。
+example 的共享 helper 只构造 upstream Emulator，Emulator 运行入口和
+Emulator→Simulator 外部装配入口必须保持分离。
 
 ## 9. 文档与实现同步
 

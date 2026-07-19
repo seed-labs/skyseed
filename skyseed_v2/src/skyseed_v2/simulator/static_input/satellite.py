@@ -1,4 +1,4 @@
-"""Immutable Satellite data supplied to the future Simulator."""
+"""Immutable Satellite data supplied to Simulator construction."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ class SatelliteSimulationInput:
     """Contain only static Satellite values needed beyond the Emulator.
 
     Layer: immutable Simulator static-input contract. The external input
-    generation adapter creates it and future Simulator code reads it. It is not
+    generation adapter creates it and Simulator construction reads it. It is not
     an Emulator entity, SEED Node or runtime position. It is public from the
     Simulator static-input package because it is the explicit static Satellite
     input contract.

@@ -2,13 +2,30 @@
 
 This handwritten example shows the complete public composition: two isolated
 Satellites, one GroundStation, one ordinary SEED AS/Network/Router, one IX, one
-explicit eBGP peering, immutable Simulator static input and
+explicit eBGP peering, immutable Emulator-to-Simulator input and
 `SkyseedDockerCompiler`.
-Static input is produced explicitly with
-`create_simulator_static_input((skyseed_as,))`. The ordinary AS is not passed
-to that fail-closed boundary. No NodeId-to-entity mapping or resolution path is
+
+`emu.py` contains only `build_emulator() -> Emulator`. `main.py` reuses it for
+the pure Emulator render/compile path. `simu.py` reuses it for external
+Emulator-to-Simulator assembly, obtains all Skyseed AS values from the real
+`SatelliteBase` owner and passes that collection to
+`create_simulator_static_input(...)`. The ordinary AS is excluded by that
+owner query. No NodeId-to-Emulator-entity mapping or resolution path is
 created. `operator` is descriptive metadata only. No YAML facade,
 GS–Satellite link or dynamic Simulator field exists.
+
+Run the canonical external assembly flow, which uses fixed timestamps and
+creates the static Topology without generating a Slice:
+
+```bash
+python3 -m examples.complete_static_emulator.simu
+```
+
+`simu.py` keeps the user-adjustable start/end/10-second interval values at the
+top, then shows `SimulatorStaticInput → SimulationTimeline →
+SimulationDefinition.static_input → Simulator → create_topology()` directly.
+A bounded Timeline is displayed completely; an unbounded Timeline is displayed
+through a fixed four-timestamp prefix without eager materialization.
 
 Generate the complete output from `skyseed_v2/`:
 

@@ -58,9 +58,7 @@ def test_static_input_is_immutable_and_returns_deterministic_input_tuples() -> N
     assert simulator_input.list_ground_stations() == (station,)
     assert simulator_input.get(satellite_1.node_id) is satellite_1
     assert simulator_input.get_satellite(satellite_1.node_id) is satellite_1
-    assert simulator_input.get_satellite("satellite-1") is satellite_1
     assert simulator_input.get_ground_station(station.node_id) is station
-    assert simulator_input.get_ground_station("gs-1") is station
 
     with pytest.raises(FrozenInstanceError):
         simulator_input._nodes = ()
@@ -70,7 +68,7 @@ def test_static_input_is_immutable_and_returns_deterministic_input_tuples() -> N
         simulator_input._by_node_id[satellite_1.node_id] = station
 
 
-def test_static_input_queries_fail_explicitly_for_missing_mismatched_or_ambiguous_ids(
+def test_static_input_queries_require_complete_node_ids_and_fail_closed(
 ) -> None:
     satellite_1 = satellite_input(65001, "shared")
     satellite_2 = satellite_input(65002, "shared")
@@ -88,11 +86,11 @@ def test_static_input_queries_fail_explicitly_for_missing_mismatched_or_ambiguou
         simulator_input.get_satellite(station.node_id)
     with pytest.raises(TypeError, match="not a ground-station"):
         simulator_input.get_ground_station(satellite_1.node_id)
-    with pytest.raises(KeyError, match="not found"):
+    with pytest.raises(TypeError, match="NodeId"):
         simulator_input.get_ground_station("missing")
-    with pytest.raises(ValueError, match="ambiguous"):
+    with pytest.raises(TypeError, match="NodeId"):
         simulator_input.get_satellite("shared")
-    with pytest.raises(TypeError, match="NodeId or string"):
+    with pytest.raises(TypeError, match="NodeId"):
         simulator_input.get_satellite(65001)
 
 

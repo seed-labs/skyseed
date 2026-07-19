@@ -5,8 +5,9 @@
 Static Emulator configuration loading and construction are implemented. The
 public file path is one direct chain; it creates the upstream
 `seedemu.core.Emulator`, not a wrapper or Skyseed-specific Emulator subtype.
-The Simulator static-input contract is **IMPLEMENTED** while Simulator
-algorithms and engine remain **NOT STARTED**.
+The Simulator static-input contract and Simulator Slice 1
+composition/time/static Topology are **IMPLEMENTED**. Position, dynamic
+Topology, Planning and execution remain **NOT STARTED**.
 
 ## Package ownership
 
@@ -19,6 +20,7 @@ algorithms and engine remain **NOT STARTED**.
 | `skyseed_v2.node_id` | Neutral logical identity | `NodeId` |
 | `skyseed_v2.simulator_input_generation` | Entity traversal and pure input copying | three input-generation functions |
 | `skyseed_v2.simulator.static_input` | receiving-side immutable cross-layer boundary input | three input types |
+| `skyseed_v2.simulator` | Simulator definition, time, composition root and immutable static Topology domain | `SimulationDefinition`, `SimulationTimeline`, `Simulator`, `Topology` and five static domain types |
 | `skyseed_v2.materialization` | Launch an already compiled Compose project | `ComposeProjectLauncher` |
 
 The root package still exports only the six high-frequency entity/value names.
@@ -74,6 +76,10 @@ simulator_input = create_simulator_static_input(skyseed_autonomous_systems)
 It composes upstream `Base.getAsns()` and `Base.getAutonomousSystem()` and keeps
 no second collection or global index.
 
+`SimulatorStaticInput.get(...)`, `get_satellite(...)` and
+`get_ground_station(...)` accept only complete `NodeId` values. They do not
+scan `entity_id` strings or provide a string fallback.
+
 `NodeId` remains a pure cross-layer value. Any future dynamic execution will
 resolve its ASN through the Base owner and then use the existing narrow AS,
 Shell and Orbit queries. No Simulator algorithm, dynamic plan, resource
@@ -119,9 +125,23 @@ flowchart LR
 
 ### Handwritten complete path
 
-The complete example adds ordinary SEED Network/Router/IX/eBGP objects and a
-GroundStation using the same public owner methods, then passes `(skyseed_as,)`
-to `create_simulator_static_input()`.
+The complete example has three explicit files and no entrypoint-to-entrypoint
+import:
+
+```text
+emu.py  → build_emulator() → upstream Emulator
+main.py → build_emulator() → render/compile only
+simu.py → build_emulator()
+        → query SatelliteBase-owned Skyseed AS values
+        → create_simulator_static_input(...)
+        → SimulationDefinition
+        → Simulator
+        → Topology
+```
+
+`build_emulator()` returns only the upstream Emulator. `main.py` is the pure
+Emulator entrypoint. `simu.py` is external assembly across the Emulator side,
+thin adapter and Simulator side; it does not import `main.py`.
 
 ### File-driven large path
 
@@ -244,6 +264,83 @@ classDiagram
 - `create_static_emulator` is a function because it has no state or lifecycle.
 - No result wrapper or Emulator subclass is necessary.
 
+## Simulator Slice 1 public contract
+
+```mermaid
+classDiagram
+    class Simulator {
+        <<implemented composition root>>
+        +Simulator(definition)
+        +get_definition() SimulationDefinition
+        +get_timeline() SimulationTimeline
+        +create_topology() Topology
+        +get_topology() Topology
+    }
+    class SimulationDefinition {
+        <<implemented frozen construction value>>
+        +static_input SimulatorStaticInput
+        +timeline SimulationTimeline
+    }
+    class SimulationTimeline {
+        <<implemented frozen time value>>
+        +iter_timestamps() Iterator
+    }
+    class SimulatorStaticInput {
+        <<implemented immutable boundary input>>
+    }
+    class Topology {
+        <<implemented immutable aggregate root>>
+    }
+    class SkyseedAutonomousSystem {
+        <<implemented Simulator domain object>>
+    }
+    class Shell {
+        <<implemented Simulator domain object>>
+    }
+    class Orbit {
+        <<implemented Simulator domain object>>
+    }
+    class Satellite {
+        <<implemented Simulator domain object>>
+    }
+    class GroundStation {
+        <<implemented Simulator domain object>>
+    }
+
+    Simulator *-- SimulationDefinition : retains
+    SimulationDefinition *-- SimulatorStaticInput : static_input
+    SimulationDefinition *-- SimulationTimeline : timeline
+    Simulator *-- Topology : creates atomically
+    Topology *-- SkyseedAutonomousSystem : owns
+    SkyseedAutonomousSystem *-- GroundStation : owns
+    SkyseedAutonomousSystem *-- Shell : owns
+    Shell *-- Orbit : owns
+    Orbit *-- Satellite : owns
+```
+
+The public constructors and facade methods are:
+
+| Type | Public construction / operations |
+| --- | --- |
+| `SimulationTimeline` | `SimulationTimeline(start_time, end_time, slice_interval)`; `is_bounded`; `iter_timestamps()` |
+| `SimulationDefinition` | `SimulationDefinition(static_input, timeline)` |
+| `Simulator` | `Simulator(definition)`; `get_definition()`; `get_timeline()`; `create_topology()`; `get_topology()` |
+| `Topology` | direct construction is blocked; `autonomous_systems`; `get_autonomous_system(asn)`; NodeId-only `get_node`, `get_satellite`, `get_ground_station`; owner-directed `get_shell(asn, shell_id)` and `get_orbit(asn, shell_id, orbit_id)` |
+| Simulator `SkyseedAutonomousSystem` | direct construction is blocked; `asn`; `shells`; `ground_stations`; owner-local `get_shell(shell_id)` and `get_ground_station(node_id)` |
+| Simulator `Shell` | direct construction is blocked; `asn`; `shell_id`; `orbits`; owner-local `get_orbit(orbit_id)` |
+| Simulator `Orbit` | direct construction is blocked; identity/orbit-parameter properties; `satellites`; owner-local `get_satellite(node_id)` |
+| Simulator `Satellite` | `Satellite(node_id, orbit_index, mean_anomaly_deg)`; `satellite_id` |
+| Simulator `GroundStation` | `GroundStation(node_id, latitude_deg, longitude_deg, elevation_m, station_type, operator)`; `ground_station_id` |
+
+Topology retains only `_autonomous_systems`, `_autonomous_systems_by_asn` and
+`_nodes_by_id`. Each owner retains its own tuple enumeration and private
+`MappingProxyType` lookup: Orbit has Satellites by NodeId, Shell has Orbits by
+local ID, and the Simulator AS has Shells by local ID and GroundStations by
+NodeId. Tuple and mapping paths reference the same immutable instances.
+Topology node-kind methods use `_nodes_by_id` and then check the returned type;
+Shell and Orbit facade methods delegate through the AS/Shell owner chain. No
+Satellite-parent reverse API or index exists.
+
 ### Root export list
 
 ```python
@@ -263,6 +360,12 @@ Owner imports remain explicit:
 from skyseed_v2.configuration import load_static_emulator_config
 from skyseed_v2.static_emulator import create_static_emulator
 from skyseed_v2.simulator_input_generation import create_simulator_static_input
+from skyseed_v2.simulator import (
+    SimulationDefinition,
+    SimulationTimeline,
+    Simulator,
+    Topology,
+)
 ```
 
 ## Rename and removal record
@@ -279,6 +382,9 @@ from skyseed_v2.simulator_input_generation import create_simulator_static_input
 | `ShellConfig.generation` / `.orbits` | `.generated_orbit_layout` / `.explicit_orbits` | makes the XOR modes explicit in Python |
 | generated `.raan` / `.phase` | `.right_ascension_distribution` / `.in_orbit_phase_distribution` | removes ambiguous abbreviations in Python |
 | eBGP `.first` / `.second` | `.peer_routers` | current `unfiltered` relationship is symmetric; YAML keys remain unchanged |
+| `EmulatorStaticInput` | `SimulatorStaticInput` | input is named for the receiving Simulator contract; the former audit-era name has no alias |
+| `create_emulator_static_input(...)` | `create_simulator_static_input(...)` | the external adapter's product is Simulator static input; the former name has no alias |
+| `SimulationDefinition.emulator_input` | `SimulationDefinition.static_input` | the field names the input's role in the Simulator definition; no compatibility keyword/property exists |
 
 There are no compatibility aliases. YAML schema version and keys remain
 unchanged, including `generation`, `orbits`, `raan`, `phase`, `first` and
@@ -294,8 +400,14 @@ unchanged, including `generation`, `orbits`, `raan`, `phase`, `first` and
 - Ordinary ground-network Config remains a thin adapter because upstream has
   no reusable declarative topology file API at the pinned commit.
 - YAML has one complete entry and no fragment loader, schema v2 or TLE path.
-- Entity creation APIs, Simulator input, compiler, materialization and runtime
-  responsibilities are unchanged.
+- `SimulatorStaticInput`, `create_simulator_static_input(...)` and
+  `SimulationDefinition.static_input` are the only current names; old names
+  have no compatibility entrypoints.
+- `Simulator` explicitly and atomically materializes one immutable Topology;
+  it does not create an Emulator or invoke the external adapter.
+- Topology uses a unified NodeId node index and owner-directed hierarchy
+  queries; duplicate typed/global and Satellite-parent reverse indexes/APIs are
+  absent.
 
 ## Review checklist
 
@@ -309,4 +421,12 @@ unchanged, including `generation`, `orbits`, `raan`, `phase`, `first` and
 - [ ] YAML schema version, keys and fixtures remain unchanged.
 - [ ] Handwritten, programmatic Config and YAML construction converge on the
       same owner APIs and deployment semantics.
-- [ ] Simulator algorithms and engine remain NOT STARTED.
+- [ ] `emu.py` only builds and returns the upstream Emulator; both entrypoints
+      reuse it and `simu.py` does not import `main.py`.
+- [ ] `SimulatorStaticInput` queries accept only `NodeId`.
+- [ ] Simulator core has no Emulator, seedemu or generation-adapter dependency.
+- [ ] Topology creation is atomic; immutable tuple/mapping paths preserve
+      instance identity and owner-directed queries.
+- [ ] No old input name, duplicate Topology index or Satellite-parent reverse
+      API remains.
+- [ ] Position, dynamic Topology, Planning and execution remain NOT STARTED.

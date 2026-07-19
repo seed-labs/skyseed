@@ -4,17 +4,15 @@ from yaml import compose as compose_yaml
 from yaml import safe_load
 from yaml.nodes import MappingNode, Node, SequenceNode
 
-from examples.complete_static_emulator.main import (
-    build_emulator,
-    simulator_input_summary,
-    main,
-)
+from examples.complete_static_emulator.emu import build_emulator
+from examples.complete_static_emulator.main import main
 from skyseed_v2.node_id import NodeId
 from skyseed_v2.simulator.static_input import (
     GroundStationSimulationInput,
     SatelliteSimulationInput,
 )
-from skyseed_v2.seedemu_integration import SkyseedDockerCompiler
+from skyseed_v2.seedemu_integration import SatelliteBase, SkyseedDockerCompiler
+from skyseed_v2.simulator_input_generation import create_simulator_static_input
 
 
 METADATA_PREFIX = "org.seedsecuritylabs.seedemu.meta."
@@ -48,17 +46,15 @@ def assert_no_duplicate_yaml_keys(node: Node, path: str = "$") -> None:
 def test_complete_example_input_matches_registry_and_compiler_output(
     tmp_path: Path,
 ) -> None:
-    emulator, skyseed_as, simulator_input = build_emulator()
+    emulator = build_emulator()
+    base = emulator.getLayer("Base")
+    assert isinstance(base, SatelliteBase)
+    skyseed_as = base.get_skyseed_autonomous_systems()[0]
+    simulator_input = create_simulator_static_input(
+        base.get_skyseed_autonomous_systems()
+    )
     ground_station = skyseed_as.get_ground_station("gs-new-york")
 
-    assert simulator_input_summary(simulator_input) == (
-        "Simulator input summary: 2 SatelliteSimulationInput, "
-        "1 GroundStationSimulationInput, "
-        "3 unique NodeId",
-        "- 65001/ground-station/gs-new-york",
-        "- 65001/satellite/satellite-0",
-        "- 65001/satellite/satellite-1",
-    )
     assert len(simulator_input.list_nodes()) == 3
     assert all(
         isinstance(item, (SatelliteSimulationInput, GroundStationSimulationInput))
@@ -142,9 +138,6 @@ def test_complete_example_cli_creates_a_new_output_parent(
     main()
 
     assert (output / "docker-compose.yml").is_file()
-    assert (
-        "Simulator input summary: 2 SatelliteSimulationInput, "
-        "1 GroundStationSimulationInput, "
-        "3 unique NodeId"
-        in capsys.readouterr().out
-    )
+    output_text = capsys.readouterr().out
+    assert "compiled complete static Emulator" in output_text
+    assert "SimulationInput" not in output_text

@@ -1,4 +1,4 @@
-"""Immutable GroundStation data supplied to the future Simulator."""
+"""Immutable GroundStation data supplied to Simulator construction."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ class GroundStationSimulationInput:
     """Contain only static GroundStation values needed beyond the Emulator.
 
     Layer: immutable Simulator static-input contract. The external input
-    generation adapter creates it and future Simulator code reads it. It is not
+    generation adapter creates it and Simulator construction reads it. It is not
     an Emulator entity, SEED Router or execution target. It is public from the
     Simulator static-input package because it is the explicit GroundStation
     input contract.

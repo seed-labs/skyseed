@@ -56,7 +56,7 @@ flowchart LR
 
 The input contains no Router reference, interface, Registry identity, border
 state, container, Compose or execution-target data. Joining an IX and border
-registration do not alter a previously created input snapshot.
+registration do not alter a previously created input value.
 GroundStation does not store `NodeId`; generation derives it from ASN,
 ground-station kind and `ground_station_id`.
 
@@ -69,11 +69,13 @@ so the logical entity remains recognizable.
 
 ## 5. Formal example
 
-`examples/complete_static_emulator/main.py` directly shows GroundStation,
-ordinary Router/Network, IX, explicit eBGP, static Simulator input and
-compilation. It uses no YAML Config loading or static Emulator creation
-operation; the static input is generated directly from `(skyseed_as,)`, with
-no entity index or resolution path.
+`examples/complete_static_emulator/emu.py` directly constructs the
+GroundStation, ordinary Router/Network, IX and explicit eBGP state. `main.py`
+reuses that helper for Emulator compilation only. `simu.py` separately reuses
+it, queries the Skyseed AS collection from `SatelliteBase` and generates static
+Simulator input for external assembly. The example uses no YAML Config loading
+or static Emulator creation operation and creates no Emulator-entity index or
+runtime resolution path.
 
 ## 6. Deferred work
 

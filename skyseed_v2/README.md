@@ -172,7 +172,7 @@ v1 只能围绕当前切片做定向事实调查，不能整体迁移。测试 P
 
 * 当前阶段与下一目标见 [`docs/CURRENT.md`](./docs/CURRENT.md)；
 * 当前架构图见 [`docs/architecture/diagrams.md`](./docs/architecture/diagrams.md)；
-* Simulator future conceptual baseline 见
+* Simulator 当前合同与 future conceptual baseline 见
   [`docs/design/simulator-conceptual-design.md`](./docs/design/simulator-conceptual-design.md)；
 * 公共 API 见 [`docs/architecture/emulator-public-construction-api.md`](./docs/architecture/emulator-public-construction-api.md)；
 * 一词一义规则见 [`docs/architecture/terminology.md`](./docs/architecture/terminology.md)。

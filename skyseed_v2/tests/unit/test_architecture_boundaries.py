@@ -55,14 +55,15 @@ def test_skyseed_as_owns_entities_but_not_simulator_static_input() -> None:
 
     imports = imported_modules(skyseed_autonomous_system)
     assert not any("skyseed_v2.simulator" in module for module in imports)
-    assert not hasattr(
-        skyseed_autonomous_system.SkyseedAutonomousSystem,
+    for boundary_attribute in (
+        "emulator_input",
         "simulator_input",
-    )
-    assert not hasattr(
-        skyseed_autonomous_system.SkyseedAutonomousSystem,
         "simulator_static_input",
-    )
+    ):
+        assert not hasattr(
+            skyseed_autonomous_system.SkyseedAutonomousSystem,
+            boundary_attribute,
+        )
 
 
 def test_simulator_static_input_has_only_data_layer_dependencies() -> None:
@@ -182,21 +183,39 @@ def test_removed_and_deferred_boundary_apis_are_not_exported() -> None:
 
     import skyseed_v2.simulator as simulator
 
-    for forbidden_name in ("Simulator", "Topology", "SimulationPlanCompiler"):
+    for implemented_name in (
+        "SimulationDefinition",
+        "SimulationTimeline",
+        "Simulator",
+        "Topology",
+    ):
+        assert hasattr(simulator, implemented_name)
+        assert not hasattr(skyseed_v2, implemented_name)
+    for forbidden_name in (
+        "Planning",
+        "TopologySlice",
+        "SimulationPlanCompiler",
+        "SimulationRunner",
+    ):
         assert not hasattr(simulator, forbidden_name)
         assert not hasattr(skyseed_v2, forbidden_name)
     project_package = Path(inspect.getsourcefile(skyseed_v2)).parent
     assert not any(
         path.name in {
             "simulation_plan_compiler.py",
-            "topology.py",
             "engine.py",
         }
         for path in project_package.rglob("*.py")
     )
     assert not any(
         isinstance(node, ast.ClassDef)
-        and node.name in {"Simulator", "Topology", "SimulationPlanCompiler"}
+        and node.name
+        in {
+            "Planning",
+            "TopologySlice",
+            "SimulationPlanCompiler",
+            "SimulationRunner",
+        }
         for path in project_package.rglob("*.py")
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
     )
@@ -206,6 +225,7 @@ def test_removed_and_deferred_boundary_apis_are_not_exported() -> None:
         importlib.util.find_spec("skyseed_v2.simulator.static_input.identity")
         is None
     )
+    assert importlib.util.find_spec("skyseed_v2.emulator_input") is None
     assert importlib.util.find_spec("skyseed_v2.simulator_input") is None
     assert importlib.util.find_spec("skyseed_v2.simulation_plan_compiler") is None
     for removed_module in (
@@ -235,6 +255,24 @@ def test_simulator_static_input_is_public_without_entity_back_dependency() -> No
         "skyseed_v2.simulator" in module_name
         for module_name in imported_modules(ground_station)
     )
+
+
+def test_simulator_core_has_no_emulator_seed_or_generation_dependency() -> None:
+    from skyseed_v2.simulator import definition, simulator, timeline, topology
+
+    for module in (definition, simulator, timeline, topology):
+        imports = imported_modules(module)
+        for forbidden_prefix in (
+            "skyseed_v2.entities",
+            "skyseed_v2.seedemu_integration",
+            "skyseed_v2.simulator_input_generation",
+            "seedemu",
+        ):
+            assert not any(
+                imported == forbidden_prefix
+                or imported.startswith(f"{forbidden_prefix}.")
+                for imported in imports
+            )
 
 
 def test_shared_validation_and_seed_metadata_have_explicit_owners() -> None:

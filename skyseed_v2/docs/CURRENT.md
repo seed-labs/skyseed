@@ -12,23 +12,24 @@
 - Pure cross-layer NodeId and owner-directed lookup contract: **IMPLEMENTED**
 - Generated example output controls: **IMPLEMENTED**
 - Simulator static input contract: **IMPLEMENTED**
-- Simulator algorithms and engine: **NOT STARTED**
+- Simulator Slice 1 composition, time and immutable static Topology: **IMPLEMENTED**
+- Position, dynamic topology, Planning and dynamic execution: **NOT STARTED**
 
 ## Current objective
 
-After this design synchronization is reviewed, the first Simulator vertical
-slice will begin with a fact investigation into how immutable
-Emulator-to-Simulator boundary data will materialize Simulator-owned and
-Topology-owned domain objects. No investigation or implementation is started
-by this record. The Simulator/Timeline/Topology/Planning structure below is an
-approved direction or conceptual/open design, not current code.
+Simulator Slice 1 is implemented and validated for focused review. Its current
+boundary is external Emulator-to-Simulator input adaptation, explicit
+`SimulationDefinition`, immutable `SimulationTimeline`, atomic `Simulator`
+Topology creation and a Simulator-owned static object tree. Position,
+connections, Zones, routes, Planning, dynamic compilation and execution remain
+outside this slice and require separately approved work.
 
 ## Implemented package boundaries
 
 ```text
 skyseed_v2/
 ├── entities/                 # Shell, Orbit, Satellite, GroundStation
-├── simulator/                # receiving-side Simulator contracts; no engine
+├── simulator/                # Simulator composition, time and static Topology
 │   └── static_input/         # immutable cross-layer boundary input types
 ├── seedemu_integration/      # Skyseed-owned seedemu extensions
 ├── configuration/            # immutable Config/auxiliary values and YAML loading
@@ -78,14 +79,14 @@ SkyseedAutonomousSystem
   GroundStation traversal.
 - `SimulatorStaticInput` receives already copied input values, validates their
   types, sorts deterministically, rejects duplicate `NodeId` values
-  and builds its read-only lookup index. It does not traverse or recognize AS
-  objects.
+  and builds its read-only lookup index. Its node queries accept only complete
+  `NodeId` values. It does not traverse or recognize AS objects, scan local
+  string IDs or provide a string-ID fallback.
 - `SatelliteSimulationInput`, `GroundStationSimulationInput` and
   `SimulatorStaticInput` are implemented in the receiving-side
   `skyseed_v2.simulator.static_input` package. They are immutable cross-layer
-  construction data, not the complete or long-lived Simu domain model. This
-  implemented contract does not imply a Simulator engine.
-- The resulting snapshot is frozen and deterministic. It retains no Emulator
+  construction data, not the complete or long-lived Simu domain model.
+- The resulting input is frozen and deterministic. It retains no Emulator
   entity, Registry, container, namespace, Compose, persistence or runtime
   Simulator object.
 - `NodeId(asn, entity_kind, entity_id)` is defined in the neutral
@@ -96,7 +97,8 @@ SkyseedAutonomousSystem
   cross-layer contract.
 - No public or global `NodeId → entity` mapping exists. `NodeId` has no resolve,
   entity, service, container, namespace or interface access capability.
-- Any future dynamic-execution lookup will call existing owners on demand:
+- Any future Emulator-side dynamic-execution lookup will call existing owners
+  on demand:
   `SatelliteBase.getAutonomousSystem(asn)` →
   `SkyseedAutonomousSystem.get_satellite()` / `get_ground_station()` and, when
   hierarchy context is needed, `get_shell()` → `Shell.get_orbit()` →
@@ -112,10 +114,16 @@ SkyseedAutonomousSystem
 - `isolated_satellites`: direct `Emulator → SatelliteBase → AS → Shell → Orbit
   → Satellite → SkyseedDockerCompiler → output controls`; no YAML or
   file-driven construction operations.
-- `complete_static_emulator`: direct entity plus ordinary seedemu
-  Network/Router/IX/eBGP construction, then
-  `create_simulator_static_input((skyseed_as,))`, `SkyseedDockerCompiler` and
-  output controls.
+- `complete_static_emulator/emu.py`: shared `build_emulator()` helper containing
+  direct entity plus ordinary seedemu Network/Router/IX/eBGP construction and
+  returning only the upstream `Emulator`.
+- `complete_static_emulator/main.py`: pure Emulator entrypoint; it reuses
+  `emu.py`, renders, compiles with `SkyseedDockerCompiler` and writes output
+  controls. It does not generate Simulator input.
+- `complete_static_emulator/simu.py`: external assembly entrypoint; it reuses
+  `emu.py`, queries the `SatelliteBase` owner for all Skyseed AS values, calls
+  `create_simulator_static_input(...)`, creates the Timeline and Definition,
+  then atomically materializes the initial static Simulator Topology.
 - `large_static_network`: YAML → `load_static_emulator_config(path)` →
   `create_static_emulator(config)` →
   `Emulator.getLayer("Base")` →
@@ -165,33 +173,34 @@ remains the Config-to-Emulator operation module.
   `ExecutionCompiler` and conceptual `SimulationRunner` are external
   application/infrastructure services, not Emulator or Simulator domain state.
 
-## Simulator future design baseline
+## Simulator Slice 1 implementation boundary
 
-The following are **approved directions**, not implementations:
+The following contracts are implemented:
 
-- Emulator entities become immutable boundary data through
-  `simulator_input_generation`; Simulator construction uses that data and user
-  parameters to materialize its own domain objects.
-- `Simulator` is the Simu composition root and facade. It creates and owns
-  peer `SimulationTimeline`, `Topology` and `Planning` subsystems.
-- `SimulationTimeline` owns time-range intent; Simulator passes explicit
-  timestamps to Topology's conceptual single-Slice creation entry.
-- `Topology` owns or manages Simu Shell, Orbit, Satellite, GroundStation,
-  future Zone definitions, future Slice states and internal indexes. It
-  exposes thin query and Slice-comparison facades while internal objects own
-  the algorithms.
-- Topology produces authoritative state and differences. Planning consumes
-  those public results, may use a read-only Topology facade when necessary,
-  and does not own, modify or recompute Topology data.
-- Semantic planning precedes backend-specific execution planning; only then
-  may conceptual dynamic lowering and execution occur.
+- `SimulationDefinition(static_input, timeline)` is the complete input to
+  `Simulator`; it retains the exact immutable values.
+- `SimulationTimeline` validates explicit time rules and lazily yields bounded
+  or unbounded timestamps. It does not read current time, cache timestamps or
+  create topology state.
+- `Simulator` is the current composition root and facade. It consumes only the
+  Definition, exposes the Definition and Timeline, and creates exactly one
+  Topology on explicit request. Creation is atomic: a failed materialization
+  leaves the Simulator without a Topology.
+- `Topology` owns immutable Simulator-side `SkyseedAutonomousSystem`, `Shell`,
+  `Orbit`, `Satellite` and `GroundStation` objects. The tree is
+  `Topology → AS → Shell → Orbit → Satellite`, with GroundStations owned by the
+  AS. All public tuple enumeration and read-only indexes reference the same
+  instances.
+- Topology keeps only its AS tuple, ASN index and unified `NodeId` index. Node
+  queries use the unified index with explicit type checks; Shell and Orbit
+  facade queries delegate along their owner chain. No Satellite-to-parent
+  reverse API or duplicate typed/global Shell/Orbit index is present.
+- The Simulator core imports neither Emulator entities, upstream seedemu nor
+  `simulator_input_generation.py`. The external adapter is the only component
+  that knows both sides.
 
-All mentioned Simulator, Timeline, Topology, Planning, Slice, difference,
-Planner, plan, dynamic compiler, bundle and `SimulationRunner` structures are
-**conceptual/open**. None is implemented or a frozen public name. Input
-renaming, distinct Simu entity types, exact facade/query return types,
-time/Slice/retention/continuing-run semantics, internal algorithm objects,
-backends and executable-bundle shape remain open questions. The full baseline
+Planning, Slice, differences, position and dynamic execution remain the
+approved conceptual design space, not Slice 1 implementation. The full record
 is
 [`design/simulator-conceptual-design.md`](design/simulator-conceptual-design.md),
 and the Mermaid map is in
@@ -199,21 +208,20 @@ and the Mermaid map is in
 
 ## Deferred work
 
-- Simulator construction, time, position, visibility, topology, planning and
-  execution.
+- Position, visibility, dynamic topology, Planning and execution.
 - Dynamic GroundStation–Satellite links and service selection.
 - Future dynamic planning/execution consumption of `NodeId` and lowering to
   runtime resource operations.
 - UT integration and any new entity kind at the static-input boundary.
-- Any future split or composition of Emulator and Simulator generator
-  entrypoints; no placeholder or filename contract exists yet.
+- Any future composition beyond the explicit external assembly demonstrated by
+  `complete_static_emulator/simu.py`.
 
 Future plans must reference `NodeId`; the later approved execution boundary
 must resolve its ASN through the Base owner and call the resulting Skyseed
 AS/entity owners' narrow query methods rather than guess from strings or retain
 a global index. No plan type, plan-compilation resolution/update path, epoch,
 dynamic topology, `SimulationRunner`, runtime resource locator or Simulator
-engine exists.
+dynamic-execution engine exists.
 
 ## Acceptance state
 
@@ -224,7 +232,8 @@ engine exists.
 - Static Emulator configuration construction: completed
 - Examples and public import paths: implemented
 - Native Ubuntu 24.04 migration baseline: validated
-- Simulator algorithms and engine: **NOT STARTED**
+- Simulator Slice 1 composition/time/static Topology: **IMPLEMENTED; PENDING HUMAN REVIEW**
+- Position/dynamic Topology/Planning/execution: **NOT STARTED**
 
 Current package/API details and the manual review checklist are recorded in
 `docs/architecture/emulator-public-construction-api.md`.

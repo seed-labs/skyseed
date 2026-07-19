@@ -1,12 +1,17 @@
 from pathlib import Path
 from subprocess import run
+import sys
 
 import pytest
 import skyseed_v2
 from examples._compose_project_scripts import write_compose_project_scripts
+from examples.complete_static_emulator import emu
 from examples.complete_static_emulator import main as complete
+from examples.complete_static_emulator import simu
 from examples.isolated_satellites import main as isolated
 from examples.large_static_network import main as large
+from seedemu.core import Emulator
+from skyseed_v2.seedemu_integration import SatelliteBase
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -35,7 +40,10 @@ def test_formal_examples_generate_controls_into_unique_project_outputs() -> None
         assert module.DEFAULT_OUTPUT == root / "output"
         assert module.COMPOSE_PROJECT_NAME == expected_project
         project_names.append(module.COMPOSE_PROJECT_NAME)
-        for required in ("main.py", "README.md"):
+        required_files = ["main.py", "README.md"]
+        if name == "complete_static_emulator":
+            required_files.extend(("emu.py", "simu.py"))
+        for required in required_files:
             assert (root / required).is_file()
         assert not (root / "start.sh").exists()
         assert not (root / "cleanup.sh").exists()
@@ -138,6 +146,7 @@ def test_formal_examples_and_package_have_no_v1_or_constellation_path() -> None:
 
 def test_small_examples_show_public_construction_without_file_facades() -> None:
     isolated_source = Path(isolated.__file__).read_text(encoding="utf-8")
+    emu_source = Path(emu.__file__).read_text(encoding="utf-8")
     complete_source = Path(complete.__file__).read_text(encoding="utf-8")
 
     for forbidden_boundary in (
@@ -148,7 +157,7 @@ def test_small_examples_show_public_construction_without_file_facades() -> None:
     ):
         assert forbidden_boundary not in isolated_source
 
-    for source in (isolated_source, complete_source):
+    for source in (isolated_source, emu_source):
         assert "load_static_emulator_config" not in source
         assert "create_static_emulator" not in source
         assert "scenario.yaml" not in source
@@ -156,22 +165,93 @@ def test_small_examples_show_public_construction_without_file_facades() -> None:
         assert ".create_orbit(" in source
         assert ".create_satellite(" in source
 
-    assert ".create_ground_station(" in complete_source
-    assert ".createAutonomousSystem(" in complete_source
-    assert ".createNetwork(" in complete_source
-    assert ".createRouter(" in complete_source
-    assert "SimulatorStaticInput" in complete_source
-    assert "create_simulator_static_input" in complete_source
+    assert ".create_ground_station(" in emu_source
+    assert ".createAutonomousSystem(" in emu_source
+    assert ".createNetwork(" in emu_source
+    assert ".createRouter(" in emu_source
+    assert "SimulatorStaticInput" not in complete_source
+    assert "create_simulator_static_input" not in complete_source
     assert "create_emulator_node_index" not in complete_source
     assert "emulator_node_index" not in complete_source
-    assert (
-        "from skyseed_v2.simulator.static_input import SimulatorStaticInput"
-        in complete_source
-    )
-    assert "(skyseed_as,)" in complete_source
-    assert "ground_as)" not in complete_source
     assert "catalog_builder" not in complete_source
     assert "SkyseedDockerCompiler" in complete_source
+    assert "from .emu import build_emulator" in complete_source
+    assert complete.build_emulator is emu.build_emulator
+    assert (
+        EXAMPLES_ROOT / "complete_static_emulator/simu.py"
+    ).is_file()
+    complete_readme = (
+        EXAMPLES_ROOT / "complete_static_emulator/README.md"
+    ).read_text(encoding="utf-8")
+    assert "python3 -m examples.complete_static_emulator.simu" in complete_readme
+
+
+def test_canonical_simu_path_is_explicit_deterministic_and_executable() -> None:
+    source = Path(simu.__file__).read_text(encoding="utf-8")
+
+    assert simu.DEFAULT_SLICE_INTERVAL.total_seconds() == 10
+    assert simu.DEFAULT_START_TIME.tzinfo is not None
+    assert "datetime.now" not in source
+    assert "from .emu import build_emulator" in source
+    assert "complete_static_emulator.main" not in source
+    assert ".getLayer(\"Base\")" in source
+    assert ".get_skyseed_autonomous_systems()" in source
+    assert "create_simulator_static_input" in source
+    assert "SimulationTimeline(" in source
+    assert "SimulationDefinition(" in source
+    assert "Simulator(" in source
+    assert ".create_topology()" in source
+    assert "build_everything" not in source
+    assert "TopologySlice" not in source
+    assert "static slice" not in source.lower()
+    assert simu.build_emulator is emu.build_emulator
+
+    result = run(
+        (
+            sys.executable,
+            "-m",
+            "examples.complete_static_emulator.simu",
+        ),
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "created Simulator static topology" in result.stdout
+    assert "2026-01-01T00:00:30+00:00" in result.stdout
+
+
+def test_complete_emulator_helper_has_one_emulator_only_responsibility() -> None:
+    source = Path(emu.__file__).read_text(encoding="utf-8")
+
+    emulator = emu.build_emulator()
+    assert isinstance(emulator, Emulator)
+    assert isinstance(emulator.getLayer("Base"), SatelliteBase)
+    assert "SimulatorStaticInput" not in source
+    assert "create_simulator_static_input" not in source
+    assert "SimulationDefinition" not in source
+    assert ".render(" not in source
+    assert ".compile(" not in source
+    assert "if __name__" not in source
+
+
+def test_canonical_simu_bounds_unbounded_timeline_display(
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr(simu, "DEFAULT_END_TIME", None)
+
+    simu.main()
+
+    timestamp_line = next(
+        line
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith("timeline timestamps:")
+    )
+    assert timestamp_line.count("2026-01-01T") == (
+        simu.UNBOUNDED_TIMESTAMPS_TO_DISPLAY
+    )
 
 
 def test_large_example_shows_load_create_and_input_generation_directly() -> None:
@@ -201,7 +281,7 @@ def test_large_example_shows_load_create_and_input_generation_directly() -> None
         "only YAML example",
         "not an Emulator subclass",
         "result wrapper",
-        "immutable Simulator input snapshot",
+        "immutable static input consumed by Simulator",
         "Config, a SEED Registry",
         "container inventory",
     ):
