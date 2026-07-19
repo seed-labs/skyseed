@@ -72,8 +72,8 @@ types and Docker names, is not held by the entities and has no lookup ability.
 `SkyseedDockerCompiler` metadata comes from the real entity and integration
 lifecycle, not from static Simulator input.
 
-Future plans will cite `NodeId`. A future `SimulationPlanCompiler` update path
-will use ASN to call Base `getAutonomousSystem()`, require a Skyseed AS and
+Future plans will cite `NodeId`. Any later approved dynamic-execution update
+path will use ASN to call Base `getAutonomousSystem()`, require a Skyseed AS and
 dispatch the kind to existing `get_satellite()` or `get_ground_station()` owner
 queries. Missing or duplicate IDs and wrong/mismatched kinds must fail closed.
 No index, plan, resolution or update path is implemented in this slice.

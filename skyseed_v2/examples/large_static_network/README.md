@@ -13,7 +13,7 @@ The creation function directly calls the same public AS/Shell/Orbit entity
 creation methods shown by the handwritten examples; it does not introduce a
 population entity or nested builder chain. Simulator input is a separate
 explicit step and receives only the constructed Skyseed AS values.
-No NodeId-to-entity mapping is created. Future `SimulationPlanCompiler` lookup
+No NodeId-to-entity mapping is created. Any future dynamic-execution lookup
 remains a separate, owner-directed concern and is not Simulator input.
 
 This is the only YAML example because the scale input is large data rather

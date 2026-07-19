@@ -1,5 +1,14 @@
 # Simulator Static-Input Ownership and Compiler Terminology Validation
 
+> **Supersession note:** This is point-in-time evidence for the static-input
+> ownership slice. Its input ownership, dependency and no-implementation facts
+> remain valid. Its reserved `SimulationPlanCompiler` wording was later
+> **retired/corrected** by
+> `docs/design/simulator-conceptual-design.md`: the current approved direction
+> separates semantic planning, backend planning and conceptual
+> `ExecutionCompiler` lowering. No dynamic type was implemented by either
+> slice.
+
 ## Scope
 
 This bounded change started from clean HEAD `3d50cf0` and moved only the pure
@@ -31,13 +40,14 @@ engine, topology and Simulation Plan compilation remain unimplemented.
   equality and serialized `value` format. It has no resolution ability.
 - Satellite and GroundStation construction APIs and ownership are unchanged.
 
-## Distinct compilation stages
+## Historical compilation-stage wording (superseded)
 
 `SkyseedDockerCompiler` remains the implemented seedemu integration that lowers
 a rendered Emulator/SEED static model into Dockerfile and Compose deployment
 configuration.
 
-`SimulationPlanCompiler` is only the reserved name for a future independent
+At the time of this validation, `SimulationPlanCompiler` was the reserved name
+for a future independent
 stage that would lower an abstract Simulation Plan into concrete dynamic
 network update operations. No class, module, interface, test skeleton,
 inheritance relationship or shared compiler parent was created.
@@ -79,8 +89,10 @@ No image build, Compose operation or container start was performed.
 - Entity ownership and construction APIs: unchanged.
 - Module dependency direction now visibly records Simulator ownership without
   adding an Emulator back-dependency.
-- `SkyseedDockerCompiler` and future `SimulationPlanCompiler` are documented as
-  independent stages with different inputs and outputs.
+- At this historical slice, `SkyseedDockerCompiler` and future
+  `SimulationPlanCompiler` were documented as independent stages. The later
+  recovery keeps the lifecycle separation but retires the dynamic master-stage
+  compression.
 - Class diagrams retain only implemented classes; flow/call diagrams add the
   future Simulator/Plan/plan-compilation boundary as non-implemented nodes.
 - Example behavior is unchanged; only the complete example's input-type import

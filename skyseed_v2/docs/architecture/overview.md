@@ -5,7 +5,8 @@
 The static Emulator core, Simulator-owned static input contract, formal
 examples and Compose materialization tooling are implemented. Simulator
 algorithms and engine, dynamic topology, planning, Runner and UT are not
-implemented in the current main slice.
+implemented in the current main slice. Their restored conceptual maps preserve
+future responsibility directions but do not freeze public APIs.
 
 ## 2. System division
 
@@ -39,8 +40,11 @@ materialization/
 The Simulator already owns its pure static-input contract under
 `simulator/static_input/`. Future Simulator work may own time, positions,
 visibility, topology, semantic planning, execution and observation. None of
-those algorithms or engine concepts is implemented or authorized by the
-current package refactor.
+those algorithms or engine concepts is implemented by the current repository.
+The approved direction uses a thin Simulator coordination shell, keeps Zone
+independent from the Topology coordination shell, and separates semantic
+planning, backend planning, executable-form compilation, execution and
+observation. Candidate names and public contracts remain open.
 
 ## 3. Static entity ownership
 
@@ -131,11 +135,14 @@ the output. `ComposeProjectLauncher` remains the programmatic, state-verifying
 consumer of the same Compose artifact. Materialization is outside entities,
 static Simulator input and both compilation stages.
 
-The reserved future name `SimulationPlanCompiler` refers to a separate stage
-that would lower an abstract Simulation Plan into concrete dynamic network
-update operations. It is not implemented, does not inherit from
-`SkyseedDockerCompiler` and has no shared public parent. Static Docker/Compose
-compilation does not consume Simulation Plans.
+The conceptual dynamic chain distinguishes backend-neutral semantic planning,
+backend-specific execution planning, executable-form lowering and Runner
+execution. `ExecutionCompiler` is a candidate label for the lowering step; it
+is not implemented, does not inherit from `SkyseedDockerCompiler` and has no
+required shared public parent. The earlier `SimulationPlanCompiler` wording is
+retired/corrected as an over-compressed description of those three separate
+responsibilities. Static Docker/Compose compilation does not consume dynamic
+plans, and `ComposeProjectLauncher` is not a dynamic Runner.
 
 ## 8. Formal examples
 
@@ -154,8 +161,8 @@ to the owning public methods.
 
 ## 9. Deferred boundaries
 
-Future Simulator state and plans will cite `NodeId`. A future
-`SimulationPlanCompiler` path will call
+Future Simulator state and plans will cite `NodeId`. Any later approved
+dynamic-execution resolution path will call
 `SatelliteBase.getAutonomousSystem(node_id.asn)`, require a
 `SkyseedAutonomousSystem`, then dispatch the supported kind to
 `get_satellite(node_id.entity_id)` or
@@ -167,3 +174,8 @@ to guess nodes. No plan/resolution/update type currently exists, and no current
 code resolves `NodeId` to containers, services, interfaces or other runtime
 resources, computes positions or visibility, selects links, plans routes,
 emits BPF changes or runs a Simulator.
+
+The detailed status labels, design evolution and open questions are in
+[`../design/simulator-conceptual-design.md`](../design/simulator-conceptual-design.md).
+The three restored conceptual class maps are in
+[`conceptual-class-diagrams.md`](conceptual-class-diagrams.md#simulator-future-conceptual-map).

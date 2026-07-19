@@ -52,9 +52,9 @@ The caller separately invokes
 makes the Emulator → Simulator static-data boundary visible and keeps Config
 creation independent of future Simulator data.
 
-No NodeId-to-entity mapping is generated. Future `SimulationPlanCompiler`
-lookup will follow the existing Base/AS/Shell/Orbit owner methods on demand and
-remains outside this configuration and input-generation flow.
+No NodeId-to-entity mapping is generated. Any future dynamic-execution lookup
+will follow the existing Base/AS/Shell/Orbit owner methods on demand and remains
+outside this configuration and input-generation flow.
 
 ## Formal examples and materialization
 

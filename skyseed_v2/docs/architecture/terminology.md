@@ -18,10 +18,10 @@ package root.
 | SatelliteSimulationInput | Simulator-owned frozen static scalar data combined from one Satellite and its owning Orbit parameters | `simulator/static_input/satellite.py` | Satellite entity, SEED Node, runtime position or execution target | `skyseed_v2.simulator.static_input` |
 | GroundStationSimulationInput | Simulator-owned frozen static scalar data copied from one GroundStation | `simulator/static_input/ground_station.py` | GroundStation entity, SEED Router or execution target | `skyseed_v2.simulator.static_input` |
 | SimulatorStaticInput | Simulator-owned frozen deterministic aggregate of pure static inputs keyed by `NodeId` | `simulator/static_input/static_input.py` | AS traversal, Config, entity/resource index, Registry, container inventory or runtime model | `skyseed_v2.simulator.static_input` |
-| NodeId | Pure stable logical node identity shared across Emulator packaging, Simulator data/state/plans and future `SimulationPlanCompiler` owner-directed lookup | `node_id.py` | entity property, lookup service, Registry key, container ID, Compose service, namespace, interface or Simulator-local number | `skyseed_v2.node_id` |
+| NodeId | Pure stable logical node identity shared across Emulator packaging, Simulator data/state/plans and future dynamic-execution owner-directed lookup | `node_id.py` | entity property, lookup service, Registry key, container ID, Compose service, namespace, interface or Simulator-local number | `skyseed_v2.node_id` |
 | Simulator static-input generation | Three direct functions sharing one private NodeId derivation to copy supported entities into pure inputs | `simulator_input_generation.py` | entity index, Projector, Builder, Resolver class, input classmethod or Simulator behavior | `skyseed_v2.simulator_input_generation` |
-| SkyseedDockerCompiler | Implemented SEED integration that lowers a rendered Emulator/SEED static model into Dockerfile and Compose deployment configuration | `seedemu_integration/skyseed_docker_compiler.py` | entity creator, Simulation Plan compiler, runtime updater or materializer | `skyseed_v2.seedemu_integration` |
-| SimulationPlanCompiler | Reserved, not-yet-implemented future stage that lowers an abstract Simulation Plan into concrete dynamic network update operations | not implemented | `SkyseedDockerCompiler`, Docker/Compose deployment compiler or shared compiler parent | not implemented |
+| SkyseedDockerCompiler | Implemented SEED integration that lowers a rendered Emulator/SEED static model into Dockerfile and Compose deployment configuration | `seedemu_integration/skyseed_docker_compiler.py` | entity creator, dynamic execution compiler, runtime updater or materializer | `skyseed_v2.seedemu_integration` |
+| SimulationPlanCompiler | **Retired/corrected** shorthand for the over-compressed `abstract Simulation Plan → compiler → concrete dynamic operations` description; retained only to explain the correction | not implemented | frozen future public contract, semantic Planner, BackendPlanner, conceptual `ExecutionCompiler`, `SkyseedDockerCompiler` or shared compiler parent | not implemented |
 | Launcher | Tool that materializes an already compiled Compose project | `materialization/compose_project_launcher.py` | entity service, either compilation stage, Runner or Simulator | `skyseed_v2.materialization` |
 | SkyseedAutonomousSystem | Owner of Shells and GroundStations plus the narrow SEED lifecycle extension | `seedemu_integration/skyseed_autonomous_system.py` | file facade or Simulator-input owner | `skyseed_v2.seedemu_integration` |
 | SatelliteBase | SEED Base Layer integration for the Satellite lifecycle | `seedemu_integration/satellite_base.py` | Emulator entity or file configuration | `skyseed_v2.seedemu_integration` |
@@ -42,8 +42,31 @@ reintroduce a stateless projection/conversion class or input classmethod.
 `NodeId` is a pure cross-layer identity value, not an Emulator entity
 attribute, lookup service or Simulator-private sequence number. Static input
 maps it only to pure data. No unified `NodeId → entity/service/container`
-mapping exists. A future `SimulationPlanCompiler` will resolve ASN through Base,
-then call the actual AS/Shell/Orbit owners' narrow lookup methods. No plan,
-resolution path or Simulator runtime type exists yet. `SkyseedDockerCompiler`
-is a separate implemented static-deployment stage and does not compile
-Simulation Plans.
+mapping exists. Any future dynamic-execution resolution will resolve ASN
+through Base, then call the actual AS/Shell/Orbit owners' narrow lookup
+methods. No plan, resolution path or Simulator runtime type exists yet.
+`SkyseedDockerCompiler` is a separate implemented static-deployment stage and
+does not compile dynamic execution plans.
+
+## Simulator future conceptual vocabulary
+
+This section is non-normative for public names. It preserves the design space
+and status needed for later vertical slices; it does not add terms to the
+current public API.
+
+| Concept or relationship | Status | Meaning at this baseline |
+| --- | --- | --- |
+| `NodeId`, `SatelliteSimulationInput`, `GroundStationSimulationInput`, `SimulatorStaticInput`, Simulator input-generation functions | **implemented** | Current immutable static-input foundation |
+| Static chain: Emulator → `SkyseedDockerCompiler` → Docker/Compose → `ComposeProjectLauncher` | **implemented** | Static deployment and materialization lifecycle |
+| `Simulator` and `Topology` as coordination shells; Zone independent from Topology | **approved direction** | Responsibility/ownership direction, not a class/API freeze |
+| Semantic planning → backend planning → executable-form lowering → Runner | **approved direction** | Separate network meaning, backend strategy, lowering and execution stages |
+| `Simulator`, `SimulationTimeline`, `ZoneModel`, `Topology`, `Planning`, topology models/slices/store/differ, both Planner levels, backend planners/plans, `ExecutionCompiler`, `ExecutableBundle`, `Runner`, `Observation` | **conceptual candidate** | Names and objects available for later slice design; none is implemented |
+| Final public names, visibility, module placement, slice/time/state contracts, backend set and Runner/materialization relationship | **open question** | Must be designed and approved per vertical slice |
+| `SimulationPlanCompiler` as the one future dynamic master stage | **retired/corrected** | Over-compressed semantic planning, backend planning and execution compilation |
+
+`SemanticTransitionPlan` describes only backend-neutral network meaning.
+`BackendExecutionPlan` describes one backend's operations, dependencies,
+batching, barriers, failure and cleanup policy. The two candidate plan forms do
+not share a required schema or parent. `ExecutionCompiler` is only a
+conceptual label for lowering an approved backend plan; its final public name
+is not decided.

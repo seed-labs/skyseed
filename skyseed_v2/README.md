@@ -29,14 +29,14 @@
 
 ```text
 调查事实
-→ 明确设计与所有权
-→ 冻结本切片公共合同
-→ 实现
+→ 领域设计
+→ 公共合同冻结
+→ Codex 实现
 → 自动测试
 → 架构增量审计
 → 最小 example 人工审核
-→ 文档、类图和术语同步
-→ 接受并冻结该切片
+→ 类图 / 术语 / CURRENT 同步
+→ 接受切片
 → 下一切片
 ```
 
@@ -131,6 +131,16 @@ CURRENT 和验证记录。只有全部接受条件满足且工作区 clean，当
 
 实现过程中发现设计问题时，应明确提出设计变更，而不是通过代码细节悄悄改变系统行为。
 
+### Conceptual diagram 保存设计空间
+
+Conceptual diagram 不是实现任务清单或公共 API 冻结清单。不得创建空类
+来匹配图；每个切片只冻结本轮需要的公共概念。图中的候选对象可随获批
+纵向切片修改、拆分、合并或重命名，不能只因尚未实现就删除。
+
+Planner、Compiler 和 Runner 不得形成隐式重规划、后端 fallback 或第二条
+成功路径。v1 只能围绕当前切片做定向事实调查，不能整体迁移。测试 PASS
+也不能替代真实执行证据。
+
 ### 接受不等于测试通过
 
 切片接受还要求 Architecture Delta 已审核、最小 example 可理解、公共
@@ -160,6 +170,8 @@ CURRENT 和验证记录。只有全部接受条件满足且工作区 clean，当
 
 * 当前阶段与下一目标见 [`docs/CURRENT.md`](./docs/CURRENT.md)；
 * 当前架构图见 [`docs/architecture/diagrams.md`](./docs/architecture/diagrams.md)；
+* Simulator future conceptual baseline 见
+  [`docs/design/simulator-conceptual-design.md`](./docs/design/simulator-conceptual-design.md)；
 * 公共 API 见 [`docs/architecture/emulator-public-construction-api.md`](./docs/architecture/emulator-public-construction-api.md)；
 * 一词一义规则见 [`docs/architecture/terminology.md`](./docs/architecture/terminology.md)。
 

@@ -1,8 +1,10 @@
 # Current Architecture Diagrams
 
 Solid implemented nodes and arrows reflect current code. The Simulator static
-input contract is **AVAILABLE**; dashed Simulator, Simulation Plan and
-`SimulationPlanCompiler` nodes are future boundaries, not implementations.
+input contract is **AVAILABLE**; dashed Simulator/dynamic nodes are conceptual
+boundaries, not implementations or frozen public APIs. The full restored maps
+are in
+[`conceptual-class-diagrams.md`](conceptual-class-diagrams.md#simulator-future-conceptual-map).
 
 ## 1. Package dependency direction
 
@@ -149,8 +151,8 @@ flowchart LR
     GI --> INPUT
     INPUT --> SIM[future Simulator consumer boundary]
     SIM -. produces .-> PLAN[future Simulation Plan citing NodeId]
-    PLAN -. consumed by .-> PLANCOMP[future SimulationPlanCompiler]
-    PLANCOMP -. NodeId.asn .-> BASE[SatelliteBase.getAutonomousSystem]
+    PLAN -. future approved boundary .-> DYNAMIC[dynamic execution resolution]
+    DYNAMIC -.->|NodeId.asn| BASE[SatelliteBase.getAutonomousSystem]
     BASE -. require Skyseed AS .-> OWNER[SkyseedAutonomousSystem]
     OWNER -. kind + entity_id .-> ENTITY[Satellite or GroundStation]
 ```
@@ -159,11 +161,10 @@ flowchart LR
 duplicate-ID rejection, immutable snapshotting and read-only indexing only. It
 does not traverse AS objects or call entity conversion and contains no entity
 reference. No unified NodeId-to-entity/resource mapping exists. The dashed
-path documents future owner-directed `SimulationPlanCompiler` calls only; no
-Simulator algorithm, plan, resolution or plan-compilation update path is
-implemented.
+path documents future owner-directed execution-boundary calls only; no
+Simulator algorithm, plan, resolution or dynamic update path is implemented.
 
-## 7. Independent compilation stages
+## 7. Static deployment and conceptual dynamic execution chains
 
 ```mermaid
 flowchart TD
@@ -171,18 +172,25 @@ flowchart TD
     E --> ADAPT[create_simulator_static_input]
     ADAPT --> INPUT[SimulatorStaticInput]
     INPUT -. future constructor input .-> SIM[future Simulator]
-    SIM -. produces .-> PLAN[future Simulation Plan]
-    PLAN -. compiles with .-> PLANCOMP[future SimulationPlanCompiler]
-    PLANCOMP -. produces .-> UPDATE[concrete dynamic network update plan]
+    SIM -. produces .-> DIFF[future TopologyDifference]
+    DIFF -. semantic planning .-> SEM[future SemanticTransitionPlan]
+    SEM -. backend planning .-> BACK[future BackendExecutionPlan]
+    BACK -. lowered by .-> EXEC[future ExecutionCompiler]
+    EXEC -. creates .-> BUNDLE[future ExecutableBundle]
+    BUNDLE -. consumed by .-> RUN[future Runner]
 
     E --> DOCKER[SkyseedDockerCompiler]
     DOCKER --> DEPLOY[Dockerfile / Compose / services / networks]
+    DEPLOY --> LAUNCH[ComposeProjectLauncher]
 ```
 
-`SkyseedDockerCompiler ≠ SimulationPlanCompiler`. The implemented static
-deployment compiler and the future plan compiler have different inputs,
-outputs, ownership and lifecycles; they have no inheritance relationship or
-shared public parent.
+The implemented static deployment compiler and the conceptual dynamic
+`ExecutionCompiler` have different inputs, outputs, ownership and lifecycles;
+they have no inheritance relationship or required shared public parent.
+`ComposeProjectLauncher` is not the future Runner. The old
+`SimulationPlanCompiler` label is retained only as a **retired/corrected**
+over-compression of semantic planning, backend planning and executable-form
+compilation, not as a frozen master contract.
 
 ## 8. Generated experiment artifact and materialization
 

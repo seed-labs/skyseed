@@ -16,12 +16,11 @@
 
 ## Current objective
 
-Accept the unified Emulator–Simulator–future `SimulationPlanCompiler`
-logical-node identity contract: static Simulator data contains
-deterministically derived `NodeId` values, while future plan compilation lookup
-follows existing owner APIs on demand and never creates a global
-NodeId-to-entity/resource index. This work does not authorize Simulator
-algorithms, plans, runtime updates or `SimulationPlanCompiler` implementation.
+Preserve the implemented Emulator–Simulator logical-node identity and static
+input contracts while the restored future Simulator design baseline awaits
+architecture review. The restored baseline is conceptual/open: it authorizes
+no Simulator algorithm, Topology, Planner, dynamic compiler, Runner, backend,
+public export or runtime implementation.
 
 ## Implemented package boundaries
 
@@ -91,11 +90,11 @@ SkyseedAutonomousSystem
   `skyseed_v2.node_id` module and deterministically derived only in
   `simulator_input_generation.py`.
 - Satellite and GroundStation do not construct, accept or retain `NodeId`;
-  the value belongs to the Emulator–Simulator–future
-  `SimulationPlanCompiler` cross-layer contract.
+  the value belongs to the Emulator–Simulator–future dynamic-execution
+  cross-layer contract.
 - No public or global `NodeId → entity` mapping exists. `NodeId` has no resolve,
   entity, service, container, namespace or interface access capability.
-- Future `SimulationPlanCompiler` lookup will call existing owners on demand:
+- Any future dynamic-execution lookup will call existing owners on demand:
   `SatelliteBase.getAutonomousSystem(asn)` →
   `SkyseedAutonomousSystem.get_satellite()` / `get_ground_station()` and, when
   hierarchy context is needed, `get_shell()` → `Shell.get_orbit()` →
@@ -131,32 +130,71 @@ exact Compose file and runs `up -d --build`; cleanup runs scoped
 Skyseed AS tuple and the ordinary AS tuple. Simulator input is deliberately a
 separate cross-layer generation output.
 
-## Distinct compilation stages
+## Static deployment and conceptual dynamic execution stages
 
 - `SkyseedDockerCompiler` is the implemented seedemu integration that lowers a
   rendered Emulator/SEED static model to Dockerfiles, Compose services and
   networks.
-- `SimulationPlanCompiler` is the reserved name for a future, independent stage
-  that would lower an abstract Simulation Plan to concrete dynamic network
-  update operations. No such type, module, interface or implementation exists.
-- The two stages have different inputs, outputs, ownership and lifecycles. They
-  do not inherit from one another and have no shared public parent.
+- The approved dynamic direction distinguishes backend-neutral semantic
+  planning, backend-specific execution planning, executable-form lowering and
+  execution. `ExecutionCompiler` is only the current conceptual diagram label
+  for the lowering step; no such type, module, interface or implementation
+  exists and its final public name is open.
+- The static compiler and conceptual dynamic compiler have different inputs,
+  outputs, ownership and lifecycles. They do not inherit from one another and
+  have no required shared public parent.
+- `abstract Simulation Plan → SimulationPlanCompiler → concrete dynamic
+  operations` is **retired/corrected** as an over-compressed description. It
+  mixed semantic planning, backend planning and executable-form compilation;
+  `SimulationPlanCompiler` is not a frozen future public contract.
+
+## Simulator future design baseline
+
+The following are **approved directions**, not implementations:
+
+- the implemented static Emulator model feeds both
+  `simulator_input_generation → SimulatorStaticInput → future Simulator` and
+  the independent `SkyseedDockerCompiler → Docker/Compose →
+  ComposeProjectLauncher` path;
+- a future `Simulator` coordinates Zone/Timeline, Topology, Planning, dynamic
+  compilation, Runner and Observation responsibilities instead of absorbing
+  every algorithm;
+- Topology is a coordination shell, Zone remains independent from it, and
+  candidate discovery differs from connection selection;
+- semantic network planning precedes backend-specific execution planning;
+- an execution compiler only lowers an approved backend plan and a Runner only
+  executes the resulting bundle;
+- `ComposeProjectLauncher` is not the dynamic Runner.
+
+`Simulator`, `SimulationTimeline`, `ZoneModel`, `Topology`, the position,
+connection, routing, slice/difference/store objects, both Planner levels,
+backend-specific planners/plans, `ExecutionCompiler`, `ExecutableBundle`,
+`Runner` and `Observation` are **conceptual candidates**. None is implemented
+or a frozen public name.
+
+Public visibility, final naming, time/slice semantics, state retention,
+position and connection decomposition, supported backends, execution-bundle
+shape, Runner/materialization relationship and Observation ownership remain
+**open questions**. The full baseline is
+[`design/simulator-conceptual-design.md`](design/simulator-conceptual-design.md),
+and the restored Mermaid maps are in
+[`architecture/conceptual-class-diagrams.md`](architecture/conceptual-class-diagrams.md#simulator-future-conceptual-map).
 
 ## Deferred work
 
 - Simulator time, position, visibility, topology, planning and execution.
 - Dynamic GroundStation–Satellite links and service selection.
-- Future `SimulationPlanCompiler` consumption of plans and lowering from
-  `NodeId` to runtime resource operations.
+- Future dynamic planning/execution consumption of `NodeId` and lowering to
+  runtime resource operations.
 - UT integration and any new entity kind at the static-input boundary.
 - Any future split or composition of Emulator and Simulator generator
   entrypoints; no placeholder or filename contract exists yet.
 
-Future plans must reference `NodeId`; `SimulationPlanCompiler` will resolve its
-ASN through the Base owner and call the resulting Skyseed AS/entity owners'
-narrow query methods rather than guess from strings or retain a global index.
-No plan type, plan-compilation resolution/update path, epoch, dynamic topology,
-Runner, runtime resource locator or Simulator engine exists.
+Future plans must reference `NodeId`; the later approved execution boundary
+must resolve its ASN through the Base owner and call the resulting Skyseed
+AS/entity owners' narrow query methods rather than guess from strings or retain
+a global index. No plan type, plan-compilation resolution/update path, epoch,
+dynamic topology, Runner, runtime resource locator or Simulator engine exists.
 
 ## Acceptance state
 

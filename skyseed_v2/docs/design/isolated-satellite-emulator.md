@@ -80,8 +80,8 @@ this boundary.
 `SkyseedAutonomousSystem` registers the unique instances. The internal
 `_SatelliteCompilerBoundary` validates `satnode` identity and emits an
 explicitly isolated service. `SkyseedDockerCompiler` is the implemented public
-static Docker/Compose deployment compiler type; it has no relationship to the
-reserved future `SimulationPlanCompiler` concept.
+static Docker/Compose deployment compiler type; it has no relationship to, or
+required common parent with, the conceptual dynamic `ExecutionCompiler`.
 
 Satellite services use `network_mode: none`, have no Compose network
 attachment and expose only loopback until a future dynamic design explicitly

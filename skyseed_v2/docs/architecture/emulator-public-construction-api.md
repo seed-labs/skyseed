@@ -22,7 +22,7 @@ SkyseedAutonomousSystem
 | `skyseed_v2.entities` | Emulator entities and tightly bound values | `Shell`, `Orbit`, `OrbitParameters`, `Satellite`, `GroundStation`, `GroundStationLocation` |
 | `skyseed_v2.configuration` | Frozen Config values and versioned YAML loading | qualified `*Config` values, `load_static_emulator_config` |
 | `skyseed_v2.static_emulator_creation` | Config-to-Emulator creation operation | `create_static_emulator`, `StaticEmulatorCreationResult` |
-| `skyseed_v2.node_id` | Neutral Emulator–Simulator–future-plan-compilation logical identity contract | `NodeId` |
+| `skyseed_v2.node_id` | Neutral Emulator–Simulator–future-dynamic-execution logical identity contract | `NodeId` |
 | `skyseed_v2.simulator_input_generation` | Shared NodeId derivation, supported-entity traversal and pure input copying | three input-generation functions |
 | `skyseed_v2.simulator.static_input` | Simulator-owned immutable static input contract | `SatelliteSimulationInput`, `GroundStationSimulationInput`, `SimulatorStaticInput` |
 | `skyseed_v2.seedemu_integration` | Skyseed-owned extensions of external seedemu | `SkyseedAutonomousSystem`, `SatelliteBase`, `SkyseedDockerCompiler` |
@@ -82,7 +82,7 @@ attribute, lookup service, entity primary key, SEED Registry key or
 runtime-resource name. It exposes no resolve/entity/container method. No
 public or global `NodeId → entity/service/container` mapping exists.
 
-Future `SimulationPlanCompiler` lookup is owner-directed rather than
+Any future dynamic-execution lookup is owner-directed rather than
 index-directed:
 
 ```text
@@ -97,9 +97,9 @@ NodeId.entity_kind + NodeId.entity_id
 Existing hierarchy queries remain available when needed:
 `SkyseedAutonomousSystem.get_shell()` → `Shell.get_orbit()` →
 `Orbit.get_satellite()`. Unknown ASN/IDs and unsupported or mismatched kinds
-must fail closed. This documents a future `SimulationPlanCompiler` contract
-only; no resolver, Simulation Plan or plan-compilation update path is
-implemented.
+must fail closed. This documents only a future owner-directed lookup direction;
+`SimulationPlanCompiler` is a historical label for the over-compressed dynamic
+boundary. No resolver, dynamic plan or update path is implemented.
 
 External composition will eventually pass the already completed pure input to
 the Simulator:
@@ -115,23 +115,28 @@ and `Topology` are not implemented. The future Simulator will not accept
 Emulator, AS, Satellite, GroundStation or SEED Node objects and will not invoke
 the generation adapter itself.
 
-## Distinct compilation stages
+## Static deployment and conceptual dynamic execution stages
 
 ```text
 rendered Emulator / SEED static model
   → SkyseedDockerCompiler
   → Dockerfile / Compose / service / network deployment configuration
 
-future abstract Simulation Plan
-  → SimulationPlanCompiler
-  → concrete dynamic network update operation plan
+future TopologyDifference
+  → SemanticPlanner → SemanticTransitionPlan
+  → BackendPlanner → BackendExecutionPlan
+  → ExecutionCompiler → ExecutableBundle → Runner
 ```
 
 `SkyseedDockerCompiler` is implemented in `seedemu_integration` and owns static
-deployment compilation. `SimulationPlanCompiler` is only a reserved future
-concept name; no class, module, interface or test skeleton exists. The two
-stages have no inheritance relationship or shared public parent and must not
-absorb one another's responsibilities.
+deployment compilation. Every dynamic type above is a conceptual candidate;
+no class, module, interface or test skeleton exists. Semantic network planning,
+backend-specific execution planning and executable-form lowering are separate
+responsibilities. `ExecutionCompiler` is not a frozen public name, has no
+inheritance relationship or required shared public parent with
+`SkyseedDockerCompiler`, and must not absorb its responsibility. The earlier
+`SimulationPlanCompiler` label is **retired/corrected** as an over-compressed
+description of the three dynamic stages, not a frozen master contract.
 
 ## Public construction paths
 
@@ -329,7 +334,7 @@ classDiagram
 - Config values make file/programmatic construction explicit and immutable.
 - Static input types are the Simulator-owned immutable static-input contract.
 - `NodeId` is public from its direct neutral module because static input,
-  future Simulator state/plans and `SimulationPlanCompiler` entity lookup
+  future Simulator state/plans and dynamic-execution entity lookup
   share it.
 - `StaticEmulatorCreationResult` is module-public because the creation
   operation returns three independently owned values; it is not a root export.
@@ -377,7 +382,7 @@ from skyseed_v2.simulator.static_input import SimulatorStaticInput
 | per-entity projector classes | direct `create_*_simulation_input` functions | no state or reusable abstraction existed |
 | input `from_*` classmethods | direct generation functions | input types remain pure data |
 | `simulator_input/` | `simulator/static_input/` | makes Simulator semantic ownership explicit without adding an engine or moving the entity-aware generation adapter |
-| `SimulationNodeId` in historical `simulator_input/identity.py` | `NodeId` in `node_id.py` | one neutral identity is shared by Emulator packaging, future Simulator state/plans and `SimulationPlanCompiler` lookup; no compatibility alias remains |
+| `SimulationNodeId` in historical `simulator_input/identity.py` | `NodeId` in `node_id.py` | one neutral identity is shared by Emulator packaging, future Simulator state/plans and dynamic-execution lookup; no compatibility alias remains |
 
 No compatibility aliases remain for deleted classes, types or old imports.
 
@@ -415,7 +420,7 @@ No compatibility aliases remain for deleted classes, types or old imports.
       `SkyseedDockerCompiler` or upstream seedemu module.
 - [ ] `StaticEmulatorCreationResult` has exactly three fields.
 - [ ] No old class, type or import alias survives.
-- [ ] `SkyseedDockerCompiler` and future `SimulationPlanCompiler` are documented
-      as independent stages.
+- [ ] `SkyseedDockerCompiler` and the conceptual dynamic execution chain are
+      documented as independent lifecycles with no required common parent.
 - [ ] Simulator static input contract is available; algorithms and engine
       remain NOT STARTED.

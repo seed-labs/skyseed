@@ -13,19 +13,28 @@
 
 ```text
 调查事实
-→ 明确设计与所有权
-→ 冻结本切片公共合同
-→ 实现
+→ 领域设计
+→ 公共合同冻结
+→ Codex 实现
 → 自动测试
 → 架构增量审计
 → 最小 example 人工审核
-→ 文档、类图和术语同步
-→ 接受并冻结该切片
+→ 类图 / 术语 / CURRENT 同步
+→ 接受切片
 → 下一切片
 ```
 
 测试通过不能单独代表切片完成。调查、合同冻结、架构审计、人工可读
-入口和文档同步都是接受条件。
+入口、真实执行证据和文档同步都是接受条件。
+
+Simulator conceptual diagrams 用于保存长期职责边界和待细化的设计空间，
+不是实现任务清单或公共 API 冻结清单。不得创建大量空类来匹配图；每个
+纵向切片只冻结本轮真正需要的公共概念。后续切片可以根据获批设计和真实
+实现修改、拆分、合并或重命名 conceptual 对象，不能只因尚未实现就从图中
+删除它们。
+
+Planner、Compiler 和 Runner 必须保持一条明确的批准路径，不得形成隐式
+重规划、后端 fallback 或其他成功路径。测试 PASS 不替代真实执行证据。
 
 ## 2. 已批准范围内的实现自主权
 
@@ -55,8 +64,9 @@
 - 正式执行路径；
 - 新运行模式或 fallback；
 - 类图中的主体类或重要关系；
-- Emulator、Simulator、`SkyseedDockerCompiler`、`SimulationPlanCompiler`、
-  Runner、Materialization 之间的职责。
+- Emulator、Simulator、Topology、SemanticPlanner、BackendPlanner、
+  `SkyseedDockerCompiler`、conceptual `ExecutionCompiler`、Runner、
+  Observation、Materialization 之间的职责。
 
 禁止先提交实现，再在完成报告中解释新概念。与争议无关且已经批准
 的工作可以继续，但争议部分必须停留在提案状态。
@@ -182,16 +192,21 @@ Service
 服务名称或其他字符串重新猜测。缺失、重复、类型不符或所有者不匹配时
 必须 fail-closed。
 
-架构记录和公共合同必须区分两个独立编译阶段：
+架构记录和公共合同必须区分静态部署链与动态执行链：
 
 - `SkyseedDockerCompiler` 将 Emulator/SEED 静态模型降低为 Docker、
   Compose、service 和 network 等静态部署配置；
-- `SimulationPlanCompiler` 将 Simulator 产生的抽象 Simulation Plan 降低为
-  具体动态网络更新操作计划。
+- 动态链的 approved direction 先区分后端中立的网络语义规划与
+  后端特定的执行规划，再由 conceptual `ExecutionCompiler` 降低已经
+  批准的后端执行计划，交给 Runner 执行。
 
-二者不得合并、互相继承、共享无真实需求的模糊公共父类，或互相承担对方
-职责。新增或实现 `SimulationPlanCompiler` 仍须作为公共架构变更单独审批。
-文档在可能同时涉及两阶段时不得使用无完整限定语义的单独 `Compiler`。
+`SkyseedDockerCompiler` 与 conceptual `ExecutionCompiler` 不得合并、互相
+继承、共享无真实需求的模糊公共父类，或互相承担对方职责。旧的
+`abstract Simulation Plan → SimulationPlanCompiler → concrete dynamic
+operations` 是 retired/corrected 的过度压缩描述：它混合了网络语义规划、
+后端实现规划和执行形式编译，不再是已批准的唯一主合同。所有动态类型和
+最终公开名称仍须作为公共架构变更逐片审批。文档在可能同时涉及两条链时
+不得使用无完整限定语义的单独 `Compiler`。
 
 Simulator 静态输入类型在语义上属于 Simulator，并且只能依赖中性纯值和
 自身数据类型。了解 Emulator 实体结构的输入生成适配代码必须位于
@@ -221,6 +236,11 @@ SEED Node 或 Registry。
 ```
 
 类图用于发现架构漂移，不只是展示结果。
+
+Conceptual class diagram 必须明确区分 implemented、approved direction、
+conceptual candidate、open question 和 retired/corrected。它可以包含尚未
+实现的候选对象以保存设计空间，但不得因此把候选对象写入 CURRENT 的
+已实现列表、根导出或正式运行路径。
 
 ## 10. 历史实现调查边界
 
