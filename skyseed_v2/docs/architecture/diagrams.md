@@ -14,7 +14,7 @@ flowchart LR
     SEED[seedemu_integration]
     INPUT[simulator/static_input]
     CONFIG[configuration]
-    CREATE[static_emulator_creation]
+    CREATE[static_emulator]
     GENERATE[simulator_input_generation]
     MAT[materialization]
     NODEID[node_id]
@@ -130,10 +130,12 @@ flowchart LR
     L --> CONFIG[immutable StaticEmulatorConfig]
     CONFIG --> CREATE[create_static_emulator]
     CREATE --> ENTITIES[public create/join methods]
-    CREATE --> RESULT[StaticEmulatorCreationResult]
-    RESULT --> CONVERT[create_simulator_static_input]
+    CREATE --> EMU[upstream Emulator]
+    EMU --> BASE[getLayer Base]
+    BASE --> ASE[get_skyseed_autonomous_systems]
+    ASE --> CONVERT[create_simulator_static_input]
     CONVERT --> INPUT[immutable SimulatorStaticInput]
-    RESULT --> COMP[render + SkyseedDockerCompiler]
+    EMU --> COMP[render + SkyseedDockerCompiler]
 ```
 
 ## 6. Static Simulator-input boundary

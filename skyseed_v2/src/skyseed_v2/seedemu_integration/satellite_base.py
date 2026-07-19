@@ -5,6 +5,8 @@ from __future__ import annotations
 from seedemu.core import Emulator, Node, Scope, ScopeTier
 from seedemu.layers.Base import Base, BaseFileTemplates
 
+from .skyseed_autonomous_system import SkyseedAutonomousSystem
+
 from skyseed_v2.entities import SATELLITE_REGISTRY_TYPE
 
 
@@ -16,6 +18,20 @@ class SatelliteBase(Base):
     It is public from `skyseed_v2.seedemu_integration` because Satellite
     lifecycle requires a Base integration hook unavailable in upstream SEED.
     """
+
+    def get_skyseed_autonomous_systems(
+        self,
+    ) -> tuple[SkyseedAutonomousSystem, ...]:
+        """Return the Skyseed AS values owned by this Base layer."""
+
+        return tuple(
+            autonomous_system
+            for asn in sorted(self.getAsns())
+            if isinstance(
+                (autonomous_system := self.getAutonomousSystem(asn)),
+                SkyseedAutonomousSystem,
+            )
+        )
 
     def _prepare(self, emulator: Emulator) -> None:
         super()._prepare(emulator)

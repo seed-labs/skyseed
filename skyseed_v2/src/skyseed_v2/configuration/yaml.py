@@ -10,22 +10,24 @@ from yaml.constructor import ConstructorError
 from yaml.loader import SafeLoader
 from yaml.nodes import MappingNode
 
-from .ground_station import GroundStationConfig
-from .network import (
+from .attachments import (
+    InternetExchangeAttachment,
+    LocalNetworkAttachment,
+)
+from .ground_network import (
     EbgpPeeringConfig,
-    EbgpRouterReferenceConfig,
-    InternetExchangeAttachmentConfig,
+    EbgpRouterReference,
     InternetExchangeConfig,
-    LocalNetworkAttachmentConfig,
     NetworkConfig,
     OrdinaryAutonomousSystemConfig,
     RouterConfig,
 )
+from .ground_station import GroundStationConfig
 from .satellite import (
-    InOrbitPhaseDistributionConfig,
+    GeneratedOrbitLayout,
+    InOrbitPhaseDistribution,
     OrbitConfig,
-    OrbitGenerationConfig,
-    RaanDistributionConfig,
+    RightAscensionDistribution,
     SatelliteConfig,
     ShellConfig,
 )
@@ -314,12 +316,12 @@ def _parse_shell(
         shell_id=mapping["shell_id"],
         altitude_km=mapping["altitude_km"],
         inclination_deg=mapping["inclination_deg"],
-        generation=(
+        generated_orbit_layout=(
             _parse_generation(mapping["generation"], context)
             if has_generation
             else None
         ),
-        orbits=(
+        explicit_orbits=(
             tuple(
                 _parse_orbit(item, orbit_index, context)
                 for orbit_index, item in enumerate(
@@ -331,7 +333,7 @@ def _parse_shell(
         ),
     )
 
-def _parse_generation(value: Any, parent: str) -> OrbitGenerationConfig:
+def _parse_generation(value: Any, parent: str) -> GeneratedOrbitLayout:
     context = f"{parent}.generation"
     mapping = _mapping(value, context)
     _fields(
@@ -355,14 +357,14 @@ def _parse_generation(value: Any, parent: str) -> OrbitGenerationConfig:
         },
         context=f"{context}.phase",
     )
-    return OrbitGenerationConfig(
+    return GeneratedOrbitLayout(
         orbit_count=mapping["orbit_count"],
         satellites_per_orbit=mapping["satellites_per_orbit"],
-        raan=RaanDistributionConfig(
+        right_ascension_distribution=RightAscensionDistribution(
             start_deg=raan["start_deg"],
             step_deg=raan["step_deg"],
         ),
-        phase=InOrbitPhaseDistributionConfig(
+        in_orbit_phase_distribution=InOrbitPhaseDistribution(
             start_deg=phase["start_deg"],
             step_deg=phase["step_deg"],
             alternating_orbit_offset_deg=phase[
@@ -466,11 +468,11 @@ def _parse_ix_attachment(
     value: Any,
     index: int,
     parent: str,
-) -> InternetExchangeAttachmentConfig:
+) -> InternetExchangeAttachment:
     context = f"{parent}.ix_attachments[{index}]"
     mapping = _mapping(value, context)
     _fields(mapping, required={"ix_id", "address"}, context=context)
-    return InternetExchangeAttachmentConfig(
+    return InternetExchangeAttachment(
         ix_id=mapping["ix_id"],
         address=mapping["address"],
     )
@@ -572,11 +574,11 @@ def _parse_local_attachment(
     value: Any,
     index: int,
     parent: str,
-) -> LocalNetworkAttachmentConfig:
+) -> LocalNetworkAttachment:
     context = f"{parent}.network_attachments[{index}]"
     mapping = _mapping(value, context)
     _fields(mapping, required={"network_id", "address"}, context=context)
-    return LocalNetworkAttachmentConfig(
+    return LocalNetworkAttachment(
         network_id=mapping["network_id"],
         address=mapping["address"],
     )
@@ -595,18 +597,20 @@ def _parse_ebgp_peering(
     )
     return EbgpPeeringConfig(
         ix_id=mapping["ix_id"],
-        first=_parse_ebgp_peer(mapping["first"], f"{context}.first"),
-        second=_parse_ebgp_peer(mapping["second"], f"{context}.second"),
+        peer_routers=(
+            _parse_ebgp_peer(mapping["first"], f"{context}.first"),
+            _parse_ebgp_peer(mapping["second"], f"{context}.second"),
+        ),
         relationship=mapping.get("relationship", "unfiltered"),
     )
 
 def _parse_ebgp_peer(
     value: Any,
     context: str,
-) -> EbgpRouterReferenceConfig:
+) -> EbgpRouterReference:
     mapping = _mapping(value, context)
     _fields(mapping, required={"asn", "router_id"}, context=context)
-    return EbgpRouterReferenceConfig(
+    return EbgpRouterReference(
         asn=mapping["asn"],
         router_id=mapping["router_id"],
     )

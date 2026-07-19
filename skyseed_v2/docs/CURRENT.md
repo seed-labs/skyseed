@@ -30,10 +30,10 @@ skyseed_v2/
 ├── simulator/                # Simulator-owned contracts; no engine
 │   └── static_input/         # immutable Simulator static input types
 ├── seedemu_integration/      # Skyseed-owned seedemu extensions
-├── configuration/            # immutable Config values and YAML loading
+├── configuration/            # immutable Config/auxiliary values and YAML loading
 ├── node_id.py                # neutral cross-layer logical node identity
 ├── simulator_input_generation.py # entity traversal and pure input generation
-├── static_emulator_creation.py # Config-to-Emulator creation operation
+├── static_emulator.py        # Config-to-upstream-Emulator operation
 └── materialization/          # Compose project launch tooling
 ```
 
@@ -116,7 +116,9 @@ SkyseedAutonomousSystem
   output controls.
 - `large_static_network`: YAML → `load_static_emulator_config(path)` →
   `create_static_emulator(config)` →
-  `create_simulator_static_input(creation.skyseed_autonomous_systems)` →
+  `Emulator.getLayer("Base")` →
+  `SatelliteBase.get_skyseed_autonomous_systems()` →
+  `create_simulator_static_input(skyseed_autonomous_systems)` →
   `SkyseedDockerCompiler` → output controls. Its acceptance baseline remains
   compile/config-only; generated start is an explicit user action.
 
@@ -126,9 +128,16 @@ wrappers no longer generate the experiment. The generated start validates the
 exact Compose file and runs `up -d --build`; cleanup runs scoped
 `down --remove-orphans` and retains the output.
 
-`StaticEmulatorCreationResult` has exactly three fields: the Emulator, the
-Skyseed AS tuple and the ordinary AS tuple. Simulator input is deliberately a
-separate cross-layer generation output.
+`create_static_emulator(config)` returns the actual upstream
+`seedemu.core.Emulator`. It has no creation-result wrapper and no Skyseed
+Emulator subtype. `SatelliteBase`, reached through `Emulator.getLayer("Base")`,
+is the real AS owner and exposes the narrow read-only
+`get_skyseed_autonomous_systems()` query used by static-input generation.
+
+The file-input schema and keys remain v1. `configuration/ground_network.py`
+contains only the minimal ordinary SEED ground-network Config needed by the
+complete static example; `configuration/attachments.py` separates node-to-
+network relations from GroundStation attributes and ground-network objects.
 
 ## Static deployment and conceptual dynamic execution stages
 

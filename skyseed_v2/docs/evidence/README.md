@@ -8,12 +8,13 @@ documentation.
 Use `docs/CURRENT.md`, `docs/architecture/` and current source/tests for the
 active package layout and public API.
 
-The current domain-data ownership and file-configuration API validation is
-recorded in
-`domain-data-and-file-configuration-api-convergence-validation.md`.
+The current Config, file-input and direct upstream-Emulator return validation
+is recorded in
+`static-emulator-file-input-convergence-validation.md`.
 
-The current Config-to-Emulator operation module-path validation is recorded in
-`static-emulator-creation-module-rename-validation.md`.
+`domain-data-and-file-configuration-api-convergence-validation.md` and
+`static-emulator-creation-module-rename-validation.md` are historical evidence
+for the superseded creation-result wrapper and old module path.
 
 The current Simulator static-input ownership and two-stage compilation
 terminology validation is recorded in

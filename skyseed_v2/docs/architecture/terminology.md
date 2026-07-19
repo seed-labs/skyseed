@@ -12,9 +12,13 @@ package root.
 | Satellite | The single Satellite entity and the same SEED Node instance; owns only per-Satellite values | `entities/satellite.py` | Orbit owner, Simulator input, container or Config | root and `skyseed_v2.entities` |
 | GroundStation | The single GroundStation entity and the same SEED Router instance | `entities/ground_station.py` | Simulator input, ordinary Router, service or Config | root and `skyseed_v2.entities` |
 | StaticEmulatorConfig | Frozen, backend-independent top-level file or programmatic configuration | `configuration/static_emulator.py` | Emulator entity, runtime state or Simulator input | `skyseed_v2.configuration` |
+| GeneratedOrbitLayout | Frozen rules for expanding one Shell's generated Orbits and Satellites | `configuration/satellite.py` | independent Config, entity population, factory or runtime trajectory | `skyseed_v2.configuration` |
+| RightAscensionDistribution | Frozen right-ascension distribution nested in `GeneratedOrbitLayout` | `configuration/satellite.py` | Orbit, Config root or runtime position | `skyseed_v2.configuration` |
+| InOrbitPhaseDistribution | Frozen in-orbit phase distribution nested in `GeneratedOrbitLayout` | `configuration/satellite.py` | Satellite state, Config root or runtime position | `skyseed_v2.configuration` |
+| InternetExchangeAttachment / LocalNetworkAttachment | Frozen relations connecting a declared node to an existing IX or local Network | `configuration/attachments.py` | GroundStation geography, SEED interface or global reference system | `skyseed_v2.configuration` |
+| EbgpRouterReference | Frozen reference to one declared Router-like eBGP endpoint | `configuration/ground_network.py` | Router entity, global locator or Simulator identity | `skyseed_v2.configuration` |
 | load_static_emulator_config | Direct function that validates versioned YAML and returns `StaticEmulatorConfig` | `configuration/yaml.py` | entity factory, `SkyseedDockerCompiler` or Registry reader | `skyseed_v2.configuration` |
-| create_static_emulator | Direct function that creates Emulator entities and routing layers from Config | `static_emulator_creation.py` | Simulator-input generation, `SkyseedDockerCompiler` or required handwritten facade | `skyseed_v2.static_emulator_creation` |
-| StaticEmulatorCreationResult | Frozen three-field result containing Emulator, Skyseed ASes and ordinary ASes | `static_emulator_creation.py` | entity parent, Simulator input or root convenience API | `skyseed_v2.static_emulator_creation` |
+| create_static_emulator | Stateless function that creates and directly returns an upstream Emulator from `StaticEmulatorConfig` | `static_emulator.py` | result wrapper, Emulator subclass, Simulator-input generation or `SkyseedDockerCompiler` | `skyseed_v2.static_emulator` |
 | SatelliteSimulationInput | Simulator-owned frozen static scalar data combined from one Satellite and its owning Orbit parameters | `simulator/static_input/satellite.py` | Satellite entity, SEED Node, runtime position or execution target | `skyseed_v2.simulator.static_input` |
 | GroundStationSimulationInput | Simulator-owned frozen static scalar data copied from one GroundStation | `simulator/static_input/ground_station.py` | GroundStation entity, SEED Router or execution target | `skyseed_v2.simulator.static_input` |
 | SimulatorStaticInput | Simulator-owned frozen deterministic aggregate of pure static inputs keyed by `NodeId` | `simulator/static_input/static_input.py` | AS traversal, Config, entity/resource index, Registry, container inventory or runtime model | `skyseed_v2.simulator.static_input` |
@@ -24,7 +28,7 @@ package root.
 | SimulationPlanCompiler | **Retired/corrected** shorthand for the over-compressed `abstract Simulation Plan → compiler → concrete dynamic operations` description; retained only to explain the correction | not implemented | frozen future public contract, semantic Planner, BackendPlanner, conceptual `ExecutionCompiler`, `SkyseedDockerCompiler` or shared compiler parent | not implemented |
 | Launcher | Tool that materializes an already compiled Compose project | `materialization/compose_project_launcher.py` | entity service, either compilation stage, Runner or Simulator | `skyseed_v2.materialization` |
 | SkyseedAutonomousSystem | Owner of Shells and GroundStations plus the narrow SEED lifecycle extension | `seedemu_integration/skyseed_autonomous_system.py` | file facade or Simulator-input owner | `skyseed_v2.seedemu_integration` |
-| SatelliteBase | SEED Base Layer integration for the Satellite lifecycle | `seedemu_integration/satellite_base.py` | Emulator entity or file configuration | `skyseed_v2.seedemu_integration` |
+| SatelliteBase | SEED Base Layer integration and real AS owner; provides the narrow Skyseed-AS collection query | `seedemu_integration/satellite_base.py` | Emulator entity, file configuration, global index or Simulator adapter | `skyseed_v2.seedemu_integration` |
 
 ## Qualified-name rule
 
@@ -35,7 +39,8 @@ responsibility.
 
 The file-driven flow is three explicit operations:
 `load_static_emulator_config(path)`, `create_static_emulator(config)` and
-`create_simulator_static_input(creation.skyseed_autonomous_systems)`. The
+`create_simulator_static_input(base.get_skyseed_autonomous_systems())`, where
+`base` is the `SatelliteBase` obtained from the returned Emulator. The
 immutable input types do not read Emulator entities or SEED objects. Do not
 reintroduce a stateless projection/conversion class or input classmethod.
 

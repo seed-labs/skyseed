@@ -11,12 +11,13 @@ from ._validation import _angle, _positive_integer
 
 
 @dataclass(frozen=True, slots=True)
-class RaanDistributionConfig:
+class RightAscensionDistribution:
     """Specify uniform right-ascension input for generated Orbits.
 
-    Layer: immutable Config. `load_static_emulator_config` or programmatic
-    callers create it; a Shell generation config consumes it. It is not an
-    Orbit or runtime trajectory and is public from configuration.
+    Layer: immutable configuration auxiliary value. The YAML reader or
+    programmatic callers create it for GeneratedOrbitLayout. It is not an
+    Orbit, independent Config or runtime trajectory and is public from
+    configuration.
     """
 
     start_deg: float = 0.0
@@ -32,12 +33,13 @@ class RaanDistributionConfig:
 
 
 @dataclass(frozen=True, slots=True)
-class InOrbitPhaseDistributionConfig:
+class InOrbitPhaseDistribution:
     """Specify uniform phase input for generated Satellites.
 
-    Layer: immutable Config. `load_static_emulator_config` or programmatic
-    callers create it for `OrbitGenerationConfig`; it is not Satellite state
-    or a runtime position model and is public from configuration.
+    Layer: immutable configuration auxiliary value. The YAML reader or
+    programmatic callers create it for GeneratedOrbitLayout. It is not
+    Satellite state, independent Config or a runtime position model and is
+    public from configuration.
     """
 
     start_deg: float = 0.0
@@ -62,49 +64,66 @@ class InOrbitPhaseDistributionConfig:
 
 
 @dataclass(frozen=True, slots=True)
-class OrbitGenerationConfig:
+class GeneratedOrbitLayout:
     """Validate deterministic Orbit/Satellite generation input for one Shell.
 
-    Layer: immutable Config. `load_static_emulator_config` or programmatic
-    callers create it; `create_static_emulator` expands it. It is not a
-    population, factory or entity owner and is public from configuration.
+    Layer: immutable configuration auxiliary value. The YAML reader or
+    programmatic callers create it within ShellConfig; create_static_emulator
+    expands it. It is not an independent Config, population, factory or entity
+    owner and is public from configuration.
     """
 
     orbit_count: int
     satellites_per_orbit: int
-    raan: RaanDistributionConfig = RaanDistributionConfig()
-    phase: InOrbitPhaseDistributionConfig = (
-        InOrbitPhaseDistributionConfig()
+    right_ascension_distribution: RightAscensionDistribution = (
+        RightAscensionDistribution()
+    )
+    in_orbit_phase_distribution: InOrbitPhaseDistribution = (
+        InOrbitPhaseDistribution()
     )
 
     def __post_init__(self) -> None:
         _positive_integer(self.orbit_count, "orbit_count")
         _positive_integer(self.satellites_per_orbit, "satellites_per_orbit")
-        if not isinstance(self.raan, RaanDistributionConfig):
-            raise TypeError("raan must be a RaanDistributionConfig")
-        if not isinstance(self.phase, InOrbitPhaseDistributionConfig):
+        if not isinstance(
+            self.right_ascension_distribution,
+            RightAscensionDistribution,
+        ):
             raise TypeError(
-                "phase must be an InOrbitPhaseDistributionConfig"
+                "right_ascension_distribution must be a "
+                "RightAscensionDistribution"
             )
+        if not isinstance(
+            self.in_orbit_phase_distribution,
+            InOrbitPhaseDistribution,
+        ):
+            raise TypeError(
+                "in_orbit_phase_distribution must be an "
+                "InOrbitPhaseDistribution"
+            )
+        right_ascension_distribution = self.right_ascension_distribution
         raan_step = (
             360.0 / self.orbit_count
-            if self.raan.step_deg is None
-            else self.raan.step_deg
+            if right_ascension_distribution.step_deg is None
+            else right_ascension_distribution.step_deg
         )
         raan_values = tuple(
-            (self.raan.start_deg + index * raan_step) % 360.0
+            (right_ascension_distribution.start_deg + index * raan_step)
+            % 360.0
             for index in range(self.orbit_count)
         )
         if len({round(value, 10) for value in raan_values}) != len(raan_values):
             raise ValueError("RAAN distribution generates duplicate Orbits")
 
+        in_orbit_phase_distribution = self.in_orbit_phase_distribution
         phase_step = (
             360.0 / self.satellites_per_orbit
-            if self.phase.step_deg is None
-            else self.phase.step_deg
+            if in_orbit_phase_distribution.step_deg is None
+            else in_orbit_phase_distribution.step_deg
         )
         phase_values = tuple(
-            (self.phase.start_deg + index * phase_step) % 360.0
+            (in_orbit_phase_distribution.start_deg + index * phase_step)
+            % 360.0
             for index in range(self.satellites_per_orbit)
         )
         if len({round(value, 10) for value in phase_values}) != len(phase_values):
@@ -213,8 +232,8 @@ class ShellConfig:
     shell_id: str
     altitude_km: float
     inclination_deg: float
-    generation: OrbitGenerationConfig | None = None
-    orbits: tuple[OrbitConfig, ...] = ()
+    generated_orbit_layout: GeneratedOrbitLayout | None = None
+    explicit_orbits: tuple[OrbitConfig, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -229,22 +248,35 @@ class ShellConfig:
         object.__setattr__(self, "altitude_km", altitude)
         object.__setattr__(self, "inclination_deg", inclination)
 
-        orbits = tuple(self.orbits)
-        if self.generation is not None and not isinstance(
-            self.generation, OrbitGenerationConfig
+        explicit_orbits = tuple(self.explicit_orbits)
+        if self.generated_orbit_layout is not None and not isinstance(
+            self.generated_orbit_layout, GeneratedOrbitLayout
         ):
-            raise TypeError("generation must be an OrbitGenerationConfig")
-        if any(not isinstance(item, OrbitConfig) for item in orbits):
-            raise TypeError("orbits must contain OrbitConfig values")
-        if (self.generation is None) == (not orbits):
-            raise ValueError(
-                "specify exactly one of generation or explicit orbits"
+            raise TypeError(
+                "generated_orbit_layout must be a GeneratedOrbitLayout"
             )
-        ids = [item.orbit_id for item in orbits]
+        if any(not isinstance(item, OrbitConfig) for item in explicit_orbits):
+            raise TypeError("explicit_orbits must contain OrbitConfig values")
+        if (self.generated_orbit_layout is None) == (not explicit_orbits):
+            raise ValueError(
+                "specify exactly one of generated_orbit_layout or "
+                "explicit_orbits"
+            )
+        ids = [item.orbit_id for item in explicit_orbits]
         if len(set(ids)) != len(ids):
-            raise ValueError("orbits contains a duplicate orbit_id")
+            raise ValueError("explicit_orbits contains a duplicate orbit_id")
         object.__setattr__(
             self,
-            "orbits",
-            tuple(sorted(orbits, key=lambda item: item.orbit_id)),
+            "explicit_orbits",
+            tuple(sorted(explicit_orbits, key=lambda item: item.orbit_id)),
         )
+
+
+__all__ = [
+    "GeneratedOrbitLayout",
+    "InOrbitPhaseDistribution",
+    "OrbitConfig",
+    "RightAscensionDistribution",
+    "SatelliteConfig",
+    "ShellConfig",
+]

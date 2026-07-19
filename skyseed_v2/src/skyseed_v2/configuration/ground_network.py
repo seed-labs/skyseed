@@ -1,4 +1,4 @@
-"""Immutable Network, Router, IX, AS, and eBGP Config values."""
+"""Thin Config adapter for ordinary upstream SEED ground-network objects."""
 
 from __future__ import annotations
 
@@ -6,63 +6,17 @@ from dataclasses import dataclass
 
 from skyseed_v2.identifier import validate_identifier
 
-from ._validation import (
-    _asn,
-    _ipv4_address,
-    _ipv4_network,
-    _positive_integer,
-)
-
-
-@dataclass(frozen=True, slots=True)
-class InternetExchangeAttachmentConfig:
-    """Describe one static node-to-IX attachment input.
-
-    Layer: immutable Config. It is nested in node Config values and consumed
-    by `create_static_emulator`; it is not a network interface or SEED object.
-    It is public from configuration for programmatic input.
-    """
-
-    ix_id: int
-    address: str
-
-    def __post_init__(self) -> None:
-        _positive_integer(self.ix_id, "ix_id")
-        object.__setattr__(
-            self, "address", _ipv4_address(self.address, "address")
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class LocalNetworkAttachmentConfig:
-    """Describe one ordinary Router attachment to an AS-owned network.
-
-    Layer: immutable Config. Input callers create it and
-    `create_static_emulator` passes it to public SEED join methods. It is not
-    an interface or Network entity and is public from configuration.
-    """
-
-    network_id: str
-    address: str
-
-    def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
-            "network_id",
-            validate_identifier(self.network_id, "network_id"),
-        )
-        object.__setattr__(
-            self, "address", _ipv4_address(self.address, "address")
-        )
+from ._validation import _asn, _ipv4_network, _positive_integer
+from .attachments import InternetExchangeAttachment, LocalNetworkAttachment
 
 
 @dataclass(frozen=True, slots=True)
 class InternetExchangeConfig:
-    """Describe one static Internet exchange construction input.
+    """Describe one upstream SEED Internet exchange construction input.
 
-    Layer: immutable Config. `load_static_emulator_config` or programmatic
-    callers create it and `create_static_emulator` calls the SEED Base API. It
-    is not an IX entity or lifecycle owner and is public from configuration.
+    Layer: immutable Config in the thin ground-network adapter. File or
+    programmatic callers create it and static Emulator construction consumes
+    it. It is not an IX entity and is public from configuration.
     """
 
     ix_id: int
@@ -78,11 +32,11 @@ class InternetExchangeConfig:
 
 @dataclass(frozen=True, slots=True)
 class NetworkConfig:
-    """Describe one ordinary-AS static IPv4 Network input.
+    """Describe one ordinary-AS upstream SEED IPv4 Network input.
 
-    Layer: immutable Config. Input callers create it and
-    `create_static_emulator` consumes it through public SEED calls. It is not
-    a SEED Network and is public from configuration.
+    Layer: immutable Config in the thin ground-network adapter. File or
+    programmatic callers create it and static Emulator construction consumes
+    it. It is not a SEED Network and is public from configuration.
     """
 
     network_id: str
@@ -99,16 +53,16 @@ class NetworkConfig:
 
 @dataclass(frozen=True, slots=True)
 class RouterConfig:
-    """Describe one ordinary SEED Router construction input.
+    """Describe one ordinary upstream SEED Router construction input.
 
-    Layer: immutable Config. Input callers create it and
-    `create_static_emulator` calls ordinary AS/Router methods. It is not a
-    Router or integration adapter and is public from configuration.
+    Layer: immutable Config in the thin ground-network adapter. It groups
+    separately typed attachment relations for static construction. It is not a
+    Router or attachment and is public from configuration.
     """
 
     router_id: str
-    network_attachments: tuple[LocalNetworkAttachmentConfig, ...] = ()
-    ix_attachments: tuple[InternetExchangeAttachmentConfig, ...] = ()
+    network_attachments: tuple[LocalNetworkAttachment, ...] = ()
+    ix_attachments: tuple[InternetExchangeAttachment, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -117,20 +71,18 @@ class RouterConfig:
         network_attachments = tuple(self.network_attachments)
         ix_attachments = tuple(self.ix_attachments)
         if any(
-            not isinstance(item, LocalNetworkAttachmentConfig)
+            not isinstance(item, LocalNetworkAttachment)
             for item in network_attachments
         ):
             raise TypeError(
-                "network_attachments must contain "
-                "LocalNetworkAttachmentConfig values"
+                "network_attachments must contain LocalNetworkAttachment values"
             )
         if any(
-            not isinstance(item, InternetExchangeAttachmentConfig)
+            not isinstance(item, InternetExchangeAttachment)
             for item in ix_attachments
         ):
             raise TypeError(
-                "ix_attachments must contain "
-                "InternetExchangeAttachmentConfig values"
+                "ix_attachments must contain InternetExchangeAttachment values"
             )
         if len({item.network_id for item in network_attachments}) != len(
             network_attachments
@@ -158,9 +110,9 @@ class RouterConfig:
 class OrdinaryAutonomousSystemConfig:
     """Describe one ordinary ground AS with Network and Router inputs.
 
-    Layer: immutable Config. `load_static_emulator_config` or programmatic
-    callers create it and `create_static_emulator` uses public SEED APIs. It is
-    not an AutonomousSystem or entity owner and is public from configuration.
+    Layer: immutable Config in the thin ground-network adapter. It exists only
+    to assemble upstream objects in the complete static example. It is not an
+    AutonomousSystem or general SEED schema and is public from configuration.
     """
 
     asn: int
@@ -172,19 +124,13 @@ class OrdinaryAutonomousSystemConfig:
         networks = tuple(self.networks)
         routers = tuple(self.routers)
         if not networks or any(
-            not isinstance(item, NetworkConfig)
-            for item in networks
+            not isinstance(item, NetworkConfig) for item in networks
         ):
-            raise ValueError(
-                "networks must contain at least one NetworkConfig"
-            )
+            raise ValueError("networks must contain at least one NetworkConfig")
         if not routers or any(
-            not isinstance(item, RouterConfig)
-            for item in routers
+            not isinstance(item, RouterConfig) for item in routers
         ):
-            raise ValueError(
-                "routers must contain at least one RouterConfig"
-            )
+            raise ValueError("routers must contain at least one RouterConfig")
         if len({item.network_id for item in networks}) != len(networks):
             raise ValueError("networks contains a duplicate network_id")
         if len({item.router_id for item in routers}) != len(routers):
@@ -202,12 +148,12 @@ class OrdinaryAutonomousSystemConfig:
 
 
 @dataclass(frozen=True, slots=True)
-class EbgpRouterReferenceConfig:
+class EbgpRouterReference:
     """Identify one statically declared Router-like peering endpoint.
 
-    Layer: immutable Config. Input callers create it and nest it
-    in an eBGP config; it is not a Router, runtime locator or Simulator
-    identity and is public from configuration.
+    Layer: immutable configuration auxiliary value. EbgpPeeringConfig contains
+    it and validation resolves it against declared owners. It is not a Router,
+    global locator or Simulator identity and is public from configuration.
     """
 
     asn: int
@@ -222,38 +168,58 @@ class EbgpRouterReferenceConfig:
 
 @dataclass(frozen=True, slots=True)
 class EbgpPeeringConfig:
-    """Describe one explicit static eBGP peering input on an IX.
+    """Describe one explicit symmetric unfiltered eBGP peering on an IX.
 
-    Layer: immutable Config. Input callers create it and
-    `create_static_emulator` configures the SEED Ebgp Layer. It is not a
+    Layer: immutable Config in the thin ground-network adapter. Static Emulator
+    construction passes it to the upstream Ebgp layer. It is not a routing
     session entity or dynamic route and is public from configuration.
     """
 
     ix_id: int
-    first: EbgpRouterReferenceConfig
-    second: EbgpRouterReferenceConfig
+    peer_routers: tuple[EbgpRouterReference, EbgpRouterReference]
     relationship: str = "unfiltered"
 
     def __post_init__(self) -> None:
         _positive_integer(self.ix_id, "ix_id")
-        if not isinstance(
-            self.first, EbgpRouterReferenceConfig
-        ) or not isinstance(self.second, EbgpRouterReferenceConfig):
+        peer_routers = tuple(self.peer_routers)
+        if len(peer_routers) != 2 or any(
+            not isinstance(peer, EbgpRouterReference) for peer in peer_routers
+        ):
             raise TypeError(
-                "first and second must be "
-                "EbgpRouterReferenceConfig values"
+                "peer_routers must contain exactly two EbgpRouterReference values"
             )
-        if self.first.asn == self.second.asn:
+        if peer_routers[0].asn == peer_routers[1].asn:
             raise ValueError("eBGP peers must belong to different ASNs")
         if self.relationship != "unfiltered":
             raise ValueError("relationship must be 'unfiltered'")
+        object.__setattr__(
+            self,
+            "peer_routers",
+            tuple(
+                sorted(
+                    peer_routers,
+                    key=lambda peer: (peer.asn, peer.router_id),
+                )
+            ),
+        )
 
     @property
     def sort_key(self) -> tuple[int, int, str, int, str]:
-        peers = sorted(
-            (
-                (self.first.asn, self.first.router_id),
-                (self.second.asn, self.second.router_id),
-            )
+        first, second = self.peer_routers
+        return (
+            self.ix_id,
+            first.asn,
+            first.router_id,
+            second.asn,
+            second.router_id,
         )
-        return (self.ix_id, *peers[0], *peers[1])
+
+
+__all__ = [
+    "EbgpPeeringConfig",
+    "EbgpRouterReference",
+    "InternetExchangeConfig",
+    "NetworkConfig",
+    "OrdinaryAutonomousSystemConfig",
+    "RouterConfig",
+]

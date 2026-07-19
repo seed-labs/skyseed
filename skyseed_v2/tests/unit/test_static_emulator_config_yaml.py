@@ -104,14 +104,16 @@ def test_valid_yaml_loads_only_immutable_static_config(
 
     assert isinstance(result, StaticEmulatorConfig)
     assert result.skyseed_autonomous_systems[0].asn == 65001
-    assert result.skyseed_autonomous_systems[0].shells[0].generation.orbit_count == 2
+    shell = result.skyseed_autonomous_systems[0].shells[0]
+    assert shell.generated_orbit_layout is not None
+    assert shell.generated_orbit_layout.orbit_count == 2
     assert result.skyseed_autonomous_systems[0].ground_stations[0].operator == (
         "Descriptive Operator"
     )
     assert result.ordinary_autonomous_systems[0].networks[0].prefix == (
         "10.202.0.0/24"
     )
-    assert result.ebgp_peerings[0].first.router_id == "gs-a"
+    assert result.ebgp_peerings[0].peer_routers[0].router_id == "gs-a"
     assert not hasattr(result, "emulator")
     assert not hasattr(result, "compiler")
     with pytest.raises(FrozenInstanceError):

@@ -1,68 +1,197 @@
 # Static Emulator Configuration
 
-## Scope
+## Scope and public path
 
-The large static example needs data-driven construction without introducing a
-new entity parent or hiding the public ownership API. Its direct path is:
+Config is the frozen, validated declaration of how to construct a static
+Emulator. It is not an entity or runtime object. The single complete file path
+is:
 
-```text
-versioned YAML
-→ load_static_emulator_config(path)
-→ immutable StaticEmulatorConfig
-→ create_static_emulator(config)
-→ public create/join methods
-→ StaticEmulatorCreationResult
-→ create_simulator_static_input(creation.skyseed_autonomous_systems)
-→ SimulatorStaticInput
-→ SkyseedDockerCompiler
+```mermaid
+flowchart LR
+    Y[YAML file] --> L[load_static_emulator_config]
+    L --> C[StaticEmulatorConfig]
+    C --> F[create_static_emulator]
+    F --> E[upstream seedemu.core.Emulator]
+    E --> B[Emulator.getLayer Base]
+    B --> A[SatelliteBase.get_skyseed_autonomous_systems]
+    A --> S[create_simulator_static_input]
+    S --> I[SimulatorStaticInput]
+    E --> R[render]
+    R --> D[SkyseedDockerCompiler]
 ```
 
-## Versioned input and configuration
+`create_static_emulator(config)` returns `Emulator` directly. There is no
+creation-result wrapper, Emulator subclass or `.emulator` second lookup.
 
-`configuration/yaml.py` owns strict YAML parsing, duplicate-key rejection,
-external GroundStation file resolution and schema-version checks. Its direct
-function returns `StaticEmulatorConfig`; it does not construct entities.
+## Package structure and meanings
 
-The frozen backend-independent values are split for discoverability:
+```text
+configuration/
+├── __init__.py
+├── _validation.py
+├── satellite.py
+├── ground_station.py
+├── ground_network.py
+├── attachments.py
+├── static_emulator.py
+└── yaml.py
+```
 
-- `configuration/satellite.py`;
-- `configuration/ground_station.py`;
-- `configuration/network.py`;
-- `configuration/static_emulator.py`.
+- `satellite.py` contains Shell/Orbit/Satellite Config and generated-layout
+  auxiliary values.
+- `ground_station.py` contains stable GroundStation attributes and the one
+  private stable-ID derivation rule.
+- `ground_network.py` is a thin Config adapter for ordinary upstream SEED AS,
+  Network, Router, IX and eBGP objects.
+- `attachments.py` contains node-to-existing-network relations. An attachment
+  is neither GroundStation geography nor a SEED interface entity.
+- `static_emulator.py` validates the complete cross-record Config graph.
+- `yaml.py` alone knows Path, PyYAML, schema versions and YAML keys.
 
-Cross-record validation remains in `StaticEmulatorConfig`. Generated IDs are
-deterministic and independent of input order. Each former qualified
-construction-input type has a one-to-one `*Config` name; no old alias remains.
+The physical YAML remains `skyseed-static-emulator/v1`, including the optional
+referenced `skyseed-ground-stations/v1` data file already used by the large
+example. No fragment loader, new fragment schema, schema v2 or TLE path exists.
 
-## Emulator creation
+## Config and auxiliary values
 
-`static_emulator_creation.py` exposes `create_static_emulator(config)`. The
-function uses the same public entity and seedemu methods as handwritten
-callers. It creates no alternate hierarchy and no population/constellation
-object. The operation-specific module name distinguishes it from
-`configuration/static_emulator.py`, which contains only Config values.
+```mermaid
+classDiagram
+    class StaticEmulatorConfig {
+        <<immutable Config>>
+        +skyseed_autonomous_systems
+        +internet_exchanges
+        +ordinary_autonomous_systems
+        +ebgp_peerings
+    }
+    class SkyseedAutonomousSystemConfig {
+        <<immutable Config>>
+        +asn
+        +shells
+        +ground_stations
+    }
+    class ShellConfig {
+        <<immutable Config>>
+        +generated_orbit_layout
+        +explicit_orbits
+    }
+    class OrbitConfig {
+        <<immutable Config>>
+    }
+    class SatelliteConfig {
+        <<immutable Config>>
+    }
+    class GroundStationConfig {
+        <<immutable Config>>
+    }
+    class GeneratedOrbitLayout {
+        <<configuration auxiliary value>>
+        +right_ascension_distribution
+        +in_orbit_phase_distribution
+    }
+    class RightAscensionDistribution {
+        <<configuration auxiliary value>>
+    }
+    class InOrbitPhaseDistribution {
+        <<configuration auxiliary value>>
+    }
+    class InternetExchangeConfig {
+        <<thin ground-network Config>>
+    }
+    class OrdinaryAutonomousSystemConfig {
+        <<thin ground-network Config>>
+    }
+    class NetworkConfig {
+        <<thin ground-network Config>>
+    }
+    class RouterConfig {
+        <<thin ground-network Config>>
+    }
+    class EbgpPeeringConfig {
+        <<thin ground-network Config>>
+        +peer_routers
+    }
+    class EbgpRouterReference {
+        <<configuration reference value>>
+    }
+    class InternetExchangeAttachment {
+        <<configuration relation value>>
+    }
+    class LocalNetworkAttachment {
+        <<configuration relation value>>
+    }
 
-`StaticEmulatorCreationResult` exposes exactly the Emulator, Skyseed AS tuple
-and ordinary AS tuple. It deliberately has no Simulator-input field.
+    StaticEmulatorConfig *-- SkyseedAutonomousSystemConfig
+    SkyseedAutonomousSystemConfig *-- ShellConfig
+    SkyseedAutonomousSystemConfig *-- GroundStationConfig
+    ShellConfig *-- GeneratedOrbitLayout
+    ShellConfig *-- OrbitConfig
+    GeneratedOrbitLayout *-- RightAscensionDistribution
+    GeneratedOrbitLayout *-- InOrbitPhaseDistribution
+    OrbitConfig *-- SatelliteConfig
+    StaticEmulatorConfig *-- InternetExchangeConfig
+    StaticEmulatorConfig *-- OrdinaryAutonomousSystemConfig
+    OrdinaryAutonomousSystemConfig *-- NetworkConfig
+    OrdinaryAutonomousSystemConfig *-- RouterConfig
+    RouterConfig *-- LocalNetworkAttachment
+    RouterConfig *-- InternetExchangeAttachment
+    GroundStationConfig *-- InternetExchangeAttachment
+    StaticEmulatorConfig *-- EbgpPeeringConfig
+    EbgpPeeringConfig *-- EbgpRouterReference
+```
 
-## Simulator input generation
+`ShellConfig` enforces `generated_orbit_layout XOR explicit_orbits`. YAML keeps
+the old `generation`, `orbits`, `raan` and `phase` keys; only Python names are
+more explicit. The currently supported eBGP relationship is `unfiltered` and
+symmetric, so Python stores exactly two canonicalized `peer_routers`; YAML
+keeps `first` and `second`.
 
-The caller separately invokes
-`create_simulator_static_input(creation.skyseed_autonomous_systems)`. This
-makes the Emulator → Simulator static-data boundary visible and keeps Config
-creation independent of future Simulator data.
+## Creation ordering and ownership
 
-No NodeId-to-entity mapping is generated. Any future dynamic-execution lookup
-will follow the existing Base/AS/Shell/Orbit owner methods on demand and remains
-outside this configuration and input-generation flow.
+```text
+create upstream Emulator and SatelliteBase
+→ create IXes
+→ create ordinary ground AS / Network / Router objects
+→ create Skyseed AS / Shell / Orbit / Satellite / GroundStation objects
+→ apply node-to-IX attachments through joinNetwork
+→ configure routing, OSPF, iBGP and eBGP layers
+→ return Emulator
+```
 
-## Formal examples and materialization
+The operation delegates to existing public owner APIs and does not duplicate
+entity validation. `SatelliteBase` is the true AS owner. Its
+`get_skyseed_autonomous_systems()` query filters its existing upstream-owned AS
+collection without retaining a parallel collection or knowing Config,
+Simulator or containers.
 
-The isolated and complete examples remain handwritten. Only
-`large_static_network` uses YAML because hundreds of repeated values are data
-rather than teaching code. The example compiles and validates Compose output;
-it does not build or start 365 services.
+## Upstream ground-network file investigation
 
-Compose materialization consumes `SkyseedDockerCompiler` output separately.
-Configuration loading and Emulator creation never launch containers, and
-materialization does not load Config or reconstruct entities.
+At the pinned upstream commit `61acdf4c9699b25b06843ec4aad747108b05924e`
+and distribution version 0.0.7:
+
+- ordinary topology is constructed by formal imperative `Base`,
+  `AutonomousSystem`, `Node` and `Ebgp` APIs;
+- no formal declarative reader creates ordinary AS/Router/Network/IX/eBGP
+  objects from YAML or JSON;
+- example `example.yaml` files are test-runner manifests rather than topology;
+- Kubernetes YAML readers configure deployment infrastructure, not Emulator
+  topology;
+- `Emulator.dump/load` pickles and restores the entire Registry and layer
+  database, so loading replaces the target Emulator state rather than adding a
+  referencable ground-network fragment;
+- `Emulator.merge` combines complete Emulator layer sets and requires merger
+  handlers for overlapping types; it is not a cross-file topology reference
+  mechanism and does not close render/compile by itself.
+
+Consequently, the current ordinary ground-network Config remains the smallest
+adapter required by the complete static example. A future physical split into
+Skyseed and ground-network files is only a possible later design decision.
+
+## Dependency rules
+
+- Config modules do not import YAML, Path, entities, seedemu or Simulator.
+- `configuration/yaml.py` imports PyYAML and Config only.
+- entities and Simulator static input do not import configuration.
+- top-level `static_emulator.py` is the sole operation module that knows Config
+  and real entity/seedemu creation APIs together.
+- `SkyseedDockerCompiler` consumes the rendered Emulator model, never Config.
+- Simulator implementation remains not started.

@@ -68,32 +68,38 @@ def test_identity_and_generation_exports_stay_with_their_owner_modules() -> None
     assert not hasattr(generation, "create_emulator_node_index")
 
 
-def test_configuration_exports_only_config_names_without_old_type_aliases() -> None:
+def test_configuration_exports_precise_config_and_auxiliary_value_names() -> None:
     configuration = importlib.import_module("skyseed_v2.configuration")
 
-    expected_config_names = {
+    expected_names = {
         "EbgpPeeringConfig",
-        "EbgpRouterReferenceConfig",
+        "EbgpRouterReference",
+        "GeneratedOrbitLayout",
         "GroundStationConfig",
-        "InOrbitPhaseDistributionConfig",
-        "InternetExchangeAttachmentConfig",
+        "InOrbitPhaseDistribution",
+        "InternetExchangeAttachment",
         "InternetExchangeConfig",
-        "LocalNetworkAttachmentConfig",
+        "LocalNetworkAttachment",
         "NetworkConfig",
         "OrbitConfig",
-        "OrbitGenerationConfig",
         "OrdinaryAutonomousSystemConfig",
-        "RaanDistributionConfig",
+        "RightAscensionDistribution",
         "RouterConfig",
         "SatelliteConfig",
         "ShellConfig",
         "SkyseedAutonomousSystemConfig",
         "StaticEmulatorConfig",
     }
-    assert expected_config_names <= set(configuration.__all__)
+    assert expected_names <= set(configuration.__all__)
     for retired_name in (
+        "EbgpRouterReferenceConfig",
         "GroundStationSpecification",
+        "InOrbitPhaseDistributionConfig",
+        "InternetExchangeAttachmentConfig",
+        "LocalNetworkAttachmentConfig",
+        "OrbitGenerationConfig",
         "OrbitSpecification",
+        "RaanDistributionConfig",
         "SatelliteSpecification",
         "ShellSpecification",
         "StaticEmulatorScenarioSpecification",

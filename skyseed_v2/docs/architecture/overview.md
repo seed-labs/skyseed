@@ -30,7 +30,7 @@ node_id.py
 simulator/
 └── static_input/
 configuration/
-static_emulator_creation.py
+static_emulator.py
 simulator_input_generation.py
 materialization/
 ```
@@ -101,17 +101,21 @@ adapter itself.
 `configuration/` contains frozen backend-independent Config values:
 
 - `satellite.py`: generated and explicit Shell/Orbit/Satellite Config;
-- `ground_station.py`: GroundStation Config and stable-ID derivation;
-- `network.py`: Network, Router, IX attachment, ordinary AS and eBGP Config;
+- `ground_station.py`: GroundStation Config and private stable-ID derivation;
+- `attachments.py`: node-to-existing-network relation values;
+- `ground_network.py`: the minimal ordinary Network, Router, IX, AS and eBGP
+  Config adapter required by the complete static example;
 - `configuration/static_emulator.py`: Skyseed AS and complete static Emulator
   Config;
 - `yaml.py`: strict versioned YAML reading.
 
 `load_static_emulator_config(path)` returns one `StaticEmulatorConfig`.
-`static_emulator_creation.py` owns `create_static_emulator(config)`, which
-sequences public entity and seedemu
-create/join calls, returning only the Emulator and both AS collections.
-`create_simulator_static_input(...)` is a separate explicit operation.
+Top-level `static_emulator.py` owns `create_static_emulator(config)`, which
+sequences public entity and seedemu create/join calls and directly returns the
+upstream `seedemu.core.Emulator`. `Emulator.getLayer("Base")` retrieves the
+real `SatelliteBase` owner, whose narrow
+`get_skyseed_autonomous_systems()` query supplies the AS collection for the
+separate `create_simulator_static_input(...)` operation.
 Handwritten callers bypass the file-driven operations.
 
 ## 6. seedemu integration
@@ -120,6 +124,7 @@ Handwritten callers bypass the file-driven operations.
 
 - `SkyseedAutonomousSystem` owns Skyseed entities and bridges their lifecycle;
 - `SatelliteBase` incorporates Satellite nodes into Base render behavior;
+  it also exposes only the Skyseed AS values it truly owns;
 - `SkyseedDockerCompiler` handles isolated Satellite output and normalized
   metadata while ordinary nodes retain upstream paths.
 

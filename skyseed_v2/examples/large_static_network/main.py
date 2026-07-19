@@ -7,9 +7,9 @@ from pathlib import Path
 
 from examples._compose_project_scripts import write_compose_project_scripts
 from skyseed_v2.configuration import load_static_emulator_config
-from skyseed_v2.seedemu_integration import SkyseedDockerCompiler
+from skyseed_v2.seedemu_integration import SatelliteBase, SkyseedDockerCompiler
 from skyseed_v2.simulator_input_generation import create_simulator_static_input
-from skyseed_v2.static_emulator_creation import create_static_emulator
+from skyseed_v2.static_emulator import create_static_emulator
 
 
 EXAMPLE_ROOT = Path(__file__).resolve().parent
@@ -27,17 +27,19 @@ def main() -> None:
     arguments = parser.parse_args()
 
     config = load_static_emulator_config(arguments.scenario)
-    creation = create_static_emulator(config)
-    simulator_input = create_simulator_static_input(
-        creation.skyseed_autonomous_systems
-    )
+    emulator = create_static_emulator(config)
+    base = emulator.getLayer("Base")
+    if not isinstance(base, SatelliteBase):
+        raise TypeError("static Emulator Base layer must be a SatelliteBase")
+    skyseed_autonomous_systems = base.get_skyseed_autonomous_systems()
+    simulator_input = create_simulator_static_input(skyseed_autonomous_systems)
     satellite_count = sum(
         len(autonomous_system.satellites())
-        for autonomous_system in creation.skyseed_autonomous_systems
+        for autonomous_system in skyseed_autonomous_systems
     )
     ground_station_count = sum(
         len(autonomous_system.ground_stations())
-        for autonomous_system in creation.skyseed_autonomous_systems
+        for autonomous_system in skyseed_autonomous_systems
     )
     print(
         f"constructed {satellite_count} Satellites, "
@@ -45,8 +47,8 @@ def main() -> None:
         f"{len(simulator_input.list_nodes())} static Simulator inputs"
     )
 
-    creation.emulator.render()
-    creation.emulator.compile(
+    emulator.render()
+    emulator.compile(
         SkyseedDockerCompiler(
             internet_map_enabled=not arguments.no_internet_map
         ),

@@ -9,12 +9,12 @@ from math import isfinite
 from skyseed_v2.identifier import validate_identifier
 
 from ._validation import _text
-from .network import InternetExchangeAttachmentConfig
+from .attachments import InternetExchangeAttachment
 
 
 @dataclass(frozen=True, slots=True)
 class GroundStationConfig:
-    """Describe static GroundStation construction and IX attachment input.
+    """Describe static GroundStation values and its attachment relations.
 
     Layer: immutable Config. `load_static_emulator_config` or programmatic
     callers create it; `create_static_emulator` calls
@@ -30,7 +30,7 @@ class GroundStationConfig:
     station_type: str
     ground_station_id: str | None = None
     identity_key: str | None = None
-    ix_attachments: tuple[InternetExchangeAttachmentConfig, ...] = ()
+    ix_attachments: tuple[InternetExchangeAttachment, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -76,12 +76,12 @@ class GroundStationConfig:
 
         attachments = tuple(self.ix_attachments)
         if any(
-            not isinstance(item, InternetExchangeAttachmentConfig)
+            not isinstance(item, InternetExchangeAttachment)
             for item in attachments
         ):
             raise TypeError(
                 "ix_attachments must contain "
-                "InternetExchangeAttachmentConfig values"
+                "InternetExchangeAttachment values"
             )
         if len({item.ix_id for item in attachments}) != len(attachments):
             raise ValueError("ix_attachments contains a duplicate ix_id")
@@ -92,7 +92,7 @@ class GroundStationConfig:
         )
 
 
-def ground_station_id_for(config: GroundStationConfig) -> str:
+def _derive_ground_station_id(config: GroundStationConfig) -> str:
     """Resolve one v2-native stable ID without using input order or SEED state."""
 
     if not isinstance(config, GroundStationConfig):
@@ -102,3 +102,6 @@ def ground_station_id_for(config: GroundStationConfig) -> str:
     assert config.identity_key is not None
     digest = sha256(config.identity_key.encode("utf-8")).hexdigest()[:20]
     return f"ground-station-{digest}"
+
+
+__all__ = ["GroundStationConfig"]

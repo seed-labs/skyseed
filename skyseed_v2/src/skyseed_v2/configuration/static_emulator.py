@@ -6,13 +6,13 @@ from dataclasses import dataclass
 from ipaddress import IPv4Address, IPv4Network
 
 from ._validation import _asn
-from .ground_station import GroundStationConfig, ground_station_id_for
-from .network import (
+from .attachments import InternetExchangeAttachment
+from .ground_network import (
     EbgpPeeringConfig,
-    InternetExchangeAttachmentConfig,
     InternetExchangeConfig,
     OrdinaryAutonomousSystemConfig,
 )
+from .ground_station import GroundStationConfig, _derive_ground_station_id
 from .satellite import ShellConfig
 
 
@@ -48,13 +48,13 @@ class SkyseedAutonomousSystemConfig:
             )
         if len({item.shell_id for item in shells}) != len(shells):
             raise ValueError("shells contains a duplicate shell_id")
-        station_ids = [ground_station_id_for(item) for item in stations]
+        station_ids = [_derive_ground_station_id(item) for item in stations]
         if len(set(station_ids)) != len(station_ids):
             raise ValueError("ground_stations contains a duplicate logical ID")
         explicit_satellite_ids = [
             satellite.satellite_id
             for shell in shells
-            for orbit in shell.orbits
+            for orbit in shell.explicit_orbits
             for satellite in orbit.satellites
         ]
         if len(set(explicit_satellite_ids)) != len(explicit_satellite_ids):
@@ -67,7 +67,7 @@ class SkyseedAutonomousSystemConfig:
         object.__setattr__(
             self,
             "ground_stations",
-            tuple(sorted(stations, key=ground_station_id_for)),
+            tuple(sorted(stations, key=_derive_ground_station_id)),
         )
 
 
@@ -171,7 +171,7 @@ class StaticEmulatorConfig:
         for autonomous_system in self.skyseed_autonomous_systems:
             router_attachments: dict[str, set[int]] = {}
             for station in autonomous_system.ground_stations:
-                station_id = ground_station_id_for(station)
+                station_id = _derive_ground_station_id(station)
                 router_attachments[station_id] = {
                     attachment.ix_id for attachment in station.ix_attachments
                 }
@@ -229,7 +229,7 @@ class StaticEmulatorConfig:
                 raise ValueError(
                     f"eBGP peering references unknown IX {peering.ix_id}"
                 )
-            for peer in (peering.first, peering.second):
+            for peer in peering.peer_routers:
                 if peer.asn not in routers_by_asn:
                     raise ValueError(
                         f"eBGP peer references unknown ASN {peer.asn}"
@@ -248,7 +248,7 @@ class StaticEmulatorConfig:
     @classmethod
     def _validate_ix_attachment(
         cls,
-        attachment: InternetExchangeAttachmentConfig,
+        attachment: InternetExchangeAttachment,
         exchanges: dict[int, IPv4Network],
         ix_addresses: dict[int, set[IPv4Address]],
         node_id: str,

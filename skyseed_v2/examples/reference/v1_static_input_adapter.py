@@ -20,10 +20,10 @@ from examples.reference.v1_reference_snapshot import (
     validate_v1_reference_snapshot,
 )
 from skyseed_v2.configuration import (
+    GeneratedOrbitLayout,
     GroundStationConfig,
-    InOrbitPhaseDistributionConfig,
-    OrbitGenerationConfig,
-    RaanDistributionConfig,
+    InOrbitPhaseDistribution,
+    RightAscensionDistribution,
     ShellConfig,
 )
 
@@ -288,14 +288,14 @@ class V1StaticInputAdapter:
             shell_id=logical_shell_id,
             altitude_km=round(_mean_motion_to_altitude_km(mean_motion), 6),
             inclination_deg=inclination,
-            generation=OrbitGenerationConfig(
+            generated_orbit_layout=GeneratedOrbitLayout(
                 orbit_count=orbit_count,
                 satellites_per_orbit=satellites_per_plane,
-                raan=RaanDistributionConfig(
+                right_ascension_distribution=RightAscensionDistribution(
                     start_deg=first_raan % 360.0,
                     step_deg=raan_step,
                 ),
-                phase=InOrbitPhaseDistributionConfig(
+                in_orbit_phase_distribution=InOrbitPhaseDistribution(
                     start_deg=plane_starts[0],
                     step_deg=phase_step,
                     alternating_orbit_offset_deg=alternating_offset,

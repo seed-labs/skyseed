@@ -183,7 +183,7 @@ def test_large_example_shows_load_create_and_input_generation_directly() -> None
     assert "create_emulator_node_index" not in source
     assert "emulator_node_index" not in source
     assert "from skyseed_v2.configuration import" in source
-    assert "from skyseed_v2.static_emulator_creation import" in source
+    assert "from skyseed_v2.static_emulator import" in source
     assert "from skyseed_v2.simulator_input_generation import" in source
     assert "from skyseed_v2.application import" not in source
     assert "from skyseed_v2.serialization import" not in source
@@ -199,7 +199,8 @@ def test_large_example_shows_load_create_and_input_generation_directly() -> None
     )
     for required_explanation in (
         "only YAML example",
-        "not an Emulator entity",
+        "not an Emulator subclass",
+        "result wrapper",
         "immutable Simulator input snapshot",
         "Config, a SEED Registry",
         "container inventory",

@@ -23,7 +23,8 @@ classDiagram
         +compile(compiler, output)
     }
     class SatelliteBase {
-        <<seedemu integration>>
+        <<seedemu integration + AS owner>>
+        +get_skyseed_autonomous_systems() tuple
     }
     class SkyseedAutonomousSystem {
         <<entity owner + seedemu integration>>
@@ -135,26 +136,30 @@ classDiagram
     class StaticEmulatorConfig {
         <<immutable configuration>>
     }
-    class StaticEmulatorCreationResult {
-        <<operation result>>
-        +emulator
-        +skyseed_autonomous_systems
-        +ordinary_autonomous_systems
-    }
     class Emulator {
         <<upstream seedemu>>
     }
+    class SatelliteBase {
+        <<seedemu integration + AS owner>>
+        +get_skyseed_autonomous_systems() tuple
+    }
+    class SkyseedAutonomousSystem {
+        <<entity owner + seedemu integration>>
+    }
 
-    StaticEmulatorConfig --> StaticEmulatorCreationResult : create_static_emulator
-    StaticEmulatorCreationResult *-- Emulator : exposes
+    StaticEmulatorConfig --> Emulator : create_static_emulator
+    Emulator *-- SatelliteBase : layer
+    SatelliteBase *-- SkyseedAutonomousSystem : owns
 ```
 
 `load_static_emulator_config(path)` creates Config values.
 `create_static_emulator(config)` sequences existing public construction calls
-and returns only the three creation outputs. A separate
-`create_simulator_static_input(creation.skyseed_autonomous_systems)` call
-generates the immutable Simulator input. None is an entity or ownership level,
-and handwritten examples do not require the file-driven operations.
+and directly returns the upstream Emulator. The caller obtains SatelliteBase
+through `Emulator.getLayer("Base")` and invokes the owner's narrow
+`get_skyseed_autonomous_systems()` query before the separate
+`create_simulator_static_input(...)` call. No operation-result class or new
+ownership level exists, and handwritten examples do not require the
+file-driven operations.
 
 Any future dynamic-execution resolution will reuse the implemented owner
 methods rather than add an index: Base `getAutonomousSystem(asn)`, Skyseed AS

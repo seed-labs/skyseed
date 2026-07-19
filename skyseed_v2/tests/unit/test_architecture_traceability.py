@@ -14,7 +14,7 @@ from skyseed_v2 import (
 )
 from skyseed_v2.materialization import ComposeProjectLauncher
 from skyseed_v2.simulator import static_input as simulator_static_input
-from skyseed_v2 import static_emulator_creation
+from skyseed_v2 import static_emulator
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -29,7 +29,7 @@ PUBLIC_MODULES = (
     seedemu_integration,
     simulator_static_input,
     configuration,
-    static_emulator_creation,
+    static_emulator,
 )
 
 
@@ -82,9 +82,6 @@ def test_current_api_mermaid_names_are_real_and_classified() -> None:
         "SimulatorStaticInput": simulator_static_input.SimulatorStaticInput,
         "SkyseedAutonomousSystem": seedemu_integration.SkyseedAutonomousSystem,
         "SkyseedDockerCompiler": seedemu_integration.SkyseedDockerCompiler,
-        "StaticEmulatorCreationResult": (
-            static_emulator_creation.StaticEmulatorCreationResult
-        ),
         "StaticEmulatorConfig": configuration.StaticEmulatorConfig,
     }
     assert names == set(expected_types)
@@ -139,7 +136,6 @@ def test_terminology_and_project_rules_cover_the_governance_contract() -> None:
         "SkyseedDockerCompiler",
         "SimulationPlanCompiler",
         "Launcher",
-        "StaticEmulatorCreationResult",
     ):
         assert f"| {term} |" in terminology
 
@@ -208,12 +204,12 @@ def test_current_emulator_documents_have_no_known_stale_implementation_names() -
         assert required_section in api_document
 
 
-def test_creation_result_is_operation_module_only() -> None:
-    result_type = static_emulator_creation.StaticEmulatorCreationResult
-    assert result_type.__module__ == "skyseed_v2.static_emulator_creation"
-    assert not hasattr(skyseed_v2, result_type.__name__)
-    assert not hasattr(entities, result_type.__name__)
-    assert not hasattr(simulator_static_input, result_type.__name__)
+def test_static_emulator_operation_returns_upstream_emulator_directly() -> None:
+    function = static_emulator.create_static_emulator
+    assert function.__module__ == "skyseed_v2.static_emulator"
+    assert inspect.get_annotations(function, eval_str=True)["return"] is Emulator
+    assert not hasattr(static_emulator, "StaticEmulatorCreationResult")
+    assert not hasattr(skyseed_v2, "create_static_emulator")
 
 
 def test_direct_file_driven_call_chain_is_documented() -> None:
@@ -221,7 +217,7 @@ def test_direct_file_driven_call_chain_is_documented() -> None:
     for operation in (
         "load_static_emulator_config(path)",
         "create_static_emulator(config)",
-        "create_simulator_static_input(creation.skyseed_autonomous_systems)",
+        "base.get_skyseed_autonomous_systems()",
     ):
         assert operation in document
     for retired in (

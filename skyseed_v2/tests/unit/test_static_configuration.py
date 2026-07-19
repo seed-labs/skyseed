@@ -3,13 +3,17 @@ from dataclasses import FrozenInstanceError, fields
 import pytest
 
 from skyseed_v2.configuration import (
+    EbgpPeeringConfig,
+    EbgpRouterReference,
+    GeneratedOrbitLayout,
     GroundStationConfig,
-    InOrbitPhaseDistributionConfig,
-    OrbitGenerationConfig,
+    InOrbitPhaseDistribution,
     OrbitConfig,
-    RaanDistributionConfig,
+    RightAscensionDistribution,
     SatelliteConfig,
     ShellConfig,
+    SkyseedAutonomousSystemConfig,
+    StaticEmulatorConfig,
 )
 
 
@@ -18,24 +22,27 @@ def test_generated_shell_config_is_immutable_and_static_only() -> None:
         shell_id="shell-a",
         altitude_km=560.0,
         inclination_deg=97.6,
-        generation=OrbitGenerationConfig(
+        generated_orbit_layout=GeneratedOrbitLayout(
             orbit_count=6,
             satellites_per_orbit=58,
-            raan=RaanDistributionConfig(0.0, 60.0),
-            phase=InOrbitPhaseDistributionConfig(
+            right_ascension_distribution=RightAscensionDistribution(
+                0.0, 60.0
+            ),
+            in_orbit_phase_distribution=InOrbitPhaseDistribution(
                 0.0, 360.0 / 58, 180.0 / 58
             ),
         ),
     )
 
-    assert config.generation.orbit_count == 6
-    assert config.generation.satellites_per_orbit == 58
+    assert config.generated_orbit_layout is not None
+    assert config.generated_orbit_layout.orbit_count == 6
+    assert config.generated_orbit_layout.satellites_per_orbit == 58
     assert {field.name for field in fields(config)} == {
         "shell_id",
         "altitude_km",
         "inclination_deg",
-        "generation",
-        "orbits",
+        "generated_orbit_layout",
+        "explicit_orbits",
     }
     assert not any(
         "epoch" in field.name
@@ -56,15 +63,16 @@ def test_explicit_shell_normalizes_orbit_and_satellite_input_order() -> None:
         shell_id="shell-explicit",
         altitude_km=550.0,
         inclination_deg=53.0,
-        orbits=(orbit_b, orbit_a),
+        explicit_orbits=(orbit_b, orbit_a),
     )
 
-    assert tuple(orbit.orbit_id for orbit in config.orbits) == (
+    assert tuple(orbit.orbit_id for orbit in config.explicit_orbits) == (
         "orbit-a",
         "orbit-b",
     )
     assert tuple(
-        satellite.satellite_id for satellite in config.orbits[0].satellites
+        satellite.satellite_id
+        for satellite in config.explicit_orbits[0].satellites
     ) == ("satellite-a", "satellite-b")
 
 
@@ -73,8 +81,8 @@ def test_explicit_shell_normalizes_orbit_and_satellite_input_order() -> None:
     (
         {},
         {
-            "generation": OrbitGenerationConfig(1, 1),
-            "orbits": (
+            "generated_orbit_layout": GeneratedOrbitLayout(1, 1),
+            "explicit_orbits": (
                 OrbitConfig(
                     "orbit-a",
                     0.0,
@@ -111,6 +119,37 @@ def test_ground_station_config_has_descriptive_operator_without_service() -> Non
     assert not hasattr(config, "epoch")
 
 
+def test_ground_station_identity_key_is_stable_and_duplicate_safe() -> None:
+    first = GroundStationConfig(
+        display_name="Gateway One",
+        latitude_deg=40.0,
+        longitude_deg=-74.0,
+        elevation_m=10.0,
+        operator="Skyseed",
+        station_type="gateway",
+        identity_key="skyseed|gateway-one|40|-74",
+    )
+    second = GroundStationConfig(
+        display_name="Renamed display only",
+        latitude_deg=41.0,
+        longitude_deg=-73.0,
+        elevation_m=20.0,
+        operator="Skyseed",
+        station_type="gateway",
+        identity_key="skyseed|gateway-one|40|-74",
+    )
+
+    with pytest.raises(ValueError, match="duplicate logical ID"):
+        StaticEmulatorConfig(
+            skyseed_autonomous_systems=(
+                SkyseedAutonomousSystemConfig(
+                    65001,
+                    ground_stations=(first, second),
+                ),
+            )
+        )
+
+
 def test_invalid_and_duplicate_explicit_values_fail_closed() -> None:
     with pytest.raises(ValueError, match="duplicate"):
         OrbitConfig(
@@ -122,7 +161,7 @@ def test_invalid_and_duplicate_explicit_values_fail_closed() -> None:
             ),
         )
     with pytest.raises(ValueError, match="positive integer"):
-        OrbitGenerationConfig(0, 1)
+        GeneratedOrbitLayout(0, 1)
     with pytest.raises(ValueError, match="exactly one"):
         GroundStationConfig(
             display_name="Gateway",
@@ -138,14 +177,30 @@ def test_invalid_and_duplicate_explicit_values_fail_closed() -> None:
 
 def test_generated_distributions_are_valid_before_entity_creation() -> None:
     with pytest.raises(ValueError, match="duplicate Orbits"):
-        OrbitGenerationConfig(
+        GeneratedOrbitLayout(
             orbit_count=2,
             satellites_per_orbit=2,
-            raan=RaanDistributionConfig(0.0, 360.0),
+            right_ascension_distribution=RightAscensionDistribution(
+                0.0, 360.0
+            ),
         )
     with pytest.raises(ValueError, match="duplicate Satellites"):
-        OrbitGenerationConfig(
+        GeneratedOrbitLayout(
             orbit_count=2,
             satellites_per_orbit=2,
-            phase=InOrbitPhaseDistributionConfig(0.0, 360.0),
+            in_orbit_phase_distribution=InOrbitPhaseDistribution(0.0, 360.0),
         )
+
+
+def test_unfiltered_ebgp_peering_uses_one_canonical_symmetric_pair() -> None:
+    peering = EbgpPeeringConfig(
+        100,
+        (
+            EbgpRouterReference(65002, "router-b"),
+            EbgpRouterReference(65001, "router-a"),
+        ),
+    )
+
+    assert tuple(peer.asn for peer in peering.peer_routers) == (65001, 65002)
+    assert not hasattr(peering, "first")
+    assert not hasattr(peering, "second")

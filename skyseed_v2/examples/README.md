@@ -53,13 +53,16 @@ v2 YAML
     -> immutable StaticEmulatorConfig
     -> create_static_emulator(config)
     -> the same public entity create methods
-    -> StaticEmulatorCreationResult
-    -> create_simulator_static_input(creation.skyseed_autonomous_systems)
+    -> upstream Emulator
+    -> Emulator.getLayer("Base")
+    -> SatelliteBase.get_skyseed_autonomous_systems()
+    -> create_simulator_static_input(skyseed_autonomous_systems)
     -> immutable SimulatorStaticInput
 ```
 
-The three operations are direct functions, not stateless service classes.
-`create_static_emulator` does not generate Simulator input. Multiple Shells
+The loading, creation and input-generation operations are direct functions,
+not stateless service classes. `create_static_emulator` returns the actual
+upstream Emulator and does not generate Simulator input. Multiple Shells
 remain a collection owned by an AS; there is no population or `Constellation`
 entity.
 

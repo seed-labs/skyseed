@@ -9,9 +9,9 @@ from examples.large_static_network._compose_support import (
 )
 from examples.large_static_network.main import DEFAULT_SCENARIO
 from skyseed_v2.configuration import load_static_emulator_config
-from skyseed_v2.seedemu_integration import SkyseedDockerCompiler
+from skyseed_v2.seedemu_integration import SatelliteBase, SkyseedDockerCompiler
 from skyseed_v2.simulator_input_generation import create_simulator_static_input
-from skyseed_v2.static_emulator_creation import create_static_emulator
+from skyseed_v2.static_emulator import create_static_emulator
 
 
 METADATA_PREFIX = "org.seedsecuritylabs.seedemu.meta."
@@ -19,11 +19,17 @@ METADATA_PREFIX = "org.seedsecuritylabs.seedemu.meta."
 
 def create_large_static_emulator():
     config = load_static_emulator_config(DEFAULT_SCENARIO)
-    creation = create_static_emulator(config)
+    emulator = create_static_emulator(config)
     simulator_input = create_simulator_static_input(
-        creation.skyseed_autonomous_systems
+        base_for(emulator).get_skyseed_autonomous_systems()
     )
-    return config, creation, simulator_input
+    return config, emulator, simulator_input
+
+
+def base_for(emulator) -> SatelliteBase:
+    base = emulator.getLayer("Base")
+    assert isinstance(base, SatelliteBase)
+    return base
 
 
 def node_files(node) -> dict[str, str]:
@@ -46,14 +52,16 @@ def assert_no_duplicate_yaml_keys(node: Node, path: str = "$") -> None:
 def test_large_static_entities_and_simulator_input_are_deterministic() -> None:
     config, first, first_input = create_large_static_emulator()
     _, second, second_input = create_large_static_emulator()
-    first_as = first.skyseed_autonomous_systems[0]
-    second_as = second.skyseed_autonomous_systems[0]
+    first_base = base_for(first)
+    second_base = base_for(second)
+    first_as = first_base.get_skyseed_autonomous_systems()[0]
+    second_as = second_base.get_skyseed_autonomous_systems()[0]
 
     assert len(first_as.shells) == 1
     assert sum(len(shell.orbits) for shell in first_as.shells) == 6
     assert len(first_as.satellites()) == 348
     assert len(first_as.ground_stations()) == 12
-    assert len(first.ordinary_autonomous_systems) == 2
+    assert len(first_base.getAsns()) == 3
     assert len(config.internet_exchanges) == 2
     assert len(config.ebgp_peerings) == 2
     assert len(first_input.list_nodes()) == 360
@@ -72,10 +80,11 @@ def test_large_static_entities_and_simulator_input_are_deterministic() -> None:
 def test_large_static_compose_inventory_and_static_routing(
     tmp_path: Path,
 ) -> None:
-    _, result, _ = create_large_static_emulator()
+    config, emulator, _ = create_large_static_emulator()
+    base = base_for(emulator)
     output = tmp_path / "output"
-    result.emulator.render()
-    result.emulator.compile(
+    emulator.render()
+    emulator.compile(
         SkyseedDockerCompiler(internet_map_enabled=True),
         str(output),
     )
@@ -141,7 +150,7 @@ def test_large_static_compose_inventory_and_static_routing(
 
     stations = tuple(
         station
-        for autonomous_system in result.skyseed_autonomous_systems
+        for autonomous_system in base.get_skyseed_autonomous_systems()
         for station in autonomous_system.ground_stations()
     )
     bgp_station_count = 0
@@ -151,7 +160,10 @@ def test_large_static_compose_inventory_and_static_routing(
         bgp_station_count += bird.count("protocol bgp ")
         assert len(station.getInterfaces()) == 1
     assert bgp_station_count == 2
-    for autonomous_system in result.ordinary_autonomous_systems:
+    for autonomous_system_config in config.ordinary_autonomous_systems:
+        autonomous_system = base.getAutonomousSystem(
+            autonomous_system_config.asn
+        )
         for router_name in autonomous_system.getRouters():
             bird = node_files(autonomous_system.getRouter(router_name))[
                 "/etc/bird/bird.conf"
