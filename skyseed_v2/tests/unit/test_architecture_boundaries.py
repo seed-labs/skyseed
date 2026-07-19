@@ -270,7 +270,7 @@ def test_static_configuration_is_backend_and_v1_independent() -> None:
         ground_network,
         ground_station,
         satellite,
-        static_emulator,
+        static_emulator_config,
     )
 
     for config_module in (
@@ -279,7 +279,7 @@ def test_static_configuration_is_backend_and_v1_independent() -> None:
         ground_network,
         ground_station,
         satellite,
-        static_emulator,
+        static_emulator_config,
     ):
         imports = imported_modules(config_module)
         assert not any(
@@ -327,7 +327,7 @@ def test_configuration_creation_and_input_generation_respect_boundaries() -> Non
     from skyseed_v2.entities import ground_station, satellite
 
     yaml_imports = imported_modules(config_yaml)
-    assert ".static_emulator" in yaml_imports
+    assert ".static_emulator_config" in yaml_imports
     for forbidden_prefix in (
         "seedemu",
         "skyseed_v2.seedemu_integration",
@@ -479,6 +479,16 @@ def test_retired_file_boundary_packages_and_public_classes_are_absent() -> None:
         assert not (project_package / retired_package).exists()
     assert importlib.util.find_spec("skyseed_v2.static_emulator") is not None
     assert importlib.util.find_spec("skyseed_v2.static_emulator_creation") is None
+    assert (
+        importlib.util.find_spec(
+            "skyseed_v2.configuration.static_emulator_config"
+        )
+        is not None
+    )
+    assert (
+        importlib.util.find_spec("skyseed_v2.configuration.static_emulator")
+        is None
+    )
     assert importlib.util.find_spec("skyseed_v2.emulator") is None
 
     import skyseed_v2.configuration as configuration

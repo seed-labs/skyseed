@@ -33,7 +33,7 @@ configuration/
 ├── ground_station.py
 ├── ground_network.py
 ├── attachments.py
-├── static_emulator.py
+├── static_emulator_config.py
 └── yaml.py
 ```
 
@@ -45,7 +45,7 @@ configuration/
   Network, Router, IX and eBGP objects.
 - `attachments.py` contains node-to-existing-network relations. An attachment
   is neither GroundStation geography nor a SEED interface entity.
-- `static_emulator.py` validates the complete cross-record Config graph.
+- `static_emulator_config.py` validates the complete cross-record Config graph.
 - `yaml.py` alone knows Path, PyYAML, schema versions and YAML keys.
 
 The physical YAML remains `skyseed-static-emulator/v1`, including the optional

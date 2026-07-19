@@ -11,7 +11,7 @@ package root.
 | OrbitParameters | Frozen altitude, inclination and right ascension shared by all Satellites in one Orbit | `entities/orbit.py` | Satellite field, dynamic position or trajectory | root and `skyseed_v2.entities` |
 | Satellite | The single Satellite entity and the same SEED Node instance; owns only per-Satellite values | `entities/satellite.py` | Orbit owner, Simulator input, container or Config | root and `skyseed_v2.entities` |
 | GroundStation | The single GroundStation entity and the same SEED Router instance | `entities/ground_station.py` | Simulator input, ordinary Router, service or Config | root and `skyseed_v2.entities` |
-| StaticEmulatorConfig | Frozen, backend-independent top-level file or programmatic configuration | `configuration/static_emulator.py` | Emulator entity, runtime state or Simulator input | `skyseed_v2.configuration` |
+| StaticEmulatorConfig | Frozen, backend-independent top-level file or programmatic configuration | `configuration/static_emulator_config.py` | Emulator entity, runtime state or Simulator input | `skyseed_v2.configuration` |
 | GeneratedOrbitLayout | Frozen rules for expanding one Shell's generated Orbits and Satellites | `configuration/satellite.py` | independent Config, entity population, factory or runtime trajectory | `skyseed_v2.configuration` |
 | RightAscensionDistribution | Frozen right-ascension distribution nested in `GeneratedOrbitLayout` | `configuration/satellite.py` | Orbit, Config root or runtime position | `skyseed_v2.configuration` |
 | InOrbitPhaseDistribution | Frozen in-orbit phase distribution nested in `GeneratedOrbitLayout` | `configuration/satellite.py` | Satellite state, Config root or runtime position | `skyseed_v2.configuration` |

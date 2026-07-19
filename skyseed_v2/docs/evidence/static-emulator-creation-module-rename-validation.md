@@ -1,5 +1,10 @@
 # Static Emulator Creation Module Rename Validation
 
+> Supersession note (2026-07-19): this is a historical snapshot. The current
+> Config aggregate module is
+> `skyseed_v2.configuration.static_emulator_config`; the top-level operation
+> module is `skyseed_v2.static_emulator`.
+
 ## Scope
 
 This record validates the approved public module-path rename:

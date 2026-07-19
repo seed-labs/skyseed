@@ -138,6 +138,9 @@ The file-input schema and keys remain v1. `configuration/ground_network.py`
 contains only the minimal ordinary SEED ground-network Config needed by the
 complete static example; `configuration/attachments.py` separates node-to-
 network relations from GroundStation attributes and ground-network objects.
+`StaticEmulatorConfig` is defined and validated in the unambiguous
+`configuration/static_emulator_config.py`; top-level `static_emulator.py`
+remains the Config-to-Emulator operation module.
 
 ## Static deployment and conceptual dynamic execution stages
 

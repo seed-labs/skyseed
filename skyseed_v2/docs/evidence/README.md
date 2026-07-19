@@ -8,8 +8,9 @@ documentation.
 Use `docs/CURRENT.md`, `docs/architecture/` and current source/tests for the
 active package layout and public API.
 
-The current Config, file-input and direct upstream-Emulator return validation
-is recorded in
+The current Config module-path clarity validation is recorded in
+`static-emulator-configuration-module-rename-validation.md`. The underlying
+file-input and direct upstream-Emulator return validation is recorded in
 `static-emulator-file-input-convergence-validation.md`.
 
 `domain-data-and-file-configuration-api-convergence-validation.md` and

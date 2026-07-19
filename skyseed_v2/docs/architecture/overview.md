@@ -105,7 +105,7 @@ adapter itself.
 - `attachments.py`: node-to-existing-network relation values;
 - `ground_network.py`: the minimal ordinary Network, Router, IX, AS and eBGP
   Config adapter required by the complete static example;
-- `configuration/static_emulator.py`: Skyseed AS and complete static Emulator
+- `configuration/static_emulator_config.py`: Skyseed AS and complete static Emulator
   Config;
 - `yaml.py`: strict versioned YAML reading.
 

@@ -31,7 +31,7 @@ from .satellite import (
     SatelliteConfig,
     ShellConfig,
 )
-from .static_emulator import (
+from .static_emulator_config import (
     SkyseedAutonomousSystemConfig,
     StaticEmulatorConfig,
 )

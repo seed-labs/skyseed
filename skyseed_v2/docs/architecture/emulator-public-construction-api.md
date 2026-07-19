@@ -39,7 +39,7 @@ satellite.py       Shell / Orbit / Satellite declarations and generation values
 ground_station.py GroundStation stable attributes and ID derivation rule
 ground_network.py thin ordinary SEED AS / Network / Router / IX / eBGP adapter
 attachments.py    node-to-existing-network attachment relations
-static_emulator.py complete validated Config graph
+static_emulator_config.py complete validated Config graph
 yaml.py            YAML → Config only
 ```
 
