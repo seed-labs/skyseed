@@ -30,6 +30,13 @@ main.py
     → output/cleanup.sh
 ```
 
+Each formal example can be run directly from its own directory with
+`python3 main.py`. Direct-file execution uses the repository `.venv` when the
+current interpreter lacks the installed dependencies. Compilation entrypoints
+replace their owned default output unless `--no-override` is passed. From that
+same directory, start and stop the generated project with
+`./output/start.sh` and `./output/cleanup.sh`.
+
 Project names are fixed and distinct. Generated `start.sh` validates the exact
 Compose file and starts that project with `up -d --build`. Generated
 `cleanup.sh` runs project-scoped `down --remove-orphans` and keeps the output

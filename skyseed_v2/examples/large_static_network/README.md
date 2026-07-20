@@ -26,25 +26,32 @@ facade. The resulting
 construction; it is not Config, a SEED Registry, a container inventory or a
 Compose directory.
 
-Generate and validate without starting 365 services:
+From `skyseed_v2/examples/large_static_network/`, generate and validate without
+starting 365 services:
 
 ```bash
-python3 -m examples.large_static_network.main --override
+python3 main.py
 docker compose --parallel 16 \
   -p skyseed_v2_large_static_network \
-  -f examples/large_static_network/output/docker-compose.yml config --quiet
+  -f output/docker-compose.yml config --quiet
 docker compose --parallel 16 \
   -p skyseed_v2_large_static_network \
-  -f examples/large_static_network/output/docker-compose.yml config --services \
+  -f output/docker-compose.yml config --services \
   | wc -l
 ```
+
+Direct-file execution uses the repository `.venv` when the current Python
+lacks the installed dependencies. Existing default output is replaced
+automatically; pass `--no-override` to reject an existing output. The
+equivalent module command from `skyseed_v2/` is
+`python3 -m examples.large_static_network.main`.
 
 The expected service count is 365. A full build/up is intentionally not part
 of the migration baseline. To deliberately build and start the complete
 experiment, run the generated control:
 
 ```bash
-examples/large_static_network/output/start.sh
+./output/start.sh
 ```
 
 `operator: Starlink` is display metadata only and does not select node type,
@@ -54,5 +61,5 @@ Cleanup removes only this project's state, if present, and this example's
 ignored output:
 
 ```bash
-examples/large_static_network/output/cleanup.sh
+./output/cleanup.sh
 ```

@@ -1,8 +1,9 @@
 # Current Architecture Diagrams
 
-Solid implemented nodes and arrows reflect current code. Simulator Slice 1 is
-**IMPLEMENTED**; dashed Planning/dynamic nodes are conceptual boundaries, not
-implementations or frozen public APIs. The top-level map is in
+Solid implemented nodes and arrows reflect current code. Accepted/frozen
+Simulator Iteration 1 and Iteration 2 static Zones are **IMPLEMENTED**; dashed
+Planning/dynamic nodes are conceptual boundaries, not implementations or
+frozen public APIs. The top-level map is in
 [`conceptual-class-diagrams.md`](conceptual-class-diagrams.md#simulator-future-conceptual-boundary-map).
 
 ## 1. Package dependency direction
@@ -27,6 +28,7 @@ flowchart LR
     INPUT --> NODEID
     CORE --> INPUT
     CORE --> NODEID
+    CORE --> CONFIG
     CONFIG --> ID
     CREATE --> CONFIG
     CREATE --> ENT
@@ -126,7 +128,13 @@ flowchart TD
     INPUT --> DEF[SimulationDefinition]
     TIMELINE[SimulationTimeline] --> DEF
     DEF --> SIM[Simulator]
-    SIM --> TOP[Topology]
+    ZYAML[zones.yaml] --> ZLOAD[load_zone_layout_definition]
+    ZLOAD --> ZDEF[ZoneLayoutDefinition]
+    ZDEF --> SIM
+    SIM -->|create_topology with ZDEF| TOP[Topology]
+    TOP --> ZLAYOUT[Topology-owned ZoneLayout]
+    ZLAYOUT --> ZONES[Zone tuple/index]
+    ZLAYOUT --> MODEL[fixed ZoneMembershipModel]
 ```
 
 `emu.py` only constructs and returns the Emulator. `main.py` is the pure
@@ -171,6 +179,11 @@ flowchart LR
     SIM --> TOPOLOGY[Topology materialization]
     TOPOLOGY --> DOMAIN[immutable AS → Shell → Orbit → Satellite tree]
     TOPOLOGY --> GSOWN[AS-owned GroundStation objects]
+    ZINPUT[zones.yaml or programmatic construction] --> ZDEF[ZoneLayoutDefinition]
+    ZDEF --> SIM
+    TOPOLOGY --> ZLAYOUT[optional Topology-owned ZoneLayout]
+    ZLAYOUT --> ZONES[Zone tuple/index]
+    ZLAYOUT --> ZMODEL[fixed ZoneMembershipModel]
     SIM -. future ownership .-> PLANNING[future Planning]
     TOPOLOGY -. creates and compares .-> SLICE[future Slice / Difference citing NodeId]
     SLICE -. consumed by .-> PLANNING
@@ -186,12 +199,70 @@ does not traverse AS objects or call entity conversion and contains no entity
 reference. Its lookups require `NodeId`; no local string-ID fallback exists. It
 is construction boundary data, not the Simulator's long-lived domain graph.
 The implemented Topology has one private unified `NodeId` index over its own
-static nodes, never Emulator entities or runtime resources. Simulator,
-Timeline, Definition, Topology and the static domain objects are implemented;
-the dashed Planning, Slice, plan, resolution and dynamic-update structures are
-not.
+static nodes, never Emulator entities or runtime resources, plus at most one
+ZoneLayout. Simulator, Timeline, Definition, Topology, the static node objects
+and static Zone domain are implemented; the dashed Planning, Slice, plan,
+dynamic resource-resolution and update structures are not.
 
-## 7. Static deployment and conceptual dynamic execution chains
+## 7. Implemented Zone construction and ownership
+
+```mermaid
+classDiagram
+    class LatitudeLongitudeRectangleDefinition {
+        <<implemented frozen construction definition>>
+    }
+    class ZoneDefinition {
+        <<implemented frozen construction definition>>
+    }
+    class ZoneLayoutDefinition {
+        <<implemented frozen construction definition>>
+    }
+    class Simulator {
+        <<implemented composition root>>
+        +create_topology(zone_layout_definition=None, zone_membership_model=None) Topology
+    }
+    class Topology {
+        <<implemented immutable aggregate root>>
+        +get_zone_layout() ZoneLayout
+        +get_zone(zone_id) Zone
+        +find_zones(latitude_deg, longitude_deg) tuple
+        +resolve_zone(latitude_deg, longitude_deg) Zone
+    }
+    class ZoneLayout {
+        <<implemented Topology-owned aggregate>>
+    }
+    class Zone {
+        <<implemented immutable Simulator domain object>>
+    }
+    class LatitudeLongitudeRectangle {
+        <<implemented immutable Zone geometry>>
+    }
+    class ZoneMembershipModel {
+        <<implemented public Protocol>>
+    }
+    class DefaultZoneMembershipModel {
+        <<implemented stateless algorithm>>
+    }
+
+    ZoneLayoutDefinition *-- ZoneDefinition
+    ZoneDefinition *-- LatitudeLongitudeRectangleDefinition
+    Simulator --> ZoneLayoutDefinition : consumes during create_topology
+    Simulator --> ZoneMembershipModel : optional algorithm injection
+    Simulator --> Topology : creates atomically
+    Topology "1" *-- "0..1" ZoneLayout : owns
+    ZoneLayout *-- Zone : owns tuple/index
+    ZoneLayout o-- ZoneMembershipModel : fixed algorithm
+    Zone *-- LatitudeLongitudeRectangle : owns
+    DefaultZoneMembershipModel ..|> ZoneMembershipModel : implements
+    Topology --> ZoneLayout : facade delegation
+```
+
+The Definition is materialization input and is not retained. ZoneLayout is the
+only owner of its Zone tuple and ID index; the Model receives those same Zone
+instances and does not own another collection. A valid Topology may omit the
+layout, and the algorithm reference cannot be replaced after construction.
+
+## 8. Static deployment and conceptual dynamic execution chains
 
 ```mermaid
 flowchart TD
@@ -222,7 +293,7 @@ they have no inheritance relationship or required shared public parent.
 over-compression of semantic planning, backend planning and executable-form
 compilation, not as a frozen master contract.
 
-## 8. Generated experiment artifact and materialization
+## 9. Generated experiment artifact and materialization
 
 ```mermaid
 flowchart LR

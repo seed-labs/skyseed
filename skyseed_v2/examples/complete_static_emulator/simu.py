@@ -4,7 +4,22 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from itertools import islice
+from pathlib import Path
+import sys
 
+
+EXAMPLE_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = EXAMPLE_ROOT.parents[1]
+
+if __package__ in (None, ""):
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from examples._direct_execution import prepare_direct_file_execution
+
+prepare_direct_file_execution(__file__)
+
+from examples.complete_static_emulator.emu import build_emulator
+from skyseed_v2.configuration import load_zone_layout_definition
 from skyseed_v2.node_id import NodeId
 from skyseed_v2.seedemu_integration import SatelliteBase
 from skyseed_v2.simulator import (
@@ -14,14 +29,16 @@ from skyseed_v2.simulator import (
 )
 from skyseed_v2.simulator_input_generation import create_simulator_static_input
 
-from .emu import build_emulator
-
-
 # User-adjustable deterministic simulation parameters.
 DEFAULT_START_TIME = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
 DEFAULT_END_TIME = datetime(2026, 1, 1, 0, 0, 30, tzinfo=timezone.utc)
 DEFAULT_SLICE_INTERVAL = timedelta(seconds=10)
 UNBOUNDED_TIMESTAMPS_TO_DISPLAY = 4
+ZONE_LAYOUT_FILE = EXAMPLE_ROOT / "zones.yaml"
+ZONE_QUERY_POINTS = (
+    ("single", 34.0522, -118.2437),
+    ("overlap", 40.7128, -74.0060),
+)
 
 
 def main() -> None:
@@ -45,7 +62,12 @@ def main() -> None:
         timeline=timeline,
     )
     simulator = Simulator(definition)
-    topology = simulator.create_topology()
+    # YAML is the standard path for layouts of this size. The same immutable
+    # ZoneLayoutDefinition may also be assembled programmatically for small uses.
+    zone_layout_definition = load_zone_layout_definition(ZONE_LAYOUT_FILE)
+    topology = simulator.create_topology(
+        zone_layout_definition=zone_layout_definition,
+    )
 
     satellite_id = NodeId(65001, "satellite", "satellite-0")
     ground_station_id = NodeId(65001, "ground-station", "gs-new-york")
@@ -69,6 +91,14 @@ def main() -> None:
         "timeline timestamps: "
         + ", ".join(timestamp.isoformat() for timestamp in timestamps)
     )
+    for label, latitude_deg, longitude_deg in ZONE_QUERY_POINTS:
+        matches = topology.find_zones(latitude_deg, longitude_deg)
+        authoritative = topology.resolve_zone(latitude_deg, longitude_deg)
+        print(
+            f"{label} physical matches: "
+            f"{', '.join(zone.zone_id for zone in matches)}; "
+            f"authoritative Zone: {authoritative.zone_id}"
+        )
 
 
 if __name__ == "__main__":

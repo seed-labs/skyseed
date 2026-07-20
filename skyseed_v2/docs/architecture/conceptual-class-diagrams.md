@@ -2,10 +2,11 @@
 
 ## Status
 
-The first diagrams describe implemented Skyseed v2 code, including Simulator
-Slice 1. The later `Simulator future conceptual boundary map` combines that
-implemented foundation with approved responsibility directions and conceptual
-candidates for later slices.
+The first diagrams describe implemented Skyseed v2 code, including accepted
+and frozen Simulator Iteration 1 plus Iteration 2 static Zones. The later
+`Simulator future conceptual boundary map` combines that implemented
+foundation with responsibility directions and conceptual candidates for later
+work.
 
 A conceptual diagram is not a public API freeze or an implementation task
 list. Candidate objects may remain private, be renamed, split, merged or
@@ -195,7 +196,7 @@ construction, Simulator static input, `SkyseedDockerCompiler` lowering and
 the conceptual dynamic planning/execution chain. It is not the conceptual
 `SimulationRunner`.
 
-## Simulator Slice 1 implemented class map
+## Simulator implemented class map through Iteration 2
 
 ```mermaid
 classDiagram
@@ -204,7 +205,7 @@ classDiagram
         +Simulator(definition)
         +get_definition() SimulationDefinition
         +get_timeline() SimulationTimeline
-        +create_topology() Topology
+        +create_topology(zone_layout_definition=None, zone_membership_model=None) Topology
         +get_topology() Topology
     }
     class SimulationDefinition {
@@ -236,6 +237,10 @@ classDiagram
         +get_ground_station(node_id) GroundStation
         +get_shell(asn, shell_id) Shell
         +get_orbit(asn, shell_id, orbit_id) Orbit
+        +get_zone_layout() ZoneLayout
+        +get_zone(zone_id) Zone
+        +find_zones(latitude_deg, longitude_deg) tuple
+        +resolve_zone(latitude_deg, longitude_deg) Zone
     }
     class SkyseedAutonomousSystem {
         <<implemented Simulator domain object>>
@@ -272,6 +277,47 @@ classDiagram
         +latitude_deg float
         +longitude_deg float
     }
+    class LatitudeLongitudeRectangleDefinition {
+        <<implemented frozen construction definition>>
+    }
+    class ZoneDefinition {
+        <<implemented frozen construction definition>>
+        +zone_id str
+        +priority int
+        +geometry LatitudeLongitudeRectangleDefinition
+    }
+    class ZoneLayoutDefinition {
+        <<implemented frozen construction definition>>
+        +zones tuple
+        +allow_overlap bool
+    }
+    class LatitudeLongitudeRectangle {
+        <<implemented immutable Zone geometry>>
+        +contains(latitude_deg, longitude_deg) bool
+        +representative_center tuple
+    }
+    class Zone {
+        <<implemented immutable Simulator domain object>>
+        +zone_id str
+        +priority int
+        +contains(latitude_deg, longitude_deg) bool
+    }
+    class ZoneMembershipModel {
+        <<implemented public Protocol>>
+        +find_zones(zones, latitude_deg, longitude_deg) Iterable
+        +resolve_zone(matches, latitude_deg, longitude_deg) Zone
+    }
+    class DefaultZoneMembershipModel {
+        <<implemented stateless algorithm>>
+    }
+    class ZoneLayout {
+        <<implemented Topology-owned aggregate>>
+        +zones tuple
+        +allow_overlap bool
+        +get_zone(zone_id) Zone
+        +find_zones(latitude_deg, longitude_deg) tuple
+        +resolve_zone(latitude_deg, longitude_deg) Zone
+    }
 
     Simulator *-- SimulationDefinition : retains
     SimulationDefinition *-- SimulatorStaticInput : static_input
@@ -282,21 +328,33 @@ classDiagram
     SkyseedAutonomousSystem "1" *-- "*" GroundStation : owns
     Shell "1" *-- "*" Orbit : owns
     Orbit "1" *-- "*" Satellite : owns
+    ZoneLayoutDefinition "1" *-- "1..*" ZoneDefinition : construction input
+    ZoneDefinition "1" *-- "1" LatitudeLongitudeRectangleDefinition : geometry input
+    Simulator --> ZoneLayoutDefinition : consumes during create_topology
+    Simulator --> ZoneMembershipModel : optional algorithm injection
+    Topology "1" *-- "0..1" ZoneLayout : owns
+    ZoneLayout "1" *-- "1..*" Zone : owns
+    ZoneLayout o-- ZoneMembershipModel : fixed algorithm
+    Zone "1" *-- "1" LatitudeLongitudeRectangle : geometry
+    DefaultZoneMembershipModel ..|> ZoneMembershipModel : implements
+    Topology --> ZoneLayout : facade delegation
 ```
 
-`Topology` stores only its AS tuple, an immutable ASN lookup and one immutable
-`NodeId` lookup. Node-type facade methods use the unified node lookup and check
-the result type. Shell and Orbit queries delegate down the owner chain shown
-above. There are no Satellite-parent reverse APIs or indexes. Every public
-tuple and private `MappingProxyType` lookup references the same object
-instances.
+`Topology` stores its AS tuple, immutable ASN lookup, one immutable `NodeId`
+lookup and at most one ZoneLayout. Node-type facade methods use the unified
+node lookup and check the result type. Shell and Orbit queries delegate down
+their owner chain; Zone queries delegate to the layout. There are no
+Satellite-parent reverse APIs or indexes. Every public tuple and private
+`MappingProxyType` lookup references the same object instances. The Definition
+is consumed during materialization and is not retained.
 
 ## Simulator future conceptual boundary map
 
 This is a conceptual boundary map, not an implementation inventory. Only the
 nodes explicitly marked implemented exist in the repository. The static
-Satellite/Orbit/Shell ownership details are frozen by Slice 1; Zone, dynamic
-state, Planning and execution details will be refined by later vertical slices.
+Satellite/Orbit/Shell ownership details are frozen by Iteration 1 and the
+static Zone ownership/membership details are implemented by Iteration 2.
+Dynamic state, Planning and execution details remain future work.
 
 ```mermaid
 classDiagram
@@ -312,6 +370,14 @@ class SimulationTimeline {
 
 class Topology {
   <<implemented static aggregate root>>
+}
+
+class ZoneLayout {
+  <<implemented static Zone aggregate>>
+}
+
+class ZoneMembershipModel {
+  <<implemented membership Protocol>>
 }
 
 class Planning {
@@ -365,6 +431,8 @@ class SimulationRunner {
 Simulator *-- SimulationTimeline
 Simulator *-- Topology
 Simulator *-- Planning
+Topology "1" *-- "0..1" ZoneLayout
+ZoneLayout o-- ZoneMembershipModel
 
 Topology --> TopologySlice : creates
 TopologySlice --> TopologyDifference : compared through Topology facade
@@ -389,8 +457,9 @@ external functions in `simulator_input_generation.py` are also implemented,
 but are omitted from this future-lifecycle map for legibility. They form the
 current construction boundary, not the Simulator's long-lived domain model.
 
-`Simulator`, `SimulationTimeline`, `Topology` and the static object tree are
-implemented. `Planning`, both Planners, the Slice and plan objects,
+`Simulator`, `SimulationTimeline`, `Topology`, the static node tree and the
+static Zone layout/Model contract are implemented. `Planning`, both Planners,
+the Slice and plan objects,
 `ExecutionCompiler`, `ExecutableBundle` and `SimulationRunner` remain
 conceptual/open. Arrows involving those future objects record directions; they
 do not freeze names, methods, fields, modules or public visibility.

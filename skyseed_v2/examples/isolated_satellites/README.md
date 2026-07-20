@@ -5,17 +5,29 @@ This handwritten example directly constructs the approved
 two no-network Satellite services. It uses no YAML, file-configuration facade,
 population helper or dynamic Simulator input.
 
-From `skyseed_v2/`, generate the complete output first:
+From `skyseed_v2/examples/isolated_satellites/`, generate the complete output
+directly:
 
 ```bash
-python3 -m examples.isolated_satellites.main --override
+python3 main.py
 ```
+
+When the current Python does not contain the project dependencies, direct-file
+execution uses the repository environment at `../../../.venv`. The equivalent
+module command from `skyseed_v2/` remains available:
+
+```bash
+python3 -m examples.isolated_satellites.main
+```
+
+Existing default output is replaced automatically. Pass `--no-override` only
+when an existing output directory should make generation fail.
 
 The generated output contains `docker-compose.yml`, build contexts and its own
 controls. Start the experiment with:
 
 ```bash
-examples/isolated_satellites/output/start.sh
+./output/start.sh
 ```
 
 The generated controls use the exact Compose project
@@ -27,5 +39,5 @@ the maintained BuildKit/Compose v2 path. Cleanup stops only this exact project
 and keeps the generated output:
 
 ```bash
-examples/isolated_satellites/output/cleanup.sh
+./output/cleanup.sh
 ```

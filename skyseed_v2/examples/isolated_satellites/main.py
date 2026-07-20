@@ -4,6 +4,20 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import sys
+
+
+EXAMPLE_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = EXAMPLE_ROOT.parents[1]
+DEFAULT_OUTPUT = EXAMPLE_ROOT / "output"
+COMPOSE_PROJECT_NAME = "skyseed_v2_isolated_satellites"
+
+if __package__ in (None, ""):
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from examples._direct_execution import prepare_direct_file_execution
+
+prepare_direct_file_execution(__file__)
 
 from seedemu.core import Emulator
 
@@ -14,11 +28,6 @@ from skyseed_v2.seedemu_integration import (
     SkyseedAutonomousSystem,
     SkyseedDockerCompiler,
 )
-
-
-EXAMPLE_ROOT = Path(__file__).resolve().parent
-DEFAULT_OUTPUT = EXAMPLE_ROOT / "output"
-COMPOSE_PROJECT_NAME = "skyseed_v2_isolated_satellites"
 
 
 def build_emulator() -> tuple[Emulator, SkyseedAutonomousSystem]:
@@ -57,7 +66,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--no-internet-map", action="store_true")
-    parser.add_argument("--override", action="store_true")
+    parser.add_argument(
+        "--override",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="replace an existing output directory (default: enabled)",
+    )
     arguments = parser.parse_args()
 
     emulator, satellite_as = build_emulator()

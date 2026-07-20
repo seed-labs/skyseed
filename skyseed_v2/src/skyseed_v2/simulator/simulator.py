@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from skyseed_v2.configuration import ZoneLayoutDefinition
+
 from .definition import SimulationDefinition
 from .timeline import SimulationTimeline
 from .topology import Topology
+from .zone import ZoneMembershipModel
 
 
 class Simulator:
@@ -31,10 +34,23 @@ class Simulator:
     def get_timeline(self) -> SimulationTimeline:
         return self._definition.timeline
 
-    def create_topology(self) -> Topology:
+    def create_topology(
+        self,
+        *,
+        zone_layout_definition: ZoneLayoutDefinition | None = None,
+        zone_membership_model: ZoneMembershipModel | None = None,
+    ) -> Topology:
         if self._topology is not None:
             raise RuntimeError("Topology has already been created")
-        topology = Topology._materialize(self._definition.static_input)
+        if zone_layout_definition is None and zone_membership_model is not None:
+            raise ValueError(
+                "zone_membership_model requires zone_layout_definition"
+            )
+        topology = Topology._materialize(
+            self._definition.static_input,
+            zone_layout_definition=zone_layout_definition,
+            zone_membership_model=zone_membership_model,
+        )
         self._topology = topology
         return topology
 

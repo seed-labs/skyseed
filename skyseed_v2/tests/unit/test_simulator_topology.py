@@ -232,6 +232,7 @@ def test_topology_collections_and_static_entities_are_immutable() -> None:
         "_autonomous_systems",
         "_autonomous_systems_by_asn",
         "_nodes_by_id",
+        "_zone_layout",
     }
     for removed_index in (
         "_satellites_by_id",

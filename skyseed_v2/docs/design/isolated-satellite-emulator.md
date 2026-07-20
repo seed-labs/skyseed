@@ -99,6 +99,13 @@ Emulator → SatelliteBase → SkyseedAutonomousSystem
 It contains no YAML, file-configuration operation or static Simulator aggregate,
 keeping the basic entity call chain directly visible.
 
+The example supports `python3 main.py` from its own directory. If the current
+interpreter lacks the installed project dependencies, that direct-file path
+restarts through the checkout's sibling `.venv`. Its owned default output is
+replaceable by default, while `--no-override` provides an explicit
+fail-on-existing-output check. Module execution from the project root remains
+supported.
+
 ## 7. Deferred work
 
 Dynamic Satellite interfaces, topology, route planning, runtime resource

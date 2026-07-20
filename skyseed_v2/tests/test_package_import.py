@@ -38,6 +38,11 @@ def test_root_exports_only_high_frequency_entities_and_values() -> None:
         "load_static_emulator_config",
         "StaticEmulatorConfig",
         "create_static_emulator",
+        "Zone",
+        "ZoneLayout",
+        "ZoneMembershipModel",
+        "DefaultZoneMembershipModel",
+        "LatitudeLongitudeRectangle",
     ):
         assert not hasattr(package, module_owned_name)
 
@@ -55,6 +60,8 @@ def test_identity_and_generation_exports_stay_with_their_owner_modules() -> None
     assert node_id.__all__ == ["NodeId"]
     assert set(simulator.__all__) == {
         "GroundStation",
+        "DefaultZoneMembershipModel",
+        "LatitudeLongitudeRectangle",
         "Orbit",
         "Satellite",
         "Shell",
@@ -63,6 +70,9 @@ def test_identity_and_generation_exports_stay_with_their_owner_modules() -> None
         "Simulator",
         "SkyseedAutonomousSystem",
         "Topology",
+        "Zone",
+        "ZoneLayout",
+        "ZoneMembershipModel",
     }
     assert "NodeId" not in simulator_static_input.__all__
     assert "SimulationNodeId" not in simulator_static_input.__all__
@@ -112,6 +122,10 @@ def test_configuration_exports_precise_config_and_auxiliary_value_names() -> Non
         "ShellConfig",
         "SkyseedAutonomousSystemConfig",
         "StaticEmulatorConfig",
+        "LatitudeLongitudeRectangleDefinition",
+        "ZoneDefinition",
+        "ZoneLayoutDefinition",
+        "load_zone_layout_definition",
     }
     assert expected_names <= set(configuration.__all__)
     for retired_name in (

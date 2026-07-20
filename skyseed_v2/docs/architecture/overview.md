@@ -3,10 +3,12 @@
 ## 1. Status
 
 The static Emulator core, receiving-side Simulator static-input contract,
-Simulator Slice 1 composition/time/static Topology, formal examples and
-Compose materialization tooling are implemented. Position, dynamic topology,
-Planning, `SimulationRunner` and UT are not implemented. Their conceptual maps
-preserve approved future responsibility directions but do not freeze APIs.
+accepted/frozen Simulator Iteration 1 composition/time/static Topology,
+Iteration 2 static Zone domain, formal examples and Compose materialization
+tooling are implemented. Satellite position, service-Satellite selection,
+dynamic topology, Planning, `SimulationRunner` and UT are not implemented.
+Their conceptual maps preserve future responsibility directions but do not
+freeze APIs.
 
 ## 2. System division
 
@@ -39,7 +41,8 @@ materialization/
 
 The receiving-side immutable boundary types are implemented under
 `simulator/static_input/`; they are construction data rather than the complete
-or long-lived Simu domain model. Slice 1 implements this construction direction:
+or long-lived Simu domain model. Iteration 1 implements this construction
+direction:
 
 ```text
 Emulator entities
@@ -52,21 +55,48 @@ Emulator entities
 `SimulationDefinition(static_input, timeline)` is the immutable construction
 input. `Simulator` retains it, exposes the same Timeline instance and explicitly
 materializes at most one Topology. Creation is atomic and does not occur in the
-constructor. Topology owns a distinct immutable object tree:
+constructor. Topology owns a distinct immutable object tree, including at most
+one static Zone layout:
 
 ```text
-Topology
-└── SkyseedAutonomousSystem
-    ├── GroundStation
-    └── Shell
-        └── Orbit
-            └── Satellite
+Simulator
+└── Topology
+    ├── SkyseedAutonomousSystem[]
+    │   ├── GroundStation[]
+    │   └── Shell[]
+    │       └── Orbit[]
+    │           └── Satellite[]
+    └── ZoneLayout [0..1]
+        ├── Zone[]
+        │   └── LatitudeLongitudeRectangle
+        └── ZoneMembershipModel
 ```
 
-Topology stores only its AS tuple, immutable ASN index and unified immutable
-`NodeId` node index. Shell and Orbit facade queries delegate down the owner
-chain. Planning, Zones, dynamic Slice state and related algorithms remain
-conceptual; no speculative Satellite-parent reverse lookup is present.
+Topology stores its AS tuple, immutable ASN index, unified immutable `NodeId`
+node index and optional `ZoneLayout`. Shell and Orbit facade queries delegate
+down the owner chain; Zone facade queries delegate to the layout. A Topology
+without a Zone layout remains valid. Planning, dynamic Slice state and related
+algorithms remain conceptual; no speculative Satellite-parent reverse lookup
+is present.
+
+Iteration 2 freezes this Zone construction chain:
+
+```text
+zones.yaml / programmatic construction
+→ ZoneLayoutDefinition
+→ Simulator.create_topology(...)
+→ Topology-owned ZoneLayout
+→ Zone[]
+→ fixed ZoneMembershipModel
+→ Topology facade
+```
+
+For file input, the loader path is `raw YAML mapping/list →
+LatitudeLongitudeRectangleDefinition → ZoneDefinition →
+ZoneLayoutDefinition`. YAML is only an input source: the loader returns the
+same definition type that programmatic callers construct, and no YAML-specific
+Zone type exists. The Definition is materialization input and is not retained
+in the Topology object tree.
 
 ## 3. Static entity ownership
 
@@ -123,7 +153,8 @@ entities, seedemu integration, upstream seedemu or the generation adapter.
 
 ## 5. Configuration and creation
 
-`configuration/` contains frozen backend-independent Config values:
+`configuration/` contains frozen backend-independent Config and Definition
+values:
 
 - `satellite.py`: generated and explicit Shell/Orbit/Satellite Config;
 - `ground_station.py`: GroundStation Config and private stable-ID derivation;
@@ -132,7 +163,9 @@ entities, seedemu integration, upstream seedemu or the generation adapter.
   Config adapter required by the complete static example;
 - `configuration/static_emulator_config.py`: Skyseed AS and complete static Emulator
   Config;
-- `yaml.py`: strict versioned YAML reading.
+- `zone.py`: immutable Zone layout construction definitions;
+- `yaml.py`: strict YAML reading for both static Emulator Config and Zone layout
+  definitions.
 
 `load_static_emulator_config(path)` returns one `StaticEmulatorConfig`.
 Top-level `static_emulator.py` owns `create_static_emulator(config)`, which
@@ -142,6 +175,11 @@ real `SatelliteBase` owner, whose narrow
 `get_skyseed_autonomous_systems()` query supplies the AS collection for the
 separate `create_simulator_static_input(...)` operation.
 Handwritten callers bypass the file-driven operations.
+
+`load_zone_layout_definition(path)` directly returns a
+`ZoneLayoutDefinition`. Programmatic construction and file loading converge on
+that exact type before `Simulator.create_topology(...)` materializes the Zone
+domain graph.
 
 ## 6. seedemu integration
 
@@ -206,8 +244,9 @@ retired/corrected as an over-compressed description.
   it creates no Simulator input.
 - `complete_static_emulator/simu.py`: external assembly entrypoint that reuses
   `emu.py`, queries Skyseed AS values from `SatelliteBase`, adapts them into
-  `SimulatorStaticInput`, creates the Definition/Simulator and materializes the
-  initial static Topology.
+  `SimulatorStaticInput`, loads `zones.yaml` as a `ZoneLayoutDefinition`, creates
+  the Definition/Simulator and materializes the initial static Topology with its
+  Zone layout.
 - `large_static_network`: YAML → Config → Emulator creation → static Simulator
   input generation → `SkyseedDockerCompiler` → generated output controls.
   Validation remains Docker/Compose compile/config-only until a user explicitly
@@ -229,8 +268,9 @@ It must fail closed on a missing ASN/ID, wrong AS, unsupported or mismatched
 kind, and duplicate ownership; it must not build a global index or parse names
 to guess nodes. No plan/resolution/update type currently exists, and no current
 code resolves `NodeId` to containers, services, interfaces or other runtime
-resources, computes positions or visibility, selects links, plans routes,
-emits BPF changes or executes a dynamic simulation.
+resources, computes Satellite positions or visibility, selects a service
+Satellite or link, plans routes, emits BPF changes or executes a dynamic
+simulation.
 
 The detailed status labels, design evolution and open questions are in
 [`../design/simulator-conceptual-design.md`](../design/simulator-conceptual-design.md).

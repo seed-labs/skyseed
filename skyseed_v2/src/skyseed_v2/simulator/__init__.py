@@ -11,9 +11,18 @@ from .topology import (
     SkyseedAutonomousSystem,
     Topology,
 )
+from .zone import (
+    DefaultZoneMembershipModel,
+    LatitudeLongitudeRectangle,
+    Zone,
+    ZoneLayout,
+    ZoneMembershipModel,
+)
 
 __all__ = [
     "GroundStation",
+    "DefaultZoneMembershipModel",
+    "LatitudeLongitudeRectangle",
     "Orbit",
     "Satellite",
     "Shell",
@@ -22,4 +31,7 @@ __all__ = [
     "Simulator",
     "SkyseedAutonomousSystem",
     "Topology",
+    "Zone",
+    "ZoneLayout",
+    "ZoneMembershipModel",
 ]

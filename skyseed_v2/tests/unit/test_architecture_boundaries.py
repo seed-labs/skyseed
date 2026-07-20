@@ -258,9 +258,9 @@ def test_simulator_static_input_is_public_without_entity_back_dependency() -> No
 
 
 def test_simulator_core_has_no_emulator_seed_or_generation_dependency() -> None:
-    from skyseed_v2.simulator import definition, simulator, timeline, topology
+    from skyseed_v2.simulator import definition, simulator, timeline, topology, zone
 
-    for module in (definition, simulator, timeline, topology):
+    for module in (definition, simulator, timeline, topology, zone):
         imports = imported_modules(module)
         for forbidden_prefix in (
             "skyseed_v2.entities",

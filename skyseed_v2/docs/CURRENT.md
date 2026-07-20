@@ -12,27 +12,31 @@
 - Pure cross-layer NodeId and owner-directed lookup contract: **IMPLEMENTED**
 - Generated example output controls: **IMPLEMENTED**
 - Simulator static input contract: **IMPLEMENTED**
-- Simulator Slice 1 composition, time and immutable static Topology: **IMPLEMENTED**
-- Position, dynamic topology, Planning and dynamic execution: **NOT STARTED**
+- Simulator Iteration 1 composition, time and immutable static Topology:
+  **ACCEPTED / FROZEN**
+- Simulator Iteration 2 static Zone domain: **ACCEPTED / FROZEN**
+- Satellite position, service-Satellite selection, dynamic topology, Planning
+  and dynamic execution: **NOT STARTED**
 
 ## Current objective
 
-Simulator Slice 1 is implemented and validated for focused review. Its current
-boundary is external Emulator-to-Simulator input adaptation, explicit
-`SimulationDefinition`, immutable `SimulationTimeline`, atomic `Simulator`
-Topology creation and a Simulator-owned static object tree. Position,
-connections, Zones, routes, Planning, dynamic compilation and execution remain
-outside this slice and require separately approved work.
+Simulator Iteration 1 is accepted and frozen. Iteration 2 implements the static
+Zone Definition/YAML path, atomic Topology materialization, ZoneLayout
+ownership, rectangle geometry, positive-area overlap validation, replaceable
+membership algorithm contract, deterministic default Model and Topology
+facade. The independent architecture audit, canonical example, tests,
+documentation and class diagrams passed final user review; Iteration 2 is now
+accepted and frozen. No later iteration has started or been named.
 
 ## Implemented package boundaries
 
 ```text
 skyseed_v2/
 ├── entities/                 # Shell, Orbit, Satellite, GroundStation
-├── simulator/                # Simulator composition, time and static Topology
+├── simulator/                # Simulator composition, time, static Topology and Zones
 │   └── static_input/         # immutable cross-layer boundary input types
 ├── seedemu_integration/      # Skyseed-owned seedemu extensions
-├── configuration/            # immutable Config/auxiliary values and YAML loading
+├── configuration/            # immutable Config/Zone Definitions and YAML loading
 ├── node_id.py                # neutral cross-layer logical node identity
 ├── simulator_input_generation.py # entity traversal and pure input generation
 ├── static_emulator.py        # Config-to-upstream-Emulator operation
@@ -123,7 +127,8 @@ SkyseedAutonomousSystem
 - `complete_static_emulator/simu.py`: external assembly entrypoint; it reuses
   `emu.py`, queries the `SatelliteBase` owner for all Skyseed AS values, calls
   `create_simulator_static_input(...)`, creates the Timeline and Definition,
-  then atomically materializes the initial static Simulator Topology.
+  loads `zones.yaml` directly as `ZoneLayoutDefinition`, then atomically
+  materializes the initial static Simulator Topology and its ZoneLayout.
 - `large_static_network`: YAML → `load_static_emulator_config(path)` →
   `create_static_emulator(config)` →
   `Emulator.getLayer("Base")` →
@@ -132,11 +137,15 @@ SkyseedAutonomousSystem
   `SkyseedDockerCompiler` → output controls. Its acceptance baseline remains
   compile/config-only; generated start is an explicit user action.
 
-Every formal Python entrypoint generates `output/start.sh` and
-`output/cleanup.sh` after the Compose artifact is complete. Source-level shell
-wrappers no longer generate the experiment. The generated start validates the
-exact Compose file and runs `up -d --build`; cleanup runs scoped
-`down --remove-orphans` and retains the output.
+Every formal example supports direct-file execution from its own directory and
+selects the checkout's sibling `.venv` when the current interpreter lacks the
+installed dependencies. Compilation entrypoints replace their owned default
+output unless `--no-override` is requested. Every formal compilation
+entrypoint generates `output/start.sh` and `output/cleanup.sh` after the
+Compose artifact is complete. Source-level shell wrappers no longer generate
+the experiment. The generated start validates the exact Compose file and runs
+`up -d --build`; cleanup runs scoped `down --remove-orphans` and retains the
+output.
 
 `create_static_emulator(config)` returns the actual upstream
 `seedemu.core.Emulator`. It has no creation-result wrapper and no Skyseed
@@ -173,7 +182,7 @@ remains the Config-to-Emulator operation module.
   `ExecutionCompiler` and conceptual `SimulationRunner` are external
   application/infrastructure services, not Emulator or Simulator domain state.
 
-## Simulator Slice 1 implementation boundary
+## Simulator Iteration 1 accepted/frozen boundary
 
 The following contracts are implemented:
 
@@ -191,25 +200,79 @@ The following contracts are implemented:
   `Topology → AS → Shell → Orbit → Satellite`, with GroundStations owned by the
   AS. All public tuple enumeration and read-only indexes reference the same
   instances.
-- Topology keeps only its AS tuple, ASN index and unified `NodeId` index. Node
-  queries use the unified index with explicit type checks; Shell and Orbit
-  facade queries delegate along their owner chain. No Satellite-to-parent
-  reverse API or duplicate typed/global Shell/Orbit index is present.
+- Topology's static-node side keeps its AS tuple, ASN index and unified `NodeId`
+  index. Node queries use the unified index with explicit type checks; Shell
+  and Orbit facade queries delegate along their owner chain. No Satellite-to-
+  parent reverse API or duplicate typed/global Shell/Orbit index is present.
 - The Simulator core imports neither Emulator entities, upstream seedemu nor
   `simulator_input_generation.py`. The external adapter is the only component
   that knows both sides.
 
-Planning, Slice, differences, position and dynamic execution remain the
-approved conceptual design space, not Slice 1 implementation. The full record
+This Iteration 1 boundary is accepted and frozen; it is not reopened by the
+Zone increment.
+
+## Simulator Iteration 2 Zone state
+
+Status: **ACCEPTED / FROZEN** after implementation, architecture audit PASS,
+documentation sync and final user acceptance.
+
+The implemented creation chain is:
+
+```text
+zones.yaml / programmatic construction
+→ ZoneLayoutDefinition
+→ Simulator.create_topology(...)
+→ Topology-owned ZoneLayout
+→ Zone[]
+→ fixed ZoneMembershipModel
+→ Topology facade
+```
+
+The YAML prefix is `raw YAML mapping/list →
+LatitudeLongitudeRectangleDefinition → ZoneDefinition →
+ZoneLayoutDefinition`. The loader returns that Definition directly; there is
+no file-specific Zone type. Definition values are materialization input and
+are not retained by Topology.
+
+Completed in Iteration 2:
+
+- Definition types and strict YAML loading;
+- atomic one-shot Topology materialization;
+- optional Topology-owned ZoneLayout and sole tuple/ID-index ownership;
+- canonical `LatitudeLongitudeRectangle` geometry, including date-line and
+  pole behavior;
+- positive-area overlap validation that permits zero-area shared boundaries;
+- public `ZoneMembershipModel` Protocol and stateless deterministic
+  `DefaultZoneMembershipModel`;
+- delegating Topology Zone facade;
+- canonical complete-static-emulator Zone example;
+- focused Zone tests, full tests and independent focused architecture audit
+  **PASS**.
+
+The default Model distinguishes all physical matches from one authoritative
+Zone, resolving by maximum priority, minimum haversine central angle to the
+representative center and lexicographic `zone_id` within `1e-12` radians.
+
+Non-blocking notes: a Protocol cannot prohibit internal mutable state in a
+third-party Model, so determinism and no previous/service-Satellite state are
+extension behavior contracts. Zone YAML currently reports failures with
+`StaticEmulatorConfigLoadError`; the name is configuration-boundary debt, and
+this iteration adds no exception. YAML and programmatic construction enforce
+the same Definition failures, while YAML wraps them as the loader exception.
+
+Planning, Slice, differences, Satellite position and dynamic execution remain
+future conceptual design space, not Iteration 2 implementation. The full record
 is
 [`design/simulator-conceptual-design.md`](design/simulator-conceptual-design.md),
 and the Mermaid map is in
 [`architecture/conceptual-class-diagrams.md`](architecture/conceptual-class-diagrams.md#simulator-future-conceptual-boundary-map).
 
-## Deferred work
+## Explicitly unstarted work
 
-- Position, visibility, dynamic topology, Planning and execution.
-- Dynamic GroundStation–Satellite links and service selection.
+- Satellite position and visibility.
+- Service-Satellite selection and dynamic GroundStation–Satellite links.
+- Slicer, Connection, Route and TopologySlice.
+- Planning and backend/runtime execution.
 - Future dynamic planning/execution consumption of `NodeId` and lowering to
   runtime resource operations.
 - UT integration and any new entity kind at the static-input boundary.
@@ -221,7 +284,8 @@ must resolve its ASN through the Base owner and call the resulting Skyseed
 AS/entity owners' narrow query methods rather than guess from strings or retain
 a global index. No plan type, plan-compilation resolution/update path, epoch,
 dynamic topology, `SimulationRunner`, runtime resource locator or Simulator
-dynamic-execution engine exists.
+dynamic-execution engine exists. The next iteration awaits a user/GPT design
+decision and is not named or started here.
 
 ## Acceptance state
 
@@ -232,8 +296,10 @@ dynamic-execution engine exists.
 - Static Emulator configuration construction: completed
 - Examples and public import paths: implemented
 - Native Ubuntu 24.04 migration baseline: validated
-- Simulator Slice 1 composition/time/static Topology: **IMPLEMENTED; PENDING HUMAN REVIEW**
-- Position/dynamic Topology/Planning/execution: **NOT STARTED**
+- Simulator Iteration 1 composition/time/static Topology: **ACCEPTED / FROZEN**
+- Simulator Iteration 2 Zone: **ACCEPTED / FROZEN**
+- Satellite position, service-Satellite selection, Slicer, Connection, Route,
+  TopologySlice, Planning and backend/runtime execution: **NOT STARTED**
 
 Current package/API details and the manual review checklist are recorded in
 `docs/architecture/emulator-public-construction-api.md`.

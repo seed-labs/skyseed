@@ -50,8 +50,8 @@ def test_formal_examples_generate_controls_into_unique_project_outputs() -> None
 
         readme = (root / "README.md").read_text(encoding="utf-8")
         assert f"python3 -m examples.{name}.main" in readme
-        assert f"examples/{name}/output/start.sh" in readme
-        assert f"examples/{name}/output/cleanup.sh" in readme
+        assert "./output/start.sh" in readme
+        assert "./output/cleanup.sh" in readme
         assert expected_project in readme
         source = Path(module.__file__).read_text(encoding="utf-8")
         assert "write_compose_project_scripts(" in source
@@ -68,6 +68,21 @@ def test_formal_examples_generate_controls_into_unique_project_outputs() -> None
     )
     assert (EXAMPLES_ROOT / "large_static_network/ground_stations.yaml").is_file()
     assert "examples/*/output/" in (PROJECT_ROOT / ".gitignore").read_text()
+
+
+@pytest.mark.parametrize("name", tuple(EXPERIMENTS))
+def test_formal_examples_support_direct_file_execution(name: str) -> None:
+    root = EXAMPLES_ROOT / name
+    result = run(
+        (sys.executable, "main.py", "--help"),
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "--no-override" in result.stdout
 
 
 def test_generated_shell_scripts_are_scoped_executable_and_syntax_valid(
@@ -175,7 +190,10 @@ def test_small_examples_show_public_construction_without_file_facades() -> None:
     assert "emulator_node_index" not in complete_source
     assert "catalog_builder" not in complete_source
     assert "SkyseedDockerCompiler" in complete_source
-    assert "from .emu import build_emulator" in complete_source
+    assert (
+        "from examples.complete_static_emulator.emu import build_emulator"
+        in complete_source
+    )
     assert complete.build_emulator is emu.build_emulator
     assert (
         EXAMPLES_ROOT / "complete_static_emulator/simu.py"
@@ -192,7 +210,10 @@ def test_canonical_simu_path_is_explicit_deterministic_and_executable() -> None:
     assert simu.DEFAULT_SLICE_INTERVAL.total_seconds() == 10
     assert simu.DEFAULT_START_TIME.tzinfo is not None
     assert "datetime.now" not in source
-    assert "from .emu import build_emulator" in source
+    assert (
+        "from examples.complete_static_emulator.emu import build_emulator"
+        in source
+    )
     assert "complete_static_emulator.main" not in source
     assert ".getLayer(\"Base\")" in source
     assert ".get_skyseed_autonomous_systems()" in source
@@ -200,25 +221,26 @@ def test_canonical_simu_path_is_explicit_deterministic_and_executable() -> None:
     assert "SimulationTimeline(" in source
     assert "SimulationDefinition(" in source
     assert "Simulator(" in source
-    assert ".create_topology()" in source
+    assert ".create_topology(" in source
+    assert "load_zone_layout_definition" in source
+    assert "zones.yaml" in source
     assert "build_everything" not in source
     assert "TopologySlice" not in source
     assert "static slice" not in source.lower()
     assert simu.build_emulator is emu.build_emulator
 
     result = run(
-        (
-            sys.executable,
-            "-m",
-            "examples.complete_static_emulator.simu",
-        ),
-        cwd=PROJECT_ROOT,
+        (sys.executable, "simu.py"),
+        cwd=EXAMPLES_ROOT / "complete_static_emulator",
         check=False,
         capture_output=True,
         text=True,
     )
     assert result.returncode == 0, result.stderr
     assert "created Simulator static topology" in result.stdout
+    assert "single physical matches: americas" in result.stdout
+    assert "overlap physical matches: americas, new-york-metro" in result.stdout
+    assert "authoritative Zone: new-york-metro" in result.stdout
     assert "2026-01-01T00:00:30+00:00" in result.stdout
 
 

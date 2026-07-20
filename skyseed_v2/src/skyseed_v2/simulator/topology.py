@@ -8,6 +8,7 @@ from math import isfinite
 from types import MappingProxyType
 from typing import Mapping
 
+from skyseed_v2.configuration import ZoneLayoutDefinition
 from skyseed_v2.identifier import validate_identifier
 from skyseed_v2.node_id import NodeId
 
@@ -16,6 +17,7 @@ from .static_input import (
     GroundStationSimulationInput,
     SatelliteSimulationInput,
 )
+from .zone import Zone, ZoneLayout, ZoneMembershipModel
 
 
 _SATELLITE_KIND = "satellite"
@@ -403,14 +405,33 @@ class Topology:
     _nodes_by_id: Mapping[NodeId, Satellite | GroundStation] = field(
         repr=False, compare=False, hash=False
     )
+    _zone_layout: ZoneLayout | None = field(
+        repr=False, compare=False, hash=False
+    )
 
     def __init__(self) -> None:
         raise TypeError("Topology is created explicitly by Simulator")
 
     @classmethod
-    def _materialize(cls, static_input: SimulatorStaticInput) -> Topology:
+    def _materialize(
+        cls,
+        static_input: SimulatorStaticInput,
+        zone_layout_definition: ZoneLayoutDefinition | None = None,
+        zone_membership_model: ZoneMembershipModel | None = None,
+    ) -> Topology:
         if not isinstance(static_input, SimulatorStaticInput):
             raise TypeError("static_input must be a SimulatorStaticInput")
+        if zone_layout_definition is None and zone_membership_model is not None:
+            raise ValueError(
+                "zone_membership_model requires zone_layout_definition"
+            )
+        zone_layout = (
+            None
+            if zone_layout_definition is None
+            else ZoneLayout._materialize(
+                zone_layout_definition, zone_membership_model
+            )
+        )
 
         satellite_inputs_by_orbit: dict[
             _OrbitKey, list[SatelliteSimulationInput]
@@ -542,12 +563,17 @@ class Topology:
                     ground_stations=ground_stations,
                 )
             )
-        return cls._create(autonomous_systems)
+        return cls._create(autonomous_systems, zone_layout=zone_layout)
 
     @classmethod
     def _create(
-        cls, autonomous_systems: Iterable[SkyseedAutonomousSystem]
+        cls,
+        autonomous_systems: Iterable[SkyseedAutonomousSystem],
+        *,
+        zone_layout: ZoneLayout | None = None,
     ) -> Topology:
+        if zone_layout is not None and not isinstance(zone_layout, ZoneLayout):
+            raise TypeError("zone_layout must be a ZoneLayout or None")
         autonomous_system_values = tuple(autonomous_systems)
         by_asn: dict[int, SkyseedAutonomousSystem] = {}
         nodes: dict[NodeId, Satellite | GroundStation] = {}
@@ -583,6 +609,7 @@ class Topology:
             instance, "_autonomous_systems_by_asn", MappingProxyType(by_asn)
         )
         object.__setattr__(instance, "_nodes_by_id", MappingProxyType(nodes))
+        object.__setattr__(instance, "_zone_layout", zone_layout)
         return instance
 
     @property
@@ -630,6 +657,26 @@ class Topology:
     def get_orbit(self, asn: int, shell_id: str, orbit_id: str) -> Orbit:
         shell = self.get_shell(asn, shell_id)
         return shell.get_orbit(orbit_id)
+
+    def get_zone_layout(self) -> ZoneLayout:
+        if self._zone_layout is None:
+            raise RuntimeError("Topology has no ZoneLayout")
+        return self._zone_layout
+
+    def get_zone(self, zone_id: str) -> Zone:
+        return self.get_zone_layout().get_zone(zone_id)
+
+    def find_zones(
+        self, latitude_deg: float, longitude_deg: float
+    ) -> tuple[Zone, ...]:
+        return self.get_zone_layout().find_zones(
+            latitude_deg, longitude_deg
+        )
+
+    def resolve_zone(self, latitude_deg: float, longitude_deg: float) -> Zone:
+        return self.get_zone_layout().resolve_zone(
+            latitude_deg, longitude_deg
+        )
 
 
 def _validate_satellite_input(value: SatelliteSimulationInput) -> None:

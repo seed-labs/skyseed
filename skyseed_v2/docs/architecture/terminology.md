@@ -12,6 +12,10 @@ package root.
 | Satellite | Emulator-side Satellite entity and the same SEED Node instance; owns only per-Satellite values | `entities/satellite.py` | Simulator Topology Satellite, Orbit owner, Simulator input, container or Config | root and `skyseed_v2.entities` |
 | GroundStation | Emulator-side GroundStation entity and the same SEED Router instance | `entities/ground_station.py` | Simulator Topology GroundStation, Simulator input, ordinary Router, service or Config | root and `skyseed_v2.entities` |
 | StaticEmulatorConfig | Frozen, backend-independent top-level file or programmatic configuration | `configuration/static_emulator_config.py` | Emulator entity, runtime state or Simulator input | `skyseed_v2.configuration` |
+| LatitudeLongitudeRectangleDefinition | Frozen construction input for one rectangular Zone geometry | `configuration/zone.py` | runtime geometry, coordinate entity or generic geometry abstraction | `skyseed_v2.configuration` |
+| ZoneDefinition | Frozen construction input carrying one Zone ID, priority and rectangle definition | `configuration/zone.py` | runtime Zone, owner, registry or service selection | `skyseed_v2.configuration` |
+| ZoneLayoutDefinition | Frozen complete Zone layout materialization input, produced programmatically or from YAML | `configuration/zone.py` | query-owning layout, runtime state or Topology-owned object | `skyseed_v2.configuration` |
+| load_zone_layout_definition | Direct function that validates Zone YAML and returns `ZoneLayoutDefinition` | `configuration/yaml.py` | entity factory, YAML-specific Zone model or runtime layout constructor | `skyseed_v2.configuration` |
 | GeneratedOrbitLayout | Frozen rules for expanding one Shell's generated Orbits and Satellites | `configuration/satellite.py` | independent Config, entity population, factory or runtime trajectory | `skyseed_v2.configuration` |
 | RightAscensionDistribution | Frozen right-ascension distribution nested in `GeneratedOrbitLayout` | `configuration/satellite.py` | Orbit, Config root or runtime position | `skyseed_v2.configuration` |
 | InOrbitPhaseDistribution | Frozen in-orbit phase distribution nested in `GeneratedOrbitLayout` | `configuration/satellite.py` | Satellite state, Config root or runtime position | `skyseed_v2.configuration` |
@@ -25,13 +29,20 @@ package root.
 | create_simulator_static_input | Thin external adapter function that traverses Emulator-side AS owners and returns one `SimulatorStaticInput` | `simulator_input_generation.py` | Simulator-core behavior, factory class, entity index or compatibility alias | `skyseed_v2.simulator_input_generation` |
 | SimulationTimeline | Frozen explicit time-range value with lazy bounded or unbounded timestamp iteration | `simulator/timeline.py` | clock, timestamp cache, Slice store or pacing service | `skyseed_v2.simulator` |
 | SimulationDefinition | Frozen complete construction input pairing `static_input` and `timeline` | `simulator/definition.py` | mutable configuration bag, Emulator input or runtime context | `skyseed_v2.simulator` |
-| Simulator | Slice 1 Simu composition root and facade consuming one `SimulationDefinition` and atomically creating one Topology | `simulator/simulator.py` | Emulator wrapper, adapter, planner, compiler or runner | `skyseed_v2.simulator` |
-| Topology | Immutable Simulator static-network aggregate root and narrow query facade | `simulator/topology.py` | boundary DTO, global database, dynamic Slice, Planning service or Emulator owner | `skyseed_v2.simulator` |
+| Simulator | Simu composition root and facade consuming one `SimulationDefinition` and atomically creating one Topology, optionally from one `ZoneLayoutDefinition` and membership Model | `simulator/simulator.py` | Emulator wrapper, adapter, planner, compiler or runner | `skyseed_v2.simulator` |
+| Topology | Immutable Simulator static-network aggregate root owning at most one `ZoneLayout` and exposing narrow owner-delegating queries | `simulator/topology.py` | boundary DTO, global database, dynamic Slice, Planning service or Emulator owner | `skyseed_v2.simulator` |
 | `skyseed_v2.simulator.SkyseedAutonomousSystem` | Simulator-owned immutable AS node; owns Simulator Shells and GroundStations | `simulator/topology.py` | Emulator/SEED AS, adapter or Registry | `skyseed_v2.simulator` |
 | `skyseed_v2.simulator.Shell` | Simulator-owned immutable Shell; owns Simulator Orbits | `simulator/topology.py` | Emulator Shell, input record or constellation | `skyseed_v2.simulator` |
 | `skyseed_v2.simulator.Orbit` | Simulator-owned immutable Orbit; owns shared orbit parameters and Simulator Satellites | `simulator/topology.py` | Emulator Orbit, input record, position or trajectory | `skyseed_v2.simulator` |
 | `skyseed_v2.simulator.Satellite` | Simulator-owned immutable static Satellite beneath one Orbit | `simulator/topology.py` | SEED Node, Emulator Satellite, position or runtime resource | `skyseed_v2.simulator` |
 | `skyseed_v2.simulator.GroundStation` | Simulator-owned immutable static GroundStation beneath one Simulator AS | `simulator/topology.py` | SEED Router, Emulator GroundStation or runtime resource | `skyseed_v2.simulator` |
+| LatitudeLongitudeRectangle | Immutable canonical latitude/longitude rectangle with closed-boundary `contains` and deterministic representative center | `simulator/zone.py` | coordinate value, Earth model, spherical area centroid or extensible geometry interface | `skyseed_v2.simulator` |
+| Zone | Immutable Simulator domain value carrying one `zone_id`, priority and `LatitudeLongitudeRectangle` | `simulator/zone.py` | membership algorithm, configuration input, owner, runtime state or service selection | `skyseed_v2.simulator` |
+| ZoneLayout | Topology-owned immutable aggregate that solely owns the Zone tuple and ID index, retains one fixed membership Model and validates Model output | `simulator/zone.py` | Definition, mutable registry, Model implementation or user-constructed layout | `skyseed_v2.simulator` |
+| ZoneMembershipModel | Runtime-checkable Protocol for physical-membership and authoritative-resolution algorithms invoked with layout-owned Zones | `simulator/zone.py` | entity, configuration model, Zone owner, position source, service selector or Planning component | `skyseed_v2.simulator` |
+| DefaultZoneMembershipModel | Stateless deterministic implementation of `ZoneMembershipModel` | `simulator/zone.py` | Zone collection, mutable runtime state, previous-state holder or service selector | `skyseed_v2.simulator` |
+| physical membership | Every layout-owned Zone whose closed-boundary `contains` operation accepts the query point | `ZoneMembershipModel.find_zones` | one authoritative answer, service selection or positive-area overlap | query result from `skyseed_v2.simulator` |
+| authoritative Zone | The single physical match selected by the active membership Model | `ZoneMembershipModel.resolve_zone` | all physical matches, Satellite choice or dynamic topology state | query result from `skyseed_v2.simulator` |
 | NodeId | Pure stable logical node identity shared across Emulator packaging, Simulator data/state/plans and future dynamic-execution owner-directed lookup | `node_id.py` | entity property, lookup service, Registry key, container ID, Compose service, namespace, interface or Simulator-local number | `skyseed_v2.node_id` |
 | Simulator static-input generation | Three direct functions sharing one private NodeId derivation to copy supported entities into pure inputs | `simulator_input_generation.py` | entity index, Projector, Builder, Resolver class, input classmethod or Simulator behavior | `skyseed_v2.simulator_input_generation` |
 | SkyseedDockerCompiler | Implemented SEED integration that lowers a rendered Emulator/SEED static model into Dockerfile and Compose deployment configuration | `seedemu_integration/skyseed_docker_compiler.py` | entity creator, dynamic execution compiler, runtime updater or materializer | `skyseed_v2.seedemu_integration` |
@@ -65,6 +76,34 @@ runtime-resource resolution path exists yet.
 `SkyseedDockerCompiler` is a separate implemented static-deployment stage and
 does not compile dynamic execution plans.
 
+Zone construction has one converged vocabulary and path:
+
+```text
+zones.yaml / programmatic construction
+→ ZoneLayoutDefinition
+→ Simulator.create_topology(...)
+→ Topology-owned ZoneLayout
+→ Zone[]
+→ fixed ZoneMembershipModel
+→ Topology facade
+```
+
+The YAML loader directly returns `ZoneLayoutDefinition`; it introduces no
+file-only Zone type. Programmatic and YAML construction therefore converge
+before Simulator materialization. Definition values are construction material
+and are not retained by Topology. `Zone`, `ZoneLayout` and the Model types are
+public only from `skyseed_v2.simulator`, not the package root.
+
+The default authoritative rule is: all physical matches → maximum priority →
+minimum haversine central angle to the rectangle's deterministic
+representative center → lexicographically smallest `zone_id` within `1e-12`
+radians. Higher priority wins and defaults to `0`. The representative center
+is not a spherical area centroid, no Earth radius is required for a central
+angle, and the tie tolerance does not change closed-boundary containment.
+`allow_overlap=False` rejects only simultaneous positive latitude and
+longitude overlap; shared edges, corners, poles and date-line boundaries have
+zero area even though their points may have multiple physical memberships.
+
 ## Simulator implementation and future conceptual vocabulary
 
 Implemented rows below are normative through the public terms above. Future
@@ -75,10 +114,12 @@ to the current public API.
 | --- | --- | --- |
 | `NodeId`, `SatelliteSimulationInput`, `GroundStationSimulationInput`, `SimulatorStaticInput`, Simulator input-generation functions | **implemented** | Current immutable Emulator-to-Simulator boundary foundation; input values are construction material, not the long-lived Simu domain model |
 | Static chain: Emulator → `SkyseedDockerCompiler` → Docker/Compose → `ComposeProjectLauncher` | **implemented** | Static deployment and materialization lifecycle |
-| Emulator entities → input generation → immutable boundary data → Simulator construction → Simulator-owned static domain objects | **implemented in Slice 1** | Boundary input materializes a separate immutable Simu graph; it does not grow into one all-purpose input aggregate |
-| `Simulator` owns its Definition and explicitly creates one `Topology`; its Timeline is retained by the Definition | **implemented in Slice 1** | Simulator is the current composition root and facade; Planning is not present |
-| `Topology` owns/manages Simu AS, Shell, Orbit, Satellite and GroundStation objects | **implemented in Slice 1** | Topology is the immutable static-network aggregate and thin owner-directed query facade, not a central database |
-| `SimulationTimeline` | **implemented in Slice 1** | Explicit frozen time rules with lazy bounded/unbounded iteration; it creates no Slice |
+| Emulator entities → input generation → immutable boundary data → Simulator construction → Simulator-owned static domain objects | **implemented in accepted/frozen Iteration 1** | Boundary input materializes a separate immutable Simu graph; it does not grow into one all-purpose input aggregate |
+| `Simulator` owns its Definition and explicitly creates one `Topology`; its Timeline is retained by the Definition | **implemented in accepted/frozen Iteration 1** | Simulator is the current composition root and facade; Planning is not present |
+| `Topology` owns/manages Simu AS, Shell, Orbit, Satellite and GroundStation objects | **implemented in accepted/frozen Iteration 1** | Topology is the immutable static-network aggregate and thin owner-directed query facade, not a central database |
+| `SimulationTimeline` | **implemented in accepted/frozen Iteration 1** | Explicit frozen time rules with lazy bounded/unbounded iteration; it creates no Slice |
+| `ZoneLayoutDefinition` → atomic Topology materialization → optional Topology-owned `ZoneLayout` | **implemented in Iteration 2** | A valid Topology may omit the layout; when present, the layout solely owns its Zone tuple/index and fixed membership Model |
+| physical membership versus authoritative Zone | **implemented in Iteration 2** | `find_zones` retains all closed-boundary matches; `resolve_zone` returns exactly one match selected by the active Model |
 | `Topology` produces authoritative state; `Planning` consumes public results and plans transitions | **approved direction** | Topology never depends on Planning; Planning does not own or modify Topology data and may query only a read-only Topology facade |
 | `TopologyDifference` → `SemanticPlanner` → `SemanticTransitionPlan` → `BackendPlanner` → `BackendExecutionPlan` | **approved direction** | Backend-neutral meaning and backend-specific execution strategy are separate planning levels |
 | Dynamic chain: `BackendExecutionPlan` → `ExecutionCompiler` → `ExecutableBundle` → `SimulationRunner` | **approved direction** | Lowering and execution remain separate from both planning and the implemented static deployment chain |

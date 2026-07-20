@@ -1,4 +1,4 @@
-"""Read versioned YAML into immutable static Emulator Config values."""
+"""Read YAML into immutable configuration values and definitions."""
 
 from __future__ import annotations
 
@@ -35,6 +35,11 @@ from .static_emulator_config import (
     SkyseedAutonomousSystemConfig,
     StaticEmulatorConfig,
 )
+from .zone import (
+    LatitudeLongitudeRectangleDefinition,
+    ZoneDefinition,
+    ZoneLayoutDefinition,
+)
 
 
 SCENARIO_SCHEMA_VERSION = "skyseed-static-emulator/v1"
@@ -45,6 +50,7 @@ __all__ = [
     "SCENARIO_SCHEMA_VERSION",
     "StaticEmulatorConfigLoadError",
     "load_static_emulator_config",
+    "load_zone_layout_definition",
 ]
 
 
@@ -194,6 +200,72 @@ def load_static_emulator_config(path: Path) -> StaticEmulatorConfig:
         raise StaticEmulatorConfigLoadError(
             f"scenario validation failed: {error}"
         ) from error
+
+
+def load_zone_layout_definition(path: Path) -> ZoneLayoutDefinition:
+    """Read one Zone layout YAML file into its immutable Definition."""
+
+    payload = _read_document(Path(path).resolve(), "zone layout")
+    _fields(
+        payload,
+        required={"allow_overlap", "zones"},
+        context="zone layout",
+    )
+    try:
+        zones = tuple(
+            _parse_zone_definition(value, index)
+            for index, value in enumerate(
+                _sequence(payload["zones"], "zone layout.zones")
+            )
+        )
+        return ZoneLayoutDefinition(
+            zones=zones,
+            allow_overlap=payload["allow_overlap"],
+        )
+    except StaticEmulatorConfigLoadError:
+        raise
+    except (TypeError, ValueError) as error:
+        raise StaticEmulatorConfigLoadError(
+            f"zone layout validation failed: {error}"
+        ) from error
+
+
+def _parse_zone_definition(value: Any, index: int) -> ZoneDefinition:
+    context = f"zone layout.zones[{index}]"
+    mapping = _mapping(value, context)
+    _fields(
+        mapping,
+        required={"zone_id", "geometry"},
+        optional={"priority"},
+        context=context,
+    )
+    geometry_context = f"{context}.geometry"
+    geometry = _mapping(mapping["geometry"], geometry_context)
+    _fields(
+        geometry,
+        required={
+            "kind",
+            "south_latitude_deg",
+            "north_latitude_deg",
+            "west_longitude_deg",
+            "east_longitude_deg",
+        },
+        context=geometry_context,
+    )
+    if geometry["kind"] != "latitude-longitude-rectangle":
+        raise StaticEmulatorConfigLoadError(
+            f"{geometry_context}.kind is unsupported: {geometry['kind']!r}"
+        )
+    return ZoneDefinition(
+        zone_id=mapping["zone_id"],
+        priority=mapping.get("priority", 0),
+        geometry=LatitudeLongitudeRectangleDefinition(
+            south_latitude_deg=geometry["south_latitude_deg"],
+            north_latitude_deg=geometry["north_latitude_deg"],
+            west_longitude_deg=geometry["west_longitude_deg"],
+            east_longitude_deg=geometry["east_longitude_deg"],
+        ),
+    )
 
 def _read_document(path: Path, context: str) -> dict[str, Any]:
     try:
