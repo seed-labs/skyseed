@@ -219,7 +219,7 @@ def test_removed_and_deferred_boundary_apis_are_not_exported() -> None:
     )
     assert importlib.util.find_spec("skyseed_v2.simulator.runtime") is None
     assert importlib.util.find_spec("skyseed_v2.simulator.engine") is None
-    assert importlib.util.find_spec("skyseed_v2.simulator.difference") is None
+    assert importlib.util.find_spec("skyseed_v2.simulator.difference") is not None
     assert (
         importlib.util.find_spec("skyseed_v2.simulator.static_input.identity")
         is None
@@ -261,6 +261,7 @@ def test_simulator_core_has_no_emulator_seed_or_generation_dependency() -> None:
         connection,
         coordinates,
         definition,
+        difference,
         position,
         route,
         simulator,
@@ -280,6 +281,7 @@ def test_simulator_core_has_no_emulator_seed_or_generation_dependency() -> None:
         connection,
         coordinates,
         definition,
+        difference,
         position,
         route,
         simulator,

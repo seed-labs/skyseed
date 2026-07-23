@@ -61,11 +61,14 @@ def test_identity_and_generation_exports_stay_with_their_owner_modules() -> None
     assert set(simulator.__all__) == {
         "CircularOrbitPositionModel",
         "Connection",
+        "ConnectionDirection",
         "ConnectionId",
         "ConnectionKind",
         "ConnectionModel",
         "ConnectionSlice",
         "DirectionalConnectionParameters",
+        "DirectionalConnectionParametersPatch",
+        "DifferenceOperation",
         "EarthFixedPosition",
         "GeometricConnectionModel",
         "GroundStation",
@@ -77,6 +80,7 @@ def test_identity_and_generation_exports_stay_with_their_owner_modules() -> None
         "PositionModel",
         "RouteKey",
         "RouteModel",
+        "RoutePatch",
         "RouteSlice",
         "RouteTarget",
         "Satellite",
@@ -88,11 +92,13 @@ def test_identity_and_generation_exports_stay_with_their_owner_modules() -> None
         "SphericalCap",
         "SkyseedAutonomousSystem",
         "Topology",
+        "TopologyDifference",
         "TopologySlice",
         "Zone",
         "ZoneLayout",
         "ZoneMembershipModel",
         "ZoneRouteTarget",
+        "ZoneServiceAssignmentPatch",
     }
     assert "NodeId" not in simulator_static_input.__all__
     assert "SimulationNodeId" not in simulator_static_input.__all__

@@ -9,6 +9,14 @@ from .connection import (
     DirectionalConnectionParameters,
 )
 from .definition import SimulationDefinition
+from .difference import (
+    ConnectionDirection,
+    DifferenceOperation,
+    DirectionalConnectionParametersPatch,
+    RoutePatch,
+    TopologyDifference,
+    ZoneServiceAssignmentPatch,
+)
 from .models import (
     CircularOrbitPositionModel,
     GeometricConnectionModel,
@@ -47,11 +55,14 @@ from .zone import (
 __all__ = [
     "CircularOrbitPositionModel",
     "Connection",
+    "ConnectionDirection",
     "ConnectionId",
     "ConnectionKind",
     "ConnectionModel",
     "ConnectionSlice",
     "DirectionalConnectionParameters",
+    "DirectionalConnectionParametersPatch",
+    "DifferenceOperation",
     "EarthFixedPosition",
     "GeometricConnectionModel",
     "GroundStation",
@@ -63,6 +74,7 @@ __all__ = [
     "PositionModel",
     "RouteKey",
     "RouteModel",
+    "RoutePatch",
     "RouteSlice",
     "RouteTarget",
     "Satellite",
@@ -74,9 +86,11 @@ __all__ = [
     "SphericalCap",
     "SkyseedAutonomousSystem",
     "Topology",
+    "TopologyDifference",
     "TopologySlice",
     "Zone",
     "ZoneLayout",
     "ZoneMembershipModel",
     "ZoneRouteTarget",
+    "ZoneServiceAssignmentPatch",
 ]

@@ -191,7 +191,7 @@ flowchart LR
     SIM -. approved ownership .-> SLICER[approved Slicer]
     SLICER -. exact reference .-> TOPOLOGY
     SLICER -. ordered generation .-> SLICE[approved TopologySlice]
-    SLICER -. adjacent comparison .-> DIFF[approved TopologyDifference]
+    SLICER -. adjacent comparison .-> DIFF[implemented and accepted TopologyDifference]
     DIFF -. future finite window .-> PLANNING[future Planning]
     PLANNING -. later approved plan .-> DYNAMIC[dynamic execution resolution]
     DYNAMIC -.->|NodeId.asn| BASE[SatelliteBase.getAutonomousSystem]
@@ -209,8 +209,9 @@ static nodes, never Emulator entities or runtime resources, plus at most one
 ZoneLayout. Simulator, Definition, Topology, the static node objects and static
 Zone domain are implemented. The updated Timeline,
 Position/Connection/Route Models, Slicer and TopologySlice are implemented and
-accepted. TopologyDifference is accepted but not implemented; Planning,
-dynamic resource-resolution and update structures remain conceptual/open.
+accepted. TopologyDifference is implemented and accepted;
+Planning, dynamic resource-resolution and update structures remain
+conceptual/open.
 
 ## 7. Implemented Zone construction and ownership
 
@@ -286,7 +287,7 @@ flowchart TD
     POS -. ConnectionModel .-> CONN[approved ConnectionSlice]
     CONN -. RouteModel .-> ROUTE[approved RouteSlice]
     ROUTE -. atomic publication .-> SLICE[approved TopologySlice]
-    SLICER -. adjacent comparison .-> DIFF[approved TopologyDifference]
+    SLICER -. adjacent comparison .-> DIFF[implemented and accepted TopologyDifference]
     DIFF -. future DifferenceWindow .-> PLAN[future Planner]
     PLAN -. future plan .-> BACK[future BackendExecutionPlan]
     BACK -. lowered by .-> EXEC[future ExecutionCompiler]
@@ -299,9 +300,9 @@ flowchart TD
 ```
 
 Solid arrows remain accepted current implementation. Position through
-TopologySlice arrows are implemented and accepted; TopologyDifference remains
-accepted/not implemented, and dashed Planner/backend arrows remain deferred.
-Topology does not create or compare Slices.
+TopologySlice arrows and TopologyDifference are implemented and accepted, and
+dashed Planner/backend arrows remain deferred. Topology does not create or
+compare Slices.
 
 The implemented static deployment compiler and conceptual dynamic
 `ExecutionCompiler` have different inputs, outputs, ownership and lifecycles;

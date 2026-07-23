@@ -42,7 +42,8 @@ The implemented accepted foundation comprises:
 The Dynamic Slice contract remains accepted/frozen. Position, Connection,
 Route, Slicer and TopologySlice are implemented and accepted and are exported
 only from `skyseed_v2.simulator`; no package-root export is implied.
-TopologyDifference is accepted/frozen but not implemented. Planning, Plan,
+TopologyDifference is implemented and accepted and is also exported only from
+`skyseed_v2.simulator`. G remains unimplemented. Planning, Plan,
 DifferenceWindow, backend execution and runtime resource policy remain
 deferred.
 
@@ -91,7 +92,7 @@ Difference patches, failure semantics, Tool reads and deferred boundaries.
 
 ## Implemented Architecture Delta
 
-The accepted A–E implementation applies this Architecture Delta:
+The accepted A–E and F implementations apply this Architecture Delta:
 
 1. Timeline becomes timezone-aware-only and UTC-normalized.
 2. Shell YAML/programmatic configuration explicitly supplies one common UTC
@@ -103,12 +104,14 @@ The accepted A–E implementation applies this Architecture Delta:
 5. Simulator explicitly creates and owns Slicer after Topology.
 6. ZoneLayout gains the accepted SphericalCap range query.
 7. Position, Connection, Route, TopologySlice and Slicer implement the
-   accepted public Simulator contracts; TopologyDifference remains accepted
-   design.
+   accepted public Simulator contracts.
 8. Tools may read formal dynamic results but do not become a second
    authoritative computation path.
 9. Built-in same-Orbit ordering uses mean anomaly; built-in cross-Orbit
    structure uses adjacent-RAAN stable cyclic pairing.
+10. Slicer provides the sole retained, adjacent-Slice Difference entry and
+    returns independent immutable sparse TopologyDifference values without
+    retaining them.
 
 ## Prohibited directions
 
@@ -143,6 +146,6 @@ Each engineering group requires explicit authorization, implementation,
 validation, architecture audit and acceptance. A, B, C, D and E do not require
 mechanical authorization pauses between their internal dependency steps.
 
-A–E is implemented and accepted. F and G remain unimplemented and require
-separate authorization; A–E acceptance does not authorize TopologyDifference
-or a Dynamic Tool and does not complete the full Dynamic Slice stage.
+A–E and F are implemented and accepted. G remains unimplemented and requires
+separate authorization; acceptance of F does not authorize a Dynamic Tool and
+does not complete the full Dynamic Slice stage.

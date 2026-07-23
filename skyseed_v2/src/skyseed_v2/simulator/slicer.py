@@ -17,6 +17,7 @@ from .connection import (
     ConnectionModel,
     ConnectionSlice,
 )
+from .difference import TopologyDifference, _compare_topology_slices
 from .position import EarthFixedPosition, PositionModel
 from .route import (
     GroundStationRouteTarget,
@@ -243,6 +244,36 @@ class Slicer:
     def get_retained_slice_id_range(self) -> tuple[int, int]:
         return self._slices[0].slice_id, self._slices[-1].slice_id
 
+    def create_difference(
+        self,
+        previous_slice_id: int,
+        current_slice_id: int,
+    ) -> TopologyDifference:
+        """Compare two retained adjacent Slices without retaining the result."""
+
+        previous = self.get_slice(previous_slice_id)
+        current = self.get_slice(current_slice_id)
+        if current_slice_id != previous_slice_id + 1:
+            raise ValueError(
+                "TopologyDifference requires strictly adjacent Slice IDs"
+            )
+
+        # Both values came from this Slicer's owner-scoped retained window, so
+        # no foreign-lineage Slice can enter the private comparator.
+        _validate_retained_slice(
+            self._topology,
+            self._timeline,
+            previous,
+            previous_slice_id,
+        )
+        _validate_retained_slice(
+            self._topology,
+            self._timeline,
+            current,
+            current_slice_id,
+        )
+        return _compare_topology_slices(previous, current)
+
     def get_topology(self) -> Topology:
         return self._topology
 
@@ -334,6 +365,42 @@ def _validated_positions(
         copied[node_id] = position
     return MappingProxyType(
         dict(sorted(copied.items(), key=lambda item: _node_key(item[0])))
+    )
+
+
+def _validate_retained_slice(
+    topology: Topology,
+    timeline: SimulationTimeline,
+    topology_slice: TopologySlice,
+    expected_slice_id: int,
+) -> None:
+    if not isinstance(topology_slice, TopologySlice):
+        raise TypeError("retained value must be a TopologySlice")
+    if topology_slice.slice_id != expected_slice_id:
+        raise ValueError("retained Slice ID metadata is inconsistent")
+    expected_timestamp = (
+        None
+        if expected_slice_id == 0
+        else timeline.start_time
+        + (expected_slice_id - 1) * timeline.slice_interval
+    )
+    if topology_slice.timestamp != expected_timestamp:
+        raise ValueError("retained Slice timestamp metadata is inconsistent")
+    if expected_slice_id == 0:
+        if (
+            topology_slice.positions
+            or topology_slice.connection_slice.connections
+            or topology_slice.connection_slice.zone_service_assignments
+            or topology_slice.route_slice.routes
+        ):
+            raise ValueError("synthetic Slice 0 dynamic state is inconsistent")
+    else:
+        _validated_positions(topology, topology_slice.positions)
+    _validate_connection_slice(topology, topology_slice.connection_slice)
+    _validate_route_slice(
+        topology,
+        topology_slice.connection_slice,
+        topology_slice.route_slice,
     )
 
 

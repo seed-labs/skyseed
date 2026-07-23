@@ -2,8 +2,9 @@
 
 This handwritten example shows the complete public composition: two planned
 Satellites, one GroundStation, one ordinary SEED AS/Network/Router, one IX, one
-explicit eBGP peering, immutable Emulator-to-Simulator input, the Dynamic
-Slice A–E chain and `SkyseedDockerCompiler`.
+explicit eBGP peering, immutable Emulator-to-Simulator input, the accepted
+Dynamic Slice A–E chain, accepted F TopologyDifference evidence and
+`SkyseedDockerCompiler`.
 
 `emu.py` contains only `build_emulator() -> Emulator`. `main.py` builds that
 Emulator once, assembles one Simulator/Topology from the same object, preserves

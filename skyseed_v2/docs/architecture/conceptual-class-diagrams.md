@@ -3,12 +3,13 @@
 ## Status
 
 The diagrams describe implemented Simulator Iterations 1 and 2 plus the
-implemented and accepted Dynamic Slice A–E main chain. TopologyDifference and
-G remain accepted/frozen but not implemented, so the full Dynamic Slice stage
-is not complete; Planning/execution remains conceptual.
+implemented and accepted Dynamic Slice A–E main chain and F
+TopologyDifference. G remains accepted/frozen but not implemented, so the
+full Dynamic Slice stage is not complete;
+Planning/execution remains conceptual.
 
 Status stereotypes are normative: `implemented` means current code,
-`implemented and accepted` marks the accepted A–E implementation,
+`implemented and accepted` marks accepted current implementation,
 `approved / not implemented` means a frozen public contract awaiting its
 authorized implementation Slice, and `conceptual/open` means deferred design.
 The detailed frozen dynamic contract is
@@ -409,9 +410,8 @@ GroundStation height and cap query are implemented and accepted in A–E.
 ## Simulator approved dynamic-slice boundary map
 
 Nodes marked `implemented` or `implemented and accepted` belong to the
-accepted current implementation. TopologyDifference remains
-`approved / not implemented` under the frozen contract. Planning and backend
-execution remain `conceptual/open`.
+accepted current implementation. Planning and backend execution remain
+`conceptual/open`.
 
 ```mermaid
 classDiagram
@@ -442,6 +442,7 @@ class Slicer {
   +create_next_slice() TopologySlice
   +create_slices(count) tuple
   +create_all_slices() tuple
+  +create_difference(previous_slice_id, current_slice_id) TopologyDifference
   +resolve_path(slice_id, source, target) tuple
 }
 
@@ -482,7 +483,7 @@ class RouteSlice {
 }
 
 class TopologyDifference {
-  <<approved / not implemented>>
+  <<implemented and accepted>>
 }
 
 class SphericalCap {
@@ -510,7 +511,7 @@ Slicer o-- PositionModel : exact fixed Model
 Slicer o-- ConnectionModel : exact fixed Model
 Slicer o-- RouteModel : exact fixed Model
 Slicer *-- TopologySlice : atomically publishes
-Slicer --> TopologyDifference : approved F comparison
+Slicer --> TopologyDifference : sole F comparison entry
 
 PositionModel --> EarthFixedPosition : produces mapping
 ConnectionModel --> ConnectionSlice : produces
@@ -528,7 +529,8 @@ TopologyDifferenceWindow --> Planning : future input
 implemented and accepted sole dynamic generation, validation and publication
 facade and resolves full paths from exact Topology and one retained Slice;
 TopologySlice retains no Topology reference. The accepted F contract assigns
-adjacent comparison to Slicer but is not implemented. PositionModel,
+adjacent comparison to Slicer and the accepted implementation provides that
+sole entry without retaining Differences. PositionModel,
 ConnectionModel and RouteModel form one fixed call chain and do not own
 authoritative Slice history.
 
@@ -593,7 +595,22 @@ class TopologySlice {
   <<implemented and accepted immutable aggregate>>
 }
 class TopologyDifference {
-  <<approved immutable change / not implemented>>
+  <<implemented and accepted immutable change>>
+}
+class ConnectionDirection {
+  <<implemented and accepted enum>>
+}
+class DifferenceOperation {
+  <<implemented and accepted enum>>
+}
+class DirectionalConnectionParametersPatch {
+  <<implemented and accepted frozen value>>
+}
+class ZoneServiceAssignmentPatch {
+  <<implemented and accepted frozen value>>
+}
+class RoutePatch {
+  <<implemented and accepted frozen value>>
 }
 
 CircularOrbitPositionModel ..|> PositionModel
@@ -613,6 +630,12 @@ TopologySlice *-- ConnectionSlice
 TopologySlice *-- RouteSlice
 TopologyDifference --> ConnectionId : removal and patch identity
 TopologyDifference --> RouteKey : route patch identity
+TopologyDifference *-- DirectionalConnectionParametersPatch
+TopologyDifference *-- ZoneServiceAssignmentPatch
+TopologyDifference *-- RoutePatch
+DirectionalConnectionParametersPatch *-- ConnectionDirection
+ZoneServiceAssignmentPatch *-- DifferenceOperation
+RoutePatch *-- DifferenceOperation
 ```
 
 The built-in Models are explicit choices, never hidden defaults. Same-Orbit

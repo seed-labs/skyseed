@@ -7,9 +7,9 @@ accepted/frozen Simulator Iteration 1 composition/time/static Topology,
 Iteration 2 static Zone domain, formal examples and Compose materialization
 tooling are implemented. The complete dynamic public contract is accepted and
 frozen; the Dynamic Slice A–E main chain is implemented and accepted.
-TopologyDifference and G are not implemented, so the full Dynamic Slice stage
-is not complete. Planning, `SimulationRunner` and UT remain deferred and
-unimplemented.
+TopologyDifference is implemented and accepted and G is not implemented, so
+the full Dynamic Slice stage is not complete. Planning,
+`SimulationRunner` and UT remain deferred and unimplemented.
 
 ## 2. System division
 
@@ -229,7 +229,7 @@ Static Topology + Timeline timestamp
 → TopologySlice
 ```
 
-The following `TopologyDifference` stage remains accepted but unimplemented.
+The following `TopologyDifference` stage is implemented and accepted.
 
 `Simulator` creates one Slicer only after Topology exists. Slicer retains exact
 Topology, Timeline and explicit Position/Connection/Route Models, then
@@ -299,9 +299,9 @@ Slice A time/epoch/coordinates/Position
 The engineering authorization groups are A–E for the complete Dynamic Slice
 main chain, F for TopologyDifference and G for Tool/example/final
 synchronization. A–E is implemented and accepted. F TopologyDifference is the
-next engineering objective; F and G remain unimplemented and require separate
-authorization. Current code has no TopologyDifference type, and the full
-Dynamic Slice stage is not complete.
+implemented and accepted adjacent comparison; G remains unimplemented and
+requires separate authorization. The full Dynamic Slice stage is not
+complete.
 
 Future Simulator state and plans will cite `NodeId`. Any later approved
 dynamic-execution resolution path will call

@@ -2,7 +2,7 @@
 
 ## Status and authority
 
-Status: **ACCEPTED / FROZEN — A–E IMPLEMENTED AND ACCEPTED; F AND G NOT
+Status: **ACCEPTED / FROZEN — A–E AND F IMPLEMENTED AND ACCEPTED; G NOT
 IMPLEMENTED**
 
 Accepted against baseline `cfaa4930cba2d1a6953617b274ef528f9ae4059a`.
@@ -536,7 +536,7 @@ Difference contains:
 - removed ConnectionIds;
 - directional changed-new-value-only Connection parameter patches;
 - Zone service assignment/unassignment patches;
-- Route next-hop/remainder patches.
+- Route next-hop/removal patches.
 
 It excludes complete Slices, Position changes, old values, candidates,
 visibility/geometry, Model configuration, labels, interfaces, resources,

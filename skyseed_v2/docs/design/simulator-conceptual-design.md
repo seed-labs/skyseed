@@ -3,8 +3,8 @@
 ## Status and purpose
 
 This record separates the implemented Iterations 1 and 2, the implemented and
-accepted Dynamic Slice A–E main chain, the accepted/frozen but unimplemented
-TopologyDifference contract and deferred conceptual directions.
+accepted Dynamic Slice A–E main chain and F TopologyDifference, and deferred
+conceptual directions.
 It is not an instruction to create placeholder types.
 
 The status labels used here are:
@@ -22,8 +22,8 @@ The status labels used here are:
 
 The static domains plus Position, Connection, Route, Slicer and TopologySlice
 are implemented and accepted and public from their owning modules.
-TopologyDifference is accepted/frozen design but not implemented. Planning,
-Plan, DifferenceWindow, the dynamic
+TopologyDifference is implemented and accepted. Planning, Plan,
+DifferenceWindow, the dynamic
 `ExecutionCompiler`, `ExecutableBundle` and `SimulationRunner` remain
 deferred and unimplemented.
 
@@ -493,8 +493,7 @@ Iteration 1 froze construction, time rules and the immutable static node graph.
 Iteration 2 implements the static Zone Definition/materialization/ownership,
 geometry and membership contract. The Dynamic Slice public contract freezes
 Position, Connection, Route, Slicer, TopologySlice and TopologyDifference
-design. A–E is implemented and accepted; TopologyDifference is not
-implemented.
+design. A–E and F TopologyDifference are implemented and accepted.
 
 Planning/Plan schemas, DifferenceWindow implementation, backend execution,
 runtime resource policy, concrete diagnostics API and private performance
@@ -504,6 +503,6 @@ The approved dependency labels are grouped for engineering authorization:
 A–E is the complete Dynamic Slice main chain, F is TopologyDifference and G is
 Tool/canonical example/final synchronization. Each group requires explicit
 authorization, but A through E do not require mechanical authorization pauses
-between internal dependency steps. A–E is implemented and accepted; F and G
-remain unimplemented and require separate authorization. The full Dynamic
+between internal dependency steps. A–E and F are implemented and accepted; G
+remains unimplemented and requires separate authorization. The full Dynamic
 Slice stage is not complete.

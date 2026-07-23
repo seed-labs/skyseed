@@ -18,7 +18,8 @@
 - Dynamic Slice public contract for Position, Connection, Route, Slicer,
   TopologySlice and TopologyDifference: **ACCEPTED / FROZEN DESIGN**
 - Dynamic Slice main-chain A–E: **IMPLEMENTED AND ACCEPTED**
-- TopologyDifference and Dynamic Tool implementation: **NOT STARTED**
+- TopologyDifference: **IMPLEMENTED AND ACCEPTED**
+- G Dynamic Tool and final synchronization: **NOT STARTED**
 - Planning and backend/runtime execution: **DEFERRED / NOT STARTED**
 
 ## Current objective
@@ -29,17 +30,23 @@ Dynamic Slice public contract is now accepted and frozen in
 Its objects, ownership, Model Protocols, built-in Model boundaries, Slice
 lifecycle, Difference semantics and implementation dependency order A through
 G are approved. The Dynamic Slice main chain A–E is implemented and accepted.
-F TopologyDifference is the next engineering objective. G Dynamic Tool,
-canonical integration and final synchronization have not started. Planning
-and backend execution remain outside the implemented scope. The full Dynamic
-Slice stage is not complete.
+F TopologyDifference is implemented and accepted. G Dynamic Tool, canonical
+integration and final synchronization have not started. Planning and backend
+execution remain outside the implemented scope. The full Dynamic Slice stage
+is not complete.
+
+The accepted F implementation publicly exposes `TopologyDifference`,
+`ConnectionDirection`, `DifferenceOperation`,
+`DirectionalConnectionParametersPatch`, `ZoneServiceAssignmentPatch` and
+`RoutePatch` from `skyseed_v2.simulator`; package-root exports remain
+unchanged.
 
 ## Implemented package boundaries
 
 ```text
 skyseed_v2/
 ├── entities/                 # Shell, Orbit, Satellite, GroundStation
-├── simulator/                # static Topology plus accepted Dynamic Slice A–E
+├── simulator/                # static Topology, accepted A–E and F
 │   └── static_input/         # immutable cross-layer boundary input types
 ├── seedemu_integration/      # Skyseed-owned seedemu extensions
 ├── configuration/            # immutable Config/Zone Definitions and YAML loading
@@ -277,8 +284,8 @@ the same Definition failures, while YAML wraps them as the loader exception.
 
 Iteration 2 remains the static Zone foundation. Position, Connection, Route,
 Slicer and TopologySlice are implemented and accepted in A–E.
-TopologyDifference remains accepted/frozen but unimplemented; Planning and
-backend execution remain deferred.
+TopologyDifference is implemented and accepted in F; Planning and backend
+execution remain deferred.
 The detailed accepted contract is
 [`architecture/dynamic-slice-public-contract.md`](architecture/dynamic-slice-public-contract.md),
 the design record is
@@ -288,7 +295,7 @@ and the Mermaid map is in
 
 ## Dynamic Slice public contract
 
-Status: **ACCEPTED / FROZEN — A–E IMPLEMENTED AND ACCEPTED; F AND G NOT
+Status: **ACCEPTED / FROZEN — A–E AND F IMPLEMENTED AND ACCEPTED; G NOT
 IMPLEMENTED**.
 
 Accepted ownership:
@@ -344,7 +351,7 @@ The public contracts are exported only from `skyseed_v2.simulator`; package
 root exports are unchanged. The shared coordinate adapter uses Astropy 8.x
 behind domain types, disables automatic IERS downloads and fails when a
 timestamp is outside bundled Earth-orientation coverage.
-`TopologyDifference` remains the next unimplemented engineering group.
+`TopologyDifference` is implemented and accepted.
 Planning, DifferenceWindow, backend execution and retention policy remain
 deferred.
 
@@ -364,20 +371,22 @@ The engineering authorization groups are A–E for the complete Dynamic Slice
 main chain, F for TopologyDifference and G for Tool/example/final
 synchronization. Each group requires explicit authorization; A through E do
 not require mechanical authorization pauses between their internal dependency
-steps. A–E is implemented and accepted; F and G are unimplemented and still
-require separate authorization.
+steps. A–E and F are implemented and accepted, and G remains unimplemented
+and requires separate authorization.
 
 ## Current completed and accepted engineering work
 
 - A–E Dynamic Slice main chain: UTC Timeline, Orbit epoch,
   GroundStation height, Position, Zone range, Connection, Route, Slicer and
   TopologySlice.
+- F TopologyDifference: immutable sparse comparison of retained adjacent
+  TopologySlices through the Slicer-owned entry.
 
 ## Explicitly unstarted work
 
-- F TopologyDifference.
-- G Dynamic Tool, canonical integration and final synchronization. The A–E
-  canonical execution example is accepted A–E evidence and is not a Tool.
+- G Dynamic Tool, canonical integration and final synchronization is not
+  started. The canonical execution example now provides A–E evidence plus
+  accepted F Difference evidence and is not a Tool.
 - Planning, DifferenceWindow and backend/runtime execution.
 - Future dynamic planning/execution consumption of `NodeId` and lowering to
   runtime resource operations.
@@ -390,7 +399,7 @@ must resolve its ASN through the Base owner and call the resulting Skyseed
 AS/entity owners' narrow query methods rather than guess from strings or retain
 a global index. No plan type, plan-compilation resolution/update path,
 `SimulationRunner`, runtime resource locator or backend execution engine
-exists beyond the accepted A–E implementation.
+exists beyond the accepted A–E and F implementations.
 
 ## Acceptance state
 
@@ -406,7 +415,7 @@ exists beyond the accepted A–E implementation.
 - Dynamic Slice public contract: **ACCEPTED / FROZEN DESIGN**
 - Position, Connection, Route, Slicer and TopologySlice:
   **IMPLEMENTED AND ACCEPTED**
-- TopologyDifference implementation: **NOT STARTED**
+- TopologyDifference implementation: **IMPLEMENTED AND ACCEPTED**
 - Dynamic Tool and final synchronization: **NOT STARTED**
 - Full Dynamic Slice stage: **NOT COMPLETE**
 - Planning and backend/runtime execution: **DEFERRED / NOT STARTED**

@@ -132,6 +132,8 @@ def main() -> None:
 
     slice_zero = slicer.get_slice(0)
     first_slice, second_slice = slicer.create_slices(2)
+    initial_difference = slicer.create_difference(0, 1)
+    next_difference = slicer.create_difference(1, 2)
     first_satellite_id = satellite_id
     second_satellite_id = NodeId(65001, "satellite", "satellite-1")
     first_satellite_position = first_slice.get_position(first_satellite_id)
@@ -196,6 +198,56 @@ def main() -> None:
         f"next hops: G={ground_next_hop.value}; Z={zone_next_hop.value}"
     )
     print("resolved path: " + " -> ".join(node.value for node in path))
+    initial_connection = initial_difference.added_connections[0]
+    initial_assignment = (
+        initial_difference.zone_service_assignment_patches[0]
+    )
+    initial_route = initial_difference.route_patches[0]
+    print(
+        "Difference 0->1: "
+        f"added_connections={len(initial_difference.added_connections)}, "
+        "connection_parameter_patches="
+        f"{len(initial_difference.connection_parameter_patches)}, "
+        "zone_service_assignment_patches="
+        f"{len(initial_difference.zone_service_assignment_patches)}, "
+        f"route_patches={len(initial_difference.route_patches)}"
+    )
+    print(
+        "Difference 0->1 samples: "
+        f"Connection={initial_connection.connection_id!r}; "
+        f"Zone={initial_assignment.zone_id}->"
+        f"{initial_assignment.service_satellite_id.value}; "
+        f"Route={initial_route.route_key!r}->"
+        f"{initial_route.next_hop.value}"
+    )
+    if next_difference.is_empty:
+        next_change = "legal empty Difference"
+    elif next_difference.connection_parameter_patches:
+        next_change = repr(
+            next_difference.connection_parameter_patches[0]
+        )
+    elif next_difference.added_connections:
+        next_change = repr(next_difference.added_connections[0])
+    elif next_difference.removed_connection_ids:
+        next_change = repr(next_difference.removed_connection_ids[0])
+    elif next_difference.zone_service_assignment_patches:
+        next_change = repr(
+            next_difference.zone_service_assignment_patches[0]
+        )
+    else:
+        next_change = repr(next_difference.route_patches[0])
+    print(
+        "Difference 1->2: "
+        f"empty={next_difference.is_empty}, "
+        f"added_connections={len(next_difference.added_connections)}, "
+        f"removed_connections={len(next_difference.removed_connection_ids)}, "
+        "connection_parameter_patches="
+        f"{len(next_difference.connection_parameter_patches)}, "
+        "zone_service_assignment_patches="
+        f"{len(next_difference.zone_service_assignment_patches)}, "
+        f"route_patches={len(next_difference.route_patches)}; "
+        f"evidence={next_change}"
+    )
 
 
 if __name__ == "__main__":

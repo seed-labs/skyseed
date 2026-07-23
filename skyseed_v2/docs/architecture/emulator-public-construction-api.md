@@ -9,9 +9,9 @@ The Simulator static-input contract, accepted/frozen Iteration 1
 composition/time/static Topology and Iteration 2 static Zone domain are
 **IMPLEMENTED**. The dynamic Slice public contract is **ACCEPTED / FROZEN
 DESIGN**. Position, Connection, Route, Slicer and TopologySlice form the
-implemented and accepted A–E main chain; TopologyDifference and G remain
-unimplemented, so the full Dynamic Slice stage is not complete. Planning and
-backend execution remain deferred.
+implemented and accepted A–E main chain; TopologyDifference is implemented
+and accepted in F and G remains unimplemented, so the full Dynamic Slice
+stage is not complete. Planning and backend execution remain deferred.
 
 ## Package ownership
 
@@ -24,7 +24,7 @@ backend execution remain deferred.
 | `skyseed_v2.node_id` | Neutral logical identity | `NodeId` |
 | `skyseed_v2.simulator_input_generation` | Entity traversal and pure input copying | three input-generation functions |
 | `skyseed_v2.simulator.static_input` | receiving-side immutable cross-layer boundary input | three input types |
-| `skyseed_v2.simulator` | Simulator definition, time, composition root, immutable static Topology/Zone domain and accepted Dynamic Slice A–E | static Simulator types plus the accepted Position, Connection, Route, TopologySlice, Slicer and built-in Model contracts |
+| `skyseed_v2.simulator` | Simulator definition, time, composition root, immutable static Topology/Zone domain and accepted Dynamic Slice A–F | static Simulator types plus accepted Position, Connection, Route, TopologySlice, Slicer and built-in Model contracts, and accepted TopologyDifference patch values |
 | `skyseed_v2.materialization` | Launch an already compiled Compose project | `ComposeProjectLauncher` |
 
 The root package still exports only the six high-frequency entity/value names.
@@ -127,7 +127,7 @@ Static Topology + Timeline timestamp
   → RouteModel
   → TopologySlice
 
-accepted, not implemented:
+implemented and accepted F:
   → TopologyDifference
 
 deferred:
@@ -140,8 +140,8 @@ TopologyDifferenceWindow
 ```
 
 `SkyseedDockerCompiler` is implemented and does not read Config. The A–E Slice
-chain is implemented and accepted; TopologyDifference remains accepted but not
-implemented. Planner and backend names remain conceptual/open.
+chain and F TopologyDifference are implemented and accepted. Planner and
+backend names remain conceptual/open.
 `SimulationPlanCompiler`
 remains only the retired/corrected label for a formerly over-compressed dynamic
 chain.
@@ -621,7 +621,7 @@ unchanged, including `generation`, `orbits`, `raan`, `phase`, `first` and
       zero-area shared boundaries are not positive-area overlap.
 - [ ] No old input name, duplicate Topology index or Satellite-parent reverse
       API remains.
-- [ ] Dynamic Slice A–E implementation remains accepted; F and G remain
-      separately authorized, unimplemented engineering groups, and no
+- [ ] Dynamic Slice A–E and F implementations remain accepted; G remains a
+      separately authorized, unimplemented engineering group, and no G
       placeholder public types or root exports exist.
 - [ ] Planning and backend/runtime execution remain deferred and unimplemented.

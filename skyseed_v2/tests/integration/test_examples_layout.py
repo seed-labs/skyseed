@@ -256,6 +256,8 @@ def test_canonical_simu_path_is_explicit_deterministic_and_executable() -> None:
     assert "HopCountRouteModel" in source
     assert ".create_slicer(" in source
     assert ".create_slices(2)" in source
+    assert ".create_difference(0, 1)" in source
+    assert ".create_difference(1, 2)" in source
     assert ".resolve_path(" in source
     assert simu.build_emulator is emu.build_emulator
 
@@ -278,6 +280,12 @@ def test_canonical_simu_path_is_explicit_deterministic_and_executable() -> None:
     assert "legally unserved: americas" in result.stdout
     assert "next hops: G=" in result.stdout
     assert "resolved path:" in result.stdout
+    assert "Difference 0->1: added_connections=" in result.stdout
+    assert "Difference 0->1 samples: Connection=" in result.stdout
+    assert "Zone=new-york-metro->" in result.stdout
+    assert "Route=RouteKey(" in result.stdout
+    assert "Difference 1->2: empty=" in result.stdout
+    assert "evidence=" in result.stdout
 
 
 def test_complete_emulator_helper_has_one_emulator_only_responsibility() -> None:
