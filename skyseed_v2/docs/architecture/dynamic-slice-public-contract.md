@@ -2,7 +2,8 @@
 
 ## Status and authority
 
-Status: **ACCEPTED / FROZEN DESIGN — NOT IMPLEMENTED**
+Status: **ACCEPTED / FROZEN — A–E IMPLEMENTED AND ACCEPTED; F AND G NOT
+IMPLEMENTED**
 
 Accepted against baseline `cfaa4930cba2d1a6953617b274ef528f9ae4059a`.
 This document is the detailed authoritative contract for the approved A
@@ -88,10 +89,15 @@ OrbitParameters
 Epoch is timezone-aware and UTC-normalized static Orbit definition data. It is
 not Timeline start and not Slicer state. Each Satellite's
 `mean_anomaly_deg` means its mean anomaly at its parent Orbit's epoch. Epoch
-must follow the complete static chain:
+enters the first configuration version once per Shell: YAML and programmatic
+Shell configuration must explicitly supply one common `epoch_utc`, and
+per-Orbit epoch override within that Shell is unsupported. Shell construction
+copies that common epoch into every independently owned Emulator
+`OrbitParameters`. Direct programmatic `OrbitParameters(...)` construction
+must also supply it explicitly. Epoch then follows the complete static chain:
 
 ```text
-Programmatic/YAML Config
+Programmatic/YAML Shell Config
 → Emulator OrbitParameters
 → SimulatorStaticInput
 → Simulator Topology Orbit
@@ -358,10 +364,16 @@ the first configured N are selected. Zero access is legal; no capacity, load
 balancing or hysteresis is used.
 
 For Zone assignment, each Satellite's Position yields a subpoint and temporary
-SphericalCap coverage. ZoneLayout supplies intersecting static Zones. For each
-Zone, representative-point elevation ranks candidate Satellites, followed by
-structural NodeId tie-break; at most one is selected. Gateway hop, Route
-evidence, capacity, mutable dwell and v1 composite scoring are forbidden.
+SphericalCap coverage. ZoneLayout intersection is only a coarse filter. A
+Satellite becomes a formal candidate for a Zone only when the Zone's
+deterministic representative point is inside that Satellite's service
+conditions and its representative-point elevation meets the configured
+minimum, using the one shared coordinate capability. For each Zone, eligible
+candidate Satellites are ranked by representative-point elevation followed by
+structural NodeId tie-break; at most one is selected. This means service of
+the representative point, not guaranteed coverage of every future UT in the
+Zone. Gateway hop, Route evidence, capacity, mutable dwell and v1 composite
+scoring are forbidden.
 
 Bandwidth and packet loss come from explicit per-kind configuration. Delay is
 current ECEF endpoint distance divided by fixed propagation speed, converted
@@ -460,12 +472,15 @@ Real Slices have `slice_id >= 1` and Timeline timestamps. IDs are continuous
 and monotonic; each timestamp has at most one published Slice; failure
 consumes neither ID nor timestamp; replacing Models requires a new Slicer.
 
-TopologySlice exposes Position, ConnectionSlice, RouteSlice and
-`resolve_path(source, target)` facades. Full path resolution walks RouteSlice,
-ConnectionSlice and Zone service assignment, detects unknown identities,
-unserved Z, missing route, foreign/invalid next hop, absent direction, loop
-and wrong terminal, and returns source through terminal without writing the
-path into RouteSlice.
+TopologySlice exposes Position, ConnectionSlice and RouteSlice queries only.
+It retains no Topology reference and does not resolve a full path.
+
+`Slicer.resolve_path(slice_id, source, target)` looks up the specified retained
+Slice and combines exact Topology, ConnectionSlice, RouteSlice and Zone
+service assignment. It distinguishes unknown node or Zone, a known but
+currently unserved Zone, current unreachability, corrupt route chain, loop and
+wrong terminal, and returns source through terminal without writing the path
+into RouteSlice. Callers cannot supply an arbitrary Topology.
 
 ## 13. Slicer generation, queries and retention
 
@@ -493,7 +508,8 @@ through repeated finite requests.
 
 Queries cover Slice ID, timestamp, latest Slice, latest ID/timestamp, next
 timestamp, exhaustion, retained ID range and exact Topology/Timeline/Model
-references. No ambiguous `current` API is accepted.
+references, plus retained-Slice full-path resolution. No ambiguous `current`
+API is accepted.
 
 Long-term contract promises only the retained window. The first implementation
 may retain all generated Slices, but permanent complete retention is not

@@ -9,7 +9,7 @@ import sys
 
 
 EXPECTED_ENVIRONMENT = "skyseed_dev"
-REQUIRED_IMPORTS = ("skyseed_v2", "seedemu", "yaml", "pytest")
+REQUIRED_IMPORTS = ("astropy", "skyseed_v2", "seedemu", "yaml", "pytest")
 
 
 def main() -> int:

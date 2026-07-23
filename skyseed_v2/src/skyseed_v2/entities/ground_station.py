@@ -29,20 +29,18 @@ class GroundStationLocation:
 
     latitude_deg: float
     longitude_deg: float
-    elevation_m: float | None = None
+    elevation_m: float = 0.0
 
     def __post_init__(self) -> None:
         latitude = float(self.latitude_deg)
         longitude = float(self.longitude_deg)
-        elevation = (
-            None if self.elevation_m is None else float(self.elevation_m)
-        )
+        elevation = float(self.elevation_m)
         if not isfinite(latitude) or not -90.0 <= latitude <= 90.0:
             raise ValueError("latitude_deg must be between -90 and 90")
         if not isfinite(longitude) or not -180.0 <= longitude <= 180.0:
             raise ValueError("longitude_deg must be between -180 and 180")
-        if elevation is not None and not isfinite(elevation):
-            raise ValueError("elevation_m must be finite when provided")
+        if not isfinite(elevation):
+            raise ValueError("elevation_m must be finite")
         object.__setattr__(self, "latitude_deg", latitude)
         object.__setattr__(self, "longitude_deg", longitude)
         object.__setattr__(self, "elevation_m", elevation)

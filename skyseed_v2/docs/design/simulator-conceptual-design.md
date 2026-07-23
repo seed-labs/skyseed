@@ -2,9 +2,9 @@
 
 ## Status and purpose
 
-This record separates the implemented, accepted/frozen Iteration 1 contract
-and implemented Iteration 2 static Zone contract from the accepted/frozen but
-not implemented Dynamic Slice contract and deferred conceptual directions.
+This record separates the implemented Iterations 1 and 2, the implemented and
+accepted Dynamic Slice A–E main chain, the accepted/frozen but unimplemented
+TopologyDifference contract and deferred conceptual directions.
 It is not an instruction to create placeholder types.
 
 The status labels used here are:
@@ -20,13 +20,12 @@ The status labels used here are:
 - **retired/corrected**: an earlier description that no longer represents the
   approved direction.
 
-Only the first status describes current code. `Simulator`,
-`SimulationDefinition`, `SimulationTimeline`, `Topology`, the immutable static
-node tree and the static Zone domain are implemented and public from their
-owning modules. Position, Connection, Route, Slicer, TopologySlice and
-TopologyDifference are accepted/frozen design but not implemented. Planning,
-Plan, DifferenceWindow, the dynamic `ExecutionCompiler`, `ExecutableBundle`
-and `SimulationRunner` remain deferred and unimplemented.
+The static domains plus Position, Connection, Route, Slicer and TopologySlice
+are implemented and accepted and public from their owning modules.
+TopologyDifference is accepted/frozen design but not implemented. Planning,
+Plan, DifferenceWindow, the dynamic
+`ExecutionCompiler`, `ExecutableBundle` and `SimulationRunner` remain
+deferred and unimplemented.
 
 The normative sources are
 [`../architecture/accepted-design.md`](../architecture/accepted-design.md),
@@ -288,21 +287,21 @@ Its implemented fields are:
 - `slice_interval`;
 - a bounded or continuing time range.
 
-The value is frozen, validates a positive interval and matching timezone
-awareness, reads no current clock, converts no timezone, and yields timestamps
+The value is frozen, requires aware datetimes, normalizes them to UTC,
+validates a positive interval, reads no current clock and yields timestamps
 lazily. `end_time` is inclusive when bounded; `None` is unbounded.
 
-Topology creation does not consume timestamps and does not create a
-Slice. The accepted Dynamic Slice contract keeps Timeline as the timestamp
+Topology creation does not consume timestamps and does not create a Slice.
+The accepted Dynamic Slice contract keeps Timeline as the timestamp
 authority and assigns ordered generation to Simulator-owned Slicer, not
-Topology. The approved aware-only UTC normalization is not implemented at
-this baseline. Retention policy remains deferred.
+Topology. Aware-only UTC normalization and Simulator-owned Slicer generation
+are implemented and accepted. Retention policy remains deferred.
 
 ## Topology aggregate and facade
 
 Topology is the aggregate root for the implemented Simu-owned static network
-world. Dynamic state is accepted/frozen design but remains unimplemented and
-is not Topology-owned. The current ownership tree is:
+world. Dynamic state is coordinated by Slicer and remains outside Topology
+ownership. The static ownership tree is:
 
 ```text
 Simulator
@@ -492,17 +491,19 @@ symmetry alone is insufficient.
 
 Iteration 1 froze construction, time rules and the immutable static node graph.
 Iteration 2 implements the static Zone Definition/materialization/ownership,
-geometry and membership contract. The Dynamic Slice public contract now
-freezes Position, Connection, Route, Slicer, TopologySlice and
-TopologyDifference design, but none is implemented.
+geometry and membership contract. The Dynamic Slice public contract freezes
+Position, Connection, Route, Slicer, TopologySlice and TopologyDifference
+design. A–E is implemented and accepted; TopologyDifference is not
+implemented.
 
 Planning/Plan schemas, DifferenceWindow implementation, backend execution,
-runtime resource policy, concrete diagnostics API, final dependency/library
-selection and private performance structure remain deferred.
+runtime resource policy, concrete diagnostics API and private performance
+structure remain deferred.
 
 The approved dependency labels are grouped for engineering authorization:
 A–E is the complete Dynamic Slice main chain, F is TopologyDifference and G is
 Tool/canonical example/final synchronization. Each group requires explicit
 authorization, but A through E do not require mechanical authorization pauses
-between internal dependency steps. This architecture-contract synchronization
-does not authorize A–E implementation.
+between internal dependency steps. A–E is implemented and accepted; F and G
+remain unimplemented and require separate authorization. The full Dynamic
+Slice stage is not complete.

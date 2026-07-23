@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from math import isfinite
 from typing import Mapping
 
 from skyseed_v2.identifier import validate_identifier
+from skyseed_v2._time import normalize_utc_datetime
 
 from .satellite import Satellite
 from .validation import _validate_angle
@@ -25,6 +27,7 @@ class OrbitParameters:
     altitude_km: float
     inclination_deg: float
     right_ascension_deg: float
+    epoch_utc: datetime
 
     def __post_init__(self) -> None:
         altitude = float(self.altitude_km)
@@ -39,6 +42,11 @@ class OrbitParameters:
         object.__setattr__(self, "altitude_km", altitude)
         object.__setattr__(self, "inclination_deg", inclination)
         object.__setattr__(self, "right_ascension_deg", right_ascension)
+        object.__setattr__(
+            self,
+            "epoch_utc",
+            normalize_utc_datetime(self.epoch_utc, "epoch_utc"),
+        )
 
 
 class Orbit:

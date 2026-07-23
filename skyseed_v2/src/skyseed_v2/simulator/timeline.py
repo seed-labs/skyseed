@@ -6,6 +6,8 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+from skyseed_v2._time import normalize_utc_datetime
+
 
 @dataclass(frozen=True, slots=True)
 class SimulationTimeline:
@@ -22,23 +24,21 @@ class SimulationTimeline:
     slice_interval: timedelta
 
     def __post_init__(self) -> None:
-        if not isinstance(self.start_time, datetime):
-            raise TypeError("start_time must be a datetime")
-        if self.end_time is not None and not isinstance(self.end_time, datetime):
-            raise TypeError("end_time must be a datetime or None")
         if not isinstance(self.slice_interval, timedelta):
             raise TypeError("slice_interval must be a timedelta")
         if self.slice_interval <= timedelta(0):
             raise ValueError("slice_interval must be greater than zero")
 
-        start_is_aware = _is_aware(self.start_time)
-        if self.end_time is not None:
-            if _is_aware(self.end_time) != start_is_aware:
-                raise ValueError(
-                    "start_time and end_time must have matching timezone awareness"
-                )
-            if self.end_time < self.start_time:
-                raise ValueError("end_time must be greater than or equal to start_time")
+        start = normalize_utc_datetime(self.start_time, "start_time")
+        end = (
+            None
+            if self.end_time is None
+            else normalize_utc_datetime(self.end_time, "end_time")
+        )
+        if end is not None and end < start:
+            raise ValueError("end_time must be greater than or equal to start_time")
+        object.__setattr__(self, "start_time", start)
+        object.__setattr__(self, "end_time", end)
 
     @property
     def is_bounded(self) -> bool:
@@ -51,13 +51,4 @@ class SimulationTimeline:
         while self.end_time is None or timestamp <= self.end_time:
             yield timestamp
             timestamp += self.slice_interval
-
-
-def _is_aware(value: datetime) -> bool:
-    try:
-        return value.utcoffset() is not None
-    except Exception as error:  # pragma: no cover - defensive custom tzinfo guard
-        raise ValueError("datetime timezone information is invalid") from error
-
-
 __all__ = ["SimulationTimeline"]

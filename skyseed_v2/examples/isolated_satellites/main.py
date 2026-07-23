@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 from pathlib import Path
 import sys
 
@@ -45,6 +46,7 @@ def build_emulator() -> tuple[Emulator, SkyseedAutonomousSystem]:
             altitude_km=550.0,
             inclination_deg=53.0,
             right_ascension_deg=15.0,
+            epoch_utc=datetime(2026, 1, 1, tzinfo=timezone.utc),
         ),
     )
     orbit.create_satellite(

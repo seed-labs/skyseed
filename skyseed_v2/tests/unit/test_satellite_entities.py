@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from seedemu.core import Node
 
@@ -9,6 +11,7 @@ def parameters() -> OrbitParameters:
         altitude_km=550.0,
         inclination_deg=53.0,
         right_ascension_deg=15.0,
+        epoch_utc=datetime(2026, 1, 1, tzinfo=timezone.utc),
     )
 
 
@@ -110,11 +113,30 @@ def test_orbit_rejects_duplicate_index_without_partial_batch() -> None:
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
-        ({"altitude_km": 0, "inclination_deg": 53, "right_ascension_deg": 0}, "altitude"),
-        ({"altitude_km": 550, "inclination_deg": 181, "right_ascension_deg": 0}, "inclination"),
-        ({"altitude_km": 550, "inclination_deg": 53, "right_ascension_deg": 360}, "right_ascension"),
+        ({"altitude_km": 0, "inclination_deg": 53, "right_ascension_deg": 0, "epoch_utc": datetime(2026, 1, 1, tzinfo=timezone.utc)}, "altitude"),
+        ({"altitude_km": 550, "inclination_deg": 181, "right_ascension_deg": 0, "epoch_utc": datetime(2026, 1, 1, tzinfo=timezone.utc)}, "inclination"),
+        ({"altitude_km": 550, "inclination_deg": 53, "right_ascension_deg": 360, "epoch_utc": datetime(2026, 1, 1, tzinfo=timezone.utc)}, "right_ascension"),
     ],
 )
 def test_orbit_parameters_reject_invalid_values(kwargs, message) -> None:
     with pytest.raises(ValueError, match=message):
         OrbitParameters(**kwargs)
+
+
+def test_orbit_epoch_is_required_aware_and_normalized_to_utc() -> None:
+    local = timezone(timedelta(hours=8))
+    parameters_value = OrbitParameters(
+        550.0,
+        53.0,
+        15.0,
+        datetime(2026, 1, 1, 8, tzinfo=local),
+    )
+    assert parameters_value.epoch_utc.tzinfo is timezone.utc
+    assert parameters_value.epoch_utc == datetime(
+        2026, 1, 1, tzinfo=timezone.utc
+    )
+
+    with pytest.raises(TypeError, match="epoch_utc"):
+        OrbitParameters(550.0, 53.0, 15.0)
+    with pytest.raises(ValueError, match="timezone-aware"):
+        OrbitParameters(550.0, 53.0, 15.0, datetime(2026, 1, 1))

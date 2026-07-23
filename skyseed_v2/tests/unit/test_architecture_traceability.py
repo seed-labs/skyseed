@@ -64,6 +64,10 @@ APPROVED_DYNAMIC_TYPES = (
     "TopologyDifference",
 )
 
+ACCEPTED_EXPORTED_DYNAMIC_TYPES = tuple(
+    name for name in APPROVED_DYNAMIC_TYPES if name != "TopologyDifference"
+)
+
 ANCHOR_DYNAMIC_CONCEPTS = (
     "SphericalCap",
     "PositionModel",
@@ -202,22 +206,29 @@ def test_terminology_and_project_rules_cover_the_governance_contract() -> None:
 
 def test_accepted_dynamic_contract_is_linked_and_status_classified() -> None:
     accepted_source = ACCEPTED_DESIGN.read_text(encoding="utf-8")
-    accepted = " ".join(accepted_source.split())
-    contract = DYNAMIC_SLICE_CONTRACT.read_text(encoding="utf-8")
-    current = " ".join(CURRENT.read_text(encoding="utf-8").split())
+    accepted = " ".join(accepted_source.split()).lower()
+    contract = " ".join(
+        DYNAMIC_SLICE_CONTRACT.read_text(encoding="utf-8").split()
+    ).lower()
+    current = " ".join(
+        CURRENT.read_text(encoding="utf-8").split()
+    ).lower()
 
     assert DYNAMIC_SLICE_CONTRACT.is_file()
     assert "(dynamic-slice-public-contract.md)" in accepted_source
-    assert "ACCEPTED / FROZEN DESIGN — NOT IMPLEMENTED" in contract
-    assert "accepted/frozen design but not implemented" in accepted
-    assert "Dynamic Slice implementation: **NOT STARTED**" in current
-    assert "complete Dynamic Slice main chain A–E" in current
-    assert "requires explicit user authorization" in current
+    for status_record in (accepted, contract, current):
+        assert "a–e" in status_record
+        assert "implemented and accepted" in status_record
+    assert "f and g not implemented" in contract
+    assert "f and g remain unimplemented" in accepted
+    assert "f and g are unimplemented" in current
+    assert "full dynamic slice stage is not complete" in current
+    assert "topologydifference implementation: **not started**" in current
 
     for type_name in ANCHOR_DYNAMIC_CONCEPTS:
-        assert type_name in accepted
+        assert type_name.lower() in accepted
     for type_name in APPROVED_DYNAMIC_TYPES:
-        assert type_name in contract
+        assert type_name.lower() in contract
 
 
 def test_dynamic_contract_preserves_the_accepted_owner_direction() -> None:
@@ -253,13 +264,13 @@ def test_dynamic_contract_preserves_the_accepted_owner_direction() -> None:
         assert retired not in contract
 
 
-def test_dynamic_terms_are_classified_without_claiming_current_exports() -> None:
+def test_dynamic_terms_classify_accepted_and_deferred_boundaries() -> None:
     terminology = " ".join(TERMINOLOGY.read_text(encoding="utf-8").split())
 
     for term in APPROVED_DYNAMIC_TYPES:
         assert term in terminology
-    assert "not implemented" in terminology
-    assert "does not authorize package-root export" in terminology
+    assert "implemented and accepted" in terminology
+    assert "accepted/frozen design; not implemented" in terminology
 
 
 def test_provenance_cannot_override_the_accepted_contract() -> None:
@@ -275,10 +286,12 @@ def test_provenance_cannot_override_the_accepted_contract() -> None:
     assert "cannot override" in provenance
 
 
-def test_approved_dynamic_types_are_not_exported_before_implementation() -> None:
-    for type_name in APPROVED_DYNAMIC_TYPES:
-        assert not hasattr(simulator_core, type_name)
+def test_dynamic_accepted_types_export_only_from_their_contract_owner() -> None:
+    for type_name in ACCEPTED_EXPORTED_DYNAMIC_TYPES:
+        assert hasattr(simulator_core, type_name)
         assert not hasattr(skyseed_v2, type_name)
+    assert not hasattr(simulator_core, "TopologyDifference")
+    assert not hasattr(skyseed_v2, "TopologyDifference")
 
 
 def test_compilation_stages_have_distinct_current_architecture_terms() -> None:

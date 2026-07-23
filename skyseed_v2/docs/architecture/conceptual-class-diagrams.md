@@ -2,13 +2,13 @@
 
 ## Status
 
-The first diagrams describe implemented Skyseed v2 code, including accepted
-and frozen Simulator Iteration 1 plus Iteration 2 static Zones. The later
-`Simulator approved dynamic-slice boundary map` combines that implemented
-foundation with the accepted/frozen but not-yet-implemented dynamic Slice
-contract and the still-conceptual future Planning/execution boundary.
+The diagrams describe implemented Simulator Iterations 1 and 2 plus the
+implemented and accepted Dynamic Slice A–E main chain. TopologyDifference and
+G remain accepted/frozen but not implemented, so the full Dynamic Slice stage
+is not complete; Planning/execution remains conceptual.
 
 Status stereotypes are normative: `implemented` means current code,
+`implemented and accepted` marks the accepted A–E implementation,
 `approved / not implemented` means a frozen public contract awaiting its
 authorized implementation Slice, and `conceptual/open` means deferred design.
 The detailed frozen dynamic contract is
@@ -49,12 +49,19 @@ classDiagram
     }
     class OrbitParameters {
         <<entity-bound value>>
+        +altitude_km float
+        +inclination_deg float
+        +right_ascension_deg float
+        +epoch_utc UTC-aware datetime
     }
     class Satellite {
         <<Emulator entity + SEED Node>>
     }
     class GroundStationLocation {
         <<entity-bound value>>
+        +latitude_deg float
+        +longitude_deg float
+        +elevation_m finite WGS84 metres
     }
     class GroundStation {
         <<Emulator entity + SEED Router>>
@@ -348,46 +355,46 @@ Satellite-parent reverse APIs or indexes. Every public tuple and private
 `MappingProxyType` lookup references the same object instances. The Definition
 is consumed during materialization and is not retained.
 
-The implemented field lists above intentionally show current code. The
-accepted Slice A deltas—UTC-only Timeline normalization, Orbit `epoch_utc` and
-finite GroundStation ellipsoidal height—are not marked implemented here.
+The implemented field lists above show current code, including UTC-only
+Timeline normalization, Orbit `epoch_utc` and finite GroundStation ellipsoidal
+height.
 
 ## Approved static/time contract deltas
 
 ```mermaid
 classDiagram
     class SimulationTimeline {
-        <<implemented; approved UTC delta>>
+        <<implemented UTC value>>
         +start_time UTC-aware datetime
         +end_time UTC-aware datetime or None
         +slice_interval timedelta
     }
     class OrbitParameters {
-        <<implemented value; approved epoch delta>>
+        <<implemented value>>
         +altitude_km float
         +inclination_deg float
         +right_ascension_deg float
         +epoch_utc UTC-aware datetime
     }
     class Orbit {
-        <<implemented object; approved epoch delta>>
+        <<implemented object>>
         +epoch_utc UTC-aware datetime
     }
     class Satellite {
-        <<implemented object; approved anomaly semantics>>
+        <<implemented object>>
         +mean_anomaly_deg float
     }
     class GroundStation {
-        <<implemented object; approved height delta>>
+        <<implemented object>>
         +elevation_m finite WGS84 ellipsoidal metres
     }
     class SphericalCap {
-        <<approved frozen value / not implemented>>
+        <<implemented frozen value>>
         +center geographic point
         +angular_radius_deg float
     }
     class ZoneLayout {
-        <<implemented aggregate; approved range-query delta>>
+        <<implemented aggregate>>
         +find_intersecting_zones(cap) tuple
     }
 
@@ -397,28 +404,25 @@ classDiagram
 ```
 
 The displayed `epoch_utc`, aware-only UTC normalization, required
-GroundStation height and cap query are accepted target contracts, not current
-implemented fields or methods.
+GroundStation height and cap query are implemented and accepted in A–E.
 
 ## Simulator approved dynamic-slice boundary map
 
-Only nodes marked `implemented` exist in current code. Nodes marked
-`approved / not implemented` are frozen contracts from
-`dynamic-slice-public-contract.md`; their presence is not an implementation
-claim or implementation authorization. The dependency labels A through G are
-grouped as A–E, F and G for explicit engineering authorization. Planning and
-backend execution remain `conceptual/open`.
+Nodes marked `implemented` or `implemented and accepted` belong to the
+accepted current implementation. TopologyDifference remains
+`approved / not implemented` under the frozen contract. Planning and backend
+execution remain `conceptual/open`.
 
 ```mermaid
 classDiagram
 direction LR
 
 class Simulator {
-  <<implemented + approved Slicer composition>>
+  <<implemented composition root>>
 }
 
 class SimulationTimeline {
-  <<implemented; approved UTC delta>>
+  <<implemented and accepted UTC value>>
 }
 
 class Topology {
@@ -434,48 +438,47 @@ class ZoneMembershipModel {
 }
 
 class Slicer {
-  <<approved / not implemented>>
+  <<implemented and accepted>>
   +create_next_slice() TopologySlice
   +create_slices(count) tuple
   +create_all_slices() tuple
-  +create_difference(previous_id, current_id) TopologyDifference
+  +resolve_path(slice_id, source, target) tuple
 }
 
 class TopologySlice {
-  <<approved / not implemented>>
+  <<implemented and accepted>>
   +slice_id int
   +timestamp datetime or None
   +positions readonly mapping
   +connection_slice ConnectionSlice
   +route_slice RouteSlice
-  +resolve_path(source, target) tuple
 }
 
 class EarthFixedPosition {
-  <<approved / not implemented>>
+  <<implemented and accepted>>
   +x_m float
   +y_m float
   +z_m float
 }
 
 class PositionModel {
-  <<approved public Protocol / not implemented>>
+  <<implemented and accepted public Protocol>>
 }
 
 class ConnectionModel {
-  <<approved public Protocol / not implemented>>
+  <<implemented and accepted public Protocol>>
 }
 
 class RouteModel {
-  <<approved public Protocol / not implemented>>
+  <<implemented and accepted public Protocol>>
 }
 
 class ConnectionSlice {
-  <<approved / not implemented>>
+  <<implemented and accepted>>
 }
 
 class RouteSlice {
-  <<approved / not implemented>>
+  <<implemented and accepted>>
 }
 
 class TopologyDifference {
@@ -483,7 +486,7 @@ class TopologyDifference {
 }
 
 class SphericalCap {
-  <<approved / not implemented>>
+  <<implemented and accepted>>
 }
 
 class Planning {
@@ -507,7 +510,7 @@ Slicer o-- PositionModel : exact fixed Model
 Slicer o-- ConnectionModel : exact fixed Model
 Slicer o-- RouteModel : exact fixed Model
 Slicer *-- TopologySlice : atomically publishes
-Slicer --> TopologyDifference : creates adjacent comparison
+Slicer --> TopologyDifference : approved F comparison
 
 PositionModel --> EarthFixedPosition : produces mapping
 ConnectionModel --> ConnectionSlice : produces
@@ -522,9 +525,12 @@ TopologyDifferenceWindow --> Planning : future input
 ```
 
 `Topology` does not create TopologySlice or TopologyDifference. Slicer is the
-sole dynamic generation, validation, publication and retained-adjacent-
-difference facade. PositionModel, ConnectionModel and RouteModel form one
-fixed call chain and do not own authoritative Slice history.
+implemented and accepted sole dynamic generation, validation and publication
+facade and resolves full paths from exact Topology and one retained Slice;
+TopologySlice retains no Topology reference. The accepted F contract assigns
+adjacent comparison to Slicer but is not implemented. PositionModel,
+ConnectionModel and RouteModel form one fixed call chain and do not own
+authoritative Slice history.
 
 ## Approved dynamic values and built-in Models
 
@@ -533,58 +539,58 @@ classDiagram
 direction LR
 
 class CircularOrbitPositionModel {
-  <<approved built-in / not implemented>>
+  <<implemented and accepted built-in>>
 }
 class GeometricConnectionModel {
-  <<approved built-in / not implemented>>
+  <<implemented and accepted built-in>>
 }
 class HopCountRouteModel {
-  <<approved built-in / not implemented>>
+  <<implemented and accepted built-in>>
 }
 class PositionModel {
-  <<approved public Protocol / not implemented>>
+  <<implemented and accepted public Protocol>>
 }
 class ConnectionModel {
-  <<approved public Protocol / not implemented>>
+  <<implemented and accepted public Protocol>>
 }
 class RouteModel {
-  <<approved public Protocol / not implemented>>
+  <<implemented and accepted public Protocol>>
 }
 class EarthFixedPosition {
-  <<approved frozen value / not implemented>>
+  <<implemented and accepted frozen value>>
 }
 class ConnectionKind {
-  <<approved enum / not implemented>>
+  <<implemented and accepted enum>>
 }
 class ConnectionId {
-  <<approved frozen value / not implemented>>
+  <<implemented and accepted frozen value>>
 }
 class DirectionalConnectionParameters {
-  <<approved frozen value / not implemented>>
+  <<implemented and accepted frozen value>>
 }
 class Connection {
-  <<approved frozen value / not implemented>>
+  <<implemented and accepted frozen value>>
 }
 class ConnectionSlice {
-  <<approved immutable aggregate / not implemented>>
+  <<implemented and accepted immutable aggregate>>
 }
 class GroundStationRouteTarget {
-  <<approved frozen tagged target / not implemented>>
+  <<implemented and accepted frozen tagged target>>
 }
 class ZoneRouteTarget {
-  <<approved frozen tagged target / not implemented>>
+  <<implemented and accepted frozen tagged target>>
 }
 class RouteTarget {
-  <<approved frozen tagged union / not implemented>>
+  <<implemented and accepted frozen tagged union>>
 }
 class RouteKey {
-  <<approved frozen value / not implemented>>
+  <<implemented and accepted frozen value>>
 }
 class RouteSlice {
-  <<approved immutable aggregate / not implemented>>
+  <<implemented and accepted immutable aggregate>>
 }
 class TopologySlice {
-  <<approved immutable aggregate / not implemented>>
+  <<implemented and accepted immutable aggregate>>
 }
 class TopologyDifference {
   <<approved immutable change / not implemented>>

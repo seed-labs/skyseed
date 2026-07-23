@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from seedemu.core import Emulator
 
 from skyseed_v2.entities import GroundStationLocation, OrbitParameters
@@ -15,7 +17,10 @@ def test_one_as_owns_satellite_ground_station_and_standard_seed_objects() -> Non
     host = skyseed_as.createHost("host-1").joinNetwork("local-net")
     shell = skyseed_as.create_shell("shell-1")
     orbit = shell.create_orbit(
-        "orbit-1", parameters=OrbitParameters(550.0, 53.0, 15.0)
+        "orbit-1",
+        parameters=OrbitParameters(
+            550.0, 53.0, 15.0, datetime(2026, 1, 1, tzinfo=timezone.utc)
+        ),
     )
     satellite = orbit.create_satellite(
         "shared-id", orbit_index=0, mean_anomaly_deg=0.0
@@ -71,7 +76,10 @@ def test_satellite_only_and_ground_station_only_as_render() -> None:
 
     satellite_as = SkyseedAutonomousSystem(150)
     orbit = satellite_as.create_shell("shell-1").create_orbit(
-        "orbit-1", parameters=OrbitParameters(550.0, 53.0, 15.0)
+        "orbit-1",
+        parameters=OrbitParameters(
+            550.0, 53.0, 15.0, datetime(2026, 1, 1, tzinfo=timezone.utc)
+        ),
     )
     satellite = orbit.create_satellite(
         "satellite-0", orbit_index=0, mean_anomaly_deg=0.0

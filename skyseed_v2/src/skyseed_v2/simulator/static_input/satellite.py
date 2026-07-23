@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 
+from skyseed_v2._time import normalize_utc_datetime
 from skyseed_v2.node_id import NodeId
 
 
@@ -30,6 +32,7 @@ class SatelliteSimulationInput:
     inclination_deg: float
     right_ascension_deg: float
     mean_anomaly_deg: float
+    epoch_utc: datetime
 
     def __post_init__(self) -> None:
         if not isinstance(self.node_id, NodeId):
@@ -40,3 +43,8 @@ class SatelliteSimulationInput:
             )
         if self.node_id.entity_id != self.satellite_id:
             raise ValueError("satellite_id must match node_id.entity_id")
+        object.__setattr__(
+            self,
+            "epoch_utc",
+            normalize_utc_datetime(self.epoch_utc, "epoch_utc"),
+        )

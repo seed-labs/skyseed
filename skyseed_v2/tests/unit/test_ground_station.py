@@ -63,6 +63,12 @@ def test_ground_station_as_rejects_duplicate_stable_ids() -> None:
         station_as.createRouter("gs-1")
 
 
+def test_ground_station_height_defaults_to_zero_and_rejects_none() -> None:
+    assert GroundStationLocation(40.0, -74.0).elevation_m == 0.0
+    with pytest.raises(TypeError):
+        GroundStationLocation(40.0, -74.0, None)
+
+
 def test_ground_station_simulation_input_is_immutable_and_restricted() -> None:
     station = create_station()
     simulation_input = create_ground_station_simulation_input(station)

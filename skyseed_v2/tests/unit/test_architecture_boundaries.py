@@ -193,7 +193,6 @@ def test_removed_and_deferred_boundary_apis_are_not_exported() -> None:
         assert not hasattr(skyseed_v2, implemented_name)
     for forbidden_name in (
         "Planning",
-        "TopologySlice",
         "SimulationPlanCompiler",
         "SimulationRunner",
     ):
@@ -212,7 +211,6 @@ def test_removed_and_deferred_boundary_apis_are_not_exported() -> None:
         and node.name
         in {
             "Planning",
-            "TopologySlice",
             "SimulationPlanCompiler",
             "SimulationRunner",
         }
@@ -221,6 +219,7 @@ def test_removed_and_deferred_boundary_apis_are_not_exported() -> None:
     )
     assert importlib.util.find_spec("skyseed_v2.simulator.runtime") is None
     assert importlib.util.find_spec("skyseed_v2.simulator.engine") is None
+    assert importlib.util.find_spec("skyseed_v2.simulator.difference") is None
     assert (
         importlib.util.find_spec("skyseed_v2.simulator.static_input.identity")
         is None
@@ -258,9 +257,41 @@ def test_simulator_static_input_is_public_without_entity_back_dependency() -> No
 
 
 def test_simulator_core_has_no_emulator_seed_or_generation_dependency() -> None:
-    from skyseed_v2.simulator import definition, simulator, timeline, topology, zone
+    from skyseed_v2.simulator import (
+        connection,
+        coordinates,
+        definition,
+        position,
+        route,
+        simulator,
+        slice,
+        slicer,
+        timeline,
+        topology,
+        zone,
+    )
+    from skyseed_v2.simulator.models import (
+        circular_orbit,
+        geometric_connection,
+        hop_count_route,
+    )
 
-    for module in (definition, simulator, timeline, topology, zone):
+    for module in (
+        connection,
+        coordinates,
+        definition,
+        position,
+        route,
+        simulator,
+        slice,
+        slicer,
+        timeline,
+        topology,
+        zone,
+        circular_orbit,
+        geometric_connection,
+        hop_count_route,
+    ):
         imports = imported_modules(module)
         for forbidden_prefix in (
             "skyseed_v2.entities",
@@ -329,7 +360,6 @@ def test_static_configuration_is_backend_and_v1_independent() -> None:
         )
         source = Path(inspect.getsourcefile(config_module)).read_text()
         for forbidden in (
-            "epoch_utc",
             "simulation_start_time",
             "current_position",
             "visibility",

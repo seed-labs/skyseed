@@ -25,6 +25,7 @@ def valid_payload() -> dict:
                         "shell_id": "shell-a",
                         "altitude_km": 550.0,
                         "inclination_deg": 53.0,
+                        "epoch_utc": "2026-01-01T08:00:00+08:00",
                         "generation": {
                             "orbit_count": 2,
                             "satellites_per_orbit": 3,
@@ -107,6 +108,7 @@ def test_valid_yaml_loads_only_immutable_static_config(
     shell = result.skyseed_autonomous_systems[0].shells[0]
     assert shell.generated_orbit_layout is not None
     assert shell.generated_orbit_layout.orbit_count == 2
+    assert shell.epoch_utc.isoformat() == "2026-01-01T00:00:00+00:00"
     assert result.skyseed_autonomous_systems[0].ground_stations[0].operator == (
         "Descriptive Operator"
     )

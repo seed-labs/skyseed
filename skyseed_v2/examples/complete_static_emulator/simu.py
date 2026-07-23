@@ -1,4 +1,4 @@
-"""Create the initial static Skyseed v2 Simulator topology."""
+"""Run the canonical Skyseed v2 Dynamic Slice main chain."""
 
 from __future__ import annotations
 
@@ -23,9 +23,15 @@ from skyseed_v2.configuration import load_zone_layout_definition
 from skyseed_v2.node_id import NodeId
 from skyseed_v2.seedemu_integration import SatelliteBase
 from skyseed_v2.simulator import (
+    CircularOrbitPositionModel,
+    ConnectionKind,
+    GeometricConnectionModel,
+    GroundStationRouteTarget,
+    HopCountRouteModel,
     SimulationDefinition,
     SimulationTimeline,
     Simulator,
+    ZoneRouteTarget,
 )
 from skyseed_v2.simulator_input_generation import create_simulator_static_input
 
@@ -69,6 +75,30 @@ def main() -> None:
         zone_layout_definition=zone_layout_definition,
     )
 
+    position_model = CircularOrbitPositionModel()
+    connection_model = GeometricConnectionModel(
+        maximum_isl_distance_m=5_000_000.0,
+        ground_station_minimum_elevation_deg=0.0,
+        maximum_ground_station_access_count=1,
+        ground_station_maximum_distance_m=None,
+        zone_coverage_minimum_elevation_deg=30.0,
+        bandwidth_bps_by_kind={
+            ConnectionKind.INTER_SATELLITE: 1_000_000_000,
+            ConnectionKind.GROUND_STATION_ACCESS: 500_000_000,
+        },
+        packet_loss_ppm_by_kind={
+            ConnectionKind.INTER_SATELLITE: 100,
+            ConnectionKind.GROUND_STATION_ACCESS: 200,
+        },
+        propagation_speed_m_per_s=299_792_458.0,
+    )
+    route_model = HopCountRouteModel()
+    slicer = simulator.create_slicer(
+        position_model=position_model,
+        connection_model=connection_model,
+        route_model=route_model,
+    )
+
     satellite_id = NodeId(65001, "satellite", "satellite-0")
     ground_station_id = NodeId(65001, "ground-station", "gs-new-york")
     autonomous_system = topology.get_autonomous_system(65001)
@@ -99,6 +129,73 @@ def main() -> None:
             f"{', '.join(zone.zone_id for zone in matches)}; "
             f"authoritative Zone: {authoritative.zone_id}"
         )
+
+    slice_zero = slicer.get_slice(0)
+    first_slice, second_slice = slicer.create_slices(2)
+    first_satellite_id = satellite_id
+    second_satellite_id = NodeId(65001, "satellite", "satellite-1")
+    first_satellite_position = first_slice.get_position(first_satellite_id)
+    ground_station_position = first_slice.get_position(ground_station_id)
+    isl = first_slice.connection_slice.get_connection_for_endpoints(
+        ConnectionKind.INTER_SATELLITE,
+        first_satellite_id,
+        second_satellite_id,
+    )
+    access = first_slice.connection_slice.get_connection_for_endpoints(
+        ConnectionKind.GROUND_STATION_ACCESS,
+        ground_station_id,
+        first_satellite_id,
+    )
+    served_zone = "new-york-metro"
+    service_satellite = (
+        first_slice.connection_slice.get_service_satellite(served_zone)
+    )
+    ground_target = GroundStationRouteTarget(ground_station_id)
+    zone_target = ZoneRouteTarget(served_zone)
+    ground_next_hop = first_slice.route_slice.get_next_hop(
+        second_satellite_id, ground_target
+    )
+    zone_next_hop = first_slice.route_slice.get_next_hop(
+        ground_station_id, zone_target
+    )
+    path = slicer.resolve_path(
+        first_slice.slice_id,
+        second_satellite_id,
+        ground_target,
+    )
+    try:
+        first_slice.connection_slice.get_service_satellite("americas")
+    except KeyError:
+        unserved = "americas"
+    else:  # pragma: no cover - canonical geometry is deterministic
+        raise AssertionError("canonical americas Zone must be unserved")
+
+    print(
+        f"slice 0: id={slice_zero.slice_id}, timestamp={slice_zero.timestamp}, "
+        f"positions={len(slice_zero.positions)}"
+    )
+    print(
+        "real Slice timestamps: "
+        f"{first_slice.timestamp.isoformat()}, "
+        f"{second_slice.timestamp.isoformat()}"
+    )
+    print(
+        "Position samples: "
+        f"{first_satellite_id.value}={first_satellite_position.geographic}; "
+        f"{ground_station_id.value}={ground_station_position.geographic}"
+    )
+    print(
+        "effective Connections: "
+        f"ISL={isl.connection_id!r}; GS access={access.connection_id!r}"
+    )
+    print(
+        f"Zone service: {served_zone} -> {service_satellite.value}; "
+        f"legally unserved: {unserved}"
+    )
+    print(
+        f"next hops: G={ground_next_hop.value}; Z={zone_next_hop.value}"
+    )
+    print("resolved path: " + " -> ".join(node.value for node in path))
 
 
 if __name__ == "__main__":

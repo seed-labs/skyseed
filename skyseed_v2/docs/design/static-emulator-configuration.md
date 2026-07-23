@@ -71,6 +71,9 @@ classDiagram
     }
     class ShellConfig {
         <<immutable Config>>
+        +altitude_km
+        +inclination_deg
+        +epoch_utc
         +generated_orbit_layout
         +explicit_orbits
     }
@@ -139,11 +142,12 @@ classDiagram
     EbgpPeeringConfig *-- EbgpRouterReference
 ```
 
-`ShellConfig` enforces `generated_orbit_layout XOR explicit_orbits`. YAML keeps
-the old `generation`, `orbits`, `raan` and `phase` keys; only Python names are
-more explicit. The currently supported eBGP relationship is `unfiltered` and
-symmetric, so Python stores exactly two canonicalized `peer_routers`; YAML
-keeps `first` and `second`.
+`ShellConfig` enforces `generated_orbit_layout XOR explicit_orbits` and
+requires one aware `epoch_utc`, normalized to UTC and copied into each
+Emulator OrbitParameters value. YAML keeps the `generation`, `orbits`, `raan`
+and `phase` keys; only Python names are more explicit. The currently supported
+eBGP relationship is `unfiltered` and symmetric, so Python stores exactly two
+canonicalized `peer_routers`; YAML keeps `first` and `second`.
 
 ## Creation ordering and ownership
 
@@ -194,6 +198,6 @@ Skyseed and ground-network files is only a possible later design decision.
 - top-level `static_emulator.py` is the sole operation module that knows Config
   and real entity/seedemu creation APIs together.
 - `SkyseedDockerCompiler` consumes the rendered Emulator model, never Config.
-- The static Simulator is implemented. The accepted Dynamic Slice contract is
-  not implemented and does not change this Config dependency direction until
-  its explicitly authorized engineering group begins.
+- The static Simulator is implemented. The accepted Dynamic Slice contract has
+  an implemented and accepted A–E main chain and does not change this Config
+  dependency direction.

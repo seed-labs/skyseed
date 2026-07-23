@@ -17,7 +17,8 @@
 - Simulator Iteration 2 static Zone domain: **ACCEPTED / FROZEN**
 - Dynamic Slice public contract for Position, Connection, Route, Slicer,
   TopologySlice and TopologyDifference: **ACCEPTED / FROZEN DESIGN**
-- Dynamic Slice implementation: **NOT STARTED**
+- Dynamic Slice main-chain A–E: **IMPLEMENTED AND ACCEPTED**
+- TopologyDifference and Dynamic Tool implementation: **NOT STARTED**
 - Planning and backend/runtime execution: **DEFERRED / NOT STARTED**
 
 ## Current objective
@@ -27,21 +28,18 @@ Dynamic Slice public contract is now accepted and frozen in
 [`architecture/dynamic-slice-public-contract.md`](architecture/dynamic-slice-public-contract.md).
 Its objects, ownership, Model Protocols, built-in Model boundaries, Slice
 lifecycle, Difference semantics and implementation dependency order A through
-G are approved but not yet implemented.
-
-This architecture-sync checkpoint changes documentation and architecture
-traceability tests only. The next suggested engineering objective is the
-complete Dynamic Slice main chain A–E, but it has not started and still
-requires explicit user authorization. No Position, Connection, Route, Slicer,
-TopologySlice or TopologyDifference code or public export exists at this
-baseline.
+G are approved. The Dynamic Slice main chain A–E is implemented and accepted.
+F TopologyDifference is the next engineering objective. G Dynamic Tool,
+canonical integration and final synchronization have not started. Planning
+and backend execution remain outside the implemented scope. The full Dynamic
+Slice stage is not complete.
 
 ## Implemented package boundaries
 
 ```text
 skyseed_v2/
 ├── entities/                 # Shell, Orbit, Satellite, GroundStation
-├── simulator/                # Simulator composition, time, static Topology and Zones
+├── simulator/                # static Topology plus accepted Dynamic Slice A–E
 │   └── static_input/         # immutable cross-layer boundary input types
 ├── seedemu_integration/      # Skyseed-owned seedemu extensions
 ├── configuration/            # immutable Config/Zone Definitions and YAML loading
@@ -71,8 +69,9 @@ SkyseedAutonomousSystem
   its AS and handled by `SkyseedDockerCompiler`.
 - `OrbitParameters` is defined beside `Orbit` in `entities/orbit.py`; each
   Orbit owns exactly one value. Satellite has no Orbit reference and no copy
-  of altitude, inclination or right ascension. The accepted Slice A delta adds
-  Orbit-owned UTC `epoch_utc`, but current code has not implemented it.
+  of altitude, inclination, right ascension or epoch. Orbit-owned UTC
+  `epoch_utc` is implemented and accepted and projected through the static
+  boundary.
 - `GroundStation` is the same SEED Router instance created by its AS,
   registered as `rnode`/border router and handled by the inherited upstream
   Router Docker-compilation path.
@@ -135,11 +134,14 @@ SkyseedAutonomousSystem
   renders and compiles with `SkyseedDockerCompiler`, writes output controls,
   then atomically publishes the repository-local offline Topology and Zone
   tool snapshot.
-- `complete_static_emulator/simu.py`: external assembly entrypoint; it reuses
+- `complete_static_emulator/simu.py`: canonical Dynamic Slice assembly
+  entrypoint; it reuses
   `emu.py`, queries the `SatelliteBase` owner for all Skyseed AS values, calls
   `create_simulator_static_input(...)`, creates the Timeline and Definition,
   loads `zones.yaml` directly as `ZoneLayoutDefinition`, then atomically
-  materializes the initial static Simulator Topology and its ZoneLayout.
+  materializes the Simulator Topology and ZoneLayout, explicitly creates all
+  three built-in Models and the Slicer, then generates and queries two real
+  TopologySlices after synthetic Slice 0.
 - `large_static_network`: YAML → `load_static_emulator_config(path)` →
   `create_static_emulator(config)` →
   `Emulator.getLayer("Base")` →
@@ -201,9 +203,9 @@ The following contracts are implemented:
 
 - `SimulationDefinition(static_input, timeline)` is the complete input to
   `Simulator`; it retains the exact immutable values.
-- `SimulationTimeline` validates explicit time rules and lazily yields bounded
-  or unbounded timestamps. It does not read current time, cache timestamps or
-  create topology state.
+- `SimulationTimeline` requires aware datetimes, normalizes them to UTC and
+  lazily yields bounded or unbounded timestamps. It does not read current
+  time, cache timestamps or create topology state.
 - `Simulator` is the current composition root and facade. It consumes only the
   Definition, exposes the Definition and Timeline, and creates exactly one
   Topology on explicit request. Creation is atomic: a failed materialization
@@ -273,10 +275,10 @@ extension behavior contracts. Zone YAML currently reports failures with
 this iteration adds no exception. YAML and programmatic construction enforce
 the same Definition failures, while YAML wraps them as the loader exception.
 
-Planning, Slice, differences, Satellite position and dynamic execution remain
-outside the implemented Iteration 2 code. Position, Connection, Route, Slicer,
-TopologySlice and TopologyDifference are now accepted/frozen design rather
-than open conceptual space. Planning and backend execution remain deferred.
+Iteration 2 remains the static Zone foundation. Position, Connection, Route,
+Slicer and TopologySlice are implemented and accepted in A–E.
+TopologyDifference remains accepted/frozen but unimplemented; Planning and
+backend execution remain deferred.
 The detailed accepted contract is
 [`architecture/dynamic-slice-public-contract.md`](architecture/dynamic-slice-public-contract.md),
 the design record is
@@ -286,7 +288,8 @@ and the Mermaid map is in
 
 ## Dynamic Slice public contract
 
-Status: **ACCEPTED / FROZEN DESIGN — NOT IMPLEMENTED**.
+Status: **ACCEPTED / FROZEN — A–E IMPLEMENTED AND ACCEPTED; F AND G NOT
+IMPLEMENTED**.
 
 Accepted ownership:
 
@@ -319,22 +322,31 @@ Timeline timestamp
 ```
 
 The accepted static/time corrections for Slice A are aware-only
-UTC-normalized Timeline values, Orbit-owned `epoch_utc`, Satellite mean
-anomaly at that epoch, finite WGS84 GroundStation ellipsoidal height and one
-WGS84 ECEF Position/coordinate capability.
+UTC-normalized Timeline values, one explicit common Shell configuration
+`epoch_utc` copied into every Orbit, Satellite mean anomaly at its parent Orbit
+epoch, finite WGS84 GroundStation ellipsoidal height and one WGS84 ECEF
+Position/coordinate capability.
 
 The accepted explicit built-in Models are `CircularOrbitPositionModel`,
 `GeometricConnectionModel` and `HopCountRouteModel`; none is a hidden default.
 Same-Orbit candidates use mean-anomaly order. Adjacent-Orbit candidates use
 unique-RAAN circular order and stable cyclic-offset pairing prepared from the
 Timeline start Position. Candidate and geometry evidence remain private Model
-state, not ConnectionSlice data.
+state, not ConnectionSlice data. SphericalCap intersection only coarsely
+filters Zone candidates; the Zone representative point must also satisfy the
+configured service elevation using the shared coordinate capability.
 
 Slicer publishes synthetic Slice 0, then continuous real Slice IDs. Its sole
 core generation operation is `create_next_slice()`; failures publish nothing
-and consume neither timestamp nor Slice ID. `TopologyDifference` compares
-retained same-lineage adjacent Slices only. Planning, DifferenceWindow,
-backend execution and retention policy remain deferred.
+and consume neither timestamp nor Slice ID. Slicer—not TopologySlice—resolves
+full paths from exact Topology and a specified retained Slice.
+The public contracts are exported only from `skyseed_v2.simulator`; package
+root exports are unchanged. The shared coordinate adapter uses Astropy 8.x
+behind domain types, disables automatic IERS downloads and fails when a
+timestamp is outside bundled Earth-orientation coverage.
+`TopologyDifference` remains the next unimplemented engineering group.
+Planning, DifferenceWindow, backend execution and retention policy remain
+deferred.
 
 Approved implementation dependency order:
 
@@ -352,15 +364,20 @@ The engineering authorization groups are A–E for the complete Dynamic Slice
 main chain, F for TopologyDifference and G for Tool/example/final
 synchronization. Each group requires explicit authorization; A through E do
 not require mechanical authorization pauses between their internal dependency
-steps. This architecture-contract synchronization authorizes none of them.
+steps. A–E is implemented and accepted; F and G are unimplemented and still
+require separate authorization.
+
+## Current completed and accepted engineering work
+
+- A–E Dynamic Slice main chain: UTC Timeline, Orbit epoch,
+  GroundStation height, Position, Zone range, Connection, Route, Slicer and
+  TopologySlice.
 
 ## Explicitly unstarted work
 
-- A–E complete Dynamic Slice main chain: UTC Timeline, Orbit epoch,
-  GroundStation height, Position, Zone range, Connection, Route, Slicer and
-  TopologySlice.
 - F TopologyDifference.
-- G dynamic Tool, canonical example and final synchronization.
+- G Dynamic Tool, canonical integration and final synchronization. The A–E
+  canonical execution example is accepted A–E evidence and is not a Tool.
 - Planning, DifferenceWindow and backend/runtime execution.
 - Future dynamic planning/execution consumption of `NodeId` and lowering to
   runtime resource operations.
@@ -372,10 +389,8 @@ Future plans must reference `NodeId`; the later approved execution boundary
 must resolve its ASN through the Base owner and call the resulting Skyseed
 AS/entity owners' narrow query methods rather than guess from strings or retain
 a global index. No plan type, plan-compilation resolution/update path,
-implemented epoch, implemented dynamic Slice type, `SimulationRunner`, runtime
-resource locator or Simulator dynamic-execution engine exists. The complete
-Dynamic Slice main chain A–E is the next suggested engineering objective but
-awaits explicit user authorization.
+`SimulationRunner`, runtime resource locator or backend execution engine
+exists beyond the accepted A–E implementation.
 
 ## Acceptance state
 
@@ -389,8 +404,11 @@ awaits explicit user authorization.
 - Simulator Iteration 1 composition/time/static Topology: **ACCEPTED / FROZEN**
 - Simulator Iteration 2 Zone: **ACCEPTED / FROZEN**
 - Dynamic Slice public contract: **ACCEPTED / FROZEN DESIGN**
-- Position, Connection, Route, Slicer, TopologySlice and TopologyDifference
-  implementation: **NOT STARTED**
+- Position, Connection, Route, Slicer and TopologySlice:
+  **IMPLEMENTED AND ACCEPTED**
+- TopologyDifference implementation: **NOT STARTED**
+- Dynamic Tool and final synchronization: **NOT STARTED**
+- Full Dynamic Slice stage: **NOT COMPLETE**
 - Planning and backend/runtime execution: **DEFERRED / NOT STARTED**
 
 Current package/API details and the manual review checklist are recorded in

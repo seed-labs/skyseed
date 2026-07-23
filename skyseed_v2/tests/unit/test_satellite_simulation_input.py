@@ -1,4 +1,5 @@
 from dataclasses import FrozenInstanceError, fields
+from datetime import datetime, timezone
 
 import pytest
 from seedemu.core import Node
@@ -10,7 +11,9 @@ from skyseed_v2.simulator.static_input import SatelliteSimulationInput
 
 
 def satellite() -> tuple[Satellite, OrbitParameters]:
-    parameters = OrbitParameters(550.0, 53.0, 15.0)
+    parameters = OrbitParameters(
+        550.0, 53.0, 15.0, datetime(2026, 1, 1, tzinfo=timezone.utc)
+    )
     orbit = Shell("shell-1", asn=65000).create_orbit(
         "orbit-1",
         parameters=parameters,
@@ -39,6 +42,7 @@ def test_input_reads_stable_identity_from_the_unique_satellite() -> None:
     )
     assert simulation_input.node_id.entity_id == simulation_input.satellite_id
     assert simulation_input.altitude_km == 550.0
+    assert simulation_input.epoch_utc == orbit_parameters.epoch_utc
     with pytest.raises(FrozenInstanceError):
         simulation_input.satellite_id = "changed"
 
@@ -59,6 +63,7 @@ def test_input_contains_only_static_values_not_seed_or_container_objects() -> No
         "inclination_deg",
         "right_ascension_deg",
         "mean_anomaly_deg",
+        "epoch_utc",
     }
     assert all(
         not isinstance(value, Node)

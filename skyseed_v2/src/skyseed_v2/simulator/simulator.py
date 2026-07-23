@@ -5,6 +5,10 @@ from __future__ import annotations
 from skyseed_v2.configuration import ZoneLayoutDefinition
 
 from .definition import SimulationDefinition
+from .connection import ConnectionModel
+from .position import PositionModel
+from .route import RouteModel
+from .slicer import Slicer
 from .timeline import SimulationTimeline
 from .topology import Topology
 from .zone import ZoneMembershipModel
@@ -20,13 +24,14 @@ class Simulator:
     entry point.
     """
 
-    __slots__ = ("_definition", "_topology")
+    __slots__ = ("_definition", "_topology", "_slicer")
 
     def __init__(self, definition: SimulationDefinition) -> None:
         if not isinstance(definition, SimulationDefinition):
             raise TypeError("definition must be a SimulationDefinition")
         self._definition = definition
         self._topology: Topology | None = None
+        self._slicer: Slicer | None = None
 
     def get_definition(self) -> SimulationDefinition:
         return self._definition
@@ -58,6 +63,31 @@ class Simulator:
         if self._topology is None:
             raise RuntimeError("Topology has not been created")
         return self._topology
+
+    def create_slicer(
+        self,
+        *,
+        position_model: PositionModel,
+        connection_model: ConnectionModel,
+        route_model: RouteModel,
+    ) -> Slicer:
+        if self._slicer is not None:
+            raise RuntimeError("Slicer has already been created")
+        topology = self.get_topology()
+        slicer = Slicer._create(
+            topology=topology,
+            timeline=self.get_timeline(),
+            position_model=position_model,
+            connection_model=connection_model,
+            route_model=route_model,
+        )
+        self._slicer = slicer
+        return slicer
+
+    def get_slicer(self) -> Slicer:
+        if self._slicer is None:
+            raise RuntimeError("Slicer has not been created")
+        return self._slicer
 
 
 __all__ = ["Simulator"]

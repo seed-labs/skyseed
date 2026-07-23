@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 import pytest
 from seedemu.core import AutonomousSystem
 
@@ -13,7 +15,9 @@ def add_satellite(
     shell = autonomous_system.create_shell(f"shell-{autonomous_system.getAsn()}")
     orbit = shell.create_orbit(
         f"orbit-{autonomous_system.getAsn()}",
-        parameters=OrbitParameters(550.0, 53.0, 15.0),
+        parameters=OrbitParameters(
+            550.0, 53.0, 15.0, datetime(2026, 1, 1, tzinfo=timezone.utc)
+        ),
     )
     satellite = orbit.create_satellite(
         entity_id,

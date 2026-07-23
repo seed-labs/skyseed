@@ -143,6 +143,7 @@ def _expand_orbit_inputs(config: ShellConfig) -> tuple[_OrbitInput, ...]:
                     altitude_km=config.altitude_km,
                     inclination_deg=config.inclination_deg,
                     right_ascension_deg=orbit.right_ascension_deg,
+                    epoch_utc=config.epoch_utc,
                 ),
                 tuple(
                     (
@@ -206,6 +207,7 @@ def _expand_orbit_inputs(config: ShellConfig) -> tuple[_OrbitInput, ...]:
                     altitude_km=config.altitude_km,
                     inclination_deg=config.inclination_deg,
                     right_ascension_deg=right_ascension,
+                    epoch_utc=config.epoch_utc,
                 ),
                 satellites,
             )

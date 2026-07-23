@@ -8,9 +8,10 @@ public file path is one direct chain; it creates the upstream
 The Simulator static-input contract, accepted/frozen Iteration 1
 composition/time/static Topology and Iteration 2 static Zone domain are
 **IMPLEMENTED**. The dynamic Slice public contract is **ACCEPTED / FROZEN
-DESIGN** but Position, Connection, Route, Slicer, TopologySlice and
-TopologyDifference remain unimplemented. Planning and backend execution remain
-deferred.
+DESIGN**. Position, Connection, Route, Slicer and TopologySlice form the
+implemented and accepted A–E main chain; TopologyDifference and G remain
+unimplemented, so the full Dynamic Slice stage is not complete. Planning and
+backend execution remain deferred.
 
 ## Package ownership
 
@@ -23,7 +24,7 @@ deferred.
 | `skyseed_v2.node_id` | Neutral logical identity | `NodeId` |
 | `skyseed_v2.simulator_input_generation` | Entity traversal and pure input copying | three input-generation functions |
 | `skyseed_v2.simulator.static_input` | receiving-side immutable cross-layer boundary input | three input types |
-| `skyseed_v2.simulator` | Simulator definition, time, composition root, immutable static Topology and Zone domain | `SimulationDefinition`, `SimulationTimeline`, `Simulator`, `Topology`, five static node types and five Zone domain/Model types |
+| `skyseed_v2.simulator` | Simulator definition, time, composition root, immutable static Topology/Zone domain and accepted Dynamic Slice A–E | static Simulator types plus the accepted Position, Connection, Route, TopologySlice, Slicer and built-in Model contracts |
 | `skyseed_v2.materialization` | Launch an already compiled Compose project | `ComposeProjectLauncher` |
 
 The root package still exports only the six high-frequency entity/value names.
@@ -31,9 +32,9 @@ There is no top-level `emulator/` package, Builder, Factory, Loader class,
 creation-result wrapper or compatibility facade. Zone types likewise remain
 public only from their owning modules and are not root exports.
 
-The accepted dynamic types are planned for `skyseed_v2.simulator` and explicit
-submodules, but are deliberately absent from this implemented-import table
-until their separately authorized Slices. See
+The implemented and accepted A–E dynamic types are exported from
+`skyseed_v2.simulator` and explicit submodules and remain absent from the
+package root. See
 [`dynamic-slice-public-contract.md`](dynamic-slice-public-contract.md).
 
 ## Configuration meaning and separation
@@ -107,9 +108,9 @@ scan `entity_id` strings or provide a string fallback.
 
 `NodeId` remains a pure cross-layer value. Any future dynamic execution will
 resolve its ASN through the Base owner and then use the existing narrow AS,
-Shell and Orbit queries. Dynamic Slice algorithms now have frozen contracts
-but no implementation; no dynamic plan, resource resolver or runtime updater
-exists.
+Shell and Orbit queries. Dynamic Slice algorithms have frozen contracts and an
+implemented and accepted A–E main chain; no dynamic plan, resource resolver or
+runtime updater exists.
 
 ## Static deployment, accepted Slice state and future execution stages
 
@@ -119,12 +120,14 @@ rendered Emulator
   → compiled Docker/Compose project
   → ComposeProjectLauncher
 
-accepted, not implemented:
+implemented and accepted A–E Dynamic Slice main chain:
 Static Topology + Timeline timestamp
   → PositionModel
   → ConnectionModel
   → RouteModel
   → TopologySlice
+
+accepted, not implemented:
   → TopologyDifference
 
 deferred:
@@ -136,10 +139,12 @@ TopologyDifferenceWindow
   → SimulationRunner
 ```
 
-`SkyseedDockerCompiler` is implemented and does not read Config. The Slice
-chain names and public meanings are accepted but not implemented. Planner and
-backend names remain conceptual/open. `SimulationPlanCompiler` remains only
-the retired/corrected label for a formerly over-compressed dynamic chain.
+`SkyseedDockerCompiler` is implemented and does not read Config. The A–E Slice
+chain is implemented and accepted; TopologyDifference remains accepted but not
+implemented. Planner and backend names remain conceptual/open.
+`SimulationPlanCompiler`
+remains only the retired/corrected label for a formerly over-compressed dynamic
+chain.
 
 ## Public construction paths
 
@@ -250,12 +255,19 @@ classDiagram
     }
     class OrbitParameters {
         <<entity-bound value>>
+        +altitude_km float
+        +inclination_deg float
+        +right_ascension_deg float
+        +epoch_utc UTC-aware datetime
     }
     class Satellite {
         <<Emulator entity + SEED Node>>
     }
     class GroundStationLocation {
         <<entity-bound value>>
+        +latitude_deg float
+        +longitude_deg float
+        +elevation_m finite WGS84 metres
     }
     class GroundStation {
         <<Emulator entity + SEED Router>>
@@ -409,18 +421,18 @@ The public constructors and facade methods are:
 | `ZoneDefinition` | `ZoneDefinition(*, zone_id, priority=0, geometry)` |
 | `ZoneLayoutDefinition` | `ZoneLayoutDefinition(zones, allow_overlap)`; `zones` is normalized to a deterministic tuple |
 | `load_zone_layout_definition` | `load_zone_layout_definition(path: Path) -> ZoneLayoutDefinition` |
-| `Simulator` | `Simulator(definition)`; `get_definition()`; `get_timeline()`; `create_topology(*, zone_layout_definition=None, zone_membership_model=None)`; `get_topology()` |
+| `Simulator` | `Simulator(definition)`; Definition/Timeline queries; one-shot `create_topology(...)` / `get_topology()`; after Topology, one-shot `create_slicer(*, position_model, connection_model, route_model)` / `get_slicer()` |
 | `Topology` | direct construction is blocked; existing static-node facade; `get_zone_layout()`; `get_zone(zone_id)`; `find_zones(latitude_deg, longitude_deg)`; `resolve_zone(latitude_deg, longitude_deg)` |
 | Simulator `SkyseedAutonomousSystem` | direct construction is blocked; `asn`; `shells`; `ground_stations`; owner-local `get_shell(shell_id)` and `get_ground_station(node_id)` |
 | Simulator `Shell` | direct construction is blocked; `asn`; `shell_id`; `orbits`; owner-local `get_orbit(orbit_id)` |
-| Simulator `Orbit` | direct construction is blocked; identity/orbit-parameter properties; `satellites`; owner-local `get_satellite(node_id)` |
+| Simulator `Orbit` | direct construction is blocked; identity/orbit-parameter properties including UTC `epoch_utc`; `satellites`; owner-local `get_satellite(node_id)` |
 | Simulator `Satellite` | `Satellite(node_id, orbit_index, mean_anomaly_deg)`; `satellite_id` |
 | Simulator `GroundStation` | `GroundStation(node_id, latitude_deg, longitude_deg, elevation_m, station_type, operator)`; `ground_station_id` |
 | `LatitudeLongitudeRectangle` | `LatitudeLongitudeRectangle(south_latitude_deg, north_latitude_deg, west_longitude_deg, east_longitude_deg)`; bound properties; `representative_center`; `contains(latitude_deg, longitude_deg) -> bool` |
 | `Zone` | `Zone(zone_id, priority, geometry)`; frozen fields; `contains(latitude_deg, longitude_deg) -> bool` |
 | `ZoneMembershipModel` | runtime-checkable Protocol: `find_zones(zones, latitude_deg, longitude_deg) -> Iterable[Zone]`; `resolve_zone(matches, latitude_deg, longitude_deg) -> Zone` |
 | `DefaultZoneMembershipModel` | `DefaultZoneMembershipModel()`; stateless implementations of both Protocol methods |
-| `ZoneLayout` | direct construction is blocked; `zones`; `allow_overlap`; `get_zone(zone_id)`; `find_zones(latitude_deg, longitude_deg)`; `resolve_zone(latitude_deg, longitude_deg)` |
+| `ZoneLayout` | direct construction is blocked; `zones`; `allow_overlap`; membership queries; `find_intersecting_zones(spherical_cap)` |
 
 Topology retains `_autonomous_systems`, `_autonomous_systems_by_asn`,
 `_nodes_by_id` and `_zone_layout`. Each owner retains its own tuple enumeration and private
@@ -609,7 +621,7 @@ unchanged, including `generation`, `orbits`, `raan`, `phase`, `first` and
       zero-area shared boundaries are not positive-area overlap.
 - [ ] No old input name, duplicate Topology index or Satellite-parent reverse
       API remains.
-- [ ] Dynamic Slice contracts remain accepted-but-unimplemented; A–E, F and G
-      are explicit engineering authorization groups, and no placeholder public
-      types or root exports exist.
+- [ ] Dynamic Slice A–E implementation remains accepted; F and G remain
+      separately authorized, unimplemented engineering groups, and no
+      placeholder public types or root exports exist.
 - [ ] Planning and backend/runtime execution remain deferred and unimplemented.

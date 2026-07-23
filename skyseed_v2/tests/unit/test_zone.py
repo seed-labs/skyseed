@@ -1,5 +1,5 @@
 from dataclasses import FrozenInstanceError
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from math import inf, nan
 
 import pytest
@@ -59,8 +59,8 @@ def create_zone_topology(
         SimulationDefinition(
             static_input=SimulatorStaticInput(),
             timeline=SimulationTimeline(
-                datetime(2026, 1, 1),
-                datetime(2026, 1, 1, 0, 0, 10),
+                datetime(2026, 1, 1, tzinfo=timezone.utc),
+                datetime(2026, 1, 1, 0, 0, 10, tzinfo=timezone.utc),
                 timedelta(seconds=10),
             ),
         )
@@ -386,7 +386,7 @@ def test_topology_zone_lifecycle_facade_identity_and_atomic_failure() -> None:
     simulation_definition = SimulationDefinition(
         SimulatorStaticInput(),
         SimulationTimeline(
-            datetime(2026, 1, 1),
+            datetime(2026, 1, 1, tzinfo=timezone.utc),
             None,
             timedelta(seconds=10),
         ),

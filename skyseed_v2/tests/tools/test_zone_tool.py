@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 
@@ -52,8 +52,8 @@ def topology_with_zones(
     definition = SimulationDefinition(
         static_input=static_input or SimulatorStaticInput(),
         timeline=SimulationTimeline(
-            datetime(2026, 1, 1),
-            datetime(2026, 1, 1, 0, 0, 10),
+            datetime(2026, 1, 1, tzinfo=timezone.utc),
+            datetime(2026, 1, 1, 0, 0, 10, tzinfo=timezone.utc),
             timedelta(seconds=10),
         ),
     )
@@ -72,8 +72,8 @@ def topology_without_zone_layout(
     simulation_definition = SimulationDefinition(
         static_input=static_input or SimulatorStaticInput(),
         timeline=SimulationTimeline(
-            datetime(2026, 1, 1),
-            datetime(2026, 1, 1, 0, 0, 10),
+            datetime(2026, 1, 1, tzinfo=timezone.utc),
+            datetime(2026, 1, 1, 0, 0, 10, tzinfo=timezone.utc),
             timedelta(seconds=10),
         ),
     )

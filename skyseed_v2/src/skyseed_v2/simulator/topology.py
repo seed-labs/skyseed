@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from datetime import datetime
 from math import isfinite
 from types import MappingProxyType
 from typing import Mapping
 
 from skyseed_v2.configuration import ZoneLayoutDefinition
+from skyseed_v2._time import normalize_utc_datetime
 from skyseed_v2.identifier import validate_identifier
 from skyseed_v2.node_id import NodeId
 
@@ -72,7 +74,7 @@ class GroundStation:
     node_id: NodeId
     latitude_deg: float
     longitude_deg: float
-    elevation_m: float | None
+    elevation_m: float
     station_type: str
     operator: str
 
@@ -80,11 +82,7 @@ class GroundStation:
         _validate_node_identity(self.node_id, _GROUND_STATION_KIND)
         latitude = _finite_float(self.latitude_deg, "latitude_deg")
         longitude = _finite_float(self.longitude_deg, "longitude_deg")
-        elevation = (
-            None
-            if self.elevation_m is None
-            else _finite_float(self.elevation_m, "elevation_m")
-        )
+        elevation = _finite_float(self.elevation_m, "elevation_m")
         if not -90.0 <= latitude <= 90.0:
             raise ValueError("latitude_deg must be between -90 and 90")
         if not -180.0 <= longitude <= 180.0:
@@ -116,6 +114,7 @@ class Orbit:
     _altitude_km: float
     _inclination_deg: float
     _right_ascension_deg: float
+    _epoch_utc: datetime
     _satellites: tuple[Satellite, ...]
     _satellites_by_node_id: Mapping[NodeId, Satellite] = field(
         repr=False, compare=False, hash=False
@@ -134,6 +133,7 @@ class Orbit:
         altitude_km: float,
         inclination_deg: float,
         right_ascension_deg: float,
+        epoch_utc: datetime,
         satellites: Iterable[Satellite],
     ) -> Orbit:
         _validate_asn(asn)
@@ -175,6 +175,11 @@ class Orbit:
         object.__setattr__(instance, "_altitude_km", altitude)
         object.__setattr__(instance, "_inclination_deg", inclination)
         object.__setattr__(instance, "_right_ascension_deg", right_ascension)
+        object.__setattr__(
+            instance,
+            "_epoch_utc",
+            normalize_utc_datetime(epoch_utc, "epoch_utc"),
+        )
         object.__setattr__(instance, "_satellites", satellite_values)
         object.__setattr__(
             instance, "_satellites_by_node_id", MappingProxyType(by_node_id)
@@ -204,6 +209,10 @@ class Orbit:
     @property
     def right_ascension_deg(self) -> float:
         return self._right_ascension_deg
+
+    @property
+    def epoch_utc(self) -> datetime:
+        return self._epoch_utc
 
     @property
     def satellites(self) -> tuple[Satellite, ...]:
@@ -436,7 +445,9 @@ class Topology:
         satellite_inputs_by_orbit: dict[
             _OrbitKey, list[SatelliteSimulationInput]
         ] = {}
-        orbit_parameters: dict[_OrbitKey, tuple[float, float, float]] = {}
+        orbit_parameters: dict[
+            _OrbitKey, tuple[float, float, float, datetime]
+        ] = {}
         orbit_indices: dict[_OrbitKey, set[int]] = {}
         satellite_parents: dict[NodeId, _OrbitKey] = {}
         ground_station_inputs_by_asn: dict[
@@ -515,6 +526,7 @@ class Topology:
                 altitude_km=parameters[0],
                 inclination_deg=parameters[1],
                 right_ascension_deg=parameters[2],
+                epoch_utc=parameters[3],
                 satellites=satellites,
             )
             orbits_by_shell.setdefault((asn, shell_id), []).append(orbit)
@@ -694,7 +706,7 @@ def _validate_satellite_input(value: SatelliteSimulationInput) -> None:
 
 def _validated_orbit_parameters(
     value: SatelliteSimulationInput,
-) -> tuple[float, float, float]:
+) -> tuple[float, float, float, datetime]:
     altitude = _finite_float(value.altitude_km, "altitude_km")
     inclination = _finite_float(value.inclination_deg, "inclination_deg")
     right_ascension = _validate_angle(
@@ -704,7 +716,8 @@ def _validated_orbit_parameters(
         raise ValueError("altitude_km must be positive")
     if not 0.0 <= inclination <= 180.0:
         raise ValueError("inclination_deg must be between 0 and 180")
-    return altitude, inclination, right_ascension
+    epoch = normalize_utc_datetime(value.epoch_utc, "epoch_utc")
+    return altitude, inclination, right_ascension, epoch
 
 
 def _validate_ground_station_input(

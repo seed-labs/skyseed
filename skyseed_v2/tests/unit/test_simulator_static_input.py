@@ -1,4 +1,5 @@
 from dataclasses import FrozenInstanceError, fields, replace
+from datetime import datetime, timezone
 
 import pytest
 
@@ -26,6 +27,7 @@ def satellite_input(
         inclination_deg=53.0,
         right_ascension_deg=15.0,
         mean_anomaly_deg=mean_anomaly_deg,
+        epoch_utc=datetime(2026, 1, 1, tzinfo=timezone.utc),
     )
 
 

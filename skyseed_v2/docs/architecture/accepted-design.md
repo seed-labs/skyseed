@@ -34,13 +34,17 @@ The implemented accepted foundation comprises:
   Satellite and GroundStation objects;
 - optional Topology-owned `ZoneLayout`, its static Zones and fixed
   `ZoneMembershipModel`;
-- the existing Emulator-to-Simulator static-input construction boundary.
+- the existing Emulator-to-Simulator static-input construction boundary;
+- the implemented and accepted Dynamic Slice main chain A–E: UTC/epoch,
+  Position, SphericalCap range queries, Connection, Route, Slicer and
+  TopologySlice.
 
-The Dynamic Slice contract for Position, Connection, Route, Slicer,
-TopologySlice and TopologyDifference is **accepted/frozen design but not
-implemented**. No dynamic type or package-root export is implied by acceptance.
-Planning, Plan, DifferenceWindow, backend execution and runtime resource
-policy remain deferred.
+The Dynamic Slice contract remains accepted/frozen. Position, Connection,
+Route, Slicer and TopologySlice are implemented and accepted and are exported
+only from `skyseed_v2.simulator`; no package-root export is implied.
+TopologyDifference is accepted/frozen but not implemented. Planning, Plan,
+DifferenceWindow, backend execution and runtime resource policy remain
+deferred.
 
 ## Core ownership and dependency direction
 
@@ -64,9 +68,10 @@ Timeline, Slicer, Position, Connection, Route, TopologySlice,
 TopologyDifference, Planning or backend state.
 
 Slicer owns the sole dynamic generation order, Model coordination, validation,
-atomic TopologySlice publication, retained-Slice queries and adjacent
-TopologyDifference entry. Model instances are explicit, fixed to one Slicer
-running context and provide no hidden default or fallback.
+atomic TopologySlice publication, retained-Slice queries, full-path resolution
+using exact Topology and adjacent TopologyDifference entry. Model instances
+are explicit, fixed to one Slicer running context and provide no hidden
+default or fallback.
 
 The sole accepted dynamic state direction is:
 
@@ -84,20 +89,22 @@ The linked detailed contract is the sole complete authority for Model
 signatures, value fields and validation, built-in algorithms, Slice lifecycle,
 Difference patches, failure semantics, Tool reads and deferred boundaries.
 
-## Architecture Delta from the implemented baseline
+## Implemented Architecture Delta
 
-The accepted, not-yet-implemented delta is:
+The accepted A–E implementation applies this Architecture Delta:
 
 1. Timeline becomes timezone-aware-only and UTC-normalized.
-2. Orbit static definition gains UTC `epoch_utc`; Satellite mean anomaly is
-   interpreted at its parent Orbit epoch.
+2. Shell YAML/programmatic configuration explicitly supplies one common UTC
+   `epoch_utc`, copied into every Orbit static definition; Satellite mean
+   anomaly is interpreted at its parent Orbit epoch.
 3. GroundStation height becomes finite WGS84 ellipsoidal metres.
 4. WGS84 ECEF metres become the sole authoritative Position representation,
    with geographic coordinates as read-only derived views.
 5. Simulator explicitly creates and owns Slicer after Topology.
 6. ZoneLayout gains the accepted SphericalCap range query.
-7. Position, Connection, Route, TopologySlice, Slicer and
-   TopologyDifference become accepted public design.
+7. Position, Connection, Route, TopologySlice and Slicer implement the
+   accepted public Simulator contracts; TopologyDifference remains accepted
+   design.
 8. Tools may read formal dynamic results but do not become a second
    authoritative computation path.
 9. Built-in same-Orbit ordering uses mean anomaly; built-in cross-Orbit
@@ -107,6 +114,8 @@ The accepted, not-yet-implemented delta is:
 
 - Topology does not create or compare TopologySlices.
 - TopologySlice does not create or own TopologyDifference.
+- TopologySlice does not retain Topology or resolve a full path; Slicer does so
+  from its exact Topology and a retained Slice.
 - ConnectionModel, Planner and Tools do not independently propagate Position.
 - Tools do not recompute authoritative Connection or Route results and are
   never Model fallbacks.
@@ -134,5 +143,6 @@ Each engineering group requires explicit authorization, implementation,
 validation, architecture audit and acceptance. A, B, C, D and E do not require
 mechanical authorization pauses between their internal dependency steps.
 
-This architecture-contract synchronization does not authorize implementation
-of A–E, F or G.
+A–E is implemented and accepted. F and G remain unimplemented and require
+separate authorization; A–E acceptance does not authorize TopologyDifference
+or a Dynamic Tool and does not complete the full Dynamic Slice stage.

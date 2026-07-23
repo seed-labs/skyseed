@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -24,7 +25,10 @@ def compile_two_satellites(output: Path, *, conflicting_metadata: bool = False):
     satellite_as = SkyseedAutonomousSystem(65000)
     base.setAutonomousSystem(satellite_as)
     orbit = satellite_as.create_shell("shell-1").create_orbit(
-        "orbit-1", parameters=OrbitParameters(550.0, 53.0, 15.0)
+        "orbit-1",
+        parameters=OrbitParameters(
+            550.0, 53.0, 15.0, datetime(2026, 1, 1, tzinfo=timezone.utc)
+        ),
     )
     satellites = orbit.create_satellites(2, satellite_id_prefix="satellite")
     emulator.addLayer(base)
@@ -187,7 +191,10 @@ def test_runtime_map_uses_auditable_no_network_adapter(tmp_path) -> None:
     satellite_as = SkyseedAutonomousSystem(65000)
     base.setAutonomousSystem(satellite_as)
     orbit = satellite_as.create_shell("shell-1").create_orbit(
-        "orbit-1", parameters=OrbitParameters(550.0, 53.0, 15.0)
+        "orbit-1",
+        parameters=OrbitParameters(
+            550.0, 53.0, 15.0, datetime(2026, 1, 1, tzinfo=timezone.utc)
+        ),
     )
     orbit.create_satellites(2, satellite_id_prefix="satellite")
     emulator.addLayer(base)

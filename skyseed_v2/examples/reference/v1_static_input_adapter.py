@@ -8,6 +8,7 @@ format.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from json import JSONDecodeError, loads
 from math import isfinite, pi
 from pathlib import Path
@@ -288,6 +289,7 @@ class V1StaticInputAdapter:
             shell_id=logical_shell_id,
             altitude_km=round(_mean_motion_to_altitude_km(mean_motion), 6),
             inclination_deg=inclination,
+            epoch_utc=datetime(1970, 1, 1, tzinfo=timezone.utc),
             generated_orbit_layout=GeneratedOrbitLayout(
                 orbit_count=orbit_count,
                 satellites_per_orbit=satellites_per_plane,

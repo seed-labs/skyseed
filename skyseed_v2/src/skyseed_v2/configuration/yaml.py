@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +10,8 @@ from yaml import YAMLError
 from yaml.constructor import ConstructorError
 from yaml.loader import SafeLoader
 from yaml.nodes import MappingNode
+
+from skyseed_v2._time import normalize_utc_datetime
 
 from .attachments import (
     InternetExchangeAttachment,
@@ -65,6 +68,20 @@ class StaticEmulatorConfigLoadError(ValueError):
 
 class _UniqueKeyYamlReader(SafeLoader):
     pass
+
+
+def _aware_datetime(value: Any, context: str) -> datetime:
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError as error:
+            raise StaticEmulatorConfigLoadError(
+                f"{context} must be an ISO 8601 timezone-aware datetime"
+            ) from error
+    try:
+        return normalize_utc_datetime(value, context)
+    except (TypeError, ValueError) as error:
+        raise StaticEmulatorConfigLoadError(str(error)) from error
 
 
 def _construct_unique_mapping(
@@ -374,7 +391,7 @@ def _parse_shell(
     mapping = _mapping(value, context)
     _fields(
         mapping,
-        required={"shell_id", "altitude_km", "inclination_deg"},
+        required={"shell_id", "altitude_km", "inclination_deg", "epoch_utc"},
         optional={"generation", "orbits"},
         context=context,
     )
@@ -388,6 +405,7 @@ def _parse_shell(
         shell_id=mapping["shell_id"],
         altitude_km=mapping["altitude_km"],
         inclination_deg=mapping["inclination_deg"],
+        epoch_utc=_aware_datetime(mapping["epoch_utc"], f"{context}.epoch_utc"),
         generated_orbit_layout=(
             _parse_generation(mapping["generation"], context)
             if has_generation

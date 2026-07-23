@@ -1,4 +1,5 @@
 from dataclasses import FrozenInstanceError, fields
+from datetime import datetime, timezone
 from inspect import signature
 from typing import get_type_hints
 
@@ -101,12 +102,13 @@ def test_simulation_inputs_reject_mismatched_logical_identities() -> None:
         "inclination_deg": 53.0,
         "right_ascension_deg": 15.0,
         "mean_anomaly_deg": 0.0,
+        "epoch_utc": datetime(2026, 1, 1, tzinfo=timezone.utc),
     }
     ground_station_values = {
         "ground_station_id": "gs-1",
         "latitude_deg": 40.0,
         "longitude_deg": -74.0,
-        "elevation_m": None,
+        "elevation_m": 0.0,
         "station_type": "gateway",
         "operator": "Skyseed",
     }
@@ -166,7 +168,9 @@ def test_existing_owners_provide_narrow_lookup_without_a_global_index() -> None:
     shell = autonomous_system.create_shell("shell-1")
     orbit = shell.create_orbit(
         "orbit-1",
-        parameters=OrbitParameters(550.0, 53.0, 15.0),
+        parameters=OrbitParameters(
+            550.0, 53.0, 15.0, datetime(2026, 1, 1, tzinfo=timezone.utc)
+        ),
     )
     satellite = orbit.create_satellite(
         "shared",

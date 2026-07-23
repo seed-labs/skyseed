@@ -4,8 +4,9 @@
 
 The isolated static Satellite slice is implemented and validated. It proves
 entity ownership, seedemu lifecycle integration, explicit no-network Compose
-output and the static future-Simulator input boundary. It does not implement
-positions, visibility, links, routing or Simulator execution.
+output and the static Simulator input boundary. Dynamic Position, Connection,
+Route and Slice execution are implemented and accepted in the separate A–E
+main chain; they are intentionally outside this isolated example.
 
 ## 2. One Satellite object
 
@@ -108,6 +109,7 @@ supported.
 
 ## 7. Deferred work
 
-Dynamic Satellite interfaces remain deferred. Position, Connection, Route and
-Slice execution now have an accepted public contract but remain unimplemented;
-Planning and runtime resource resolution remain deferred.
+Dynamic Position, Connection, Route and Slice execution are present in the
+implemented and accepted A–E main chain. This isolated static example does not
+exercise them. TopologyDifference, Planning and runtime resource resolution
+remain deferred.

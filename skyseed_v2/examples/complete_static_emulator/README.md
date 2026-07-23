@@ -1,9 +1,9 @@
 # Complete Static Emulator
 
-This handwritten example shows the complete public composition: two isolated
+This handwritten example shows the complete public composition: two planned
 Satellites, one GroundStation, one ordinary SEED AS/Network/Router, one IX, one
-explicit eBGP peering, immutable Emulator-to-Simulator input and
-`SkyseedDockerCompiler`.
+explicit eBGP peering, immutable Emulator-to-Simulator input, the Dynamic
+Slice A–E chain and `SkyseedDockerCompiler`.
 
 `emu.py` contains only `build_emulator() -> Emulator`. `main.py` builds that
 Emulator once, assembles one Simulator/Topology from the same object, preserves
@@ -14,12 +14,13 @@ Emulator-to-Simulator assembly and obtains all Skyseed AS values from the real
 `create_simulator_static_input(...)`. The ordinary AS is excluded by that
 owner query. No NodeId-to-Emulator-entity mapping or resolution path is
 created. `operator` is descriptive metadata only. The Simulator path loads the
-static Zone layout from `zones.yaml`; no GS–Satellite link or dynamic Simulator
-field exists.
+static Zone layout from `zones.yaml`; formal dynamic Connections remain
+Simulator results and do not mutate Emulator entities.
 
 From `skyseed_v2/examples/complete_static_emulator/`, run the canonical
-external assembly flow, which uses fixed timestamps and creates the static
-Topology without generating a Slice:
+external assembly flow, which uses fixed timestamps, explicitly creates the
+three built-in Models and Slicer, queries synthetic Slice 0 and generates two
+real TopologySlices:
 
 ```bash
 python3 simu.py
@@ -31,9 +32,10 @@ The equivalent module command from `skyseed_v2/` is
 `simu.py` keeps the user-adjustable start/end/10-second interval values at the
 top, then shows `SimulatorStaticInput → SimulationTimeline →
 SimulationDefinition.static_input → Simulator → create_topology(...)` directly,
-then demonstrates physical Zone matches and authoritative resolution.
-A bounded Timeline is displayed completely; an unbounded Timeline is displayed
-through a fixed four-timestamp prefix without eager materialization.
+then demonstrates Position, ISL, GroundStation access, Zone service, G/Z next
+hops, a resolved full path and a legal unserved Zone. A bounded Timeline is
+displayed completely; an unbounded Timeline is displayed through a fixed
+four-timestamp prefix without eager materialization.
 
 For a layout with many Zones, defining them in `zones.yaml` is the recommended
 path. Small tests may instead construct
@@ -45,8 +47,8 @@ does not introduce a second Zone representation.
 The latitude/longitude pairs printed by this example are manually chosen query
 points, not new domain entities. A physical match is every Zone whose closed
 boundary contains the point; the authoritative result is the one match chosen
-by the active `ZoneMembershipModel`. The example neither computes Satellite
-positions nor selects a service Satellite for a Zone.
+by the active `ZoneMembershipModel`. Static membership remains separate from
+the dynamic service assignment shown by the ConnectionSlice.
 
 Generate the complete output from the same example directory:
 

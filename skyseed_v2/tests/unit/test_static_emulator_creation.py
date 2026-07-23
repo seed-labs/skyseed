@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from seedemu.core import Emulator
 
 from skyseed_v2.static_emulator import create_static_emulator
@@ -32,6 +34,7 @@ def explicit_shell(shell_id: str, satellite_id: str) -> ShellConfig:
         shell_id=shell_id,
         altitude_km=550.0,
         inclination_deg=53.0,
+        epoch_utc=datetime(2026, 1, 1, tzinfo=timezone.utc),
         explicit_orbits=(
             OrbitConfig(
                 orbit_id=f"{shell_id}-orbit",
@@ -53,6 +56,7 @@ def generated_shell(shell_id: str) -> ShellConfig:
         shell_id=shell_id,
         altitude_km=560.0,
         inclination_deg=97.6,
+        epoch_utc=datetime(2026, 1, 1, tzinfo=timezone.utc),
         generated_orbit_layout=GeneratedOrbitLayout(
             orbit_count=2,
             satellites_per_orbit=3,
@@ -127,6 +131,35 @@ def test_creation_supports_satellite_only_ground_only_and_multiple_skyseed_as() 
     ) == ("gs-a",)
     assert len(simulator_input.list_satellites()) == 1
     assert len(simulator_input.list_ground_stations()) == 1
+    orbit = satellite_as.get_shell("shell-a").get_orbit("shell-a-orbit")
+    assert orbit.parameters.epoch_utc == datetime(
+        2026, 1, 1, tzinfo=timezone.utc
+    )
+    assert simulator_input.list_satellites()[0].epoch_utc == (
+        orbit.parameters.epoch_utc
+    )
+
+
+def test_generated_shell_copies_common_epoch_into_every_orbit() -> None:
+    config = StaticEmulatorConfig(
+        skyseed_autonomous_systems=(
+            SkyseedAutonomousSystemConfig(
+                65001,
+                shells=(generated_shell("generated"),),
+            ),
+        )
+    )
+    emulator = create_static_emulator(config)
+    skyseed_as = base_for(emulator).get_skyseed_autonomous_systems()[0]
+    orbits = skyseed_as.get_shell("generated").orbits
+
+    assert len(orbits) == 2
+    assert all(
+        orbit.parameters.epoch_utc
+        == datetime(2026, 1, 1, tzinfo=timezone.utc)
+        for orbit in orbits
+    )
+    assert len({id(orbit.parameters) for orbit in orbits}) == 2
 
 
 def test_creation_calls_the_approved_public_entity_creation_methods(

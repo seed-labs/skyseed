@@ -59,20 +59,40 @@ def test_identity_and_generation_exports_stay_with_their_owner_modules() -> None
 
     assert node_id.__all__ == ["NodeId"]
     assert set(simulator.__all__) == {
+        "CircularOrbitPositionModel",
+        "Connection",
+        "ConnectionId",
+        "ConnectionKind",
+        "ConnectionModel",
+        "ConnectionSlice",
+        "DirectionalConnectionParameters",
+        "EarthFixedPosition",
+        "GeometricConnectionModel",
         "GroundStation",
+        "GroundStationRouteTarget",
+        "HopCountRouteModel",
         "DefaultZoneMembershipModel",
         "LatitudeLongitudeRectangle",
         "Orbit",
+        "PositionModel",
+        "RouteKey",
+        "RouteModel",
+        "RouteSlice",
+        "RouteTarget",
         "Satellite",
         "Shell",
         "SimulationDefinition",
         "SimulationTimeline",
         "Simulator",
+        "Slicer",
+        "SphericalCap",
         "SkyseedAutonomousSystem",
         "Topology",
+        "TopologySlice",
         "Zone",
         "ZoneLayout",
         "ZoneMembershipModel",
+        "ZoneRouteTarget",
     }
     assert "NodeId" not in simulator_static_input.__all__
     assert "SimulationNodeId" not in simulator_static_input.__all__
@@ -97,6 +117,8 @@ def test_identity_and_generation_exports_stay_with_their_owner_modules() -> None
         "Simulator",
         "SkyseedAutonomousSystem",
         "Topology",
+        "TopologySlice",
+        "Slicer",
     ):
         assert not hasattr(package, simulator_owned_name)
 

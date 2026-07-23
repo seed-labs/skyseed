@@ -2,12 +2,13 @@
 
 ## 1. Status and scope
 
-The complete handwritten static example is implemented. It combines two
-isolated Satellites, one GroundStation, one ordinary seedemu AS/Network/Router,
-one IX, explicit eBGP, immutable Simulator static input and Docker compilation.
-Its Simulator entrypoint also loads the static Zone layout from `zones.yaml`.
-It adds no GroundStation–Satellite link, Satellite position calculation,
-service-Satellite selection or dynamic Simulator field.
+The complete handwritten example is implemented. It combines two isolated
+Satellites, one GroundStation, one ordinary seedemu AS/Network/Router, one IX,
+explicit eBGP, immutable Simulator static input and Docker compilation. Its
+Simulator entrypoint also loads the static Zone layout from `zones.yaml` and
+exercises the implemented and accepted A–E Dynamic Slice main chain. The
+Emulator/Compose side still adds no GroundStation–Satellite network
+attachment.
 
 ## 2. Static input contract
 
@@ -158,7 +159,7 @@ No index, plan, resolution or update path is implemented in this slice.
 
 ## 7. Deferred work
 
-Position, visibility, dynamic links, service-Satellite selection, Slicer,
-Connection, Route, TopologySlice and TopologyDifference now have an accepted
-public contract but remain unimplemented. Planning, resource resolution and
-backend/runtime execution remain deferred.
+Position, visibility, dynamic Connections, service-Satellite selection,
+Slicer, Route and TopologySlice are implemented and accepted in A–E.
+TopologyDifference, Planning, resource resolution and backend/runtime execution
+remain deferred.

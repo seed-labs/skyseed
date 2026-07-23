@@ -1,4 +1,5 @@
 from dataclasses import FrozenInstanceError, fields
+from datetime import datetime, timezone
 
 import pytest
 
@@ -22,6 +23,7 @@ def test_generated_shell_config_is_immutable_and_static_only() -> None:
         shell_id="shell-a",
         altitude_km=560.0,
         inclination_deg=97.6,
+        epoch_utc=datetime(2026, 1, 1, tzinfo=timezone.utc),
         generated_orbit_layout=GeneratedOrbitLayout(
             orbit_count=6,
             satellites_per_orbit=58,
@@ -41,12 +43,12 @@ def test_generated_shell_config_is_immutable_and_static_only() -> None:
         "shell_id",
         "altitude_km",
         "inclination_deg",
+        "epoch_utc",
         "generated_orbit_layout",
         "explicit_orbits",
     }
     assert not any(
-        "epoch" in field.name
-        or "position" in field.name
+        "position" in field.name
         or "visibility" in field.name
         for field in fields(config)
     )
@@ -63,6 +65,7 @@ def test_explicit_shell_normalizes_orbit_and_satellite_input_order() -> None:
         shell_id="shell-explicit",
         altitude_km=550.0,
         inclination_deg=53.0,
+        epoch_utc=datetime(2026, 1, 1, tzinfo=timezone.utc),
         explicit_orbits=(orbit_b, orbit_a),
     )
 
@@ -98,6 +101,7 @@ def test_shell_requires_exactly_one_construction_mode(kwargs) -> None:
             shell_id="shell-a",
             altitude_km=550.0,
             inclination_deg=53.0,
+            epoch_utc=datetime(2026, 1, 1, tzinfo=timezone.utc),
             **kwargs,
         )
 

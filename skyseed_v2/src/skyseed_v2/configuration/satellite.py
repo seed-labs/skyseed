@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from math import isfinite
 
 from skyseed_v2.identifier import validate_identifier
+from skyseed_v2._time import normalize_utc_datetime
 
 from ._validation import _angle, _positive_integer
 
@@ -232,6 +234,7 @@ class ShellConfig:
     shell_id: str
     altitude_km: float
     inclination_deg: float
+    epoch_utc: datetime
     generated_orbit_layout: GeneratedOrbitLayout | None = None
     explicit_orbits: tuple[OrbitConfig, ...] = ()
 
@@ -247,6 +250,11 @@ class ShellConfig:
             raise ValueError("inclination_deg must be between 0 and 180")
         object.__setattr__(self, "altitude_km", altitude)
         object.__setattr__(self, "inclination_deg", inclination)
+        object.__setattr__(
+            self,
+            "epoch_utc",
+            normalize_utc_datetime(self.epoch_utc, "epoch_utc"),
+        )
 
         explicit_orbits = tuple(self.explicit_orbits)
         if self.generated_orbit_layout is not None and not isinstance(

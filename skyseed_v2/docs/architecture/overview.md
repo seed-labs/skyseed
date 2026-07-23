@@ -5,9 +5,11 @@
 The static Emulator core, receiving-side Simulator static-input contract,
 accepted/frozen Simulator Iteration 1 composition/time/static Topology,
 Iteration 2 static Zone domain, formal examples and Compose materialization
-tooling are implemented. The Position/Connection/Route/Slicer/Slice/Difference
-public contract is accepted and frozen but not implemented. Planning,
-`SimulationRunner` and UT remain deferred and unimplemented.
+tooling are implemented. The complete dynamic public contract is accepted and
+frozen; the Dynamic Slice A–E main chain is implemented and accepted.
+TopologyDifference and G are not implemented, so the full Dynamic Slice stage
+is not complete. Planning, `SimulationRunner` and UT remain deferred and
+unimplemented.
 
 ## 2. System division
 
@@ -74,10 +76,9 @@ Simulator
 Topology stores its AS tuple, immutable ASN index, unified immutable `NodeId`
 node index and optional `ZoneLayout`. Shell and Orbit facade queries delegate
 down the owner chain; Zone facade queries delegate to the layout. A Topology
-without a Zone layout remains valid. Dynamic Slice algorithms are absent from
-current code, but their public contract now adds at most one explicit-Model
-Slicer after Topology creation while keeping Topology static. No speculative
-Satellite-parent reverse lookup is present.
+without a Zone layout remains valid. After Topology creation, Simulator may
+explicitly create at most one fixed-Model Slicer while keeping Topology
+static. No speculative Satellite-parent reverse lookup is present.
 
 Iteration 2 freezes this Zone construction chain:
 
@@ -116,9 +117,10 @@ registration and compilation. The integration-bearing nature of these objects
 is why the package is named `entities`, not `domain`.
 
 `OrbitParameters` is defined beside and owned by `Orbit`. Satellite retains no
-Orbit reference and no copy of altitude, inclination or right ascension. Slice
-A is approved to add Orbit-owned UTC `epoch_utc`; Satellite mean anomaly then
-means its value at that epoch. This delta is not implemented yet.
+Orbit reference and no copy of altitude, inclination, right ascension or
+epoch. Orbit-owned UTC `epoch_utc` is implemented and accepted in A–E;
+Satellite mean anomaly
+means its value at that epoch.
 
 ## 4. Emulator → Simulator static boundary
 
@@ -214,7 +216,7 @@ Emulator / SEED static model
 → ComposeProjectLauncher
 ```
 
-The accepted/frozen but unimplemented dynamic state chain is:
+The accepted/frozen A–E dynamic state chain is implemented and accepted:
 
 ```text
 Static Topology + Timeline timestamp
@@ -225,8 +227,9 @@ Static Topology + Timeline timestamp
 → RouteModel
 → RouteSlice
 → TopologySlice
-→ TopologyDifference
 ```
+
+The following `TopologyDifference` stage remains accepted but unimplemented.
 
 `Simulator` creates one Slicer only after Topology exists. Slicer retains exact
 Topology, Timeline and explicit Position/Connection/Route Models, then
@@ -266,8 +269,9 @@ retired/corrected as an over-compressed description.
 - `complete_static_emulator/simu.py`: external assembly entrypoint that reuses
   `emu.py`, queries Skyseed AS values from `SatelliteBase`, adapts them into
   `SimulatorStaticInput`, loads `zones.yaml` as a `ZoneLayoutDefinition`, creates
-  the Definition/Simulator and materializes the initial static Topology with its
-  Zone layout.
+  the Definition/Simulator and materializes the Topology with its Zone layout,
+  then explicitly creates three Models and the Slicer, queries Slice 0 and
+  generates two real Slices.
 - `large_static_network`: YAML → Config → Emulator creation → static Simulator
   input generation → `SkyseedDockerCompiler` → generated output controls.
   Validation remains Docker/Compose compile/config-only until a user explicitly
@@ -294,10 +298,10 @@ Slice A time/epoch/coordinates/Position
 
 The engineering authorization groups are A–E for the complete Dynamic Slice
 main chain, F for TopologyDifference and G for Tool/example/final
-synchronization. A through E need not stop mechanically between internal
-dependency steps, but A–E as a group still requires explicit implementation
-authorization. Current code has no EarthFixedPosition,
-Position/Connection/Route Model, Slicer, dynamic Slice or Difference type.
+synchronization. A–E is implemented and accepted. F TopologyDifference is the
+next engineering objective; F and G remain unimplemented and require separate
+authorization. Current code has no TopologyDifference type, and the full
+Dynamic Slice stage is not complete.
 
 Future Simulator state and plans will cite `NodeId`. Any later approved
 dynamic-execution resolution path will call

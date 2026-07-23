@@ -126,6 +126,7 @@ def _create_satellite_simulation_input(
         inclination_deg=orbit_parameters.inclination_deg,
         right_ascension_deg=orbit_parameters.right_ascension_deg,
         mean_anomaly_deg=satellite.mean_anomaly_deg,
+        epoch_utc=orbit_parameters.epoch_utc,
     )
 
 

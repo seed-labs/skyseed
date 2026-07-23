@@ -2,8 +2,9 @@
 
 Solid implemented nodes and arrows reflect current code. Accepted/frozen
 Simulator Iteration 1 and Iteration 2 static Zones are **IMPLEMENTED**; dashed
-dynamic-Slice nodes are **APPROVED / NOT IMPLEMENTED**, while dashed Planning
-and backend nodes remain conceptual/open. The top-level map is in
+dynamic-Slice nodes describe the **IMPLEMENTED AND ACCEPTED A–E** chain or the
+approved/not-implemented F stage, while dashed Planning and backend nodes
+remain conceptual/open. The top-level map is in
 [`conceptual-class-diagrams.md`](conceptual-class-diagrams.md#simulator-approved-dynamic-slice-boundary-map).
 
 ## 1. Package dependency direction
@@ -205,9 +206,10 @@ reference. Its lookups require `NodeId`; no local string-ID fallback exists. It
 is construction boundary data, not the Simulator's long-lived domain graph.
 The implemented Topology has one private unified `NodeId` index over its own
 static nodes, never Emulator entities or runtime resources, plus at most one
-ZoneLayout. Simulator, Timeline, Definition, Topology, the static node objects
-and static Zone domain are implemented. Slicer, TopologySlice and
-TopologyDifference are accepted contracts but not implemented; Planning,
+ZoneLayout. Simulator, Definition, Topology, the static node objects and static
+Zone domain are implemented. The updated Timeline,
+Position/Connection/Route Models, Slicer and TopologySlice are implemented and
+accepted. TopologyDifference is accepted but not implemented; Planning,
 dynamic resource-resolution and update structures remain conceptual/open.
 
 ## 7. Implemented Zone construction and ownership
@@ -296,10 +298,10 @@ flowchart TD
     DEPLOY --> LAUNCH[ComposeProjectLauncher]
 ```
 
-Solid arrows remain current implementation. Dashed Position through Difference
-arrows are accepted public contracts awaiting Slices A through F; dashed
-Planner/backend arrows remain deferred. Topology does not create or compare
-Slices.
+Solid arrows remain accepted current implementation. Position through
+TopologySlice arrows are implemented and accepted; TopologyDifference remains
+accepted/not implemented, and dashed Planner/backend arrows remain deferred.
+Topology does not create or compare Slices.
 
 The implemented static deployment compiler and conceptual dynamic
 `ExecutionCompiler` have different inputs, outputs, ownership and lifecycles;

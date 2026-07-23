@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 import pytest
 
 from seedemu.core import Emulator, Node
@@ -22,7 +24,9 @@ def build_rendered_emulator():
     shell = satellite_as.create_shell("shell-1")
     orbit = shell.create_orbit(
         "orbit-1",
-        parameters=OrbitParameters(550.0, 53.0, 15.0),
+        parameters=OrbitParameters(
+            550.0, 53.0, 15.0, datetime(2026, 1, 1, tzinfo=timezone.utc)
+        ),
     )
     orbit.create_satellites(2, satellite_id_prefix="satellite")
     emulator.addLayer(base)
@@ -112,10 +116,16 @@ def test_as_rejects_duplicate_shell_and_satellite_ids_across_shells() -> None:
 
     second_shell = satellite_as.create_shell("shell-2")
     first_orbit = first_shell.create_orbit(
-        "orbit-1", parameters=OrbitParameters(550.0, 53.0, 15.0)
+        "orbit-1",
+        parameters=OrbitParameters(
+            550.0, 53.0, 15.0, datetime(2026, 1, 1, tzinfo=timezone.utc)
+        ),
     )
     second_orbit = second_shell.create_orbit(
-        "orbit-1", parameters=OrbitParameters(550.0, 53.0, 25.0)
+        "orbit-1",
+        parameters=OrbitParameters(
+            550.0, 53.0, 25.0, datetime(2026, 1, 1, tzinfo=timezone.utc)
+        ),
     )
     first_orbit.create_satellite(
         "satellite-0", orbit_index=0, mean_anomaly_deg=0.0

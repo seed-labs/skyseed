@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import isfinite
 
 from skyseed_v2.node_id import NodeId
 
@@ -25,7 +26,7 @@ class GroundStationSimulationInput:
     ground_station_id: str
     latitude_deg: float
     longitude_deg: float
-    elevation_m: float | None
+    elevation_m: float
     station_type: str
     operator: str
 
@@ -38,3 +39,7 @@ class GroundStationSimulationInput:
             )
         if self.node_id.entity_id != self.ground_station_id:
             raise ValueError("ground_station_id must match node_id.entity_id")
+        elevation = float(self.elevation_m)
+        if not isfinite(elevation):
+            raise ValueError("elevation_m must be finite")
+        object.__setattr__(self, "elevation_m", elevation)

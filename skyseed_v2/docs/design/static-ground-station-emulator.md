@@ -79,6 +79,7 @@ runtime resolution path.
 
 ## 6. Deferred work
 
-Dynamic satellite-facing interfaces remain deferred. Visibility, service
-selection and dynamic Slice execution now have an accepted public contract but
-remain unimplemented; Planning/backend execution remains deferred.
+Dynamic Position, visibility, service selection and Slice execution are
+implemented and accepted in A–E. This static GroundStation example
+intentionally does not exercise them; TopologyDifference and Planning/backend
+execution remain deferred.

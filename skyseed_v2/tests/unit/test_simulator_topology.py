@@ -1,5 +1,5 @@
 from dataclasses import FrozenInstanceError, fields, replace
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from types import MappingProxyType
 
 import pytest
@@ -46,6 +46,7 @@ def satellite_input(
         inclination_deg=inclination_deg,
         right_ascension_deg=right_ascension_deg,
         mean_anomaly_deg=mean_anomaly_deg,
+        epoch_utc=datetime(2026, 1, 1, tzinfo=timezone.utc),
     )
 
 
@@ -65,8 +66,10 @@ def definition_for(simulator_input: SimulatorStaticInput) -> SimulationDefinitio
     return SimulationDefinition(
         static_input=simulator_input,
         timeline=SimulationTimeline(
-            start_time=datetime(2026, 1, 1),
-            end_time=datetime(2026, 1, 1, 0, 0, 20),
+            start_time=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            end_time=datetime(
+                2026, 1, 1, 0, 0, 20, tzinfo=timezone.utc
+            ),
             slice_interval=timedelta(seconds=10),
         ),
     )
@@ -105,7 +108,9 @@ def multi_hierarchy_input() -> SimulatorStaticInput:
 def test_definition_is_immutable_typed_and_retains_exact_inputs() -> None:
     simulator_input = SimulatorStaticInput()
     timeline = SimulationTimeline(
-        datetime(2026, 1, 1), None, timedelta(seconds=10)
+        datetime(2026, 1, 1, tzinfo=timezone.utc),
+        None,
+        timedelta(seconds=10),
     )
     definition = SimulationDefinition(simulator_input, timeline)
 
@@ -175,6 +180,9 @@ def test_topology_materializes_multi_as_shell_and_orbit_hierarchy() -> None:
     assert orbit.altitude_km == 550.0
     assert orbit.inclination_deg == 53.0
     assert orbit.right_ascension_deg == 15.0
+    assert orbit.epoch_utc == datetime(
+        2026, 1, 1, tzinfo=timezone.utc
+    )
     assert not hasattr(satellite, "altitude_km")
     assert not hasattr(satellite, "shell_id")
 

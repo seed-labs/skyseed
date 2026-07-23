@@ -251,8 +251,12 @@ def test_canonical_simu_path_is_explicit_deterministic_and_executable() -> None:
     assert "load_zone_layout_definition" in source
     assert "zones.yaml" in source
     assert "build_everything" not in source
-    assert "TopologySlice" not in source
-    assert "static slice" not in source.lower()
+    assert "CircularOrbitPositionModel" in source
+    assert "GeometricConnectionModel" in source
+    assert "HopCountRouteModel" in source
+    assert ".create_slicer(" in source
+    assert ".create_slices(2)" in source
+    assert ".resolve_path(" in source
     assert simu.build_emulator is emu.build_emulator
 
     result = run(
@@ -268,6 +272,12 @@ def test_canonical_simu_path_is_explicit_deterministic_and_executable() -> None:
     assert "overlap physical matches: americas, new-york-metro" in result.stdout
     assert "authoritative Zone: new-york-metro" in result.stdout
     assert "2026-01-01T00:00:30+00:00" in result.stdout
+    assert "slice 0: id=0, timestamp=None" in result.stdout
+    assert "effective Connections: ISL=" in result.stdout
+    assert "GS access=" in result.stdout
+    assert "legally unserved: americas" in result.stdout
+    assert "next hops: G=" in result.stdout
+    assert "resolved path:" in result.stdout
 
 
 def test_complete_emulator_helper_has_one_emulator_only_responsibility() -> None:

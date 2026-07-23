@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 
@@ -32,8 +32,8 @@ def topology_from_input(static_input: SimulatorStaticInput):
     definition = SimulationDefinition(
         static_input,
         SimulationTimeline(
-            datetime(2026, 1, 1),
-            datetime(2026, 1, 1, 0, 0, 10),
+            datetime(2026, 1, 1, tzinfo=timezone.utc),
+            datetime(2026, 1, 1, 0, 0, 10, tzinfo=timezone.utc),
             timedelta(seconds=10),
         ),
     )
@@ -59,6 +59,7 @@ def satellite_input(
         inclination_deg=40.0,
         right_ascension_deg=right_ascension_deg,
         mean_anomaly_deg=orbit_index * 30.0,
+        epoch_utc=datetime(2026, 1, 1, tzinfo=timezone.utc),
     )
 
 

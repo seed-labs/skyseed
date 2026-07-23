@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from pathlib import Path
 
 from yaml import safe_load
@@ -58,13 +59,16 @@ def complete_programmatic_config() -> StaticEmulatorConfig:
                         shell_id="shell-1",
                         altitude_km=550.0,
                         inclination_deg=53.0,
+                        epoch_utc=datetime(
+                            2026, 1, 1, tzinfo=timezone.utc
+                        ),
                         explicit_orbits=(
                             OrbitConfig(
                                 orbit_id="orbit-1",
-                                right_ascension_deg=15.0,
+                                right_ascension_deg=245.0,
                                 satellites=(
-                                    SatelliteConfig("satellite-0", 0, 0.0),
-                                    SatelliteConfig("satellite-1", 1, 180.0),
+                                    SatelliteConfig("satellite-0", 0, 126.0),
+                                    SatelliteConfig("satellite-1", 1, 146.0),
                                 ),
                             ),
                         ),

@@ -5,6 +5,7 @@ skyseed_autonomous_systems:
       - shell_id: migration-smoke-shell
         altitude_km: 550.0
         inclination_deg: 53.0
+        epoch_utc: "2026-01-01T00:00:00+00:00"
         generation:
           orbit_count: 2
           satellites_per_orbit: 6

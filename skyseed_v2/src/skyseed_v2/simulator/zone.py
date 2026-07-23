@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from math import asin, cos, isfinite, radians, sin, sqrt
+from math import asin, atan2, cos, isfinite, pi, radians, sin, sqrt
 from numbers import Real
 from types import MappingProxyType
 from typing import Mapping, Protocol, runtime_checkable
@@ -113,6 +113,32 @@ class LatitudeLongitudeRectangle:
 
 
 @dataclass(frozen=True, slots=True)
+class SphericalCap:
+    """Represent one immutable spherical surface range.
+
+    Layer: Simulator geographic query value. Connection models create it and
+    ZoneLayout consumes it for coarse static-geometry filtering. It is not a
+    service assignment, Earth model or Position and is public from
+    ``skyseed_v2.simulator``.
+    """
+
+    center: tuple[float, float]
+    angular_radius_deg: float
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.center, tuple) or len(self.center) != 2:
+            raise TypeError("center must be a (latitude_deg, longitude_deg) tuple")
+        center = _validated_coordinates(*self.center)
+        radius = _finite_coordinate(
+            self.angular_radius_deg, "angular_radius_deg"
+        )
+        if not 0.0 <= radius <= 180.0:
+            raise ValueError("angular_radius_deg must be between 0 and 180")
+        object.__setattr__(self, "center", center)
+        object.__setattr__(self, "angular_radius_deg", radius)
+
+
+@dataclass(frozen=True, slots=True)
 class Zone:
     """Represent one Simulator-owned immutable static Zone.
 
@@ -134,6 +160,10 @@ class Zone:
 
     def contains(self, latitude_deg: Real, longitude_deg: Real) -> bool:
         return self.geometry.contains(latitude_deg, longitude_deg)
+
+    @property
+    def representative_point(self) -> tuple[float, float]:
+        return self.geometry.representative_center
 
 
 @runtime_checkable
@@ -354,6 +384,24 @@ class ZoneLayout:
             )
         return winner
 
+    def find_intersecting_zones(
+        self,
+        spherical_cap: SphericalCap,
+    ) -> tuple[Zone, ...]:
+        if not isinstance(spherical_cap, SphericalCap):
+            raise TypeError("spherical_cap must be a SphericalCap")
+        radius = radians(spherical_cap.angular_radius_deg)
+        return tuple(
+            zone
+            for zone in self._zones
+            if _minimum_angle_to_rectangle(
+                spherical_cap.center[0],
+                spherical_cap.center[1],
+                zone.geometry,
+            )
+            <= radius + _DISTANCE_TIE_TOLERANCE_RADIANS
+        )
+
 
 def _central_angle_to_center(
     latitude_deg: float,
@@ -375,9 +423,90 @@ def _central_angle_to_center(
     return 2.0 * asin(sqrt(min(1.0, max(0.0, haversine))))
 
 
+def _minimum_angle_to_rectangle(
+    latitude_deg: float,
+    longitude_deg: float,
+    geometry: LatitudeLongitudeRectangle,
+) -> float:
+    if geometry.contains(latitude_deg, longitude_deg):
+        return 0.0
+
+    latitude = radians(latitude_deg)
+    longitude = radians(longitude_deg)
+    south = radians(geometry.south_latitude_deg)
+    north = radians(geometry.north_latitude_deg)
+    longitude_intervals = _unwrapped_longitude_intervals(
+        longitude,
+        radians(geometry.west_longitude_deg),
+        radians(geometry.east_longitude_deg),
+    )
+    candidates: list[float] = []
+
+    for west, east in longitude_intervals:
+        nearest_longitude = min(max(longitude, west), east)
+        candidates.extend(
+            (
+                _central_angle_radians(
+                    latitude, longitude, south, nearest_longitude
+                ),
+                _central_angle_radians(
+                    latitude, longitude, north, nearest_longitude
+                ),
+            )
+        )
+        for boundary_longitude in (west, east):
+            delta_longitude = boundary_longitude - longitude
+            optimum_latitude = atan2(
+                sin(latitude),
+                cos(latitude) * cos(delta_longitude),
+            )
+            optimum_latitude = min(max(optimum_latitude, south), north)
+            candidates.append(
+                _central_angle_radians(
+                    latitude,
+                    longitude,
+                    optimum_latitude,
+                    boundary_longitude,
+                )
+            )
+    return min(candidates)
+
+
+def _unwrapped_longitude_intervals(
+    reference: float,
+    west: float,
+    east: float,
+) -> tuple[tuple[float, float], ...]:
+    span = (east - west) % (2.0 * pi)
+    if span == 0.0:
+        span = 2.0 * pi
+    intervals = []
+    for offset in (-2.0 * pi, 0.0, 2.0 * pi):
+        start = west + offset
+        intervals.append((start, start + span))
+    return tuple(intervals)
+
+
+def _central_angle_radians(
+    first_latitude: float,
+    first_longitude: float,
+    second_latitude: float,
+    second_longitude: float,
+) -> float:
+    delta_latitude = second_latitude - first_latitude
+    delta_longitude = second_longitude - first_longitude
+    haversine = sin(delta_latitude / 2.0) ** 2 + (
+        cos(first_latitude)
+        * cos(second_latitude)
+        * sin(delta_longitude / 2.0) ** 2
+    )
+    return 2.0 * asin(sqrt(min(1.0, max(0.0, haversine))))
+
+
 __all__ = [
     "DefaultZoneMembershipModel",
     "LatitudeLongitudeRectangle",
+    "SphericalCap",
     "Zone",
     "ZoneLayout",
     "ZoneMembershipModel",

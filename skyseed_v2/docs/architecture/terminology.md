@@ -8,9 +8,9 @@ package root.
 | --- | --- | --- | --- | --- |
 | Shell | Emulator-side entity owned by one Emulator-side `SkyseedAutonomousSystem`; owns Emulator Orbits | `entities/shell.py` | Simulator Topology Shell, constellation, population or input record | root and `skyseed_v2.entities` |
 | Orbit | Emulator-side entity owned by one Emulator Shell; owns one `OrbitParameters` value and its Emulator Satellites | `entities/orbit.py` | Simulator Topology Orbit, generated input record or runtime trajectory | root and `skyseed_v2.entities` |
-| OrbitParameters | Orbit-owned frozen altitude, inclination, right ascension and accepted UTC reference epoch; current code lacks the approved `epoch_utc` field until Slice A | `entities/orbit.py` | Satellite field, Timeline start, dynamic position or trajectory | root and `skyseed_v2.entities` |
+| OrbitParameters | Orbit-owned frozen altitude, inclination, right ascension and UTC reference epoch; the first configuration version copies one explicit common Shell epoch into each Orbit | `entities/orbit.py` | Satellite field, Timeline start, per-Orbit Shell override, dynamic position or trajectory | root and `skyseed_v2.entities` |
 | Satellite | Emulator-side Satellite entity and the same SEED Node instance; owns only per-Satellite values | `entities/satellite.py` | Simulator Topology Satellite, Orbit owner, Simulator input, container or Config | root and `skyseed_v2.entities` |
-| GroundStationLocation | Emulator-side GroundStation geodetic location; accepted height meaning is finite WGS84 ellipsoidal metres, with current optional-height code awaiting Slice A correction | `entities/ground_station.py` | ECEF Position, service selection or generic elevation evidence | root and `skyseed_v2.entities` |
+| GroundStationLocation | Emulator-side GroundStation geodetic location with finite WGS84 ellipsoidal height in metres | `entities/ground_station.py` | ECEF Position, service selection or generic elevation evidence | root and `skyseed_v2.entities` |
 | GroundStation | Emulator-side GroundStation entity and the same SEED Router instance | `entities/ground_station.py` | Simulator Topology GroundStation, Simulator input, ordinary Router, service or Config | root and `skyseed_v2.entities` |
 | StaticEmulatorConfig | Frozen, backend-independent top-level file or programmatic configuration | `configuration/static_emulator_config.py` | Emulator entity, runtime state or Simulator input | `skyseed_v2.configuration` |
 | LatitudeLongitudeRectangleDefinition | Frozen construction input for one rectangular Zone geometry | `configuration/zone.py` | runtime geometry, coordinate entity or generic geometry abstraction | `skyseed_v2.configuration` |
@@ -30,7 +30,7 @@ package root.
 | create_simulator_static_input | Thin external adapter function that traverses Emulator-side AS owners and returns one `SimulatorStaticInput` | `simulator_input_generation.py` | Simulator-core behavior, factory class, entity index or compatibility alias | `skyseed_v2.simulator_input_generation` |
 | SimulationTimeline | Frozen Slice timestamp authority with lazy bounded/unbounded iteration; accepted Slice A behavior is aware-only input normalized and stored as UTC | `simulator/timeline.py` | clock, arbitrary-timestamp gateway, timestamp cache, Slice store or pacing service | `skyseed_v2.simulator` |
 | SimulationDefinition | Frozen complete construction input pairing `static_input` and `timeline` | `simulator/definition.py` | mutable configuration bag, Emulator input or runtime context | `skyseed_v2.simulator` |
-| Simulator | Simu composition root retaining one Definition, atomically creating at most one Topology and, after it, at most one explicit-Model Slicer; Slicer creation is accepted but not implemented | `simulator/simulator.py` | Emulator wrapper, adapter, Slice producer, planner, compiler or runner | `skyseed_v2.simulator` |
+| Simulator | Simu composition root retaining one Definition, atomically creating at most one Topology and, after it, at most one explicit-Model Slicer | `simulator/simulator.py` | Emulator wrapper, adapter, Slice producer, planner, compiler or runner | `skyseed_v2.simulator` |
 | Topology | Immutable Simulator static-network aggregate root owning at most one `ZoneLayout` and exposing narrow owner-delegating queries | `simulator/topology.py` | boundary DTO, global database, dynamic Slice, Planning service or Emulator owner | `skyseed_v2.simulator` |
 | `skyseed_v2.simulator.SkyseedAutonomousSystem` | Simulator-owned immutable AS node; owns Simulator Shells and GroundStations | `simulator/topology.py` | Emulator/SEED AS, adapter or Registry | `skyseed_v2.simulator` |
 | `skyseed_v2.simulator.Shell` | Simulator-owned immutable Shell; owns Simulator Orbits | `simulator/topology.py` | Emulator Shell, input record or constellation | `skyseed_v2.simulator` |
@@ -52,7 +52,7 @@ package root.
 | SkyseedAutonomousSystem | Owner of Shells and GroundStations plus the narrow SEED lifecycle extension | `seedemu_integration/skyseed_autonomous_system.py` | file facade or Simulator-input owner | `skyseed_v2.seedemu_integration` |
 | SatelliteBase | SEED Base Layer integration and real AS owner; provides the narrow Skyseed-AS collection query | `seedemu_integration/satellite_base.py` | Emulator entity, file configuration, global index or Simulator adapter | `skyseed_v2.seedemu_integration` |
 
-## Accepted dynamic terms awaiting implementation
+## Dynamic terms and implementation boundaries
 
 The following names and meanings are frozen by
 [`dynamic-slice-public-contract.md`](dynamic-slice-public-contract.md), but no
@@ -80,8 +80,8 @@ authorize package-root export.
 | RouteTarget | Public union of GroundStationRouteTarget and ZoneRouteTarget | approved Route boundary | arbitrary node endpoint, UT target or untagged string | `skyseed_v2.simulator` |
 | RouteKey | Stable source NodeId plus logical RouteTarget | approved Route boundary | next hop, timestamp, full path, label or backend generation | `skyseed_v2.simulator` |
 | RouteSlice | Deeply immutable sparse source→RouteTarget→next-hop table over the current Topology source universe | approved dynamic Slice boundary | full path, metric/candidate store, label table or independent Slice identity | `skyseed_v2.simulator` |
-| TopologySlice | Deeply immutable synthetic-baseline or real-timestamp aggregate of positions, ConnectionSlice and RouteSlice | Slicer-published approved dynamic state | Topology owner, Model holder, previous-Slice chain, Planner or backend state | `skyseed_v2.simulator` |
-| Slicer | Exact-Topology/Timeline/Model coordinator that validates and atomically publishes ordered TopologySlices and creates retained adjacent Differences | Simulator-owned approved dynamic component | static Topology owner, Model algorithm, Planner, backend runner or arbitrary timestamp service | `skyseed_v2.simulator` |
+| TopologySlice | Deeply immutable synthetic-baseline or real-timestamp aggregate of positions, ConnectionSlice and RouteSlice | Slicer-published approved dynamic state | Topology owner/reference, full-path resolver, Model holder, previous-Slice chain, Planner or backend state | `skyseed_v2.simulator` |
+| Slicer | Exact-Topology/Timeline/Model coordinator that validates and atomically publishes ordered TopologySlices and resolves retained-Slice paths; adjacent Difference creation remains approved F scope | Simulator-owned dynamic component | static Topology owner, Model algorithm, Planner, backend runner or arbitrary timestamp service | `skyseed_v2.simulator` |
 | TopologyDifference | Independent immutable adjacent-Slice connection/service/route patch contract | fixed pure comparison invoked by Slicer | complete Slice, Position diff, old-value log, rollback Plan or Planner-owned state | `skyseed_v2.simulator` |
 | TopologyDifferenceWindow | Deferred finite base-Slice plus ordered-adjacent-Difference planning input | future Planning boundary | implemented Slicer retention, current Slice contract or accepted Planner implementation | not implemented; deferred |
 
@@ -140,27 +140,29 @@ zero area even though their points may have multiple physical memberships.
 
 ## Simulator implementation and approved/deferred vocabulary
 
-Implemented rows describe current code. Accepted/not-implemented rows freeze
-the next public contracts without claiming exports or implementation.
-Conceptual/open rows preserve only deferred Planning/backend design space.
+Implemented and implemented-and-accepted rows describe accepted current code.
+Accepted/not-implemented rows freeze the next public contracts without
+claiming exports or implementation. Conceptual/open rows preserve only
+deferred Planning/backend design space.
 
 | Concept or relationship | Status | Meaning at this baseline |
 | --- | --- | --- |
 | `NodeId`, `SatelliteSimulationInput`, `GroundStationSimulationInput`, `SimulatorStaticInput`, Simulator input-generation functions | **implemented** | Current immutable Emulator-to-Simulator boundary foundation; input values are construction material, not the long-lived Simu domain model |
 | Static chain: Emulator → `SkyseedDockerCompiler` → Docker/Compose → `ComposeProjectLauncher` | **implemented** | Static deployment and materialization lifecycle |
 | Emulator entities → input generation → immutable boundary data → Simulator construction → Simulator-owned static domain objects | **implemented in accepted/frozen Iteration 1** | Boundary input materializes a separate immutable Simu graph; it does not grow into one all-purpose input aggregate |
-| `Simulator` owns its Definition and explicitly creates one `Topology`; its Timeline is retained by the Definition | **implemented in accepted/frozen Iteration 1** | Simulator is the current composition root and facade; the accepted later Slicer creation method is not yet code |
+| `Simulator` owns its Definition and explicitly creates one `Topology`; its Timeline is retained by the Definition | **implemented in accepted/frozen Iteration 1; A–E extension implemented and accepted** | Simulator is the composition root and facade and explicitly creates at most one Slicer after Topology |
 | `Topology` owns/manages Simu AS, Shell, Orbit, Satellite and GroundStation objects | **implemented in accepted/frozen Iteration 1** | Topology is the immutable static-network aggregate and thin owner-directed query facade, not a central database |
-| `SimulationTimeline` | **implemented in accepted/frozen Iteration 1** | Explicit frozen time rules with lazy bounded/unbounded iteration; it creates no Slice |
+| `SimulationTimeline` A–E semantics | **implemented and accepted** | Aware-only, UTC-normalized frozen time rules with lazy bounded/unbounded iteration; it creates no Slice |
 | `ZoneLayoutDefinition` → atomic Topology materialization → optional Topology-owned `ZoneLayout` | **implemented in Iteration 2** | A valid Topology may omit the layout; when present, the layout solely owns its Zone tuple/index and fixed membership Model |
 | physical membership versus authoritative Zone | **implemented in Iteration 2** | `find_zones` retains all closed-boundary matches; `resolve_zone` returns exactly one match selected by the active Model |
-| Simulator → explicit Slicer → PositionModel → ConnectionModel → RouteModel → TopologySlice | **accepted/frozen design; not implemented** | Slicer, not Topology, owns ordered dynamic generation and atomic publication using exact fixed Model instances |
-| EarthFixedPosition, Connection/Route values, synthetic Slice 0 and adjacent TopologyDifference | **accepted/frozen design; not implemented** | Frozen deep-immutable dynamic result contracts; Difference excludes Position changes and full Slices |
-| Timeline UTC normalization, Orbit epoch, GroundStation ellipsoidal height and SphericalCap Zone query | **accepted Architecture Delta; not implemented** | Slice A owns the time/epoch/Position portion; later approved slices implement the Zone range and dynamic values |
+| Simulator → explicit Slicer → PositionModel → ConnectionModel → RouteModel → TopologySlice | **implemented and accepted** | Slicer, not Topology, owns ordered dynamic generation and atomic publication using exact fixed Model instances |
+| EarthFixedPosition, Connection/Route values and synthetic Slice 0 | **implemented and accepted** | Frozen deeply immutable dynamic result contracts |
+| adjacent TopologyDifference | **accepted/frozen design; not implemented** | Difference excludes Position changes and full Slices and remains engineering group F |
+| Timeline UTC normalization, Orbit epoch, GroundStation ellipsoidal height and SphericalCap Zone query | **implemented and accepted Architecture Delta** | A–E applies the accepted time/epoch/Position and Zone-range corrections |
 | `TopologyDifferenceWindow` → future Planner | **approved future direction; deferred** | Planner consumes a finite validated Difference window; Topology does not plan and Slicer does not own Planning policy |
 | Dynamic chain: `BackendExecutionPlan` → `ExecutionCompiler` → `ExecutableBundle` → `SimulationRunner` | **approved direction** | Lowering and execution remain separate from both planning and the implemented static deployment chain |
 | Planner/Plan types, DifferenceWindow implementation, backend plans, `ExecutionCompiler`, `ExecutableBundle`, `SimulationRunner` | **conceptual/open** | None is implemented; current approval freezes no detailed Planner/backend public schema |
-| Position, Connection, Route, Slicer, TopologySlice and TopologyDifference implementation | **not started** | Their public contracts are frozen; A–E is the complete main-chain engineering group, F is Difference and G is Tool/example/final synchronization, each awaiting explicit group authorization |
+| Position, Connection, Route, Slicer and TopologySlice implementation | **implemented and accepted** | A–E is accepted; F remains Difference and G remains Dynamic Tool/final synchronization, both unimplemented, so the full Dynamic Slice stage is not complete |
 | `SimulationPlanCompiler` as the one future dynamic master stage | **retired/corrected** | Over-compressed semantic planning, backend planning and execution compilation |
 
 Earlier candidate records used `SemanticTransitionPlan` for backend-neutral

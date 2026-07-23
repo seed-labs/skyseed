@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from seedemu.core import Emulator
 from seedemu.layers import Ebgp, Ibgp, Ospf, PeerRelationship, Routing
 
@@ -30,17 +32,22 @@ def build_emulator() -> Emulator:
     shell = skyseed_as.create_shell("shell-1")
     orbit = shell.create_orbit(
         "orbit-1",
-        parameters=OrbitParameters(550.0, 53.0, 15.0),
+        parameters=OrbitParameters(
+            550.0,
+            53.0,
+            245.0,
+            datetime(2026, 1, 1, tzinfo=timezone.utc),
+        ),
     )
     orbit.create_satellite(
         "satellite-0",
         orbit_index=0,
-        mean_anomaly_deg=0.0,
+        mean_anomaly_deg=126.0,
     )
     orbit.create_satellite(
         "satellite-1",
         orbit_index=1,
-        mean_anomaly_deg=180.0,
+        mean_anomaly_deg=146.0,
     )
 
     ground_station = skyseed_as.create_ground_station(

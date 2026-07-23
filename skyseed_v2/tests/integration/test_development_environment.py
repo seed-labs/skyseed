@@ -44,6 +44,7 @@ def test_environment_setup_and_check_scripts_define_one_canonical_path() -> None
     assert "skyseed_v2" in check
     assert "seedemu" in check
     assert "pytest" in check
+    assert "astropy" in check
     assert (
         run(
             ("bash", "-n", str(PROJECT_ROOT / "scripts/setup_dev_environment.sh")),
