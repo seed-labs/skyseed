@@ -117,8 +117,10 @@ flowchart TD
     EMU[emu.py] --> BUILD[build_emulator]
     BUILD --> UP[upstream Emulator]
 
-    MAIN[main.py] --> BUILD
+    MAIN[main.py canonical full output] --> BUILD
+    MAIN --> BASE
     MAIN --> RENDER[Emulator render and SkyseedDockerCompiler]
+    MAIN --> TOOLS[repository-local offline tools after compile]
 
     SIMU[simu.py external assembly] --> BUILD
     SIMU --> BASE[query SatelliteBase-owned Skyseed AS]
@@ -137,11 +139,12 @@ flowchart TD
     ZLAYOUT --> MODEL[fixed ZoneMembershipModel]
 ```
 
-`emu.py` only constructs and returns the Emulator. `main.py` is the pure
-Emulator render/compile entrypoint. `simu.py` is the external assembly entrypoint
-that crosses from the Emulator side, through the thin adapter, to the Simulator
-side; it does not import `main.py`. Simulator core never imports back across
-that boundary.
+`emu.py` only constructs and returns the Emulator. `main.py` is the canonical
+full-output entrypoint: it creates the Emulator and Topology once, preserves
+render/compile, then gives that same Topology to repository-local offline
+tools. `simu.py` remains the independent readable assembly entrypoint and does
+not import `main.py` or generate tool artifacts. Simulator core never imports
+back across that boundary or into `tools`.
 
 ## 5. File-driven large call chain
 

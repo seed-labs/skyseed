@@ -240,8 +240,8 @@ retired/corrected as an over-compressed description.
   `SkyseedDockerCompiler` and generated output controls.
 - `complete_static_emulator/emu.py`: shared construction helper returning only
   the upstream Emulator.
-- `complete_static_emulator/main.py`: pure Emulator render/compile entrypoint;
-  it creates no Simulator input.
+- `complete_static_emulator/main.py`: canonical compile plus offline-tooling
+  entrypoint using one Emulator and one Topology.
 - `complete_static_emulator/simu.py`: external assembly entrypoint that reuses
   `emu.py`, queries Skyseed AS values from `SatelliteBase`, adapts them into
   `SimulatorStaticInput`, loads `zones.yaml` as a `ZoneLayoutDefinition`, creates

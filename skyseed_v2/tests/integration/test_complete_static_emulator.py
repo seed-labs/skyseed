@@ -135,9 +135,22 @@ def test_complete_example_cli_creates_a_new_output_parent(
         ["complete_static_emulator.py", "--output", str(output)],
     )
 
-    main()
+    assert main() == 0
 
     assert (output / "docker-compose.yml").is_file()
+    for relative_path in (
+        "tools/index.html",
+        "tools/topology/index.html",
+        "tools/topology/topology.json",
+        "tools/topology/summary.txt",
+        "tools/zone/index.html",
+        "tools/zone/probes.json",
+        "tools/zone/summary.txt",
+    ):
+        assert (output / relative_path).is_file()
     output_text = capsys.readouterr().out
     assert "compiled complete static Emulator" in output_text
     assert "SimulationInput" not in output_text
+    assert "Topology Tool: PASS" in output_text
+    assert "Zone Tool: PASS" in output_text
+    assert "Tooling overall: PASS" in output_text

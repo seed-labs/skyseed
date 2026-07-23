@@ -148,7 +148,7 @@ import:
 
 ```text
 emu.py  → build_emulator() → upstream Emulator
-main.py → build_emulator() → render/compile only
+main.py → build_emulator() → one Simulator/Topology → render/compile → tools
 simu.py → build_emulator()
         → query SatelliteBase-owned Skyseed AS values
         → create_simulator_static_input(...)
@@ -162,9 +162,11 @@ Simulator.create_topology(zone_layout_definition=...)
         → Topology facade
 ```
 
-`build_emulator()` returns only the upstream Emulator. `main.py` is the pure
-Emulator entrypoint. `simu.py` is external assembly across the Emulator side,
-thin adapter and Simulator side; it does not import `main.py`. The Definition
+`build_emulator()` returns only the upstream Emulator. `main.py` is the
+canonical full-output path: it assembles one Simulator/Topology from that same
+Emulator, preserves render/compile, then runs repository-local offline tools.
+`simu.py` is independent external assembly across the Emulator side, thin
+adapter and Simulator side; it does not import `main.py` or generate tools. The Definition
 could instead be constructed programmatically without changing the Simulator
 materialization contract.
 

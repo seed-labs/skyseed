@@ -5,9 +5,11 @@ Satellites, one GroundStation, one ordinary SEED AS/Network/Router, one IX, one
 explicit eBGP peering, immutable Emulator-to-Simulator input and
 `SkyseedDockerCompiler`.
 
-`emu.py` contains only `build_emulator() -> Emulator`. `main.py` reuses it for
-the pure Emulator render/compile path. `simu.py` reuses it for external
-Emulator-to-Simulator assembly, obtains all Skyseed AS values from the real
+`emu.py` contains only `build_emulator() -> Emulator`. `main.py` builds that
+Emulator once, assembles one Simulator/Topology from the same object, preserves
+the Emulator render/compile path, then writes the offline Topology and Zone
+tool snapshot. `simu.py` independently reuses it for readable external
+Emulator-to-Simulator assembly and obtains all Skyseed AS values from the real
 `SatelliteBase` owner and passes that collection to
 `create_simulator_static_input(...)`. The ordinary AS is excluded by that
 owner query. No NodeId-to-Emulator-entity mapping or resolution path is
@@ -52,10 +54,16 @@ Generate the complete output from the same example directory:
 python3 main.py
 ```
 
-Direct-file execution uses the repository `.venv` when the current Python
-lacks the installed dependencies. Existing default output is replaced
-automatically; pass `--no-override` to reject an existing output. The
-equivalent module command from `skyseed_v2/` is
+The default command also writes `output/tools/index.html` plus standalone
+Topology and Zone pages after Compose compilation. The pages embed their data,
+work offline when opened directly, and retain private JSON audit artifacts;
+`simu.py` deliberately does not generate these tools.
+
+Direct-file execution uses the caller's selected Python and never switches
+environments. The recommended local interpreter is the canonical
+`skyseed_dev` Conda environment described in the top-level README. Existing
+default output is replaced automatically; pass `--no-override` to reject an
+existing output. The equivalent module command from `skyseed_v2/` is
 `python3 -m examples.complete_static_emulator.main`.
 
 `SkyseedDockerCompiler` expresses locally built SEED base images as Compose

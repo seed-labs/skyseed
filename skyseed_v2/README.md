@@ -184,3 +184,40 @@ v1 只能围绕当前切片做定向事实调查，不能整体迁移。测试 P
 长期工程约束集中在唯一的根级 [`AGENTS.md`](./AGENTS.md)。本 README
 解释开发方法，但不建立第二套规则。流程需要调整时，应作为明确的
 文档变更进行审核，并同步两个文件中受影响的说明。
+
+## 8. 本地开发环境
+
+canonical local development environment 是 Conda 环境 `skyseed_dev`。
+首次配置时，从本仓库根目录运行：
+
+```bash
+scripts/setup_dev_environment.sh
+conda activate skyseed_dev
+python scripts/check_dev_environment.py
+```
+
+Python 项目依赖仍由 `pyproject.toml` 管理；`environment.yml` 只固定本地
+环境名称、Python 版本和 pip。普通 venv 和 CI 只要安装相同项目依赖仍然
+受支持，examples 不会自动切换解释器或寻找 `.venv`。
+
+当前 package index 不发布项目固定的 `seedemu==0.0.7`。setup 脚本默认
+使用与 `skyseed/` 同级的 `seed-emulator/` checkout；其他布局可显式设置
+`SEED_EMULATOR_CHECKOUT`。该处理不在 environment.yml 中重复维护 Python
+依赖版本。
+
+首次在 VS Code 打开 workspace 时，执行一次 **Python: Select
+Interpreter** 并选择 `skyseed_dev`。仓库设置会在后续新终端中激活已选择
+的解释器，但不能替代首次选择。
+
+## 9. Offline Tooling Baseline
+
+从 `examples/complete_static_emulator/` 执行默认入口：
+
+```bash
+python main.py
+```
+
+同一个 Emulator 会创建一次 Simulator/Topology，并在 Compose 编译完成后
+生成 `output/tools/index.html`、Topology 页面和 Zone 页面。页面内嵌本次
+数据，可以离线直接打开；相邻 JSON 是私有 tooling audit artifact，不是
+Simulator 或领域合同。独立的 `simu.py` 保留可读的正式调用链，不生成工具。

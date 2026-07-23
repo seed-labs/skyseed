@@ -1,7 +1,8 @@
 # Skyseed v2 Engineering and Architecture Rules
 
 本文件只保存长期适用的工程与架构治理规则。开始工作前阅读
-`README.md`、`docs/CURRENT.md` 和 `docs/architecture/terminology.md`。
+`README.md`、`docs/CURRENT.md`、`docs/architecture/accepted-design.md`
+和 `docs/architecture/terminology.md`。
 
 当前阶段和下一目标只记录在 `docs/CURRENT.md`；每轮批准范围和排除
 范围以该轮任务 Prompt 为准。不得把当前提交、分支、阶段状态、临时
@@ -289,3 +290,37 @@ conceptual candidate、open question 和 retired/corrected。它可以包含尚�
 
 后续若需要改变已冻结合同，必须作为新的显式架构变更提出，不能顺带
 修改。
+
+## 12. Canonical local development environment
+
+本项目的 canonical local development environment 是 Conda 环境
+`skyseed_dev`。它用于人类、Codex、测试、canonical examples 和 tooling
+的本地验证，但项目本身仍支持安装了相同项目依赖的普通 venv 和 CI。
+
+Codex 不得自行创建或使用 `.venv`、`venv`、Poetry 环境或其他 Conda
+环境。每个实现或验证任务开始前必须报告：
+
+```text
+CONDA_DEFAULT_ENV
+CONDA_PREFIX
+which python
+python --version
+python -m pip --version
+```
+
+非交互证据优先使用 `conda run -n skyseed_dev ...`。不得静默安装缺失
+依赖；依赖变化必须先报告并写入仓库正式配置。测试报告必须注明实际环境
+和 Python executable。Examples 使用调用者当前选择的解释器，不得自动
+寻找、创建或重新执行 `.venv` 或 Conda 环境。
+
+## 13. Accepted architecture calibration
+
+每次新纵向轮次和重要调查前，必须先读取
+`docs/architecture/accepted-design.md`。调查输出必须明确区分：
+
+- Repository facts；
+- Design candidates；
+- Historical/reference facts。
+
+Design candidates 和 Historical/reference facts 不得自动修改已接受架构、
+冻结公共合同、根 export 或正式执行路径。

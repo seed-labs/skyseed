@@ -4,6 +4,7 @@ import sys
 
 import pytest
 import skyseed_v2
+from examples import _direct_execution
 from examples._compose_project_scripts import write_compose_project_scripts
 from examples.complete_static_emulator import emu
 from examples.complete_static_emulator import main as complete
@@ -83,6 +84,25 @@ def test_formal_examples_support_direct_file_execution(name: str) -> None:
 
     assert result.returncode == 0, result.stderr
     assert "--no-override" in result.stdout
+
+
+def test_direct_execution_never_restarts_through_another_interpreter(
+    monkeypatch,
+) -> None:
+    source = Path(_direct_execution.__file__).read_text(encoding="utf-8")
+    assert ".venv" not in source
+    assert "execv" not in source
+    assert "subprocess" not in source
+
+    monkeypatch.setattr(_direct_execution, "find_spec", lambda _name: None)
+    with pytest.raises(SystemExit) as error:
+        _direct_execution.prepare_direct_file_execution("example/main.py")
+
+    message = str(error.value)
+    assert "skyseed_dev" in message
+    assert "scripts/setup_dev_environment.sh" in message
+    assert "conda activate skyseed_dev" in message
+    assert "correctly configured venv or CI" in message
 
 
 def test_generated_shell_scripts_are_scoped_executable_and_syntax_valid(
@@ -184,12 +204,18 @@ def test_small_examples_show_public_construction_without_file_facades() -> None:
     assert ".createAutonomousSystem(" in emu_source
     assert ".createNetwork(" in emu_source
     assert ".createRouter(" in emu_source
-    assert "SimulatorStaticInput" not in complete_source
-    assert "create_simulator_static_input" not in complete_source
+    assert "create_simulator_static_input" in complete_source
+    assert "SimulationTimeline(" in complete_source
+    assert "SimulationDefinition(" in complete_source
+    assert "Simulator(" in complete_source
+    assert ".create_topology(" in complete_source
     assert "create_emulator_node_index" not in complete_source
     assert "emulator_node_index" not in complete_source
     assert "catalog_builder" not in complete_source
     assert "SkyseedDockerCompiler" in complete_source
+    assert 'ENABLED_TOOLS = ("topology", "zone")' in complete_source
+    assert "write_topology_tool(" in complete_source
+    assert "write_zone_tool(" in complete_source
     assert (
         "from examples.complete_static_emulator.emu import build_emulator"
         in complete_source

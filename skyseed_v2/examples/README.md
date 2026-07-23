@@ -31,10 +31,13 @@ main.py
 ```
 
 Each formal example can be run directly from its own directory with
-`python3 main.py`. Direct-file execution uses the repository `.venv` when the
-current interpreter lacks the installed dependencies. Compilation entrypoints
-replace their owned default output unless `--no-override` is passed. From that
-same directory, start and stop the generated project with
+`python3 main.py`. Direct-file execution always uses the interpreter selected
+by the caller; it never searches for or restarts through another environment.
+For local development, create and activate the repository's canonical
+`skyseed_dev` Conda environment as described in the top-level README.
+Compilation entrypoints replace their owned default output unless
+`--no-override` is passed. From that same directory, start and stop the
+generated project with
 `./output/start.sh` and `./output/cleanup.sh`.
 
 Project names are fixed and distinct. Generated `start.sh` validates the exact
@@ -88,10 +91,12 @@ dynamic-execution lookup will call the existing Base/AS/Shell/Orbit owners
 directly.
 
 `complete_static_emulator/emu.py` is the shared construction helper and returns
-only the upstream Emulator. `main.py` reuses it as a pure render/compile
-entrypoint. `simu.py` independently reuses it as the canonical external
-assembly entrypoint, queries all Skyseed AS values from `SatelliteBase`, and
-then shows the Simulator-side flow directly:
+only the upstream Emulator. `main.py` reuses it for the canonical full output:
+one Simulator/Topology from the same Emulator, the preserved render/compile
+path, and the offline Topology/Zone tool snapshot after compilation. `simu.py`
+independently reuses it as the readable external assembly entrypoint, queries
+all Skyseed AS values from `SatelliteBase`, and then shows the Simulator-side
+flow directly:
 
 ```text
 create_simulator_static_input(...)
@@ -103,6 +108,7 @@ create_simulator_static_input(...)
 ```
 
 It creates no dynamic Slice and does not render or compile deployment output.
+It also does not generate tool artifacts.
 For an unbounded Timeline it displays only a fixed prefix and never consumes
 the infinite iterator in full.
 

@@ -12,9 +12,10 @@ directly:
 python3 main.py
 ```
 
-When the current Python does not contain the project dependencies, direct-file
-execution uses the repository environment at `../../../.venv`. The equivalent
-module command from `skyseed_v2/` remains available:
+Direct-file execution uses the caller's selected Python and never switches
+environments. The recommended local interpreter is the canonical
+`skyseed_dev` Conda environment described in the top-level README. The
+equivalent module command from `skyseed_v2/` remains available:
 
 ```bash
 python3 -m examples.isolated_satellites.main

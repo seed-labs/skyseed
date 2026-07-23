@@ -40,10 +40,11 @@ docker compose --parallel 16 \
   | wc -l
 ```
 
-Direct-file execution uses the repository `.venv` when the current Python
-lacks the installed dependencies. Existing default output is replaced
-automatically; pass `--no-override` to reject an existing output. The
-equivalent module command from `skyseed_v2/` is
+Direct-file execution uses the caller's selected Python and never switches
+environments. The recommended local interpreter is the canonical
+`skyseed_dev` Conda environment described in the top-level README. Existing
+default output is replaced automatically; pass `--no-override` to reject an
+existing output. The equivalent module command from `skyseed_v2/` is
 `python3 -m examples.large_static_network.main`.
 
 The expected service count is 365. A full build/up is intentionally not part

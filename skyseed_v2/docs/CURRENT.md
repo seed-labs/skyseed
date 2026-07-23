@@ -121,9 +121,11 @@ SkyseedAutonomousSystem
 - `complete_static_emulator/emu.py`: shared `build_emulator()` helper containing
   direct entity plus ordinary seedemu Network/Router/IX/eBGP construction and
   returning only the upstream `Emulator`.
-- `complete_static_emulator/main.py`: pure Emulator entrypoint; it reuses
-  `emu.py`, renders, compiles with `SkyseedDockerCompiler` and writes output
-  controls. It does not generate Simulator input.
+- `complete_static_emulator/main.py`: canonical full-output entrypoint; it
+  builds one Emulator, creates one Simulator/Topology from that same object,
+  renders and compiles with `SkyseedDockerCompiler`, writes output controls,
+  then atomically publishes the repository-local offline Topology and Zone
+  tool snapshot.
 - `complete_static_emulator/simu.py`: external assembly entrypoint; it reuses
   `emu.py`, queries the `SatelliteBase` owner for all Skyseed AS values, calls
   `create_simulator_static_input(...)`, creates the Timeline and Definition,
@@ -137,10 +139,12 @@ SkyseedAutonomousSystem
   `SkyseedDockerCompiler` → output controls. Its acceptance baseline remains
   compile/config-only; generated start is an explicit user action.
 
-Every formal example supports direct-file execution from its own directory and
-selects the checkout's sibling `.venv` when the current interpreter lacks the
-installed dependencies. Compilation entrypoints replace their owned default
-output unless `--no-override` is requested. Every formal compilation
+Every formal example supports direct-file execution from its own directory
+with the caller's selected interpreter and never searches for or restarts
+through another environment. Local development uses the canonical
+`skyseed_dev` Conda environment documented in the top-level README.
+Compilation entrypoints replace their owned default output unless
+`--no-override` is requested. Every formal compilation
 entrypoint generates `output/start.sh` and `output/cleanup.sh` after the
 Compose artifact is complete. Source-level shell wrappers no longer generate
 the experiment. The generated start validates the exact Compose file and runs
