@@ -79,5 +79,6 @@ runtime resolution path.
 
 ## 6. Deferred work
 
-Dynamic satellite-facing interfaces, visibility, service selection, link
-planning and Simulator execution remain unstarted.
+Dynamic satellite-facing interfaces remain deferred. Visibility, service
+selection and dynamic Slice execution now have an accepted public contract but
+remain unimplemented; Planning/backend execution remains deferred.

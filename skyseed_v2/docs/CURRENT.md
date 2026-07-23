@@ -15,18 +15,26 @@
 - Simulator Iteration 1 composition, time and immutable static Topology:
   **ACCEPTED / FROZEN**
 - Simulator Iteration 2 static Zone domain: **ACCEPTED / FROZEN**
-- Satellite position, service-Satellite selection, dynamic topology, Planning
-  and dynamic execution: **NOT STARTED**
+- Dynamic Slice public contract for Position, Connection, Route, Slicer,
+  TopologySlice and TopologyDifference: **ACCEPTED / FROZEN DESIGN**
+- Dynamic Slice implementation: **NOT STARTED**
+- Planning and backend/runtime execution: **DEFERRED / NOT STARTED**
 
 ## Current objective
 
-Simulator Iteration 1 is accepted and frozen. Iteration 2 implements the static
-Zone Definition/YAML path, atomic Topology materialization, ZoneLayout
-ownership, rectangle geometry, positive-area overlap validation, replaceable
-membership algorithm contract, deterministic default Model and Topology
-facade. The independent architecture audit, canonical example, tests,
-documentation and class diagrams passed final user review; Iteration 2 is now
-accepted and frozen. No later iteration has started or been named.
+Simulator Iterations 1 and 2 remain implemented and accepted. The complete
+Dynamic Slice public contract is now accepted and frozen in
+[`architecture/dynamic-slice-public-contract.md`](architecture/dynamic-slice-public-contract.md).
+Its objects, ownership, Model Protocols, built-in Model boundaries, Slice
+lifecycle, Difference semantics and implementation dependency order A through
+G are approved but not yet implemented.
+
+This architecture-sync checkpoint changes documentation and architecture
+traceability tests only. The next suggested engineering objective is the
+complete Dynamic Slice main chain A–E, but it has not started and still
+requires explicit user authorization. No Position, Connection, Route, Slicer,
+TopologySlice or TopologyDifference code or public export exists at this
+baseline.
 
 ## Implemented package boundaries
 
@@ -63,7 +71,8 @@ SkyseedAutonomousSystem
   its AS and handled by `SkyseedDockerCompiler`.
 - `OrbitParameters` is defined beside `Orbit` in `entities/orbit.py`; each
   Orbit owns exactly one value. Satellite has no Orbit reference and no copy
-  of altitude, inclination or right ascension.
+  of altitude, inclination or right ascension. The accepted Slice A delta adds
+  Orbit-owned UTC `epoch_utc`, but current code has not implemented it.
 - `GroundStation` is the same SEED Router instance created by its AS,
   registered as `rnode`/border router and handled by the inherited upstream
   Router Docker-compilation path.
@@ -165,12 +174,12 @@ network relations from GroundStation attributes and ground-network objects.
 `configuration/static_emulator_config.py`; top-level `static_emulator.py`
 remains the Config-to-Emulator operation module.
 
-## Static deployment and conceptual dynamic execution stages
+## Static deployment and future backend execution stages
 
 - The implemented static chain is `Emulator / SEED static model →
   SkyseedDockerCompiler → compiled Docker / Compose project →
   ComposeProjectLauncher`.
-- The conceptual/open dynamic chain is `BackendExecutionPlan →
+- The still-conceptual backend execution chain is `BackendExecutionPlan →
   ExecutionCompiler → ExecutableBundle → SimulationRunner`. No type, module,
   interface or implementation in that chain exists, and final public names
   remain open.
@@ -265,18 +274,94 @@ this iteration adds no exception. YAML and programmatic construction enforce
 the same Definition failures, while YAML wraps them as the loader exception.
 
 Planning, Slice, differences, Satellite position and dynamic execution remain
-future conceptual design space, not Iteration 2 implementation. The full record
-is
+outside the implemented Iteration 2 code. Position, Connection, Route, Slicer,
+TopologySlice and TopologyDifference are now accepted/frozen design rather
+than open conceptual space. Planning and backend execution remain deferred.
+The detailed accepted contract is
+[`architecture/dynamic-slice-public-contract.md`](architecture/dynamic-slice-public-contract.md),
+the design record is
 [`design/simulator-conceptual-design.md`](design/simulator-conceptual-design.md),
 and the Mermaid map is in
-[`architecture/conceptual-class-diagrams.md`](architecture/conceptual-class-diagrams.md#simulator-future-conceptual-boundary-map).
+[`architecture/conceptual-class-diagrams.md`](architecture/conceptual-class-diagrams.md#simulator-approved-dynamic-slice-boundary-map).
+
+## Dynamic Slice public contract
+
+Status: **ACCEPTED / FROZEN DESIGN — NOT IMPLEMENTED**.
+
+Accepted ownership:
+
+```text
+Simulator
+├── exact SimulationDefinition
+├── at most one Topology
+└── at most one Slicer
+    ├── exact Topology
+    ├── exact SimulationTimeline
+    ├── exact PositionModel
+    ├── exact ConnectionModel
+    ├── exact RouteModel
+    └── published TopologySlice sequence
+```
+
+Topology remains the immutable static world. Slicer alone coordinates the
+single dynamic path:
+
+```text
+Timeline timestamp
+→ PositionModel
+→ readonly EarthFixedPosition mapping
+→ ConnectionModel
+→ ConnectionSlice
+→ RouteModel
+→ RouteSlice
+→ atomically published TopologySlice
+→ adjacent TopologyDifference
+```
+
+The accepted static/time corrections for Slice A are aware-only
+UTC-normalized Timeline values, Orbit-owned `epoch_utc`, Satellite mean
+anomaly at that epoch, finite WGS84 GroundStation ellipsoidal height and one
+WGS84 ECEF Position/coordinate capability.
+
+The accepted explicit built-in Models are `CircularOrbitPositionModel`,
+`GeometricConnectionModel` and `HopCountRouteModel`; none is a hidden default.
+Same-Orbit candidates use mean-anomaly order. Adjacent-Orbit candidates use
+unique-RAAN circular order and stable cyclic-offset pairing prepared from the
+Timeline start Position. Candidate and geometry evidence remain private Model
+state, not ConnectionSlice data.
+
+Slicer publishes synthetic Slice 0, then continuous real Slice IDs. Its sole
+core generation operation is `create_next_slice()`; failures publish nothing
+and consume neither timestamp nor Slice ID. `TopologyDifference` compares
+retained same-lineage adjacent Slices only. Planning, DifferenceWindow,
+backend execution and retention policy remain deferred.
+
+Approved implementation dependency order:
+
+```text
+Slice A time/epoch/coordinates/Position
+→ Slice B Zone range/Connection values
+→ Slice C GeometricConnectionModel
+→ Slice D Route
+→ Slice E Slicer/TopologySlice
+→ Slice F TopologyDifference
+→ Slice G Tool/example/final audit
+```
+
+The engineering authorization groups are A–E for the complete Dynamic Slice
+main chain, F for TopologyDifference and G for Tool/example/final
+synchronization. Each group requires explicit authorization; A through E do
+not require mechanical authorization pauses between their internal dependency
+steps. This architecture-contract synchronization authorizes none of them.
 
 ## Explicitly unstarted work
 
-- Satellite position and visibility.
-- Service-Satellite selection and dynamic GroundStation–Satellite links.
-- Slicer, Connection, Route and TopologySlice.
-- Planning and backend/runtime execution.
+- A–E complete Dynamic Slice main chain: UTC Timeline, Orbit epoch,
+  GroundStation height, Position, Zone range, Connection, Route, Slicer and
+  TopologySlice.
+- F TopologyDifference.
+- G dynamic Tool, canonical example and final synchronization.
+- Planning, DifferenceWindow and backend/runtime execution.
 - Future dynamic planning/execution consumption of `NodeId` and lowering to
   runtime resource operations.
 - UT integration and any new entity kind at the static-input boundary.
@@ -286,10 +371,11 @@ and the Mermaid map is in
 Future plans must reference `NodeId`; the later approved execution boundary
 must resolve its ASN through the Base owner and call the resulting Skyseed
 AS/entity owners' narrow query methods rather than guess from strings or retain
-a global index. No plan type, plan-compilation resolution/update path, epoch,
-dynamic topology, `SimulationRunner`, runtime resource locator or Simulator
-dynamic-execution engine exists. The next iteration awaits a user/GPT design
-decision and is not named or started here.
+a global index. No plan type, plan-compilation resolution/update path,
+implemented epoch, implemented dynamic Slice type, `SimulationRunner`, runtime
+resource locator or Simulator dynamic-execution engine exists. The complete
+Dynamic Slice main chain A–E is the next suggested engineering objective but
+awaits explicit user authorization.
 
 ## Acceptance state
 
@@ -302,8 +388,10 @@ decision and is not named or started here.
 - Native Ubuntu 24.04 migration baseline: validated
 - Simulator Iteration 1 composition/time/static Topology: **ACCEPTED / FROZEN**
 - Simulator Iteration 2 Zone: **ACCEPTED / FROZEN**
-- Satellite position, service-Satellite selection, Slicer, Connection, Route,
-  TopologySlice, Planning and backend/runtime execution: **NOT STARTED**
+- Dynamic Slice public contract: **ACCEPTED / FROZEN DESIGN**
+- Position, Connection, Route, Slicer, TopologySlice and TopologyDifference
+  implementation: **NOT STARTED**
+- Planning and backend/runtime execution: **DEFERRED / NOT STARTED**
 
 Current package/API details and the manual review checklist are recorded in
 `docs/architecture/emulator-public-construction-api.md`.

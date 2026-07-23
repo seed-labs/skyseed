@@ -23,6 +23,11 @@ API_DOCUMENT = (
     PROJECT_ROOT / "docs/architecture/emulator-public-construction-api.md"
 )
 TERMINOLOGY = PROJECT_ROOT / "docs/architecture/terminology.md"
+ACCEPTED_DESIGN = PROJECT_ROOT / "docs/architecture/accepted-design.md"
+DYNAMIC_SLICE_CONTRACT = (
+    PROJECT_ROOT / "docs/architecture/dynamic-slice-public-contract.md"
+)
+CURRENT = PROJECT_ROOT / "docs/CURRENT.md"
 PUBLIC_MODULES = (
     entities,
     materialization,
@@ -32,6 +37,41 @@ PUBLIC_MODULES = (
     configuration,
     static_emulator,
     simulator_core,
+)
+
+
+APPROVED_DYNAMIC_TYPES = (
+    "EarthFixedPosition",
+    "SphericalCap",
+    "PositionModel",
+    "ConnectionModel",
+    "RouteModel",
+    "CircularOrbitPositionModel",
+    "GeometricConnectionModel",
+    "HopCountRouteModel",
+    "ConnectionKind",
+    "ConnectionId",
+    "DirectionalConnectionParameters",
+    "Connection",
+    "ConnectionSlice",
+    "GroundStationRouteTarget",
+    "ZoneRouteTarget",
+    "RouteTarget",
+    "RouteKey",
+    "RouteSlice",
+    "TopologySlice",
+    "Slicer",
+    "TopologyDifference",
+)
+
+ANCHOR_DYNAMIC_CONCEPTS = (
+    "SphericalCap",
+    "PositionModel",
+    "ConnectionModel",
+    "RouteModel",
+    "TopologySlice",
+    "Slicer",
+    "TopologyDifference",
 )
 
 
@@ -158,6 +198,87 @@ def test_terminology_and_project_rules_cover_the_governance_contract() -> None:
         assert required_rule in rules
     assert "Do not start Simulator" not in rules
     assert "simulator_input_generation.py" not in rules
+
+
+def test_accepted_dynamic_contract_is_linked_and_status_classified() -> None:
+    accepted_source = ACCEPTED_DESIGN.read_text(encoding="utf-8")
+    accepted = " ".join(accepted_source.split())
+    contract = DYNAMIC_SLICE_CONTRACT.read_text(encoding="utf-8")
+    current = " ".join(CURRENT.read_text(encoding="utf-8").split())
+
+    assert DYNAMIC_SLICE_CONTRACT.is_file()
+    assert "(dynamic-slice-public-contract.md)" in accepted_source
+    assert "ACCEPTED / FROZEN DESIGN — NOT IMPLEMENTED" in contract
+    assert "accepted/frozen design but not implemented" in accepted
+    assert "Dynamic Slice implementation: **NOT STARTED**" in current
+    assert "complete Dynamic Slice main chain A–E" in current
+    assert "requires explicit user authorization" in current
+
+    for type_name in ANCHOR_DYNAMIC_CONCEPTS:
+        assert type_name in accepted
+    for type_name in APPROVED_DYNAMIC_TYPES:
+        assert type_name in contract
+
+
+def test_dynamic_contract_preserves_the_accepted_owner_direction() -> None:
+    accepted = " ".join(ACCEPTED_DESIGN.read_text(encoding="utf-8").split())
+    accepted_semantics = accepted.replace("`", "")
+    contract = DYNAMIC_SLICE_CONTRACT.read_text(encoding="utf-8")
+
+    for required in (
+        "Simulator",
+        "Topology",
+        "Slicer",
+        "PositionModel",
+        "ConnectionModel",
+        "RouteModel",
+        "TopologySlice",
+        "TopologyDifference",
+    ):
+        assert required in accepted
+        assert required in contract
+    for owner_semantic in (
+        "Simulator remains the composition root",
+        "Topology owns the immutable static world",
+        "Slicer owns the sole dynamic generation order",
+    ):
+        assert owner_semantic in accepted_semantics
+
+    for retired in (
+        "Topology.create_slice(",
+        "Topology.compare_slices(",
+        "Topology creates TopologySlice",
+    ):
+        assert retired not in accepted
+        assert retired not in contract
+
+
+def test_dynamic_terms_are_classified_without_claiming_current_exports() -> None:
+    terminology = " ".join(TERMINOLOGY.read_text(encoding="utf-8").split())
+
+    for term in APPROVED_DYNAMIC_TYPES:
+        assert term in terminology
+    assert "not implemented" in terminology
+    assert "does not authorize package-root export" in terminology
+
+
+def test_provenance_cannot_override_the_accepted_contract() -> None:
+    accepted = " ".join(ACCEPTED_DESIGN.read_text(encoding="utf-8").split())
+    provenance = " ".join(
+        (
+            PROJECT_ROOT / "docs/design/simulator-conceptual-design.md"
+        ).read_text(encoding="utf-8").split()
+    )
+
+    assert "cannot override this anchor" in accepted
+    assert "retired/non-authoritative" in provenance.lower()
+    assert "cannot override" in provenance
+
+
+def test_approved_dynamic_types_are_not_exported_before_implementation() -> None:
+    for type_name in APPROVED_DYNAMIC_TYPES:
+        assert not hasattr(simulator_core, type_name)
+        assert not hasattr(skyseed_v2, type_name)
 
 
 def test_compilation_stages_have_distinct_current_architecture_terms() -> None:

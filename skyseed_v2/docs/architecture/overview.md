@@ -5,10 +5,9 @@
 The static Emulator core, receiving-side Simulator static-input contract,
 accepted/frozen Simulator Iteration 1 composition/time/static Topology,
 Iteration 2 static Zone domain, formal examples and Compose materialization
-tooling are implemented. Satellite position, service-Satellite selection,
-dynamic topology, Planning, `SimulationRunner` and UT are not implemented.
-Their conceptual maps preserve future responsibility directions but do not
-freeze APIs.
+tooling are implemented. The Position/Connection/Route/Slicer/Slice/Difference
+public contract is accepted and frozen but not implemented. Planning,
+`SimulationRunner` and UT remain deferred and unimplemented.
 
 ## 2. System division
 
@@ -75,9 +74,10 @@ Simulator
 Topology stores its AS tuple, immutable ASN index, unified immutable `NodeId`
 node index and optional `ZoneLayout`. Shell and Orbit facade queries delegate
 down the owner chain; Zone facade queries delegate to the layout. A Topology
-without a Zone layout remains valid. Planning, dynamic Slice state and related
-algorithms remain conceptual; no speculative Satellite-parent reverse lookup
-is present.
+without a Zone layout remains valid. Dynamic Slice algorithms are absent from
+current code, but their public contract now adds at most one explicit-Model
+Slicer after Topology creation while keeping Topology static. No speculative
+Satellite-parent reverse lookup is present.
 
 Iteration 2 freezes this Zone construction chain:
 
@@ -116,7 +116,9 @@ registration and compilation. The integration-bearing nature of these objects
 is why the package is named `entities`, not `domain`.
 
 `OrbitParameters` is defined beside and owned by `Orbit`. Satellite retains no
-Orbit reference and no copy of altitude, inclination or right ascension.
+Orbit reference and no copy of altitude, inclination or right ascension. Slice
+A is approved to add Orbit-owned UTC `epoch_utc`; Satellite mean anomaly then
+means its value at that epoch. This delta is not implemented yet.
 
 ## 4. Emulator → Simulator static boundary
 
@@ -193,7 +195,7 @@ domain graph.
 
 The package is not a vendored seedemu copy and not data seeding code.
 
-## 7. Static deployment and dynamic execution
+## 7. Static deployment, dynamic Slice state and future execution
 
 `SkyseedDockerCompiler` lowers one rendered Emulator to a Compose project.
 After all current generators finish, the formal example entrypoint adds
@@ -212,7 +214,26 @@ Emulator / SEED static model
 → ComposeProjectLauncher
 ```
 
-The conceptual/open dynamic chain is:
+The accepted/frozen but unimplemented dynamic state chain is:
+
+```text
+Static Topology + Timeline timestamp
+→ PositionModel
+→ readonly EarthFixedPosition mapping
+→ ConnectionModel
+→ ConnectionSlice
+→ RouteModel
+→ RouteSlice
+→ TopologySlice
+→ TopologyDifference
+```
+
+`Simulator` creates one Slicer only after Topology exists. Slicer retains exact
+Topology, Timeline and explicit Position/Connection/Route Models, then
+validates and atomically publishes ordered Slices. Topology never creates or
+compares Slices.
+
+The conceptual/open backend execution chain is:
 
 ```text
 BackendExecutionPlan
@@ -221,9 +242,9 @@ BackendExecutionPlan
 → SimulationRunner
 ```
 
-Before dynamic lowering, a `SemanticPlanner` and a `BackendPlanner` have
-separate responsibility for backend-neutral meaning and backend-specific
-execution strategy. `ExecutionCompiler` only lowers an approved backend plan;
+Earlier design records separated backend-neutral and backend-specific
+planning, but detailed Planner/Plan public names remain deferred.
+`ExecutionCompiler` only lowers a future approved backend plan;
 `SimulationRunner` only executes its bundle. They do not re-plan, recompute
 Topology, select another backend or hide failure with fallback.
 
@@ -255,7 +276,28 @@ retired/corrected as an over-compressed description.
 The examples are executable architecture records; their calls lead directly
 to the owning public methods.
 
-## 9. Deferred boundaries
+## 9. Accepted next boundary and deferred work
+
+The detailed frozen contract is
+[`dynamic-slice-public-contract.md`](dynamic-slice-public-contract.md).
+Its approved implementation dependency order is:
+
+```text
+Slice A time/epoch/coordinates/Position
+→ Slice B Zone range/Connection values
+→ Slice C GeometricConnectionModel
+→ Slice D Route
+→ Slice E Slicer/TopologySlice
+→ Slice F TopologyDifference
+→ Slice G Tool/example/final audit
+```
+
+The engineering authorization groups are A–E for the complete Dynamic Slice
+main chain, F for TopologyDifference and G for Tool/example/final
+synchronization. A through E need not stop mechanically between internal
+dependency steps, but A–E as a group still requires explicit implementation
+authorization. Current code has no EarthFixedPosition,
+Position/Connection/Route Model, Slicer, dynamic Slice or Difference type.
 
 Future Simulator state and plans will cite `NodeId`. Any later approved
 dynamic-execution resolution path will call
@@ -275,4 +317,4 @@ simulation.
 The detailed status labels, design evolution and open questions are in
 [`../design/simulator-conceptual-design.md`](../design/simulator-conceptual-design.md).
 The top-level conceptual class map is in
-[`conceptual-class-diagrams.md`](conceptual-class-diagrams.md#simulator-future-conceptual-boundary-map).
+[`conceptual-class-diagrams.md`](conceptual-class-diagrams.md#simulator-approved-dynamic-slice-boundary-map).

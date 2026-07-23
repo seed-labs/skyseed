@@ -194,4 +194,6 @@ Skyseed and ground-network files is only a possible later design decision.
 - top-level `static_emulator.py` is the sole operation module that knows Config
   and real entity/seedemu creation APIs together.
 - `SkyseedDockerCompiler` consumes the rendered Emulator model, never Config.
-- Simulator implementation remains not started.
+- The static Simulator is implemented. The accepted Dynamic Slice contract is
+  not implemented and does not change this Config dependency direction until
+  its explicitly authorized engineering group begins.

@@ -108,5 +108,6 @@ supported.
 
 ## 7. Deferred work
 
-Dynamic Satellite interfaces, topology, route planning, runtime resource
-resolution and Simulator execution remain unstarted.
+Dynamic Satellite interfaces remain deferred. Position, Connection, Route and
+Slice execution now have an accepted public contract but remain unimplemented;
+Planning and runtime resource resolution remain deferred.

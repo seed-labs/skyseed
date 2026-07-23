@@ -2,9 +2,9 @@
 
 Solid implemented nodes and arrows reflect current code. Accepted/frozen
 Simulator Iteration 1 and Iteration 2 static Zones are **IMPLEMENTED**; dashed
-Planning/dynamic nodes are conceptual boundaries, not implementations or
-frozen public APIs. The top-level map is in
-[`conceptual-class-diagrams.md`](conceptual-class-diagrams.md#simulator-future-conceptual-boundary-map).
+dynamic-Slice nodes are **APPROVED / NOT IMPLEMENTED**, while dashed Planning
+and backend nodes remain conceptual/open. The top-level map is in
+[`conceptual-class-diagrams.md`](conceptual-class-diagrams.md#simulator-approved-dynamic-slice-boundary-map).
 
 ## 1. Package dependency direction
 
@@ -187,9 +187,11 @@ flowchart LR
     TOPOLOGY --> ZLAYOUT[optional Topology-owned ZoneLayout]
     ZLAYOUT --> ZONES[Zone tuple/index]
     ZLAYOUT --> ZMODEL[fixed ZoneMembershipModel]
-    SIM -. future ownership .-> PLANNING[future Planning]
-    TOPOLOGY -. creates and compares .-> SLICE[future Slice / Difference citing NodeId]
-    SLICE -. consumed by .-> PLANNING
+    SIM -. approved ownership .-> SLICER[approved Slicer]
+    SLICER -. exact reference .-> TOPOLOGY
+    SLICER -. ordered generation .-> SLICE[approved TopologySlice]
+    SLICER -. adjacent comparison .-> DIFF[approved TopologyDifference]
+    DIFF -. future finite window .-> PLANNING[future Planning]
     PLANNING -. later approved plan .-> DYNAMIC[dynamic execution resolution]
     DYNAMIC -.->|NodeId.asn| BASE[SatelliteBase.getAutonomousSystem]
     BASE -. require Skyseed AS .-> OWNER[SkyseedAutonomousSystem]
@@ -204,8 +206,9 @@ is construction boundary data, not the Simulator's long-lived domain graph.
 The implemented Topology has one private unified `NodeId` index over its own
 static nodes, never Emulator entities or runtime resources, plus at most one
 ZoneLayout. Simulator, Timeline, Definition, Topology, the static node objects
-and static Zone domain are implemented; the dashed Planning, Slice, plan,
-dynamic resource-resolution and update structures are not.
+and static Zone domain are implemented. Slicer, TopologySlice and
+TopologyDifference are accepted contracts but not implemented; Planning,
+dynamic resource-resolution and update structures remain conceptual/open.
 
 ## 7. Implemented Zone construction and ownership
 
@@ -265,7 +268,7 @@ only owner of its Zone tuple and ID index; the Model receives those same Zone
 instances and does not own another collection. A valid Topology may omit the
 layout, and the algorithm reference cannot be replaced after construction.
 
-## 8. Static deployment and conceptual dynamic execution chains
+## 8. Static deployment, approved Slice state and future execution
 
 ```mermaid
 flowchart TD
@@ -275,10 +278,15 @@ flowchart TD
     INPUT --> DEF[SimulationDefinition]
     DEF --> SIM[Simulator]
     SIM --> TOP[Topology]
-    SIM -. owns .-> PLAN[future Planning]
-    TOP -. compares authoritative slices .-> DIFF[future TopologyDifference]
-    DIFF -. SemanticPlanner .-> SEM[future SemanticTransitionPlan]
-    SEM -. BackendPlanner .-> BACK[future BackendExecutionPlan]
+    SIM -. creates after Topology .-> SLICER[approved Slicer]
+    TOP -. exact static input .-> SLICER
+    SLICER -. PositionModel .-> POS[approved Position mapping]
+    POS -. ConnectionModel .-> CONN[approved ConnectionSlice]
+    CONN -. RouteModel .-> ROUTE[approved RouteSlice]
+    ROUTE -. atomic publication .-> SLICE[approved TopologySlice]
+    SLICER -. adjacent comparison .-> DIFF[approved TopologyDifference]
+    DIFF -. future DifferenceWindow .-> PLAN[future Planner]
+    PLAN -. future plan .-> BACK[future BackendExecutionPlan]
     BACK -. lowered by .-> EXEC[future ExecutionCompiler]
     EXEC -. creates .-> BUNDLE[future ExecutableBundle]
     BUNDLE -. consumed by .-> RUN[future SimulationRunner]
@@ -288,13 +296,17 @@ flowchart TD
     DEPLOY --> LAUNCH[ComposeProjectLauncher]
 ```
 
-The implemented static deployment compiler and the conceptual dynamic
+Solid arrows remain current implementation. Dashed Position through Difference
+arrows are accepted public contracts awaiting Slices A through F; dashed
+Planner/backend arrows remain deferred. Topology does not create or compare
+Slices.
+
+The implemented static deployment compiler and conceptual dynamic
 `ExecutionCompiler` have different inputs, outputs, ownership and lifecycles;
 they have no inheritance relationship or required shared public parent.
 `ComposeProjectLauncher` is not the conceptual `SimulationRunner`. The old
 `SimulationPlanCompiler` label is retained only as a **retired/corrected**
-over-compression of semantic planning, backend planning and executable-form
-compilation, not as a frozen master contract.
+over-compression, not as a frozen master contract.
 
 ## 9. Generated experiment artifact and materialization
 

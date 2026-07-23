@@ -4,15 +4,15 @@
 
 The first diagrams describe implemented Skyseed v2 code, including accepted
 and frozen Simulator Iteration 1 plus Iteration 2 static Zones. The later
-`Simulator future conceptual boundary map` combines that implemented
-foundation with responsibility directions and conceptual candidates for later
-work.
+`Simulator approved dynamic-slice boundary map` combines that implemented
+foundation with the accepted/frozen but not-yet-implemented dynamic Slice
+contract and the still-conceptual future Planning/execution boundary.
 
-A conceptual diagram is not a public API freeze or an implementation task
-list. Candidate objects may remain private, be renamed, split, merged or
-removed by later approved vertical slices. Status and detailed boundaries are
-defined in
-[`../design/simulator-conceptual-design.md`](../design/simulator-conceptual-design.md).
+Status stereotypes are normative: `implemented` means current code,
+`approved / not implemented` means a frozen public contract awaiting its
+authorized implementation Slice, and `conceptual/open` means deferred design.
+The detailed frozen dynamic contract is
+[`dynamic-slice-public-contract.md`](dynamic-slice-public-contract.md).
 
 ## Emulator entities and seedemu integration
 
@@ -348,24 +348,77 @@ Satellite-parent reverse APIs or indexes. Every public tuple and private
 `MappingProxyType` lookup references the same object instances. The Definition
 is consumed during materialization and is not retained.
 
-## Simulator future conceptual boundary map
+The implemented field lists above intentionally show current code. The
+accepted Slice A deltas—UTC-only Timeline normalization, Orbit `epoch_utc` and
+finite GroundStation ellipsoidal height—are not marked implemented here.
 
-This is a conceptual boundary map, not an implementation inventory. Only the
-nodes explicitly marked implemented exist in the repository. The static
-Satellite/Orbit/Shell ownership details are frozen by Iteration 1 and the
-static Zone ownership/membership details are implemented by Iteration 2.
-Dynamic state, Planning and execution details remain future work.
+## Approved static/time contract deltas
+
+```mermaid
+classDiagram
+    class SimulationTimeline {
+        <<implemented; approved UTC delta>>
+        +start_time UTC-aware datetime
+        +end_time UTC-aware datetime or None
+        +slice_interval timedelta
+    }
+    class OrbitParameters {
+        <<implemented value; approved epoch delta>>
+        +altitude_km float
+        +inclination_deg float
+        +right_ascension_deg float
+        +epoch_utc UTC-aware datetime
+    }
+    class Orbit {
+        <<implemented object; approved epoch delta>>
+        +epoch_utc UTC-aware datetime
+    }
+    class Satellite {
+        <<implemented object; approved anomaly semantics>>
+        +mean_anomaly_deg float
+    }
+    class GroundStation {
+        <<implemented object; approved height delta>>
+        +elevation_m finite WGS84 ellipsoidal metres
+    }
+    class SphericalCap {
+        <<approved frozen value / not implemented>>
+        +center geographic point
+        +angular_radius_deg float
+    }
+    class ZoneLayout {
+        <<implemented aggregate; approved range-query delta>>
+        +find_intersecting_zones(cap) tuple
+    }
+
+    OrbitParameters --> Orbit : static projection
+    Orbit "1" *-- "*" Satellite : epoch interprets anomaly
+    ZoneLayout --> SphericalCap : range query input
+```
+
+The displayed `epoch_utc`, aware-only UTC normalization, required
+GroundStation height and cap query are accepted target contracts, not current
+implemented fields or methods.
+
+## Simulator approved dynamic-slice boundary map
+
+Only nodes marked `implemented` exist in current code. Nodes marked
+`approved / not implemented` are frozen contracts from
+`dynamic-slice-public-contract.md`; their presence is not an implementation
+claim or implementation authorization. The dependency labels A through G are
+grouped as A–E, F and G for explicit engineering authorization. Planning and
+backend execution remain `conceptual/open`.
 
 ```mermaid
 classDiagram
 direction LR
 
 class Simulator {
-  <<implemented top-level facade>>
+  <<implemented + approved Slicer composition>>
 }
 
 class SimulationTimeline {
-  <<implemented time value>>
+  <<implemented; approved UTC delta>>
 }
 
 class Topology {
@@ -380,86 +433,189 @@ class ZoneMembershipModel {
   <<implemented membership Protocol>>
 }
 
-class Planning {
-  <<conceptual aggregate root>>
+class Slicer {
+  <<approved / not implemented>>
+  +create_next_slice() TopologySlice
+  +create_slices(count) tuple
+  +create_all_slices() tuple
+  +create_difference(previous_id, current_id) TopologyDifference
 }
 
 class TopologySlice {
-  <<future immutable state>>
+  <<approved / not implemented>>
+  +slice_id int
+  +timestamp datetime or None
+  +positions readonly mapping
+  +connection_slice ConnectionSlice
+  +route_slice RouteSlice
+  +resolve_path(source, target) tuple
+}
+
+class EarthFixedPosition {
+  <<approved / not implemented>>
+  +x_m float
+  +y_m float
+  +z_m float
+}
+
+class PositionModel {
+  <<approved public Protocol / not implemented>>
+}
+
+class ConnectionModel {
+  <<approved public Protocol / not implemented>>
+}
+
+class RouteModel {
+  <<approved public Protocol / not implemented>>
+}
+
+class ConnectionSlice {
+  <<approved / not implemented>>
+}
+
+class RouteSlice {
+  <<approved / not implemented>>
 }
 
 class TopologyDifference {
-  <<future immutable change>>
+  <<approved / not implemented>>
 }
 
-class SemanticPlanner {
+class SphericalCap {
+  <<approved / not implemented>>
+}
+
+class Planning {
   <<conceptual/open>>
 }
 
-class BackendPlanner {
-  <<conceptual/open>>
+class TopologyDifferenceWindow {
+  <<conceptual/open deferred>>
 }
 
-class SemanticTransitionPlan {
-  <<conceptual/open>>
-}
-
-class BackendExecutionPlan {
-  <<conceptual/open>>
-}
-
-class SkyseedDockerCompiler {
-  <<implemented static deployment compiler>>
-}
-
-class ComposeProjectLauncher {
-  <<implemented static project launcher>>
-}
-
-class ExecutionCompiler {
-  <<future dynamic compiler>>
-}
-
-class ExecutableBundle {
-  <<future immutable execution input>>
-}
-
-class SimulationRunner {
-  <<future dynamic executor>>
-}
-
-Simulator *-- SimulationTimeline
-Simulator *-- Topology
-Simulator *-- Planning
+Simulator *-- SimulationTimeline : exact via Definition
+Simulator *-- Topology : creates at most one
+Simulator *-- Slicer : creates at most one
 Topology "1" *-- "0..1" ZoneLayout
 ZoneLayout o-- ZoneMembershipModel
+ZoneLayout --> SphericalCap : approved range query
 
-Topology --> TopologySlice : creates
-TopologySlice --> TopologyDifference : compared through Topology facade
+Slicer o-- Topology : exact static input
+Slicer o-- SimulationTimeline : exact timestamp authority
+Slicer o-- PositionModel : exact fixed Model
+Slicer o-- ConnectionModel : exact fixed Model
+Slicer o-- RouteModel : exact fixed Model
+Slicer *-- TopologySlice : atomically publishes
+Slicer --> TopologyDifference : creates adjacent comparison
 
-Planning o-- SemanticPlanner
-Planning o-- BackendPlanner
+PositionModel --> EarthFixedPosition : produces mapping
+ConnectionModel --> ConnectionSlice : produces
+RouteModel --> RouteSlice : produces
+TopologySlice *-- EarthFixedPosition : positions
+TopologySlice *-- ConnectionSlice
+TopologySlice *-- RouteSlice
 
-TopologyDifference --> SemanticPlanner
-SemanticPlanner --> SemanticTransitionPlan
-SemanticTransitionPlan --> BackendPlanner
-BackendPlanner --> BackendExecutionPlan
-
-BackendExecutionPlan --> ExecutionCompiler
-ExecutionCompiler --> ExecutableBundle
-ExecutableBundle --> SimulationRunner
-
-SkyseedDockerCompiler --> ComposeProjectLauncher : static deployment chain
+TopologyDifferenceWindow o-- TopologySlice : future base
+TopologyDifferenceWindow o-- TopologyDifference : future ordered changes
+TopologyDifferenceWindow --> Planning : future input
 ```
 
-`NodeId`, `SimulationDefinition`, the `*SimulationInput` values and the
-external functions in `simulator_input_generation.py` are also implemented,
-but are omitted from this future-lifecycle map for legibility. They form the
-current construction boundary, not the Simulator's long-lived domain model.
+`Topology` does not create TopologySlice or TopologyDifference. Slicer is the
+sole dynamic generation, validation, publication and retained-adjacent-
+difference facade. PositionModel, ConnectionModel and RouteModel form one
+fixed call chain and do not own authoritative Slice history.
 
-`Simulator`, `SimulationTimeline`, `Topology`, the static node tree and the
-static Zone layout/Model contract are implemented. `Planning`, both Planners,
-the Slice and plan objects,
+## Approved dynamic values and built-in Models
+
+```mermaid
+classDiagram
+direction LR
+
+class CircularOrbitPositionModel {
+  <<approved built-in / not implemented>>
+}
+class GeometricConnectionModel {
+  <<approved built-in / not implemented>>
+}
+class HopCountRouteModel {
+  <<approved built-in / not implemented>>
+}
+class PositionModel {
+  <<approved public Protocol / not implemented>>
+}
+class ConnectionModel {
+  <<approved public Protocol / not implemented>>
+}
+class RouteModel {
+  <<approved public Protocol / not implemented>>
+}
+class EarthFixedPosition {
+  <<approved frozen value / not implemented>>
+}
+class ConnectionKind {
+  <<approved enum / not implemented>>
+}
+class ConnectionId {
+  <<approved frozen value / not implemented>>
+}
+class DirectionalConnectionParameters {
+  <<approved frozen value / not implemented>>
+}
+class Connection {
+  <<approved frozen value / not implemented>>
+}
+class ConnectionSlice {
+  <<approved immutable aggregate / not implemented>>
+}
+class GroundStationRouteTarget {
+  <<approved frozen tagged target / not implemented>>
+}
+class ZoneRouteTarget {
+  <<approved frozen tagged target / not implemented>>
+}
+class RouteTarget {
+  <<approved frozen tagged union / not implemented>>
+}
+class RouteKey {
+  <<approved frozen value / not implemented>>
+}
+class RouteSlice {
+  <<approved immutable aggregate / not implemented>>
+}
+class TopologySlice {
+  <<approved immutable aggregate / not implemented>>
+}
+class TopologyDifference {
+  <<approved immutable change / not implemented>>
+}
+
+CircularOrbitPositionModel ..|> PositionModel
+GeometricConnectionModel ..|> ConnectionModel
+HopCountRouteModel ..|> RouteModel
+PositionModel --> EarthFixedPosition : produces readonly mapping
+ConnectionId *-- ConnectionKind
+Connection *-- ConnectionId
+Connection *-- DirectionalConnectionParameters : two directions
+ConnectionSlice *-- Connection
+GroundStationRouteTarget ..|> RouteTarget
+ZoneRouteTarget ..|> RouteTarget
+RouteKey *-- RouteTarget
+RouteSlice *-- RouteKey
+TopologySlice *-- EarthFixedPosition
+TopologySlice *-- ConnectionSlice
+TopologySlice *-- RouteSlice
+TopologyDifference --> ConnectionId : removal and patch identity
+TopologyDifference --> RouteKey : route patch identity
+```
+
+The built-in Models are explicit choices, never hidden defaults. Same-Orbit
+ordering is unique mean anomaly; cross-Orbit structure is unique-RAAN
+adjacency plus stable cyclic-offset pairing at Timeline start. Candidate and
+geometry evidence remain private ConnectionModel state. RouteSlice stores
+next hops, not full paths.
+
+Planning, `TopologyDifferenceWindow`, plan types, backend lowering,
 `ExecutionCompiler`, `ExecutableBundle` and `SimulationRunner` remain
-conceptual/open. Arrows involving those future objects record directions; they
-do not freeze names, methods, fields, modules or public visibility.
+conceptual/open and are deliberately omitted from the accepted public-value
+diagram.

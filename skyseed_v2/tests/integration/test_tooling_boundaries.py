@@ -28,7 +28,7 @@ def test_tools_are_repository_local_and_dependency_direction_is_one_way() -> Non
         assert "import tools" not in source, path
 
 
-def test_tooling_has_no_general_framework_or_unapproved_runtime_concepts() -> None:
+def test_tooling_has_no_unapproved_general_framework() -> None:
     source = "\n".join(
         path.read_text(encoding="utf-8")
         for path in TOOLS_ROOT.glob("*.py")
@@ -42,11 +42,25 @@ def test_tooling_has_no_general_framework_or_unapproved_runtime_concepts() -> No
         "VisualizerFactory",
         "plugin discovery",
         "artifact manager",
+    ):
+        assert forbidden not in source
+
+
+def test_dynamic_tool_boundary_allows_readonly_results_without_generation() -> None:
+    contract = (
+        PROJECT_ROOT / "docs/architecture/dynamic-slice-public-contract.md"
+    ).read_text(encoding="utf-8")
+
+    for readable_result in (
         "TopologySlice",
         "ConnectionSlice",
         "RouteSlice",
+        "TopologyDifference",
     ):
-        assert forbidden not in source
+        assert readable_result in contract
+    assert "may read frozen Position" in contract
+    assert "never reruns a Model" in contract
+    assert "non-authoritative design analysis" in contract
 
 
 def test_general_tooling_has_no_canonical_example_identity_control_logic() -> None:
@@ -67,24 +81,26 @@ def test_general_tooling_has_no_canonical_example_identity_control_logic() -> No
         assert canonical_value not in source
 
 
-def test_accepted_design_anchor_contains_the_frozen_direction_and_boundaries() -> None:
+def test_accepted_design_anchor_keeps_the_tooling_boundary() -> None:
     anchor = (
         PROJECT_ROOT / "docs/architecture/accepted-design.md"
     ).read_text(encoding="utf-8")
+    normalized_anchor = " ".join(anchor.split())
 
     for accepted in (
-        "Simulator",
-        "SimulationTimeline",
-        "SimulationDefinition",
-        "Topology",
-        "ZoneLayout",
-        "LatitudeLongitudeRectangle",
-        "DefaultZoneMembershipModel",
+        "dynamic-slice-public-contract.md",
+        "Tools may read formal dynamic results",
+        "Tools do not independently propagate Position",
+        "Tools do not recompute authoritative Connection or Route results",
+        "never Model fallbacks",
+        "second authoritative computation path",
+        "Candidate and historical records retain provenance",
+    ):
+        assert accepted in normalized_anchor
+
+    for retired in (
         "Topology\n→ Slicer",
         "position prerequisite computation",
         "tools` a formal computation path or fallback",
-        "Repository facts",
-        "Design candidates",
-        "Historical/reference facts",
     ):
-        assert accepted in anchor
+        assert retired not in anchor

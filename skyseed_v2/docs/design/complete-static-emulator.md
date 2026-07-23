@@ -158,6 +158,7 @@ No index, plan, resolution or update path is implemented in this slice.
 
 ## 7. Deferred work
 
-Satellite positions, visibility, dynamic links, service-Satellite selection,
-Slicer, Connection, Route, TopologySlice, Planning, resource resolution and
-backend/runtime execution remain unstarted.
+Position, visibility, dynamic links, service-Satellite selection, Slicer,
+Connection, Route, TopologySlice and TopologyDifference now have an accepted
+public contract but remain unimplemented. Planning, resource resolution and
+backend/runtime execution remain deferred.

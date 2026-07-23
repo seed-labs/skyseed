@@ -3,8 +3,9 @@
 ## Status and purpose
 
 This record separates the implemented, accepted/frozen Iteration 1 contract
-and implemented Iteration 2 static Zone contract from conceptual directions
-for later work. It is not an instruction to create placeholder types.
+and implemented Iteration 2 static Zone contract from the accepted/frozen but
+not implemented Dynamic Slice contract and deferred conceptual directions.
+It is not an instruction to create placeholder types.
 
 The status labels used here are:
 
@@ -12,6 +13,8 @@ The status labels used here are:
   completed slices;
 - **approved direction**: an accepted ownership, responsibility or dependency
   direction that later slices must start from;
+- **accepted/frozen design, not implemented**: an approved public contract
+  that does not yet describe current code or exports;
 - **conceptual/open**: a useful future concept whose final name, shape,
   visibility or detailed contract still requires investigation and approval;
 - **retired/corrected**: an earlier description that no longer represents the
@@ -20,12 +23,18 @@ The status labels used here are:
 Only the first status describes current code. `Simulator`,
 `SimulationDefinition`, `SimulationTimeline`, `Topology`, the immutable static
 node tree and the static Zone domain are implemented and public from their
-owning modules. `Planning`, every Slice and Planner, Satellite position,
-Connection, Route, the dynamic `ExecutionCompiler`, `ExecutableBundle` and
-`SimulationRunner` are not implemented or frozen public contracts.
+owning modules. Position, Connection, Route, Slicer, TopologySlice and
+TopologyDifference are accepted/frozen design but not implemented. Planning,
+Plan, DifferenceWindow, the dynamic `ExecutionCompiler`, `ExecutableBundle`
+and `SimulationRunner` remain deferred and unimplemented.
 
-The canonical top-level boundary map is in
-[`../architecture/conceptual-class-diagrams.md`](../architecture/conceptual-class-diagrams.md#simulator-future-conceptual-boundary-map).
+The normative sources are
+[`../architecture/accepted-design.md`](../architecture/accepted-design.md),
+the detailed
+[`../architecture/dynamic-slice-public-contract.md`](../architecture/dynamic-slice-public-contract.md)
+and [`../CURRENT.md`](../CURRENT.md) for implementation status. The canonical
+boundary map is in
+[`../architecture/conceptual-class-diagrams.md`](../architecture/conceptual-class-diagrams.md#simulator-approved-dynamic-slice-boundary-map).
 
 ## Implemented foundation
 
@@ -284,22 +293,16 @@ awareness, reads no current clock, converts no timezone, and yields timestamps
 lazily. `end_time` is inclusive when bounded; `None` is unbounded.
 
 Topology creation does not consume timestamps and does not create a
-Slice. A later single-instant Topology entry remains conceptual, for example:
-
-```text
-Topology.create_slice(timestamp, previous_slice?)
-```
-
-A continuous Slice sequence is therefore Simulator coordination over the
-Timeline and repeated calls to the single-instant Topology entry. The method
-name and parameters are illustrative, not frozen API. Continuing execution,
-lookahead, sliding windows and stopping mechanisms remain **conceptual/open**.
+Slice. The accepted Dynamic Slice contract keeps Timeline as the timestamp
+authority and assigns ordered generation to Simulator-owned Slicer, not
+Topology. The approved aware-only UTC normalization is not implemented at
+this baseline. Retention policy remains deferred.
 
 ## Topology aggregate and facade
 
 Topology is the aggregate root for the implemented Simu-owned static network
-world. Future dynamic topology state remains conceptual. The current ownership
-tree is:
+world. Dynamic state is accepted/frozen design but remains unimplemented and
+is not Topology-owned. The current ownership tree is:
 
 ```text
 Simulator
@@ -329,32 +332,37 @@ to the optional layout. There is no global
 Shell/Orbit index, duplicate typed node index, Satellite-to-parent reverse
 index, `get_shell_for_satellite()` or `get_orbit_for_satellite()`.
 
-Future dynamic topology states and comparison behavior require separate
-approval. Topology must remain a thin coordination shell rather than
-accumulate propagation, connection, routing and comparison algorithms. A
-future outer facade and internal implementation may intentionally expose
-similar operations:
+The accepted Dynamic Slice contract keeps Topology as this immutable static
+aggregate and query facade. Topology does not create TopologySlice or compare
+Slices. Slicer coordinates Models, atomically publishes TopologySlices and
+invokes the one fixed pure adjacent-Difference comparison. TopologyDifference
+is independent; it is not owned by TopologySlice, Planning or a public
+`TopologyDiffer`.
+
+## Retired/non-authoritative dynamic candidates
+
+The following earlier candidate descriptions are retained only as provenance
+and cannot override the accepted anchor or detailed contract:
 
 ```text
-Planning
-→ Topology.compare_slices(left, right)
-→ internal TopologyDiffer.compare(left, right)
+Topology.create_slice(timestamp, previous_slice?)
+Topology.compare_slices(left, right)
+Topology creates TopologySlice or TopologyDifference
+TopologySlice creates or owns TopologyDifference
+same orbit_index defines same-Orbit ring or cross-Orbit pairing
+Tool recomputes Position, Connection or Route
 ```
-
-There must be only one authoritative comparison algorithm. The Topology
-operation delegates to it so callers do not depend on internal objects or data
-structures. Whether an independently named `TopologyDiffer` exists is
-**conceptual/open**.
 
 ## Planning dependency on Topology
 
-The dependency is one-way:
+The accepted dependency is one-way:
 
 ```text
-Topology
-→ produces TopologySlice / TopologyDifference
+Static Topology + Timeline
+→ Slicer
+→ produces TopologySlice / adjacent TopologyDifference
 
-Planning
+future Planning
 → consumes Topology public results
 → may query the Topology read-only facade when necessary
 ```
@@ -367,9 +375,9 @@ The preferred information path is:
 
 ```text
 TopologySlice A + TopologySlice B
-→ Topology.compare_slices(...)
+→ Slicer.create_difference(...)
 → TopologyDifference
-→ Planning
+→ future Planning
 ```
 
 Information necessary to describe the change belongs in
@@ -400,15 +408,16 @@ execution cost.
 The core boundary is:
 
 ```text
-Topology decides what the authoritative network state should be.
+Models plus Slicer determine and publish authoritative dynamic network state.
 
-Planning decides how to transition from one authoritative state to another.
+Future Planning decides how to transition from one authoritative state to
+another.
 ```
 
-## Two planning levels
+## Historical two-planning-level candidate
 
-The following chain is an **approved direction**, while all names and fields
-remain **conceptual/open**:
+The following earlier decomposition remains **non-authoritative provenance**;
+its names, levels and fields are not frozen:
 
 ```text
 TopologyDifference
@@ -427,6 +436,15 @@ and cleanup behavior.
 BPF and Linux MPLS execution plans may have fundamentally different forms.
 A BackendPlanner must not recompute Topology or disguise failure through a
 different-backend fallback.
+
+The accepted future boundary currently freezes only:
+
+```text
+TopologyDifferenceWindow
++ explicit planning context
+→ future Planner
+→ future Plan
+```
 
 ## Static deployment and dynamic execution
 
@@ -470,25 +488,21 @@ No common `Compiler`, `EmulatorRunner` or generic `Runner` abstraction is
 approved. Such an abstraction would require later independent evidence; name
 symmetry alone is insufficient.
 
-## Open questions after Iteration 2
+## Open questions after Dynamic Slice contract acceptance
 
 Iteration 1 froze construction, time rules and the immutable static node graph.
 Iteration 2 implements the static Zone Definition/materialization/ownership,
-geometry and membership contract. Later work still requires its own fact,
-design, contract and review phases.
+geometry and membership contract. The Dynamic Slice public contract now
+freezes Position, Connection, Route, Slicer, TopologySlice and
+TopologyDifference design, but none is implemented.
 
-Later design must still decide:
+Planning/Plan schemas, DifferenceWindow implementation, backend execution,
+runtime resource policy, concrete diagnostics API, final dependency/library
+selection and private performance structure remain deferred.
 
-- precise Timeline, timestamp, Slice identity, retention and comparison
-  contracts;
-- continuous operation, lookahead, sliding-window and stopping semantics;
-- the internal propagation, connection, route, index and comparison objects;
-- whether Topology queries return entities or dedicated read-only views;
-- exact semantic and backend plan schemas and supported backends;
-- `ExecutableBundle` contents and dynamic-execution resource resolution;
-- final names, visibility, module placement and root exports.
-
-No Satellite position, service-Satellite selection, Slicer, Connection, Route,
-TopologySlice, Planning, backend/runtime executor or dynamic runtime path has
-started. The next iteration is intentionally unnamed pending a user/GPT design
-decision.
+The approved dependency labels are grouped for engineering authorization:
+A–E is the complete Dynamic Slice main chain, F is TopologyDifference and G is
+Tool/canonical example/final synchronization. Each group requires explicit
+authorization, but A through E do not require mechanical authorization pauses
+between internal dependency steps. This architecture-contract synchronization
+does not authorize A–E implementation.

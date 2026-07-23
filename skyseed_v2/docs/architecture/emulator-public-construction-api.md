@@ -7,8 +7,10 @@ public file path is one direct chain; it creates the upstream
 `seedemu.core.Emulator`, not a wrapper or Skyseed-specific Emulator subtype.
 The Simulator static-input contract, accepted/frozen Iteration 1
 composition/time/static Topology and Iteration 2 static Zone domain are
-**IMPLEMENTED**. Satellite position, service-Satellite selection, dynamic
-Topology, Planning and execution remain **NOT STARTED**.
+**IMPLEMENTED**. The dynamic Slice public contract is **ACCEPTED / FROZEN
+DESIGN** but Position, Connection, Route, Slicer, TopologySlice and
+TopologyDifference remain unimplemented. Planning and backend execution remain
+deferred.
 
 ## Package ownership
 
@@ -28,6 +30,11 @@ The root package still exports only the six high-frequency entity/value names.
 There is no top-level `emulator/` package, Builder, Factory, Loader class,
 creation-result wrapper or compatibility facade. Zone types likewise remain
 public only from their owning modules and are not root exports.
+
+The accepted dynamic types are planned for `skyseed_v2.simulator` and explicit
+submodules, but are deliberately absent from this implemented-import table
+until their separately authorized Slices. See
+[`dynamic-slice-public-contract.md`](dynamic-slice-public-contract.md).
 
 ## Configuration meaning and separation
 
@@ -100,10 +107,11 @@ scan `entity_id` strings or provide a string fallback.
 
 `NodeId` remains a pure cross-layer value. Any future dynamic execution will
 resolve its ASN through the Base owner and then use the existing narrow AS,
-Shell and Orbit queries. No Simulator algorithm, dynamic plan, resource
-resolver or runtime updater exists.
+Shell and Orbit queries. Dynamic Slice algorithms now have frozen contracts
+but no implementation; no dynamic plan, resource resolver or runtime updater
+exists.
 
-## Static deployment and conceptual dynamic execution stages
+## Static deployment, accepted Slice state and future execution stages
 
 ```text
 rendered Emulator
@@ -111,19 +119,27 @@ rendered Emulator
   → compiled Docker/Compose project
   → ComposeProjectLauncher
 
-future TopologyDifference
-  → SemanticPlanner
-  → SemanticTransitionPlan
-  → BackendPlanner
-  → BackendExecutionPlan
+accepted, not implemented:
+Static Topology + Timeline timestamp
+  → PositionModel
+  → ConnectionModel
+  → RouteModel
+  → TopologySlice
+  → TopologyDifference
+
+deferred:
+TopologyDifferenceWindow
+  → future Planner/Plan
+  → future BackendExecutionPlan
   → ExecutionCompiler
   → ExecutableBundle
   → SimulationRunner
 ```
 
-`SkyseedDockerCompiler` is implemented and does not read Config. The dynamic
-names are conceptual/open. `SimulationPlanCompiler` remains only the
-retired/corrected label for a formerly over-compressed dynamic chain.
+`SkyseedDockerCompiler` is implemented and does not read Config. The Slice
+chain names and public meanings are accepted but not implemented. Planner and
+backend names remain conceptual/open. `SimulationPlanCompiler` remains only
+the retired/corrected label for a formerly over-compressed dynamic chain.
 
 ## Public construction paths
 
@@ -593,6 +609,7 @@ unchanged, including `generation`, `orbits`, `raan`, `phase`, `first` and
       zero-area shared boundaries are not positive-area overlap.
 - [ ] No old input name, duplicate Topology index or Satellite-parent reverse
       API remains.
-- [ ] Satellite position, service-Satellite selection, Slicer, Connection,
-      Route, TopologySlice, Planning and backend/runtime execution remain NOT
-      STARTED.
+- [ ] Dynamic Slice contracts remain accepted-but-unimplemented; A–E, F and G
+      are explicit engineering authorization groups, and no placeholder public
+      types or root exports exist.
+- [ ] Planning and backend/runtime execution remain deferred and unimplemented.
