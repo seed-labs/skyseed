@@ -163,5 +163,5 @@ Details use tables and lists. Raw JSON is only a collapsed audit view.
 9. In Ground/Zone view, inspect GroundStation access and served/unserved Zones.
 10. Select several Routing G/Z targets and verify the structured path table.
 11. Inspect one Difference category at a time and focus individual patches.
-12. Record acceptance or any issue after the external A–G audit bundle has
-   passed GPT review.
+12. Confirm the accepted A–G behavior or record any regression found while
+   reviewing the external audit bundle.

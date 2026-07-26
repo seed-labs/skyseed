@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from skyseed_v2._time import normalize_utc_datetime
-from skyseed_v2.node_id import NodeId
+from skyseed_v2.shared.time import normalize_utc_datetime
+from skyseed_v2.shared import NodeId
 
-from .._routing_policy import eligible_shortest_next_hops
-from ..connection import ConnectionSlice
-from ..route import (
+from ..slicing._routing_policy import eligible_shortest_next_hops
+from ..slicing import ConnectionSlice
+from ..slicing import (
     GroundStationRouteTarget,
     RouteKey,
     RouteSlice,

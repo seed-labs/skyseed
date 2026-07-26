@@ -1,8 +1,10 @@
 # Skyseed v2 Engineering and Architecture Rules
 
 本文件只保存长期适用的工程与架构治理规则。开始工作前阅读
-`README.md`、`docs/CURRENT.md`、`docs/architecture/accepted-design.md`
-和 `docs/architecture/terminology.md`。
+`README.md`、`docs/README.md`、`docs/CURRENT.md` 和
+`docs/accepted-design.md`。正式对象关系和术语分别只维护在
+`docs/human-readable/object-model.md` 与
+`docs/human-readable/terminology.md`。
 
 当前阶段和下一目标只记录在 `docs/CURRENT.md`；每轮批准范围和排除
 范围以该轮任务 Prompt 为准。不得把当前提交、分支、阶段状态、临时
@@ -28,15 +30,9 @@
 测试通过不能单独代表切片完成。调查、合同冻结、架构审计、人工可读
 入口、真实执行证据和文档同步都是接受条件。
 
-Simulator conceptual diagrams 用于保存长期职责边界和待细化的设计空间，
-不是实现任务清单或公共 API 冻结清单。不得创建大量空类来匹配图；每个
-纵向切片只冻结本轮真正需要的公共概念。后续切片可以根据获批设计和真实
-实现修改、拆分、合并或重命名 conceptual 对象，不能只因尚未实现就从图中
-删除它们。
-
-Planner、限定职责的 Compiler 和 conceptual `SimulationRunner` 必须保持一条
-明确的批准路径，不得形成隐式重规划、后端 fallback 或其他成功路径。测试
-PASS 不替代真实执行证据。
+规划、后端准备/编译和动态执行能力仍未正式设计。它们未来的名称、
+owner、package、输入输出和执行链必须单独批准。
+`ComposeProjectLauncher` 仅负责当前静态 Compose project 的启动与验证。
 
 ## 2. 已批准范围内的实现自主权
 
@@ -71,9 +67,9 @@ PASS 不替代真实执行证据。
 - 正式执行路径；
 - 新运行模式或 fallback；
 - 类图中的主体类或重要关系；
-- Emulator、Simulator、Topology、SemanticPlanner、BackendPlanner、
-  `SkyseedDockerCompiler`、conceptual `ExecutionCompiler`、
-  `SimulationRunner`、Observation、Materialization 之间的职责。
+- Emulator、Simulator、Topology、`SkyseedDockerCompiler`、
+  `ComposeProjectLauncher` 或任何未来规划、后端准备/编译、动态执行
+  能力之间的职责。
 
 禁止先提交实现，再在完成报告中解释新概念。与争议无关且已经批准
 的工作可以继续，但争议部分必须停留在提案状态。
@@ -199,23 +195,13 @@ Service
 服务名称或其他字符串重新猜测。缺失、重复、类型不符或所有者不匹配时
 必须 fail-closed。
 
-架构记录和公共合同必须区分静态部署链与动态执行链：
+`SkyseedDockerCompiler` 将 Emulator/SEED 静态模型降低为 Docker、
+Compose、service 和 network 等静态部署配置。
+`ComposeProjectLauncher` 仅负责当前静态 Compose project 的启动与验证。
 
-- `SkyseedDockerCompiler` 将 Emulator/SEED 静态模型降低为 Docker、
-  Compose、service 和 network 等静态部署配置；
-- 动态链的 approved direction 先区分后端中立的网络语义规划与
-  后端特定的执行规划，再由 conceptual `ExecutionCompiler` 降低已经
-  批准的后端执行计划，交给 conceptual `SimulationRunner` 执行。
-
-`SkyseedDockerCompiler` 与 conceptual `ExecutionCompiler` 不得合并、互相
-继承、共享无真实需求的模糊公共父类，或互相承担对方职责。旧的
-`abstract Simulation Plan → SimulationPlanCompiler → concrete dynamic
-operations` 是 retired/corrected 的过度压缩描述：它混合了网络语义规划、
-后端实现规划和执行形式编译，不再是已批准的唯一主合同。所有动态类型和
-最终公开名称仍须作为公共架构变更逐片审批。文档在可能同时涉及两条链时
-不得使用无完整限定语义的单独 `Compiler` 或 `Runner`，也不得仅为名称
-对称创建共同父类。当前动态执行者的 conceptual 限定名是
-`SimulationRunner`；`ComposeProjectLauncher` 不承担该职责。
+规划、后端准备/编译和动态执行能力仍未正式设计。它们未来的名称、
+owner、package、输入输出和执行链必须单独批准。不得通过文档、空目录、
+公共类型、模糊父类、fallback 或第二条成功路径提前冻结其设计。
 
 Simulator 静态输入类型是接收侧定义的跨层边界数据，只能依赖中性纯值和
 自身数据类型；它们不是 Simulator 内部长久使用的完整领域模型。了解
@@ -231,11 +217,15 @@ Emulator→Simulator 外部装配入口必须保持分离。
 
 公共类、方法、属性、所有权或模块边界变化时，必须按影响同步更新：
 
-- Mermaid 类图；
+- Mermaid 高层 owner/cardinality 图：
+  `docs/human-readable/object-model.md`；
+- public class/member/role stereotype 详细图：只在对应 owner package
+  `src/skyseed_v2/**/README.md`；
 - 调用流程图；
 - 模块依赖图；
 - 公共 API 清单；
-- 术语表；
+- 术语导航（唯一入口：
+  `docs/human-readable/terminology.md`）；
 - example README；
 - 验证记录；
 - `docs/CURRENT.md` 中受影响的阶段描述。
@@ -251,10 +241,12 @@ Emulator→Simulator 外部装配入口必须保持分离。
 
 类图用于发现架构漂移，不只是展示结果。
 
-Conceptual class diagram 必须明确区分 implemented、approved direction、
-conceptual candidate、open question 和 retired/corrected。它可以包含尚未
-实现的候选对象以保存设计空间，但不得因此把候选对象写入 CURRENT 的
-已实现列表、根导出或正式运行路径。
+高层 owner 图与详细类图只能记录已接受的 public contracts，且类名必须
+一致。详细图中记录的 public 属性/property/method 必须能映射真实合同，
+每个 class block 必须带 role stereotype；conceptual candidate、open
+question 和 retired/corrected 不得混入这些图。候选图必须留在
+non-authoritative `docs/candidates/`，且不得因此把候选对象写入 CURRENT、
+根导出或正式运行路径。
 
 ## 10. 历史实现调查边界
 
@@ -316,7 +308,7 @@ python -m pip --version
 ## 13. Accepted architecture calibration
 
 每次新纵向轮次和重要调查前，必须先读取
-`docs/architecture/accepted-design.md`。调查输出必须明确区分：
+`docs/accepted-design.md`。调查输出必须明确区分：
 
 - Repository facts；
 - Design candidates；

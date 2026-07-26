@@ -1,0 +1,99 @@
+# Non-authoritative environment reproduction input.
+schema_version: skyseed-static-emulator/v1
+skyseed_autonomous_systems:
+  - asn: 65200
+    shells:
+      - shell_id: migration-smoke-shell
+        altitude_km: 550.0
+        inclination_deg: 53.0
+        epoch_utc: "2026-01-01T00:00:00+00:00"
+        generation:
+          orbit_count: 2
+          satellites_per_orbit: 6
+          raan:
+            start_deg: 0.0
+            step_deg: 180.0
+          phase:
+            start_deg: 0.0
+            step_deg: 60.0
+            alternating_orbit_offset_deg: 30.0
+    ground_stations:
+      - ground_station_id: smoke-gs-a
+        display_name: Migration Smoke GS A
+        latitude_deg: 31.2304
+        longitude_deg: 121.4737
+        elevation_m: 10.0
+        operator: Skyseed
+        station_type: gateway
+        ix_attachments:
+          - ix_id: 200
+            address: 10.200.0.10
+      - ground_station_id: smoke-gs-b
+        display_name: Migration Smoke GS B
+        latitude_deg: 22.3193
+        longitude_deg: 114.1694
+        elevation_m: 20.0
+        operator: Skyseed
+        station_type: gateway
+        ix_attachments:
+          - ix_id: 201
+            address: 10.201.0.10
+      - ground_station_id: smoke-gs-c
+        display_name: Migration Smoke GS C
+        latitude_deg: 35.6762
+        longitude_deg: 139.6503
+        elevation_m: 30.0
+        operator: Skyseed
+        station_type: gateway
+        ix_attachments:
+          - ix_id: 200
+            address: 10.200.0.11
+internet_exchanges:
+  - ix_id: 200
+    prefix: 10.200.0.0/24
+    route_server: false
+  - ix_id: 201
+    prefix: 10.201.0.0/24
+    route_server: false
+ordinary_autonomous_systems:
+  - asn: 65201
+    networks:
+      - network_id: service-a
+        prefix: 10.211.0.0/24
+    routers:
+      - router_id: smoke-router-a
+        network_attachments:
+          - network_id: service-a
+            address: 10.211.0.254
+        ix_attachments:
+          - ix_id: 200
+            address: 10.200.0.254
+  - asn: 65202
+    networks:
+      - network_id: service-b
+        prefix: 10.212.0.0/24
+    routers:
+      - router_id: smoke-router-b
+        network_attachments:
+          - network_id: service-b
+            address: 10.212.0.254
+        ix_attachments:
+          - ix_id: 201
+            address: 10.201.0.254
+ebgp_peerings:
+  - ix_id: 200
+    first:
+      asn: 65200
+      router_id: smoke-gs-a
+    second:
+      asn: 65201
+      router_id: smoke-router-a
+    relationship: unfiltered
+  - ix_id: 201
+    first:
+      asn: 65200
+      router_id: smoke-gs-b
+    second:
+      asn: 65202
+      router_id: smoke-router-b
+    relationship: unfiltered

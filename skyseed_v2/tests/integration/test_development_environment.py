@@ -78,7 +78,7 @@ def test_agents_records_environment_and_architecture_calibration_policy() -> Non
         "CONDA_DEFAULT_ENV",
         "CONDA_PREFIX",
         "conda run -n skyseed_dev",
-        "docs/architecture/accepted-design.md",
+        "docs/accepted-design.md",
         "Repository facts",
         "Design candidates",
         "Historical/reference facts",

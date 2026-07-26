@@ -8,13 +8,13 @@ import pytest
 
 from examples.complete_static_emulator.emu import build_emulator
 from examples.complete_static_emulator.main import _create_simulator_topology
-from skyseed_v2.node_id import NodeId
+from skyseed_v2.shared import NodeId
 from skyseed_v2.simulator import (
     SimulationDefinition,
     SimulationTimeline,
     Simulator,
 )
-from skyseed_v2.simulator.static_input import (
+from skyseed_v2.simulator.input import (
     GroundStationSimulationInput,
     SatelliteSimulationInput,
     SimulatorStaticInput,

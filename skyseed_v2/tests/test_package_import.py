@@ -9,7 +9,7 @@ def test_package_can_be_imported() -> None:
 
 def test_package_exposes_no_retired_satellite_node_alias() -> None:
     package = importlib.import_module("skyseed_v2")
-    seed_integration = importlib.import_module("skyseed_v2.seedemu_integration")
+    seed_integration = importlib.import_module("skyseed_v2.emulator.seedemu")
 
     assert not hasattr(package, "SatelliteNode")
     assert not hasattr(seed_integration, "SatelliteNode")
@@ -48,13 +48,17 @@ def test_root_exports_only_high_frequency_entities_and_values() -> None:
 
 
 def test_identity_and_generation_exports_stay_with_their_owner_modules() -> None:
-    node_id = importlib.import_module("skyseed_v2.node_id")
+    node_id = importlib.import_module("skyseed_v2.shared")
     simulator = importlib.import_module("skyseed_v2.simulator")
     simulator_static_input = importlib.import_module(
-        "skyseed_v2.simulator.static_input"
+        "skyseed_v2.simulator.input"
     )
     generation = importlib.import_module(
-        "skyseed_v2.simulator_input_generation"
+        "skyseed_v2.emulator_to_simulator"
+    )
+    emulator = importlib.import_module("skyseed_v2.emulator")
+    simulator_configuration = importlib.import_module(
+        "skyseed_v2.configuration.simulator"
     )
 
     assert node_id.__all__ == ["NodeId"]
@@ -112,6 +116,12 @@ def test_identity_and_generation_exports_stay_with_their_owner_modules() -> None
         "create_satellite_simulation_input",
         "create_simulator_static_input",
     }
+    assert set(emulator.__all__) == {
+        "create_static_emulator",
+        "entities",
+        "seedemu",
+    }
+    assert "ZoneLayoutDefinitionLoadError" in simulator_configuration.__all__
     assert not hasattr(generation, "create_emulator_node_index")
     assert not hasattr(simulator_static_input, "EmulatorStaticInput")
     assert not hasattr(generation, "create_emulator_static_input")
@@ -129,10 +139,16 @@ def test_identity_and_generation_exports_stay_with_their_owner_modules() -> None
         assert not hasattr(package, simulator_owned_name)
 
 
-def test_configuration_exports_precise_config_and_auxiliary_value_names() -> None:
+def test_configuration_exports_are_split_by_construction_owner() -> None:
     configuration = importlib.import_module("skyseed_v2.configuration")
+    emulator_configuration = importlib.import_module(
+        "skyseed_v2.configuration.emulator"
+    )
+    simulator_configuration = importlib.import_module(
+        "skyseed_v2.configuration.simulator"
+    )
 
-    expected_names = {
+    expected_emulator_names = {
         "EbgpPeeringConfig",
         "EbgpRouterReference",
         "GeneratedOrbitLayout",
@@ -150,12 +166,18 @@ def test_configuration_exports_precise_config_and_auxiliary_value_names() -> Non
         "ShellConfig",
         "SkyseedAutonomousSystemConfig",
         "StaticEmulatorConfig",
+    }
+    expected_simulator_names = {
         "LatitudeLongitudeRectangleDefinition",
         "ZoneDefinition",
         "ZoneLayoutDefinition",
         "load_zone_layout_definition",
     }
-    assert expected_names <= set(configuration.__all__)
+    assert configuration.__all__ == ["emulator", "simulator"]
+    assert expected_emulator_names <= set(emulator_configuration.__all__)
+    assert expected_simulator_names <= set(simulator_configuration.__all__)
+    assert not expected_emulator_names & set(simulator_configuration.__all__)
+    assert not expected_simulator_names & set(emulator_configuration.__all__)
     for retired_name in (
         "EbgpRouterReferenceConfig",
         "GroundStationSpecification",
@@ -170,4 +192,4 @@ def test_configuration_exports_precise_config_and_auxiliary_value_names() -> Non
         "StaticEmulatorScenarioSpecification",
         "StaticEmulatorScenarioLoader",
     ):
-        assert not hasattr(configuration, retired_name)
+        assert not hasattr(emulator_configuration, retired_name)

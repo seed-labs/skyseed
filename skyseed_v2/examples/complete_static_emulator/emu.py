@@ -8,7 +8,7 @@ from seedemu.core import Emulator
 from seedemu.layers import Ebgp, Ibgp, Ospf, PeerRelationship, Routing
 
 from skyseed_v2 import GroundStationLocation, OrbitParameters
-from skyseed_v2.seedemu_integration import (
+from skyseed_v2.emulator.seedemu import (
     SatelliteBase,
     SkyseedAutonomousSystem,
 )

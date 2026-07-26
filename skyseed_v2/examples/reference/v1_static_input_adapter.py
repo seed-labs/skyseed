@@ -20,7 +20,7 @@ from examples.reference.v1_reference_snapshot import (
     V1ReferenceSnapshotAudit,
     validate_v1_reference_snapshot,
 )
-from skyseed_v2.configuration import (
+from skyseed_v2.configuration.emulator import (
     GeneratedOrbitLayout,
     GroundStationConfig,
     InOrbitPhaseDistribution,

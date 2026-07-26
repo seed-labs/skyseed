@@ -7,8 +7,8 @@ from yaml import compose as compose_yaml
 from yaml import safe_load
 from yaml.nodes import MappingNode, Node, SequenceNode
 
-from skyseed_v2.entities import OrbitParameters
-from skyseed_v2.seedemu_integration import (
+from skyseed_v2.emulator.entities import OrbitParameters
+from skyseed_v2.emulator.seedemu import (
     SATELLITE_REGISTRY_TYPE,
     SatelliteBase,
     SkyseedAutonomousSystem,

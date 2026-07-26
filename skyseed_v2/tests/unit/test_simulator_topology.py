@@ -5,7 +5,7 @@ from types import MappingProxyType
 import pytest
 
 import skyseed_v2
-from skyseed_v2.node_id import NodeId
+from skyseed_v2.shared import NodeId
 from skyseed_v2.simulator import (
     GroundStation,
     Orbit,
@@ -17,7 +17,7 @@ from skyseed_v2.simulator import (
     SkyseedAutonomousSystem,
     Topology,
 )
-from skyseed_v2.simulator.static_input import (
+from skyseed_v2.simulator.input import (
     SimulatorStaticInput,
     GroundStationSimulationInput,
     SatelliteSimulationInput,

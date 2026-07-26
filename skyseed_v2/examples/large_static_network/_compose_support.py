@@ -4,7 +4,7 @@ from pathlib import Path
 
 from yaml import safe_load
 
-from skyseed_v2.materialization import ComposeServiceExpectations
+from skyseed_v2.compose import ComposeServiceExpectations
 
 
 def materialization_expectations(

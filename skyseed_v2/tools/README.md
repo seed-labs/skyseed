@@ -1,52 +1,61 @@
-# Skyseed v2 Offline Tools
+# Repository-local Inspection Tools
 
-This regular repository-level package contains private, offline Topology,
-Zone and Dynamic Slice inspection pages.
+These packages generate private, offline views from already-created formal
+objects. They are not installed as `skyseed_v2`, do not mutate domain objects,
+and never provide fallback results.
 
-The tools read an already-created public `Topology`. They do not create or
-modify Emulator/Simulator objects, participate in formal computation, provide
-fallback results, enter the installed wheel, or add public `skyseed_v2`
-exports. Their JSON files use a private tooling `format_version` only.
+Legend: `A --> B` means the output of Tool stage A is the only input of stage
+B.
 
-The Dynamic Slice Tool instead receives one exact public `Slicer`. It reads
-its exact Topology and retained TopologySlices, asks that Slicer for formal
-resolved paths and adjacent TopologyDifferences, and writes a
-non-authoritative view bundle. It never imports or invokes a Model, propagates
-Position, forms a Connection, computes a Route or compares Slices itself.
-
-Run the canonical example from `examples/complete_static_emulator/`:
-
-```bash
-python main.py
+```mermaid
+flowchart LR
+    FORMAL["formal Topology / Slicer"] --> READ["reader: detached read snapshot"]
+    READ --> PROJECT["projection: private view data"]
+    PROJECT --> ANALYZE["non-authoritative display analysis"]
+    ANALYZE --> UI["renderer: final view to offline UI"]
+    UI --> WRITE["writer: filesystem artifacts"]
 ```
 
-The generated standalone pages are under the selected output directory's
-`inspection/` subtree and require no server or network access.
+Legend: `A -.-> B` means validation A consumes the already-written artifact B;
+it is not a Tool pipeline stage.
 
-Run the comprehensive richer reference:
+```mermaid
+flowchart LR
+    SMOKE["browser smoke in scripts/"] -.-> ARTIFACT["written HTML artifact"]
+```
+
+The three tools remain deliberately separate:
+
+- `topology/` reads the static owner tree and facade identity;
+- `zone/` selects observation probes, then records authoritative membership
+  and resolution returned by Topology;
+- `dynamic_slice/` reads one exact Slicer's retained Slice, resolved paths,
+  and adjacent Difference results.
+
+Only the Slicer calls Position, Connection, and Route Models. Tools do not
+propagate Position, form Connections, compute Routes, compare slices, update
+the static container network, or create a second authoritative computation
+path. The Dynamic Slice UI's orbit guides and classifications are display-only.
+
+Run the compact example:
+
+```bash
+python examples/complete_static_emulator/main.py
+```
+
+Run the richer Dynamic Slice reference:
 
 ```bash
 python examples/dynamic_slice_network/main.py
 ```
 
-Its standalone Dynamic Slice page is
-`examples/dynamic_slice_network/output/inspection/dynamic-slice/index.html`.
-The same run also writes the static Topology and Zone pages at
-`examples/dynamic_slice_network/output/inspection/topology/index.html` and
-`examples/dynamic_slice_network/output/inspection/zone/index.html`. All three
-pages embed their data and have no remote runtime dependency.
-`dynamic_slice_network/main.py` is the only executable assembly entry;
-`simu.py` only projects an explicitly supplied existing Emulator.
+Outputs are written under each example's ignored `output/inspection/`
+directory. Browser validation is performed by
+`scripts/check_dynamic_slice_tool_browser.py`; screenshots are validation
+artifacts and do not belong to the formal read chain.
 
-The Topology page combines the existing 2D GroundStation map with a
-display-only unit-sphere view of static orbit planes and GroundStation
-coordinates. It does not propagate Satellites or place them from
-`mean_anomaly`.
-
-The Zone page embeds every generated probe in both its JSON artifact and
-standalone HTML. Its initial focus view keeps representative centers,
-failures, multi-matches, relation probes, pole probes, dateline probes, and a
-small deterministic sample per Zone visible; the complete set remains
-available through the all-probes view. The 2D map and unit-sphere globe share
-the same client-side filters and never re-run formal APIs while switching
-views.
+When a Tool projection changes, update its package README, focused Tool tests,
+`docs/user-guides/inspection-tools.md`, and
+`docs/codex-reference/inspection-tools.md`. The unique global synchronization
+table is `docs/codex-reference/maintenance-map.md`. A production contract
+change must also update the owning Simulator contract before the Tool.

@@ -5,11 +5,11 @@ from math import inf, nan
 import pytest
 
 import skyseed_v2
-from skyseed_v2.configuration import (
+from skyseed_v2.configuration.simulator import (
     LatitudeLongitudeRectangleDefinition,
-    StaticEmulatorConfigLoadError,
     ZoneDefinition,
     ZoneLayoutDefinition,
+    ZoneLayoutDefinitionLoadError,
     load_zone_layout_definition,
 )
 from skyseed_v2.simulator import (
@@ -21,7 +21,7 @@ from skyseed_v2.simulator import (
     SphericalCap,
     Zone,
 )
-from skyseed_v2.simulator.static_input import SimulatorStaticInput
+from skyseed_v2.simulator.input import SimulatorStaticInput
 
 
 def rectangle_definition(
@@ -174,13 +174,26 @@ zones:
 """,
         encoding="utf-8",
     )
-    with pytest.raises(StaticEmulatorConfigLoadError, match="unsupported"):
+    with pytest.raises(ZoneLayoutDefinitionLoadError, match="unsupported"):
         load_zone_layout_definition(unknown)
 
     empty = tmp_path / "empty.yaml"
     empty.write_text("allow_overlap: false\nzones: []\n", encoding="utf-8")
-    with pytest.raises(StaticEmulatorConfigLoadError, match="at least one"):
+    with pytest.raises(ZoneLayoutDefinitionLoadError, match="at least one"):
         load_zone_layout_definition(empty)
+
+
+def test_zone_yaml_error_contract_is_owned_by_simulator_configuration() -> None:
+    from skyseed_v2.configuration.emulator import (
+        StaticEmulatorConfigLoadError,
+    )
+    from skyseed_v2.configuration.simulator import (
+        ZoneLayoutDefinitionLoadError as exported_error,
+    )
+
+    assert exported_error is ZoneLayoutDefinitionLoadError
+    assert exported_error is not StaticEmulatorConfigLoadError
+    assert exported_error.__module__ == "skyseed_v2.configuration.simulator.yaml"
 
 
 def test_rectangle_contains_normal_boundaries_corners_and_dateline() -> None:

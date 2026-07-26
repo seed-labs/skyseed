@@ -6,24 +6,24 @@ from typing import get_type_hints
 import pytest
 
 import skyseed_v2
-from skyseed_v2.entities import (
+from skyseed_v2.emulator.entities import (
     GroundStation,
     GroundStationLocation,
     Orbit,
     OrbitParameters,
     Satellite,
 )
-from skyseed_v2.simulator_input_generation import (
+from skyseed_v2.emulator_to_simulator import (
     create_ground_station_simulation_input,
     create_satellite_simulation_input,
 )
-from skyseed_v2.node_id import NodeId
-from skyseed_v2.simulator.static_input import (
+from skyseed_v2.shared import NodeId
+from skyseed_v2.simulator.input import (
     GroundStationSimulationInput,
     SatelliteSimulationInput,
     SimulatorStaticInput,
 )
-from skyseed_v2.seedemu_integration import (
+from skyseed_v2.emulator.seedemu import (
     SatelliteBase,
     SkyseedAutonomousSystem,
 )

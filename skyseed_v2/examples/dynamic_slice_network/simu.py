@@ -7,8 +7,8 @@ from pathlib import Path
 
 from seedemu.core import Emulator
 
-from skyseed_v2.configuration import load_zone_layout_definition
-from skyseed_v2.seedemu_integration import SatelliteBase
+from skyseed_v2.configuration.simulator import load_zone_layout_definition
+from skyseed_v2.emulator.seedemu import SatelliteBase
 from skyseed_v2.simulator import (
     CircularOrbitPositionModel,
     ConnectionKind,
@@ -19,7 +19,7 @@ from skyseed_v2.simulator import (
     Simulator,
     Slicer,
 )
-from skyseed_v2.simulator_input_generation import create_simulator_static_input
+from skyseed_v2.emulator_to_simulator import create_simulator_static_input
 
 
 EXAMPLE_ROOT = Path(__file__).resolve().parent

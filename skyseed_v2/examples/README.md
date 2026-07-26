@@ -107,8 +107,8 @@ Both input styles converge at `SkyseedAutonomousSystem.create_shell`,
 `SkyseedAutonomousSystem.create_ground_station`. `SimulatorStaticInput` is the
 immutable static-data boundary consumed by Simulator construction; it is not a
 scenario, SEED Registry, container inventory or output-directory index.
-Entity traversal and conversion belong to `simulator_input_generation.py`;
-the receiving-side `skyseed_v2.simulator.static_input` package contains only
+Entity traversal and conversion belong to `emulator_to_simulator.py`;
+the receiving-side `skyseed_v2.simulator.input` package contains only
 immutable data and its pure-data lookup. No public/global
 `NodeId → entity/service/container` mapping exists. Any future
 dynamic-execution lookup will call the existing Base/AS/Shell/Orbit owners
@@ -140,8 +140,8 @@ The `reference/` directory is excluded from the package and formal example
 path. It preserves offline historical investigation/conversion tooling only;
 no formal example imports or reads it.
 
-`dynamic_slice_network/` is the richer bounded A–F reference used by the G
-implementation candidate. It remains separate from the minimal canonical
+`dynamic_slice_network/` is the richer bounded Dynamic Slice reference used by
+all three Inspection Tools. It remains separate from the minimal canonical
 smoke. Its `emu.py` is the sole Emulator builder, `simu.py` only projects an
 explicitly supplied existing Emulator, and `main.py` is the sole executable
 assembly. That entry compiles the current static Docker/Compose network,

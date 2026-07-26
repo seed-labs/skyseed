@@ -9,16 +9,16 @@ from yaml import compose as compose_yaml
 from yaml import safe_load
 from yaml.nodes import MappingNode, Node, SequenceNode
 
-from skyseed_v2.simulator_input_generation import create_ground_station_simulation_input
-from skyseed_v2.entities import GroundStation, GroundStationLocation, OrbitParameters
-from skyseed_v2.node_id import NodeId
-from skyseed_v2.seedemu_integration import (
+from skyseed_v2.emulator_to_simulator import create_ground_station_simulation_input
+from skyseed_v2.emulator.entities import GroundStation, GroundStationLocation, OrbitParameters
+from skyseed_v2.shared import NodeId
+from skyseed_v2.emulator.seedemu import (
     SATELLITE_REGISTRY_TYPE,
     SatelliteBase,
     SkyseedAutonomousSystem,
     SkyseedDockerCompiler,
 )
-from skyseed_v2.simulator.static_input import (
+from skyseed_v2.simulator.input import (
     GroundStationSimulationInput,
 )
 

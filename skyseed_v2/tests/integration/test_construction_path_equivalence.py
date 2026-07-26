@@ -4,8 +4,8 @@ from pathlib import Path
 from yaml import safe_load
 
 from examples.complete_static_emulator.emu import build_emulator
-from skyseed_v2.static_emulator import create_static_emulator
-from skyseed_v2.configuration import (
+from skyseed_v2.emulator.construction import create_static_emulator
+from skyseed_v2.configuration.emulator import (
     EbgpPeeringConfig,
     EbgpRouterReference,
     GroundStationConfig,
@@ -22,8 +22,8 @@ from skyseed_v2.configuration import (
     StaticEmulatorConfig,
     load_static_emulator_config,
 )
-from skyseed_v2.seedemu_integration import SatelliteBase, SkyseedDockerCompiler
-from skyseed_v2.simulator_input_generation import create_simulator_static_input
+from skyseed_v2.emulator.seedemu import SatelliteBase, SkyseedDockerCompiler
+from skyseed_v2.emulator_to_simulator import create_simulator_static_input
 
 
 FIXTURE = Path(__file__).parents[1] / "fixtures/complete_equivalent.yaml"

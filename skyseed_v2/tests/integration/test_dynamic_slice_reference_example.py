@@ -16,13 +16,13 @@ from examples.dynamic_slice_network import simu
 from examples.dynamic_slice_network.emu import (
     build_dynamic_reference_emulator,
 )
-from skyseed_v2.seedemu_integration import SatelliteBase
+from skyseed_v2.emulator.seedemu import SatelliteBase
 from skyseed_v2.simulator import (
     ConnectionKind,
     GeometricConnectionModel,
     Slicer,
 )
-from skyseed_v2.simulator.coordinates import (
+from skyseed_v2.simulator.geometry import (
     elevation_deg,
     geodetic_to_ecef,
     has_earth_line_of_sight,

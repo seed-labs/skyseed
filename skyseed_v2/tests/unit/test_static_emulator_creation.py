@@ -2,8 +2,8 @@ from datetime import datetime, timezone
 
 from seedemu.core import Emulator
 
-from skyseed_v2.static_emulator import create_static_emulator
-from skyseed_v2.configuration import (
+from skyseed_v2.emulator.construction import create_static_emulator
+from skyseed_v2.configuration.emulator import (
     EbgpPeeringConfig,
     EbgpRouterReference,
     GeneratedOrbitLayout,
@@ -21,12 +21,12 @@ from skyseed_v2.configuration import (
     SkyseedAutonomousSystemConfig,
     StaticEmulatorConfig,
 )
-from skyseed_v2.entities import Orbit, Shell
-from skyseed_v2.seedemu_integration import (
+from skyseed_v2.emulator.entities import Orbit, Shell
+from skyseed_v2.emulator.seedemu import (
     SatelliteBase,
     SkyseedAutonomousSystem,
 )
-from skyseed_v2.simulator_input_generation import create_simulator_static_input
+from skyseed_v2.emulator_to_simulator import create_simulator_static_input
 
 
 def explicit_shell(shell_id: str, satellite_id: str) -> ShellConfig:

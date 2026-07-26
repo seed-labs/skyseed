@@ -31,7 +31,7 @@ from examples.dynamic_slice_network.emu import (
 from examples.dynamic_slice_network.simu import (
     create_dynamic_reference_slicer,
 )
-from skyseed_v2.seedemu_integration import SkyseedDockerCompiler
+from skyseed_v2.emulator.seedemu import SkyseedDockerCompiler
 from tools.dynamic_slice import write_dynamic_slice_tool
 from tools.topology import write_topology_tool
 from tools.zone import write_zone_tool

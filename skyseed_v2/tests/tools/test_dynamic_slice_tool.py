@@ -32,9 +32,9 @@ from skyseed_v2.simulator import (
     Simulator,
     Slicer,
 )
-from skyseed_v2.node_id import NodeId
-from skyseed_v2.simulator.coordinates import elevation_deg, geodetic_to_ecef
-from skyseed_v2.simulator.static_input import (
+from skyseed_v2.shared import NodeId
+from skyseed_v2.simulator.geometry import elevation_deg, geodetic_to_ecef
+from skyseed_v2.simulator.input import (
     SatelliteSimulationInput,
     SimulatorStaticInput,
 )
@@ -45,8 +45,11 @@ from tools.dynamic_slice import (
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-TOOL_SOURCE = PROJECT_ROOT / "tools/dynamic_slice.py"
-TOOL_UI_SOURCE = PROJECT_ROOT / "tools/_dynamic_slice_ui.py"
+TOOL_SOURCE = PROJECT_ROOT / "tools/dynamic_slice/inspection.py"
+TOOL_UI_SOURCE = PROJECT_ROOT / "tools/dynamic_slice/renderer.py"
+TOOL_PIPELINE_SOURCES = tuple(
+    sorted((PROJECT_ROOT / "tools/dynamic_slice").glob("*.py"))
+)
 EXPECTED_FILES = {
     "checksums.sha256",
     "dynamic-slice.json",
@@ -54,6 +57,10 @@ EXPECTED_FILES = {
     "inventory.json",
     "summary.txt",
 }
+CANONICAL_DYNAMIC_SLICE_SHA256 = (
+    "7044fa7b8574226534c90ddb0fceb8d6"
+    "db311621be229158d2ae2c0405a62414"
+)
 PORTABILITY_EPOCH = datetime(2026, 2, 1, tzinfo=timezone.utc)
 
 
@@ -654,7 +661,7 @@ def test_portability_browser_smoke_handles_duplicate_orbits_and_empty_state(
 def test_dynamic_tool_is_repository_local_readonly_and_not_exported() -> None:
     source = "\n".join(
         path.read_text(encoding="utf-8")
-        for path in (TOOL_SOURCE, TOOL_UI_SOURCE)
+        for path in TOOL_PIPELINE_SOURCES
     )
     for forbidden in (
         "CircularOrbitPositionModel",
@@ -675,11 +682,11 @@ def test_dynamic_tool_is_repository_local_readonly_and_not_exported() -> None:
         ".create_difference(",
     ):
         assert required in source
-    assert (
-        "from skyseed_v2.simulator.coordinates import "
-        "elevation_deg, geodetic_to_ecef"
-        in TOOL_SOURCE.read_text(encoding="utf-8")
-    )
+    display_analysis = (
+        PROJECT_ROOT / "tools/dynamic_slice/display_analysis.py"
+    ).read_text(encoding="utf-8")
+    assert "elevation_deg" in display_analysis
+    assert "geodetic_to_ecef" in display_analysis
     assert "def geodetic_to_ecef(" not in source
     assert "def elevation_deg(" not in source
 
@@ -760,7 +767,9 @@ def test_frontend_has_five_focused_presets_with_shared_context() -> None:
     assert "position.ecef_m" in source
     assert "guide.mean_radius_m/WGS84_DISPLAY_RADIUS_M" in source
     assert "const raan=orbit.right_ascension_deg" not in source
-    assert "formal-ecef-positions" in TOOL_SOURCE.read_text(encoding="utf-8")
+    assert "formal-ecef-positions" in (
+        PROJECT_ROOT / "tools/dynamic_slice/display_analysis.py"
+    ).read_text(encoding="utf-8")
     assert "orbitsByRef" in source
     assert "orbitRefBySatellite" in source
     assert "selectedOrbitRef" in source
@@ -807,6 +816,9 @@ def test_bundle_is_complete_self_contained_and_checksum_valid(
         assert digest == sha256((output / relative).read_bytes()).hexdigest()
 
     data_text = (output / "dynamic-slice.json").read_text(encoding="utf-8")
+    assert sha256(data_text.encode("utf-8")).hexdigest() == (
+        CANONICAL_DYNAMIC_SLICE_SHA256
+    )
     html = (output / "index.html").read_text(encoding="utf-8")
     for forbidden in (
         "NodeId(",

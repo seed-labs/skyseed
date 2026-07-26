@@ -27,15 +27,15 @@ from examples._compose_project_scripts import (
     write_compose_project_scripts,
 )
 from examples.complete_static_emulator.emu import build_emulator
-from skyseed_v2.configuration import load_zone_layout_definition
-from skyseed_v2.seedemu_integration import SatelliteBase, SkyseedDockerCompiler
+from skyseed_v2.configuration.simulator import load_zone_layout_definition
+from skyseed_v2.emulator.seedemu import SatelliteBase, SkyseedDockerCompiler
 from skyseed_v2.simulator import (
     SimulationDefinition,
     SimulationTimeline,
     Simulator,
     Topology,
 )
-from skyseed_v2.simulator_input_generation import create_simulator_static_input
+from skyseed_v2.emulator_to_simulator import create_simulator_static_input
 from tools._html import (
     write_aggregate_index,
     write_failed_tool,

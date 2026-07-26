@@ -2,16 +2,12 @@
 
 from __future__ import annotations
 
-from skyseed_v2.configuration import ZoneLayoutDefinition
+from skyseed_v2.configuration.simulator import ZoneLayoutDefinition
 
 from .definition import SimulationDefinition
-from .connection import ConnectionModel
-from .position import PositionModel
-from .route import RouteModel
-from .slicer import Slicer
+from .slicing import ConnectionModel, PositionModel, RouteModel, Slicer
 from .timeline import SimulationTimeline
-from .topology import Topology
-from .zone import ZoneMembershipModel
+from .topology import Topology, ZoneMembershipModel
 
 
 class Simulator:

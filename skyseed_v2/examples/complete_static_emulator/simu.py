@@ -19,9 +19,9 @@ from examples._direct_execution import prepare_direct_file_execution
 prepare_direct_file_execution(__file__)
 
 from examples.complete_static_emulator.emu import build_emulator
-from skyseed_v2.configuration import load_zone_layout_definition
-from skyseed_v2.node_id import NodeId
-from skyseed_v2.seedemu_integration import SatelliteBase
+from skyseed_v2.configuration.simulator import load_zone_layout_definition
+from skyseed_v2.shared import NodeId
+from skyseed_v2.emulator.seedemu import SatelliteBase
 from skyseed_v2.simulator import (
     CircularOrbitPositionModel,
     ConnectionKind,
@@ -33,7 +33,7 @@ from skyseed_v2.simulator import (
     Simulator,
     ZoneRouteTarget,
 )
-from skyseed_v2.simulator_input_generation import create_simulator_static_input
+from skyseed_v2.emulator_to_simulator import create_simulator_static_input
 
 # User-adjustable deterministic simulation parameters.
 DEFAULT_START_TIME = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)

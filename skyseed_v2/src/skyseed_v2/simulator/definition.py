@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .static_input import SimulatorStaticInput
+from .input import SimulatorStaticInput
 from .timeline import SimulationTimeline
 
 

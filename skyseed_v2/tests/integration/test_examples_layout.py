@@ -17,7 +17,7 @@ from examples.dynamic_slice_network import main as dynamic
 from examples.isolated_satellites import main as isolated
 from examples.large_static_network import main as large
 from seedemu.core import Emulator
-from skyseed_v2.seedemu_integration import SatelliteBase
+from skyseed_v2.emulator.seedemu import SatelliteBase
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -520,9 +520,10 @@ def test_large_example_shows_load_create_and_input_generation_directly() -> None
     assert "create_simulator_static_input" in source
     assert "create_emulator_node_index" not in source
     assert "emulator_node_index" not in source
-    assert "from skyseed_v2.configuration import" in source
-    assert "from skyseed_v2.static_emulator import" in source
-    assert "from skyseed_v2.simulator_input_generation import" in source
+    assert "from skyseed_v2.configuration.emulator import" in source
+    assert "from skyseed_v2.emulator import create_static_emulator" in source
+    assert "from skyseed_v2.emulator.construction import" not in source
+    assert "from skyseed_v2.emulator_to_simulator import" in source
     assert "from skyseed_v2.application import" not in source
     assert "from skyseed_v2.serialization import" not in source
     assert "from skyseed_v2 import" not in source

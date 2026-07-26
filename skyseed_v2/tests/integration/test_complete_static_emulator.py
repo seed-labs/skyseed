@@ -6,13 +6,13 @@ from yaml.nodes import MappingNode, Node, SequenceNode
 
 from examples.complete_static_emulator.emu import build_emulator
 from examples.complete_static_emulator.main import main
-from skyseed_v2.node_id import NodeId
-from skyseed_v2.simulator.static_input import (
+from skyseed_v2.shared import NodeId
+from skyseed_v2.simulator.input import (
     GroundStationSimulationInput,
     SatelliteSimulationInput,
 )
-from skyseed_v2.seedemu_integration import SatelliteBase, SkyseedDockerCompiler
-from skyseed_v2.simulator_input_generation import create_simulator_static_input
+from skyseed_v2.emulator.seedemu import SatelliteBase, SkyseedDockerCompiler
+from skyseed_v2.emulator_to_simulator import create_simulator_static_input
 
 
 METADATA_PREFIX = "org.seedsecuritylabs.seedemu.meta."

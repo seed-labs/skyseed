@@ -22,13 +22,13 @@ from astropy.utils import iers
 import pytest
 
 import skyseed_v2
-import skyseed_v2.simulator.coordinates as coordinates
-from skyseed_v2.configuration import (
+import skyseed_v2.simulator.geometry.coordinates as coordinates
+from skyseed_v2.configuration.simulator import (
     LatitudeLongitudeRectangleDefinition,
     ZoneDefinition,
     ZoneLayoutDefinition,
 )
-from skyseed_v2.node_id import NodeId
+from skyseed_v2.shared import NodeId
 from skyseed_v2.simulator import (
     CircularOrbitPositionModel,
     Connection,
@@ -49,12 +49,12 @@ from skyseed_v2.simulator import (
     TopologySlice,
     ZoneRouteTarget,
 )
-from skyseed_v2.simulator.coordinates import (
+from skyseed_v2.simulator.geometry import (
     ecef_distance_m,
     geodetic_to_ecef,
     has_earth_line_of_sight,
 )
-from skyseed_v2.simulator.static_input import (
+from skyseed_v2.simulator.input import (
     GroundStationSimulationInput,
     SatelliteSimulationInput,
     SimulatorStaticInput,
@@ -272,7 +272,7 @@ def test_iers_policy_is_scoped_and_import_has_no_global_side_effect() -> None:
                     "iers.conf.iers_degraded_accuracy = 'warn'",
                     "before = (iers.conf.auto_download, "
                     "iers.conf.iers_degraded_accuracy)",
-                    "import skyseed_v2.simulator.coordinates",
+                    "import skyseed_v2.simulator.geometry",
                     "after = (iers.conf.auto_download, "
                     "iers.conf.iers_degraded_accuracy)",
                     "print(f'before={before!r} after={after!r}')",
@@ -1601,7 +1601,7 @@ def test_slicer_uses_timeline_iterator_as_its_only_timestamp_authority(
     slicer.create_difference(2, 3)
 
     slicer_source = Path(
-        sys.modules["skyseed_v2.simulator.slicer"].__file__
+        sys.modules["skyseed_v2.simulator.slicing.slicer"].__file__
     ).read_text(encoding="utf-8")
     assert "slice_interval" not in slicer_source
 

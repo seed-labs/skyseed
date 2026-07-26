@@ -5,15 +5,15 @@ import pytest
 from seedemu.core import Emulator, Node
 from seedemu.core.enums import NodeRole
 
-from skyseed_v2.simulator_input_generation import create_simulator_static_input
-from skyseed_v2.node_id import NodeId
-from skyseed_v2.entities import OrbitParameters, Satellite, SatelliteRole
-from skyseed_v2.seedemu_integration import (
+from skyseed_v2.emulator_to_simulator import create_simulator_static_input
+from skyseed_v2.shared import NodeId
+from skyseed_v2.emulator.entities import OrbitParameters, Satellite, SatelliteRole
+from skyseed_v2.emulator.seedemu import (
     SATELLITE_REGISTRY_TYPE,
     SatelliteBase,
     SkyseedAutonomousSystem,
 )
-from skyseed_v2.simulator.static_input import SatelliteSimulationInput
+from skyseed_v2.simulator.input import SatelliteSimulationInput
 
 
 def build_rendered_emulator():

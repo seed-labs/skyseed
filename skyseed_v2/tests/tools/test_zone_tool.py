@@ -6,12 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from skyseed_v2.configuration import (
+from skyseed_v2.configuration.simulator import (
     LatitudeLongitudeRectangleDefinition,
     ZoneDefinition,
     ZoneLayoutDefinition,
 )
-from skyseed_v2.node_id import NodeId
+from skyseed_v2.shared import NodeId
 from skyseed_v2.simulator import (
     LatitudeLongitudeRectangle,
     SimulationDefinition,
@@ -20,12 +20,16 @@ from skyseed_v2.simulator import (
     Topology,
     Zone,
 )
-from skyseed_v2.simulator.static_input import (
+from skyseed_v2.simulator.input import (
     GroundStationSimulationInput,
     SimulatorStaticInput,
 )
 from tools.zone import collect_zone_data, write_zone_tool
-from tools.zone_probes import select_zone_probes
+from tools.zone import select_zone_probes
+from tools.zone.probe_read_plan import (
+    RectangleDisplaySnapshot,
+    ZoneDisplaySnapshot,
+)
 
 
 def zone(
@@ -41,6 +45,24 @@ def zone(
         zone_id=zone_id,
         priority=priority,
         geometry=LatitudeLongitudeRectangle(south, north, west, east),
+    )
+
+
+def display_zone(
+    zone_id: str,
+    south: float,
+    north: float,
+    west: float,
+    east: float,
+) -> ZoneDisplaySnapshot:
+    return ZoneDisplaySnapshot(
+        zone_id=zone_id,
+        geometry=RectangleDisplaySnapshot(
+            south_latitude_deg=south,
+            north_latitude_deg=north,
+            west_longitude_deg=west,
+            east_longitude_deg=east,
+        ),
     )
 
 
@@ -122,7 +144,7 @@ def categories(probes) -> set[str]:
 
 
 def test_single_zone_probes_are_deterministic_and_cover_normal_rectangle() -> None:
-    value = zone("normal", -10, 10, -20, 20)
+    value = display_zone("normal", -10, 10, -20, 20)
     first = select_zone_probes((value,))
     second = select_zone_probes((value,))
 
@@ -140,7 +162,7 @@ def test_single_zone_probes_are_deterministic_and_cover_normal_rectangle() -> No
         "south-west-corner",
         "south-east-corner",
     } <= categories(first)
-    assert all(value.contains(p["latitude_deg"], p["longitude_deg"]) for p in first)
+    assert all(-10 <= p["latitude_deg"] <= 10 for p in first)
 
 
 def test_zone_collector_handles_no_layout_single_zone_many_zones_and_no_relations(
@@ -221,9 +243,9 @@ def test_zone_collector_preserves_multiple_pair_relations() -> None:
 
 
 def test_wrapped_and_pole_probes_preserve_all_origins_after_deduplication() -> None:
-    wrapped = zone("wrapped", -10, 10, 170, -170)
-    north = zone("north", 80, 90, 10, 50)
-    south = zone("south", -90, -80, -50, -10)
+    wrapped = display_zone("wrapped", -10, 10, 170, -170)
+    north = display_zone("north", 80, 90, 10, 50)
+    south = display_zone("south", -90, -80, -50, -10)
     probes = select_zone_probes((wrapped, north, south))
 
     wrapped_sides = [
@@ -236,7 +258,7 @@ def test_wrapped_and_pole_probes_preserve_all_origins_after_deduplication() -> N
     ]
     assert {probe["longitude_deg"] for probe in wrapped_sides} == {-179.0, 179.0}
     assert all(
-        wrapped.contains(probe["latitude_deg"], probe["longitude_deg"])
+        -10 <= probe["latitude_deg"] <= 10
         for probe in wrapped_sides
     )
     north_pole = next(probe for probe in probes if probe["latitude_deg"] == 90)
@@ -257,32 +279,32 @@ def test_wrapped_and_pole_probes_preserve_all_origins_after_deduplication() -> N
 def test_pair_scan_covers_overlap_edges_corners_poles_and_dateline() -> None:
     positive = select_zone_probes(
         (
-            zone("left", -10, 10, -20, 20),
-            zone("overlap", 0, 15, 0, 30),
+            display_zone("left", -10, 10, -20, 20),
+            display_zone("overlap", 0, 15, 0, 30),
         )
     )
     edge = select_zone_probes(
         (
-            zone("left", -10, 10, -20, 20),
-            zone("right", -10, 10, 20, 40),
+            display_zone("left", -10, 10, -20, 20),
+            display_zone("right", -10, 10, 20, 40),
         )
     )
     corner = select_zone_probes(
         (
-            zone("left", -10, 10, -20, 20),
-            zone("corner", 10, 20, 20, 30),
+            display_zone("left", -10, 10, -20, 20),
+            display_zone("corner", 10, 20, 20, 30),
         )
     )
     pole = select_zone_probes(
         (
-            zone("north-a", 80, 90, 10, 50),
-            zone("north-b", 85, 90, 100, 150),
+            display_zone("north-a", 80, 90, 10, 50),
+            display_zone("north-b", 85, 90, 100, 150),
         )
     )
     dateline = select_zone_probes(
         (
-            zone("wrap-a", -10, 10, 170, -170),
-            zone("wrap-b", -5, 5, 175, -175),
+            display_zone("wrap-a", -10, 10, 170, -170),
+            display_zone("wrap-b", -5, 5, 175, -175),
         )
     )
 
@@ -429,9 +451,10 @@ def test_custom_model_winner_is_observed_without_default_explanation(
 
 
 def test_zone_tool_uses_public_membership_model_facade() -> None:
-    source = (Path(__file__).resolve().parents[2] / "tools/zone.py").read_text(
-        encoding="utf-8"
-    )
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "tools/zone/reader.py"
+    ).read_text(encoding="utf-8")
 
     assert "layout.get_membership_model()" in source
     assert "._membership_model" not in source

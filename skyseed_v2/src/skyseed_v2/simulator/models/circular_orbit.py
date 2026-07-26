@@ -7,11 +7,11 @@ from math import cos, pi, radians, sin, sqrt
 from types import MappingProxyType
 from typing import Mapping
 
-from skyseed_v2._time import normalize_utc_datetime
-from skyseed_v2.node_id import NodeId
+from skyseed_v2.shared.time import normalize_utc_datetime
+from skyseed_v2.shared import NodeId
 
-from ..coordinates import _gcrs_cartesian_batch_to_ecef, geodetic_to_ecef
-from ..position import EarthFixedPosition
+from ..geometry import EarthFixedPosition, geodetic_to_ecef
+from ..geometry.coordinates import _gcrs_cartesian_batch_to_ecef
 from ..topology import Topology
 
 

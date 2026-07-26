@@ -8,10 +8,10 @@ from examples.large_static_network._compose_support import (
     materialization_expectations,
 )
 from examples.large_static_network.main import DEFAULT_SCENARIO
-from skyseed_v2.configuration import load_static_emulator_config
-from skyseed_v2.seedemu_integration import SatelliteBase, SkyseedDockerCompiler
-from skyseed_v2.simulator_input_generation import create_simulator_static_input
-from skyseed_v2.static_emulator import create_static_emulator
+from skyseed_v2.configuration.emulator import load_static_emulator_config
+from skyseed_v2.emulator.seedemu import SatelliteBase, SkyseedDockerCompiler
+from skyseed_v2.emulator_to_simulator import create_simulator_static_input
+from skyseed_v2.emulator.construction import create_static_emulator
 
 
 METADATA_PREFIX = "org.seedsecuritylabs.seedemu.meta."

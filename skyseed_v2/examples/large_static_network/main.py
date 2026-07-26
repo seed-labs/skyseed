@@ -24,10 +24,10 @@ from examples._compose_project_scripts import (
     prepare_example_output,
     write_compose_project_scripts,
 )
-from skyseed_v2.configuration import load_static_emulator_config
-from skyseed_v2.seedemu_integration import SatelliteBase, SkyseedDockerCompiler
-from skyseed_v2.simulator_input_generation import create_simulator_static_input
-from skyseed_v2.static_emulator import create_static_emulator
+from skyseed_v2.configuration.emulator import load_static_emulator_config
+from skyseed_v2.emulator.seedemu import SatelliteBase, SkyseedDockerCompiler
+from skyseed_v2.emulator_to_simulator import create_simulator_static_input
+from skyseed_v2.emulator import create_static_emulator
 
 
 def main() -> None:

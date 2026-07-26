@@ -4,12 +4,12 @@ from pathlib import Path
 import pytest
 from yaml import safe_dump, safe_load
 
-from skyseed_v2.configuration import (
+from skyseed_v2.configuration.emulator import (
     SCENARIO_SCHEMA_VERSION,
     StaticEmulatorConfigLoadError,
     load_static_emulator_config,
 )
-from skyseed_v2.configuration import (
+from skyseed_v2.configuration.emulator import (
     StaticEmulatorConfig,
 )
 

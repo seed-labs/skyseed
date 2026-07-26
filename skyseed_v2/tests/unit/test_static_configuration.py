@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from skyseed_v2.configuration import (
+from skyseed_v2.configuration.emulator import (
     EbgpPeeringConfig,
     EbgpRouterReference,
     GeneratedOrbitLayout,

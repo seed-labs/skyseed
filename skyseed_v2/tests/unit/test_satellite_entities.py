@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from seedemu.core import Node
 
-from skyseed_v2.entities import OrbitParameters, Satellite, Shell
+from skyseed_v2.emulator.entities import OrbitParameters, Satellite, Shell
 
 
 def parameters() -> OrbitParameters:

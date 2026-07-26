@@ -6,7 +6,7 @@ from subprocess import CompletedProcess
 
 import pytest
 
-from skyseed_v2.materialization import (
+from skyseed_v2.compose import (
     ComposeLaunchStrategy,
     ComposeMaterializationError,
     ComposeProjectLauncher,
@@ -545,9 +545,9 @@ def test_compose_file_drift_stops_before_a_later_batch(tmp_path: Path) -> None:
 def test_materializer_does_not_import_or_call_compiler() -> None:
     from inspect import getsourcefile
 
-    from skyseed_v2.materialization import compose_project_launcher
+    from skyseed_v2.compose import launcher
 
-    source = Path(getsourcefile(compose_project_launcher)).read_text()
+    source = Path(getsourcefile(launcher)).read_text()
     assert "SkyseedDockerCompiler" not in source
     assert ".compile(" not in source
     assert "yaml" not in source

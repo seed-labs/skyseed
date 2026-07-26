@@ -131,15 +131,12 @@ CURRENT 和验证记录。只有全部接受条件满足且工作区 clean，当
 
 实现过程中发现设计问题时，应明确提出设计变更，而不是通过代码细节悄悄改变系统行为。
 
-### Conceptual diagram 保存设计空间
+### 未来能力必须单独批准
 
-Conceptual diagram 不是实现任务清单或公共 API 冻结清单。不得创建空类
-来匹配图；每个切片只冻结本轮需要的公共概念。图中的候选对象可随获批
-纵向切片修改、拆分、合并或重命名，不能只因尚未实现就删除。
-
-Planner、限定职责的 Compiler 和 conceptual `SimulationRunner` 不得形成
-隐式重规划、后端 fallback 或第二条成功路径。静态项目启动者是
-`ComposeProjectLauncher`，不承担 conceptual `SimulationRunner` 职责。
+规划、后端准备/编译和动态执行能力仍未正式设计。它们未来的名称、
+owner、package、输入输出和执行链必须单独批准。
+`ComposeProjectLauncher` 仅负责当前静态 Compose project 的启动与验证。
+不得通过候选类图、空类型、fallback 或第二条成功路径提前冻结未来设计。
 v1 只能围绕当前切片做定向事实调查，不能整体迁移。测试 PASS 也不能
 替代真实执行证据。
 
@@ -170,12 +167,13 @@ v1 只能围绕当前切片做定向事实调查，不能整体迁移。测试 P
 
 本 README 不重复维护当前阶段、下一目标或当前包结构：
 
+* 文档身份与入口见 [`docs/README.md`](./docs/README.md)；
 * 当前阶段与下一目标见 [`docs/CURRENT.md`](./docs/CURRENT.md)；
-* 当前架构图见 [`docs/architecture/diagrams.md`](./docs/architecture/diagrams.md)；
-* Simulator 当前合同与 future conceptual baseline 见
-  [`docs/design/simulator-conceptual-design.md`](./docs/design/simulator-conceptual-design.md)；
-* 公共 API 见 [`docs/architecture/emulator-public-construction-api.md`](./docs/architecture/emulator-public-construction-api.md)；
-* 一词一义规则见 [`docs/architecture/terminology.md`](./docs/architecture/terminology.md)。
+* 最高架构锚点见 [`docs/accepted-design.md`](./docs/accepted-design.md)；
+* 人工架构图见 [`docs/human-readable/`](./docs/human-readable/)；
+* 公共合同和维护映射见
+  [`docs/codex-reference/`](./docs/codex-reference/)；
+* 操作入口见 [`docs/user-guides/`](./docs/user-guides/)。
 
 ## 7. 本文件的使用
 

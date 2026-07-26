@@ -3,9 +3,9 @@ from datetime import datetime, timezone
 import pytest
 from seedemu.core import AutonomousSystem
 
-from skyseed_v2.entities import GroundStationLocation, OrbitParameters
-from skyseed_v2.seedemu_integration import SkyseedAutonomousSystem
-from skyseed_v2.simulator_input_generation import create_simulator_static_input
+from skyseed_v2.emulator.entities import GroundStationLocation, OrbitParameters
+from skyseed_v2.emulator.seedemu import SkyseedAutonomousSystem
+from skyseed_v2.emulator_to_simulator import create_simulator_static_input
 
 
 def add_satellite(

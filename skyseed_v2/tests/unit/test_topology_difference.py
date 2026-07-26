@@ -6,13 +6,13 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 import skyseed_v2
-import skyseed_v2.simulator.difference as difference_module
-from skyseed_v2.configuration import (
+import skyseed_v2.simulator.slicing.difference as difference_module
+from skyseed_v2.configuration.simulator import (
     LatitudeLongitudeRectangleDefinition,
     ZoneDefinition,
     ZoneLayoutDefinition,
 )
-from skyseed_v2.node_id import NodeId
+from skyseed_v2.shared import NodeId
 from skyseed_v2.simulator import (
     Connection,
     ConnectionDirection,
@@ -35,7 +35,7 @@ from skyseed_v2.simulator import (
     ZoneRouteTarget,
     ZoneServiceAssignmentPatch,
 )
-from skyseed_v2.simulator.static_input import (
+from skyseed_v2.simulator.input import (
     GroundStationSimulationInput,
     SatelliteSimulationInput,
     SimulatorStaticInput,

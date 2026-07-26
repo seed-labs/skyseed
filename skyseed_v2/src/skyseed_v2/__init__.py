@@ -9,7 +9,7 @@ from __future__ import annotations
 import typing as _typing
 
 if _typing.TYPE_CHECKING:
-    from .entities import (
+    from .emulator.entities import (
         GroundStation,
         GroundStationLocation,
         Orbit,
@@ -45,7 +45,7 @@ def __getattr__(name: str) -> _typing.Any:
 
     if name not in _ENTITY_EXPORTS:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    from . import entities
+    from .emulator import entities
 
     value = getattr(entities, name)
     globals()[name] = value

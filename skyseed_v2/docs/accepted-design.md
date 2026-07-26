@@ -1,0 +1,74 @@
+# Accepted design anchor
+
+本文件只保存已接受的核心架构。当前实现状态唯一见
+[`CURRENT.md`](CURRENT.md)；详细合同按任务读取
+[`codex-reference/`](codex-reference/)。
+
+## Core principles
+
+- upstream SEED `Emulator` owns the static Emulator composition;
+- Emulator owner tree is Skyseed AS → Shell / GroundStation → Orbit →
+  Satellite;
+- `Simulator` is the Simulator composition root and creates exactly one
+  `Topology`, then exactly one `Slicer`;
+- `SimulatorStaticInput` is immutable receiver-owned boundary data;
+- Models execute Position → Connection → Route;
+- `Slicer` owns retained `TopologySlice` values and creates
+  `TopologyDifference` only from retained formal slices;
+- Tools are repository-local, read-only, and non-authoritative.
+- candidate and provenance material is non-authoritative and never a default
+  implementation source.
+
+## Formal chains
+
+```text
+Emulator configuration
+→ create_static_emulator()
+→ upstream Emulator + Skyseed entities
+→ create_simulator_static_input()
+→ SimulatorStaticInput
+→ SimulationDefinition
+→ Simulator
+→ Topology
+→ Slicer
+→ PositionModel → ConnectionModel → RouteModel
+→ TopologySlice / TopologyDifference
+```
+
+Static deployment is separate:
+
+```text
+Emulator → SkyseedDockerCompiler → Compose project
+→ ComposeProjectLauncher
+```
+
+`ComposeProjectLauncher` is not a dynamic simulation Runner.
+
+## Prohibited behavior
+
+- no Simulator core dependency on Emulator or SEED;
+- no SEED integration dependency on Simulator, Tools, Compose launcher, or
+  examples;
+- no compatibility forwarding or two import paths for retired modules;
+- no second authoritative computation path in Tools;
+- no Tool-side Model execution, Position propagation, Connection/Route
+  recomputation, or Slice comparison;
+- no implicit planner, backend fallback, runtime fallback, or global
+  cross-owner lookup;
+- no unapproved Manager, Context, Builder, Catalog, Coordinator, or Result
+  abstraction.
+
+## Detailed accepted contracts
+
+- [public imports](codex-reference/public-imports.md)
+- [ownership and lifecycle](codex-reference/ownership-lifecycle.md)
+- [Emulator–Simulator boundary](codex-reference/emulator-simulator-boundary.md)
+- [Topology and Zone](codex-reference/topology-zone-contracts.md)
+- [Dynamic slicing](codex-reference/dynamic-slicing-contracts.md)
+- [Position and Connection values](codex-reference/position-connection-values.md)
+- [Model contracts and built-in algorithms](codex-reference/model-contracts.md)
+- [routing and path contracts](codex-reference/routing-path-contracts.md)
+- [Timeline, Slice, retention, and Difference](codex-reference/timeline-slice-difference-contracts.md)
+- [invariants and failures](codex-reference/invariants-failures.md)
+- [extension points](codex-reference/extension-points.md)
+- [maintenance map](codex-reference/maintenance-map.md)

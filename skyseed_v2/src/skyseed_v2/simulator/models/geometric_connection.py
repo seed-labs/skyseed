@@ -9,25 +9,30 @@ from threading import RLock
 from types import MappingProxyType
 from weakref import ReferenceType, ref
 
-from skyseed_v2._time import normalize_utc_datetime
-from skyseed_v2.node_id import NodeId
+from skyseed_v2.shared.time import normalize_utc_datetime
+from skyseed_v2.shared import NodeId
 
-from ..connection import (
+from ..slicing import (
     Connection,
     ConnectionId,
     ConnectionKind,
     ConnectionSlice,
     DirectionalConnectionParameters,
 )
-from ..coordinates import (
+from ..geometry import (
+    EarthFixedPosition,
     ecef_distance_m,
     elevation_deg,
     geodetic_to_ecef,
     has_earth_line_of_sight,
 )
-from ..position import EarthFixedPosition
-from ..topology import GroundStation, Orbit, Satellite, Topology
-from ..zone import SphericalCap
+from ..topology import (
+    GroundStation,
+    Orbit,
+    Satellite,
+    SphericalCap,
+    Topology,
+)
 
 
 _NodePair = tuple[NodeId, NodeId]

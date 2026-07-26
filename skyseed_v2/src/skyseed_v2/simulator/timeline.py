@@ -6,7 +6,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from skyseed_v2._time import normalize_utc_datetime
+from skyseed_v2.shared.time import normalize_utc_datetime
 
 
 @dataclass(frozen=True, slots=True)

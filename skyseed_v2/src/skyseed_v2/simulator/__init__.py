@@ -1,39 +1,36 @@
 """Public Simulator composition, time and static-topology contracts."""
 
-from .connection import (
+from .slicing import (
     Connection,
+    ConnectionDirection,
     ConnectionId,
     ConnectionKind,
     ConnectionModel,
     ConnectionSlice,
     DirectionalConnectionParameters,
-)
-from .definition import SimulationDefinition
-from .difference import (
-    ConnectionDirection,
     DifferenceOperation,
     DirectionalConnectionParametersPatch,
+    GroundStationRouteTarget,
+    PositionModel,
+    RouteKey,
+    RouteModel,
     RoutePatch,
+    RouteSlice,
+    RouteTarget,
+    Slicer,
     TopologyDifference,
+    TopologySlice,
+    ZoneRouteTarget,
     ZoneServiceAssignmentPatch,
 )
+from .definition import SimulationDefinition
+from .geometry import EarthFixedPosition
 from .models import (
     CircularOrbitPositionModel,
     GeometricConnectionModel,
     HopCountRouteModel,
 )
-from .position import EarthFixedPosition, PositionModel
-from .route import (
-    GroundStationRouteTarget,
-    RouteKey,
-    RouteModel,
-    RouteSlice,
-    RouteTarget,
-    ZoneRouteTarget,
-)
 from .simulator import Simulator
-from .slice import TopologySlice
-from .slicer import Slicer
 from .timeline import SimulationTimeline
 from .topology import (
     GroundStation,
@@ -43,7 +40,7 @@ from .topology import (
     SkyseedAutonomousSystem,
     Topology,
 )
-from .zone import (
+from .topology import (
     DefaultZoneMembershipModel,
     LatitudeLongitudeRectangle,
     SphericalCap,

@@ -1206,7 +1206,20 @@ document.getElementById("play-pause").click();
 return true;
 """,
             )
-            time.sleep(1.95)
+            playback_deadline = time.monotonic() + min(timeout, 6.0)
+            while True:
+                playback_labels = _execute(
+                    base_url,
+                    session_id,
+                    """
+return [...new Set(window.__playbackLabels)];
+""",
+                )
+                if playback_labels[:3] == ["Slice 0", "Δ0→1", "Slice 1"]:
+                    break
+                if time.monotonic() >= playback_deadline:
+                    break
+                time.sleep(0.1)
             playback = _execute(
                 base_url,
                 session_id,

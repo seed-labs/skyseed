@@ -3,8 +3,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from skyseed_v2.node_id import NodeId
-from skyseed_v2.simulator.static_input import (
+from skyseed_v2.shared import NodeId
+from skyseed_v2.simulator.input import (
     GroundStationSimulationInput,
     SatelliteSimulationInput,
     SimulatorStaticInput,

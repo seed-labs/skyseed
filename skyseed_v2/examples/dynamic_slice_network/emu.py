@@ -6,8 +6,8 @@ from pathlib import Path
 
 from seedemu.core import Emulator
 
-from skyseed_v2.configuration import load_static_emulator_config
-from skyseed_v2.static_emulator import create_static_emulator
+from skyseed_v2.configuration.emulator import load_static_emulator_config
+from skyseed_v2.emulator import create_static_emulator
 
 
 EXAMPLE_ROOT = Path(__file__).resolve().parent
