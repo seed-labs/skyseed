@@ -19,7 +19,7 @@ from .static_input import (
     GroundStationSimulationInput,
     SatelliteSimulationInput,
 )
-from .zone import Zone, ZoneLayout, ZoneMembershipModel
+from .zone import SphericalCap, Zone, ZoneLayout, ZoneMembershipModel
 
 
 _SATELLITE_KIND = "satellite"
@@ -684,6 +684,11 @@ class Topology:
         return self.get_zone_layout().find_zones(
             latitude_deg, longitude_deg
         )
+
+    def find_intersecting_zones(
+        self, spherical_cap: SphericalCap
+    ) -> tuple[Zone, ...]:
+        return self.get_zone_layout().find_intersecting_zones(spherical_cap)
 
     def resolve_zone(self, latitude_deg: float, longitude_deg: float) -> Zone:
         return self.get_zone_layout().resolve_zone(

@@ -1,0 +1,79 @@
+schema_version: skyseed-static-emulator/v1
+skyseed_autonomous_systems:
+  - asn: 65010
+    shells:
+      - shell_id: dynamic-shell
+        altitude_km: 550.0
+        inclination_deg: 53.0
+        epoch_utc: "2026-01-01T00:00:00+00:00"
+        generation:
+          orbit_count: 4
+          satellites_per_orbit: 8
+          raan:
+            start_deg: 0.0
+            step_deg: 90.0
+          phase:
+            start_deg: 0.0
+            step_deg: 45.0
+            alternating_orbit_offset_deg: 22.5
+    ground_stations:
+      # Historical/reference provenance: copied from the v1
+      # data/ground/starlink_gateways.json catalog entries selected by
+      # s4_visualization_gateway_binding_12.json and V1StaticInputAdapter.
+      # The v1 repository does not establish current operational status.
+      - ground_station_id: gs-porto-alegre-reference
+        display_name: Starlink Gateway - Porto Alegre, Brazil
+        latitude_deg: -30.0346
+        longitude_deg: -51.2177
+        elevation_m: 0.0
+        operator: Skyseed
+        station_type: gateway
+        ix_attachments:
+          - ix_id: 110
+            address: 10.110.0.101
+      - ground_station_id: gs-marsala-reference
+        display_name: Starlink Gateway - Marsala, Italy
+        latitude_deg: 37.7986
+        longitude_deg: 12.4357
+        elevation_m: 0.0
+        operator: Skyseed
+        station_type: gateway
+        ix_attachments:
+          - ix_id: 110
+            address: 10.110.0.102
+      - ground_station_id: gs-yamaguchi-reference
+        display_name: Starlink Gateway - Yamaguchi, Japan
+        latitude_deg: 34.1861
+        longitude_deg: 131.4706
+        elevation_m: 0.0
+        operator: Skyseed
+        station_type: gateway
+        ix_attachments:
+          - ix_id: 110
+            address: 10.110.0.103
+internet_exchanges:
+  - ix_id: 110
+    prefix: 10.110.0.0/24
+    route_server: false
+ordinary_autonomous_systems:
+  - asn: 65110
+    networks:
+      - network_id: service-net
+        prefix: 10.210.0.0/24
+    routers:
+      - router_id: service-router
+        network_attachments:
+          - network_id: service-net
+            address: 10.210.0.254
+        ix_attachments:
+          - ix_id: 110
+            address: 10.110.0.254
+ebgp_peerings:
+  - ix_id: 110
+    first:
+      asn: 65010
+      router_id: gs-porto-alegre-reference
+    second:
+      asn: 65110
+      router_id: service-router
+    relationship: unfiltered

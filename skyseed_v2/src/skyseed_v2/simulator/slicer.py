@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from collections import deque
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterator, Mapping
 from datetime import datetime
 from threading import RLock
 from types import MappingProxyType
@@ -19,6 +18,10 @@ from .connection import (
 )
 from .difference import TopologyDifference, _compare_topology_slices
 from .position import EarthFixedPosition, PositionModel
+from ._routing_policy import (
+    eligible_shortest_next_hops,
+    route_step_allows_transit,
+)
 from .route import (
     GroundStationRouteTarget,
     RouteModel,
@@ -53,6 +56,10 @@ class Slicer:
         "_route_model",
         "_slices",
         "_slices_by_timestamp",
+        "_latest_slice",
+        "_timestamp_iterator",
+        "_pending_timestamp",
+        "_next_slice_id",
     )
 
     def __init__(self) -> None:
@@ -97,8 +104,15 @@ class Slicer:
         instance._position_model = position_model
         instance._connection_model = connection_model
         instance._route_model = route_model
-        instance._slices = [slice_zero]
+        timestamp_iterator = timeline.iter_timestamps()
+        instance._slices = {0: slice_zero}
         instance._slices_by_timestamp = {}
+        instance._latest_slice = slice_zero
+        instance._timestamp_iterator = timestamp_iterator
+        instance._pending_timestamp = _next_timeline_timestamp(
+            timestamp_iterator
+        )
+        instance._next_slice_id = 1
         _claim_model_owners(models, instance)
         connection_context_claimed = False
         try:
@@ -128,8 +142,8 @@ class Slicer:
         timestamp = self.get_next_timestamp()
         if timestamp is None:
             raise StopIteration("SimulationTimeline is exhausted")
-        slice_id = len(self._slices)
-        previous = self._slices[-1]
+        slice_id = self._next_slice_id
+        previous = self._latest_slice
 
         raw_positions = self._position_model.compute_positions(
             self._topology, timestamp
@@ -172,8 +186,12 @@ class Slicer:
 
         # Publication is the only mutation and happens after the whole candidate
         # passes construction and cross-result validation.
-        self._slices.append(candidate)
+        next_timestamp = _next_timeline_timestamp(self._timestamp_iterator)
+        self._slices[slice_id] = candidate
         self._slices_by_timestamp[timestamp] = candidate
+        self._latest_slice = candidate
+        self._next_slice_id = slice_id + 1
+        self._pending_timestamp = next_timestamp
         return candidate
 
     def create_slices(self, count: int) -> tuple[TopologySlice, ...]:
@@ -204,7 +222,7 @@ class Slicer:
             raise ValueError("slice_id must be a non-negative integer")
         try:
             return self._slices[slice_id]
-        except IndexError as error:
+        except KeyError as error:
             raise KeyError(f"Slice not retained: {slice_id}") from error
 
     def get_slice_at(self, timestamp: datetime) -> TopologySlice:
@@ -215,34 +233,26 @@ class Slicer:
             raise KeyError(f"Slice timestamp not retained: {utc.isoformat()}") from error
 
     def get_latest_slice(self) -> TopologySlice:
-        return self._slices[-1]
+        return self._latest_slice
 
     def get_latest_slice_id(self) -> int:
-        return self._slices[-1].slice_id
+        return self._latest_slice.slice_id
 
     def get_latest_timestamp(self) -> datetime | None:
-        return self._slices[-1].timestamp
+        return self._latest_slice.timestamp
 
     def get_next_timestamp(self) -> datetime | None:
-        timestamp = (
-            self._timeline.start_time
-            + (len(self._slices) - 1) * self._timeline.slice_interval
-        )
-        if (
-            self._timeline.end_time is not None
-            and timestamp > self._timeline.end_time
-        ):
-            return None
-        return timestamp
+        return self._pending_timestamp
 
     def is_exhausted(self) -> bool:
         return self.get_next_timestamp() is None
 
     def get_retained_slice_ids(self) -> tuple[int, ...]:
-        return tuple(slice_value.slice_id for slice_value in self._slices)
+        return tuple(sorted(self._slices))
 
     def get_retained_slice_id_range(self) -> tuple[int, int]:
-        return self._slices[0].slice_id, self._slices[-1].slice_id
+        retained_ids = self.get_retained_slice_ids()
+        return retained_ids[0], retained_ids[-1]
 
     def create_difference(
         self,
@@ -335,6 +345,24 @@ class Slicer:
                 raise ValueError(
                     "Route chain uses an absent current Connection"
                 )
+            if (
+                isinstance(target, GroundStationRouteTarget)
+                and next_hop.entity_kind == "ground-station"
+                and next_hop != terminal
+            ):
+                raise ValueError(
+                    f"Route chain reached wrong terminal: {next_hop.value}"
+                )
+            if not route_step_allows_transit(
+                source,
+                current,
+                next_hop,
+                target,
+                terminal,
+            ):
+                raise ValueError(
+                    "Route chain uses ineligible GroundStation transit"
+                )
             if next_hop in seen:
                 raise ValueError("Route chain contains a loop")
             path.append(next_hop)
@@ -378,11 +406,8 @@ def _validate_retained_slice(
         raise TypeError("retained value must be a TopologySlice")
     if topology_slice.slice_id != expected_slice_id:
         raise ValueError("retained Slice ID metadata is inconsistent")
-    expected_timestamp = (
-        None
-        if expected_slice_id == 0
-        else timeline.start_time
-        + (expected_slice_id - 1) * timeline.slice_interval
+    expected_timestamp = _timeline_timestamp_for_slice_id(
+        timeline, expected_slice_id
     )
     if topology_slice.timestamp != expected_timestamp:
         raise ValueError("retained Slice timestamp metadata is inconsistent")
@@ -454,7 +479,6 @@ def _validate_route_slice(
     if not isinstance(route_slice, RouteSlice):
         raise TypeError("RouteModel must return a RouteSlice")
     known_nodes = _topology_node_ids(topology)
-    graph = _connection_graph(known_nodes, connection_slice)
     for source, target_routes in route_slice.routes.items():
         if source not in known_nodes:
             raise ValueError("Route source is foreign to Topology")
@@ -484,21 +508,14 @@ def _validate_route_slice(
                 terminal,
             )
 
-    satellite_ids = {
-        node_id for node_id in known_nodes
-        if node_id.entity_kind == "satellite"
-    }
     ground_station_ids = {
         node_id for node_id in known_nodes
         if node_id.entity_kind == "ground-station"
     }
-    required_targets: list[
-        tuple[RouteTarget, NodeId, Iterable[NodeId]]
-    ] = [
+    required_targets: list[tuple[RouteTarget, NodeId]] = [
         (
             GroundStationRouteTarget(ground_station_id),
             ground_station_id,
-            satellite_ids,
         )
         for ground_station_id in sorted(
             ground_station_ids, key=_node_key
@@ -508,17 +525,19 @@ def _validate_route_slice(
         (
             ZoneRouteTarget(zone_id),
             service_satellite,
-            known_nodes,
         )
         for zone_id, service_satellite in (
             connection_slice.zone_service_assignments.items()
         )
     )
-    for target, terminal, allowed_sources in required_targets:
-        reachable = _reachable_nodes(graph, terminal)
-        for source in allowed_sources:
-            if source == terminal or source not in reachable:
-                continue
+    for target, terminal in required_targets:
+        reachable_sources = eligible_shortest_next_hops(
+            topology,
+            connection_slice,
+            target,
+            terminal,
+        )
+        for source in reachable_sources:
             try:
                 route_slice.get_next_hop(source, target)
             except KeyError as error:
@@ -548,6 +567,22 @@ def _validate_route_chain(
             raise ValueError("Route chain is incomplete") from error
         if not _has_connection(connection_slice, current, next_hop):
             raise ValueError("Route chain uses an absent current Connection")
+        if (
+            isinstance(target, GroundStationRouteTarget)
+            and next_hop.entity_kind == "ground-station"
+            and next_hop != terminal
+        ):
+            raise ValueError("Route chain reaches the wrong terminal")
+        if not route_step_allows_transit(
+            source,
+            current,
+            next_hop,
+            target,
+            terminal,
+        ):
+            raise ValueError(
+                "Route chain uses ineligible GroundStation transit"
+            )
         if next_hop in seen:
             raise ValueError("Route chain contains a loop")
         seen.add(next_hop)
@@ -615,34 +650,6 @@ def _has_connection(
     )
 
 
-def _connection_graph(
-    known_nodes: set[NodeId],
-    connection_slice: ConnectionSlice,
-) -> dict[NodeId, set[NodeId]]:
-    graph = {node_id: set() for node_id in known_nodes}
-    for connection in connection_slice.connections:
-        first = connection.connection_id.endpoint_a
-        second = connection.connection_id.endpoint_b
-        graph[first].add(second)
-        graph[second].add(first)
-    return graph
-
-
-def _reachable_nodes(
-    graph: Mapping[NodeId, set[NodeId]],
-    terminal: NodeId,
-) -> set[NodeId]:
-    reachable = {terminal}
-    pending = deque([terminal])
-    while pending:
-        current = pending.popleft()
-        for neighbor in graph[current]:
-            if neighbor not in reachable:
-                reachable.add(neighbor)
-                pending.append(neighbor)
-    return reachable
-
-
 def _claim_model_owners(
     models: tuple[object, object, object],
     owner: Slicer,
@@ -700,6 +707,31 @@ def _topology_node_ids(topology: Topology) -> set[NodeId]:
 
 def _node_key(node_id: NodeId) -> tuple[int, str, str]:
     return node_id.asn, node_id.entity_kind, node_id.entity_id
+
+
+def _next_timeline_timestamp(
+    timestamps: Iterator[datetime],
+) -> datetime | None:
+    try:
+        timestamp = next(timestamps)
+    except StopIteration:
+        return None
+    return normalize_utc_datetime(timestamp, "Timeline timestamp")
+
+
+def _timeline_timestamp_for_slice_id(
+    timeline: SimulationTimeline,
+    slice_id: int,
+) -> datetime | None:
+    if slice_id == 0:
+        return None
+    for current_slice_id, timestamp in enumerate(
+        timeline.iter_timestamps(),
+        start=1,
+    ):
+        if current_slice_id == slice_id:
+            return timestamp
+    raise ValueError("retained Slice ID is outside SimulationTimeline")
 
 
 __all__ = ["Slicer"]

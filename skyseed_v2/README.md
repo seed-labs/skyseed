@@ -218,6 +218,8 @@ python main.py
 ```
 
 同一个 Emulator 会创建一次 Simulator/Topology，并在 Compose 编译完成后
-生成 `output/tools/index.html`、Topology 页面和 Zone 页面。页面内嵌本次
-数据，可以离线直接打开；相邻 JSON 是私有 tooling audit artifact，不是
-Simulator 或领域合同。独立的 `simu.py` 保留可读的正式调用链，不生成工具。
+生成 `output/runtime/docker-compose.yml`、根级 start/cleanup controls
+以及 `output/inspection/index.html`、Topology 页面和 Zone 页面。页面内嵌
+本次数据，可以离线直接打开；相邻 JSON 是私有 tooling audit artifact，
+不是 Simulator 或领域合同。独立的 `simu.py` 保留可读的正式调用链，不
+生成工具。

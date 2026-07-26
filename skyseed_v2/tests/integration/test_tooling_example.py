@@ -42,12 +42,12 @@ def test_main_builds_once_creates_one_topology_and_shares_it_after_compile(
         return original_create_topology(self, **kwargs)
 
     def topology_writer(topology, directory):
-        assert (output / "docker-compose.yml").is_file()
+        assert (output / "runtime/docker-compose.yml").is_file()
         received.append(topology)
         return real_write_topology_tool(topology, directory)
 
     def zone_writer(topology, directory):
-        assert (output / "docker-compose.yml").is_file()
+        assert (output / "runtime/docker-compose.yml").is_file()
         received.append(topology)
         return real_write_zone_tool(topology, directory)
 
@@ -67,15 +67,15 @@ def test_main_builds_once_creates_one_topology_and_shares_it_after_compile(
     assert len(received) == 2
     assert received[0] is received[1]
     artifacts = {
-        path.relative_to(output / "tools").as_posix()
-        for path in (output / "tools").rglob("*")
+        path.relative_to(output / "inspection").as_posix()
+        for path in (output / "inspection").rglob("*")
         if path.is_file()
     }
     assert artifacts == EXPECTED_ARTIFACTS
     terminal = capsys.readouterr().out
-    assert str(output / "tools/index.html") in terminal
-    assert str(output / "tools/topology/index.html") in terminal
-    assert str(output / "tools/zone/index.html") in terminal
+    assert str(output / "inspection/index.html") in terminal
+    assert str(output / "inspection/topology/index.html") in terminal
+    assert str(output / "inspection/zone/index.html") in terminal
     assert "Topology Tool: PASS" in terminal
     assert "Zone Tool: PASS" in terminal
     assert "Tooling overall: PASS" in terminal
@@ -89,7 +89,7 @@ def test_current_snapshot_replaces_previous_snapshot_without_history(
     topology = complete._create_simulator_topology(build_emulator())
 
     first, first_aggregate = complete._write_tool_snapshot(topology, output)
-    stale = output / "tools/topology/stale-success.txt"
+    stale = output / "inspection/topology/stale-success.txt"
     stale.write_text("old", encoding="utf-8")
     second, second_aggregate = complete._write_tool_snapshot(topology, output)
 
@@ -97,10 +97,10 @@ def test_current_snapshot_replaces_previous_snapshot_without_history(
     assert all(result["status"] == "PASS" for result in first.values())
     assert all(result["status"] == "PASS" for result in second.values())
     assert not stale.exists()
-    assert not (output / "tools/latest").exists()
+    assert not (output / "inspection/latest").exists()
     assert not any(
         path.is_dir() and path.name.startswith("run")
-        for path in (output / "tools").iterdir()
+        for path in (output / "inspection").iterdir()
     )
 
 
@@ -110,7 +110,7 @@ def test_tool_failure_writes_current_failed_artifact_continues_and_returns_nonze
     capsys,
 ) -> None:
     output = tmp_path / "output"
-    stale = output / "tools/topology/topology.json"
+    stale = output / "inspection/topology/topology.json"
     stale.parent.mkdir(parents=True)
     stale.write_text('{"stale":true}', encoding="utf-8")
     zone_calls = 0
@@ -135,13 +135,13 @@ def test_tool_failure_writes_current_failed_artifact_continues_and_returns_nonze
     assert zone_calls == 1
     assert not stale.exists()
     topology_failure = (
-        output / "tools/topology/index.html"
+        output / "inspection/topology/index.html"
     ).read_text(encoding="utf-8")
-    aggregate = (output / "tools/index.html").read_text(encoding="utf-8")
+    aggregate = (output / "inspection/index.html").read_text(encoding="utf-8")
     assert "FAILED" in topology_failure
     assert "forced topology failure" in topology_failure
     assert "FAIL" in aggregate
-    assert (output / "tools/zone/probes.json").is_file()
+    assert (output / "inspection/zone/probes.json").is_file()
     terminal = capsys.readouterr().out
     assert "Topology Tool: FAILED" in terminal
     assert "Zone Tool: PASS" in terminal

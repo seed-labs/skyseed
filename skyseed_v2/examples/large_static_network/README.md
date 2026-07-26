@@ -18,9 +18,9 @@ explicit step and receives only the constructed Skyseed AS values.
 No NodeId-to-entity mapping is created. Any future dynamic-execution lookup
 remains a separate, owner-directed concern and is not Simulator static input.
 
-This is the only YAML example because the scale input is large data rather
-than teaching code. Loading, creation and Simulator-input generation are
-direct functions, not an Emulator subclass, result wrapper or mandatory
+This specialized example uses YAML because the scale input is large data
+rather than teaching code. Loading, creation and Simulator-input generation
+are direct functions, not an Emulator subclass, result wrapper or mandatory
 facade. The resulting
 `SimulatorStaticInput` is immutable static input consumed by Simulator
 construction; it is not Config, a SEED Registry, a container inventory or a
@@ -33,10 +33,10 @@ starting 365 services:
 python3 main.py
 docker compose --parallel 16 \
   -p skyseed_v2_large_static_network \
-  -f output/docker-compose.yml config --quiet
+  -f output/runtime/docker-compose.yml config --quiet
 docker compose --parallel 16 \
   -p skyseed_v2_large_static_network \
-  -f output/docker-compose.yml config --services \
+  -f output/runtime/docker-compose.yml config --services \
   | wc -l
 ```
 
@@ -48,8 +48,19 @@ existing output. The equivalent module command from `skyseed_v2/` is
 `python3 -m examples.large_static_network.main`.
 
 The expected service count is 365. A full build/up is intentionally not part
-of the migration baseline. To deliberately build and start the complete
-experiment, run the generated control:
+of the migration baseline. The generated layout contains only root controls
+and the static runtime:
+
+```text
+output/
+├── start.sh
+├── cleanup.sh
+└── runtime/
+    └── docker-compose.yml and compiler-generated files
+```
+
+To deliberately build and start the complete experiment, run the generated
+control:
 
 ```bash
 ./output/start.sh

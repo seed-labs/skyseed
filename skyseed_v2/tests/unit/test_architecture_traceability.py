@@ -233,10 +233,13 @@ def test_accepted_dynamic_contract_is_linked_and_status_classified() -> None:
     assert "a–e and f are implemented and accepted" in accepted
     assert "a–e and f implemented and accepted" in contract
     assert "topologydifference: **implemented and accepted**" in current
-    assert "g" in contract and "not implemented" in contract
-    assert "g remains unimplemented" in accepted
+    for status_record in (accepted, contract, current):
+        assert "g" in status_record
+        assert "implementation candidate under final review" in status_record
+    assert "complete stage not yet accepted" in contract
+    assert "complete dynamic slice stage is not yet accepted" in accepted
     assert "g dynamic tool" in current
-    assert "full dynamic slice stage is not complete" in current
+    assert "not yet accepted as complete" in current
 
     for type_name in ANCHOR_DYNAMIC_CONCEPTS:
         assert type_name.lower() in accepted
@@ -284,6 +287,8 @@ def test_dynamic_terms_classify_accepted_and_deferred_boundaries() -> None:
         assert term in terminology
     assert "implemented and accepted" in terminology
     assert "adjacent TopologyDifference | **implemented and accepted**" in terminology
+    assert "Dynamic Slice Inspection Tool" in terminology
+    assert "implementation candidate under final review" in terminology
 
 
 def test_provenance_cannot_override_the_accepted_contract() -> None:

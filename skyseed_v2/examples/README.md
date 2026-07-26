@@ -1,8 +1,8 @@
 # Self-Contained Skyseed v2 Examples
 
-Every formal experiment owns a thin entrypoint, scoped cleanup and ignored
-output directory. The two teaching examples are handwritten; only the scale
-example owns v2 YAML:
+Every deployment experiment owns a thin entrypoint, scoped cleanup and ignored
+output directory. The two teaching deployment examples are handwritten; the
+static scale example and richer Dynamic Slice reference own explicit v2 YAML:
 
 ```text
 examples/
@@ -14,21 +14,44 @@ examples/
 │   ├── main.py
 │   ├── simu.py
 │   └── README.md
-└── large_static_network/
-    ├── main.py
+├── large_static_network/
+│   ├── main.py
+│   ├── scenario.yaml
+│   ├── ground_stations.yaml
+│   └── README.md
+└── dynamic_slice_network/
     ├── scenario.yaml
-    ├── ground_stations.yaml
+    ├── zones.yaml
+    ├── emu.py
+    ├── simu.py
+    ├── main.py
     └── README.md
 ```
+
+| Example | Long-term purpose | Recommended entry | Compose | Simulator / Slices | Inspection Tools |
+| --- | --- | --- | --- | --- | --- |
+| `isolated_satellites` | Specialized handwritten two-Satellite deployment | `python3 -m examples.isolated_satellites.main` | Yes | No | None |
+| `complete_static_emulator` | Minimal static/canonical example kept deliberately small | `python3 -m examples.complete_static_emulator.main` | Yes | One static Topology in `main.py`; separate `simu.py` is the small A–F smoke | Topology and Zone |
+| `large_static_network` | Specialized static scale and Compose validation | `python3 -m examples.large_static_network.main` | Yes | Static input projection only | None |
+| `dynamic_slice_network` | Comprehensive Emu + Simu reference for final manual review | `python3 -m examples.dynamic_slice_network.main` | Yes | One Simulator/Slicer with the bounded A–F sequence | Topology, Zone and five-view Dynamic Slice |
 
 Running an example's Python entrypoint generates its ignored `output/`:
 
 ```text
-main.py
-    → output/docker-compose.yml and build contexts
-    → output/start.sh
-    → output/cleanup.sh
+output/
+├── start.sh
+├── cleanup.sh
+├── runtime/
+│   ├── docker-compose.yml
+│   └── compiler-generated build contexts
+└── inspection/              # only examples with read-only Tools
+    └── one isolated subtree per Tool
 ```
+
+`runtime/` is the runnable static container project. `inspection/` contains
+only read-only offline views and their private audit payloads. Examples
+without Tools omit `inspection/`; no example copies runtime files or Tool
+payloads into the output root.
 
 Each formal example can be run directly from its own directory with
 `python3 main.py`. Direct-file execution always uses the interpreter selected
@@ -41,7 +64,8 @@ generated project with
 `./output/start.sh` and `./output/cleanup.sh`.
 
 Project names are fixed and distinct. Generated `start.sh` validates the exact
-Compose file and starts that project with `up -d --build`. Generated
+`runtime/docker-compose.yml` and starts that project with `up -d --build`.
+Generated
 `cleanup.sh` runs project-scoped `down --remove-orphans` and keeps the output
 available for inspection or another start. Neither script is a Runner, and no
 script uses global prune, shared-image deletion, recovery logic or fallback.
@@ -56,8 +80,8 @@ handwritten values
     -> SkyseedAutonomousSystem.create_ground_station (complete example)
 ```
 
-Only the scale example uses YAML because hundreds of repeated input records are
-data rather than teaching code. It uses the one file-input path:
+The static scale and richer dynamic examples use YAML because repeated input
+records are data rather than teaching code. Both use the one file-input path:
 
 ```text
 v2 YAML
@@ -115,6 +139,18 @@ the infinite iterator in full.
 The `reference/` directory is excluded from the package and formal example
 path. It preserves offline historical investigation/conversion tooling only;
 no formal example imports or reads it.
+
+`dynamic_slice_network/` is the richer bounded A–F reference used by the G
+implementation candidate. It remains separate from the minimal canonical
+smoke. Its `emu.py` is the sole Emulator builder, `simu.py` only projects an
+explicitly supplied existing Emulator, and `main.py` is the sole executable
+assembly. That entry compiles the current static Docker/Compose network,
+projects the same SatelliteBase owner into one exact Slicer, generates every
+Slice/Difference, gives the Slicer's exact Topology to the Topology and Zone
+Tools, and gives the exact Slicer to the five-view Dynamic Slice Tool. Static
+container artifacts remain under `output/runtime`; all three read-only views
+remain under `output/inspection`. Static containers are not updated by Slice
+results.
 
 See each experiment's README for exact commands. `SkyseedDockerCompiler`
 declares locally built SEED base images as Compose `service:` additional build

@@ -57,10 +57,25 @@ Generate the complete output from the same example directory:
 python3 main.py
 ```
 
-The default command also writes `output/tools/index.html` plus standalone
-Topology and Zone pages after Compose compilation. The pages embed their data,
-work offline when opened directly, and retain private JSON audit artifacts;
-`simu.py` deliberately does not generate these tools.
+The default command compiles the runnable static project under
+`output/runtime/` and writes `output/inspection/index.html` plus standalone
+Topology and Zone pages:
+
+```text
+output/
+├── start.sh
+├── cleanup.sh
+├── runtime/
+│   └── docker-compose.yml and compiler-generated files
+└── inspection/
+    ├── index.html
+    ├── topology/
+    └── zone/
+```
+
+The pages embed their data, work offline when opened directly, and retain
+private JSON audit artifacts only inside their Tool subtree; `simu.py`
+deliberately does not generate these tools.
 
 Direct-file execution uses the caller's selected Python and never switches
 environments. The recommended local interpreter is the canonical

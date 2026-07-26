@@ -7,8 +7,9 @@ accepted/frozen Simulator Iteration 1 composition/time/static Topology,
 Iteration 2 static Zone domain, formal examples and Compose materialization
 tooling are implemented. The complete dynamic public contract is accepted and
 frozen; the Dynamic Slice A–E main chain is implemented and accepted.
-TopologyDifference is implemented and accepted and G is not implemented, so
-the full Dynamic Slice stage is not complete. Planning,
+TopologyDifference is implemented and accepted. G has a repository-local
+read-only Tool and richer example implementation candidate under final review;
+the complete Dynamic Slice stage is not yet accepted. Planning,
 `SimulationRunner` and UT remain deferred and unimplemented.
 
 ## 2. System division
@@ -97,7 +98,8 @@ LatitudeLongitudeRectangleDefinition → ZoneDefinition →
 ZoneLayoutDefinition`. YAML is only an input source: the loader returns the
 same definition type that programmatic callers construct, and no YAML-specific
 Zone type exists. The Definition is materialization input and is not retained
-in the Topology object tree.
+in the Topology object tree. ZoneLayout's read-only Model query returns the
+exact fixed membership Model; it neither copies nor replaces it.
 
 ## 3. Static entity ownership
 
@@ -299,9 +301,9 @@ Slice A time/epoch/coordinates/Position
 The engineering authorization groups are A–E for the complete Dynamic Slice
 main chain, F for TopologyDifference and G for Tool/example/final
 synchronization. A–E is implemented and accepted. F TopologyDifference is the
-implemented and accepted adjacent comparison; G remains unimplemented and
-requires separate authorization. The full Dynamic Slice stage is not
-complete.
+implemented and accepted adjacent comparison; G is an implementation
+candidate under final review. Automated validation does not accept the
+complete Dynamic Slice stage.
 
 Future Simulator state and plans will cite `NodeId`. Any later approved
 dynamic-execution resolution path will call

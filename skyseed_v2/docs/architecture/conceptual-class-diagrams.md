@@ -4,12 +4,14 @@
 
 The diagrams describe implemented Simulator Iterations 1 and 2 plus the
 implemented and accepted Dynamic Slice A–E main chain and F
-TopologyDifference. G remains accepted/frozen but not implemented, so the
-full Dynamic Slice stage is not complete;
+TopologyDifference. G has an `implementation candidate under final review`;
+the complete Dynamic Slice stage is not yet accepted;
 Planning/execution remains conceptual.
 
 Status stereotypes are normative: `implemented` means current code,
 `implemented and accepted` marks accepted current implementation,
+`implementation candidate under final review` marks current G code and
+evidence awaiting final bundle review and explicit user acceptance,
 `approved / not implemented` means a frozen public contract awaiting its
 authorized implementation Slice, and `conceptual/open` means deferred design.
 The detailed frozen dynamic contract is
@@ -248,6 +250,7 @@ classDiagram
         +get_zone_layout() ZoneLayout
         +get_zone(zone_id) Zone
         +find_zones(latitude_deg, longitude_deg) tuple
+        +find_intersecting_zones(cap) tuple
         +resolve_zone(latitude_deg, longitude_deg) Zone
     }
     class SkyseedAutonomousSystem {
@@ -322,6 +325,7 @@ classDiagram
         <<implemented Topology-owned aggregate>>
         +zones tuple
         +allow_overlap bool
+        +get_membership_model() ZoneMembershipModel
         +get_zone(zone_id) Zone
         +find_zones(latitude_deg, longitude_deg) tuple
         +resolve_zone(latitude_deg, longitude_deg) Zone
@@ -398,9 +402,14 @@ classDiagram
         <<implemented aggregate>>
         +find_intersecting_zones(cap) tuple
     }
+    class Topology {
+        <<implemented static facade>>
+        +find_intersecting_zones(cap) tuple
+    }
 
     OrbitParameters --> Orbit : static projection
     Orbit "1" *-- "*" Satellite : epoch interprets anomaly
+    Topology --> ZoneLayout : delegates range query
     ZoneLayout --> SphericalCap : range query input
 ```
 
@@ -427,10 +436,12 @@ class SimulationTimeline {
 
 class Topology {
   <<implemented static aggregate root>>
+  +find_intersecting_zones(cap) tuple
 }
 
 class ZoneLayout {
   <<implemented static Zone aggregate>>
+  +get_membership_model() ZoneMembershipModel
 }
 
 class ZoneMembershipModel {
@@ -532,7 +543,9 @@ TopologySlice retains no Topology reference. The accepted F contract assigns
 adjacent comparison to Slicer and the accepted implementation provides that
 sole entry without retaining Differences. PositionModel,
 ConnectionModel and RouteModel form one fixed call chain and do not own
-authoritative Slice history.
+authoritative Slice history. Slicer consumes the exact Timeline iterator for
+its pending timestamp and generated progress; retained storage neither
+defines nor rewinds that progress.
 
 ## Approved dynamic values and built-in Models
 
@@ -641,10 +654,62 @@ RoutePatch *-- DifferenceOperation
 The built-in Models are explicit choices, never hidden defaults. Same-Orbit
 ordering is unique mean anomaly; cross-Orbit structure is unique-RAAN
 adjacency plus stable cyclic-offset pairing at Timeline start. Candidate and
-geometry evidence remain private ConnectionModel state. RouteSlice stores
-next hops, not full paths.
+geometry evidence remain private ConnectionModel state. HopCount routing
+allows a target GroundStation as a G terminal and a GroundStation source's
+first access hop for Z, but every backbone transit node is a Satellite.
+RouteSlice stores next hops, not full paths.
 
 Planning, `TopologyDifferenceWindow`, plan types, backend lowering,
 `ExecutionCompiler`, `ExecutableBundle` and `SimulationRunner` remain
 conceptual/open and are deliberately omitted from the accepted public-value
 diagram.
+
+## G read-only Dynamic Slice Inspection flow
+
+This is a repository-local Tool flow, not a new domain owner or public
+Simulator type:
+
+```mermaid
+flowchart LR
+    EXAMPLE[rich bounded reference main]
+    EMULATOR[one Emulator]
+    COMPILE[render + SkyseedDockerCompiler]
+    COMPOSE[static Docker / Compose project]
+    SLICER[exact public Slicer]
+    SLICES[retained TopologySlices]
+    PATHS[formal resolved paths]
+    DIFFS[formal adjacent TopologyDifferences]
+    PROJECTOR[private Tool projector]
+    BUNDLE[non-authoritative offline view bundle]
+    TIMELINE[shared Slice timeline]
+    TOPOLOGY[Topology / Orbit view]
+    ISL[ISL view]
+    SERVICE[Ground / Zone view]
+    ROUTING[Routing view]
+    DIFFERENCE[Difference view]
+
+    EXAMPLE --> EMULATOR
+    EMULATOR --> COMPILE --> COMPOSE
+    EMULATOR -->|SatelliteBase projection| SLICER
+    SLICER -->|get_slice| SLICES
+    SLICER -->|resolve_path| PATHS
+    SLICER -->|create_difference| DIFFS
+    SLICES --> PROJECTOR
+    PATHS --> PROJECTOR
+    DIFFS --> PROJECTOR
+    PROJECTOR --> BUNDLE
+    BUNDLE --> TIMELINE
+    TIMELINE --> TOPOLOGY
+    TIMELINE --> ISL
+    TIMELINE --> SERVICE
+    TIMELINE --> ROUTING
+    TIMELINE --> DIFFERENCE
+```
+
+The G implementation candidate imports no Model and performs no propagation,
+Connection selection, Route calculation or Slice comparison. Its JSON, HTML,
+inventory and checksums are private view artifacts under ignored example
+output and do not enter `skyseed_v2.simulator` exports. The five views have
+separate canvases and do not default to a combined overlay. The static Compose
+branch is not updated from Slice results; a future Planner/backend owns that
+deferred boundary.

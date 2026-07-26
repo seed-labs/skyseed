@@ -24,8 +24,19 @@ python3 -m examples.isolated_satellites.main
 Existing default output is replaced automatically. Pass `--no-override` only
 when an existing output directory should make generation fail.
 
-The generated output contains `docker-compose.yml`, build contexts and its own
-controls. Start the experiment with:
+The generated `output/runtime/` contains `docker-compose.yml` and build
+contexts. The scenario-owned controls are at the output root:
+
+```text
+output/
+├── start.sh
+├── cleanup.sh
+└── runtime/
+    ├── docker-compose.yml
+    └── compiler-generated build contexts
+```
+
+Start the experiment with:
 
 ```bash
 ./output/start.sh

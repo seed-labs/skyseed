@@ -2,8 +2,8 @@
 
 ## Status and authority
 
-Status: **ACCEPTED / FROZEN — A–E AND F IMPLEMENTED AND ACCEPTED; G NOT
-IMPLEMENTED**
+Status: **ACCEPTED / FROZEN — A–E AND F IMPLEMENTED AND ACCEPTED; G
+IMPLEMENTATION CANDIDATE UNDER FINAL REVIEW; COMPLETE STAGE NOT YET ACCEPTED**
 
 Accepted against baseline `cfaa4930cba2d1a6953617b274ef528f9ae4059a`.
 This document is the detailed authoritative contract for the approved A
@@ -225,6 +225,11 @@ Zone in deterministic order and handles the date line and poles. It neither
 selects service Satellites nor stores dynamic candidates. ZoneLayout remains
 the owner of static Zones and static surface geometry only.
 
+`Topology.find_intersecting_zones(spherical_cap)` is the stable dynamic-caller
+facade and delegates unchanged to its owned ZoneLayout. ConnectionModel uses
+that facade; Topology does not acquire elevation, eligibility or assignment
+selection behavior.
+
 ## 7. Connection identity and values
 
 Initial `ConnectionKind` members are:
@@ -364,7 +369,8 @@ the first configured N are selected. Zero access is legal; no capacity, load
 balancing or hysteresis is used.
 
 For Zone assignment, each Satellite's Position yields a subpoint and temporary
-SphericalCap coverage. ZoneLayout intersection is only a coarse filter. A
+SphericalCap coverage. The Topology facade delegates the coarse intersection
+query to ZoneLayout. That intersection is only a coarse filter. A
 Satellite becomes a formal candidate for a Zone only when the Zone's
 deterministic representative point is inside that Satellite's service
 conditions and its representative-point elevation meets the configured
@@ -420,14 +426,26 @@ interface or independent Slice ID. An empty read-only table is a valid state.
 ## 11. Built-in HopCountRouteModel
 
 `HopCountRouteModel` is an explicit built-in choice. Every current Connection
-becomes two directed edges, including GroundStation access. Directional
-parameters may differ but this Model uses only edge existence.
+provides both forwarding directions, but a GroundStation-access direction is
+eligible only at the edge of a formal route; it does not silently grant
+GroundStation backbone-transit capability. Directional parameters may differ
+but this Model uses only eligible edge existence.
 
 G targets are all Topology GroundStations. Z targets are only currently served
 Zones. Satellites receive routes to reachable G and served Z targets.
 GroundStations receive no G-to-G routes and do receive routes to reachable
 served Z targets. GroundStation self G targets and the current Zone service
 Satellite are terminals without entries.
+
+For a G target, that target GroundStation may be the terminal and every
+intermediate node is a Satellite; no other GroundStation may occur in the
+path. For a Z target, a GroundStation source may use one of its own access
+Connections to enter the Satellite network, after which every intermediate
+node and the service-Satellite terminal is a Satellite. A
+Satellite→GroundStation→Satellite path is therefore unreachable to this
+built-in Model even when the undirected connection graph contains those two
+access Connections. Future ground relay requires an explicit capability and a
+different RouteModel.
 
 For each target, a reverse BFS tree minimizes hop count and uses structural
 NodeId tie-breaking independent of Connection enumeration or insertion order.
@@ -505,6 +523,15 @@ is no fallback.
 `create_slices(count)` and `create_all_slices()` may only loop over the core
 operation. The latter is bounded-Timeline only; an unbounded Timeline advances
 through repeated finite requests.
+
+The formal timestamp sequence comes only from
+`SimulationTimeline.iter_timestamps()`. Slicer retains one pending value from
+that sequence and advances its generated Slice ID/timestamp progress only
+after successful publication. Generated progress is independent of the
+retained-Slice container and its length. Retention is storage/query policy and
+does not recalculate, rewind or otherwise define the next Slice identity or
+timestamp. Retained metadata validation uses the same Timeline sequence, not
+a duplicated interval formula.
 
 Queries cover Slice ID, timestamp, latest Slice, latest ID/timestamp, next
 timestamp, exhaustion, retained ID range and exact Topology/Timeline/Model
@@ -636,13 +663,21 @@ the frozen concepts, ownership and dependency direction.
 3. GroundStation elevation becomes required finite WGS84 ellipsoidal height.
 4. Simulator explicitly creates and owns Slicer.
 5. Topology no longer has any proposed Slice creation/comparison role.
-6. ZoneLayout adds SphericalCap intersection query.
+6. ZoneLayout adds the SphericalCap intersection algorithm and Topology exposes
+   its stable delegating query facade.
 7. Position, Connection, Route, Slice, Slicer and Difference contracts become
    accepted public design.
 8. Tools may read formal dynamic results without recomputation.
 9. Same-Orbit rings use mean-anomaly order, not orbit index.
 10. Cross-Orbit links use stable adjacent-Orbit cyclic pairing, not same-index
     pairing.
+11. HopCountRouteModel and Slicer validation use one GroundStation
+    transit-eligibility rule; GroundStation access does not imply backbone
+    transit.
+12. Slicer consumes Timeline's timestamp iterator and keeps generated progress
+    independent of retained storage.
+13. ZoneLayout exposes its exact fixed membership Model through one read-only
+    owner query so repository-local inspection need not access private state.
 
 ## 20. Deferred content
 

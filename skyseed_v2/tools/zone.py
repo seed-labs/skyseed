@@ -186,10 +186,7 @@ def collect_zone_data(topology: Topology) -> dict[str, Any]:
             },
         }
 
-    try:
-        model_type = type(getattr(layout, "_membership_model")).__name__
-    except Exception:
-        model_type = "unknown"
+    model_type = type(layout.get_membership_model()).__name__
     model_is_default = model_type == "DefaultZoneMembershipModel"
     owned_by_id = {zone.zone_id: zone for zone in layout.zones}
     owned_identities = {id(zone): zone for zone in layout.zones}

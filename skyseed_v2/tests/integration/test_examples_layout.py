@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from subprocess import run
 import sys
@@ -5,10 +6,14 @@ import sys
 import pytest
 import skyseed_v2
 from examples import _direct_execution
-from examples._compose_project_scripts import write_compose_project_scripts
+from examples._compose_project_scripts import (
+    prepare_example_output,
+    write_compose_project_scripts,
+)
 from examples.complete_static_emulator import emu
 from examples.complete_static_emulator import main as complete
 from examples.complete_static_emulator import simu
+from examples.dynamic_slice_network import main as dynamic
 from examples.isolated_satellites import main as isolated
 from examples.large_static_network import main as large
 from seedemu.core import Emulator
@@ -31,6 +36,7 @@ EXPERIMENTS = {
         "skyseed_v2_large_static_network",
     ),
 }
+FORMAL_EXAMPLES = (*EXPERIMENTS, "dynamic_slice_network")
 
 
 def test_formal_examples_generate_controls_into_unique_project_outputs() -> None:
@@ -69,6 +75,21 @@ def test_formal_examples_generate_controls_into_unique_project_outputs() -> None
     )
     assert (EXAMPLES_ROOT / "large_static_network/ground_stations.yaml").is_file()
     assert "examples/*/output/" in (PROJECT_ROOT / ".gitignore").read_text()
+
+
+def test_examples_readme_indexes_current_long_term_roles_and_outputs() -> None:
+    readme = (EXAMPLES_ROOT / "README.md").read_text(encoding="utf-8")
+
+    for name in FORMAL_EXAMPLES:
+        assert f"`{name}`" in readme
+    assert "Minimal static/canonical example kept deliberately small" in readme
+    assert "Specialized static scale and Compose validation" in readme
+    assert "Comprehensive Emu + Simu reference for final manual review" in readme
+    assert "Topology, Zone and five-view Dynamic Slice" in readme
+    assert dynamic.DEFAULT_OUTPUT == (
+        EXAMPLES_ROOT / "dynamic_slice_network/output"
+    )
+    assert dynamic.COMPOSE_PROJECT_NAME == "skyseed_v2_dynamic_slice_network"
 
 
 @pytest.mark.parametrize("name", tuple(EXPERIMENTS))
@@ -110,8 +131,9 @@ def test_generated_shell_scripts_are_scoped_executable_and_syntax_valid(
 ) -> None:
     for name, (_, project_name) in EXPERIMENTS.items():
         output = tmp_path / name / "output"
-        output.mkdir(parents=True)
-        (output / "docker-compose.yml").write_text(
+        runtime = prepare_example_output(output, override=False)
+        runtime.mkdir()
+        (runtime / "docker-compose.yml").write_text(
             "services: {}\n",
             encoding="utf-8",
         )
@@ -132,7 +154,14 @@ def test_generated_shell_scripts_are_scoped_executable_and_syntax_valid(
         cleanup_text = cleanup.read_text(encoding="utf-8")
         assert "config --quiet" in start_text
         assert "up -d --build" in start_text
-        assert 'COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"' in start_text
+        assert (
+            'COMPOSE_FILE="$SCRIPT_DIR/runtime/docker-compose.yml"'
+            in start_text
+        )
+        assert (
+            'COMPOSE_FILE="$SCRIPT_DIR/runtime/docker-compose.yml"'
+            in cleanup_text
+        )
         assert project_name in start_text
         assert project_name in cleanup_text
         assert "down --remove-orphans" in cleanup_text
@@ -141,18 +170,181 @@ def test_generated_shell_scripts_are_scoped_executable_and_syntax_valid(
         assert "find " not in cleanup_text
 
 
+def test_generated_shell_scripts_resolve_runtime_from_any_working_directory(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "scenario-output"
+    runtime = prepare_example_output(output, override=False)
+    runtime.mkdir()
+    compose_file = runtime / "docker-compose.yml"
+    compose_file.write_text("services: {}\n", encoding="utf-8")
+    write_compose_project_scripts(output, "skyseed_v2_path_test")
+
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    docker = fake_bin / "docker"
+    docker.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$DOCKER_LOG"
+""",
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
+    unrelated_working_directory = tmp_path / "unrelated/working/directory"
+    unrelated_working_directory.mkdir(parents=True)
+    environment = dict(os.environ)
+    environment["PATH"] = f"{fake_bin}:{environment['PATH']}"
+    docker_log = tmp_path / "docker.log"
+    environment["DOCKER_LOG"] = str(docker_log)
+
+    for script_name in ("start.sh", "cleanup.sh"):
+        result = run(
+            (str(output / script_name),),
+            cwd=unrelated_working_directory,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+
+    calls = docker_log.read_text(encoding="utf-8").splitlines()
+    assert len(calls) == 3
+    assert all(
+        f"-f {compose_file}" in call
+        and "-p skyseed_v2_path_test" in call
+        for call in calls
+    )
+    assert calls[0].endswith("config --quiet")
+    assert calls[1].endswith("up -d --build")
+    assert calls[2].endswith("down --remove-orphans")
+
+
 def test_output_script_generation_fails_closed_on_incomplete_output(
     tmp_path: Path,
 ) -> None:
     with pytest.raises(ValueError, match="docker-compose.yml"):
         write_compose_project_scripts(tmp_path, "skyseed_v2_test")
 
-    (tmp_path / "docker-compose.yml").write_text(
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    (runtime / "docker-compose.yml").write_text(
         "services: {}\n",
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="project_name"):
         write_compose_project_scripts(tmp_path, "invalid project")
+
+
+def test_example_output_preparation_replaces_only_the_owned_root(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "output"
+    output.mkdir()
+    (output / "emulator").mkdir()
+    (output / "simulator").mkdir()
+    (output / "dynamic-slice").mkdir()
+    outside = tmp_path / "outside"
+    outside.write_text("preserved", encoding="utf-8")
+
+    runtime = prepare_example_output(output, override=True)
+
+    assert runtime == output / "runtime"
+    assert output.is_dir()
+    assert tuple(output.iterdir()) == ()
+    assert outside.read_text(encoding="utf-8") == "preserved"
+    with pytest.raises(FileExistsError, match="already exists"):
+        prepare_example_output(output, override=False)
+
+
+@pytest.mark.parametrize(
+    ("name", "module", "inspection_tools"),
+    (
+        ("isolated_satellites", isolated, ()),
+        ("complete_static_emulator", complete, ("topology", "zone")),
+        ("large_static_network", large, ()),
+        (
+            "dynamic_slice_network",
+            dynamic,
+            ("topology", "zone", "dynamic-slice"),
+        ),
+    ),
+)
+def test_formal_examples_emit_one_user_facing_output_tree(
+    name: str,
+    module,
+    inspection_tools: tuple[str, ...],
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    output = tmp_path / name / "output"
+
+    def render_spy(self):
+        return self
+
+    def compile_spy(self, _compiler, directory, override=False):
+        assert not override
+        runtime = Path(directory)
+        assert runtime == output / "runtime"
+        runtime.mkdir(parents=True)
+        (runtime / "docker-compose.yml").write_text(
+            "services: {}\n",
+            encoding="utf-8",
+        )
+        (runtime / "compiler-output.txt").write_text(
+            "runtime-only",
+            encoding="utf-8",
+        )
+        return self
+
+    monkeypatch.setattr(Emulator, "render", render_spy)
+    monkeypatch.setattr(Emulator, "compile", compile_spy)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "main.py",
+            "--output",
+            str(output),
+            "--no-internet-map",
+        ],
+    )
+
+    result = module.main()
+    assert result in (None, 0)
+    expected_root = {"start.sh", "cleanup.sh", "runtime"}
+    if inspection_tools:
+        expected_root.add("inspection")
+    assert {path.name for path in output.iterdir()} == expected_root
+    assert not any(
+        (output / forbidden).exists()
+        for forbidden in ("emulator", "simulator", "dynamic-slice", "tools")
+    )
+    assert {
+        path.name for path in (output / "runtime").iterdir()
+    } == {"docker-compose.yml", "compiler-output.txt"}
+    for script_name in ("start.sh", "cleanup.sh"):
+        script = output / script_name
+        assert script.is_file()
+        assert script.stat().st_mode & 0o111
+        assert (
+            'COMPOSE_FILE="$SCRIPT_DIR/runtime/docker-compose.yml"'
+            in script.read_text(encoding="utf-8")
+        )
+
+    if not inspection_tools:
+        return
+    inspection = output / "inspection"
+    tool_directories = {
+        path.name for path in inspection.iterdir() if path.is_dir()
+    }
+    assert tool_directories == set(inspection_tools)
+    for tool_name in inspection_tools:
+        assert (inspection / tool_name / "index.html").is_file()
+    assert not any(
+        path.name in {"topology.json", "probes.json", "dynamic-slice.json"}
+        for path in output.iterdir()
+    )
 
 
 def test_formal_examples_and_package_have_no_v1_or_constellation_path() -> None:
@@ -344,7 +536,7 @@ def test_large_example_shows_load_create_and_input_generation_directly() -> None
         encoding="utf-8"
     )
     for required_explanation in (
-        "only YAML example",
+        "specialized example uses YAML",
         "not an Emulator subclass",
         "result wrapper",
         "immutable static input consumed by Simulator",

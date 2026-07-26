@@ -22,7 +22,10 @@ from examples._direct_execution import prepare_direct_file_execution
 
 prepare_direct_file_execution(__file__)
 
-from examples._compose_project_scripts import write_compose_project_scripts
+from examples._compose_project_scripts import (
+    prepare_example_output,
+    write_compose_project_scripts,
+)
 from examples.complete_static_emulator.emu import build_emulator
 from skyseed_v2.configuration import load_zone_layout_definition
 from skyseed_v2.seedemu_integration import SatelliteBase, SkyseedDockerCompiler
@@ -78,7 +81,7 @@ def _write_tool_snapshot(
     topology: Topology,
     output: Path,
 ) -> tuple[dict[str, dict[str, object]], bool]:
-    staging = Path(tempfile.mkdtemp(prefix=".tools-", dir=output))
+    staging = Path(tempfile.mkdtemp(prefix=".inspection-", dir=output))
     results: dict[str, dict[str, object]] = {}
     aggregate_ok = True
     try:
@@ -119,7 +122,7 @@ def _write_tool_snapshot(
             aggregate_ok = False
             write_failed_tool(staging, "Tooling aggregate", error)
 
-        final_directory = output / "tools"
+        final_directory = output / "inspection"
         if final_directory.is_symlink() or final_directory.is_file():
             final_directory.unlink()
         elif final_directory.exists():
@@ -145,28 +148,31 @@ def main() -> int:
 
     emulator = build_emulator()
     topology = _create_simulator_topology(emulator)
-    arguments.output.parent.mkdir(parents=True, exist_ok=True)
+    runtime_output = prepare_example_output(
+        arguments.output,
+        override=arguments.override,
+    )
     emulator.render()
     emulator.compile(
         SkyseedDockerCompiler(
             internet_map_enabled=not arguments.no_internet_map
         ),
-        str(arguments.output),
-        override=arguments.override,
+        str(runtime_output),
     )
     write_compose_project_scripts(arguments.output, COMPOSE_PROJECT_NAME)
     tool_results, aggregate_ok = _write_tool_snapshot(
         topology,
         arguments.output,
     )
-    print(f"compiled complete static Emulator to {arguments.output}")
+    print(f"compiled complete static Emulator to {runtime_output}")
     print(f"start with {arguments.output / 'start.sh'}")
-    print(f"Tooling index: {arguments.output / 'tools/index.html'}")
+    print(f"cleanup with {arguments.output / 'cleanup.sh'}")
+    print(f"Inspection index: {arguments.output / 'inspection/index.html'}")
     for tool_name in ENABLED_TOOLS:
         result = tool_results[tool_name]
         print(
             f"{tool_name.capitalize()} Tool: {result['status']} "
-            f"({arguments.output / 'tools' / tool_name / 'index.html'})"
+            f"({arguments.output / 'inspection' / tool_name / 'index.html'})"
         )
     overall_pass = aggregate_ok and all(
         result.get("status") == "PASS" for result in tool_results.values()

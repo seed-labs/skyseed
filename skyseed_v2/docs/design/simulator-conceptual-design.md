@@ -3,8 +3,9 @@
 ## Status and purpose
 
 This record separates the implemented Iterations 1 and 2, the implemented and
-accepted Dynamic Slice A–E main chain and F TopologyDifference, and deferred
-conceptual directions.
+accepted Dynamic Slice A–E main chain and F TopologyDifference, the G
+implementation candidate under final review, and deferred conceptual
+directions.
 It is not an instruction to create placeholder types.
 
 The status labels used here are:
@@ -15,6 +16,8 @@ The status labels used here are:
   direction that later slices must start from;
 - **accepted/frozen design, not implemented**: an approved public contract
   that does not yet describe current code or exports;
+- **implementation candidate under final review**: current G repository-local
+  code and evidence awaiting audit-bundle review and explicit user acceptance;
 - **conceptual/open**: a useful future concept whose final name, shape,
   visibility or detailed contract still requires investigation and approval;
 - **retired/corrected**: an earlier description that no longer represents the
@@ -26,6 +29,9 @@ TopologyDifference is implemented and accepted. Planning, Plan,
 DifferenceWindow, the dynamic
 `ExecutionCompiler`, `ExecutableBundle` and `SimulationRunner` remain
 deferred and unimplemented.
+The repository-local G Inspection Tool only projects one exact Slicer's
+public results into non-authoritative offline view data; it is not a new
+Simulator object or computation path.
 
 The normative sources are
 [`../architecture/accepted-design.md`](../architecture/accepted-design.md),
@@ -195,7 +201,8 @@ The active Model is selected during materialization and cannot be replaced
 after Topology creation. It is a calculation strategy retained by the layout,
 not a second owner or copy of the Zone collection. Reusing one Definition for
 two Simulators materializes two independent Topology/ZoneLayout/Zone object
-trees.
+trees. `ZoneLayout.get_membership_model()` is the narrow read-only owner query
+for that exact retained Model; it neither copies nor replaces it.
 
 The implemented responsibilities are deliberately narrow:
 
@@ -294,8 +301,10 @@ lazily. `end_time` is inclusive when bounded; `None` is unbounded.
 Topology creation does not consume timestamps and does not create a Slice.
 The accepted Dynamic Slice contract keeps Timeline as the timestamp
 authority and assigns ordered generation to Simulator-owned Slicer, not
-Topology. Aware-only UTC normalization and Simulator-owned Slicer generation
-are implemented and accepted. Retention policy remains deferred.
+Topology. Slicer consumes the Timeline's formal iterator and keeps its
+generated progress separate from retained-Slice storage. Aware-only UTC
+normalization and Simulator-owned Slicer generation are implemented and
+accepted. Retention policy remains deferred.
 
 ## Topology aggregate and facade
 
@@ -504,5 +513,6 @@ A–E is the complete Dynamic Slice main chain, F is TopologyDifference and G is
 Tool/canonical example/final synchronization. Each group requires explicit
 authorization, but A through E do not require mechanical authorization pauses
 between internal dependency steps. A–E and F are implemented and accepted; G
-remains unimplemented and requires separate authorization. The full Dynamic
-Slice stage is not complete.
+is an implementation candidate under final review. The complete Dynamic
+Slice stage remains unaccepted pending audit-bundle review and explicit user
+acceptance.

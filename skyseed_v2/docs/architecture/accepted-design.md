@@ -43,9 +43,11 @@ The Dynamic Slice contract remains accepted/frozen. Position, Connection,
 Route, Slicer and TopologySlice are implemented and accepted and are exported
 only from `skyseed_v2.simulator`; no package-root export is implied.
 TopologyDifference is implemented and accepted and is also exported only from
-`skyseed_v2.simulator`. G remains unimplemented. Planning, Plan,
-DifferenceWindow, backend execution and runtime resource policy remain
-deferred.
+`skyseed_v2.simulator`. G has an implementation candidate under final review:
+one richer reference example and a repository-local read-only Dynamic Slice
+Inspection Tool. The complete Dynamic Slice stage is not yet accepted.
+Planning, Plan, DifferenceWindow, backend execution and runtime resource
+policy remain deferred.
 
 ## Core ownership and dependency direction
 
@@ -102,7 +104,8 @@ The accepted A–E and F implementations apply this Architecture Delta:
 4. WGS84 ECEF metres become the sole authoritative Position representation,
    with geographic coordinates as read-only derived views.
 5. Simulator explicitly creates and owns Slicer after Topology.
-6. ZoneLayout gains the accepted SphericalCap range query.
+6. ZoneLayout gains the accepted SphericalCap range-query algorithm, exposed
+   to dynamic callers through the delegating Topology facade.
 7. Position, Connection, Route, TopologySlice and Slicer implement the
    accepted public Simulator contracts.
 8. Tools may read formal dynamic results but do not become a second
@@ -112,6 +115,13 @@ The accepted A–E and F implementations apply this Architecture Delta:
 10. Slicer provides the sole retained, adjacent-Slice Difference entry and
     returns independent immutable sparse TopologyDifference values without
     retaining them.
+11. The built-in HopCount route and Slicer validation share the rule that
+    GroundStation access does not implicitly permit GroundStation backbone
+    transit.
+12. Slicer consumes the Timeline timestamp sequence and keeps generated
+    progress independent of retained Slice storage.
+13. ZoneLayout provides a narrow read-only query for its exact fixed
+    membership Model; Tools do not inspect its private state.
 
 ## Prohibited directions
 
@@ -129,6 +139,8 @@ The accepted A–E and F implementations apply this Architecture Delta:
 - Same-Orbit ordering is not `orbit_index`; cross-Orbit pairing is not
   same-index pairing.
 - Candidate and geometry evidence are not ConnectionSlice state.
+- GroundStation access does not silently make a GroundStation a backbone
+  transit node in the built-in HopCount Model.
 - v1 owners, types, constants and algorithms do not automatically become v2
   architecture.
 
@@ -146,6 +158,7 @@ Each engineering group requires explicit authorization, implementation,
 validation, architecture audit and acceptance. A, B, C, D and E do not require
 mechanical authorization pauses between their internal dependency steps.
 
-A–E and F are implemented and accepted. G remains unimplemented and requires
-separate authorization; acceptance of F does not authorize a Dynamic Tool and
-does not complete the full Dynamic Slice stage.
+A–E and F are implemented and accepted. G is an implementation candidate
+under final review; neither its implementation nor automated validation
+accepts the complete Dynamic Slice stage. Final acceptance requires review of
+the external audit bundle followed by explicit user acceptance.

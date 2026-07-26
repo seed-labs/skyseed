@@ -5,22 +5,42 @@ from __future__ import annotations
 from pathlib import Path
 from re import fullmatch
 from shlex import quote
+import shutil
 
 
 _PARALLEL_LIMIT = 16
+
+
+def prepare_example_output(
+    output_directory: Path,
+    *,
+    override: bool,
+) -> Path:
+    """Create one clean scenario output root and return its runtime directory."""
+
+    output = Path(output_directory)
+    if output.exists() or output.is_symlink():
+        if not override:
+            raise FileExistsError(f"example output already exists: {output}")
+        if output.is_symlink() or output.is_file():
+            output.unlink()
+        else:
+            shutil.rmtree(output)
+    output.mkdir(parents=True)
+    return output / "runtime"
 
 
 def write_compose_project_scripts(
     output_directory: Path,
     project_name: str,
 ) -> None:
-    """Add executable start/cleanup controls to one complete Compose output."""
+    """Add root controls for one Compose project under output/runtime."""
 
     output = Path(output_directory)
-    compose_file = output / "docker-compose.yml"
+    compose_file = output / "runtime/docker-compose.yml"
     if not compose_file.is_file():
         raise ValueError(
-            "output_directory must contain a compiled docker-compose.yml"
+            "output_directory must contain runtime/docker-compose.yml"
         )
     if not isinstance(project_name, str) or fullmatch(
         r"[a-z0-9][a-z0-9_-]*", project_name
@@ -37,7 +57,7 @@ def write_compose_project_scripts(
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${{BASH_SOURCE[0]}}")" && pwd)"
-COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
+COMPOSE_FILE="$SCRIPT_DIR/runtime/docker-compose.yml"
 PROJECT_NAME={shell_project_name}
 COMPOSE=(
     docker compose
@@ -56,7 +76,7 @@ COMPOSE=(
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${{BASH_SOURCE[0]}}")" && pwd)"
-COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
+COMPOSE_FILE="$SCRIPT_DIR/runtime/docker-compose.yml"
 PROJECT_NAME={shell_project_name}
 COMPOSE=(
     docker compose

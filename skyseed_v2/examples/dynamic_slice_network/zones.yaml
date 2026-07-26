@@ -1,0 +1,43 @@
+allow_overlap: true
+
+zones:
+  - zone_id: north-america-east
+    priority: 10
+    geometry:
+      kind: latitude-longitude-rectangle
+      south_latitude_deg: 30.0
+      north_latitude_deg: 50.0
+      west_longitude_deg: -90.0
+      east_longitude_deg: -60.0
+  - zone_id: northeast-priority
+    priority: 20
+    geometry:
+      kind: latitude-longitude-rectangle
+      south_latitude_deg: 38.0
+      north_latitude_deg: 46.0
+      west_longitude_deg: -80.0
+      east_longitude_deg: -68.0
+  - zone_id: western-europe
+    priority: 10
+    geometry:
+      kind: latitude-longitude-rectangle
+      south_latitude_deg: 42.0
+      north_latitude_deg: 58.0
+      west_longitude_deg: -12.0
+      east_longitude_deg: 15.0
+  - zone_id: east-asia
+    priority: 10
+    geometry:
+      kind: latitude-longitude-rectangle
+      south_latitude_deg: 25.0
+      north_latitude_deg: 45.0
+      west_longitude_deg: 125.0
+      east_longitude_deg: 150.0
+  - zone_id: south-america
+    priority: 10
+    geometry:
+      kind: latitude-longitude-rectangle
+      south_latitude_deg: -35.0
+      north_latitude_deg: -5.0
+      west_longitude_deg: -75.0
+      east_longitude_deg: -45.0

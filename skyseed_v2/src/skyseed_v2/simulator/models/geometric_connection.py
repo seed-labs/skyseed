@@ -382,11 +382,6 @@ class GeometricConnectionModel:
         satellites: tuple[Satellite, ...],
         positions: Mapping[NodeId, EarthFixedPosition],
     ) -> Mapping[str, NodeId]:
-        try:
-            zone_layout = topology.get_zone_layout()
-        except RuntimeError:
-            return MappingProxyType({})
-
         candidates: dict[
             str, list[tuple[float, tuple[int, str, str], NodeId]]
         ] = {}
@@ -397,9 +392,12 @@ class GeometricConnectionModel:
                 satellite_position.latitude_deg,
                 satellite_position.longitude_deg,
             )
-            coarse_zones = zone_layout.find_intersecting_zones(
-                SphericalCap(subpoint, cap_radius)
-            )
+            try:
+                coarse_zones = topology.find_intersecting_zones(
+                    SphericalCap(subpoint, cap_radius)
+                )
+            except RuntimeError:
+                return MappingProxyType({})
             for zone in coarse_zones:
                 latitude, longitude = zone.representative_point
                 representative_position = geodetic_to_ecef(

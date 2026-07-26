@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from collections import deque
 from datetime import datetime
 
 from skyseed_v2._time import normalize_utc_datetime
 from skyseed_v2.node_id import NodeId
 
+from .._routing_policy import eligible_shortest_next_hops
 from ..connection import ConnectionSlice
 from ..route import (
     GroundStationRouteTarget,
@@ -16,7 +16,7 @@ from ..route import (
     RouteTarget,
     ZoneRouteTarget,
 )
-from ..topology import GroundStation, Satellite, Topology
+from ..topology import Topology
 
 
 class HopCountRouteModel:
@@ -44,95 +44,43 @@ class HopCountRouteModel:
         if not isinstance(previous_route_slice, RouteSlice):
             raise TypeError("previous_route_slice must be a RouteSlice")
 
-        nodes, satellites, ground_stations = _topology_nodes(topology)
-        graph = {node_id: set() for node_id in nodes}
-        for connection in connection_slice.connections:
-            first = connection.connection_id.endpoint_a
-            second = connection.connection_id.endpoint_b
-            if first not in graph or second not in graph:
-                raise ValueError("Connection endpoint is foreign to Topology")
-            graph[first].add(second)
-            graph[second].add(first)
-
-        target_terminals: list[tuple[RouteTarget, NodeId, bool]] = []
-        for ground_station in ground_stations:
-            target_terminals.append(
-                (
-                    GroundStationRouteTarget(ground_station.node_id),
-                    ground_station.node_id,
-                    True,
+        target_terminals: list[tuple[RouteTarget, NodeId]] = []
+        for autonomous_system in topology.autonomous_systems:
+            for ground_station in autonomous_system.ground_stations:
+                target_terminals.append(
+                    (
+                        GroundStationRouteTarget(ground_station.node_id),
+                        ground_station.node_id,
+                    )
                 )
-            )
         for zone_id, service_satellite in (
             connection_slice.zone_service_assignments.items()
         ):
-            if service_satellite not in satellites:
+            try:
+                node = topology.get_satellite(service_satellite)
+            except KeyError as error:
                 raise ValueError(
                     "Zone service Satellite is foreign to Topology"
-                )
+                ) from error
             target_terminals.append(
-                (ZoneRouteTarget(zone_id), service_satellite, False)
+                (ZoneRouteTarget(zone_id), node.node_id)
             )
 
         entries: list[tuple[RouteKey, NodeId]] = []
-        for target, terminal, ground_station_target in target_terminals:
-            distances = _reverse_distances(graph, terminal)
-            allowed_sources = (
-                satellites
-                if ground_station_target
-                else nodes
+        for target, terminal in target_terminals:
+            choices_by_source = eligible_shortest_next_hops(
+                topology,
+                connection_slice,
+                target,
+                terminal,
             )
-            for source in sorted(allowed_sources, key=_node_key):
-                if source == terminal or source not in distances:
-                    continue
-                closer = tuple(
-                    neighbor
-                    for neighbor in graph[source]
-                    if distances.get(neighbor) == distances[source] - 1
-                )
-                if not closer:
+            for source, choices in choices_by_source.items():
+                if not choices:
                     raise ValueError("reverse BFS produced a corrupt route tree")
                 entries.append(
-                    (RouteKey(source, target), min(closer, key=_node_key))
+                    (RouteKey(source, target), choices[0])
                 )
         return RouteSlice(entries)
-
-
-def _reverse_distances(
-    graph: dict[NodeId, set[NodeId]],
-    terminal: NodeId,
-) -> dict[NodeId, int]:
-    distances = {terminal: 0}
-    pending = deque([terminal])
-    while pending:
-        current = pending.popleft()
-        for neighbor in sorted(graph[current], key=_node_key):
-            if neighbor not in distances:
-                distances[neighbor] = distances[current] + 1
-                pending.append(neighbor)
-    return distances
-
-
-def _topology_nodes(
-    topology: Topology,
-) -> tuple[set[NodeId], set[NodeId], tuple[GroundStation, ...]]:
-    nodes: set[NodeId] = set()
-    satellites: set[NodeId] = set()
-    ground_stations: list[GroundStation] = []
-    for autonomous_system in topology.autonomous_systems:
-        for shell in autonomous_system.shells:
-            for orbit in shell.orbits:
-                for satellite in orbit.satellites:
-                    nodes.add(satellite.node_id)
-                    satellites.add(satellite.node_id)
-        for ground_station in autonomous_system.ground_stations:
-            nodes.add(ground_station.node_id)
-            ground_stations.append(ground_station)
-    return nodes, satellites, tuple(ground_stations)
-
-
-def _node_key(node_id: NodeId) -> tuple[int, str, str]:
-    return node_id.asn, node_id.entity_kind, node_id.entity_id
 
 
 __all__ = ["HopCountRouteModel"]

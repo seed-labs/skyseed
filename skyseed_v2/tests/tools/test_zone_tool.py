@@ -428,6 +428,16 @@ def test_custom_model_winner_is_observed_without_default_explanation(
     assert "LastMatchModel" in html
 
 
+def test_zone_tool_uses_public_membership_model_facade() -> None:
+    source = (Path(__file__).resolve().parents[2] / "tools/zone.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "layout.get_membership_model()" in source
+    assert "._membership_model" not in source
+    assert 'getattr(layout, "_membership_model")' not in source
+
+
 @pytest.mark.parametrize("failure_kind", ("foreign-match", "foreign-winner"))
 def test_illegal_model_output_is_fail_without_fallback(failure_kind: str) -> None:
     external = zone("external", -90, 90, -180, 0)

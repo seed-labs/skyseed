@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gc
 import importlib
+from inspect import getsource
 import os
 from pathlib import Path
 import subprocess
@@ -487,10 +488,61 @@ def test_spherical_cap_queries_handle_date_line_and_pole() -> None:
     ) == ("date-line",)
     assert tuple(
         zone.zone_id
-        for zone in zone_layout.find_intersecting_zones(
+        for zone in topology.find_intersecting_zones(
             SphericalCap((89.0, 0.0), 3.0)
         )
     ) == ("north-pole",)
+
+
+def test_connection_model_uses_only_topology_zone_intersection_facade(
+    monkeypatch,
+) -> None:
+    satellite = _satellite("sat-0")
+    static_input = SimulatorStaticInput((satellite,))
+    _, topology = _simulator(static_input, zone_layout=_zone_layout())
+    positions = CircularOrbitPositionModel().compute_positions(topology, EPOCH)
+    original = type(topology).find_intersecting_zones
+    calls = []
+
+    def find_intersecting_zones_spy(self, spherical_cap):
+        assert self is topology
+        calls.append(spherical_cap)
+        return original(self, spherical_cap)
+
+    monkeypatch.setattr(
+        type(topology),
+        "find_intersecting_zones",
+        find_intersecting_zones_spy,
+    )
+    result = _connection_model().compute_connection_slice(
+        topology,
+        EPOCH,
+        positions,
+        ConnectionSlice(),
+    )
+
+    source = getsource(GeometricConnectionModel._assign_zone_service)
+    assert calls
+    assert result.zone_service_assignments
+    assert "topology.find_intersecting_zones(" in source
+    assert "get_zone_layout" not in source
+    assert "zone_layout.find_intersecting_zones" not in source
+
+
+def test_connection_model_without_zone_layout_keeps_empty_assignment_semantics() -> None:
+    satellite = _satellite("sat-0")
+    static_input = SimulatorStaticInput((satellite,))
+    _, topology = _simulator(static_input)
+    positions = CircularOrbitPositionModel().compute_positions(topology, EPOCH)
+
+    result = _connection_model().compute_connection_slice(
+        topology,
+        EPOCH,
+        positions,
+        ConnectionSlice(),
+    )
+
+    assert result.zone_service_assignments == {}
 
 
 def test_connection_values_normalize_identity_units_and_deep_immutability() -> None:
@@ -801,6 +853,91 @@ def test_hop_count_route_is_deterministic_sparse_and_omits_terminals() -> None:
         first.get_next_hop(by_name["e"], target)
 
 
+def test_hop_count_route_excludes_ground_stations_from_backbone_transit() -> None:
+    first = _satellite("first", mean_anomaly_deg=0.0)
+    second = _satellite(
+        "second", orbit_index=1, mean_anomaly_deg=180.0
+    )
+    relay = _ground_station("relay")
+    ground_target = _ground_station("target")
+    _, topology = _simulator(
+        SimulatorStaticInput(
+            (first, second), (relay, ground_target)
+        ),
+        zone_layout=_zone_layout(),
+    )
+    parameters = DirectionalConnectionParameters(1, 0, 0)
+
+    def connection(first_node: NodeId, second_node: NodeId) -> Connection:
+        kind = (
+            ConnectionKind.GROUND_STATION_ACCESS
+            if "ground-station"
+            in {first_node.entity_kind, second_node.entity_kind}
+            else ConnectionKind.INTER_SATELLITE
+        )
+        return Connection(
+            ConnectionId(kind, first_node, second_node),
+            parameters,
+            parameters,
+        )
+
+    transit_only = (
+        connection(first.node_id, relay.node_id),
+        connection(relay.node_id, second.node_id),
+    )
+    zone_target = ZoneRouteTarget("near")
+    zone_routes = HopCountRouteModel().compute_route_slice(
+        topology,
+        EPOCH,
+        ConnectionSlice(
+            transit_only,
+            {"near": second.node_id},
+        ),
+        RouteSlice(),
+    )
+    with pytest.raises(KeyError, match="unreachable"):
+        zone_routes.get_next_hop(first.node_id, zone_target)
+    assert zone_routes.get_next_hop(relay.node_id, zone_target) == (
+        second.node_id
+    )
+
+    ground_routes = HopCountRouteModel().compute_route_slice(
+        topology,
+        EPOCH,
+        ConnectionSlice(
+            transit_only
+            + (
+                connection(second.node_id, ground_target.node_id),
+            )
+        ),
+        RouteSlice(),
+    )
+    target = GroundStationRouteTarget(ground_target.node_id)
+    with pytest.raises(KeyError, match="unreachable"):
+        ground_routes.get_next_hop(first.node_id, target)
+    assert ground_routes.get_next_hop(second.node_id, target) == (
+        ground_target.node_id
+    )
+
+    satellite_backbone = connection(first.node_id, second.node_id)
+    legal_connections = ConnectionSlice(
+        transit_only + (satellite_backbone,),
+        {"near": second.node_id},
+    )
+    legal_routes = HopCountRouteModel().compute_route_slice(
+        topology,
+        EPOCH,
+        legal_connections,
+        RouteSlice(),
+    )
+    assert legal_routes.get_next_hop(first.node_id, zone_target) == (
+        second.node_id
+    )
+    assert legal_routes.get_next_hop(relay.node_id, zone_target) == (
+        second.node_id
+    )
+
+
 class _FixedPositionModel:
     def __init__(self, positions):
         self.positions = positions
@@ -837,6 +974,35 @@ class _FailOnceRouteModel:
         if self.calls == 1:
             raise RuntimeError("injected route failure")
         return RouteSlice()
+
+
+class _FailOncePositionModel:
+    def __init__(self, positions):
+        self.positions = positions
+        self.fail = True
+
+    def compute_positions(self, topology, timestamp):
+        if self.fail:
+            self.fail = False
+            raise RuntimeError("injected Position failure")
+        return self.positions
+
+
+class _FailOnceConnectionModel:
+    def __init__(self) -> None:
+        self.fail = True
+
+    def compute_connection_slice(
+        self,
+        topology,
+        timestamp,
+        positions,
+        previous_connection_slice,
+    ):
+        if self.fail:
+            self.fail = False
+            raise RuntimeError("injected Connection failure")
+        return ConnectionSlice()
 
 
 class _OmitOnceRouteModel:
@@ -967,6 +1133,50 @@ def test_slicer_failure_is_atomic_and_retries_same_id_and_timestamp() -> None:
             connection_model=_EmptyConnectionModel(),
             route_model=HopCountRouteModel(),
         )
+
+
+@pytest.mark.parametrize("failure_stage", ("position", "connection", "route"))
+def test_every_model_failure_retries_the_same_pending_timestamp_and_id(
+    failure_stage: str,
+) -> None:
+    satellite = _satellite("only")
+    simulator, _ = _simulator(
+        SimulatorStaticInput((satellite,)), end_time=EPOCH
+    )
+    positions = {
+        satellite.node_id: EarthFixedPosition(7_000_000.0, 0.0, 0.0)
+    }
+    position_model = (
+        _FailOncePositionModel(positions)
+        if failure_stage == "position"
+        else _FixedPositionModel(positions)
+    )
+    connection_model = (
+        _FailOnceConnectionModel()
+        if failure_stage == "connection"
+        else _EmptyConnectionModel()
+    )
+    route_model = (
+        _FailOnceRouteModel()
+        if failure_stage == "route"
+        else HopCountRouteModel()
+    )
+    slicer = simulator.create_slicer(
+        position_model=position_model,
+        connection_model=connection_model,
+        route_model=route_model,
+    )
+
+    with pytest.raises(RuntimeError, match="injected"):
+        slicer.create_next_slice()
+    assert slicer.get_retained_slice_ids() == (0,)
+    assert slicer.get_latest_slice_id() == 0
+    assert slicer.get_next_timestamp() == EPOCH
+
+    retried = slicer.create_next_slice()
+    assert retried.slice_id == 1
+    assert retried.timestamp == EPOCH
+    assert slicer.is_exhausted()
 
 
 def test_slicer_rejects_missing_reachable_route_and_retries_same_slice() -> None:
@@ -1347,6 +1557,189 @@ def test_unbounded_batch_is_finite_and_create_all_requires_bound() -> None:
     assert not slicer.is_exhausted()
     with pytest.raises(RuntimeError, match="bounded"):
         slicer.create_all_slices()
+
+
+def test_slicer_uses_timeline_iterator_as_its_only_timestamp_authority(
+    monkeypatch,
+) -> None:
+    timestamps = (
+        EPOCH,
+        EPOCH + timedelta(seconds=7),
+        EPOCH + timedelta(seconds=31),
+    )
+
+    def irregular_timestamps(self):
+        yield from timestamps
+
+    monkeypatch.setattr(
+        SimulationTimeline,
+        "iter_timestamps",
+        irregular_timestamps,
+    )
+    satellite = _satellite("only")
+    simulator, _ = _simulator(
+        SimulatorStaticInput((satellite,)),
+        end_time=EPOCH + timedelta(minutes=1),
+    )
+    slicer = simulator.create_slicer(
+        position_model=_FixedPositionModel(
+            {
+                satellite.node_id: EarthFixedPosition(
+                    7_000_000.0, 0.0, 0.0
+                )
+            }
+        ),
+        connection_model=_EmptyConnectionModel(),
+        route_model=HopCountRouteModel(),
+    )
+
+    slices = slicer.create_all_slices()
+    assert tuple(value.slice_id for value in slices) == (1, 2, 3)
+    assert tuple(value.timestamp for value in slices) == timestamps
+    assert slicer.get_next_timestamp() is None
+    slicer.create_difference(1, 2)
+    slicer.create_difference(2, 3)
+
+    slicer_source = Path(
+        sys.modules["skyseed_v2.simulator.slicer"].__file__
+    ).read_text(encoding="utf-8")
+    assert "slice_interval" not in slicer_source
+
+
+def test_generated_progress_does_not_depend_on_retained_prefix_size() -> None:
+    satellite = _satellite("only")
+    simulator, _ = _simulator(
+        SimulatorStaticInput((satellite,)),
+        end_time=None,
+    )
+    slicer = simulator.create_slicer(
+        position_model=_FixedPositionModel(
+            {
+                satellite.node_id: EarthFixedPosition(
+                    7_000_000.0, 0.0, 0.0
+                )
+            }
+        ),
+        connection_model=_EmptyConnectionModel(),
+        route_model=HopCountRouteModel(),
+    )
+    first, second, third = slicer.create_slices(3)
+
+    assert isinstance(slicer._slices, dict)
+    del slicer._slices[0]
+    del slicer._slices[1]
+    slicer._slices_by_timestamp.pop(first.timestamp)
+
+    fourth = slicer.create_next_slice()
+    assert fourth.slice_id == 4
+    assert fourth.timestamp == EPOCH + timedelta(seconds=30)
+    assert slicer.get_latest_slice() is fourth
+    assert slicer.get_retained_slice_ids() == (2, 3, 4)
+    assert slicer.get_retained_slice_id_range() == (2, 4)
+    assert slicer.create_difference(3, 4).previous_slice_id == 3
+    with pytest.raises(KeyError, match="not retained"):
+        slicer.get_slice(1)
+    assert second.slice_id == 2
+    assert third.slice_id == 3
+
+
+def test_slicer_rejects_ground_station_transit_without_consuming_progress() -> None:
+    first = _satellite("first", mean_anomaly_deg=0.0)
+    second = _satellite(
+        "second", orbit_index=1, mean_anomaly_deg=180.0
+    )
+    relay = _ground_station("relay")
+    simulator, _ = _simulator(
+        SimulatorStaticInput((first, second), (relay,)),
+        end_time=EPOCH,
+        zone_layout=_zone_layout(),
+    )
+    parameters = DirectionalConnectionParameters(1, 0, 0)
+
+    def connection(first_node: NodeId, second_node: NodeId) -> Connection:
+        return Connection(
+            ConnectionId(
+                ConnectionKind.GROUND_STATION_ACCESS,
+                first_node,
+                second_node,
+            ),
+            parameters,
+            parameters,
+        )
+
+    connection_slice = ConnectionSlice(
+        (
+            connection(first.node_id, relay.node_id),
+            connection(relay.node_id, second.node_id),
+        ),
+        {"near": second.node_id},
+    )
+    zone_target = ZoneRouteTarget("near")
+    ground_target = GroundStationRouteTarget(relay.node_id)
+    illegal_routes = RouteSlice(
+        (
+            (RouteKey(first.node_id, zone_target), relay.node_id),
+            (RouteKey(relay.node_id, zone_target), second.node_id),
+            (RouteKey(first.node_id, ground_target), relay.node_id),
+            (RouteKey(second.node_id, ground_target), relay.node_id),
+        )
+    )
+
+    class IllegalOnceRouteModel:
+        def __init__(self) -> None:
+            self.first_call = True
+            self.valid_model = HopCountRouteModel()
+
+        def compute_route_slice(
+            self,
+            topology,
+            timestamp,
+            current_connections,
+            previous_route_slice,
+        ):
+            if self.first_call:
+                self.first_call = False
+                return illegal_routes
+            return self.valid_model.compute_route_slice(
+                topology,
+                timestamp,
+                current_connections,
+                previous_route_slice,
+            )
+
+    positions = {
+        first.node_id: EarthFixedPosition(7_000_000.0, 0.0, 0.0),
+        second.node_id: EarthFixedPosition(7_000_000.0, 1_000.0, 0.0),
+        relay.node_id: geodetic_to_ecef(40.7128, -74.006, 10.0),
+    }
+    slicer = simulator.create_slicer(
+        position_model=_FixedPositionModel(positions),
+        connection_model=_StaticConnectionModel(connection_slice),
+        route_model=IllegalOnceRouteModel(),
+    )
+
+    with pytest.raises(ValueError, match="GroundStation transit"):
+        slicer.create_next_slice()
+    assert slicer.get_latest_slice_id() == 0
+    assert slicer.get_next_timestamp() == EPOCH
+
+    published = slicer.create_next_slice()
+    assert published.slice_id == 1
+    assert published.timestamp == EPOCH
+    assert slicer.resolve_path(1, relay.node_id, zone_target) == (
+        relay.node_id,
+        second.node_id,
+    )
+
+    slicer._slices[1] = TopologySlice(
+        slice_id=1,
+        timestamp=published.timestamp,
+        positions=published.positions,
+        connection_slice=published.connection_slice,
+        route_slice=illegal_routes,
+    )
+    with pytest.raises(ValueError, match="GroundStation transit"):
+        slicer.resolve_path(1, first.node_id, zone_target)
 
 
 @pytest.mark.parametrize("wrong_terminal", (False, True))

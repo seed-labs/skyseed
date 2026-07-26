@@ -326,6 +326,11 @@ class ZoneLayout:
     def allow_overlap(self) -> bool:
         return self._allow_overlap
 
+    def get_membership_model(self) -> ZoneMembershipModel:
+        """Return the exact fixed membership Model owned by this layout."""
+
+        return self._membership_model
+
     def get_zone(self, zone_id: str) -> Zone:
         if not isinstance(zone_id, str):
             raise TypeError("zone_id must be a string")

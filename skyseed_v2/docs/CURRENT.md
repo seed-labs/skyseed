@@ -19,7 +19,8 @@
   TopologySlice and TopologyDifference: **ACCEPTED / FROZEN DESIGN**
 - Dynamic Slice main-chain A–E: **IMPLEMENTED AND ACCEPTED**
 - TopologyDifference: **IMPLEMENTED AND ACCEPTED**
-- G Dynamic Tool and final synchronization: **NOT STARTED**
+- G Dynamic Tool and final synchronization:
+  **IMPLEMENTATION CANDIDATE UNDER FINAL REVIEW**
 - Planning and backend/runtime execution: **DEFERRED / NOT STARTED**
 
 ## Current objective
@@ -30,10 +31,17 @@ Dynamic Slice public contract is now accepted and frozen in
 Its objects, ownership, Model Protocols, built-in Model boundaries, Slice
 lifecycle, Difference semantics and implementation dependency order A through
 G are approved. The Dynamic Slice main chain A–E is implemented and accepted.
-F TopologyDifference is implemented and accepted. G Dynamic Tool, canonical
-integration and final synchronization have not started. Planning and backend
-execution remain outside the implemented scope. The full Dynamic Slice stage
-is not complete.
+F TopologyDifference is implemented and accepted. G now has a richer dynamic
+reference example, repository-local read-only Inspection Tool, integration
+tests and final audit evidence as an implementation candidate under final
+review. Final integration review additionally fixed the accepted built-in
+Route boundary so GroundStations are not implicit backbone transit, restored
+Timeline iteration as Slicer's sole timestamp sequence, decoupled generated
+progress from retained storage and replaced the Zone Tool's private Model
+access with one ZoneLayout-owned read-only query. These are under final
+integration review with G; they do not add Planning or backend behavior.
+Planning and backend execution remain outside the implemented scope. The
+complete Dynamic Slice stage is not yet accepted.
 
 The accepted F implementation publicly exposes `TopologyDifference`,
 `ConnectionDirection`, `DifferenceOperation`,
@@ -149,6 +157,17 @@ SkyseedAutonomousSystem
   materializes the Simulator Topology and ZoneLayout, explicitly creates all
   three built-in Models and the Slicer, then generates and queries two real
   TopologySlices after synthetic Slice 0.
+- `dynamic_slice_network/main.py`: comprehensive richer reference; it builds
+  one YAML-defined Emulator with Skyseed/ordinary ASes, IX, static
+  GroundStation attachments and routing/eBGP, renders and compiles its static
+  Docker/Compose project, then projects that same SatelliteBase owner into one
+  formal Simulator/Slicer. It publishes twenty real Slices after Slice 0 and
+  gives the Slicer's exact Topology to the static Topology and Zone Tools and
+  the exact Slicer to the non-authoritative five-view Dynamic Inspection Tool.
+  Static containers are not updated from Slice results.
+- `dynamic_slice_network/simu.py`: projection-only helper that requires an
+  existing Emulator and creates the same accepted A–F Simulator/Slicer chain;
+  it neither constructs the Emulator nor generates Tool output.
 - `large_static_network`: YAML → `load_static_emulator_config(path)` →
   `create_static_emulator(config)` →
   `Emulator.getLayer("Base")` →
@@ -164,10 +183,12 @@ through another environment. Local development uses the canonical
 Compilation entrypoints replace their owned default output unless
 `--no-override` is requested. Every formal compilation
 entrypoint generates `output/start.sh` and `output/cleanup.sh` after the
-Compose artifact is complete. Source-level shell wrappers no longer generate
-the experiment. The generated start validates the exact Compose file and runs
-`up -d --build`; cleanup runs scoped `down --remove-orphans` and retains the
-output.
+`output/runtime/docker-compose.yml` artifact is complete. Runnable static
+artifacts stay under `runtime/`; repository-local read-only Tool bundles, when
+present, stay under `inspection/`. Source-level shell wrappers no longer
+generate the experiment. The generated start validates the exact runtime
+Compose file and runs `up -d --build`; cleanup runs scoped
+`down --remove-orphans` and retains the output.
 
 `create_static_emulator(config)` returns the actual upstream
 `seedemu.core.Emulator`. It has no creation-result wrapper and no Skyseed
@@ -266,7 +287,7 @@ Completed in Iteration 2:
 - positive-area overlap validation that permits zero-area shared boundaries;
 - public `ZoneMembershipModel` Protocol and stateless deterministic
   `DefaultZoneMembershipModel`;
-- delegating Topology Zone facade;
+- delegating Topology Zone facade, including SphericalCap intersection;
 - canonical complete-static-emulator Zone example;
 - focused Zone tests, full tests and independent focused architecture audit
   **PASS**.
@@ -295,8 +316,9 @@ and the Mermaid map is in
 
 ## Dynamic Slice public contract
 
-Status: **ACCEPTED / FROZEN — A–E AND F IMPLEMENTED AND ACCEPTED; G NOT
-IMPLEMENTED**.
+Status: **ACCEPTED / FROZEN — A–E AND F IMPLEMENTED AND ACCEPTED; G
+IMPLEMENTATION CANDIDATE UNDER FINAL REVIEW; COMPLETE STAGE NOT YET
+ACCEPTED**.
 
 Accepted ownership:
 
@@ -371,8 +393,8 @@ The engineering authorization groups are A–E for the complete Dynamic Slice
 main chain, F for TopologyDifference and G for Tool/example/final
 synchronization. Each group requires explicit authorization; A through E do
 not require mechanical authorization pauses between their internal dependency
-steps. A–E and F are implemented and accepted, and G remains unimplemented
-and requires separate authorization.
+steps. A–E and F are implemented and accepted. G is an implementation
+candidate under final review and is not yet accepted.
 
 ## Current completed and accepted engineering work
 
@@ -382,11 +404,36 @@ and requires separate authorization.
 - F TopologyDifference: immutable sparse comparison of retained adjacent
   TopologySlices through the Slicer-owned entry.
 
+## Current implementation candidate under final review
+
+- G adds the separate comprehensive `dynamic_slice_network` reference plus
+  the existing static Topology/Zone inspection outputs and repository-local
+  five-view Dynamic browser bundle. The static Tools read one exact Topology;
+  the Dynamic Tool reads one exact Slicer, retained Slices, formal resolved
+  paths and formal adjacent Differences. None is a domain owner or second
+  computation path.
+- The minimal `complete_static_emulator/simu.py` remains the small canonical
+  A–F smoke and is not enlarged into the Tool scenario.
+- G automated validation and the external A–G review bundle do not accept the
+  complete Dynamic Slice stage. GPT bundle review and explicit user Tool
+  acceptance remain required.
+
+### G Architecture Delta
+
+- Public Simulator types, methods, fields, ownership and package-root exports:
+  **none**.
+- Formal A–F generation, path and Difference semantics: **unchanged**.
+- Repository-local additions: one richer `examples/dynamic_slice_network/`
+  Emu+Simu reference, one private projector plus five-view frontend, and one
+  dependency-free Firefox WebDriver smoke script.
+- Tool flow: exact Slicer → retained public Slice reads +
+  `resolve_path(...)` + `create_difference(...)` → private JSON/HTML view
+  bundle. No Model or private comparator is called.
+- Class/data-flow documentation adds only this external read-only projection;
+  it does not add a domain node or owner.
+
 ## Explicitly unstarted work
 
-- G Dynamic Tool, canonical integration and final synchronization is not
-  started. The canonical execution example now provides A–E evidence plus
-  accepted F Difference evidence and is not a Tool.
 - Planning, DifferenceWindow and backend/runtime execution.
 - Future dynamic planning/execution consumption of `NodeId` and lowering to
   runtime resource operations.
@@ -416,8 +463,9 @@ exists beyond the accepted A–E and F implementations.
 - Position, Connection, Route, Slicer and TopologySlice:
   **IMPLEMENTED AND ACCEPTED**
 - TopologyDifference implementation: **IMPLEMENTED AND ACCEPTED**
-- Dynamic Tool and final synchronization: **NOT STARTED**
-- Full Dynamic Slice stage: **NOT COMPLETE**
+- Dynamic Tool and final synchronization:
+  **IMPLEMENTATION CANDIDATE UNDER FINAL REVIEW**
+- Full Dynamic Slice stage: **NOT YET ACCEPTED AS COMPLETE**
 - Planning and backend/runtime execution: **DEFERRED / NOT STARTED**
 
 Current package/API details and the manual review checklist are recorded in

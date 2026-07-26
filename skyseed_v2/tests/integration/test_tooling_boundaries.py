@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 import skyseed_v2
@@ -10,6 +11,8 @@ TOOLS_ROOT = PROJECT_ROOT / "tools"
 COMPLETE_MAIN = (
     PROJECT_ROOT / "examples/complete_static_emulator/main.py"
 )
+DYNAMIC_TOOL = TOOLS_ROOT / "dynamic_slice.py"
+DYNAMIC_TOOL_UI = TOOLS_ROOT / "_dynamic_slice_ui.py"
 
 
 def test_tools_are_repository_local_and_dependency_direction_is_one_way() -> None:
@@ -21,6 +24,7 @@ def test_tools_are_repository_local_and_dependency_direction_is_one_way() -> Non
     assert not hasattr(skyseed_v2, "Tool")
     assert not hasattr(skyseed_v2, "TopologyTool")
     assert not hasattr(skyseed_v2, "ZoneTool")
+    assert not hasattr(skyseed_v2, "DynamicSliceTool")
 
     for path in (PROJECT_ROOT / "src/skyseed_v2").rglob("*.py"):
         source = path.read_text(encoding="utf-8")
@@ -61,6 +65,58 @@ def test_dynamic_tool_boundary_allows_readonly_results_without_generation() -> N
     assert "may read frozen Position" in contract
     assert "never reruns a Model" in contract
     assert "non-authoritative design analysis" in contract
+
+    source = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (DYNAMIC_TOOL, DYNAMIC_TOOL_UI)
+    )
+    for required_read in (
+        ".get_topology(",
+        ".get_slice(",
+        ".resolve_path(",
+        ".create_difference(",
+    ):
+        assert required_read in source
+    for forbidden_generation in (
+        "CircularOrbitPositionModel",
+        "GeometricConnectionModel",
+        "HopCountRouteModel",
+        "compute_positions(",
+        "compute_connection_slice(",
+        "compute_route_slice(",
+        "_compare_topology_slices",
+    ):
+        assert forbidden_generation not in source
+
+
+def test_tools_do_not_read_domain_private_members() -> None:
+    findings = []
+    for path in sorted(TOOLS_ROOT.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Attribute)
+                and node.attr.startswith("_")
+                and not node.attr.startswith("__")
+            ):
+                findings.append(
+                    f"{path.relative_to(PROJECT_ROOT)}:{node.lineno}:"
+                    f".{node.attr}"
+                )
+            elif (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id in {"getattr", "setattr", "hasattr", "delattr"}
+                and len(node.args) >= 2
+                and isinstance(node.args[1], ast.Constant)
+                and isinstance(node.args[1].value, str)
+                and node.args[1].value.startswith("_")
+            ):
+                findings.append(
+                    f"{path.relative_to(PROJECT_ROOT)}:{node.lineno}:"
+                    f"{node.args[1].value}"
+                )
+    assert findings == []
 
 
 def test_general_tooling_has_no_canonical_example_identity_control_logic() -> None:

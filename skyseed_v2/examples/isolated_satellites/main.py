@@ -22,7 +22,10 @@ prepare_direct_file_execution(__file__)
 
 from seedemu.core import Emulator
 
-from examples._compose_project_scripts import write_compose_project_scripts
+from examples._compose_project_scripts import (
+    prepare_example_output,
+    write_compose_project_scripts,
+)
 from skyseed_v2 import OrbitParameters
 from skyseed_v2.seedemu_integration import (
     SatelliteBase,
@@ -77,19 +80,23 @@ def main() -> None:
     arguments = parser.parse_args()
 
     emulator, satellite_as = build_emulator()
+    runtime_output = prepare_example_output(
+        arguments.output,
+        override=arguments.override,
+    )
     emulator.render()
     emulator.compile(
         SkyseedDockerCompiler(
             internet_map_enabled=not arguments.no_internet_map
         ),
-        str(arguments.output),
-        override=arguments.override,
+        str(runtime_output),
     )
     write_compose_project_scripts(arguments.output, COMPOSE_PROJECT_NAME)
 
     satellites = satellite_as.satellites()
-    print(f"compiled {len(satellites)} Satellites to {arguments.output}")
+    print(f"compiled {len(satellites)} Satellites to {runtime_output}")
     print(f"start with {arguments.output / 'start.sh'}")
+    print(f"cleanup with {arguments.output / 'cleanup.sh'}")
     for satellite in satellites:
         print(f"- {satellite.satellite_id}")
 

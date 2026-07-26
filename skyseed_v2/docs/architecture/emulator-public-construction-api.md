@@ -10,8 +10,9 @@ composition/time/static Topology and Iteration 2 static Zone domain are
 **IMPLEMENTED**. The dynamic Slice public contract is **ACCEPTED / FROZEN
 DESIGN**. Position, Connection, Route, Slicer and TopologySlice form the
 implemented and accepted A–E main chain; TopologyDifference is implemented
-and accepted in F and G remains unimplemented, so the full Dynamic Slice
-stage is not complete. Planning and backend execution remain deferred.
+and accepted in F. G has a repository-local richer example and read-only Tool
+implementation candidate under final review; the complete Dynamic Slice stage
+is not yet accepted. Planning and backend execution remain deferred.
 
 ## Package ownership
 
@@ -27,12 +28,16 @@ stage is not complete. Planning and backend execution remain deferred.
 | `skyseed_v2.simulator` | Simulator definition, time, composition root, immutable static Topology/Zone domain and accepted Dynamic Slice A–F | static Simulator types plus accepted Position, Connection, Route, TopologySlice, Slicer and built-in Model contracts, and accepted TopologyDifference patch values |
 | `skyseed_v2.materialization` | Launch an already compiled Compose project | `ComposeProjectLauncher` |
 
+Repository-local `tools/dynamic_slice.py` is outside the installed package and
+has no `skyseed_v2` export. It accepts one exact Slicer and writes only a
+private offline view bundle.
+
 The root package still exports only the six high-frequency entity/value names.
 There is no top-level `emulator/` package, Builder, Factory, Loader class,
 creation-result wrapper or compatibility facade. Zone types likewise remain
 public only from their owning modules and are not root exports.
 
-The implemented and accepted A–E dynamic types are exported from
+The implemented and accepted A–F dynamic types are exported from
 `skyseed_v2.simulator` and explicit submodules and remain absent from the
 package root. See
 [`dynamic-slice-public-contract.md`](dynamic-slice-public-contract.md).
@@ -129,6 +134,12 @@ Static Topology + Timeline timestamp
 
 implemented and accepted F:
   → TopologyDifference
+
+G implementation candidate under final review:
+  exact Slicer
+  → retained Slice / formal path / formal adjacent Difference reads
+  → repository-local private projector
+  → non-authoritative offline view bundle
 
 deferred:
 TopologyDifferenceWindow
@@ -348,6 +359,7 @@ classDiagram
         +get_zone_layout() ZoneLayout
         +get_zone(zone_id) Zone
         +find_zones(latitude_deg, longitude_deg) tuple
+        +find_intersecting_zones(cap) tuple
         +resolve_zone(latitude_deg, longitude_deg) Zone
     }
     class SkyseedAutonomousSystem {
@@ -382,6 +394,7 @@ classDiagram
     }
     class ZoneLayout {
         <<implemented Topology-owned aggregate>>
+        +get_membership_model() ZoneMembershipModel
     }
     class ZoneMembershipModel {
         <<implemented public Protocol>>
@@ -422,7 +435,7 @@ The public constructors and facade methods are:
 | `ZoneLayoutDefinition` | `ZoneLayoutDefinition(zones, allow_overlap)`; `zones` is normalized to a deterministic tuple |
 | `load_zone_layout_definition` | `load_zone_layout_definition(path: Path) -> ZoneLayoutDefinition` |
 | `Simulator` | `Simulator(definition)`; Definition/Timeline queries; one-shot `create_topology(...)` / `get_topology()`; after Topology, one-shot `create_slicer(*, position_model, connection_model, route_model)` / `get_slicer()` |
-| `Topology` | direct construction is blocked; existing static-node facade; `get_zone_layout()`; `get_zone(zone_id)`; `find_zones(latitude_deg, longitude_deg)`; `resolve_zone(latitude_deg, longitude_deg)` |
+| `Topology` | direct construction is blocked; existing static-node facade; `get_zone_layout()`; `get_zone(zone_id)`; `find_zones(latitude_deg, longitude_deg)`; `find_intersecting_zones(spherical_cap)`; `resolve_zone(latitude_deg, longitude_deg)` |
 | Simulator `SkyseedAutonomousSystem` | direct construction is blocked; `asn`; `shells`; `ground_stations`; owner-local `get_shell(shell_id)` and `get_ground_station(node_id)` |
 | Simulator `Shell` | direct construction is blocked; `asn`; `shell_id`; `orbits`; owner-local `get_orbit(orbit_id)` |
 | Simulator `Orbit` | direct construction is blocked; identity/orbit-parameter properties including UTC `epoch_utc`; `satellites`; owner-local `get_satellite(node_id)` |
@@ -432,7 +445,7 @@ The public constructors and facade methods are:
 | `Zone` | `Zone(zone_id, priority, geometry)`; frozen fields; `contains(latitude_deg, longitude_deg) -> bool` |
 | `ZoneMembershipModel` | runtime-checkable Protocol: `find_zones(zones, latitude_deg, longitude_deg) -> Iterable[Zone]`; `resolve_zone(matches, latitude_deg, longitude_deg) -> Zone` |
 | `DefaultZoneMembershipModel` | `DefaultZoneMembershipModel()`; stateless implementations of both Protocol methods |
-| `ZoneLayout` | direct construction is blocked; `zones`; `allow_overlap`; membership queries; `find_intersecting_zones(spherical_cap)` |
+| `ZoneLayout` | direct construction is blocked; `zones`; `allow_overlap`; `get_membership_model()` exact read-only owner query; membership queries; `find_intersecting_zones(spherical_cap)` |
 
 Topology retains `_autonomous_systems`, `_autonomous_systems_by_asn`,
 `_nodes_by_id` and `_zone_layout`. Each owner retains its own tuple enumeration and private
@@ -445,8 +458,10 @@ Satellite-parent reverse API or index exists.
 
 When configured, ZoneLayout is the sole owner of the Zone tuple and immutable
 ID index; both return the same Zone instances. Its Model reference is fixed at
-materialization and owns no second Zone collection. Topology only delegates its
-four Zone facade methods. The Definition is not retained. Reusing one
+materialization and owns no second Zone collection.
+`get_membership_model()` returns that exact retained Model without copying or
+replacement. Topology only delegates its five Zone facade methods. The
+Definition is not retained. Reusing one
 Definition with two Simulators creates independent Topology/ZoneLayout/Zone
 trees.
 
@@ -458,8 +473,10 @@ The main failure surface is part of the public contract:
 | `load_zone_layout_definition(path)` | `ZoneLayoutDefinition` | `StaticEmulatorConfigLoadError` for read, YAML shape/schema and wrapped Definition validation failures |
 | `Simulator.create_topology(...)` | `Topology` | `RuntimeError` after a successful prior creation; `ValueError` for Model-only input; materialization validation errors propagate while leaving Topology unset |
 | `Topology.get_zone_layout()` | same owned `ZoneLayout` | `RuntimeError` when no layout was configured |
+| `ZoneLayout.get_membership_model()` | exact fixed `ZoneMembershipModel` | no alternate owner, copy, replacement or fallback |
 | `get_zone(zone_id)` | same owned `Zone` | `TypeError` for non-string ID; `KeyError` for unknown ID; facade also raises `RuntimeError` when no layout exists |
 | `find_zones(latitude_deg, longitude_deg)` | sorted tuple of owned physical matches | coordinate `TypeError`/`ValueError`; any Model/iteration `TypeError` is wrapped as the iterable-result `TypeError`; foreign/duplicate Model Zones raise `ValueError`; other custom exceptions propagate; facade raises `RuntimeError` when no layout exists |
+| `find_intersecting_zones(spherical_cap)` | unchanged deterministic tuple returned by the owned `ZoneLayout` | `TypeError` for a non-`SphericalCap`; facade raises `RuntimeError` when no layout exists |
 | `resolve_zone(latitude_deg, longitude_deg)` | one owned authoritative `Zone` | coordinate errors; `LookupError` for no physical match; `ValueError` for a foreign authoritative result; custom resolution exceptions otherwise propagate |
 
 Iteration 2 public exposure and return types are exact:
@@ -474,9 +491,9 @@ Iteration 2 public exposure and return types are exact:
 | `skyseed_v2.simulator.Zone` | constructor shown above; `zone_id`, `priority`, `geometry`; `contains(latitude_deg: Real, longitude_deg: Real)` | `str`, `int`, `LatitudeLongitudeRectangle`; `bool` |
 | `skyseed_v2.simulator.ZoneMembershipModel` | `find_zones(zones: tuple[Zone, ...], latitude_deg: float, longitude_deg: float)`; `resolve_zone(matches: tuple[Zone, ...], latitude_deg: float, longitude_deg: float)` | `Iterable[Zone]`; `Zone` |
 | `skyseed_v2.simulator.DefaultZoneMembershipModel` | same two operations | sorted `tuple[Zone, ...]`; `Zone` |
-| `skyseed_v2.simulator.ZoneLayout` | blocked constructor; `zones`; `allow_overlap`; three query operations shown above | `tuple[Zone, ...]`; `bool`; owned `Zone`/tuple results |
+| `skyseed_v2.simulator.ZoneLayout` | blocked constructor; `zones`; `allow_overlap`; `get_membership_model()`; three query operations shown above | `tuple[Zone, ...]`; `bool`; exact fixed `ZoneMembershipModel`; owned `Zone`/tuple results |
 | `skyseed_v2.simulator.Simulator.create_topology` | `(*, zone_layout_definition: ZoneLayoutDefinition | None = None, zone_membership_model: ZoneMembershipModel | None = None)` | `Topology` |
-| `skyseed_v2.simulator.Topology` | `get_zone_layout()`; `get_zone(zone_id: str)`; `find_zones(latitude_deg: float, longitude_deg: float)`; `resolve_zone(latitude_deg: float, longitude_deg: float)` | `ZoneLayout`; `Zone`; `tuple[Zone, ...]`; `Zone` |
+| `skyseed_v2.simulator.Topology` | `get_zone_layout()`; `get_zone(zone_id: str)`; `find_zones(latitude_deg: float, longitude_deg: float)`; `find_intersecting_zones(spherical_cap: SphericalCap)`; `resolve_zone(latitude_deg: float, longitude_deg: float)` | `ZoneLayout`; `Zone`; `tuple[Zone, ...]`; `tuple[Zone, ...]`; `Zone` |
 
 The preceding failure table applies to each constructor and operation; these
 types have no root-package export.
@@ -615,13 +632,15 @@ unchanged, including `generation`, `orbits`, `raan`, `phase`, `first` and
 - [ ] Zone YAML/programmatic paths converge on `ZoneLayoutDefinition` before
       `Simulator.create_topology(...)`; no file-specific Zone type exists.
 - [ ] Topology owns at most one ZoneLayout, and a Topology without one is valid.
-- [ ] ZoneLayout owns one Zone tuple/index and one fixed Model; Topology's four
+- [ ] ZoneLayout owns one Zone tuple/index and one fixed Model; Topology's five
       Zone methods only delegate.
 - [ ] Physical membership and authoritative resolution remain distinct, and
       zero-area shared boundaries are not positive-area overlap.
 - [ ] No old input name, duplicate Topology index or Satellite-parent reverse
       API remains.
-- [ ] Dynamic Slice A–E and F implementations remain accepted; G remains a
-      separately authorized, unimplemented engineering group, and no G
-      placeholder public types or root exports exist.
+- [ ] Dynamic Slice A–E and F implementations remain accepted; the G
+      implementation candidate adds no Simulator public type, root export,
+      Model call or second authoritative computation path.
+- [ ] The complete Dynamic Slice stage remains under final review until the
+      external bundle and interactive Tool receive explicit acceptance.
 - [ ] Planning and backend/runtime execution remain deferred and unimplemented.

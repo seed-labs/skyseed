@@ -20,7 +20,10 @@ from examples._direct_execution import prepare_direct_file_execution
 
 prepare_direct_file_execution(__file__)
 
-from examples._compose_project_scripts import write_compose_project_scripts
+from examples._compose_project_scripts import (
+    prepare_example_output,
+    write_compose_project_scripts,
+)
 from skyseed_v2.configuration import load_static_emulator_config
 from skyseed_v2.seedemu_integration import SatelliteBase, SkyseedDockerCompiler
 from skyseed_v2.simulator_input_generation import create_simulator_static_input
@@ -61,17 +64,21 @@ def main() -> None:
         f"{len(simulator_input.list_nodes())} Simulator static inputs"
     )
 
+    runtime_output = prepare_example_output(
+        arguments.output,
+        override=arguments.override,
+    )
     emulator.render()
     emulator.compile(
         SkyseedDockerCompiler(
             internet_map_enabled=not arguments.no_internet_map
         ),
-        str(arguments.output),
-        override=arguments.override,
+        str(runtime_output),
     )
     write_compose_project_scripts(arguments.output, COMPOSE_PROJECT_NAME)
-    print(f"compiled large static network to {arguments.output}")
+    print(f"compiled large static network to {runtime_output}")
     print(f"start with {arguments.output / 'start.sh'}")
+    print(f"cleanup with {arguments.output / 'cleanup.sh'}")
 
 
 if __name__ == "__main__":

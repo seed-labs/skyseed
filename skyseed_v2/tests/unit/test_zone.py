@@ -18,6 +18,7 @@ from skyseed_v2.simulator import (
     SimulationDefinition,
     SimulationTimeline,
     Simulator,
+    SphericalCap,
     Zone,
 )
 from skyseed_v2.simulator.static_input import SimulatorStaticInput
@@ -295,6 +296,36 @@ def test_default_membership_is_sorted_and_resolution_is_deterministic() -> None:
         topology.resolve_zone(50, 50)
 
 
+def test_topology_intersection_facade_delegates_with_identical_overlap_results() -> None:
+    broad = zone_definition(
+        "broad",
+        geometry=rectangle_definition(-20, 20, -30, 30),
+    )
+    focused = zone_definition(
+        "focused",
+        priority=10,
+        geometry=rectangle_definition(-5, 5, -5, 5),
+    )
+    _, topology = create_zone_topology(
+        layout_definition(broad, focused, allow_overlap=True)
+    )
+    layout = topology.get_zone_layout()
+    coverage = SphericalCap((0.0, 0.0), 1.0)
+
+    direct = layout.find_intersecting_zones(coverage)
+    through_facade = topology.find_intersecting_zones(coverage)
+
+    assert through_facade == direct
+    assert all(
+        facade_zone is layout_zone
+        for facade_zone, layout_zone in zip(through_facade, direct, strict=True)
+    )
+    assert tuple(zone.zone_id for zone in through_facade) == (
+        "broad",
+        "focused",
+    )
+
+
 def test_resolution_uses_haversine_center_distance_then_zone_id() -> None:
     dateline = zone_definition(
         "dateline",
@@ -348,12 +379,15 @@ class NonMatchWinnerModel:
 
 
 def test_custom_model_is_injectable_but_layout_normalizes_its_results() -> None:
+    model = ReverseModel()
     _, topology = create_zone_topology(
         layout_definition(zone_definition("b"), zone_definition("a")),
-        ReverseModel(),
+        model,
     )
     layout = topology.get_zone_layout()
 
+    assert layout.get_membership_model() is model
+    assert layout.get_membership_model() is layout.get_membership_model()
     assert tuple(zone.zone_id for zone in layout.find_zones(0, 0)) == (
         "a",
         "b",
@@ -361,6 +395,20 @@ def test_custom_model_is_injectable_but_layout_normalizes_its_results() -> None:
     assert layout.resolve_zone(0, 0) is layout.get_zone("b")
     assert not hasattr(layout, "set_zone_model")
     assert not hasattr(layout, "service_satellites")
+
+
+def test_default_membership_model_has_one_readonly_owner_query() -> None:
+    _, topology = create_zone_topology(
+        layout_definition(zone_definition("zone"))
+    )
+    layout = topology.get_zone_layout()
+    model = layout.get_membership_model()
+
+    assert isinstance(model, DefaultZoneMembershipModel)
+    assert model is layout.get_membership_model()
+    assert not hasattr(layout, "set_membership_model")
+    with pytest.raises((AttributeError, FrozenInstanceError)):
+        layout._membership_model = ReverseModel()
 
 
 @pytest.mark.parametrize(
@@ -396,6 +444,9 @@ def test_topology_zone_lifecycle_facade_identity_and_atomic_failure() -> None:
         unconfigured.get_zone_layout,
         lambda: unconfigured.get_zone("zone"),
         lambda: unconfigured.find_zones(0, 0),
+        lambda: unconfigured.find_intersecting_zones(
+            SphericalCap((0.0, 0.0), 1.0)
+        ),
         lambda: unconfigured.resolve_zone(0, 0),
     ):
         with pytest.raises(RuntimeError, match="ZoneLayout"):

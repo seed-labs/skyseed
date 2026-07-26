@@ -192,6 +192,8 @@ flowchart LR
     SLICER -. exact reference .-> TOPOLOGY
     SLICER -. ordered generation .-> SLICE[approved TopologySlice]
     SLICER -. adjacent comparison .-> DIFF[implemented and accepted TopologyDifference]
+    SLICER -. G read-only projection .-> TOOL[G candidate Inspection Tool]
+    TOOL -. private view output .-> VIEW[offline view bundle]
     DIFF -. future finite window .-> PLANNING[future Planning]
     PLANNING -. later approved plan .-> DYNAMIC[dynamic execution resolution]
     DYNAMIC -.->|NodeId.asn| BASE[SatelliteBase.getAutonomousSystem]
@@ -210,6 +212,9 @@ ZoneLayout. Simulator, Definition, Topology, the static node objects and static
 Zone domain are implemented. The updated Timeline,
 Position/Connection/Route Models, Slicer and TopologySlice are implemented and
 accepted. TopologyDifference is implemented and accepted;
+the repository-local G Inspection Tool is an implementation candidate under
+final review and only projects the public Slicer path into five isolated
+Topology/Orbit, ISL, Ground/Zone, Routing and Difference views;
 Planning, dynamic resource-resolution and update structures remain
 conceptual/open.
 
@@ -235,10 +240,12 @@ classDiagram
         +get_zone_layout() ZoneLayout
         +get_zone(zone_id) Zone
         +find_zones(latitude_deg, longitude_deg) tuple
+        +find_intersecting_zones(cap) tuple
         +resolve_zone(latitude_deg, longitude_deg) Zone
     }
     class ZoneLayout {
         <<implemented Topology-owned aggregate>>
+        +get_membership_model() ZoneMembershipModel
     }
     class Zone {
         <<implemented immutable Simulator domain object>>
@@ -270,6 +277,7 @@ The Definition is materialization input and is not retained. ZoneLayout is the
 only owner of its Zone tuple and ID index; the Model receives those same Zone
 instances and does not own another collection. A valid Topology may omit the
 layout, and the algorithm reference cannot be replaced after construction.
+The layout's read-only owner query returns that exact Model for inspection.
 
 ## 8. Static deployment, approved Slice state and future execution
 
@@ -288,6 +296,8 @@ flowchart TD
     CONN -. RouteModel .-> ROUTE[approved RouteSlice]
     ROUTE -. atomic publication .-> SLICE[approved TopologySlice]
     SLICER -. adjacent comparison .-> DIFF[implemented and accepted TopologyDifference]
+    SLICER -. readonly Tool queries .-> TOOL[G candidate Inspection Tool]
+    TOOL -. writes .-> VIEW[private offline bundle]
     DIFF -. future DifferenceWindow .-> PLAN[future Planner]
     PLAN -. future plan .-> BACK[future BackendExecutionPlan]
     BACK -. lowered by .-> EXEC[future ExecutionCompiler]
@@ -301,7 +311,8 @@ flowchart TD
 
 Solid arrows remain accepted current implementation. Position through
 TopologySlice arrows and TopologyDifference are implemented and accepted, and
-dashed Planner/backend arrows remain deferred. Topology does not create or
+the G Tool projection is an implementation candidate under final review.
+Dashed Planner/backend arrows remain deferred. Topology does not create or
 compare Slices.
 
 The implemented static deployment compiler and conceptual dynamic
