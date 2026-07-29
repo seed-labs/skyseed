@@ -24,9 +24,9 @@ from skyseed_v2.simulator.input import (
     SimulatorStaticInput,
 )
 from skyseed_v2.emulator.seedemu import (
-    SatelliteBase,
     SkyseedAutonomousSystem,
 )
+from seedemu.layers import Base
 
 
 def test_node_id_is_stable_hashable_and_backend_independent() -> None:
@@ -162,7 +162,7 @@ def test_emulator_entities_do_not_hold_or_accept_node_id() -> None:
 
 
 def test_existing_owners_provide_narrow_lookup_without_a_global_index() -> None:
-    base = SatelliteBase()
+    base = Base()
     autonomous_system = SkyseedAutonomousSystem(65001)
     base.setAutonomousSystem(autonomous_system)
     shell = autonomous_system.create_shell("shell-1")

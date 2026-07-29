@@ -13,6 +13,10 @@ def test_package_exposes_no_retired_satellite_node_alias() -> None:
 
     assert not hasattr(package, "SatelliteNode")
     assert not hasattr(seed_integration, "SatelliteNode")
+    assert set(seed_integration.__all__) == {
+        "SkyseedAutonomousSystem",
+        "get_skyseed_autonomous_systems",
+    }
 
 
 def test_root_exports_only_high_frequency_entities_and_values() -> None:

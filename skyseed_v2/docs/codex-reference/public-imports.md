@@ -21,8 +21,8 @@ long-term public promises.
 | `skyseed_v2.configuration.emulator` | `EbgpPeeringConfig`, `EbgpRouterReference`, `GeneratedOrbitLayout`, `GROUND_STATIONS_SCHEMA_VERSION`, `GroundStationConfig`, `InOrbitPhaseDistribution`, `InternetExchangeAttachment`, `InternetExchangeConfig`, `LocalNetworkAttachment`, `OrbitConfig`, `OrdinaryAutonomousSystemConfig`, `NetworkConfig`, `RouterConfig`, `RightAscensionDistribution`, `SCENARIO_SCHEMA_VERSION`, `SatelliteConfig`, `ShellConfig`, `SkyseedAutonomousSystemConfig`, `StaticEmulatorConfig`, `StaticEmulatorConfigLoadError`, `load_static_emulator_config` |
 | `skyseed_v2.configuration.simulator` | `LatitudeLongitudeRectangleDefinition`, `ZoneDefinition`, `ZoneLayoutDefinition`, `ZoneLayoutDefinitionLoadError`, `load_zone_layout_definition` |
 | `skyseed_v2.emulator` | `create_static_emulator`, `entities`, `seedemu` |
-| `skyseed_v2.emulator.entities` | `GROUND_STATION_REGISTRY_TYPE`, `GROUND_STATION_ROLE_LABEL`, `GroundStation`, `GroundStationLocation`, `SATELLITE_REGISTRY_TYPE`, `SATELLITE_ROLE_LABEL`, `Orbit`, `OrbitParameters`, `Satellite`, `SatelliteRole`, `Shell` |
-| `skyseed_v2.emulator.seedemu` | `GROUND_STATION_REGISTRY_TYPE`, `GROUND_STATION_ROLE_LABEL`, `SkyseedAutonomousSystem`, `SATELLITE_REGISTRY_TYPE`, `SATELLITE_ROLE_LABEL`, `SatelliteBase`, `SkyseedDockerCompiler` |
+| `skyseed_v2.emulator.entities` | `GroundStation`, `GroundStationLocation`, `Orbit`, `OrbitParameters`, `Satellite`, `Shell` |
+| `skyseed_v2.emulator.seedemu` | `SkyseedAutonomousSystem`, `get_skyseed_autonomous_systems` |
 | `skyseed_v2.emulator_to_simulator` | `create_ground_station_simulation_input`, `create_satellite_simulation_input`, `create_simulator_static_input` |
 | `skyseed_v2.shared` | `NodeId` |
 | `skyseed_v2.compose` | `ComposeBatchResult`, `ComposeLaunchStrategy`, `ComposeMaterializationError`, `ComposeMaterializationResult`, `ComposeProjectLauncher`, `ComposeServiceExpectations` |

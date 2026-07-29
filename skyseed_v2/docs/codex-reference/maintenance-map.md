@@ -69,7 +69,7 @@ object model.
 | `configuration/emulator/` | Emulator declarations/YAML | `src/skyseed_v2/configuration/emulator/README.md` | complete/dynamic/large examples | static configuration and YAML tests |
 | `configuration/simulator/` | Zone declarations/YAML | `src/skyseed_v2/configuration/simulator/README.md` | dynamic example, Zone Tool | Zone and YAML tests |
 | `emulator/entities/` | Emulator entity owner tree | `src/skyseed_v2/emulator/entities/README.md` | all Emulator examples, compiler/projector | entity, identity, integration tests |
-| `emulator/seedemu/` | upstream SEED extension boundary | `src/skyseed_v2/emulator/seedemu/README.md` | complete/isolated/large examples | SEED, compiler, package-resource tests |
+| `emulator/seedemu/` | upstream SEED extension boundary | `src/skyseed_v2/emulator/seedemu/README.md` | complete/isolated/large examples | SEED lifecycle, query helper, standard compiler tests |
 | `emulator/construction.py` | config-driven Emulator entry | `src/skyseed_v2/emulator/README.md` | complete/dynamic/large examples | creation/equivalence tests |
 | `emulator_to_simulator.py` | sole cross-layer projection | `human-readable/system-overview.md` | all Simulator examples | static-input construction and boundary tests |
 | `simulator/input/` | receiver-owned immutable DTO | `src/skyseed_v2/simulator/input/README.md` | bridge/definition | static-input and dependency tests |

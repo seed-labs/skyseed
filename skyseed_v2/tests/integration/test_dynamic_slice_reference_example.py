@@ -16,7 +16,8 @@ from examples.dynamic_slice_network import simu
 from examples.dynamic_slice_network.emu import (
     build_dynamic_reference_emulator,
 )
-from skyseed_v2.emulator.seedemu import SatelliteBase
+from seedemu.layers import Base
+from skyseed_v2.emulator.seedemu import SkyseedAutonomousSystem
 from skyseed_v2.simulator import (
     ConnectionKind,
     GeometricConnectionModel,
@@ -185,7 +186,7 @@ def test_richer_emulator_contains_static_network_and_routing_layers() -> None:
     emulator = build_dynamic_reference_emulator()
     base = emulator.getLayer("Base")
 
-    assert isinstance(base, SatelliteBase)
+    assert isinstance(base, Base)
     assert str(base.getInternetExchange(110).getPeeringLan().getPrefix()) == (
         "10.110.0.0/24"
     )
@@ -323,8 +324,15 @@ def test_richer_main_builds_once_and_emits_static_and_dynamic_outputs(
     assert compiled[0] is built[0]
     assert len(projection_inputs) == 1
     base = built[0].getLayer("Base")
-    assert isinstance(base, SatelliteBase)
-    expected_as_owners = base.get_skyseed_autonomous_systems()
+    assert isinstance(base, Base)
+    expected_as_owners = tuple(
+        autonomous_system
+        for asn in sorted(base.getAsns())
+        if isinstance(
+            (autonomous_system := base.getAutonomousSystem(asn)),
+            SkyseedAutonomousSystem,
+        )
+    )
     assert len(projection_inputs[0]) == len(expected_as_owners)
     assert all(
         actual is expected

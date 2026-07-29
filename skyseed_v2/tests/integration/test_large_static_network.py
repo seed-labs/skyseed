@@ -8,8 +8,10 @@ from examples.large_static_network._compose_support import (
     materialization_expectations,
 )
 from examples.large_static_network.main import DEFAULT_SCENARIO
+from seedemu.compiler import Docker
+from seedemu.layers import Base
 from skyseed_v2.configuration.emulator import load_static_emulator_config
-from skyseed_v2.emulator.seedemu import SatelliteBase, SkyseedDockerCompiler
+from skyseed_v2.emulator.seedemu import SkyseedAutonomousSystem
 from skyseed_v2.emulator_to_simulator import create_simulator_static_input
 from skyseed_v2.emulator.construction import create_static_emulator
 
@@ -21,15 +23,28 @@ def create_large_static_emulator():
     config = load_static_emulator_config(DEFAULT_SCENARIO)
     emulator = create_static_emulator(config)
     simulator_input = create_simulator_static_input(
-        base_for(emulator).get_skyseed_autonomous_systems()
+        skyseed_autonomous_systems_for(base_for(emulator))
     )
     return config, emulator, simulator_input
 
 
-def base_for(emulator) -> SatelliteBase:
+def base_for(emulator) -> Base:
     base = emulator.getLayer("Base")
-    assert isinstance(base, SatelliteBase)
+    assert isinstance(base, Base)
     return base
+
+
+def skyseed_autonomous_systems_for(
+    base: Base,
+) -> tuple[SkyseedAutonomousSystem, ...]:
+    return tuple(
+        autonomous_system
+        for asn in sorted(base.getAsns())
+        if isinstance(
+            (autonomous_system := base.getAutonomousSystem(asn)),
+            SkyseedAutonomousSystem,
+        )
+    )
 
 
 def node_files(node) -> dict[str, str]:
@@ -54,8 +69,8 @@ def test_large_static_entities_and_simulator_input_are_deterministic() -> None:
     _, second, second_input = create_large_static_emulator()
     first_base = base_for(first)
     second_base = base_for(second)
-    first_as = first_base.get_skyseed_autonomous_systems()[0]
-    second_as = second_base.get_skyseed_autonomous_systems()[0]
+    first_as = skyseed_autonomous_systems_for(first_base)[0]
+    second_as = skyseed_autonomous_systems_for(second_base)[0]
 
     assert len(first_as.shells) == 1
     assert sum(len(shell.orbits) for shell in first_as.shells) == 6
@@ -85,7 +100,10 @@ def test_large_static_compose_inventory_and_static_routing(
     output = tmp_path / "output"
     emulator.render()
     emulator.compile(
-        SkyseedDockerCompiler(internet_map_enabled=True),
+        Docker(
+            namingScheme="as{asn}{role}-{displayName}",
+            internetMapEnabled=True,
+        ),
         str(output),
     )
     compose_text = (output / "docker-compose.yml").read_text()
@@ -99,7 +117,10 @@ def test_large_static_compose_inventory_and_static_routing(
     ordinary_router_services = []
     for service in compose["services"].values():
         labels = service.get("labels", {})
-        if labels.get(f"{METADATA_PREFIX}type") == "satnode":
+        if (
+            labels.get(f"{METADATA_PREFIX}skyseed.entity_type")
+            == "Satellite"
+        ):
             satellite_services.append(service)
         elif (
             labels.get(f"{METADATA_PREFIX}skyseed.entity_type")
@@ -150,7 +171,7 @@ def test_large_static_compose_inventory_and_static_routing(
 
     stations = tuple(
         station
-        for autonomous_system in base.get_skyseed_autonomous_systems()
+        for autonomous_system in skyseed_autonomous_systems_for(base)
         for station in autonomous_system.ground_stations()
     )
     bgp_station_count = 0

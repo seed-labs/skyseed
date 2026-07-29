@@ -5,20 +5,17 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from seedemu.core import Emulator
-from seedemu.layers import Ebgp, Ibgp, Ospf, PeerRelationship, Routing
+from seedemu.layers import Base, Ebgp, Ibgp, Ospf, PeerRelationship, Routing
 
 from skyseed_v2 import GroundStationLocation, OrbitParameters
-from skyseed_v2.emulator.seedemu import (
-    SatelliteBase,
-    SkyseedAutonomousSystem,
-)
+from skyseed_v2.emulator.seedemu import SkyseedAutonomousSystem
 
 
 def build_emulator() -> Emulator:
     """Construct and return the complete example's upstream Emulator."""
 
     emulator = Emulator()
-    base = SatelliteBase()
+    base = Base()
     base.createInternetExchange(
         100,
         prefix="10.100.0.0/24",

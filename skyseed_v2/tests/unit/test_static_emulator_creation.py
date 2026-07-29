@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 from seedemu.core import Emulator
+from seedemu.layers import Base
 
 from skyseed_v2.emulator.construction import create_static_emulator
 from skyseed_v2.configuration.emulator import (
@@ -22,10 +23,7 @@ from skyseed_v2.configuration.emulator import (
     StaticEmulatorConfig,
 )
 from skyseed_v2.emulator.entities import Orbit, Shell
-from skyseed_v2.emulator.seedemu import (
-    SatelliteBase,
-    SkyseedAutonomousSystem,
-)
+from skyseed_v2.emulator.seedemu import SkyseedAutonomousSystem
 from skyseed_v2.emulator_to_simulator import create_simulator_static_input
 
 
@@ -89,10 +87,24 @@ def ground_station(
     )
 
 
-def base_for(emulator: Emulator) -> SatelliteBase:
+def base_for(emulator: Emulator) -> Base:
     base = emulator.getLayer("Base")
-    assert isinstance(base, SatelliteBase)
+    assert isinstance(base, Base)
     return base
+
+
+def skyseed_autonomous_systems_for(
+    emulator: Emulator,
+) -> tuple[SkyseedAutonomousSystem, ...]:
+    base = base_for(emulator)
+    return tuple(
+        autonomous_system
+        for asn in sorted(base.getAsns())
+        if isinstance(
+            (autonomous_system := base.getAutonomousSystem(asn)),
+            SkyseedAutonomousSystem,
+        )
+    )
 
 
 def test_creation_supports_satellite_only_ground_only_and_multiple_skyseed_as() -> None:
@@ -110,9 +122,7 @@ def test_creation_supports_satellite_only_ground_only_and_multiple_skyseed_as() 
     )
 
     emulator = create_static_emulator(config)
-    skyseed_autonomous_systems = base_for(
-        emulator
-    ).get_skyseed_autonomous_systems()
+    skyseed_autonomous_systems = skyseed_autonomous_systems_for(emulator)
     satellite_as, station_as = skyseed_autonomous_systems
     simulator_input = create_simulator_static_input(skyseed_autonomous_systems)
 
@@ -150,7 +160,7 @@ def test_generated_shell_copies_common_epoch_into_every_orbit() -> None:
         )
     )
     emulator = create_static_emulator(config)
-    skyseed_as = base_for(emulator).get_skyseed_autonomous_systems()[0]
+    skyseed_as = skyseed_autonomous_systems_for(emulator)[0]
     orbits = skyseed_as.get_shell("generated").orbits
 
     assert len(orbits) == 2
@@ -251,7 +261,7 @@ def test_creation_supports_ground_network_ix_and_explicit_ebgp() -> None:
     emulator = create_static_emulator(config)
     base = base_for(emulator)
     emulator.render()
-    skyseed_autonomous_systems = base.get_skyseed_autonomous_systems()
+    skyseed_autonomous_systems = skyseed_autonomous_systems_for(emulator)
     skyseed_as = skyseed_autonomous_systems[0]
     station = skyseed_as.get_ground_station("gs-a")
     router = base.getAutonomousSystem(65002).getRouter("ground-router")
@@ -290,8 +300,8 @@ def test_generated_input_is_stable_without_a_population_abstraction() -> None:
 
     first = create_static_emulator(config)
     second = create_static_emulator(config)
-    first_autonomous_systems = base_for(first).get_skyseed_autonomous_systems()
-    second_autonomous_systems = base_for(second).get_skyseed_autonomous_systems()
+    first_autonomous_systems = skyseed_autonomous_systems_for(first)
+    second_autonomous_systems = skyseed_autonomous_systems_for(second)
     first_as = first_autonomous_systems[0]
     second_as = second_autonomous_systems[0]
 

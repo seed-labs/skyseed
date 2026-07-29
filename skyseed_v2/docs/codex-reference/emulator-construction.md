@@ -18,17 +18,22 @@ projection, Docker compilation, Compose launch, or dynamic slicing.
 assembly create configuration values and consume the returned upstream
 `Emulator`; construction owns no later lifecycle.
 
-`SatelliteBase` owns created Skyseed and ordinary autonomous systems.
+The upstream `Base` owns created Skyseed and ordinary autonomous systems.
 `SkyseedAutonomousSystem` owns Shells and GroundStations, each Shell owns
 Orbits, and each Orbit owns Satellites. Routing layers remain upstream SEED
 objects attached to the returned Emulator.
+
+`get_skyseed_autonomous_systems(base)` is the Skyseed-owned read-only query
+used by construction and external assembly examples. It enumerates upstream
+Base AS values and returns only `SkyseedAutonomousSystem` instances; it owns
+no entity, registration, or lifecycle behavior.
 
 ## Contract
 
 `create_static_emulator(config)`:
 
 1. requires one `StaticEmulatorConfig`;
-2. creates one upstream `Emulator` and one `SatelliteBase`;
+2. creates one upstream `Emulator` and one upstream `Base`;
 3. creates Internet Exchanges and ordinary Autonomous Systems;
 4. creates each Skyseed Autonomous System through the established
    AS → Shell → Orbit → Satellite owner chain, plus AS-owned GroundStations;

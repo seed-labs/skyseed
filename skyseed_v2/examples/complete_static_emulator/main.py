@@ -27,8 +27,10 @@ from examples._compose_project_scripts import (
     write_compose_project_scripts,
 )
 from examples.complete_static_emulator.emu import build_emulator
+from seedemu.compiler import Docker
+from seedemu.layers import Base
 from skyseed_v2.configuration.simulator import load_zone_layout_definition
-from skyseed_v2.emulator.seedemu import SatelliteBase, SkyseedDockerCompiler
+from skyseed_v2.emulator.seedemu import get_skyseed_autonomous_systems
 from skyseed_v2.simulator import (
     SimulationDefinition,
     SimulationTimeline,
@@ -57,9 +59,9 @@ def _create_simulator_topology(emulator: object) -> Topology:
     if not hasattr(emulator, "getLayer"):
         raise TypeError("emulator must provide the upstream Emulator facade")
     base = emulator.getLayer("Base")
-    if not isinstance(base, SatelliteBase):
-        raise TypeError("complete example Base layer must be a SatelliteBase")
-    skyseed_autonomous_systems = base.get_skyseed_autonomous_systems()
+    if not isinstance(base, Base):
+        raise TypeError("complete example Base layer must be a Base")
+    skyseed_autonomous_systems = get_skyseed_autonomous_systems(base)
     simulator_input = create_simulator_static_input(skyseed_autonomous_systems)
     timeline = SimulationTimeline(
         start_time=DEFAULT_START_TIME,
@@ -144,7 +146,22 @@ def main() -> int:
         help="replace an existing output directory (default: enabled)",
     )
     parser.add_argument("--no-internet-map", action="store_true")
+    parser.add_argument(
+        "--internet-map-source",
+        type=Path,
+        help=(
+            "explicit repaired InternetMap2 source/build context; required "
+            "when InternetMap is enabled"
+        ),
+    )
     arguments = parser.parse_args()
+    if (
+        not arguments.no_internet_map
+        and arguments.internet_map_source is None
+    ):
+        parser.error(
+            "--internet-map-source is required unless --no-internet-map is used"
+        )
 
     emulator = build_emulator()
     topology = _create_simulator_topology(emulator)
@@ -154,8 +171,10 @@ def main() -> int:
     )
     emulator.render()
     emulator.compile(
-        SkyseedDockerCompiler(
-            internet_map_enabled=not arguments.no_internet_map
+        Docker(
+            namingScheme="as{asn}{role}-{displayName}",
+            internetMapEnabled=not arguments.no_internet_map,
+            internetMapSource=arguments.internet_map_source,
         ),
         str(runtime_output),
     )

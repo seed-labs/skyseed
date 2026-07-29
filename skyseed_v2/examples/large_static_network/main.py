@@ -24,8 +24,10 @@ from examples._compose_project_scripts import (
     prepare_example_output,
     write_compose_project_scripts,
 )
+from seedemu.compiler import Docker
+from seedemu.layers import Base
 from skyseed_v2.configuration.emulator import load_static_emulator_config
-from skyseed_v2.emulator.seedemu import SatelliteBase, SkyseedDockerCompiler
+from skyseed_v2.emulator.seedemu import get_skyseed_autonomous_systems
 from skyseed_v2.emulator_to_simulator import create_simulator_static_input
 from skyseed_v2.emulator import create_static_emulator
 
@@ -41,14 +43,29 @@ def main() -> None:
         help="replace an existing output directory (default: enabled)",
     )
     parser.add_argument("--no-internet-map", action="store_true")
+    parser.add_argument(
+        "--internet-map-source",
+        type=Path,
+        help=(
+            "explicit repaired InternetMap2 source/build context; required "
+            "when InternetMap is enabled"
+        ),
+    )
     arguments = parser.parse_args()
+    if (
+        not arguments.no_internet_map
+        and arguments.internet_map_source is None
+    ):
+        parser.error(
+            "--internet-map-source is required unless --no-internet-map is used"
+        )
 
     config = load_static_emulator_config(arguments.scenario)
     emulator = create_static_emulator(config)
     base = emulator.getLayer("Base")
-    if not isinstance(base, SatelliteBase):
-        raise TypeError("static Emulator Base layer must be a SatelliteBase")
-    skyseed_autonomous_systems = base.get_skyseed_autonomous_systems()
+    if not isinstance(base, Base):
+        raise TypeError("static Emulator Base layer must be a Base")
+    skyseed_autonomous_systems = get_skyseed_autonomous_systems(base)
     simulator_input = create_simulator_static_input(skyseed_autonomous_systems)
     satellite_count = sum(
         len(autonomous_system.satellites())
@@ -70,8 +87,10 @@ def main() -> None:
     )
     emulator.render()
     emulator.compile(
-        SkyseedDockerCompiler(
-            internet_map_enabled=not arguments.no_internet_map
+        Docker(
+            namingScheme="as{asn}{role}-{displayName}",
+            internetMapEnabled=not arguments.no_internet_map,
+            internetMapSource=arguments.internet_map_source,
         ),
         str(runtime_output),
     )

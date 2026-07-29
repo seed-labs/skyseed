@@ -4,6 +4,8 @@ from pathlib import Path
 from yaml import safe_load
 
 from examples.complete_static_emulator.emu import build_emulator
+from seedemu.compiler import Docker
+from seedemu.layers import Base
 from skyseed_v2.emulator.construction import create_static_emulator
 from skyseed_v2.configuration.emulator import (
     EbgpPeeringConfig,
@@ -22,7 +24,7 @@ from skyseed_v2.configuration.emulator import (
     StaticEmulatorConfig,
     load_static_emulator_config,
 )
-from skyseed_v2.emulator.seedemu import SatelliteBase, SkyseedDockerCompiler
+from skyseed_v2.emulator.seedemu import SkyseedAutonomousSystem
 from skyseed_v2.emulator_to_simulator import create_simulator_static_input
 
 
@@ -44,9 +46,24 @@ def entity_semantics(compose: dict) -> dict[str, dict]:
             "network_mode": service.get("network_mode"),
             "networks": tuple(service.get("networks", {})),
             "role": labels[f"{METADATA_PREFIX}role"],
-            "type": labels[f"{METADATA_PREFIX}type"],
+            "entity_type": labels[
+                f"{METADATA_PREFIX}skyseed.entity_type"
+            ],
         }
     return semantics
+
+
+def skyseed_autonomous_systems(
+    base: Base,
+) -> tuple[SkyseedAutonomousSystem, ...]:
+    return tuple(
+        autonomous_system
+        for asn in sorted(base.getAsns())
+        if isinstance(
+            (autonomous_system := base.getAutonomousSystem(asn)),
+            SkyseedAutonomousSystem,
+        )
+    )
 
 
 def complete_programmatic_config() -> StaticEmulatorConfig:
@@ -129,8 +146,8 @@ def test_handwritten_and_file_inputs_share_entity_and_compiler_semantics(
 ) -> None:
     manual_emulator = build_emulator()
     manual_base = manual_emulator.getLayer("Base")
-    assert isinstance(manual_base, SatelliteBase)
-    manual_autonomous_systems = manual_base.get_skyseed_autonomous_systems()
+    assert isinstance(manual_base, Base)
+    manual_autonomous_systems = skyseed_autonomous_systems(manual_base)
     manual_as = manual_autonomous_systems[0]
     manual_simulator_input = create_simulator_static_input(
         manual_autonomous_systems
@@ -140,8 +157,8 @@ def test_handwritten_and_file_inputs_share_entity_and_compiler_semantics(
     assert isinstance(config, StaticEmulatorConfig)
     file_emulator = create_static_emulator(config)
     file_base = file_emulator.getLayer("Base")
-    assert isinstance(file_base, SatelliteBase)
-    file_autonomous_systems = file_base.get_skyseed_autonomous_systems()
+    assert isinstance(file_base, Base)
+    file_autonomous_systems = skyseed_autonomous_systems(file_base)
     file_as = file_autonomous_systems[0]
     file_simulator_input = create_simulator_static_input(
         file_autonomous_systems
@@ -150,9 +167,9 @@ def test_handwritten_and_file_inputs_share_entity_and_compiler_semantics(
         complete_programmatic_config()
     )
     programmatic_base = programmatic_emulator.getLayer("Base")
-    assert isinstance(programmatic_base, SatelliteBase)
-    programmatic_autonomous_systems = (
-        programmatic_base.get_skyseed_autonomous_systems()
+    assert isinstance(programmatic_base, Base)
+    programmatic_autonomous_systems = skyseed_autonomous_systems(
+        programmatic_base
     )
     programmatic_simulator_input = create_simulator_static_input(
         programmatic_autonomous_systems
@@ -176,8 +193,8 @@ def test_handwritten_and_file_inputs_share_entity_and_compiler_semantics(
     file_emulator.render()
     programmatic_emulator.render()
     for entity_type, entity_id in (
-        ("satnode", "satellite-0"),
-        ("satnode", "satellite-1"),
+        ("extnode", "satellite-0"),
+        ("extnode", "satellite-1"),
         ("rnode", "gs-new-york"),
     ):
         assert manual_emulator.getRegistry().get(
@@ -194,15 +211,24 @@ def test_handwritten_and_file_inputs_share_entity_and_compiler_semantics(
     file_output = tmp_path / "file"
     programmatic_output = tmp_path / "programmatic"
     manual_emulator.compile(
-        SkyseedDockerCompiler(internet_map_enabled=False),
+        Docker(
+            namingScheme="as{asn}{role}-{displayName}",
+            internetMapEnabled=False,
+        ),
         str(manual_output),
     )
     file_emulator.compile(
-        SkyseedDockerCompiler(internet_map_enabled=False),
+        Docker(
+            namingScheme="as{asn}{role}-{displayName}",
+            internetMapEnabled=False,
+        ),
         str(file_output),
     )
     programmatic_emulator.compile(
-        SkyseedDockerCompiler(internet_map_enabled=False),
+        Docker(
+            namingScheme="as{asn}{role}-{displayName}",
+            internetMapEnabled=False,
+        ),
         str(programmatic_output),
     )
     manual_compose = safe_load(

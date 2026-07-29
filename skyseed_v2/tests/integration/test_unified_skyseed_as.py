@@ -1,14 +1,20 @@
 from datetime import datetime, timezone
 
+import pytest
+
 from seedemu.core import Emulator
+from seedemu.layers import Base
 
 from skyseed_v2.emulator.entities import GroundStationLocation, OrbitParameters
-from skyseed_v2.emulator.seedemu import SatelliteBase, SkyseedAutonomousSystem
+from skyseed_v2.emulator.seedemu import (
+    SkyseedAutonomousSystem,
+    get_skyseed_autonomous_systems,
+)
 
 
 def test_one_as_owns_satellite_ground_station_and_standard_seed_objects() -> None:
     emulator = Emulator()
-    base = SatelliteBase()
+    base = Base()
     skyseed_as = SkyseedAutonomousSystem(150)
     base.setAutonomousSystem(skyseed_as)
 
@@ -37,12 +43,13 @@ def test_one_as_owns_satellite_ground_station_and_standard_seed_objects() -> Non
     registry = emulator.getRegistry()
 
     assert skyseed_as.get_satellite("shared-id") is satellite
+    assert skyseed_as.getExtensionNode("shared-id") is satellite
     assert skyseed_as.get_ground_station("shared-id") is station
     assert skyseed_as.getRouter("shared-id") is station
     assert skyseed_as.getRouter("router-1") is router
     assert skyseed_as.getHost("host-1") is host
     assert skyseed_as.getNetwork("local-net") is network
-    assert registry.get("150", "satnode", "shared-id") is satellite
+    assert registry.get("150", "extnode", "shared-id") is satellite
     assert registry.get("150", "rnode", "shared-id") is station
     assert registry.get("150", "rnode", "router-1") is router
     assert registry.get("150", "hnode", "host-1") is host
@@ -70,9 +77,22 @@ def test_multiple_unified_as_instances_are_independent() -> None:
     assert len(second.ground_stations()) == 1
 
 
+def test_skyseed_as_query_is_read_only_and_filters_ordinary_as() -> None:
+    base = Base()
+    skyseed_as = SkyseedAutonomousSystem(151)
+    ordinary_as = base.createAutonomousSystem(150)
+    base.setAutonomousSystem(skyseed_as)
+
+    assert get_skyseed_autonomous_systems(base) == (skyseed_as,)
+    assert base.getAutonomousSystem(150) is ordinary_as
+    assert base.getAutonomousSystem(151) is skyseed_as
+    with pytest.raises(TypeError, match="upstream Base"):
+        get_skyseed_autonomous_systems(object())
+
+
 def test_satellite_only_and_ground_station_only_as_render() -> None:
     emulator = Emulator()
-    base = SatelliteBase()
+    base = Base()
 
     satellite_as = SkyseedAutonomousSystem(150)
     orbit = satellite_as.create_shell("shell-1").create_orbit(
@@ -99,5 +119,5 @@ def test_satellite_only_and_ground_station_only_as_render() -> None:
     emulator.addLayer(base)
     emulator.render()
 
-    assert emulator.getRegistry().get("150", "satnode", "satellite-0") is satellite
+    assert emulator.getRegistry().get("150", "extnode", "satellite-0") is satellite
     assert emulator.getRegistry().get("151", "rnode", "gs-1") is station

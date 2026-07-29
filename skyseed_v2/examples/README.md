@@ -63,6 +63,15 @@ Compilation entrypoints replace their owned default output unless
 generated project with
 `./output/start.sh` and `./output/cleanup.sh`.
 
+The standard upstream compiler still uses the published InternetMap image by
+default as its backwards-compatible path, but that image's runtime
+compatibility with zero-interface containers is not yet proven. These
+canonical examples therefore select the repaired source artifact instead:
+when InternetMap is enabled, pass
+`--internet-map-source /path/to/seed-emulator/tools/InternetMap2`. Use
+`--no-internet-map` when no explicit repaired source context is available;
+the Map-disabled zero-interface path is unaffected.
+
 Project names are fixed and distinct. Generated `start.sh` validates the exact
 `runtime/docker-compose.yml` and starts that project with `up -d --build`.
 Generated
@@ -91,7 +100,7 @@ v2 YAML
     -> the same public entity create methods
     -> upstream Emulator
     -> Emulator.getLayer("Base")
-    -> SatelliteBase.get_skyseed_autonomous_systems()
+    -> get_skyseed_autonomous_systems(Base)
     -> create_simulator_static_input(skyseed_autonomous_systems)
     -> immutable SimulatorStaticInput
 ```
@@ -119,7 +128,7 @@ only the upstream Emulator. `main.py` reuses it for the canonical full output:
 one Simulator/Topology from the same Emulator, the preserved render/compile
 path, and the offline Topology/Zone tool snapshot after compilation. `simu.py`
 independently reuses it as the readable external assembly entrypoint, queries
-all Skyseed AS values from `SatelliteBase`, and then shows the Simulator-side
+all `SkyseedAutonomousSystem` values from upstream `Base`, and then shows the Simulator-side
 flow directly:
 
 ```text
@@ -145,15 +154,13 @@ all three Inspection Tools. It remains separate from the minimal canonical
 smoke. Its `emu.py` is the sole Emulator builder, `simu.py` only projects an
 explicitly supplied existing Emulator, and `main.py` is the sole executable
 assembly. That entry compiles the current static Docker/Compose network,
-projects the same SatelliteBase owner into one exact Slicer, generates every
+projects the same upstream Base-owned AS values into one exact Slicer, generates every
 Slice/Difference, gives the Slicer's exact Topology to the Topology and Zone
 Tools, and gives the exact Slicer to the five-view Dynamic Slice Tool. Static
 container artifacts remain under `output/runtime`; all three read-only views
 remain under `output/inspection`. Static containers are not updated by Slice
 results.
 
-See each experiment's README for exact commands. `SkyseedDockerCompiler`
-declares locally built SEED base images as Compose `service:` additional build
-contexts, and the active examples use the maintained Docker Engine BuildKit
-and plugin-based `docker compose` defaults directly. They do not select the
-legacy builder.
+See each experiment's README for exact commands. The active examples consume
+the upstream SEED `Docker` compiler output through plugin-based
+`docker compose`.

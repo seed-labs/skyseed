@@ -3,8 +3,9 @@
 from datetime import datetime, timezone
 from pathlib import Path
 
+from seedemu.compiler import Docker
 from seedemu.core import Emulator, Router
-from seedemu.layers import Ebgp, Ibgp, Ospf, PeerRelationship, Routing
+from seedemu.layers import Base, Ebgp, Ibgp, Ospf, PeerRelationship, Routing
 from yaml import compose as compose_yaml
 from yaml import safe_load
 from yaml.nodes import MappingNode, Node, SequenceNode
@@ -12,12 +13,7 @@ from yaml.nodes import MappingNode, Node, SequenceNode
 from skyseed_v2.emulator_to_simulator import create_ground_station_simulation_input
 from skyseed_v2.emulator.entities import GroundStation, GroundStationLocation, OrbitParameters
 from skyseed_v2.shared import NodeId
-from skyseed_v2.emulator.seedemu import (
-    SATELLITE_REGISTRY_TYPE,
-    SatelliteBase,
-    SkyseedAutonomousSystem,
-    SkyseedDockerCompiler,
-)
+from skyseed_v2.emulator.seedemu import SkyseedAutonomousSystem
 from skyseed_v2.simulator.input import (
     GroundStationSimulationInput,
 )
@@ -25,7 +21,7 @@ from skyseed_v2.simulator.input import (
 
 def build_rendered_ground_scenario():
     emulator = Emulator()
-    base = SatelliteBase()
+    base = Base()
     base.createInternetExchange(100, create_rs=False)
 
     skyseed_as = SkyseedAutonomousSystem(65001)
@@ -44,6 +40,7 @@ def build_rendered_ground_scenario():
         location=GroundStationLocation(40.0, -74.0, 12.5),
         station_type="gateway",
         operator="Skyseed",
+        service_config={"endpoint": "uplink-a"},
     )
     input_before_ix = create_ground_station_simulation_input(station)
     station.joinNetwork("ix100", "10.100.0.101")
@@ -139,10 +136,32 @@ def test_ground_station_uses_one_standard_rnode_and_border_router_instance() -> 
     assert "rnode" not in input_after_brd_registration.node_id.value
     assert "brdnode" not in input_after_brd_registration.node_id.value
     assert station.isBorderRouter()
+    assert station.getGeo() == (40.0, -74.0, "")
+    assert {
+        key: station.getLabel()[key]
+        for key in (
+            "skyseed.entity_type",
+            "skyseed.ground_station_id",
+            "skyseed.station_type",
+            "skyseed.operator",
+            "skyseed.latitude_deg",
+            "skyseed.longitude_deg",
+            "skyseed.elevation_m",
+        )
+    } == {
+        "skyseed.entity_type": "GroundStation",
+        "skyseed.ground_station_id": "gs-1",
+        "skyseed.station_type": "gateway",
+        "skyseed.operator": "Skyseed",
+        "skyseed.latitude_deg": "40.0",
+        "skyseed.longitude_deg": "-74.0",
+        "skyseed.elevation_m": "12.5",
+    }
+    assert dict(station.service_config) == {"endpoint": "uplink-a"}
     assert len(station.getInterfaces()) == 1
     assert station.getInterfaces()[0].getNet().getName() == "ix100"
     assert registry.getByType("65001", "hnode") == []
-    assert len(registry.getByType("65001", "satnode")) == 2
+    assert len(registry.getByType("65001", "extnode")) == 2
 
 
 def test_ground_station_has_only_explicit_ebgp_and_no_ospf_or_ibgp() -> None:
@@ -173,9 +192,12 @@ def test_ground_station_compiles_through_standard_router_path_with_metadata(
     emulator, _, station, _, _, _ = build_rendered_ground_scenario()
     output = tmp_path / "output"
 
-    class RecordingCompiler(SkyseedDockerCompiler):
+    class RecordingCompiler(Docker):
         def __init__(self) -> None:
-            super().__init__(internet_map_enabled=False)
+            super().__init__(
+                namingScheme="as{asn}{role}-{displayName}",
+                internetMapEnabled=False,
+            )
             self.standard_nodes = []
 
         def _compileNode(self, node):
@@ -197,12 +219,31 @@ def test_ground_station_compiles_through_standard_router_path_with_metadata(
     assert service_name == "brdnode_65001_gs-1"
     assert service.get("network_mode") != "none"
     assert list(service["networks"]) == ["net_ix_ix100"]
-    assert labels["org.seedsecuritylabs.seedemu.meta.role"] == "GroundStation"
-    assert labels["org.seedsecuritylabs.seedemu.meta.type"] == "rnode"
+    assert labels["org.seedsecuritylabs.seedemu.meta.role"] == "BorderRouter"
+    assert labels[
+        "org.seedsecuritylabs.seedemu.meta.skyseed.entity_type"
+    ] == "GroundStation"
     assert labels[
         "org.seedsecuritylabs.seedemu.meta.skyseed.ground_station_id"
     ] == "gs-1"
+    assert labels[
+        "org.seedsecuritylabs.seedemu.meta.skyseed.station_type"
+    ] == "gateway"
+    assert labels[
+        "org.seedsecuritylabs.seedemu.meta.skyseed.operator"
+    ] == "Skyseed"
+    assert labels[
+        "org.seedsecuritylabs.seedemu.meta.skyseed.latitude_deg"
+    ] == "40.0"
+    assert labels[
+        "org.seedsecuritylabs.seedemu.meta.skyseed.longitude_deg"
+    ] == "-74.0"
+    assert labels[
+        "org.seedsecuritylabs.seedemu.meta.skyseed.elevation_m"
+    ] == "12.5"
     assert not any("runtime_node" in key for key in labels)
+    assert not any("service_config" in key for key in labels)
+    assert "uplink-a" not in labels.values()
     assert "Host" not in labels.values()
     assert "Satellite" not in labels.values()
     assert station.hasAttribute("__soft_install_tiers")
@@ -214,7 +255,6 @@ def test_ground_station_compiles_through_standard_router_path_with_metadata(
     )
     for key in (
         "role",
-        "type",
         "skyseed.entity_type",
         "skyseed.ground_station_id",
     ):
@@ -228,7 +268,7 @@ def test_satellites_remain_isolated_in_ground_station_scenario() -> None:
     emulator, _, station, _, satellites, _ = build_rendered_ground_scenario()
 
     assert emulator.getRegistry().getByType(
-        "65001", SATELLITE_REGISTRY_TYPE
+        "65001", "extnode"
     ) == list(satellites)
     assert all(satellite.getInterfaces() == [] for satellite in satellites)
     assert all(satellite is not station for satellite in satellites)

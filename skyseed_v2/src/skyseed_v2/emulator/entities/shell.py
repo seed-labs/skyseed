@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Iterable
+from collections.abc import Callable, Iterable
 
 from skyseed_v2.shared.identifier import validate_identifier
 
@@ -25,6 +25,7 @@ class Shell:
         *,
         asn: int,
         satellite_ids: set[str] | None = None,
+        _on_satellite_created: Callable[[Satellite], None] | None = None,
     ) -> None:
         self._shell_id = validate_identifier(shell_id, "shell_id")
         self._orbits: dict[str, Orbit] = {}
@@ -32,6 +33,7 @@ class Shell:
             satellite_ids if satellite_ids is not None else set()
         )
         self._asn = asn
+        self._on_satellite_created = _on_satellite_created
 
     @property
     def shell_id(self) -> str:
@@ -61,6 +63,7 @@ class Shell:
             parameters=parameters,
             satellite_ids=self._satellite_ids,
             asn=self._asn,
+            _on_satellite_created=self._on_satellite_created,
         )
         self._orbits[orbit_id] = orbit
         return orbit

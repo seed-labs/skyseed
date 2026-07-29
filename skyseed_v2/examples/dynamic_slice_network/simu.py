@@ -6,9 +6,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from seedemu.core import Emulator
+from seedemu.layers import Base
 
 from skyseed_v2.configuration.simulator import load_zone_layout_definition
-from skyseed_v2.emulator.seedemu import SatelliteBase
+from skyseed_v2.emulator.seedemu import get_skyseed_autonomous_systems
 from skyseed_v2.simulator import (
     CircularOrbitPositionModel,
     ConnectionKind,
@@ -58,10 +59,11 @@ def create_dynamic_reference_slicer(
     if not isinstance(emulator, Emulator):
         raise TypeError("emulator must be an upstream Emulator")
     base = emulator.getLayer("Base")
-    if not isinstance(base, SatelliteBase):
-        raise TypeError("dynamic reference Base layer must be a SatelliteBase")
+    if not isinstance(base, Base):
+        raise TypeError("dynamic reference Base layer must be a Base")
+    skyseed_autonomous_systems = get_skyseed_autonomous_systems(base)
     simulator_input = create_simulator_static_input(
-        base.get_skyseed_autonomous_systems()
+        skyseed_autonomous_systems
     )
     timeline = SimulationTimeline(
         start_time=DEFAULT_START_TIME,

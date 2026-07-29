@@ -13,10 +13,6 @@ from seedemu.core.enums import NodeRole
 from skyseed_v2.shared.identifier import validate_identifier
 
 
-GROUND_STATION_REGISTRY_TYPE = "rnode"
-GROUND_STATION_ROLE_LABEL = "GroundStation"
-
-
 @dataclass(frozen=True, slots=True)
 class GroundStationLocation:
     """Hold one GroundStation's geodetic values for a static Emulator run.
@@ -51,7 +47,7 @@ class GroundStation(Router):
 
     Layer: approved Emulator entity plus SEED capability.
     `SkyseedAutonomousSystem.create_ground_station` creates it; its AS, routing
-    layers and SkyseedDockerCompiler use it. Input generation copies its static
+    layers and the standard SEED compiler use it. Input generation copies its static
     values. It is not a Config, ordinary Router or dynamic link state. It is
     root public because it is an approved user-visible entity.
     """
@@ -94,6 +90,16 @@ class GroundStation(Router):
         )
         self.setDisplayName(display_name or self.ground_station_id)
         self.setGeo(location.latitude_deg, location.longitude_deg)
+        # Keep standard Router/BorderRouter identity; Skyseed identity is
+        # projected only through public labels.
+        self.setLabel("skyseed.entity_type", "GroundStation")
+        self.setLabel("skyseed.ground_station_id", self.ground_station_id)
+        self.setLabel("skyseed.station_type", self.station_type)
+        self.setLabel("skyseed.operator", self.operator)
+        self.setLabel("skyseed.latitude_deg", str(location.latitude_deg))
+        self.setLabel("skyseed.longitude_deg", str(location.longitude_deg))
+        if location.elevation_m is not None:
+            self.setLabel("skyseed.elevation_m", str(location.elevation_m))
 
     @staticmethod
     def _validate_text(value: str, field_name: str) -> str:
@@ -120,9 +126,3 @@ class GroundStation(Router):
     @property
     def service_config(self) -> Mapping[str, str]:
         return self._service_config
-
-    @property
-    def registry_type(self) -> str:
-        """Stable primary Registry identity independent of border state."""
-
-        return GROUND_STATION_REGISTRY_TYPE

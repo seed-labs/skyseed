@@ -9,7 +9,8 @@ From `skyseed_v2/examples/isolated_satellites/`, generate the complete output
 directly:
 
 ```bash
-python3 main.py
+python3 main.py \
+  --internet-map-source /path/to/seed-emulator/tools/InternetMap2
 ```
 
 Direct-file execution uses the caller's selected Python and never switches
@@ -18,8 +19,14 @@ environments. The recommended local interpreter is the canonical
 equivalent module command from `skyseed_v2/` remains available:
 
 ```bash
-python3 -m examples.isolated_satellites.main
+python3 -m examples.isolated_satellites.main \
+  --internet-map-source /path/to/seed-emulator/tools/InternetMap2
 ```
+
+The source path is an explicit opt-in to an InternetMap artifact containing
+the none-network backend normalization. The example never infers the SEED
+checkout layout. Pass `--no-internet-map` instead when no repaired source
+context should be staged.
 
 Existing default output is replaced automatically. Pass `--no-override` only
 when an existing output directory should make generation fail.
@@ -45,10 +52,8 @@ Start the experiment with:
 The generated controls use the exact Compose project
 `skyseed_v2_isolated_satellites`.
 
-`SkyseedDockerCompiler` declares each locally built SEED base image as a
-Compose `service:` additional build context. The generated start script uses
-the maintained BuildKit/Compose v2 path. Cleanup stops only this exact project
-and keeps the generated output:
+The generated start script uses plugin-based Compose v2. Cleanup stops only
+this exact project and keeps the generated output:
 
 ```bash
 ./output/cleanup.sh

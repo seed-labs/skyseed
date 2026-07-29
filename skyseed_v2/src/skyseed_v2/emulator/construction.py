@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from seedemu.core import AutonomousSystem, Emulator
-from seedemu.layers import Ebgp, Ibgp, Ospf, PeerRelationship, Routing
+from seedemu.layers import Base, Ebgp, Ibgp, Ospf, PeerRelationship, Routing
 
 from skyseed_v2.configuration.emulator import (
     OrdinaryAutonomousSystemConfig,
@@ -15,7 +15,10 @@ from skyseed_v2.configuration.emulator.ground_station import (
     _derive_ground_station_id,
 )
 from skyseed_v2.emulator.entities import GroundStationLocation, OrbitParameters
-from skyseed_v2.emulator.seedemu import SatelliteBase, SkyseedAutonomousSystem
+from skyseed_v2.emulator.seedemu import (
+    SkyseedAutonomousSystem,
+    get_skyseed_autonomous_systems,
+)
 
 
 __all__ = ["create_static_emulator"]
@@ -32,7 +35,7 @@ def create_static_emulator(config: StaticEmulatorConfig) -> Emulator:
         raise TypeError("config must be a StaticEmulatorConfig")
 
     emulator = Emulator()
-    base = SatelliteBase()
+    base = Base()
 
     for exchange in config.internet_exchanges:
         base.createInternetExchange(
@@ -52,7 +55,7 @@ def create_static_emulator(config: StaticEmulatorConfig) -> Emulator:
 
 
 def _create_skyseed_autonomous_system(
-    base: SatelliteBase,
+    base: Base,
     config: SkyseedAutonomousSystemConfig,
 ) -> SkyseedAutonomousSystem:
     autonomous_system = SkyseedAutonomousSystem(config.asn)
@@ -90,7 +93,7 @@ def _create_skyseed_autonomous_system(
 
 
 def _create_ordinary_autonomous_system(
-    base: SatelliteBase,
+    base: Base,
     config: OrdinaryAutonomousSystemConfig,
 ) -> AutonomousSystem:
     autonomous_system = base.createAutonomousSystem(config.asn)
@@ -107,7 +110,7 @@ def _create_ordinary_autonomous_system(
 
 def _add_routing_layers(
     emulator: Emulator,
-    base: SatelliteBase,
+    base: Base,
     config: StaticEmulatorConfig,
 ) -> None:
     if not config.ebgp_peerings:
@@ -116,7 +119,7 @@ def _add_routing_layers(
 
     ospf = Ospf()
     ibgp = Ibgp()
-    for autonomous_system in base.get_skyseed_autonomous_systems():
+    for autonomous_system in get_skyseed_autonomous_systems(base):
         ospf.maskAsn(autonomous_system.getAsn())
         ibgp.maskAsn(autonomous_system.getAsn())
     ebgp = Ebgp()
@@ -132,7 +135,6 @@ def _add_routing_layers(
         )
     for layer in (base, Routing(), ospf, ibgp, ebgp):
         emulator.addLayer(layer)
-
 
 def _expand_orbit_inputs(config: ShellConfig) -> tuple[_OrbitInput, ...]:
     """Expand one immutable Shell Config without creating an entity."""

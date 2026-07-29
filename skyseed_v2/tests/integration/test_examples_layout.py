@@ -17,7 +17,7 @@ from examples.dynamic_slice_network import main as dynamic
 from examples.isolated_satellites import main as isolated
 from examples.large_static_network import main as large
 from seedemu.core import Emulator
-from skyseed_v2.emulator.seedemu import SatelliteBase
+from seedemu.layers import Base
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -404,7 +404,8 @@ def test_small_examples_show_public_construction_without_file_facades() -> None:
     assert "create_emulator_node_index" not in complete_source
     assert "emulator_node_index" not in complete_source
     assert "catalog_builder" not in complete_source
-    assert "SkyseedDockerCompiler" in complete_source
+    assert "Docker(" in complete_source
+    assert "SkyseedDockerCompiler" not in complete_source
     assert 'ENABLED_TOOLS = ("topology", "zone")' in complete_source
     assert "write_topology_tool(" in complete_source
     assert "write_zone_tool(" in complete_source
@@ -434,7 +435,7 @@ def test_canonical_simu_path_is_explicit_deterministic_and_executable() -> None:
     )
     assert "complete_static_emulator.main" not in source
     assert ".getLayer(\"Base\")" in source
-    assert ".get_skyseed_autonomous_systems()" in source
+    assert "get_skyseed_autonomous_systems(base)" in source
     assert "create_simulator_static_input" in source
     assert "SimulationTimeline(" in source
     assert "SimulationDefinition(" in source
@@ -485,7 +486,7 @@ def test_complete_emulator_helper_has_one_emulator_only_responsibility() -> None
 
     emulator = emu.build_emulator()
     assert isinstance(emulator, Emulator)
-    assert isinstance(emulator.getLayer("Base"), SatelliteBase)
+    assert isinstance(emulator.getLayer("Base"), Base)
     assert "SimulatorStaticInput" not in source
     assert "create_simulator_static_input" not in source
     assert "SimulationDefinition" not in source

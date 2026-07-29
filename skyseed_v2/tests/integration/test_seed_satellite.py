@@ -2,23 +2,19 @@ from datetime import datetime, timezone
 
 import pytest
 
-from seedemu.core import Emulator, Node
+from seedemu.core import Emulator, ExtensionNode
 from seedemu.core.enums import NodeRole
+from seedemu.layers import Base
 
+from skyseed_v2.emulator.entities import OrbitParameters, Satellite
+from skyseed_v2.emulator.seedemu import SkyseedAutonomousSystem
 from skyseed_v2.emulator_to_simulator import create_simulator_static_input
 from skyseed_v2.shared import NodeId
-from skyseed_v2.emulator.entities import OrbitParameters, Satellite, SatelliteRole
-from skyseed_v2.emulator.seedemu import (
-    SATELLITE_REGISTRY_TYPE,
-    SatelliteBase,
-    SkyseedAutonomousSystem,
-)
-from skyseed_v2.simulator.input import SatelliteSimulationInput
 
 
 def build_rendered_emulator():
     emulator = Emulator()
-    base = SatelliteBase()
+    base = Base()
     satellite_as = SkyseedAutonomousSystem(65000)
     base.setAutonomousSystem(satellite_as)
     shell = satellite_as.create_shell("shell-1")
@@ -34,34 +30,27 @@ def build_rendered_emulator():
     return emulator, satellite_as, shell, orbit
 
 
-def test_orbit_satellites_are_the_registered_seed_nodes() -> None:
+def test_orbit_and_as_inventory_share_registered_extension_nodes() -> None:
     emulator, satellite_as, _, orbit = build_rendered_emulator()
-    registry = emulator.getRegistry()
+    registered = emulator.getRegistry().getByType("65000", "extnode")
 
-    registered_satellites = registry.getByType(
-        "65000", SATELLITE_REGISTRY_TYPE
-    )
-
-    assert len(registered_satellites) == 2
-    assert all(isinstance(satellite, Satellite) for satellite in registered_satellites)
-    assert all(isinstance(satellite, Node) for satellite in registered_satellites)
+    assert registered == list(orbit.satellites)
+    assert all(isinstance(satellite, Satellite) for satellite in registered)
+    assert all(isinstance(satellite, ExtensionNode) for satellite in registered)
     assert all(
-        registered is created
-        for registered, created in zip(
-            registered_satellites, orbit.satellites, strict=True
-        )
+        satellite_as.getExtensionNode(satellite.satellite_id) is satellite
+        for satellite in orbit.satellites
     )
+    assert satellite_as.getExtensionNodes() == [
+        "satellite-0",
+        "satellite-1",
+    ]
     assert all(
-        satellite.getRole() is SatelliteRole.SATELLITE
-        for satellite in registered_satellites
+        satellite.getRole() is NodeRole.ExtensionNode
+        for satellite in registered
     )
-    assert all(
-        satellite.getRole() is not NodeRole.Host
-        for satellite in registered_satellites
-    )
-    assert registry.getByType("65000", "hnode") == []
-    assert not hasattr(satellite_as, "_satellite_nodes")
-    assert not hasattr(satellite_as, "get_satellite_node")
+    assert emulator.getRegistry().getByType("65000", "satnode") == []
+    assert emulator.getRegistry().getByType("65000", "hnode") == []
 
 
 def test_only_satellites_not_shell_or_orbit_enter_registry() -> None:
@@ -73,9 +62,9 @@ def test_only_satellites_not_shell_or_orbit_enter_registry() -> None:
     assert all(satellite in registered_objects for satellite in orbit.satellites)
 
 
-def test_base_render_and_options_apply_to_the_orbit_satellite_instances() -> None:
+def test_standard_base_render_and_options_apply_to_satellite_instances() -> None:
     emulator, _, _, orbit = build_rendered_emulator()
-    nodes = emulator.getRegistry().getByType("65000", SATELLITE_REGISTRY_TYPE)
+    nodes = emulator.getRegistry().getByType("65000", "extnode")
 
     for registered, satellite in zip(nodes, orbit.satellites, strict=True):
         assert registered is satellite
@@ -87,6 +76,18 @@ def test_base_render_and_options_apply_to_the_orbit_satellite_instances() -> Non
         assert "/interface_setup" in files
 
 
+def test_satellite_identity_is_projected_with_public_node_labels() -> None:
+    _, _, _, orbit = build_rendered_emulator()
+    satellite = orbit.satellites[0]
+
+    assert satellite.getLabel() == {
+        "skyseed.entity_type": "Satellite",
+        "skyseed.satellite_id": "satellite-0",
+        "skyseed.shell_id": "shell-1",
+        "skyseed.orbit_id": "orbit-1",
+    }
+
+
 def test_simulation_input_is_a_static_copy_of_registered_satellite() -> None:
     emulator, satellite_as, _, _ = build_rendered_emulator()
 
@@ -95,17 +96,15 @@ def test_simulation_input_is_a_static_copy_of_registered_satellite() -> None:
     ).list_satellites():
         satellite = satellite_as.get_satellite(simulation_input.satellite_id)
         registered = emulator.getRegistry().get(
-            "65000", SATELLITE_REGISTRY_TYPE, simulation_input.satellite_id
+            "65000", "extnode", simulation_input.satellite_id
         )
         assert registered is satellite
-        assert simulation_input.satellite_id == satellite.satellite_id
         assert simulation_input.node_id == NodeId(
             asn=satellite.getAsn(),
             entity_kind="satellite",
             entity_id=satellite.satellite_id,
         )
-        assert not isinstance(simulation_input.node_id, Node)
-        assert "satnode" not in simulation_input.node_id.value
+        assert "extnode" not in simulation_input.node_id.value
 
 
 def test_as_rejects_duplicate_shell_and_satellite_ids_across_shells() -> None:

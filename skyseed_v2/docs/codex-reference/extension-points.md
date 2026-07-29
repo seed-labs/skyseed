@@ -14,8 +14,9 @@ Compose launch options, and repository Tools.
 
 | Extension | Owner boundary | May customize | Must not own |
 |---|---|---|---|
-| `SatelliteBase` / `SkyseedAutonomousSystem` | `emulator/seedemu` | upstream Base/AS behavior for Skyseed entities | Simulator or Tools |
-| `SkyseedDockerCompiler` | `emulator/seedemu` | SEED Docker dispatch, metadata, package asset use | dynamic execution |
+| `SkyseedAutonomousSystem` | `emulator/seedemu` | Skyseed entity creation plus standard router/extension-node inventory attachment | Simulator or Tools |
+| upstream `ExtensionNode` / `Docker` | SEED | generic extension-node lifecycle, metadata, and zero-interface deployment | Skyseed domain semantics |
+| future functional Layer (unfrozen) | Skyseed Emulator | shared software, files, build/start commands, and daemons | entity creation, Registry, ownership, identity metadata, compiler dispatch |
 | `ZoneMembershipModel` | ZoneLayout | physical matches and winner among matches | Zones or service assignment |
 | `PositionModel` | Slicer | complete Position mapping | Slice publication |
 | `ConnectionModel` | Slicer | complete ConnectionSlice | Route or publication |
@@ -32,13 +33,16 @@ SEED extraction direction is:
 Skyseed construction/entities → emulator/seedemu → upstream SEED
 ```
 
-The extraction blockers are explicit: Skyseed `Satellite` and
-`GroundStation` are dual-role SEED subclasses, and compiler dispatch/type
-metadata imports those Skyseed entity types/constants. The SEED extension
-package itself has no dependency on Simulator, Tools, Compose launcher, or
-examples. Assets are loaded through
-`files("skyseed_v2.emulator.seedemu")/assets/...` and packaged by
-`pyproject.toml`.
+`Satellite` is a public upstream `ExtensionNode`; `GroundStation` is an
+upstream `Router`. Both project immutable identity through public Node labels,
+and GroundStation also uses `setGeo`. The standard SEED lifecycle/compiler
+consumes those surfaces without importing Skyseed entity types. The Skyseed
+integration package has no dependency on Simulator, Tools, Compose launcher,
+compiler subclass, package asset, or examples.
+
+No functional Layer exists yet because no shared runtime software/file/command
+contract is approved. Its future name, number, and public API remain
+deliberately unfrozen.
 
 ## Invariants
 
@@ -46,8 +50,8 @@ Extensions remain narrow, typed, owner-validated, and replace no formal owner.
 
 ## Failure semantics
 
-Unsupported upstream API shape, foreign extension output, or missing asset
-fails closed. There is no compatibility adapter to an older path.
+Unsupported upstream API shape or invalid entity ownership fails closed.
+There is no compatibility adapter to an older path.
 
 ## Prohibited behavior
 
@@ -63,6 +67,5 @@ inside an accepted extension are implementation detail.
 ## Maintenance
 
 For SEED changes update package README, direct-import/consumer checks,
-compiler integration tests, package-data/wheel resource check, and review
-evidence. For Model/Zone/Tool changes update the corresponding contract and
-focused tests.
+standard compiler integration tests, and review evidence. For Model/Zone/Tool
+changes update the corresponding contract and focused tests.

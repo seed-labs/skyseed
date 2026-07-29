@@ -7,6 +7,8 @@ for exact semantics.
 |---|---|---|
 | Emulator | upstream SEED composition and the Skyseed entities it owns | [ownership](../codex-reference/ownership-lifecycle.md) |
 | Emulator entity | Shell/Orbit/Satellite/GroundStation used by SEED construction | [Emulator boundary](../codex-reference/emulator-simulator-boundary.md) |
+| extension-node lifecycle index | AS-held same-object reference used for SEED registration/configuration, not Satellite domain ownership | [ownership](../codex-reference/ownership-lifecycle.md) |
+| future functional Layer | unfrozen Skyseed boundary for shared software/files/commands/daemons; no current class or API | [extension points](../codex-reference/extension-points.md) |
 | Simulator input | immutable receiver-owned copied scalar DTO; never an Emulator object | [Emulator–Simulator boundary](../codex-reference/emulator-simulator-boundary.md) |
 | Simulator | composition root that creates one Topology then one Slicer | [ownership](../codex-reference/ownership-lifecycle.md) |
 | Topology | immutable Simulator static aggregate and lookup facade | [Topology/Zone](../codex-reference/topology-zone-contracts.md) |

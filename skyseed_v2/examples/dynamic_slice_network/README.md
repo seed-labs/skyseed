@@ -46,14 +46,20 @@ Both representative points remain inside their own rectangles.
 Run the formal comprehensive entry from the repository root:
 
 ```bash
-python3 -m examples.dynamic_slice_network.main
+python3 -m examples.dynamic_slice_network.main \
+  --internet-map-source /path/to/seed-emulator/tools/InternetMap2
 ```
 
 Or directly from this directory:
 
 ```bash
-python3 main.py
+python3 main.py \
+  --internet-map-source /path/to/seed-emulator/tools/InternetMap2
 ```
+
+The explicit source path selects an InternetMap artifact containing the
+none-network backend normalization without assuming a checkout layout. Pass
+`--no-internet-map` when the map is intentionally omitted.
 
 The output is one user-facing scenario root with a runnable static environment
 and isolated read-only inspection bundles:
@@ -84,7 +90,7 @@ output/
 
 `main.py` constructs the Emulator exactly once, renders and compiles it, adds
 project-scoped controls, projects SimulatorStaticInput from that same
-Emulator's SatelliteBase owner, creates one Topology and one Slicer, publishes
+Emulator's upstream Base owner, creates one Topology and one Slicer, publishes
 every formal Slice, then gives that exact Topology to the Topology and Zone
 Tools and that exact Slicer to the Dynamic Slice Tool. `start.sh` validates
 `runtime/docker-compose.yml` before starting:

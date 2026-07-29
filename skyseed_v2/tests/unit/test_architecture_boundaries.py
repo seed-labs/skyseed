@@ -1,6 +1,5 @@
 import ast
 import importlib.util
-from importlib.resources import files
 import inspect
 import os
 from pathlib import Path
@@ -10,12 +9,7 @@ import sys
 import skyseed_v2
 from skyseed_v2.emulator.entities import GroundStation, Satellite
 from skyseed_v2.shared.identifier import validate_identifier
-from skyseed_v2.emulator.seedemu import SkyseedDockerCompiler
 from skyseed_v2.simulator import input as simulator_static_input
-from skyseed_v2.emulator.seedemu.metadata import (
-    SEED_METADATA_PREFIX,
-    SKYSEED_METADATA_PREFIX,
-)
 
 
 def imported_modules(module) -> set[str]:
@@ -68,9 +62,9 @@ def test_skyseed_as_owns_entities_but_not_simulator_static_input() -> None:
 
 
 def test_seedemu_extension_is_an_extractable_upstream_boundary() -> None:
-    seedemu_root = (
-        Path(inspect.getsourcefile(SkyseedDockerCompiler)).parent.resolve()
-    )
+    from skyseed_v2.emulator import seedemu
+
+    seedemu_root = Path(inspect.getsourcefile(seedemu)).parent.resolve()
     files = {
         path.relative_to(seedemu_root).as_posix()
         for path in seedemu_root.rglob("*")
@@ -79,11 +73,7 @@ def test_seedemu_extension_is_an_extractable_upstream_boundary() -> None:
     assert files == {
         "README.md",
         "__init__.py",
-        "assets/internet_map_none_network_patch.sh",
-        "metadata.py",
-        "satellite_base.py",
         "skyseed_autonomous_system.py",
-        "skyseed_docker_compiler.py",
     }
 
     for path in seedemu_root.glob("*.py"):
@@ -113,20 +103,20 @@ def test_seedemu_extension_is_an_extractable_upstream_boundary() -> None:
             ), (path, forbidden_prefix)
 
 
-def test_seedemu_package_asset_uses_the_new_resource_owner() -> None:
+def test_retired_seedemu_compiler_assets_are_not_packaged() -> None:
     project_root = Path(__file__).resolve().parents[2]
     package_configuration = (project_root / "pyproject.toml").read_text(
         encoding="utf-8"
     )
-    assert (
-        '"skyseed_v2.emulator.seedemu" = ["assets/*.sh"]'
-        in package_configuration
+    assert '"skyseed_v2.emulator.seedemu" = ["assets/*.sh"]' not in (
+        package_configuration
     )
     assert '"skyseed_v2.seedemu_integration"' not in package_configuration
-    patch_resource = files("skyseed_v2.emulator.seedemu").joinpath(
-        "assets/internet_map_none_network_patch.sh"
-    )
-    assert patch_resource.is_file()
+    seedemu_root = project_root / "src/skyseed_v2/emulator/seedemu"
+    assert not any((seedemu_root / "assets").glob("*"))
+    assert not (seedemu_root / "metadata.py").exists()
+    assert not (seedemu_root / "satellite_base.py").exists()
+    assert not (seedemu_root / "skyseed_docker_compiler.py").exists()
 
 
 def test_simulator_static_input_has_only_data_layer_dependencies() -> None:
@@ -378,10 +368,8 @@ def test_simulator_core_has_no_emulator_seed_or_generation_dependency() -> None:
             )
 
 
-def test_shared_validation_and_seed_metadata_have_explicit_owners() -> None:
+def test_shared_validation_has_an_explicit_owner() -> None:
     assert validate_identifier.__module__ == "skyseed_v2.shared.identifier"
-    assert SEED_METADATA_PREFIX == "org.seedsecuritylabs.seedemu.meta."
-    assert SKYSEED_METADATA_PREFIX == "skyseed."
 
 
 def test_retired_as_and_compiler_names_have_no_aliases() -> None:
@@ -391,17 +379,19 @@ def test_retired_as_and_compiler_names_have_no_aliases() -> None:
         "SatelliteAutonomousSystem",
         "GroundStationAutonomousSystem",
         "SatelliteDockerCompiler",
+        "SkyseedDockerCompiler",
+        "SatelliteBase",
     ):
         assert not hasattr(skyseed_v2, retired_name)
         assert not hasattr(seed_integration, retired_name)
 
-    compiler = SkyseedDockerCompiler(internet_map_enabled=False)
-    assert compiler.getName() == "SkyseedDocker"
-
-
-def test_private_upstream_accumulator_has_one_source_access_point() -> None:
-    compiler_source = Path(inspect.getsourcefile(SkyseedDockerCompiler)).read_text()
-    assert compiler_source.count('"_Docker__services"') == 1
+def test_skyseed_has_no_private_docker_accumulator_access() -> None:
+    package_root = Path(inspect.getsourcefile(skyseed_v2)).parent
+    production_source = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in package_root.rglob("*.py")
+    )
+    assert "_Docker__services" not in production_source
 
 
 def test_static_configuration_is_backend_and_v1_independent() -> None:

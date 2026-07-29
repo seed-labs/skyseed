@@ -4,11 +4,10 @@ from __future__ import annotations
 
 from typing import Mapping
 
-from seedemu.core import AutonomousSystem, Emulator, Router
+from seedemu.core import AutonomousSystem
+from seedemu.layers import Base
 
 from skyseed_v2.emulator.entities import (
-    GROUND_STATION_REGISTRY_TYPE,
-    SATELLITE_REGISTRY_TYPE,
     GroundStation,
     GroundStationLocation,
     Satellite,
@@ -31,7 +30,6 @@ class SkyseedAutonomousSystem(AutonomousSystem):
         super().__init__(asn, subnet_template)
         self._shells: dict[str, Shell] = {}
         self._satellite_ids: set[str] = set()
-        self._ground_stations: dict[str, GroundStation] = {}
 
     @property
     def shells(self) -> tuple[Shell, ...]:
@@ -47,6 +45,7 @@ class SkyseedAutonomousSystem(AutonomousSystem):
             shell_id,
             asn=self.getAsn(),
             satellite_ids=self._satellite_ids,
+            _on_satellite_created=self.addExtensionNode,
         )
         self._shells[shell_id] = shell
         return shell
@@ -86,10 +85,7 @@ class SkyseedAutonomousSystem(AutonomousSystem):
         ground_station_id = validate_identifier(
             ground_station_id, "ground_station_id"
         )
-        if (
-            ground_station_id in self._ground_stations
-            or ground_station_id in super().getRouters()
-        ):
+        if ground_station_id in self.getRouters():
             raise ValueError(
                 f"ground_station_id {ground_station_id!r} already exists"
             )
@@ -103,79 +99,41 @@ class SkyseedAutonomousSystem(AutonomousSystem):
             service_config=service_config,
             routing_backend=routing_backend,
         )
-        self._ground_stations[ground_station_id] = ground_station
-        return ground_station
+        return self._addRouter(ground_station)
 
     def ground_stations(self) -> tuple[GroundStation, ...]:
-        return tuple(self._ground_stations.values())
+        return tuple(
+            router
+            for name in self.getRouters()
+            if isinstance((router := self.getRouter(name)), GroundStation)
+        )
 
     def get_ground_station(self, ground_station_id: str) -> GroundStation:
         try:
-            return self._ground_stations[ground_station_id]
+            ground_station = self.getRouter(ground_station_id)
         except KeyError as error:
             raise KeyError(
                 f"ground station {ground_station_id!r} does not exist"
             ) from error
-
-    def getRouters(self) -> list[str]:
-        return super().getRouters() + list(self._ground_stations)
-
-    def createRouter(self, name: str, routingBackend: str = "bird") -> Router:
-        if name in self._ground_stations:
-            raise ValueError(f"Router name {name!r} already exists")
-        return super().createRouter(name, routingBackend)
-
-    def getRouter(self, name: str) -> Router:
-        if name in self._ground_stations:
-            return self._ground_stations[name]
-        return super().getRouter(name)
-
-    def getBorderRouters(self) -> list[Router]:
-        return super().getBorderRouters() + [
-            station
-            for station in self._ground_stations.values()
-            if station.isBorderRouter()
-        ]
-
-    def registerNodes(self, emulator: Emulator) -> None:
-        super().registerNodes(emulator)
-        registry = emulator.getRegistry()
-        scope = str(self.getAsn())
-        for ground_station in self.ground_stations():
-            registry.register(
-                scope,
-                GROUND_STATION_REGISTRY_TYPE,
-                ground_station.ground_station_id,
-                ground_station,
+        if not isinstance(ground_station, GroundStation):
+            raise KeyError(
+                f"ground station {ground_station_id!r} does not exist"
             )
-        for satellite in self.satellites():
-            registry.register(
-                scope,
-                SATELLITE_REGISTRY_TYPE,
-                satellite.satellite_id,
-                satellite,
-            )
+        return ground_station
 
-    def inheritOptions(self, emulator: Emulator) -> None:
-        # Upstream discovers GroundStation through its standard rnode entry.
-        super().inheritOptions(emulator)
-        for satellite in self.satellites():
-            self.handDown(satellite)
 
-    def configure(self, emulator: Emulator) -> None:
-        # Upstream configures ordinary Routers and Hosts first.
-        super().configure(emulator)
-        registry = emulator.getRegistry()
-        for ground_station in self.ground_stations():
-            if not ground_station.getNameServers():
-                ground_station.setNameServers(self.getNameServers())
-            ground_station.configure(emulator)
-            if ground_station.isBorderRouter():
-                registry.register(
-                    str(self.getAsn()),
-                    "brdnode",
-                    ground_station.getName(),
-                    ground_station,
-                )
-        for satellite in self.satellites():
-            satellite.configure(emulator)
+def get_skyseed_autonomous_systems(
+    base: Base,
+) -> tuple[SkyseedAutonomousSystem, ...]:
+    """Query Skyseed AS values from an upstream Base without owning lifecycle."""
+
+    if not isinstance(base, Base):
+        raise TypeError("base must be an upstream Base layer")
+    return tuple(
+        autonomous_system
+        for asn in sorted(base.getAsns())
+        if isinstance(
+            (autonomous_system := base.getAutonomousSystem(asn)),
+            SkyseedAutonomousSystem,
+        )
+    )

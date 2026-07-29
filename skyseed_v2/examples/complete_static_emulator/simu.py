@@ -19,9 +19,10 @@ from examples._direct_execution import prepare_direct_file_execution
 prepare_direct_file_execution(__file__)
 
 from examples.complete_static_emulator.emu import build_emulator
+from seedemu.layers import Base
 from skyseed_v2.configuration.simulator import load_zone_layout_definition
 from skyseed_v2.shared import NodeId
-from skyseed_v2.emulator.seedemu import SatelliteBase
+from skyseed_v2.emulator.seedemu import get_skyseed_autonomous_systems
 from skyseed_v2.simulator import (
     CircularOrbitPositionModel,
     ConnectionKind,
@@ -52,9 +53,9 @@ def main() -> None:
 
     # Emulator-to-Simulator input adaptation in this external assembly entrypoint.
     base = emulator.getLayer("Base")
-    if not isinstance(base, SatelliteBase):
-        raise TypeError("complete example Base layer must be a SatelliteBase")
-    skyseed_autonomous_systems = base.get_skyseed_autonomous_systems()
+    if not isinstance(base, Base):
+        raise TypeError("complete example Base layer must be a Base")
+    skyseed_autonomous_systems = get_skyseed_autonomous_systems(base)
     simulator_input = create_simulator_static_input(skyseed_autonomous_systems)
 
     # Simulator construction and static topology materialization.

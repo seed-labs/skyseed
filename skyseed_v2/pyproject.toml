@@ -16,9 +16,6 @@ test = ["pytest>=7"]
 [tool.setuptools.packages.find]
 where = ["src"]
 
-[tool.setuptools.package-data]
-"skyseed_v2.emulator.seedemu" = ["assets/*.sh"]
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]

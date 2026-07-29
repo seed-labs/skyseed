@@ -16,7 +16,7 @@ flowchart LR
     SLI --> RES["retained Slice / Difference"]
     RES --> TOOL["read-only Inspection Tools"]
 
-    EMU --> COMP["SkyseedDockerCompiler"]
+    EMU --> COMP["upstream SEED Docker compiler"]
     COMP --> PROJECT["Compose project"]
     PROJECT --> LAUNCH["ComposeProjectLauncher"]
 ```

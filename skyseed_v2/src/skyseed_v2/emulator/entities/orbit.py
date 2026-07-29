@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from math import isfinite
-from typing import Mapping
+from collections.abc import Callable, Mapping
 
 from skyseed_v2.shared.identifier import validate_identifier
 from skyseed_v2.shared.time import normalize_utc_datetime
@@ -66,6 +66,7 @@ class Orbit:
         parameters: OrbitParameters,
         satellite_ids: set[str],
         asn: int,
+        _on_satellite_created: Callable[[Satellite], None] | None = None,
     ) -> None:
         self._orbit_id = validate_identifier(orbit_id, "orbit_id")
         self._shell_id = validate_identifier(shell_id, "shell_id")
@@ -76,6 +77,7 @@ class Orbit:
         self._asn = asn
         self._satellites: dict[str, Satellite] = {}
         self._satellite_indices: set[int] = set()
+        self._on_satellite_created = _on_satellite_created
 
     @property
     def orbit_id(self) -> str:
@@ -132,6 +134,10 @@ class Orbit:
             asn=self._asn,
             payload=payload or {},
         )
+        # Orbit organization and the AS lifecycle index receive this same
+        # Satellite instance; neither side creates a wrapper or copy.
+        if self._on_satellite_created is not None:
+            self._on_satellite_created(satellite)
         self._satellites[satellite_id] = satellite
         self._satellite_indices.add(orbit_index)
         self._satellite_ids.add(satellite_id)

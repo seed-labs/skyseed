@@ -6,12 +6,14 @@ from yaml.nodes import MappingNode, Node, SequenceNode
 
 from examples.complete_static_emulator.emu import build_emulator
 from examples.complete_static_emulator.main import main
+from seedemu.compiler import Docker
+from seedemu.layers import Base
+from skyseed_v2.emulator.seedemu import SkyseedAutonomousSystem
 from skyseed_v2.shared import NodeId
 from skyseed_v2.simulator.input import (
     GroundStationSimulationInput,
     SatelliteSimulationInput,
 )
-from skyseed_v2.emulator.seedemu import SatelliteBase, SkyseedDockerCompiler
 from skyseed_v2.emulator_to_simulator import create_simulator_static_input
 
 
@@ -48,11 +50,17 @@ def test_complete_example_input_matches_registry_and_compiler_output(
 ) -> None:
     emulator = build_emulator()
     base = emulator.getLayer("Base")
-    assert isinstance(base, SatelliteBase)
-    skyseed_as = base.get_skyseed_autonomous_systems()[0]
-    simulator_input = create_simulator_static_input(
-        base.get_skyseed_autonomous_systems()
+    assert isinstance(base, Base)
+    skyseed_autonomous_systems = tuple(
+        autonomous_system
+        for asn in sorted(base.getAsns())
+        if isinstance(
+            (autonomous_system := base.getAutonomousSystem(asn)),
+            SkyseedAutonomousSystem,
+        )
     )
+    skyseed_as = skyseed_autonomous_systems[0]
+    simulator_input = create_simulator_static_input(skyseed_autonomous_systems)
     ground_station = skyseed_as.get_ground_station("gs-new-york")
 
     assert len(simulator_input.list_nodes()) == 3
@@ -67,10 +75,10 @@ def test_complete_example_input_matches_registry_and_compiler_output(
 
     emulator.render()
     registry = emulator.getRegistry()
-    assert registry.get("65001", "satnode", "satellite-0") is (
+    assert registry.get("65001", "extnode", "satellite-0") is (
         skyseed_as.get_satellite("satellite-0")
     )
-    assert registry.get("65001", "satnode", "satellite-1") is (
+    assert registry.get("65001", "extnode", "satellite-1") is (
         skyseed_as.get_satellite("satellite-1")
     )
     assert registry.get("65001", "rnode", "gs-new-york") is ground_station
@@ -84,7 +92,10 @@ def test_complete_example_input_matches_registry_and_compiler_output(
 
     output = tmp_path / "output"
     emulator.compile(
-        SkyseedDockerCompiler(internet_map_enabled=True),
+        Docker(
+            namingScheme="as{asn}{role}-{displayName}",
+            internetMapEnabled=True,
+        ),
         str(output),
     )
     compose_text = (output / "docker-compose.yml").read_text()
@@ -100,23 +111,26 @@ def test_complete_example_input_matches_registry_and_compiler_output(
         labels = service["labels"]
         assert service["network_mode"] == "none"
         assert "networks" not in service
-        assert labels[f"{METADATA_PREFIX}role"] == "Satellite"
-        assert labels[f"{METADATA_PREFIX}type"] == "satnode"
+        assert labels[f"{METADATA_PREFIX}role"] == "ExtensionNode"
+        assert labels[
+            f"{METADATA_PREFIX}skyseed.entity_type"
+        ] == "Satellite"
     station_service = services["gs-new-york"]
     station_labels = station_service["labels"]
     assert station_service.get("network_mode") != "none"
     assert list(station_service["networks"]) == ["net_ix_ix100"]
-    assert station_labels[f"{METADATA_PREFIX}role"] == "GroundStation"
-    assert station_labels[f"{METADATA_PREFIX}type"] == "rnode"
+    assert station_labels[f"{METADATA_PREFIX}role"] == "BorderRouter"
+    assert station_labels[
+        f"{METADATA_PREFIX}skyseed.entity_type"
+    ] == "GroundStation"
     for service_name in (
         "brdnode_65001_gs-new-york",
         "brdnode_65002_ground-router",
     ):
         service = compose["services"][service_name]
         dependency = service["depends_on"][0]
-        assert service["build"]["additional_contexts"] == {
-            dependency: f"service:{dependency}",
-        }
+        assert service["build"] == f"./{service_name}"
+        assert compose["services"][dependency]["image"] == dependency
 
     assert "SimulatorStaticInput" not in compose_text
     assert "NodeId" not in compose_text
@@ -130,9 +144,18 @@ def test_complete_example_cli_creates_a_new_output_parent(
     capsys,
 ) -> None:
     output = tmp_path / "new-parent" / "output"
+    internet_map_source = tmp_path / "internet-map-source"
+    internet_map_source.mkdir()
+    (internet_map_source / "Dockerfile").write_text("FROM scratch\n")
     monkeypatch.setattr(
         "sys.argv",
-        ["complete_static_emulator.py", "--output", str(output)],
+        [
+            "complete_static_emulator.py",
+            "--output",
+            str(output),
+            "--internet-map-source",
+            str(internet_map_source),
+        ],
     )
 
     assert main() == 0

@@ -22,7 +22,7 @@ The full entity member list remains in the entity owner README.
 
 ```mermaid
 flowchart LR
-    F["create_static_emulator()"] --> B["SatelliteBase"]
+    F["create_static_emulator()"] --> B["upstream Base"]
     B --> A["EmulatorAS"]
     A --> SH["EmulatorShell"]
     SH --> O["EmulatorOrbit"]

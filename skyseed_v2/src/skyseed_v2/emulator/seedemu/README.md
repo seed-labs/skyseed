@@ -1,69 +1,53 @@
 # SEED integration boundary
 
-This package is the extractable upstream SEED extension boundary. It contains
-the Base/AS subclasses, Docker compiler hook, metadata, and package asset; it
-contains no Simulator, Dynamic Slice, Tool, Compose-launcher, generic
-configuration, orchestration, or example-specific logic.
+This package contains the single Skyseed-specific SEED integration owner:
+`SkyseedAutonomousSystem`. Generic extension-node lifecycle, rendering,
+metadata, zero-interface compilation, and InternetMap compatibility belong to
+upstream SEED.
 
 ## Local assembly / ownership map
 
-Legend: `A --> B` means A directly depends on B across the extraction
-boundary.
+Legend: `A --> B` means A depends on B across the package boundary.
 
 ```mermaid
 flowchart LR
-    SKY["Skyseed construction/entities"] --> EXT["emulator/seedemu"]
-    EXT --> UPSTREAM["upstream SEED Base / AS / Docker APIs"]
+    SKY["Skyseed construction/entities"] --> EXT["SkyseedAutonomousSystem"]
+    EXT --> UPSTREAM["upstream SEED AutonomousSystem / ExtensionNode APIs"]
 ```
 
-Legend: `*--` is SEED-extension/entity ownership using the real public class
-names.
+Legend: `*--` is domain ownership.
 
 ```mermaid
 classDiagram
-    class SatelliteBase
     class SkyseedAutonomousSystem
     class Shell
     class Orbit
     class Satellite
     class GroundStation
 
-    SatelliteBase "1" *-- "0..*" SkyseedAutonomousSystem : Skyseed ASes
     SkyseedAutonomousSystem "1" *-- "0..*" GroundStation : ground stations
     SkyseedAutonomousSystem "1" *-- "0..*" Shell : shells
     Shell "1" *-- "0..*" Orbit : orbits
     Orbit "1" *-- "0..*" Satellite : satellites
 ```
 
-Legend: `..>` means the compiler consumes the rendered upstream `Emulator`
-state; it does not own that state.
+Legend: `..|>` is realization of the upstream extension-node contract.
 
 ```mermaid
 classDiagram
-    class SkyseedDockerCompiler
-    class Emulator
+    class ExtensionNode
+    class Satellite
 
-    SkyseedDockerCompiler ..> Emulator : consumes rendered SEED state
+    Satellite ..|> ExtensionNode
 ```
-
-This whole package is the future upstream-extraction boundary; Skyseed
-construction, entities, configuration, projection, Simulator, Tools, and
-Compose lifecycle remain outside it.
 
 ## Detailed public class/member diagrams
 
-Legend: `A *-- B` means the SEED extension owner A owns Skyseed entity B.
-Only Skyseed-specific public members are expanded; broad inherited SEED APIs
-are omitted.
+Legend: this class diagram lists the public Skyseed-specific AS members; it
+contains no relationship edge.
 
 ```mermaid
 classDiagram
-    direction LR
-    class SatelliteBase {
-        <<SEED Base extension>>
-        +get_skyseed_autonomous_systems()
-        +render()
-    }
     class SkyseedAutonomousSystem {
         <<SEED AS extension and entity owner>>
         +shells
@@ -75,58 +59,47 @@ classDiagram
         +ground_stations()
         +get_ground_station()
     }
-    class Shell
-    class GroundStation
-    SatelliteBase "1" *-- "*" SkyseedAutonomousSystem : autonomous systems
-    SkyseedAutonomousSystem "1" *-- "*" Shell : shells
-    SkyseedAutonomousSystem "1" *-- "*" GroundStation : ground stations
-```
-
-Legend: `Compiler ..> Entity` means compiler dispatch depends on the entity's
-Skyseed registry type; it is not ownership.
-
-```mermaid
-classDiagram
-    direction LR
-    class SkyseedDockerCompiler {
-        <<SEED Docker compiler extension>>
-        +getName()
-    }
-    class Satellite
-    class GroundStation
-    SkyseedDockerCompiler ..> Satellite : registry dispatch
-    SkyseedDockerCompiler ..> GroundStation : registry dispatch
 ```
 
 | Diagram class | Public contract | Required public members |
 |---|---|---|
-| `SatelliteBase` | `skyseed_v2.emulator.seedemu.SatelliteBase` | `get_skyseed_autonomous_systems()`, `render()` |
 | `SkyseedAutonomousSystem` | `skyseed_v2.emulator.seedemu.SkyseedAutonomousSystem` | `shells`, `create_shell()`, `get_shell()`, `satellites()`, `get_satellite()`, `create_ground_station()`, `ground_stations()`, `get_ground_station()` |
-| `SkyseedDockerCompiler` | `skyseed_v2.emulator.seedemu.SkyseedDockerCompiler` | `getName()` |
+
+The package also exports
+`get_skyseed_autonomous_systems(base)`, a read-only Base query. It does not
+register, configure, or own any object.
 
 ## Entry points
 
-Code entries are `satellite_base.py`, `skyseed_autonomous_system.py`,
-`skyseed_docker_compiler.py`, `metadata.py`, and
-`assets/internet_map_none_network_patch.sh`.
+Code entry: `skyseed_autonomous_system.py`.
 
 ## Dependencies
 
-This boundary directly depends on upstream SEED APIs, Skyseed Emulator
-entities, shared identifier validation, and its package resource. It has no
-Simulator, Tool, Compose, configuration, bridge, or example dependency.
+This boundary depends on upstream SEED `AutonomousSystem` APIs, Skyseed
+entities, and shared identifier validation. It has no custom Base, compiler,
+metadata serializer, InternetMap asset, Simulator, Tool, Compose, or example
+dependency.
 
-`Satellite`/`GroundStation` dual-role inheritance and compiler type checks are
-the concrete upstream-extraction coupling; construction and
-`emulator_to_simulator.py` remain Skyseed-owned.
+## Lifecycle contract
+
+GroundStations are inserted into the standard router inventory. Satellites
+remain owned by their Orbit and the same object reference is also inserted
+into the AS extension-node lifecycle inventory at creation time. Standard
+SEED then performs register, option inheritance, configure, Base render, and
+Docker compilation.
+
+A future functional Layer may apply shared software, files, commands, and
+daemons. No such Layer exists in this package today; its name, number, and API
+remain unfrozen, and it will not take over entity creation, Registry, static
+identity projection, or compiler serialization.
 
 ## Examples and tests
 
-Complete, isolated, dynamic, and large examples use the extension. Architecture,
-SEED, compiler, and wheel/resource tests cover extraction constraints.
+All static Emulator examples use upstream `Base` and `Docker`. Entity,
+lifecycle, construction-path, standard compiler, and architecture tests cover
+this boundary.
 
 ## Maintenance checklist
 
-When this boundary changes, update the local map and detailed diagrams,
-extension/boundary contracts, package-data configuration, public imports,
-extraction evidence, and focused integration tests.
+When this boundary changes, update the AS/entity ownership diagrams, public
+imports, lifecycle tests, and extraction evidence.

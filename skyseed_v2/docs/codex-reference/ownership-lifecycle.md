@@ -15,10 +15,10 @@ Slicer/results, and Compose launcher.
 | Object | Creator | Owner | Primary consumers |
 |---|---|---|---|
 | upstream `Emulator` | `create_static_emulator` or handwritten assembly | itself/composition caller | SEED render/compiler, boundary projector |
-| `SkyseedAutonomousSystem` | construction or `SatelliteBase` caller | upstream Base/Emulator | Shell/GS creation, projector |
+| `SkyseedAutonomousSystem` | construction or upstream Base caller | upstream Base/Emulator | Shell/GS creation, projector |
 | `Shell` | Skyseed AS | Skyseed AS | Orbit construction, projector |
 | `Orbit` | Shell | Shell | Satellite construction, projector |
-| Emulator `Satellite` | Orbit | Orbit | SEED, compiler, projector |
+| Emulator `Satellite` | Orbit | Orbit, plus same-reference AS extension-node lifecycle index | SEED, compiler, projector |
 | Emulator `GroundStation` | Skyseed AS | Skyseed AS | SEED, compiler, projector |
 | `SimulatorStaticInput` | boundary functions | calling assembly / `SimulationDefinition` | Topology materialization |
 | `Simulator` | caller | caller-facing composition root | Topology/Slicer lifecycle |
@@ -28,7 +28,7 @@ Slicer/results, and Compose launcher.
 | `Slicer` | `Simulator.create_slicer` | Simulator | caller and Tools |
 | `TopologySlice` | Slicer | retained by the creating Slicer | queries, paths, Difference, Tools |
 | `TopologyDifference` | Slicer on request | caller | Tools / future approved consumers |
-| Compose project | `SkyseedDockerCompiler` | filesystem/caller | `ComposeProjectLauncher` |
+| Compose project | upstream SEED `Docker` compiler | filesystem/caller | `ComposeProjectLauncher` |
 
 ## Contract
 

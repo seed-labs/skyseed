@@ -59,7 +59,7 @@ def test_ground_station_as_rejects_duplicate_stable_ids() -> None:
             station_type="gateway",
             operator="Skyseed",
         )
-    with pytest.raises(ValueError, match="already exists"):
+    with pytest.raises(AssertionError, match="already exists"):
         station_as.createRouter("gs-1")
 
 
@@ -67,6 +67,22 @@ def test_ground_station_height_defaults_to_zero_and_rejects_none() -> None:
     assert GroundStationLocation(40.0, -74.0).elevation_m == 0.0
     with pytest.raises(TypeError):
         GroundStationLocation(40.0, -74.0, None)
+
+
+def test_ground_station_omits_missing_elevation_label() -> None:
+    location = GroundStationLocation(40.0, -74.0)
+    # Isolate label projection without changing the accepted location-value
+    # validation contract, which still defaults to 0.0 and rejects None.
+    object.__setattr__(location, "elevation_m", None)
+    station = GroundStation(
+        ground_station_id="gs-no-elevation",
+        asn=151,
+        location=location,
+        station_type="gateway",
+        operator="Skyseed",
+    )
+
+    assert "skyseed.elevation_m" not in station.getLabel()
 
 
 def test_ground_station_simulation_input_is_immutable_and_restricted() -> None:

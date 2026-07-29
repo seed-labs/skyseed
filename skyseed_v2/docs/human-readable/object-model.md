@@ -17,9 +17,9 @@ classDiagram
     class UpstreamEmulator {
         <<upstream composition root>>
     }
-    class SatelliteBase {
-        <<SEED extension layer>>
-        +get_skyseed_autonomous_systems()
+    class UpstreamBase {
+        <<upstream SEED Base layer>>
+        +getAutonomousSystem()
     }
     class EmulatorAS["SkyseedAutonomousSystem"]
     class EmulatorAS {
@@ -50,12 +50,80 @@ classDiagram
         +ground_station_id
     }
 
-    UpstreamEmulator "1" *-- "1" SatelliteBase : layer
-    SatelliteBase "1" *-- "0..*" EmulatorAS : Skyseed AS
+    UpstreamEmulator "1" *-- "1" UpstreamBase : layer
+    UpstreamBase "1" *-- "0..*" EmulatorAS : Skyseed AS
     EmulatorAS "1" *-- "0..*" EmulatorShell : shells
     EmulatorAS "1" *-- "0..*" EmulatorGroundStation : stations
     EmulatorShell "1" *-- "0..*" EmulatorOrbit : orbits
     EmulatorOrbit "1" *-- "0..*" EmulatorSatellite : satellites
+```
+
+Legend: `<|--` is Python inheritance; `o--` is a same-instance lifecycle
+reference and does not transfer domain ownership.
+
+```mermaid
+classDiagram
+    direction LR
+
+    class SeedNode["SEED Node"] {
+        <<upstream lifecycle base>>
+    }
+    class SeedRouter["SEED Router"] {
+        <<upstream router>>
+    }
+    class SeedExtensionNode["SEED ExtensionNode"] {
+        <<upstream extension node>>
+    }
+    class SatelliteEntity["Satellite"] {
+        <<Emulator entity and ExtensionNode>>
+    }
+    class GroundStationEntity["GroundStation"] {
+        <<Emulator entity and Router>>
+    }
+
+    SeedNode <|-- SeedRouter
+    SeedRouter <|-- GroundStationEntity
+    SeedNode <|-- SeedExtensionNode
+    SeedExtensionNode <|-- SatelliteEntity
+```
+
+Legend: `*--` means Orbit owns Satellite in domain organization.
+
+```mermaid
+classDiagram
+    class OrbitOwner["Orbit"] {
+        <<Satellite domain owner>>
+    }
+    class SatelliteEntity["Satellite"] {
+        <<Emulator entity and ExtensionNode>>
+    }
+    OrbitOwner "1" *-- "0..*" SatelliteEntity : domain organization
+```
+
+Legend: `o--` means the AS lifecycle inventory references that same instance.
+
+```mermaid
+classDiagram
+    class SkyseedAS["SkyseedAutonomousSystem"] {
+        <<Emulator AS owner>>
+    }
+    class SatelliteEntity["Satellite"] {
+        <<Emulator entity and ExtensionNode>>
+    }
+    SkyseedAS "1" o-- "0..*" SatelliteEntity : lifecycle index, same instance
+```
+
+Legend: `A --> B` is a static lowering or future injection data flow; it does
+not express ownership.
+
+```mermaid
+flowchart LR
+    ENTITY["Entity / construction"] --> IDENTITY["static identity labels / geo"]
+    FUTURE["Future Skyseed functional Layer<br/>name, count, API unfrozen"] --> FUNCTION["software / files / commands / daemons"]
+    IDENTITY --> NODE["public SEED Node APIs"]
+    FUNCTION --> NODE
+    NODE --> COMPILER["standard SEED compiler"]
+    COMPILER --> ARTIFACT["Dockerfile / Compose serialization"]
 ```
 
 Legend: `A *-- B` is owner/composition. Labels describe the owned value;
@@ -260,7 +328,6 @@ classDiagram
 
 | Diagram object | Public contract |
 |---|---|
-| `SatelliteBase` | `skyseed_v2.emulator.seedemu.SatelliteBase` |
 | `EmulatorAS` | `skyseed_v2.emulator.seedemu.SkyseedAutonomousSystem` |
 | `EmulatorShell` | `skyseed_v2.emulator.entities.Shell` |
 | `EmulatorOrbit` | `skyseed_v2.emulator.entities.Orbit` |

@@ -3,15 +3,16 @@
 This handwritten example shows the complete public composition: two planned
 Satellites, one GroundStation, one ordinary SEED AS/Network/Router, one IX, one
 explicit eBGP peering, immutable Emulator-to-Simulator input, the accepted
-Dynamic Slice A–E chain, accepted F TopologyDifference evidence and
-`SkyseedDockerCompiler`.
+Dynamic Slice A–E chain, accepted F TopologyDifference evidence and the
+upstream SEED `Docker` compiler.
 
 `emu.py` contains only `build_emulator() -> Emulator`. `main.py` builds that
 Emulator once, assembles one Simulator/Topology from the same object, preserves
 the Emulator render/compile path, then writes the offline Topology and Zone
 tool snapshot. `simu.py` independently reuses it for readable external
 Emulator-to-Simulator assembly and obtains all Skyseed AS values from the real
-`SatelliteBase` owner and passes that collection to
+upstream `Base` owner with `get_skyseed_autonomous_systems(base)` and passes
+that collection to
 `create_simulator_static_input(...)`. The ordinary AS is excluded by that
 owner query. No NodeId-to-Emulator-entity mapping or resolution path is
 created. `operator` is descriptive metadata only. The Simulator path loads the
@@ -54,7 +55,8 @@ the dynamic service assignment shown by the ConnectionSlice.
 Generate the complete output from the same example directory:
 
 ```bash
-python3 main.py
+python3 main.py \
+  --internet-map-source /path/to/seed-emulator/tools/InternetMap2
 ```
 
 The default command compiles the runnable static project under
@@ -82,11 +84,14 @@ environments. The recommended local interpreter is the canonical
 `skyseed_dev` Conda environment described in the top-level README. Existing
 default output is replaced automatically; pass `--no-override` to reject an
 existing output. The equivalent module command from `skyseed_v2/` is
-`python3 -m examples.complete_static_emulator.main`.
+`python3 -m examples.complete_static_emulator.main --internet-map-source
+/path/to/seed-emulator/tools/InternetMap2`.
 
-`SkyseedDockerCompiler` expresses locally built SEED base images as Compose
-`service:` additional build contexts, so a maintained Docker installation can
-use its default BuildKit builder directly. Start the generated project with:
+This explicit path selects a source artifact containing the none-network
+backend normalization; the example does not infer the SEED checkout layout.
+Use `--no-internet-map` when that artifact is not required.
+
+Start the generated upstream SEED `Docker` Compose project with:
 
 ```bash
 ./output/start.sh

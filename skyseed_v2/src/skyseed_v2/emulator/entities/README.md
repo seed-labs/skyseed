@@ -27,8 +27,18 @@ classDiagram
     Orbit "1" *-- "0..*" Satellite : satellites
 ```
 
-Standalone local values/helpers expanded below: `GroundStationLocation`,
-`OrbitParameters`, and `SatelliteRole`.
+Legend: `o--` is a same-instance lifecycle reference without ownership
+transfer.
+
+```mermaid
+classDiagram
+    class SkyseedAutonomousSystem
+    class Satellite
+    SkyseedAutonomousSystem "1" o-- "0..*" Satellite : SEED lifecycle index
+```
+
+Standalone local values expanded below: `GroundStationLocation` and
+`OrbitParameters`.
 
 ## Detailed public class/member diagrams
 
@@ -63,8 +73,6 @@ classDiagram
         +orbit_index
         +mean_anomaly_deg
         +payload
-        +registry_type
-        +scope()
     }
     class GroundStation {
         <<Emulator and SEED router>>
@@ -73,7 +81,6 @@ classDiagram
         +station_type
         +operator
         +service_config
-        +registry_type
     }
     Shell "1" *-- "*" Orbit : orbits
     Orbit "1" *-- "*" Satellite : satellites
@@ -103,10 +110,6 @@ classDiagram
         +longitude_deg
         +elevation_m
     }
-    class SatelliteRole {
-        <<SEED registry role enum>>
-        +SATELLITE
-    }
     Orbit "1" *-- "1" OrbitParameters : parameters
     GroundStation "1" *-- "1" GroundStationLocation : location
 ```
@@ -115,11 +118,17 @@ classDiagram
 |---|---|---|
 | `Shell` | `skyseed_v2.emulator.entities.Shell` | `shell_id`, `orbits`, `create_orbit()`, `get_orbit()`, `iter_satellites()` |
 | `Orbit` | `skyseed_v2.emulator.entities.Orbit` | `orbit_id`, `shell_id`, `parameters`, `satellites`, `get_satellite()`, `create_satellite()`, `create_satellites()` |
-| `Satellite` | `skyseed_v2.emulator.entities.Satellite` | `satellite_id`, `shell_id`, `orbit_id`, `orbit_index`, `mean_anomaly_deg`, `payload`, `registry_type`, `scope()` |
-| `GroundStation` | `skyseed_v2.emulator.entities.GroundStation` | `ground_station_id`, `location`, `station_type`, `operator`, `service_config`, `registry_type` |
+| `Satellite` | `skyseed_v2.emulator.entities.Satellite` | `satellite_id`, `shell_id`, `orbit_id`, `orbit_index`, `mean_anomaly_deg`, `payload` |
+| `GroundStation` | `skyseed_v2.emulator.entities.GroundStation` | `ground_station_id`, `location`, `station_type`, `operator`, `service_config` |
 | `GroundStationLocation` | `skyseed_v2.emulator.entities.GroundStationLocation` | `latitude_deg`, `longitude_deg`, `elevation_m` |
 | `OrbitParameters` | `skyseed_v2.emulator.entities.OrbitParameters` | `altitude_km`, `inclination_deg`, `right_ascension_deg`, `epoch_utc` |
-| `SatelliteRole` | `skyseed_v2.emulator.entities.SatelliteRole` | `SATELLITE` |
+
+Satellite projects `skyseed.entity_type`, `skyseed.satellite_id`,
+`skyseed.shell_id`, and `skyseed.orbit_id` through public Node labels.
+GroundStation keeps standard Router/BorderRouter role and projects
+`skyseed.entity_type`, `skyseed.ground_station_id`,
+`skyseed.station_type`, `skyseed.operator`, latitude, longitude, and elevation
+labels; it also uses public `setGeo()`.
 
 ## Entry points
 

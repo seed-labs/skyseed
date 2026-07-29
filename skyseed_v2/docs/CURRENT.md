@@ -13,7 +13,7 @@ provenance material is non-authoritative.
 - documentation identity/checking consolidation: **implemented and accepted**;
 - compatibility forwarding and dual import paths: absent.
 
-## Implemented and accepted
+## Accepted implementation
 
 - static Emulator configuration, YAML loading, owner construction, SEED Base /
   AS extensions, Docker compiler hook, metadata, and assets;
@@ -59,3 +59,19 @@ Flat predecessor paths such as `entities/`, `seedemu_integration/`,
 `materialization/`, `static_emulator.py`,
 `simulator_input_generation.py`, `simulator/static_input/`, and flat
 Simulator slicing/geometry modules are retired and absent.
+
+## Candidate under review
+
+The current unstaged SEED/Skyseed integration candidate is not accepted yet.
+It proposes upstream `ExtensionNode` lifecycle support, a static deployment
+path using upstream `Base` plus upstream `Docker`, public Node metadata
+projection, standard Satellite/Router compilation, removal of the retired
+Satellite Base/compiler/metadata/assets, and generic zero-interface services
+using `network_mode: none`.
+
+The standard SEED InternetMap path remains the published image. Skyseed
+canonical examples explicitly require a caller-provided repaired InternetMap2
+source/build context when InternetMap is enabled; this opt-in path is still
+under review. Compose configuration alone does not prove that the
+backwards-compatible published image handles zero-interface containers at
+runtime. The Map-disabled zero-interface path is unaffected.

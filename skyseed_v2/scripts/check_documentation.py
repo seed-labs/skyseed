@@ -1058,10 +1058,11 @@ def _check_local_assembly_maps() -> int:
             ("composition", "Orbit", "Satellite", "1", "0..*"),
         ),
         "src/skyseed_v2/emulator/seedemu/README.md": (
-            ("composition", "SatelliteBase", "SkyseedAutonomousSystem", "1", "0..*"),
             ("composition", "SkyseedAutonomousSystem", "GroundStation", "1", "0..*"),
             ("composition", "SkyseedAutonomousSystem", "Shell", "1", "0..*"),
-            ("dependency", "SkyseedDockerCompiler", "Emulator", None, None),
+            ("composition", "Shell", "Orbit", "1", "0..*"),
+            ("composition", "Orbit", "Satellite", "1", "0..*"),
+            ("realization", "Satellite", "ExtensionNode", None, None),
         ),
         "src/skyseed_v2/configuration/emulator/README.md": (
             ("handoff", "YAML / handwritten declarations", "StaticEmulatorConfig", None, None),

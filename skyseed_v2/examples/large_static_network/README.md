@@ -9,7 +9,7 @@ contract or runtime path.
 Its visible construction path is
 `load_static_emulator_config(path) -> create_static_emulator(config) ->
 Emulator.getLayer("Base") ->
-SatelliteBase.get_skyseed_autonomous_systems() ->
+select SkyseedAutonomousSystem values from Base ->
 create_simulator_static_input(skyseed_autonomous_systems)`.
 The creation function directly calls the same public AS/Shell/Orbit entity
 creation methods shown by the handwritten examples; it does not introduce a
@@ -30,7 +30,8 @@ From `skyseed_v2/examples/large_static_network/`, generate and validate without
 starting 365 services:
 
 ```bash
-python3 main.py
+python3 main.py \
+  --internet-map-source /path/to/seed-emulator/tools/InternetMap2
 docker compose --parallel 16 \
   -p skyseed_v2_large_static_network \
   -f output/runtime/docker-compose.yml config --quiet
@@ -45,7 +46,12 @@ environments. The recommended local interpreter is the canonical
 `skyseed_dev` Conda environment described in the top-level README. Existing
 default output is replaced automatically; pass `--no-override` to reject an
 existing output. The equivalent module command from `skyseed_v2/` is
-`python3 -m examples.large_static_network.main`.
+`python3 -m examples.large_static_network.main --internet-map-source
+/path/to/seed-emulator/tools/InternetMap2`.
+
+The source context is explicit and supplies the repaired InternetMap backend;
+the example does not infer a SEED checkout layout. Use `--no-internet-map`
+when the map is intentionally omitted.
 
 The expected service count is 365. A full build/up is intentionally not part
 of the migration baseline. The generated layout contains only root controls
@@ -67,7 +73,7 @@ control:
 ```
 
 `operator: Starlink` is display metadata only and does not select node type,
-ASN, routing or `SkyseedDockerCompiler` behavior.
+ASN, routing or upstream SEED `Docker` behavior.
 
 Cleanup removes only this project's state, if present, and this example's
 ignored output:

@@ -7,8 +7,11 @@
 ## Core principles
 
 - upstream SEED `Emulator` owns the static Emulator composition;
-- Emulator owner tree is Skyseed AS → Shell / GroundStation → Orbit →
-  Satellite;
+- Emulator owner tree is Skyseed AS → Shell → Orbit → Satellite, plus Skyseed
+  AS → GroundStation;
+- `Satellite(ExtensionNode)` remains Orbit-owned while the same instance is
+  indexed by its AS for the standard SEED lifecycle; `GroundStation(Router)`
+  remains on the standard rnode/brdnode path;
 - `Simulator` is the Simulator composition root and creates exactly one
   `Topology`, then exactly one `Slicer`;
 - `SimulatorStaticInput` is immutable receiver-owned boundary data;
@@ -38,11 +41,17 @@ Emulator configuration
 Static deployment is separate:
 
 ```text
-Emulator → SkyseedDockerCompiler → Compose project
+Emulator → upstream SEED Docker compiler → Compose project
 → ComposeProjectLauncher
 ```
 
 `ComposeProjectLauncher` is not a dynamic simulation Runner.
+
+Static identity is projected by entities/construction through public Node
+labels and geo APIs. A future Skyseed functional Layer may inject shared
+software, files, commands, and daemons, but its name, count, and API are not
+frozen. It will not create entities, register nodes, serialize metadata, or
+dispatch compiler subtypes.
 
 ## Prohibited behavior
 
