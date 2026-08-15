@@ -46,20 +46,19 @@ Both representative points remain inside their own rectangles.
 Run the formal comprehensive entry from the repository root:
 
 ```bash
-python3 -m examples.dynamic_slice_network.main \
-  --internet-map-source /path/to/seed-emulator/tools/InternetMap2
+python3 -m examples.dynamic_slice_network.main
 ```
 
 Or directly from this directory:
 
 ```bash
-python3 main.py \
-  --internet-map-source /path/to/seed-emulator/tools/InternetMap2
+python3 main.py
 ```
 
-The explicit source path selects an InternetMap artifact containing the
-none-network backend normalization without assuming a checkout layout. Pass
-`--no-internet-map` when the map is intentionally omitted.
+The canonical command enables the standard upstream InternetMap image. Pass
+`--no-internet-map` only to isolate a suspected Map failure during diagnosis;
+the example does not stage a local Map source tree or infer a SEED checkout
+layout.
 
 The output is one user-facing scenario root with a runnable static environment
 and isolated read-only inspection bundles:

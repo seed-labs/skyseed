@@ -55,8 +55,7 @@ the dynamic service assignment shown by the ConnectionSlice.
 Generate the complete output from the same example directory:
 
 ```bash
-python3 main.py \
-  --internet-map-source /path/to/seed-emulator/tools/InternetMap2
+python3 main.py
 ```
 
 The default command compiles the runnable static project under
@@ -84,12 +83,12 @@ environments. The recommended local interpreter is the canonical
 `skyseed_dev` Conda environment described in the top-level README. Existing
 default output is replaced automatically; pass `--no-override` to reject an
 existing output. The equivalent module command from `skyseed_v2/` is
-`python3 -m examples.complete_static_emulator.main --internet-map-source
-/path/to/seed-emulator/tools/InternetMap2`.
+`python3 -m examples.complete_static_emulator.main`.
 
-This explicit path selects a source artifact containing the none-network
-backend normalization; the example does not infer the SEED checkout layout.
-Use `--no-internet-map` when that artifact is not required.
+The canonical command enables the standard upstream InternetMap image. Use
+`--no-internet-map` only to isolate a suspected Map failure during diagnosis.
+The example does not stage a local Map source tree or infer the SEED checkout
+layout.
 
 Start the generated upstream SEED `Docker` Compose project with:
 

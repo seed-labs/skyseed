@@ -62,14 +62,14 @@ def test_only_satellites_not_shell_or_orbit_enter_registry() -> None:
     assert all(satellite in registered_objects for satellite in orbit.satellites)
 
 
-def test_standard_base_render_and_options_apply_to_satellite_instances() -> None:
+def test_base_render_and_required_compiler_option_apply_to_satellites() -> None:
     emulator, _, _, orbit = build_rendered_emulator()
     nodes = emulator.getRegistry().getByType("65000", "extnode")
 
     for registered, satellite in zip(nodes, orbit.satellites, strict=True):
         assert registered is satellite
         assert satellite.getInterfaces() == []
-        assert satellite.getOption("sysctl_netipv4_ip_forward") is not None
+        assert satellite.getOption("sysctl_netipv4_ip_forward") is None
         assert satellite.getOption("sysctl_netipv4_conf_rp_filter") is not None
         files = {file.get()[0]: file.get()[1] for file in satellite.getFiles()}
         assert files["/ifinfo.txt"] == ""

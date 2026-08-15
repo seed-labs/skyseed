@@ -63,14 +63,10 @@ Compilation entrypoints replace their owned default output unless
 generated project with
 `./output/start.sh` and `./output/cleanup.sh`.
 
-The standard upstream compiler still uses the published InternetMap image by
-default as its backwards-compatible path, but that image's runtime
-compatibility with zero-interface containers is not yet proven. These
-canonical examples therefore select the repaired source artifact instead:
-when InternetMap is enabled, pass
-`--internet-map-source /path/to/seed-emulator/tools/InternetMap2`. Use
-`--no-internet-map` when no explicit repaired source context is available;
-the Map-disabled zero-interface path is unaffected.
+The formal examples enable the standard upstream InternetMap image by default.
+`--no-internet-map` exists only to isolate an InternetMap fault during local
+diagnosis; it is not the canonical validation path. No example stages a local
+InternetMap source tree or assumes a SEED checkout layout.
 
 Project names are fixed and distinct. Generated `start.sh` validates the exact
 `runtime/docker-compose.yml` and starts that project with `up -d --build`.

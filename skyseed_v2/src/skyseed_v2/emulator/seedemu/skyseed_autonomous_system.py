@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Mapping
 
-from seedemu.core import AutonomousSystem
+from seedemu.core import AutonomousSystem, Emulator, Router
 from seedemu.layers import Base
 
 from skyseed_v2.emulator.entities import (
@@ -30,6 +30,7 @@ class SkyseedAutonomousSystem(AutonomousSystem):
         super().__init__(asn, subnet_template)
         self._shells: dict[str, Shell] = {}
         self._satellite_ids: set[str] = set()
+        self._ground_stations: dict[str, GroundStation] = {}
 
     @property
     def shells(self) -> tuple[Shell, ...]:
@@ -99,27 +100,94 @@ class SkyseedAutonomousSystem(AutonomousSystem):
             service_config=service_config,
             routing_backend=routing_backend,
         )
-        return self._addRouter(ground_station)
+        self._ground_stations[ground_station_id] = ground_station
+        return ground_station
 
     def ground_stations(self) -> tuple[GroundStation, ...]:
-        return tuple(
-            router
-            for name in self.getRouters()
-            if isinstance((router := self.getRouter(name)), GroundStation)
-        )
+        return tuple(self._ground_stations.values())
 
     def get_ground_station(self, ground_station_id: str) -> GroundStation:
         try:
-            ground_station = self.getRouter(ground_station_id)
+            return self._ground_stations[ground_station_id]
         except KeyError as error:
             raise KeyError(
                 f"ground station {ground_station_id!r} does not exist"
             ) from error
-        if not isinstance(ground_station, GroundStation):
-            raise KeyError(
-                f"ground station {ground_station_id!r} does not exist"
+
+    def createRouter(
+        self, name: str, routingBackend: str = "bird"
+    ) -> Router:
+        """Create a standard SEED Router without colliding with a station."""
+
+        assert name not in self._ground_stations, (
+            f"Router with name {name} already exists."
+        )
+        return super().createRouter(name, routingBackend)
+
+    def getRouters(self) -> list[str]:
+        """Return ordinary Router and GroundStation inventory names."""
+
+        return super().getRouters() + list(self._ground_stations)
+
+    def getBorderRouters(self) -> list[Router]:
+        """Return every ordinary or GroundStation border router."""
+
+        return super().getBorderRouters() + [
+            station
+            for station in self._ground_stations.values()
+            if station.isBorderRouter()
+        ]
+
+    def getRouter(self, name: str) -> Router:
+        """Resolve a GroundStation through the standard Router query path."""
+
+        if name in self._ground_stations:
+            return self._ground_stations[name]
+        return super().getRouter(name)
+
+    @staticmethod
+    def _new_base_option(base: Base, fullname: str):
+        matches = [
+            option
+            for option in base.getAvailableOptions()
+            if option.fullname() == fullname
+        ]
+        if len(matches) != 1:
+            raise RuntimeError(
+                f"SEED Base option {fullname!r} is unavailable or ambiguous"
             )
-        return ground_station
+        return matches[0]
+
+    def registerNodes(self, emulator: Emulator) -> None:
+        """Register Skyseed entities through their upstream node contracts."""
+
+        base = emulator.getLayer("Base")
+        if not isinstance(base, Base):
+            raise RuntimeError("SkyseedAutonomousSystem requires a SEED Base layer")
+        for satellite in self.satellites():
+            if satellite.getOption("sysctl_netipv4_conf_rp_filter") is None:
+                satellite.setOption(
+                    self._new_base_option(
+                        base, "sysctl_netipv4_conf_rp_filter"
+                    )
+                )
+
+        super().registerNodes(emulator)
+        registry = emulator.getRegistry()
+        for name, station in self._ground_stations.items():
+            registry.register(str(self.getAsn()), "rnode", name, station)
+
+    def configure(self, emulator: Emulator) -> None:
+        """Configure GroundStations with ordinary SEED Router semantics."""
+
+        super().configure(emulator)
+        registry = emulator.getRegistry()
+        for name, station in self._ground_stations.items():
+            if len(station.getNameServers()) == 0:
+                station.setNameServers(self.getNameServers())
+            station.configure(emulator)
+            if station.isBorderRouter():
+                registry.register(str(self.getAsn()), "brdnode", name, station)
 
 
 def get_skyseed_autonomous_systems(

@@ -145,23 +145,12 @@ def main() -> int:
         default=True,
         help="replace an existing output directory (default: enabled)",
     )
-    parser.add_argument("--no-internet-map", action="store_true")
     parser.add_argument(
-        "--internet-map-source",
-        type=Path,
-        help=(
-            "explicit repaired InternetMap2 source/build context; required "
-            "when InternetMap is enabled"
-        ),
+        "--no-internet-map",
+        action="store_true",
+        help="disable InternetMap for fault isolation only",
     )
     arguments = parser.parse_args()
-    if (
-        not arguments.no_internet_map
-        and arguments.internet_map_source is None
-    ):
-        parser.error(
-            "--internet-map-source is required unless --no-internet-map is used"
-        )
 
     emulator = build_emulator()
     topology = _create_simulator_topology(emulator)
@@ -174,7 +163,6 @@ def main() -> int:
         Docker(
             namingScheme="as{asn}{role}-{displayName}",
             internetMapEnabled=not arguments.no_internet_map,
-            internetMapSource=arguments.internet_map_source,
         ),
         str(runtime_output),
     )

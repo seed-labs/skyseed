@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from pathlib import Path
 
-from seedemu.compiler import Docker, DockerImage
+from seedemu.compiler import Docker
 from seedemu.core import Emulator
 from seedemu.layers import Base
 from yaml import compose as compose_yaml
@@ -18,9 +18,7 @@ METADATA_PREFIX = "org.seedsecuritylabs.seedemu.meta."
 def compile_two_satellites(
     output: Path,
     *,
-    local_image_context: Path | None = None,
     internet_map_enabled: bool = False,
-    internet_map_source: Path | None = None,
 ):
     emulator = Emulator()
     base = Base()
@@ -38,21 +36,7 @@ def compile_two_satellites(
     compiler = Docker(
         namingScheme="as{asn}{role}-{displayName}",
         internetMapEnabled=internet_map_enabled,
-        internetMapSource=internet_map_source,
     )
-    if local_image_context is not None:
-        local_image_context.mkdir()
-        (local_image_context / "Dockerfile").write_text("FROM alpine:3.20\n")
-        compiler.addImage(
-            DockerImage(
-                "skyseed-local-base",
-                software=[],
-                local=True,
-                dirName=str(local_image_context),
-            ),
-            priority=100,
-        )
-        compiler.forceImage("skyseed-local-base")
     emulator.compile(compiler, str(output))
     compose_text = (output / "docker-compose.yml").read_text()
     return emulator, compiler, safe_load(compose_text), compose_text, satellites
@@ -104,33 +88,11 @@ def test_standard_compiler_dispatches_unique_extension_nodes(tmp_path) -> None:
 def test_satellite_services_are_explicitly_networkless(tmp_path) -> None:
     emulator, _, compose, _, _ = compile_two_satellites(tmp_path / "output")
 
-    assert "networks" not in compose
+    assert compose["networks"] == {}
     assert emulator.getRegistry().getByType("65000", "net") == []
     for service in satellite_services(compose).values():
         assert service["network_mode"] == "none"
         assert "networks" not in service
-
-
-def test_satellite_builds_declare_native_buildkit_image_dependencies(
-    tmp_path,
-) -> None:
-    output = tmp_path / "output"
-    _, _, compose, _, _ = compile_two_satellites(
-        output,
-        local_image_context=tmp_path / "local-image",
-    )
-
-    for service_name, service in satellite_services(compose).items():
-        assert service["depends_on"] == ["skyseed-local-base"]
-        assert service["build"] == {
-            "context": f"./{service_name}",
-            "additional_contexts": {
-                "skyseed-local-base": "service:skyseed-local-base",
-            },
-        }
-        assert (output / service_name / "Dockerfile").read_text().startswith(
-            "FROM skyseed-local-base\n"
-        )
 
 
 def test_remote_image_satellites_keep_scalar_build_context(tmp_path) -> None:
@@ -193,36 +155,3 @@ def test_default_map_preserves_the_published_image(tmp_path) -> None:
     assert "build" not in map_service
     assert map_service["image"] == "handsonsecurity/seedemu-internetmap:2.0"
     assert not (output / "seedemu-internet-map").exists()
-
-
-def test_opt_in_map_stages_the_caller_selected_source(tmp_path) -> None:
-    source = tmp_path / "selected-internet-map"
-    normalization = (
-        source
-        / "backend"
-        / "src"
-        / "utils"
-        / "container-networks.ts"
-    )
-    normalization.parent.mkdir(parents=True)
-    (source / "Dockerfile").write_text("FROM scratch\n")
-    normalization.write_text("// network_mode:none normalization\n")
-    output = tmp_path / "output"
-    _, _, compose, _, _ = compile_two_satellites(
-        output,
-        internet_map_enabled=True,
-        internet_map_source=source,
-    )
-
-    map_service = compose["services"]["seedemu_internet_map"]
-    assert map_service["build"] == "./seedemu-internet-map"
-    assert map_service["image"] == "seedemu-internetmap:2.0-local-source"
-    staged_normalization = (
-        output
-        / "seedemu-internet-map"
-        / "backend"
-        / "src"
-        / "utils"
-        / "container-networks.ts"
-    ).read_text()
-    assert "network_mode:none" in staged_normalization

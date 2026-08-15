@@ -9,8 +9,7 @@ From `skyseed_v2/examples/isolated_satellites/`, generate the complete output
 directly:
 
 ```bash
-python3 main.py \
-  --internet-map-source /path/to/seed-emulator/tools/InternetMap2
+python3 main.py
 ```
 
 Direct-file execution uses the caller's selected Python and never switches
@@ -19,14 +18,13 @@ environments. The recommended local interpreter is the canonical
 equivalent module command from `skyseed_v2/` remains available:
 
 ```bash
-python3 -m examples.isolated_satellites.main \
-  --internet-map-source /path/to/seed-emulator/tools/InternetMap2
+python3 -m examples.isolated_satellites.main
 ```
 
-The source path is an explicit opt-in to an InternetMap artifact containing
-the none-network backend normalization. The example never infers the SEED
-checkout layout. Pass `--no-internet-map` instead when no repaired source
-context should be staged.
+The canonical command enables the standard upstream InternetMap image. Pass
+`--no-internet-map` only to isolate a suspected Map failure during diagnosis.
+The example never stages a local Map source tree or infers the SEED checkout
+layout.
 
 Existing default output is replaced automatically. Pass `--no-override` only
 when an existing output directory should make generation fail.

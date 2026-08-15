@@ -82,11 +82,15 @@ dependency.
 
 ## Lifecycle contract
 
-GroundStations are inserted into the standard router inventory. Satellites
+SkyseedAutonomousSystem keeps the GroundStations it constructs and projects
+them into the standard SEED rnode/brdnode registry and Router configuration
+path; this does not require a new upstream Router-registration API. Satellites
 remain owned by their Orbit and the same object reference is also inserted
 into the AS extension-node lifecycle inventory at creation time. Standard
-SEED then performs register, option inheritance, configure, Base render, and
-Docker compilation.
+SEED performs their register, configure, Base render, and Docker compilation.
+Skyseed sets only the Base `sysctl_netipv4_conf_rp_filter` default that the
+current upstream Docker compiler reads; legacy Global/AS generic options are
+not inherited by extnodes.
 
 A future functional Layer may apply shared software, files, commands, and
 daemons. No such Layer exists in this package today; its name, number, and API

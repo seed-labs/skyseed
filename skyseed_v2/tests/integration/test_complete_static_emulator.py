@@ -144,17 +144,12 @@ def test_complete_example_cli_creates_a_new_output_parent(
     capsys,
 ) -> None:
     output = tmp_path / "new-parent" / "output"
-    internet_map_source = tmp_path / "internet-map-source"
-    internet_map_source.mkdir()
-    (internet_map_source / "Dockerfile").write_text("FROM scratch\n")
     monkeypatch.setattr(
         "sys.argv",
         [
             "complete_static_emulator.py",
             "--output",
             str(output),
-            "--internet-map-source",
-            str(internet_map_source),
         ],
     )
 

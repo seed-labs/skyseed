@@ -60,18 +60,24 @@ Flat predecessor paths such as `entities/`, `seedemu_integration/`,
 `simulator_input_generation.py`, `simulator/static_input/`, and flat
 Simulator slicing/geometry modules are retired and absent.
 
-## Candidate under review
+## SEED extnode integration baseline
 
-The current unstaged SEED/Skyseed integration candidate is not accepted yet.
-It proposes upstream `ExtensionNode` lifecycle support, a static deployment
-path using upstream `Base` plus upstream `Docker`, public Node metadata
-projection, standard Satellite/Router compilation, removal of the retired
-Satellite Base/compiler/metadata/assets, and generic zero-interface services
-using `network_mode: none`.
+The accepted baseline for this milestone is SEED commit
+`23a565a63d4ff50532f4313ca9ecc6afbfc22e16` (`feat: add generic extension node
+support`). Skyseed uses that commit's upstream `ExtensionNode` lifecycle,
+upstream `Base` plus upstream `Docker`, public Node metadata projection,
+standard Satellite/Router compilation, and extnode-specific zero-interface
+services using `network_mode: none`. Satellite extnodes do not inherit legacy
+Global/AS generic options; Skyseed explicitly supplies only the Base
+`sysctl_netipv4_conf_rp_filter` default required by the current Docker
+compiler. Skyseed locally projects its constructed GroundStation Router
+subclasses into the standard rnode/brdnode lifecycle and does not require a
+new upstream Router-registration API.
 
-The standard SEED InternetMap path remains the published image. Skyseed
-canonical examples explicitly require a caller-provided repaired InternetMap2
-source/build context when InternetMap is enabled; this opt-in path is still
-under review. Compose configuration alone does not prove that the
-backwards-compatible published image handles zero-interface containers at
-runtime. The Map-disabled zero-interface path is unaffected.
+Canonical examples enable the standard published InternetMap image and no
+longer stage a caller-provided source tree. `--no-internet-map` is retained
+only for fault isolation, not as formal runtime-success evidence. A canonical
+InternetMap-enabled runtime validation with isolated Satellites,
+GroundStation, IX and an ordinary Router succeeded against the published
+image; the Map page and container/network APIs loaded without errors, so this
+candidate contains no InternetMap compatibility shim or custom image path.

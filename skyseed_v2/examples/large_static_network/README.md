@@ -30,8 +30,7 @@ From `skyseed_v2/examples/large_static_network/`, generate and validate without
 starting 365 services:
 
 ```bash
-python3 main.py \
-  --internet-map-source /path/to/seed-emulator/tools/InternetMap2
+python3 main.py
 docker compose --parallel 16 \
   -p skyseed_v2_large_static_network \
   -f output/runtime/docker-compose.yml config --quiet
@@ -46,12 +45,12 @@ environments. The recommended local interpreter is the canonical
 `skyseed_dev` Conda environment described in the top-level README. Existing
 default output is replaced automatically; pass `--no-override` to reject an
 existing output. The equivalent module command from `skyseed_v2/` is
-`python3 -m examples.large_static_network.main --internet-map-source
-/path/to/seed-emulator/tools/InternetMap2`.
+`python3 -m examples.large_static_network.main`.
 
-The source context is explicit and supplies the repaired InternetMap backend;
-the example does not infer a SEED checkout layout. Use `--no-internet-map`
-when the map is intentionally omitted.
+The canonical command enables the standard upstream InternetMap image. Use
+`--no-internet-map` only to isolate a suspected Map failure during diagnosis;
+the example does not stage a local Map source tree or infer a SEED checkout
+layout.
 
 The expected service count is 365. A full build/up is intentionally not part
 of the migration baseline. The generated layout contains only root controls
