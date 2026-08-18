@@ -34,7 +34,7 @@ examples/
 | `isolated_satellites` | Specialized handwritten two-Satellite deployment | `python3 -m examples.isolated_satellites.main` | Yes | No | None |
 | `complete_static_emulator` | Minimal static/canonical example kept deliberately small | `python3 -m examples.complete_static_emulator.main` | Yes | One static Topology in `main.py`; separate `simu.py` reaches Slice/Difference and incrementally synchronized Plan | Topology and Zone |
 | `large_static_network` | Specialized static scale and Compose validation | `python3 -m examples.large_static_network.main` | Yes | Static input projection only | None |
-| `mini_satellite_internet` | Small but reasonably rich reusable satellite Internet reference | `python3 -m examples.mini_satellite_internet.main` | Yes | One Simulator/Slicer with bounded dynamic state and consecutive Plans | Topology, Zone, Dynamic Slice and Planner |
+| `mini_satellite_internet` | Small but reasonably rich reusable satellite Internet reference | `python3 -m examples.mini_satellite_internet.main` | Yes | One Simulator/Slicer with bounded dynamic state and consecutive Plans | Topology, Zone, Dynamic Slice, Planner and BPF Compiler |
 
 Running an example's Python entrypoint generates its ignored `output/`:
 
@@ -153,16 +153,15 @@ no formal example imports or reads it.
 
 `mini_satellite_internet/` is the richer bounded satellite Internet reference
 used by the four Inspection Tools. It remains separate from the minimal canonical
-smoke. Its `emu.py` is the sole Emulator builder, `simu.py` only projects an
+smoke. Its `emu.py` is the sole Emulator builder, `simu.py` owns the
+Simulator/Topology/Slicer and Planner configuration/progression over an
 explicitly supplied existing Emulator, and `main.py` is the sole executable
-assembly. That entry compiles the current static Docker/Compose network,
-projects the same upstream Base-owned AS values into one exact Slicer, generates every
-Slice/Difference, gives the Slicer's exact Topology to the Topology and Zone
-Tools, gives the exact Slicer to the five-view Dynamic Slice Tool, drives real
-Planner publication through the public Simulator facade, and gives those exact
-formal results to the Planner Tool. Static container artifacts remain under `output/runtime`; the
-read-only views remain under `output/inspection`. Static containers are not
-updated by Slice results.
+orchestrator. That entry compiles the current static Docker/Compose network,
+asks `simu.py` to project the same upstream Base-owned AS values and prepare
+consecutive Plans, gives the exact Topology/Slicer to their Inspection Tools,
+and gives already-prepared formal Planner results to the Planner Tool. Static
+container artifacts remain under `output/runtime`; the read-only views remain
+under `output/inspection`. Static containers are not updated by Slice results.
 
 See each experiment's README for exact commands. The active examples consume
 the upstream SEED `Docker` compiler output through plugin-based

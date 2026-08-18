@@ -39,6 +39,7 @@ DISCOVERED_PUBLIC_PACKAGES = tuple(
 )
 APPROVED_PUBLIC_PACKAGES = (
     "skyseed_v2",
+    "skyseed_v2.backend.bpf",
     "skyseed_v2.compose",
     "skyseed_v2.configuration",
     "skyseed_v2.configuration.emulator",
@@ -68,6 +69,7 @@ TOOL_READMES = (
     PROJECT_ROOT / "tools/zone/README.md",
     PROJECT_ROOT / "tools/dynamic_slice/README.md",
     PROJECT_ROOT / "tools/planner/README.md",
+    PROJECT_ROOT / "tools/bpf_compiler/README.md",
 )
 
 AUTHORITATIVE_ROOT_FILES = (
@@ -339,7 +341,8 @@ def _check_anchor_consistency() -> None:
     if "implemented and accepted" not in current:
         raise AssertionError("accepted Dynamic Slice status missing from CURRENT")
     for deferred in (
-        "backend preparation/compilation",
+        "runtime binding",
+        "BPF preparation/load/activation/maintenance",
         "dynamic execution",
         "future names, owners, packages, inputs, outputs",
         "execution chains are not frozen",
@@ -1263,7 +1266,6 @@ def _check_repository_growth() -> None:
             raise AssertionError(f"public package README is absent: {readme}")
 
     forbidden_future_package_parts = {
-        "backend",
         "execution",
         "preparer",
         "runner",
@@ -1303,12 +1305,14 @@ def _check_maintenance_mapping() -> None:
             raise AssertionError(f"owner README needs Mermaid: {path}")
     for required in (
         "configuration/emulator/",
+        "backend/bpf/",
         "emulator/seedemu/",
         "emulator_to_simulator.py",
         "simulator/topology/",
         "simulator/slicing/",
         "tools/dynamic_slice/",
         "tools/planner/",
+        "tools/bpf_compiler/",
         "src/skyseed_v2/simulator/models/README.md",
         "src/skyseed_v2/shared/README.md",
     ):

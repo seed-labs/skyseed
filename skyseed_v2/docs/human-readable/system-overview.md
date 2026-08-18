@@ -17,6 +17,9 @@ flowchart LR
     SIM --> PLA["at most one Planner"]
     RES --> PLA
     PLA --> PLAN["immutable semantic Plan"]
+    PLAN --> BPF["one-shot compile_bpf"]
+    RES --> BPF
+    BPF --> REAL["immutable symbolic BpfCompiledRealization"]
     RES --> TOOL["read-only Inspection Tools"]
 
     EMU --> COMP["upstream SEED Docker compiler"]
@@ -26,4 +29,7 @@ flowchart LR
 
 The upper dynamic path and lower static deployment path share the Emulator
 source but not lifecycle ownership. Tools only observe formal objects/results.
+The BPF Compiler is a downstream reader, not a Simulator-owned component; it
+does not bind containers or kernel resources. Any future shared container
+software remains functional-Layer/SEED deployment work on the lower path.
 Implementation state is recorded only in [`CURRENT.md`](../CURRENT.md).

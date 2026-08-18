@@ -38,6 +38,10 @@ def _collapsed_group(module_name: str) -> str:
         return "ROOT"
     if module_name == "skyseed_v2.emulator_to_simulator":
         return "BRIDGE"
+    if module_name == "skyseed_v2.backend" or module_name.startswith(
+        "skyseed_v2.backend."
+    ):
+        return "BPF"
     for prefix, group in (
         ("skyseed_v2.configuration.emulator", "CONFIG_EMU"),
         ("skyseed_v2.configuration.simulator", "CONFIG_SIM"),
@@ -213,6 +217,7 @@ def main() -> int:
         if module_name.startswith("skyseed_v2.simulator") and any(
             target.startswith("skyseed_v2.emulator")
             or target == "skyseed_v2.emulator_to_simulator"
+            or target.startswith("skyseed_v2.backend")
             for target in targets
         ):
             raise AssertionError(
@@ -290,6 +295,7 @@ def main() -> int:
     print("retired paths: absent")
     print("production -> Tools: absent")
     print("Simulator -> Emulator/SEED: absent")
+    print("Simulator -> backend: absent")
     print("SEED -> Simulator/Tools/Compose/examples: absent")
     print("compatibility forwarding: absent")
     print("import dependency result: PASS")

@@ -311,6 +311,13 @@ classDiagram
         +previous_slice_id
         +current_slice_id
     }
+    class Plan
+    class BpfCompiledRealization {
+        <<immutable symbolic backend handoff>>
+        +start_slice_id
+        +end_slice_id
+        +constraints
+    }
 
     UpstreamEmulator ..> SimulatorStaticInput : scalar projection
     Simulator ..> Topology : create_topology
@@ -319,6 +326,8 @@ classDiagram
     Slicer ..> ConnectionModel : 2 calls
     Slicer ..> RouteModel : 3 calls
     Slicer ..> TopologyDifference : creates on request
+    Plan ..> BpfCompiledRealization : compile_bpf semantic input
+    Slicer ..> BpfCompiledRealization : compile_bpf read-only facts
 ```
 
 The projection carries no Emulator/SEED reference. No Model calls another
@@ -385,6 +394,7 @@ classDiagram
 | `CircularOrbitPositionModel` | `skyseed_v2.simulator.models.CircularOrbitPositionModel` |
 | `GeometricConnectionModel` | `skyseed_v2.simulator.models.GeometricConnectionModel` |
 | `HopCountRouteModel` | `skyseed_v2.simulator.models.HopCountRouteModel` |
+| `BpfCompiledRealization` | `skyseed_v2.backend.bpf.BpfCompiledRealization` |
 
 Each mapped class has one detailed maintenance source: the README in the
 package that owns its implementation. See

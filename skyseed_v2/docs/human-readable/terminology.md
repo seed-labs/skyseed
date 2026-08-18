@@ -23,6 +23,8 @@ for exact semantics.
 | Plan | immutable backend-independent Connection/Parameter/Forwarding transition publication for one continuous non-overlapping `(start, end]` interval | [planning](../codex-reference/planning-contracts.md) |
 | Forwarding precedence | Plan-owned same-time `predecessor → successor` semantic constraint; not tuple order or an execution schedule | [planning](../codex-reference/planning-contracts.md) |
 | nominal semantic time | simulation timestamp to which Planner assigns a transition, not runtime completion time | [planning](../codex-reference/planning-contracts.md) |
+| BPF Compiler | one-shot deterministic downstream lowering over Plan and approved read-only Simulator facts | [BPF Compiler](../codex-reference/bpf-compiler.md) |
+| BpfCompiledRealization | immutable symbolic interval handoff and next-compilation intended baseline; not live runtime state | [BPF Compiler](../codex-reference/bpf-compiler.md) |
 | Inspection Tool | repository-local read-only projection/display/artifact pipeline | [user guide](../user-guides/inspection-tools.md) |
 | ComposeProjectLauncher | launcher/verifier for an already compiled static Compose project | [system overview](system-overview.md) |
 

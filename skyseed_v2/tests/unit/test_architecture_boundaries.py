@@ -246,7 +246,6 @@ def test_removed_and_undesignated_future_boundary_apis_are_not_exported() -> Non
         assert not hasattr(skyseed_v2, implemented_name)
 
     future_capability_tokens = (
-        "backend",
         "executioncompiler",
         "preparer",
         "simulationrunner",
@@ -264,7 +263,6 @@ def test_removed_and_undesignated_future_boundary_apis_are_not_exported() -> Non
         future_component in path.parts
         for path in project_package.rglob("*")
         for future_component in (
-            "backend",
             "execution",
             "preparer",
             "runner",

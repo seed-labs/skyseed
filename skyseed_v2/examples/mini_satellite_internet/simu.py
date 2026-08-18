@@ -1,4 +1,4 @@
-"""Project an existing Emulator into the richer A-F Dynamic Slice sequence."""
+"""Assemble the canonical Mini Satellite Internet Simulator and Planner."""
 
 from __future__ import annotations
 
@@ -11,10 +11,16 @@ from seedemu.layers import Base
 from skyseed_v2.configuration.simulator import load_zone_layout_definition
 from skyseed_v2.emulator.seedemu import get_skyseed_autonomous_systems
 from skyseed_v2.simulator import (
+    AccumulatedDeadbandParameterPlanningModel,
     CircularOrbitPositionModel,
     ConnectionKind,
+    DefaultCoordinationPolicy,
+    DependencyAwareForwardingPlanningModel,
     GeometricConnectionModel,
     HopCountRouteModel,
+    MidpointConnectionPlanningModel,
+    Plan,
+    Planner,
     SimulationDefinition,
     SimulationTimeline,
     Simulator,
@@ -47,6 +53,25 @@ PACKET_LOSS_PPM_BY_KIND = {
     ConnectionKind.INTER_SATELLITE: 100,
     ConnectionKind.GROUND_STATION_ACCESS: 200,
 }
+PUBLICATION_DIFFERENCE_COUNT = 4
+MINIMUM_DWELL_SECONDS = 240
+PARAMETER_THRESHOLDS = {
+    "bandwidth_bps": 10_000_000,
+    "delay_us": 250,
+    "packet_loss_ppm": 50,
+}
+
+
+class _VisibleAllPublishFour:
+    """Keep all generated future visible and publish four Differences."""
+
+    __slots__ = ()
+
+    def select_differences(self, available_differences):
+        return tuple(available_differences)
+
+    def select_publication_differences(self, visible_differences):
+        return tuple(visible_differences[:PUBLICATION_DIFFERENCE_COUNT])
 
 
 def create_mini_satellite_internet_simulator(
@@ -115,6 +140,48 @@ def create_mini_satellite_internet_slicer(
         emulator,
         zone_layout_path=zone_layout_path,
     ).get_slicer()
+
+
+def prepare_mini_satellite_internet_planning(
+    simulator: Simulator,
+) -> tuple[Planner, tuple[Plan, ...], dict[str, object]]:
+    """Create, configure, and fully progress the reference Planner branch."""
+
+    if not isinstance(simulator, Simulator):
+        raise TypeError("simulator must be a Simulator")
+    slicer = simulator.get_slicer()
+    planner = simulator.create_planner(
+        horizon_policy=_VisibleAllPublishFour(),
+        connection_model=MidpointConnectionPlanningModel(
+            minimum_dwell=timedelta(seconds=MINIMUM_DWELL_SECONDS),
+        ),
+        parameter_model=AccumulatedDeadbandParameterPlanningModel(
+            bandwidth_bps_threshold=PARAMETER_THRESHOLDS["bandwidth_bps"],
+            delay_us_threshold=PARAMETER_THRESHOLDS["delay_us"],
+            packet_loss_ppm_threshold=PARAMETER_THRESHOLDS[
+                "packet_loss_ppm"
+            ],
+        ),
+        forwarding_model=DependencyAwareForwardingPlanningModel(),
+        coordination_policy=DefaultCoordinationPolicy(),
+    )
+    plans = [planner.get_plan()]
+    while plans[-1].end_slice_id < slicer.get_latest_slice_id():
+        plans.append(planner.synchronize())
+    configuration = {
+        "scenario_identity": "mini_satellite_internet",
+        "slice_interval_seconds": DEFAULT_SLICE_INTERVAL.total_seconds(),
+        "real_slice_count": REAL_SLICE_COUNT,
+        "horizon_visibility": "all generated unpublished Differences",
+        "visible_through_slice_id": slicer.get_latest_slice_id(),
+        "publication_difference_count": PUBLICATION_DIFFERENCE_COUNT,
+        "connection_timing": "midpoint",
+        "minimum_dwell_seconds": MINIMUM_DWELL_SECONDS,
+        "parameter_thresholds": PARAMETER_THRESHOLDS,
+        "forwarding_model": "DependencyAwareForwardingPlanningModel",
+        "coordination_policy": "DefaultCoordinationPolicy",
+    }
+    return planner, tuple(plans), configuration
 
 
 __all__ = [

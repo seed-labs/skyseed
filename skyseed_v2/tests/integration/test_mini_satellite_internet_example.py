@@ -234,11 +234,14 @@ def test_richer_main_builds_once_and_emits_static_and_dynamic_outputs(
     built = []
     compiled = []
     projected = []
+    created_simulators = []
     projection_inputs = []
     created_slicers = []
     topology_tool_inputs = []
     zone_tool_inputs = []
     dynamic_tool_inputs = []
+    bpf_compiler_inputs = []
+    bpf_tool_inputs = []
     real_build = reference_main.build_mini_satellite_internet_emulator
     real_compile = Emulator.compile
     real_project = reference_main.create_mini_satellite_internet_simulator
@@ -246,7 +249,14 @@ def test_richer_main_builds_once_and_emits_static_and_dynamic_outputs(
     real_topology_tool = reference_main.write_topology_tool
     real_zone_tool = reference_main.write_zone_tool
     real_dynamic_tool = reference_main.write_dynamic_slice_tool
+    real_prepare_planning = (
+        reference_main.prepare_mini_satellite_internet_planning
+    )
     real_planner_tool = reference_main.write_planner_inspection
+    real_bpf_compiler = (
+        reference_main._compile_bpf_realizations
+    )
+    real_bpf_tool = reference_main.write_bpf_compiler_tool
 
     def build_spy(path):
         emulator = real_build(path)
@@ -265,6 +275,7 @@ def test_richer_main_builds_once_and_emits_static_and_dynamic_outputs(
     def projection_spy(emulator, **kwargs):
         projected.append(emulator)
         simulator = real_project(emulator, **kwargs)
+        created_simulators.append(simulator)
         created_slicers.append(simulator.get_slicer())
         return simulator
 
@@ -281,10 +292,29 @@ def test_richer_main_builds_once_and_emits_static_and_dynamic_outputs(
         return real_dynamic_tool(slicer, directory)
 
     planner_tool_inputs = []
+    planning_inputs = []
 
-    def planner_tool_spy(simulator, slicer, directory):
-        planner_tool_inputs.append((simulator, slicer))
-        return real_planner_tool(simulator, slicer, directory)
+    def planning_spy(simulator):
+        planning_inputs.append(simulator)
+        return real_prepare_planning(simulator)
+
+    def planner_tool_spy(slicer, planner, plans, configuration, directory):
+        planner_tool_inputs.append((slicer, planner, plans, configuration))
+        return real_planner_tool(
+            slicer,
+            planner,
+            plans,
+            configuration,
+            directory,
+        )
+
+    def bpf_compiler_spy(slicer, plans):
+        bpf_compiler_inputs.append((slicer, plans))
+        return real_bpf_compiler(slicer, plans)
+
+    def bpf_tool_spy(plans, realizations, directory):
+        bpf_tool_inputs.append((plans, realizations))
+        return real_bpf_tool(plans, realizations, directory)
 
     monkeypatch.setattr(
         reference_main,
@@ -315,8 +345,23 @@ def test_richer_main_builds_once_and_emits_static_and_dynamic_outputs(
     )
     monkeypatch.setattr(
         reference_main,
+        "prepare_mini_satellite_internet_planning",
+        planning_spy,
+    )
+    monkeypatch.setattr(
+        reference_main,
         "write_planner_inspection",
         planner_tool_spy,
+    )
+    monkeypatch.setattr(
+        reference_main,
+        "_compile_bpf_realizations",
+        bpf_compiler_spy,
+    )
+    monkeypatch.setattr(
+        reference_main,
+        "write_bpf_compiler_tool",
+        bpf_tool_spy,
     )
     monkeypatch.setattr(
         "sys.argv",
@@ -355,6 +400,7 @@ def test_richer_main_builds_once_and_emits_static_and_dynamic_outputs(
         )
     )
     assert len(created_slicers) == 1
+    assert planning_inputs == created_simulators
     exact_slicer = created_slicers[0]
     exact_topology = exact_slicer.get_topology()
     assert len(topology_tool_inputs) == 1
@@ -364,13 +410,19 @@ def test_richer_main_builds_once_and_emits_static_and_dynamic_outputs(
     assert len(dynamic_tool_inputs) == 1
     assert dynamic_tool_inputs[0] is exact_slicer
     assert len(planner_tool_inputs) == 1
-    assert planner_tool_inputs[0][1] is exact_slicer
+    assert planner_tool_inputs[0][0] is exact_slicer
+    exact_plans = planner_tool_inputs[0][2]
+    assert bpf_compiler_inputs == [(exact_slicer, exact_plans)]
+    assert len(bpf_tool_inputs) == 1
+    assert bpf_tool_inputs[0][0] is exact_plans
+    assert bpf_tool_inputs[0][1]
 
     runtime_output = output / "runtime"
     topology_output = output / "inspection/topology"
     zone_output = output / "inspection/zone"
     dynamic_output = output / "inspection/dynamic-slice"
     planner_output = output / "inspection/planner"
+    bpf_compiler_output = output / "inspection/bpf-compiler"
     compose_file = runtime_output / "docker-compose.yml"
     compose = safe_load(compose_file.read_text(encoding="utf-8"))
     assert isinstance(compose["services"], dict)
@@ -410,6 +462,7 @@ def test_richer_main_builds_once_and_emits_static_and_dynamic_outputs(
         "zone",
         "dynamic-slice",
         "planner",
+        "bpf-compiler",
     }
     for forbidden in ("emulator", "simulator", "dynamic-slice", "tools"):
         assert not (output / forbidden).exists()
@@ -436,6 +489,14 @@ def test_richer_main_builds_once_and_emits_static_and_dynamic_outputs(
         "checksums.sha256",
     ):
         assert (planner_output / name).is_file()
+    for name in (
+        "index.html",
+        "bpf-compiler-inspection.json",
+        "summary.txt",
+        "inventory.json",
+        "checksums.sha256",
+    ):
+        assert (bpf_compiler_output / name).is_file()
 
     topology_payload = json.loads(
         (topology_output / "topology.json").read_text(encoding="utf-8")
@@ -517,6 +578,11 @@ def test_richer_main_builds_once_and_emits_static_and_dynamic_outputs(
     assert f"Zone Tool entry: {zone_output / 'index.html'}" in output_text
     assert (
         f"Dynamic Tool entry: {dynamic_output / 'index.html'}"
+        in output_text
+    )
+    assert f"Planner Tool entry: {planner_output / 'index.html'}" in output_text
+    assert (
+        f"BPF Compiler Tool entry: {bpf_compiler_output / 'index.html'}"
         in output_text
     )
     assert "static containers are not updated" in output_text
@@ -827,6 +893,7 @@ def test_richer_reference_sources_do_not_construct_formal_dynamic_results() -> N
         assert forbidden not in source
     for required in (
         "def create_mini_satellite_internet_slicer(",
+        "def prepare_mini_satellite_internet_planning(",
         "create_simulator_static_input(",
         "Simulator(",
         ".create_topology(",
@@ -840,6 +907,12 @@ def test_richer_reference_sources_do_not_construct_formal_dynamic_results() -> N
     assert main_source.count("write_dynamic_slice_tool(") == 1
     assert main_source.count(".get_topology()") == 1
     for forbidden in (
+        "AccumulatedDeadbandParameterPlanningModel",
+        "DefaultCoordinationPolicy",
+        "DependencyAwareForwardingPlanningModel",
+        "MidpointConnectionPlanningModel",
+        ".create_planner(",
+        ".synchronize(",
         "Simulator(",
         ".create_topology(",
         "load_zone_layout_definition(",

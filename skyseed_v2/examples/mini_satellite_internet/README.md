@@ -22,7 +22,9 @@ explicitly records:
 - Zone representative-point minimum elevation `10°`;
 - ISL/access bandwidth `1,000,000,000 / 500,000,000 bps`;
 - ISL/access loss `100 / 200 ppm`;
-- propagation speed `299,792,458 m/s`.
+- propagation speed `299,792,458 m/s`;
+- Planner visibility/publication, dwell, parameter, forwarding, coordination,
+  and consecutive Plan progression policy.
 
 The three GroundStation coordinates are copied into this v2 YAML from the
 historical/reference v1 catalog
@@ -86,20 +88,28 @@ output/
         ├── summary.txt
         ├── inventory.json
         └── checksums.sha256
-    └── planner/               # written by the same main.py run
+    ├── planner/               # written by the same main.py run
         ├── index.html
         ├── planner-inspection.json
+        ├── summary.txt
+        ├── inventory.json
+        └── checksums.sha256
+    └── bpf-compiler/          # reads precompiled symbolic results
+        ├── index.html
+        ├── bpf-compiler-inspection.json
         ├── summary.txt
         ├── inventory.json
         └── checksums.sha256
 ```
 
 `main.py` constructs the Emulator exactly once, renders and compiles it, adds
-project-scoped controls, projects SimulatorStaticInput from that same
-Emulator's upstream Base owner, creates one Topology and one Slicer, publishes
-every formal Slice, then gives that exact Topology to the Topology and Zone
-Tools, that exact Slicer to the Dynamic Slice Tool, and consecutive immutable
-Plans plus retained PlanningDecisions to the Planner Tool. `start.sh` validates
+project-scoped controls, then asks `simu.py` to project SimulatorStaticInput
+from that same Emulator's upstream Base owner, create the formal
+Simulator/Topology/Slicer, and prepare consecutive immutable Plans. `main.py`
+gives those already-created facts and PlanningDecisions to the four
+Simulator-facing read-only Tools. A private preparation step in `main.py`
+compiles the continuous Plan chain once, then gives those Plans and
+already-produced results to the fifth, BPF Compiler, Tool. `start.sh` validates
 `runtime/docker-compose.yml` before starting:
 
 ```bash
@@ -123,10 +133,10 @@ python -m examples.mini_satellite_internet.main
 
 The primary artifact is
 `output/inspection/planner/index.html`; its sibling JSON, summary, inventory,
-and checksum files are private audit evidence. Scenario assembly creates the
-real Simulator/Slicer, obtains Planner through the public Simulator facade,
+and checksum files are private audit evidence. `simu.py` creates the real
+Simulator/Slicer, obtains Planner through the public Simulator facade, and
 publishes five continuous Plans covering `(0,4]`, `(4,8]`, `(8,12]`,
-`(12,16]`, and `(16,20]`, and passes those exact immutable results plus
+`(12,16]`, and `(16,20]`; `main.py` passes those exact immutable results plus
 retained PlanningDecisions to the single Tool facade. The Tool itself does not
 synchronize Planner or invoke a Model.
 
@@ -138,9 +148,16 @@ decisions, and Difference-to-Plan comparison. Rejected suppression candidates
 remain explicitly unavailable because the formal read surface does not retain
 them.
 
-`main.py` is the single full compile-and-four-Tool assembly entry. `simu.py`
-has no CLI and never writes Tool output; its public assembly helpers project
-the explicitly supplied Emulator into the matching formal Simulator/Slicer.
+`main.py` is the single full deployment-compile, planning, backend-compile,
+and five-Tool orchestration entry.
+`simu.py` has no CLI and never writes Tool output; its example-local assembly
+helpers project the explicitly supplied Emulator into the matching formal
+Simulator/Slicer and prepare the Planner branch.
+
+The private backend preparation in `main.py` invokes `compile_bpf` once per
+continuous Plan with the explicit previous intended baseline. The BPF Compiler
+Tool only consumes the returned immutable values; it cannot compile, rerun
+Simulator semantics, or bind runtime/kernel resources.
 
 The example never edits a Slice, constructs a Connection/Route/Difference
 manually, or bypasses the three Models and Slicer. Inventory, observed
@@ -203,3 +220,6 @@ Details use tables and lists. Raw JSON is only a collapsed audit view.
 11. Inspect one Difference category at a time and focus individual patches.
 12. Confirm the accepted A–G behavior or record any regression found while
    reviewing the external audit bundle.
+13. Open `output/inspection/bpf-compiler/index.html`, select all five Plan
+    intervals, and inspect Plan-to-symbolic lowering, ordering, and intended
+    end state.

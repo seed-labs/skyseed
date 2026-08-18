@@ -52,6 +52,7 @@ def test_root_exports_only_high_frequency_entities_and_values() -> None:
 
 
 def test_identity_and_generation_exports_stay_with_their_owner_modules() -> None:
+    bpf = importlib.import_module("skyseed_v2.backend.bpf")
     node_id = importlib.import_module("skyseed_v2.shared")
     simulator = importlib.import_module("skyseed_v2.simulator")
     simulator_static_input = importlib.import_module(
@@ -66,6 +67,7 @@ def test_identity_and_generation_exports_stay_with_their_owner_modules() -> None
     )
 
     assert node_id.__all__ == ["NodeId"]
+    assert bpf.__all__ == ["BpfCompiledRealization", "compile_bpf"]
     assert set(simulator.__all__) == {
         "AccumulatedDeadbandParameterPlanningModel",
         "AllAvailablePlanningHorizonPolicy",
@@ -160,6 +162,8 @@ def test_identity_and_generation_exports_stay_with_their_owner_modules() -> None
         "Slicer",
         "Planner",
         "Plan",
+        "BpfCompiledRealization",
+        "compile_bpf",
     ):
         assert not hasattr(package, simulator_owned_name)
 

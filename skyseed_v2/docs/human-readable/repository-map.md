@@ -24,6 +24,7 @@ flowchart LR
     MODELS["simulator/models"]
     PLANNING["simulator/planning"]
     COMPOSE["compose"]
+    BPF["backend/bpf"]
 
     BRIDGE --> ENTITIES
     BRIDGE --> INPUT
@@ -67,9 +68,13 @@ flowchart LR
     TOPOLOGY --> CONFIG_SIM
     TOPOLOGY --> INPUT
     TOPOLOGY --> SHARED
+    BPF --> SHARED
+    BPF --> SIM
 ```
 
-`COMPOSE` is intentionally isolated from other production packages. External
+`COMPOSE` is intentionally isolated from other production packages. `BPF` is
+an intentionally one-way downstream consumer of public Simulator and shared
+facts; Simulator has no reverse edge. External
 stdlib/dependency imports, including upstream SEED, are outside this internal
 graph. Module-level dependency validation remains acyclic even where collapsed
 facade groups show edges in both directions.

@@ -24,7 +24,7 @@ flowchart LR
     SMOKE["browser smoke in scripts/"] -.-> ARTIFACT["written HTML artifact"]
 ```
 
-The four tools remain deliberately separate:
+The five tools remain deliberately separate:
 
 - `topology/` reads the static owner tree and facade identity;
 - `zone/` selects observation probes, then records authoritative membership
@@ -33,6 +33,9 @@ The four tools remain deliberately separate:
   and adjacent Difference results.
 - `planner/` reads one exact Slicer plus consecutive immutable Plans and
   retained PlanningDecisions, then compares those formal results directly.
+- `bpf_compiler/` reads consecutive immutable Plans plus already-produced
+  `BpfCompiledRealization` values and displays their exact supported lowering
+  relationships without invoking the Compiler.
 
 Only the Slicer calls Position, Connection, and Route Models. Tools do not
 propagate Position, form Connections, compute Routes, compare slices, update
@@ -58,9 +61,9 @@ python -m examples.mini_satellite_internet.main
 ```
 
 Outputs are written under each example's ignored `output/inspection/`
-directory. Browser validation is performed by
-`scripts/check_dynamic_slice_tool_browser.py`; screenshots are validation
-artifacts and do not belong to the formal read chain.
+directory. Browser validation is performed by the matching smoke scripts in
+`scripts/`, including `check_bpf_compiler_tool_browser.py`; screenshots are
+validation artifacts and do not belong to the formal read chain.
 
 When a Tool projection changes, update its package README, focused Tool tests,
 `docs/user-guides/inspection-tools.md`, and

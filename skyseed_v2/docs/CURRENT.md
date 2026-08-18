@@ -34,28 +34,40 @@ provenance material is non-authoritative.
   continuous non-overlapping Plans, performs replaceable cross-domain
   Coordination with lookahead, and publishes immutable backend-independent
   typed transitions plus minimal same-time Forwarding precedences;
+- top-level BPF Compiler minimal vertical slice: **implemented and accepted**;
+  `compile_bpf` deterministically lowers one Plan plus approved read-only
+  Simulator facts and an explicit previous intended baseline into immutable
+  symbolic resource/qdisc/forwarding/Zone intent, ordering constraints, and
+  interval-end intended state;
 - read-only Topology, Zone, Dynamic Slice, and Planner Inspection Tools; the
   Planner Tool has one real complex-scenario entry and directly displays
   formal Slicer, Difference, Plan, and retained PlanningDecision results;
 - `mini_satellite_internet` is the single richer small-scale reference
-  scenario and its `main.py` emits all four inspection views from one formal
-  assembly;
+  scenario and its `main.py` emits those four views plus the BPF Compiler
+  Inspection Tool candidate from one formal assembly;
 - static Compose project launch/verification through
   `ComposeProjectLauncher`.
 
 ## Deferred
 
-backend preparation/compilation and dynamic execution capabilities remain
-deferred. Their future names, owners, packages, inputs, outputs, and
+runtime binding, BPF preparation/load/activation/maintenance, and Runner;
+dynamic execution remains deferred. The offline read-only BPF Compiler
+Inspection Tool is implemented in the current worktree and remains under
+page-level human acceptance review as part of the uncommitted Compiler + Tool
+milestone.
+Their future names, owners, packages, inputs, outputs, and
 execution chains are not frozen and require separate approval.
 
-No package, empty directory, public type, fallback, or execution path for
-those deferred capability areas exists in the current implementation.
+No package, empty directory, public type, fallback, or execution path for those
+deferred capability areas exists in the current implementation. The BPF
+Compiler emits no command, container mutation, kernel object, live attachment,
+or physical generation.
 
 ## Current production paths
 
 ```text
 src/skyseed_v2/
+├── backend/bpf/
 ├── shared/
 ├── configuration/{emulator,simulator}/
 ├── emulator/{entities,seedemu}/

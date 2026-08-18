@@ -13,6 +13,7 @@ from examples.mini_satellite_internet.main import (
 )
 from examples.mini_satellite_internet.simu import (
     create_mini_satellite_internet_simulator,
+    prepare_mini_satellite_internet_planning,
 )
 
 
@@ -21,9 +22,14 @@ def generated(tmp_path_factory):
     output = tmp_path_factory.mktemp("planner-tool")
     emulator = build_mini_satellite_internet_emulator()
     simulator = create_mini_satellite_internet_simulator(emulator)
+    planner, plans, configuration = prepare_mini_satellite_internet_planning(
+        simulator
+    )
     result = write_planner_inspection(
-        simulator,
         simulator.get_slicer(),
+        planner,
+        plans,
+        configuration,
         output,
     )
     data = json.loads(

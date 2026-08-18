@@ -9,6 +9,7 @@ import sys
 from seedemu.core import Emulator
 
 import skyseed_v2
+from skyseed_v2.backend import bpf
 import skyseed_v2.simulator as simulator_core
 from skyseed_v2 import compose
 from skyseed_v2 import shared
@@ -39,6 +40,7 @@ PUBLIC_MODULES = (
     construction,
     simulator_core,
     simulator_planning,
+    bpf,
 )
 DYNAMIC_TYPES = (
     "AccumulatedDeadbandParameterPlanningModel",
@@ -147,13 +149,21 @@ def test_accepted_anchor_and_current_have_distinct_roles() -> None:
         assert required in accepted
     assert "Dynamic Slice A–G: **implemented and accepted**" in current
     for deferred in (
-        "backend preparation/compilation",
+        "runtime binding",
+        "BPF preparation/load/activation/maintenance",
         "dynamic execution",
         "future names, owners, packages, inputs, outputs",
         "execution chains are not frozen",
     ):
         assert deferred in current
     assert "EmulatorStaticInput" not in PUBLIC_IMPORTS.read_text(
+        encoding="utf-8"
+    )
+    assert (
+        "BPF Compiler minimal vertical slice: **implemented and accepted**"
+        in current
+    )
+    assert "`skyseed_v2.backend.bpf`" in PUBLIC_IMPORTS.read_text(
         encoding="utf-8"
     )
 

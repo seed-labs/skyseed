@@ -29,6 +29,7 @@ def test_tools_are_repository_local_and_dependency_direction_is_one_way() -> Non
     assert not hasattr(skyseed_v2, "ZoneTool")
     assert not hasattr(skyseed_v2, "DynamicSliceTool")
     assert not hasattr(skyseed_v2, "PlannerTool")
+    assert not hasattr(skyseed_v2, "BpfCompilerTool")
 
     for path in (PROJECT_ROOT / "src/skyseed_v2").rglob("*.py"):
         source = path.read_text(encoding="utf-8")
@@ -55,9 +56,13 @@ def test_tooling_has_no_unapproved_general_framework() -> None:
 
 
 def test_browser_smoke_remains_outside_tool_responsibilities() -> None:
-    browser_source = (
-        PROJECT_ROOT / "scripts/check_dynamic_slice_tool_browser.py"
-    ).read_text(encoding="utf-8")
+    browser_source = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (
+            PROJECT_ROOT / "scripts/check_dynamic_slice_tool_browser.py",
+            PROJECT_ROOT / "scripts/check_bpf_compiler_tool_browser.py",
+        )
+    )
     assert "geckodriver" in browser_source
     assert "geckodriver" not in "\n".join(
         path.read_text(encoding="utf-8")

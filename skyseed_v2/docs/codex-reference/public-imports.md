@@ -17,6 +17,7 @@ long-term public promises.
 | Import owner | Exported names |
 |---|---|
 | `skyseed_v2` | `GroundStation`, `GroundStationLocation`, `Orbit`, `OrbitParameters`, `Satellite`, `Shell` |
+| `skyseed_v2.backend.bpf` | `BpfCompiledRealization`, `compile_bpf` |
 | `skyseed_v2.configuration` | `emulator`, `simulator` |
 | `skyseed_v2.configuration.emulator` | `EbgpPeeringConfig`, `EbgpRouterReference`, `GeneratedOrbitLayout`, `GROUND_STATIONS_SCHEMA_VERSION`, `GroundStationConfig`, `InOrbitPhaseDistribution`, `InternetExchangeAttachment`, `InternetExchangeConfig`, `LocalNetworkAttachment`, `OrbitConfig`, `OrdinaryAutonomousSystemConfig`, `NetworkConfig`, `RouterConfig`, `RightAscensionDistribution`, `SCENARIO_SCHEMA_VERSION`, `SatelliteConfig`, `ShellConfig`, `SkyseedAutonomousSystemConfig`, `StaticEmulatorConfig`, `StaticEmulatorConfigLoadError`, `load_static_emulator_config` |
 | `skyseed_v2.configuration.simulator` | `LatitudeLongitudeRectangleDefinition`, `ZoneDefinition`, `ZoneLayoutDefinition`, `ZoneLayoutDefinitionLoadError`, `load_zone_layout_definition` |
@@ -42,6 +43,9 @@ function object remains defined and owned by
 slicing, planning, and built-in Model names from the five owning Simulator
 packages. It
 does not export static-input DTOs or `NodeId`.
+
+`skyseed_v2.backend.bpf` is the only current backend public facade. The parent
+`backend` package does not define a generic framework or root-level facade.
 
 ## Invariants
 

@@ -47,6 +47,7 @@ object model.
 | Public package | Owner classification | Local README |
 |---|---|---|
 | `skyseed_v2` | narrow root entity facade | `src/skyseed_v2/README.md` |
+| `skyseed_v2.backend.bpf` | one-shot symbolic BPF Compiler and immutable handoff | `src/skyseed_v2/backend/bpf/README.md` |
 | `skyseed_v2.compose` | compiled Compose project launcher/evidence | `src/skyseed_v2/compose/README.md` |
 | `skyseed_v2.configuration` | declaration namespace boundary | `src/skyseed_v2/configuration/README.md` |
 | `skyseed_v2.configuration.emulator` | Emulator declarations and YAML | `src/skyseed_v2/configuration/emulator/README.md` |
@@ -67,6 +68,7 @@ object model.
 
 | Changed path | Owner/contract | Human diagram | Example/Tool consumer | Required focused verification |
 |---|---|---|---|---|
+| `backend/bpf/` | downstream symbolic BPF lowering | `src/skyseed_v2/backend/bpf/README.md` | canonical mini Emulator/Simulator/Planner chain; future runtime consumer | focused Compiler contracts, architecture gates, canonical main-chain smoke |
 | `configuration/emulator/` | Emulator declarations/YAML | `src/skyseed_v2/configuration/emulator/README.md` | complete/dynamic/large examples | static configuration and YAML tests |
 | `configuration/simulator/` | Zone declarations/YAML | `src/skyseed_v2/configuration/simulator/README.md` | dynamic example, Zone Tool | Zone and YAML tests |
 | `emulator/entities/` | Emulator entity owner tree | `src/skyseed_v2/emulator/entities/README.md` | all Emulator examples, compiler/projector | entity, identity, integration tests |
@@ -86,6 +88,7 @@ object model.
 | `tools/zone/` | probes + formal Zone observation/UI/artifacts | `human-readable/traceability-map.md` | complete/dynamic examples | Zone Tool and tooling-boundary tests |
 | `tools/dynamic_slice/` | formal Slicer reads + display/UI/artifacts | `human-readable/traceability-map.md` | dynamic example | Dynamic Tool tests and browser smoke |
 | `tools/planner/` | formal Slicer/Plan/decision reads + private comparison UI/artifacts | `human-readable/traceability-map.md` | dynamic Planner inspection entry | Planner Tool and tooling-boundary tests |
+| `tools/bpf_compiler/` | immutable Plan/compiled-result reads + private lowering UI/artifacts | `human-readable/traceability-map.md` | Mini backend branch and inspection entry | BPF Compiler Tool tests and browser smoke |
 | public package `__init__.py` | import surface | `human-readable/repository-map.md` | all users | public import/export + wheel checks |
 | `docs/accepted-design.md` | architecture anchor | system diagram links | all maintenance | focused anchor consistency |
 | `docs/CURRENT.md` | implementation state | none | all maintenance | focused status consistency |

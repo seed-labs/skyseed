@@ -85,7 +85,7 @@ def test_examples_readme_indexes_current_long_term_roles_and_outputs() -> None:
     assert "Minimal static/canonical example kept deliberately small" in readme
     assert "Specialized static scale and Compose validation" in readme
     assert "Small but reasonably rich reusable satellite Internet" in readme
-    assert "Topology, Zone, Dynamic Slice and Planner" in readme
+    assert "Topology, Zone, Dynamic Slice, Planner and BPF Compiler" in readme
     assert mini.DEFAULT_OUTPUT == (
         EXAMPLES_ROOT / "mini_satellite_internet/output"
     )
@@ -268,7 +268,13 @@ def test_example_output_preparation_replaces_only_the_owned_root(
         (
             "mini_satellite_internet",
             mini,
-            ("topology", "zone", "dynamic-slice", "planner"),
+            (
+                "topology",
+                "zone",
+                "dynamic-slice",
+                "planner",
+                "bpf-compiler",
+            ),
         ),
     ),
 )
@@ -348,6 +354,7 @@ def test_formal_examples_emit_one_user_facing_output_tree(
             "probes.json",
             "dynamic-slice.json",
             "planner-inspection.json",
+            "bpf-compiler-inspection.json",
         }
         for path in output.iterdir()
     )

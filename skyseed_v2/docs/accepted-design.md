@@ -23,6 +23,12 @@
   semantic `Plan` intervals without advancing Slicer; published intervals are
   continuous/non-overlapping while private planned state and visible lookahead
   continue across their boundaries;
+- the top-level `backend` domain is downstream of Simulator; its BPF Compiler
+  is a one-shot deterministic lowering from `Plan`, approved read-only
+  Simulator facts, and an explicit previous intended baseline into an
+  immutable symbolic realization;
+- BPF compilation owns no Simulator semantics, deployment, runtime/kernel
+  binding, hidden progression, or lifecycle service;
 - Tools are repository-local, read-only, and non-authoritative.
 - candidate and provenance material is non-authoritative and never a default
   implementation source.
@@ -43,6 +49,9 @@ Emulator configuration
 → TopologySlice / TopologyDifference
 → Planner(Connection / Parameter / Forwarding planning + Coordination)
 → Plan
+→ compile_bpf(Plan + approved read-only Simulator facts
+  + explicit previous baseline)
+→ BpfCompiledRealization
 ```
 
 Static deployment is separate:
@@ -63,6 +72,8 @@ dispatch compiler subtypes.
 ## Prohibited behavior
 
 - no Simulator core dependency on Emulator or SEED;
+- no Simulator dependency on backend; backend may read approved public
+  Simulator facts/contracts without taking ownership or invoking Models;
 - no SEED integration dependency on Simulator, Tools, Compose launcher, or
   examples;
 - no compatibility forwarding or two import paths for retired modules;
@@ -86,6 +97,7 @@ dispatch compiler subtypes.
 - [routing and path contracts](codex-reference/routing-path-contracts.md)
 - [Timeline, Slice, retention, and Difference](codex-reference/timeline-slice-difference-contracts.md)
 - [Simulator Planner](codex-reference/planning-contracts.md)
+- [BPF Compiler](codex-reference/bpf-compiler.md)
 - [invariants and failures](codex-reference/invariants-failures.md)
 - [extension points](codex-reference/extension-points.md)
 - [maintenance map](codex-reference/maintenance-map.md)

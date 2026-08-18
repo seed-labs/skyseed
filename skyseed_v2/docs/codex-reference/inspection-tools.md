@@ -7,8 +7,8 @@ recorded only in [`CURRENT.md`](../CURRENT.md).
 
 ## Scope
 
-Repository-local Topology, Zone, Dynamic Slice, and Planner inspection
-pipelines.
+Repository-local Topology, Zone, Dynamic Slice, Planner, and BPF Compiler
+inspection pipelines.
 Tools are read-only consumers and are not installed `skyseed_v2` product API.
 
 ## Owners and consumers
@@ -26,6 +26,11 @@ later responsibilities consume only Tool-owned detached values. A small Tool
 may colocate adjacent responsibilities when the boundary remains explicit;
 file count and filenames are not part of the contract. Examples call the Tool
 facades; browser smoke consumes emitted HTML from the validation side.
+
+The BPF Compiler reader instead consumes consecutive immutable Plans and the
+aligned `BpfCompiledRealization` values already produced by an explicit
+backend-side caller. Its facade never invokes `compile_bpf`, queries Simulator
+facts, or binds runtime/kernel resources.
 
 ## Contract
 
@@ -60,6 +65,8 @@ interpolate sub-slice geometry.
 ## Invariants
 
 - Tools never mutate formal values, synchronize Planner, or invoke Models;
+- the BPF Compiler Tool never invokes the Compiler or accepts responsibility
+  for producing compiled realizations;
 - only readers import or call formal Topology/Slicer APIs;
 - read snapshots contain detached Tool-owned primitives/values, not Topology,
   Slicer, Slice, Difference, or entity instances;
