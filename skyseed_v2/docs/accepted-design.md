@@ -13,11 +13,16 @@
   indexed by its AS for the standard SEED lifecycle; `GroundStation(Router)`
   remains on the standard rnode/brdnode path;
 - `Simulator` is the Simulator composition root and creates exactly one
-  `Topology`, then exactly one `Slicer`;
+  `Topology`, then exactly one `Slicer`, then at most one formal `Planner`;
 - `SimulatorStaticInput` is immutable receiver-owned boundary data;
 - Models execute Position → Connection → Route;
 - `Slicer` owns retained `TopologySlice` values and creates
   `TopologyDifference` only from retained formal slices;
+- `Planner` is the persistent sibling of Slicer, incrementally consumes
+  already-generated Differences, and publishes immutable backend-independent
+  semantic `Plan` intervals without advancing Slicer; published intervals are
+  continuous/non-overlapping while private planned state and visible lookahead
+  continue across their boundaries;
 - Tools are repository-local, read-only, and non-authoritative.
 - candidate and provenance material is non-authoritative and never a default
   implementation source.
@@ -36,6 +41,8 @@ Emulator configuration
 → Slicer
 → PositionModel → ConnectionModel → RouteModel
 → TopologySlice / TopologyDifference
+→ Planner(Connection / Parameter / Forwarding planning + Coordination)
+→ Plan
 ```
 
 Static deployment is separate:
@@ -62,7 +69,7 @@ dispatch compiler subtypes.
 - no second authoritative computation path in Tools;
 - no Tool-side Model execution, Position propagation, Connection/Route
   recomputation, or Slice comparison;
-- no implicit planner, backend fallback, runtime fallback, or global
+- no implicit backend fallback, runtime fallback, or global
   cross-owner lookup;
 - no unapproved Manager, Context, Builder, Catalog, Coordinator, or Result
   abstraction.
@@ -78,6 +85,7 @@ dispatch compiler subtypes.
 - [Model contracts and built-in algorithms](codex-reference/model-contracts.md)
 - [routing and path contracts](codex-reference/routing-path-contracts.md)
 - [Timeline, Slice, retention, and Difference](codex-reference/timeline-slice-difference-contracts.md)
+- [Simulator Planner](codex-reference/planning-contracts.md)
 - [invariants and failures](codex-reference/invariants-failures.md)
 - [extension points](codex-reference/extension-points.md)
 - [maintenance map](codex-reference/maintenance-map.md)

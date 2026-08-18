@@ -24,11 +24,12 @@ or guess an alternative identity.
 | Simulator Zone-layout YAML | immutable validated Zone definitions; unknown-field/geometry checks | `ZoneLayoutDefinitionLoadError` |
 | entity creation | owner-local uniqueness; no partial batch publication | `KeyError` / `ValueError` |
 | Emulator→Simulator | complete scalar copy; unique `NodeId`; no SEED reference | `TypeError` / `ValueError` |
-| Simulator lifecycle | Topology once, then Slicer once | `RuntimeError` |
+| Simulator lifecycle | Topology once, Slicer once, then Planner at most once | `RuntimeError` |
 | Topology lookup | exact owner/facade identity | `KeyError` |
 | Zone membership | owned distinct matches; owned winner | `LookupError` / `ValueError` |
 | Slicer Model chain | complete typed output; atomic publication | `TypeError` / `ValueError` |
 | path/Difference | retained lineage, valid chain, adjacent IDs | `KeyError` / `LookupError` / `ValueError` |
+| Planner | visibility/publication selected before Models, exact input prefixes, continuous `(start, end]` coverage, planned-state continuity, active-lifetime parameters, supported forwarding and valid same-time precedences | `TypeError` / `ValueError` / `RuntimeError` |
 | Compose launcher | exact project/file/services/digest/final states | `ComposeMaterializationError` |
 | Tools | current-run artifact or conspicuous failure artifact | no stale/fallback success |
 
@@ -43,12 +44,20 @@ or guess an alternative identity.
 - a failed Slice candidate consumes neither its ID nor pending Timeline
   timestamp;
 - generated Slice progress is independent of retained storage.
+- failed built-in Planner synchronization preserves the published Plan,
+  consumed-Difference progress, and Planner-owned incremental state.
 
 ## Failure semantics
 
 Fail closed at the first owning boundary. Do not catch a contract error to
 invent a successful fallback. External subprocess failure includes bounded
 context but does not trigger legacy Compose or another output path.
+
+Planner's built-in/reference algorithms are stateless and its own candidate
+state is committed only after validation. The existing replaceable Protocols
+cannot undo private mutations made by an arbitrary third-party stateful
+strategy before it raises; no transactional rollback promise or public
+prepare/commit/discard API is implied.
 
 ## Prohibited behavior
 

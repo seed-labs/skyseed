@@ -28,6 +28,7 @@ def test_tools_are_repository_local_and_dependency_direction_is_one_way() -> Non
     assert not hasattr(skyseed_v2, "TopologyTool")
     assert not hasattr(skyseed_v2, "ZoneTool")
     assert not hasattr(skyseed_v2, "DynamicSliceTool")
+    assert not hasattr(skyseed_v2, "PlannerTool")
 
     for path in (PROJECT_ROOT / "src/skyseed_v2").rglob("*.py"):
         source = path.read_text(encoding="utf-8")
@@ -119,7 +120,7 @@ def test_tool_files_are_shaped_by_responsibility_not_a_uniform_template() -> Non
         "resolve_path",
         "create_difference",
     )
-    for tool_name in ("topology", "zone", "dynamic_slice"):
+    for tool_name in ("topology", "zone", "dynamic_slice", "planner"):
         root = TOOLS_ROOT / tool_name
         sources = {
             path: path.read_text(encoding="utf-8")
@@ -129,6 +130,10 @@ def test_tool_files_are_shaped_by_responsibility_not_a_uniform_template() -> Non
             path
             for path, source in sources.items()
             if _called_attributes(source) & set(formal_calls)
+            or (
+                "class PlannerInspectionRead" in source
+                and "read_dynamic_slices(" in source
+            )
         }
         assert formal_readers, tool_name
         for path in formal_readers:
@@ -186,7 +191,7 @@ def test_tool_files_are_shaped_by_responsibility_not_a_uniform_template() -> Non
     }
     all_sources = {
         (tool_name, path): path.read_text(encoding="utf-8")
-        for tool_name in ("topology", "zone", "dynamic_slice")
+        for tool_name in ("topology", "zone", "dynamic_slice", "planner")
         for path in (TOOLS_ROOT / tool_name).glob("*.py")
     }
     for helper, owner_tool in display_only_helpers.items():

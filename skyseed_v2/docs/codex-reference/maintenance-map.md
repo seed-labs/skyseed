@@ -59,6 +59,7 @@ object model.
 | `skyseed_v2.simulator.geometry` | Earth-fixed values and calculations | `src/skyseed_v2/simulator/geometry/README.md` |
 | `skyseed_v2.simulator.input` | receiver-owned immutable DTOs | `src/skyseed_v2/simulator/input/README.md` |
 | `skyseed_v2.simulator.models` | built-in Model implementations | `src/skyseed_v2/simulator/models/README.md` |
+| `skyseed_v2.simulator.planning` | incremental semantic planning owner | `src/skyseed_v2/simulator/planning/README.md` |
 | `skyseed_v2.simulator.slicing` | dynamic contracts, retained slices, Difference | `src/skyseed_v2/simulator/slicing/README.md` |
 | `skyseed_v2.simulator.topology` | static aggregate and Zone owner | `src/skyseed_v2/simulator/topology/README.md` |
 
@@ -77,12 +78,14 @@ object model.
 | `simulator/geometry/` | ECEF/geodetic/distance/LOS | `src/skyseed_v2/simulator/geometry/README.md` | built-in Models, Dynamic Tool views | geometry/model tests and SCC |
 | `simulator/slicing/` | dynamic contracts, Slicer, Slice, Difference | `src/skyseed_v2/simulator/slicing/README.md` | Models/Dynamic Tool | main-chain, Difference, Tool boundaries |
 | `simulator/models/` | built-in Position/Connection/Route algorithms | `src/skyseed_v2/simulator/models/README.md` | dynamic example | focused main-chain/model tests |
-| `simulator/{definition,timeline,simulator}.py` | Simulator composition/lifecycle | `src/skyseed_v2/simulator/README.md` | Simulator examples | lifecycle/timeline tests |
+| `simulator/planning/` | semantic Planner, Plan and planning algorithms | `src/skyseed_v2/simulator/planning/README.md` | complete canonical `simu.py` | planning value/algorithm/main-chain tests |
+| `simulator/{definition,timeline,simulator}.py` | Simulator composition/lifecycle | `src/skyseed_v2/simulator/README.md` | Simulator examples | lifecycle/timeline/Planner tests |
 | `compose/launcher.py` | compiled Compose project lifecycle | `src/skyseed_v2/compose/README.md` | complete/large examples | launcher and large integration tests |
 | `shared/` | neutral identity/time primitives | `src/skyseed_v2/shared/README.md` | configuration, Emulator, Simulator | identity/time tests |
 | `tools/topology/` | read-only static projection/UI/artifacts | `human-readable/traceability-map.md` | complete/dynamic examples | Topology Tool and tooling-boundary tests |
 | `tools/zone/` | probes + formal Zone observation/UI/artifacts | `human-readable/traceability-map.md` | complete/dynamic examples | Zone Tool and tooling-boundary tests |
 | `tools/dynamic_slice/` | formal Slicer reads + display/UI/artifacts | `human-readable/traceability-map.md` | dynamic example | Dynamic Tool tests and browser smoke |
+| `tools/planner/` | formal Slicer/Plan/decision reads + private comparison UI/artifacts | `human-readable/traceability-map.md` | dynamic Planner inspection entry | Planner Tool and tooling-boundary tests |
 | public package `__init__.py` | import surface | `human-readable/repository-map.md` | all users | public import/export + wheel checks |
 | `docs/accepted-design.md` | architecture anchor | system diagram links | all maintenance | focused anchor consistency |
 | `docs/CURRENT.md` | implementation state | none | all maintenance | focused status consistency |

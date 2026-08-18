@@ -32,6 +32,7 @@ Index:
 - [Model contracts and built-in algorithms](model-contracts.md)
 - [routing and path contracts](routing-path-contracts.md)
 - [Timeline, Slice, retention, and Difference](timeline-slice-difference-contracts.md)
+- [Simulator Planner contracts](planning-contracts.md)
 - [invariants and failures](invariants-failures.md)
 - [extension points](extension-points.md)
 - [maintenance map](maintenance-map.md)

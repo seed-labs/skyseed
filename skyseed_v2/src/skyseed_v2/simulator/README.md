@@ -1,8 +1,8 @@
 # Simulator composition root
 
 This README owns only `SimulationDefinition`, `SimulationTimeline`, and
-`Simulator`. Topology, input, geometry, slicing, and built-in Model members are
-maintained in their respective package README files.
+`Simulator`. Topology, input, geometry, slicing, planning, and built-in Model
+members are maintained in their respective package README files.
 
 ## Local assembly / ownership map
 
@@ -17,12 +17,14 @@ classDiagram
     class Simulator
     class Topology
     class Slicer
+    class Planner
 
     SimulationDefinition "1" *-- "1" SimulatorStaticInput : static input
     SimulationDefinition "1" *-- "1" SimulationTimeline : timeline
     Simulator "1" *-- "1" SimulationDefinition : exact definition
     Simulator "1" *-- "1" Topology : creates and owns
     Simulator "1" *-- "1" Slicer : creates and owns after Topology
+    Simulator "1" *-- "0..1" Planner : creates and owns after Slicer
 ```
 
 ## Detailed public class/member diagrams
@@ -53,6 +55,8 @@ classDiagram
         +get_topology()
         +create_slicer()
         +get_slicer()
+        +create_planner()
+        +get_planner()
     }
 ```
 
@@ -60,7 +64,7 @@ classDiagram
 |---|---|---|
 | `SimulationDefinition` | `skyseed_v2.simulator.SimulationDefinition` | `static_input`, `timeline` |
 | `SimulationTimeline` | `skyseed_v2.simulator.SimulationTimeline` | `start_time`, `end_time`, `slice_interval`, `is_bounded`, `iter_timestamps()` |
-| `Simulator` | `skyseed_v2.simulator.Simulator` | `get_definition()`, `get_timeline()`, `create_topology()`, `get_topology()`, `create_slicer()`, `get_slicer()` |
+| `Simulator` | `skyseed_v2.simulator.Simulator` | `get_definition()`, `get_timeline()`, `create_topology()`, `get_topology()`, `create_slicer()`, `get_slicer()`, `create_planner()`, `get_planner()` |
 
 ## Entry points
 
@@ -69,12 +73,13 @@ Code entries are `definition.py`, `timeline.py`, and `simulator.py`.
 ## Dependencies
 
 The definition consumes `input/`; `Simulator` consumes Simulator Zone
-configuration, creates `topology/`, and binds `slicing/` to the exact
-Topology/Timeline and supplied Model Protocol roles.
+configuration, creates `topology/`, binds `slicing/` to the exact
+Topology/Timeline and supplied Model Protocol roles, then binds `planning/` to
+that exact sibling Slicer and supplied planning algorithm roles.
 
 ## Examples and tests
 
-Assembly is shown in `examples/dynamic_slice_network/simu.py`. Simulator
+Assembly is shown in `examples/mini_satellite_internet/simu.py`. Simulator
 lifecycle, Timeline, Topology, dynamic main-chain, Difference, and Zone tests
 cover the composition root.
 

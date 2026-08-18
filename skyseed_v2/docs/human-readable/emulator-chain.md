@@ -29,5 +29,5 @@ sequenceDiagram
 ```
 
 Code entry: `src/skyseed_v2/emulator/construction.py`. Human examples:
-`examples/complete_static_emulator/` and `examples/dynamic_slice_network/`.
+`examples/complete_static_emulator/` and `examples/mini_satellite_internet/`.
 Implementation state is recorded only in [`CURRENT.md`](../CURRENT.md).

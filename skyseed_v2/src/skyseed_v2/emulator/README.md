@@ -54,7 +54,7 @@ or Tools.
 ## Examples and tests
 
 Examples:
-`complete_static_emulator`, `dynamic_slice_network`, and
+`complete_static_emulator`, `mini_satellite_internet`, and
 `large_static_network`. Tests: static construction, path equivalence, entity
 ownership, and SEED integration tests.
 

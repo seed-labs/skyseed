@@ -22,6 +22,7 @@ flowchart LR
     TOPOLOGY["simulator/topology"]
     SLICING["simulator/slicing"]
     MODELS["simulator/models"]
+    PLANNING["simulator/planning"]
     COMPOSE["compose"]
 
     BRIDGE --> ENTITIES
@@ -53,6 +54,7 @@ flowchart LR
     SIM --> GEOMETRY
     SIM --> INPUT
     SIM --> MODELS
+    SIM --> PLANNING
     SIM --> SHARED
     SIM --> SLICING
     SIM --> TOPOLOGY
@@ -60,6 +62,8 @@ flowchart LR
     SLICING --> SHARED
     SLICING --> SIM
     SLICING --> TOPOLOGY
+    PLANNING --> SHARED
+    PLANNING --> SLICING
     TOPOLOGY --> CONFIG_SIM
     TOPOLOGY --> INPUT
     TOPOLOGY --> SHARED

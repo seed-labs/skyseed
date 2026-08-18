@@ -49,18 +49,18 @@ PACKET_LOSS_PPM_BY_KIND = {
 }
 
 
-def create_dynamic_reference_slicer(
+def create_mini_satellite_internet_simulator(
     emulator: Emulator,
     *,
     zone_layout_path: Path = ZONE_LAYOUT_FILE,
-) -> Slicer:
-    """Project one Emulator into the formal bounded A-F chain."""
+) -> Simulator:
+    """Create the real bounded Simulator and publish its complete Slice range."""
 
     if not isinstance(emulator, Emulator):
         raise TypeError("emulator must be an upstream Emulator")
     base = emulator.getLayer("Base")
     if not isinstance(base, Base):
-        raise TypeError("dynamic reference Base layer must be a Base")
+        raise TypeError("mini satellite Internet Base layer must be a Base")
     skyseed_autonomous_systems = get_skyseed_autonomous_systems(base)
     simulator_input = create_simulator_static_input(
         skyseed_autonomous_systems
@@ -101,4 +101,23 @@ def create_dynamic_reference_slicer(
     created = slicer.create_all_slices()
     if len(created) != REAL_SLICE_COUNT:
         raise AssertionError("bounded reference Timeline produced wrong count")
-    return slicer
+    return simulator
+
+
+def create_mini_satellite_internet_slicer(
+    emulator: Emulator,
+    *,
+    zone_layout_path: Path = ZONE_LAYOUT_FILE,
+) -> Slicer:
+    """Project one Emulator into the formal bounded A-F chain."""
+
+    return create_mini_satellite_internet_simulator(
+        emulator,
+        zone_layout_path=zone_layout_path,
+    ).get_slicer()
+
+
+__all__ = [
+    "create_mini_satellite_internet_simulator",
+    "create_mini_satellite_internet_slicer",
+]

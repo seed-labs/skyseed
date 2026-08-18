@@ -8,16 +8,20 @@ ownership.
 flowchart LR
     CE["complete_static_emulator"] --> EM["Emulator + compiler + Compose launcher"]
     CE --> TZ["Topology / Zone Tools"]
-    DN["dynamic_slice_network"] --> DS["Simulator + Slicer + Models"]
+    CE --> PL["Simulator Planner canonical path"]
+    DN["mini_satellite_internet"] --> DS["Simulator + Slicer + Models"]
     DN --> DT["Topology / Zone / Dynamic Slice Tools"]
+    DN --> PT["Planner Inspection Tool"]
     IS["isolated_satellites"] --> SE["SEED entity and compiler boundary"]
     LS["large_static_network"] --> SC["configuration + scale construction"]
 
     EM --> ITEST["integration tests"]
     DS --> UTEST["focused unit tests"]
+    PL --> PTEST["planning unit + integration tests"]
     TZ --> TTEST["tests/tools"]
     DT --> TTEST
     DT --> BROWSER["browser smoke script"]
+    PT --> TTEST
     SE --> ITEST
     SC --> ITEST
 ```
@@ -25,8 +29,10 @@ flowchart LR
 | Change area | Human entry | Primary verification |
 |---|---|---|
 | Emulator/configuration/SEED | `complete_static_emulator` | entity, construction, compiler integration |
-| Simulator/Topology/Zone | `dynamic_slice_network/simu.py` | topology, zone, lifecycle unit tests |
-| Slicer/Models/Difference | `dynamic_slice_network` | dynamic main-chain and difference tests |
+| Simulator/Topology/Zone | `mini_satellite_internet/simu.py` | topology, zone, lifecycle unit tests |
+| Slicer/Models/Difference | `mini_satellite_internet` | dynamic main-chain and difference tests |
+| Planner/Plan/planning algorithms | `complete_static_emulator/simu.py` | planning value, algorithm and main-chain tests |
+| Planner human inspection | `mini_satellite_internet/main.py` | Planner Tool tests and visual artifact inspection |
 | Inspection Tools | both complete and dynamic examples | `tests/tools`, tooling boundaries, browser smoke |
 | Compose launcher | complete/large examples | launcher and large-network integration |
 

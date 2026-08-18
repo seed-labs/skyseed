@@ -14,7 +14,7 @@ EXAMPLE_ROOT = Path(__file__).resolve().parent
 DEFAULT_SCENARIO = EXAMPLE_ROOT / "scenario.yaml"
 
 
-def build_dynamic_reference_emulator(
+def build_mini_satellite_internet_emulator(
     scenario_path: Path = DEFAULT_SCENARIO,
 ) -> Emulator:
     """Load the explicit static input and return the upstream Emulator."""
@@ -23,4 +23,4 @@ def build_dynamic_reference_emulator(
     return create_static_emulator(config)
 
 
-__all__ = ["build_dynamic_reference_emulator"]
+__all__ = ["build_mini_satellite_internet_emulator"]

@@ -19,6 +19,7 @@ from skyseed_v2.emulator import construction
 from skyseed_v2.emulator import entities
 from skyseed_v2.emulator import seedemu
 from skyseed_v2.simulator import input as simulator_input
+from skyseed_v2.simulator import planning as simulator_planning
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -37,22 +38,41 @@ PUBLIC_MODULES = (
     emulator_facade,
     construction,
     simulator_core,
+    simulator_planning,
 )
 DYNAMIC_TYPES = (
+    "AccumulatedDeadbandParameterPlanningModel",
+    "AllAvailablePlanningHorizonPolicy",
     "CircularOrbitPositionModel",
     "Connection",
     "ConnectionDirection",
     "ConnectionId",
     "ConnectionKind",
     "ConnectionModel",
+    "ConnectionPlanningModel",
     "ConnectionSlice",
+    "ConnectionTransition",
+    "ConnectionTransitionOperation",
+    "CoordinationPolicy",
+    "DefaultCoordinationPolicy",
+    "DependencyAwareForwardingPlanningModel",
     "DirectionalConnectionParameters",
     "DirectionalConnectionParametersPatch",
     "DifferenceOperation",
     "EarthFixedPosition",
+    "ForwardingPlanningModel",
+    "ForwardingTransition",
+    "ForwardingTransitionPrecedence",
     "GeometricConnectionModel",
     "GroundStationRouteTarget",
     "HopCountRouteModel",
+    "MidpointConnectionPlanningModel",
+    "ParameterPlanningModel",
+    "ParameterTransition",
+    "Plan",
+    "Planner",
+    "PlanningDecision",
+    "PlanningHorizonPolicy",
     "PositionModel",
     "RouteKey",
     "RouteModel",
@@ -60,6 +80,7 @@ DYNAMIC_TYPES = (
     "RouteSlice",
     "RouteTarget",
     "Slicer",
+    "SampleBoundaryConnectionPlanningModel",
     "SphericalCap",
     "TopologyDifference",
     "TopologySlice",
@@ -126,7 +147,6 @@ def test_accepted_anchor_and_current_have_distinct_roles() -> None:
         assert required in accepted
     assert "Dynamic Slice A–G: **implemented and accepted**" in current
     for deferred in (
-        "Planning",
         "backend preparation/compilation",
         "dynamic execution",
         "future names, owners, packages, inputs, outputs",

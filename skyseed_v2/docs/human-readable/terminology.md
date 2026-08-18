@@ -10,7 +10,7 @@ for exact semantics.
 | extension-node lifecycle index | AS-held same-object reference used for SEED registration/configuration, not Satellite domain ownership | [ownership](../codex-reference/ownership-lifecycle.md) |
 | future functional Layer | unfrozen Skyseed boundary for shared software/files/commands/daemons; no current class or API | [extension points](../codex-reference/extension-points.md) |
 | Simulator input | immutable receiver-owned copied scalar DTO; never an Emulator object | [Emulator–Simulator boundary](../codex-reference/emulator-simulator-boundary.md) |
-| Simulator | composition root that creates one Topology then one Slicer | [ownership](../codex-reference/ownership-lifecycle.md) |
+| Simulator | composition root that creates one Topology, one Slicer, then at most one Planner | [ownership](../codex-reference/ownership-lifecycle.md) |
 | Topology | immutable Simulator static aggregate and lookup facade | [Topology/Zone](../codex-reference/topology-zone-contracts.md) |
 | Position | one authoritative `EarthFixedPosition` per spatial node and timestamp | [Position/Connection](../codex-reference/position-connection-values.md) |
 | Connection | currently effective bidirectional dynamic edge with directional parameters | [Position/Connection](../codex-reference/position-connection-values.md) |
@@ -19,6 +19,10 @@ for exact semantics.
 | Slice 0 | synthetic empty baseline, not a Timeline instant | [Timeline/Slice/Difference](../codex-reference/timeline-slice-difference-contracts.md) |
 | TopologySlice | one atomically published immutable Position/Connection/Route result | [Timeline/Slice/Difference](../codex-reference/timeline-slice-difference-contracts.md) |
 | TopologyDifference | on-request sparse change for retained adjacent Slices | [Timeline/Slice/Difference](../codex-reference/timeline-slice-difference-contracts.md) |
+| Planner | persistent Simulator sibling that incrementally converts Difference evolution into semantic plans | [planning](../codex-reference/planning-contracts.md) |
+| Plan | immutable backend-independent Connection/Parameter/Forwarding transition publication for one continuous non-overlapping `(start, end]` interval | [planning](../codex-reference/planning-contracts.md) |
+| Forwarding precedence | Plan-owned same-time `predecessor → successor` semantic constraint; not tuple order or an execution schedule | [planning](../codex-reference/planning-contracts.md) |
+| nominal semantic time | simulation timestamp to which Planner assigns a transition, not runtime completion time | [planning](../codex-reference/planning-contracts.md) |
 | Inspection Tool | repository-local read-only projection/display/artifact pipeline | [user guide](../user-guides/inspection-tools.md) |
 | ComposeProjectLauncher | launcher/verifier for an already compiled static Compose project | [system overview](system-overview.md) |
 

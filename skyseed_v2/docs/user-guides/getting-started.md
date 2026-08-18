@@ -22,10 +22,11 @@ Tools:
 python examples/complete_static_emulator/main.py
 ```
 
-Dynamic Slice reference and all three Inspection Tools:
+Mini satellite Internet reference with Topology, Zone, Dynamic Slice, and
+Planner Tools:
 
 ```bash
-python examples/dynamic_slice_network/main.py
+python examples/mini_satellite_internet/main.py
 ```
 
 Other focused entries:

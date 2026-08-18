@@ -14,6 +14,9 @@ flowchart LR
     SIM --> TOP["one Topology"]
     SIM --> SLI["one Slicer"]
     SLI --> RES["retained Slice / Difference"]
+    SIM --> PLA["at most one Planner"]
+    RES --> PLA
+    PLA --> PLAN["immutable semantic Plan"]
     RES --> TOOL["read-only Inspection Tools"]
 
     EMU --> COMP["upstream SEED Docker compiler"]

@@ -248,7 +248,6 @@ def test_removed_and_undesignated_future_boundary_apis_are_not_exported() -> Non
     future_capability_tokens = (
         "backend",
         "executioncompiler",
-        "planner",
         "preparer",
         "simulationrunner",
     )
@@ -267,8 +266,6 @@ def test_removed_and_undesignated_future_boundary_apis_are_not_exported() -> Non
         for future_component in (
             "backend",
             "execution",
-            "planner",
-            "planning",
             "preparer",
             "runner",
             "runtime",
@@ -284,6 +281,7 @@ def test_removed_and_undesignated_future_boundary_apis_are_not_exported() -> Non
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
     )
     assert importlib.util.find_spec("skyseed_v2.simulator.slicing.difference") is not None
+    assert importlib.util.find_spec("skyseed_v2.simulator.planning") is not None
     assert (
         importlib.util.find_spec("skyseed_v2.simulator.input.identity")
         is None

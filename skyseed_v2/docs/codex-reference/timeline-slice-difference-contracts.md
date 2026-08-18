@@ -85,7 +85,9 @@ Difference. There is no ambiguous `current` API.
 Slices from the same Slicer, validates exact metadata/contents and strict
 `N → N+1`, invokes one fixed pure comparator, and returns an independent
 frozen `TopologyDifference`. Slicer does not retain it and TopologySlice does
-not create it.
+not create it. The sibling Planner is the first formal retained consumer: it
+requests each newly available adjacent Difference exactly once and does not
+move comparison or Difference ownership into planning.
 
 Difference contains exactly:
 
@@ -133,8 +135,9 @@ Tool-side comparison.
 ## Extension points
 
 A retention-window policy may evict old published Slices without changing
-generated identity/time. A broader Difference window or planning scope is
-outside this contract; implementation state is recorded only in
+generated identity/time. Planner coverage and optimization are defined in the
+separate planning contract and do not broaden Difference semantics;
+implementation state is recorded only in
 [`CURRENT.md`](../CURRENT.md).
 
 ## Maintenance

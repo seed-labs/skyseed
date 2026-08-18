@@ -2,7 +2,8 @@
 
 Every deployment experiment owns a thin entrypoint, scoped cleanup and ignored
 output directory. The two teaching deployment examples are handwritten; the
-static scale example and richer Dynamic Slice reference own explicit v2 YAML:
+static scale example and richer mini satellite Internet reference own explicit
+v2 YAML:
 
 ```text
 examples/
@@ -19,7 +20,7 @@ examples/
 │   ├── scenario.yaml
 │   ├── ground_stations.yaml
 │   └── README.md
-└── dynamic_slice_network/
+└── mini_satellite_internet/
     ├── scenario.yaml
     ├── zones.yaml
     ├── emu.py
@@ -31,9 +32,9 @@ examples/
 | Example | Long-term purpose | Recommended entry | Compose | Simulator / Slices | Inspection Tools |
 | --- | --- | --- | --- | --- | --- |
 | `isolated_satellites` | Specialized handwritten two-Satellite deployment | `python3 -m examples.isolated_satellites.main` | Yes | No | None |
-| `complete_static_emulator` | Minimal static/canonical example kept deliberately small | `python3 -m examples.complete_static_emulator.main` | Yes | One static Topology in `main.py`; separate `simu.py` is the small A–F smoke | Topology and Zone |
+| `complete_static_emulator` | Minimal static/canonical example kept deliberately small | `python3 -m examples.complete_static_emulator.main` | Yes | One static Topology in `main.py`; separate `simu.py` reaches Slice/Difference and incrementally synchronized Plan | Topology and Zone |
 | `large_static_network` | Specialized static scale and Compose validation | `python3 -m examples.large_static_network.main` | Yes | Static input projection only | None |
-| `dynamic_slice_network` | Comprehensive Emu + Simu reference for final manual review | `python3 -m examples.dynamic_slice_network.main` | Yes | One Simulator/Slicer with the bounded A–F sequence | Topology, Zone and five-view Dynamic Slice |
+| `mini_satellite_internet` | Small but reasonably rich reusable satellite Internet reference | `python3 -m examples.mini_satellite_internet.main` | Yes | One Simulator/Slicer with bounded dynamic state and consecutive Plans | Topology, Zone, Dynamic Slice and Planner |
 
 Running an example's Python entrypoint generates its ignored `output/`:
 
@@ -84,6 +85,11 @@ handwritten values
     -> Orbit.create_satellite
     -> SkyseedAutonomousSystem.create_ground_station (complete example)
 ```
+
+The complete example's separate `simu.py` continues from the static boundary
+through `Simulator → Topology → Slicer → Difference → Planner → Plan`. Planner
+reads only already-generated Slicer state; backend preparation and dynamic
+runtime execution remain outside that path.
 
 The static scale and richer dynamic examples use YAML because repeated input
 records are data rather than teaching code. Both use the one file-input path:
@@ -145,17 +151,18 @@ The `reference/` directory is excluded from the package and formal example
 path. It preserves offline historical investigation/conversion tooling only;
 no formal example imports or reads it.
 
-`dynamic_slice_network/` is the richer bounded Dynamic Slice reference used by
-all three Inspection Tools. It remains separate from the minimal canonical
+`mini_satellite_internet/` is the richer bounded satellite Internet reference
+used by the four Inspection Tools. It remains separate from the minimal canonical
 smoke. Its `emu.py` is the sole Emulator builder, `simu.py` only projects an
 explicitly supplied existing Emulator, and `main.py` is the sole executable
 assembly. That entry compiles the current static Docker/Compose network,
 projects the same upstream Base-owned AS values into one exact Slicer, generates every
 Slice/Difference, gives the Slicer's exact Topology to the Topology and Zone
-Tools, and gives the exact Slicer to the five-view Dynamic Slice Tool. Static
-container artifacts remain under `output/runtime`; all three read-only views
-remain under `output/inspection`. Static containers are not updated by Slice
-results.
+Tools, gives the exact Slicer to the five-view Dynamic Slice Tool, drives real
+Planner publication through the public Simulator facade, and gives those exact
+formal results to the Planner Tool. Static container artifacts remain under `output/runtime`; the
+read-only views remain under `output/inspection`. Static containers are not
+updated by Slice results.
 
 See each experiment's README for exact commands. The active examples consume
 the upstream SEED `Docker` compiler output through plugin-based

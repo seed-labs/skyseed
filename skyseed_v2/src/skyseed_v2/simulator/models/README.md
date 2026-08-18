@@ -70,7 +70,7 @@ neutral shared values. They do not call one another.
 
 ## Examples and tests
 
-Assembly is in `examples/dynamic_slice_network/simu.py`. Dynamic main-chain,
+Assembly is in `examples/mini_satellite_internet/simu.py`. Dynamic main-chain,
 routing, reference-output, and Model lifecycle tests cover these
 implementations.
 

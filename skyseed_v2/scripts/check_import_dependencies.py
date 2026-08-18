@@ -50,6 +50,7 @@ def _collapsed_group(module_name: str) -> str:
         ("skyseed_v2.simulator.topology", "TOPOLOGY"),
         ("skyseed_v2.simulator.slicing", "SLICING"),
         ("skyseed_v2.simulator.models", "MODELS"),
+        ("skyseed_v2.simulator.planning", "PLANNING"),
         ("skyseed_v2.simulator", "SIM"),
         ("skyseed_v2.shared", "SHARED"),
         ("skyseed_v2.compose", "COMPOSE"),

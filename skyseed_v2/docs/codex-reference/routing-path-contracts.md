@@ -57,7 +57,13 @@ already the terminal. `Slicer.resolve_path(slice_id, source, target)` first
 loads the retained Slice and exact owner Topology, resolves the G terminal or
 current Z service Satellite, then follows formal next hops over current
 Connections. It returns the source-through-terminal tuple without storing it
-in RouteSlice and never accepts an arbitrary caller-supplied Topology.
+in RouteSlice and never accepts an arbitrary caller-supplied Topology. The
+sibling Planner calls this same formal query, converts each path to immutable
+Connection-identity facts, and passes that narrow context to its forwarding
+algorithm for timing and minimal direct downstream-first precedences. Tuple
+order remains deterministic but non-authoritative. The replaceable
+ForwardingPlanningModel never receives Slicer, invokes RouteModel, or
+establishes a second path computation.
 
 Unknown node or G/Zone identity, known but currently unserved Zone, current
 unreachability, incomplete/corrupt route chain, loop, wrong terminal, absent

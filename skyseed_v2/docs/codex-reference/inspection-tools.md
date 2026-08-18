@@ -7,7 +7,8 @@ recorded only in [`CURRENT.md`](../CURRENT.md).
 
 ## Scope
 
-Repository-local Topology, Zone, and Dynamic Slice inspection pipelines.
+Repository-local Topology, Zone, Dynamic Slice, and Planner inspection
+pipelines.
 Tools are read-only consumers and are not installed `skyseed_v2` product API.
 
 ## Owners and consumers
@@ -18,7 +19,9 @@ Each Tool preserves this responsibility boundary:
 reader → projection → display_analysis → renderer → artifact_writer
 ```
 
-The formal reader consumes the exact `Topology` or `Slicer`. Projection and
+The formal reader consumes the exact `Topology` or `Slicer`; the Planner
+reader additionally consumes consecutive immutable `Plan` publications and
+retained `PlanningDecision` values supplied by scenario assembly. Projection and
 later responsibilities consume only Tool-owned detached values. A small Tool
 may colocate adjacent responsibilities when the boundary remains explicit;
 file count and filenames are not part of the contract. Examples call the Tool
@@ -42,13 +45,21 @@ facades; browser smoke consumes emitted HTML from the validation side.
 - the Tool facade composes the responsibilities and preserves its Tool-facing
   function.
 
-Dynamic reads use retained Slice, path-resolution, and adjacent-Difference
-APIs. Zone reads use formal membership/resolution results. Display analysis
+Dynamic and Planner reads use retained Slice, path-resolution, and
+adjacent-Difference APIs. Planner inspection reads actual Plan transitions,
+temporal indexes, precedence edges, and retained decisions; it never
+reconstructs rejected candidates or an expected Plan. Zone reads use formal
+membership/resolution results. Display analysis
 may explain or arrange those results but cannot replace them.
+
+Planner display aliases, lifetime/state lanes, and spatial selection are
+Tool-owned projections. Its spatial panel uses exact retained ECEF positions
+from the formal Before/After Slice around a nominal transition; it does not
+interpolate sub-slice geometry.
 
 ## Invariants
 
-- Tools never mutate formal values or invoke Models;
+- Tools never mutate formal values, synchronize Planner, or invoke Models;
 - only readers import or call formal Topology/Slicer APIs;
 - read snapshots contain detached Tool-owned primitives/values, not Topology,
   Slicer, Slice, Difference, or entity instances;

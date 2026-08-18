@@ -9,7 +9,7 @@ B.
 
 ```mermaid
 flowchart LR
-    FORMAL["formal Topology / Slicer"] --> READ["reader: detached read snapshot"]
+    FORMAL["formal Topology / Slicer / Plan results"] --> READ["reader: detached read snapshot"]
     READ --> PROJECT["projection: private view data"]
     PROJECT --> ANALYZE["non-authoritative display analysis"]
     ANALYZE --> UI["renderer: final view to offline UI"]
@@ -24,13 +24,15 @@ flowchart LR
     SMOKE["browser smoke in scripts/"] -.-> ARTIFACT["written HTML artifact"]
 ```
 
-The three tools remain deliberately separate:
+The four tools remain deliberately separate:
 
 - `topology/` reads the static owner tree and facade identity;
 - `zone/` selects observation probes, then records authoritative membership
   and resolution returned by Topology;
 - `dynamic_slice/` reads one exact Slicer's retained Slice, resolved paths,
   and adjacent Difference results.
+- `planner/` reads one exact Slicer plus consecutive immutable Plans and
+  retained PlanningDecisions, then compares those formal results directly.
 
 Only the Slicer calls Position, Connection, and Route Models. Tools do not
 propagate Position, form Connections, compute Routes, compare slices, update
@@ -46,7 +48,13 @@ python examples/complete_static_emulator/main.py
 Run the richer Dynamic Slice reference:
 
 ```bash
-python examples/dynamic_slice_network/main.py
+python examples/mini_satellite_internet/main.py
+```
+
+Run the complete Planner inspection workflow as one command:
+
+```bash
+python -m examples.mini_satellite_internet.main
 ```
 
 Outputs are written under each example's ignored `output/inspection/`

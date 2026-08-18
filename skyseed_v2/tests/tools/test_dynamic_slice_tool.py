@@ -11,11 +11,11 @@ import tempfile
 import pytest
 
 import skyseed_v2
-from examples.dynamic_slice_network.emu import (
-    build_dynamic_reference_emulator,
+from examples.mini_satellite_internet.emu import (
+    build_mini_satellite_internet_emulator,
 )
-from examples.dynamic_slice_network.simu import (
-    create_dynamic_reference_slicer,
+from examples.mini_satellite_internet.simu import (
+    create_mini_satellite_internet_slicer,
 )
 from skyseed_v2.simulator import (
     CircularOrbitPositionModel,
@@ -198,8 +198,8 @@ def _portable_slicer() -> Slicer:
 
 @pytest.fixture(scope="module")
 def slicer() -> Slicer:
-    emulator = build_dynamic_reference_emulator()
-    return create_dynamic_reference_slicer(emulator)
+    emulator = build_mini_satellite_internet_emulator()
+    return create_mini_satellite_internet_slicer(emulator)
 
 
 @pytest.fixture(scope="module")
@@ -628,7 +628,7 @@ def test_portability_browser_smoke_handles_duplicate_orbits_and_empty_state(
     from scripts.check_dynamic_slice_tool_browser import run_browser_smoke
 
     ignored_output = (
-        PROJECT_ROOT / "examples/dynamic_slice_network/output"
+        PROJECT_ROOT / "examples/mini_satellite_internet/output"
     )
     ignored_output.mkdir(parents=True, exist_ok=True)
     browser_root = Path(

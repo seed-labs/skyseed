@@ -7,8 +7,9 @@ recorded only in [`CURRENT.md`](../CURRENT.md).
 
 ## Scope
 
-SEED integration, Zone membership, three Models, configuration loaders,
-Compose launch options, and repository Tools.
+SEED integration, Zone membership, three Slicer Models, five Planner
+algorithm roles, configuration loaders, Compose launch options, and repository
+Tools.
 
 ## Owners and consumers
 
@@ -21,6 +22,11 @@ Compose launch options, and repository Tools.
 | `PositionModel` | Slicer | complete Position mapping | Slice publication |
 | `ConnectionModel` | Slicer | complete ConnectionSlice | Route or publication |
 | `RouteModel` | Slicer | complete RouteSlice | path validation/publication |
+| `PlanningHorizonPolicy` | Planner | select visible not-yet-published Difference prefix and its publication prefix before Models run | Slicer retention, Slice creation or execution scheduling |
+| `ConnectionPlanningModel` | Planner | horizon-aware nominal time and short-lifetime candidates | visibility or final suppression |
+| `ParameterPlanningModel` | Planner | cross-Difference sparse targets against last planned values | Connection lifetime or backend control |
+| `ForwardingPlanningModel` | Planner | timing and minimal same-time precedences from formal RoutePatch and narrow immutable path facts | Slicer, RouteModel, route selection or execution scheduling |
+| `CoordinationPolicy` | Planner | transform all three typed Model results into one coherent keep/suppress result | fixed Planner validity |
 | YAML loader data | receiving configuration package | accepted schema values | domain runtime objects |
 | Compose strategy | ComposeProjectLauncher | explicit single/batched project startup | compile/edit/fallback |
 | Inspection projection/UI | repository `tools/` | non-authoritative display | formal computation |
@@ -47,6 +53,9 @@ deliberately unfrozen.
 ## Invariants
 
 Extensions remain narrow, typed, owner-validated, and replace no formal owner.
+Planner algorithm roles may be implemented by the same Python object when it
+satisfies multiple Protocols; role separation does not impose object-identity
+separation.
 
 ## Failure semantics
 
@@ -67,5 +76,6 @@ inside an accepted extension are implementation detail.
 ## Maintenance
 
 For SEED changes update package README, direct-import/consumer checks,
-standard compiler integration tests, and review evidence. For Model/Zone/Tool
-changes update the corresponding contract and focused tests.
+standard compiler integration tests, and review evidence. For Model,
+Planner-algorithm, Zone, or Tool changes update the corresponding contract and
+focused tests.

@@ -11,10 +11,10 @@ import pytest
 from seedemu.core import Emulator
 from yaml import safe_load
 
-from examples.dynamic_slice_network import main as reference_main
-from examples.dynamic_slice_network import simu
-from examples.dynamic_slice_network.emu import (
-    build_dynamic_reference_emulator,
+from examples.mini_satellite_internet import main as reference_main
+from examples.mini_satellite_internet import simu
+from examples.mini_satellite_internet.emu import (
+    build_mini_satellite_internet_emulator,
 )
 from seedemu.layers import Base
 from skyseed_v2.emulator.seedemu import SkyseedAutonomousSystem
@@ -33,17 +33,17 @@ from tools.zone import collect_zone_data
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-EXAMPLE_ROOT = PROJECT_ROOT / "examples/dynamic_slice_network"
+EXAMPLE_ROOT = PROJECT_ROOT / "examples/mini_satellite_internet"
 
 
 @pytest.fixture(scope="module")
 def reference_emulator():
-    return build_dynamic_reference_emulator()
+    return build_mini_satellite_internet_emulator()
 
 
 @pytest.fixture(scope="module")
 def reference_slicer(reference_emulator) -> Slicer:
-    return simu.create_dynamic_reference_slicer(reference_emulator)
+    return simu.create_mini_satellite_internet_slicer(reference_emulator)
 
 
 @pytest.fixture(scope="module")
@@ -183,7 +183,7 @@ def test_cross_plane_pairing_is_one_predecessor_and_one_successor_candidate(
 
 
 def test_richer_emulator_contains_static_network_and_routing_layers() -> None:
-    emulator = build_dynamic_reference_emulator()
+    emulator = build_mini_satellite_internet_emulator()
     base = emulator.getLayer("Base")
 
     assert isinstance(base, Base)
@@ -205,7 +205,7 @@ def test_richer_example_has_one_emulator_builder_and_fail_closed_projection() ->
     simu_source = (EXAMPLE_ROOT / "simu.py").read_text(encoding="utf-8")
     main_source = (EXAMPLE_ROOT / "main.py").read_text(encoding="utf-8")
 
-    assert emu_source.count("def build_dynamic_reference_emulator(") == 1
+    assert emu_source.count("def build_mini_satellite_internet_emulator(") == 1
     assert "load_static_emulator_config(" in emu_source
     assert "create_static_emulator(" in emu_source
     for forbidden in (
@@ -216,13 +216,13 @@ def test_richer_example_has_one_emulator_builder_and_fail_closed_projection() ->
         "Simulator(",
     ):
         assert forbidden not in emu_source
-    assert "dynamic_slice_network.emu" not in simu_source
-    assert "def build_dynamic_reference_emulator(" not in main_source
+    assert "mini_satellite_internet.emu" not in simu_source
+    assert "def build_mini_satellite_internet_emulator(" not in main_source
 
     with pytest.raises(TypeError):
-        simu.create_dynamic_reference_slicer()
+        simu.create_mini_satellite_internet_slicer()
     with pytest.raises(TypeError, match="upstream Emulator"):
-        simu.create_dynamic_reference_slicer(object())
+        simu.create_mini_satellite_internet_slicer(object())
 
 
 def test_richer_main_builds_once_and_emits_static_and_dynamic_outputs(
@@ -239,13 +239,14 @@ def test_richer_main_builds_once_and_emits_static_and_dynamic_outputs(
     topology_tool_inputs = []
     zone_tool_inputs = []
     dynamic_tool_inputs = []
-    real_build = reference_main.build_dynamic_reference_emulator
+    real_build = reference_main.build_mini_satellite_internet_emulator
     real_compile = Emulator.compile
-    real_project = reference_main.create_dynamic_reference_slicer
+    real_project = reference_main.create_mini_satellite_internet_simulator
     real_input_projection = simu.create_simulator_static_input
     real_topology_tool = reference_main.write_topology_tool
     real_zone_tool = reference_main.write_zone_tool
     real_dynamic_tool = reference_main.write_dynamic_slice_tool
+    real_planner_tool = reference_main.write_planner_inspection
 
     def build_spy(path):
         emulator = real_build(path)
@@ -263,9 +264,9 @@ def test_richer_main_builds_once_and_emits_static_and_dynamic_outputs(
 
     def projection_spy(emulator, **kwargs):
         projected.append(emulator)
-        slicer = real_project(emulator, **kwargs)
-        created_slicers.append(slicer)
-        return slicer
+        simulator = real_project(emulator, **kwargs)
+        created_slicers.append(simulator.get_slicer())
+        return simulator
 
     def topology_tool_spy(topology, directory):
         topology_tool_inputs.append(topology)
@@ -279,9 +280,15 @@ def test_richer_main_builds_once_and_emits_static_and_dynamic_outputs(
         dynamic_tool_inputs.append(slicer)
         return real_dynamic_tool(slicer, directory)
 
+    planner_tool_inputs = []
+
+    def planner_tool_spy(simulator, slicer, directory):
+        planner_tool_inputs.append((simulator, slicer))
+        return real_planner_tool(simulator, slicer, directory)
+
     monkeypatch.setattr(
         reference_main,
-        "build_dynamic_reference_emulator",
+        "build_mini_satellite_internet_emulator",
         build_spy,
     )
     monkeypatch.setattr(Emulator, "compile", compile_spy)
@@ -292,7 +299,7 @@ def test_richer_main_builds_once_and_emits_static_and_dynamic_outputs(
     )
     monkeypatch.setattr(
         reference_main,
-        "create_dynamic_reference_slicer",
+        "create_mini_satellite_internet_simulator",
         projection_spy,
     )
     monkeypatch.setattr(
@@ -305,6 +312,11 @@ def test_richer_main_builds_once_and_emits_static_and_dynamic_outputs(
         reference_main,
         "write_dynamic_slice_tool",
         dynamic_tool_spy,
+    )
+    monkeypatch.setattr(
+        reference_main,
+        "write_planner_inspection",
+        planner_tool_spy,
     )
     monkeypatch.setattr(
         "sys.argv",
@@ -351,11 +363,14 @@ def test_richer_main_builds_once_and_emits_static_and_dynamic_outputs(
     assert zone_tool_inputs[0] is exact_topology
     assert len(dynamic_tool_inputs) == 1
     assert dynamic_tool_inputs[0] is exact_slicer
+    assert len(planner_tool_inputs) == 1
+    assert planner_tool_inputs[0][1] is exact_slicer
 
     runtime_output = output / "runtime"
     topology_output = output / "inspection/topology"
     zone_output = output / "inspection/zone"
     dynamic_output = output / "inspection/dynamic-slice"
+    planner_output = output / "inspection/planner"
     compose_file = runtime_output / "docker-compose.yml"
     compose = safe_load(compose_file.read_text(encoding="utf-8"))
     assert isinstance(compose["services"], dict)
@@ -376,7 +391,7 @@ def test_richer_main_builds_once_and_emits_static_and_dynamic_outputs(
 
     start = (output / "start.sh").read_text(encoding="utf-8")
     cleanup = (output / "cleanup.sh").read_text(encoding="utf-8")
-    assert "skyseed_v2_dynamic_slice_network" in start
+    assert "skyseed_v2_mini_satellite_internet" in start
     assert "config --quiet" in start
     assert "up -d --build" in start
     assert "down --remove-orphans" in cleanup
@@ -394,6 +409,7 @@ def test_richer_main_builds_once_and_emits_static_and_dynamic_outputs(
         "topology",
         "zone",
         "dynamic-slice",
+        "planner",
     }
     for forbidden in ("emulator", "simulator", "dynamic-slice", "tools"):
         assert not (output / forbidden).exists()
@@ -412,6 +428,14 @@ def test_richer_main_builds_once_and_emits_static_and_dynamic_outputs(
         "checksums.sha256",
     ):
         assert (dynamic_output / name).is_file()
+    for name in (
+        "index.html",
+        "planner-inspection.json",
+        "summary.txt",
+        "inventory.json",
+        "checksums.sha256",
+    ):
+        assert (planner_output / name).is_file()
 
     topology_payload = json.loads(
         (topology_output / "topology.json").read_text(encoding="utf-8")
@@ -768,8 +792,8 @@ def test_reference_ground_stations_copy_v1_reference_values_without_runtime_depe
 def test_richer_reference_core_identities_and_counts_repeat_deterministically(
     reference_view_data: dict[str, object],
 ) -> None:
-    repeated_emulator = build_dynamic_reference_emulator()
-    repeated = simu.create_dynamic_reference_slicer(repeated_emulator)
+    repeated_emulator = build_mini_satellite_internet_emulator()
+    repeated = simu.create_mini_satellite_internet_slicer(repeated_emulator)
 
     assert collect_dynamic_slice_data(repeated) == reference_view_data
 
@@ -778,8 +802,8 @@ def test_richer_reference_sources_do_not_construct_formal_dynamic_results() -> N
     source = (EXAMPLE_ROOT / "simu.py").read_text(encoding="utf-8")
     for forbidden in (
         "argparse",
-        "build_dynamic_reference_emulator",
-        "examples.dynamic_slice_network.emu",
+        "build_mini_satellite_internet_emulator",
+        "examples.mini_satellite_internet.emu",
         "scenario_path",
         "write_topology_tool",
         "write_zone_tool",
@@ -802,7 +826,7 @@ def test_richer_reference_sources_do_not_construct_formal_dynamic_results() -> N
     ):
         assert forbidden not in source
     for required in (
-        "def create_dynamic_reference_slicer(",
+        "def create_mini_satellite_internet_slicer(",
         "create_simulator_static_input(",
         "Simulator(",
         ".create_topology(",
@@ -822,7 +846,9 @@ def test_richer_reference_sources_do_not_construct_formal_dynamic_results() -> N
         "create_simulator_static_input(",
     ):
         assert forbidden not in main_source
-    parameters = signature(simu.create_dynamic_reference_slicer).parameters
+    parameters = signature(
+        simu.create_mini_satellite_internet_slicer
+    ).parameters
     assert tuple(parameters) == ("emulator", "zone_layout_path")
     assert parameters["emulator"].default is Parameter.empty
     assert parameters["emulator"].annotation == "Emulator"

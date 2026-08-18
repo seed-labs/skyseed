@@ -51,6 +51,7 @@ APPROVED_PUBLIC_PACKAGES = (
     "skyseed_v2.simulator.geometry",
     "skyseed_v2.simulator.input",
     "skyseed_v2.simulator.models",
+    "skyseed_v2.simulator.planning",
     "skyseed_v2.simulator.slicing",
     "skyseed_v2.simulator.topology",
 )
@@ -66,6 +67,7 @@ TOOL_READMES = (
     PROJECT_ROOT / "tools/topology/README.md",
     PROJECT_ROOT / "tools/zone/README.md",
     PROJECT_ROOT / "tools/dynamic_slice/README.md",
+    PROJECT_ROOT / "tools/planner/README.md",
 )
 
 AUTHORITATIVE_ROOT_FILES = (
@@ -337,7 +339,6 @@ def _check_anchor_consistency() -> None:
     if "implemented and accepted" not in current:
         raise AssertionError("accepted Dynamic Slice status missing from CURRENT")
     for deferred in (
-        "Planning",
         "backend preparation/compilation",
         "dynamic execution",
         "future names, owners, packages, inputs, outputs",
@@ -1264,8 +1265,6 @@ def _check_repository_growth() -> None:
     forbidden_future_package_parts = {
         "backend",
         "execution",
-        "planner",
-        "planning",
         "preparer",
         "runner",
         "runtime",
@@ -1309,6 +1308,7 @@ def _check_maintenance_mapping() -> None:
         "simulator/topology/",
         "simulator/slicing/",
         "tools/dynamic_slice/",
+        "tools/planner/",
         "src/skyseed_v2/simulator/models/README.md",
         "src/skyseed_v2/shared/README.md",
     ):

@@ -24,11 +24,15 @@ from skyseed_v2.configuration.simulator import load_zone_layout_definition
 from skyseed_v2.shared import NodeId
 from skyseed_v2.emulator.seedemu import get_skyseed_autonomous_systems
 from skyseed_v2.simulator import (
+    AccumulatedDeadbandParameterPlanningModel,
     CircularOrbitPositionModel,
     ConnectionKind,
+    DefaultCoordinationPolicy,
+    DependencyAwareForwardingPlanningModel,
     GeometricConnectionModel,
     GroundStationRouteTarget,
     HopCountRouteModel,
+    MidpointConnectionPlanningModel,
     SimulationDefinition,
     SimulationTimeline,
     Simulator,
@@ -135,6 +139,19 @@ def main() -> None:
     first_slice, second_slice = slicer.create_slices(2)
     initial_difference = slicer.create_difference(0, 1)
     next_difference = slicer.create_difference(1, 2)
+    planner = simulator.create_planner(
+        connection_model=MidpointConnectionPlanningModel(
+            minimum_dwell=timedelta(seconds=5),
+        ),
+        parameter_model=AccumulatedDeadbandParameterPlanningModel(
+            bandwidth_bps_threshold=10_000_000,
+            delay_us_threshold=5,
+            packet_loss_ppm_threshold=50,
+        ),
+        forwarding_model=DependencyAwareForwardingPlanningModel(),
+        coordination_policy=DefaultCoordinationPolicy(),
+    )
+    initial_plan = planner.get_plan()
     first_satellite_id = satellite_id
     second_satellite_id = NodeId(65001, "satellite", "satellite-1")
     first_satellite_position = first_slice.get_position(first_satellite_id)
@@ -248,6 +265,35 @@ def main() -> None:
         f"{len(next_difference.zone_service_assignment_patches)}, "
         f"route_patches={len(next_difference.route_patches)}; "
         f"evidence={next_change}"
+    )
+    print(
+        "initial Plan coverage: "
+        f"{initial_plan.start_slice_id}->{initial_plan.end_slice_id}; "
+        f"Connection={len(initial_plan.connection_transitions)}, "
+        f"Parameter={len(initial_plan.parameter_transitions)}, "
+        f"Forwarding={len(initial_plan.forwarding_transitions)}, "
+        f"Precedence={len(initial_plan.forwarding_precedences)}, "
+        f"times={len(initial_plan.temporal_index)}"
+    )
+    initial_decision = planner.get_planning_decisions()[0]
+    print(
+        "planning evidence: "
+        f"{initial_decision.decision} by {initial_decision.decided_by}: "
+        f"{initial_decision.reason}"
+    )
+
+    third_slice = slicer.create_next_slice()
+    updated_plan = planner.synchronize()
+    print(
+        "incremental Plan synchronization: "
+        f"new_slice={third_slice.slice_id}, "
+        f"coverage={updated_plan.start_slice_id}->"
+        f"{updated_plan.end_slice_id}, "
+        f"consumed_differences={len(planner.get_consumed_differences())}, "
+        f"Connection={len(updated_plan.connection_transitions)}, "
+        f"Parameter={len(updated_plan.parameter_transitions)}, "
+        f"Forwarding={len(updated_plan.forwarding_transitions)}, "
+        f"Precedence={len(updated_plan.forwarding_precedences)}"
     )
 
 

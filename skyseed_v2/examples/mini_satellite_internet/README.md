@@ -1,8 +1,9 @@
-# Dynamic Slice Network Reference
+# Mini Satellite Internet Reference
 
-This richer reference is separate from the minimal
-`complete_static_emulator` canonical example. It is the comprehensive G
-reference: one YAML-built Emulator owns the Skyseed constellation, static
+This small but reasonably rich reference is separate from the minimal
+`complete_static_emulator` canonical example. It is a reusable satellite
+Internet scenario rather than a Starlink replica or Planner-specific fixture:
+one YAML-built Emulator owns the Skyseed constellation, static
 GroundStation/IX attachment, ordinary SEED network and routing/eBGP layers;
 that exact Emulator is both compiled into a static Docker/Compose project and
 projected into the accepted A–F Dynamic Slice chain.
@@ -46,7 +47,7 @@ Both representative points remain inside their own rectangles.
 Run the formal comprehensive entry from the repository root:
 
 ```bash
-python3 -m examples.dynamic_slice_network.main
+python3 -m examples.mini_satellite_internet.main
 ```
 
 Or directly from this directory:
@@ -79,9 +80,15 @@ output/
     │   ├── index.html
     │   ├── probes.json
     │   └── summary.txt
-    └── dynamic-slice/
+    ├── dynamic-slice/
         ├── index.html
         ├── dynamic-slice.json
+        ├── summary.txt
+        ├── inventory.json
+        └── checksums.sha256
+    └── planner/               # written by the same main.py run
+        ├── index.html
+        ├── planner-inspection.json
         ├── summary.txt
         ├── inventory.json
         └── checksums.sha256
@@ -91,7 +98,8 @@ output/
 project-scoped controls, projects SimulatorStaticInput from that same
 Emulator's upstream Base owner, creates one Topology and one Slicer, publishes
 every formal Slice, then gives that exact Topology to the Topology and Zone
-Tools and that exact Slicer to the Dynamic Slice Tool. `start.sh` validates
+Tools, that exact Slicer to the Dynamic Slice Tool, and consecutive immutable
+Plans plus retained PlanningDecisions to the Planner Tool. `start.sh` validates
 `runtime/docker-compose.yml` before starting:
 
 ```bash
@@ -104,10 +112,35 @@ Position, Connection, Zone service, Route and Difference results do not
 update those containers. The future Planner/backend/runtime boundary is
 responsible for translating accepted dynamic results into runtime operations.
 
-`main.py` is the only executable assembly entry. `simu.py` has no CLI and
-never constructs an Emulator or writes Tool output; its
-`create_dynamic_reference_slicer(emulator, ...)` function only projects an
-explicitly supplied existing Emulator into the formal Simulator/Slicer chain.
+## One-command Planner inspection
+
+From the repository root, run the complete real scenario, Planner publication,
+and inspection workflow with the active `skyseed_dev` environment:
+
+```bash
+python -m examples.mini_satellite_internet.main
+```
+
+The primary artifact is
+`output/inspection/planner/index.html`; its sibling JSON, summary, inventory,
+and checksum files are private audit evidence. Scenario assembly creates the
+real Simulator/Slicer, obtains Planner through the public Simulator facade,
+publishes five continuous Plans covering `(0,4]`, `(4,8]`, `(8,12]`,
+`(12,16]`, and `(16,20]`, and passes those exact immutable results plus
+retained PlanningDecisions to the single Tool facade. The Tool itself does not
+synchronize Planner or invoke a Model.
+
+The page separates sampled Slice time from publication coverage and nominal
+transition time. It presents repeated Connection lifetimes, sampled parameter
+values beside actual ParameterTransitions, RoutePatches beside actual
+ForwardingTransitions, same-time forwarding precedence, retained coordination
+decisions, and Difference-to-Plan comparison. Rejected suppression candidates
+remain explicitly unavailable because the formal read surface does not retain
+them.
+
+`main.py` is the single full compile-and-four-Tool assembly entry. `simu.py`
+has no CLI and never writes Tool output; its public assembly helpers project
+the explicitly supplied Emulator into the matching formal Simulator/Slicer.
 
 The example never edits a Slice, constructs a Connection/Route/Difference
 manually, or bypasses the three Models and Slicer. Inventory, observed

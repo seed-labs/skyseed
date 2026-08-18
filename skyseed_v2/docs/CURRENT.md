@@ -28,14 +28,25 @@ provenance material is non-authoritative.
 - `TopologySlice`, retained-slice lookup, path resolution, and
   `TopologyDifference`;
 - Dynamic Slice A–G: **implemented and accepted**;
-- read-only Topology, Zone, and Dynamic Slice Inspection Tools;
+- Simulator-owned semantic Planner first vertical slice: **implemented and
+  accepted**; it selects visible future and a publication prefix before
+  cross-Difference Models, incrementally preserves private planned state across
+  continuous non-overlapping Plans, performs replaceable cross-domain
+  Coordination with lookahead, and publishes immutable backend-independent
+  typed transitions plus minimal same-time Forwarding precedences;
+- read-only Topology, Zone, Dynamic Slice, and Planner Inspection Tools; the
+  Planner Tool has one real complex-scenario entry and directly displays
+  formal Slicer, Difference, Plan, and retained PlanningDecision results;
+- `mini_satellite_internet` is the single richer small-scale reference
+  scenario and its `main.py` emits all four inspection views from one formal
+  assembly;
 - static Compose project launch/verification through
   `ComposeProjectLauncher`.
 
 ## Deferred
 
-Planning, backend preparation/compilation, and dynamic execution capabilities
-remain deferred. Their future names, owners, packages, inputs, outputs, and
+backend preparation/compilation and dynamic execution capabilities remain
+deferred. Their future names, owners, packages, inputs, outputs, and
 execution chains are not frozen and require separate approval.
 
 No package, empty directory, public type, fallback, or execution path for
@@ -50,7 +61,7 @@ src/skyseed_v2/
 ├── emulator/{entities,seedemu}/
 ├── emulator/construction.py
 ├── emulator_to_simulator.py
-├── simulator/{input,topology,geometry,slicing,models}/
+├── simulator/{input,topology,geometry,slicing,models,planning}/
 ├── simulator/{definition,timeline,simulator}.py
 └── compose/launcher.py
 ```

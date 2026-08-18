@@ -3,8 +3,8 @@
 This handwritten example shows the complete public composition: two planned
 Satellites, one GroundStation, one ordinary SEED AS/Network/Router, one IX, one
 explicit eBGP peering, immutable Emulator-to-Simulator input, the accepted
-Dynamic Slice A–E chain, accepted F TopologyDifference evidence and the
-upstream SEED `Docker` compiler.
+Dynamic Slice A–E chain, accepted F TopologyDifference evidence, the
+Simulator-owned semantic Planner, and the upstream SEED `Docker` compiler.
 
 `emu.py` contains only `build_emulator() -> Emulator`. `main.py` builds that
 Emulator once, assembles one Simulator/Topology from the same object, preserves
@@ -21,8 +21,10 @@ Simulator results and do not mutate Emulator entities.
 
 From `skyseed_v2/examples/complete_static_emulator/`, run the canonical
 external assembly flow, which uses fixed timestamps, explicitly creates the
-three built-in Models and Slicer, queries synthetic Slice 0 and generates two
-real TopologySlices:
+three built-in Slicer Models, Slicer and Planner, queries synthetic Slice 0,
+generates two real TopologySlices, publishes an initial Plan, then creates a
+third Slice and incrementally publishes the next continuous non-overlapping
+Plan interval:
 
 ```bash
 python3 simu.py
@@ -38,6 +40,13 @@ then demonstrates Position, ISL, GroundStation access, Zone service, G/Z next
 hops, a resolved full path and a legal unserved Zone. A bounded Timeline is
 displayed completely; an unbounded Timeline is displayed through a fixed
 four-timestamp prefix without eager materialization.
+
+The Planner path uses midpoint Connection timing, accumulated parameter
+deadbands, dependency-aware forwarding and the default CoordinationPolicy. It
+prints Plan coverage, typed transition/Forwarding-precedence counts, and one
+retained/merged/suppressed decision record. The precedence is a same-time
+semantic constraint, not runtime execution order. These are semantic planning
+results only; no backend or runtime operation is produced.
 
 For a layout with many Zones, defining them in `zones.yaml` is the recommended
 path. Small tests may instead construct

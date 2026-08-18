@@ -152,6 +152,7 @@ classDiagram
         <<composition root>>
         +create_topology()
         +create_slicer()
+        +create_planner()
     }
     class Topology {
         <<static aggregate>>
@@ -220,12 +221,37 @@ classDiagram
         <<route aggregate>>
         +routes
     }
+    class Planner {
+        <<incremental semantic planner>>
+        +synchronize()
+        +get_plan()
+    }
+    class Plan {
+        <<immutable semantic update plan>>
+        +start_slice_id
+        +start_timestamp
+        +end_slice_id
+        +end_timestamp
+        +connection_transitions
+        +parameter_transitions
+        +forwarding_transitions
+        +forwarding_precedences
+        +temporal_index
+    }
+    class ForwardingTransitionPrecedence {
+        <<immutable semantic ordering relation>>
+        +predecessor
+        +successor
+    }
 
     SimulationDefinition "1" *-- "1" SimulatorStaticInput : static input
     SimulationDefinition "1" *-- "1" SimulationTimeline : timeline
     Simulator "1" *-- "1" SimulationDefinition : exact definition
     Simulator "1" *-- "1" Topology : created static aggregate
     Simulator "1" *-- "1" Slicer : created dynamic owner
+    Simulator "1" *-- "0..1" Planner : created after Slicer
+    Planner "1" *-- "0..1" Plan : current snapshot
+    Plan "1" *-- "0..*" ForwardingTransitionPrecedence : semantic ordering
     Topology "1" *-- "0..*" SimulatorAS : autonomous systems
     SimulatorAS "1" *-- "0..*" SimulatorShell : shells
     SimulatorAS "1" *-- "0..*" SimulatorGroundStation : stations
@@ -249,9 +275,11 @@ classDiagram
     class Slicer
     class Topology
     class SimulationTimeline
+    class Planner
 
     Slicer "1" --> "1" Topology : exact Topology
     Slicer "1" --> "1" SimulationTimeline : exact Timeline
+    Planner "1" --> "1" Slicer : exact Simulator sibling
 ```
 
 ## Creation, projection, and calls

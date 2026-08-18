@@ -305,7 +305,7 @@ Built-in realizations live in `../models/`; no Model calls another Model.
 
 ## Examples and tests
 
-The readable assembly is `examples/dynamic_slice_network/simu.py`. Focused
+The readable assembly is `examples/mini_satellite_internet/simu.py`. Focused
 tests are `tests/unit/test_dynamic_slice_main_chain.py` and
 `tests/unit/test_topology_difference.py`; Tool tests verify read-only
 consumption.

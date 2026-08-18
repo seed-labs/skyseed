@@ -13,7 +13,7 @@ from examples._compose_project_scripts import (
 from examples.complete_static_emulator import emu
 from examples.complete_static_emulator import main as complete
 from examples.complete_static_emulator import simu
-from examples.dynamic_slice_network import main as dynamic
+from examples.mini_satellite_internet import main as mini
 from examples.isolated_satellites import main as isolated
 from examples.large_static_network import main as large
 from seedemu.core import Emulator
@@ -36,7 +36,7 @@ EXPERIMENTS = {
         "skyseed_v2_large_static_network",
     ),
 }
-FORMAL_EXAMPLES = (*EXPERIMENTS, "dynamic_slice_network")
+FORMAL_EXAMPLES = (*EXPERIMENTS, "mini_satellite_internet")
 
 
 def test_formal_examples_generate_controls_into_unique_project_outputs() -> None:
@@ -84,12 +84,13 @@ def test_examples_readme_indexes_current_long_term_roles_and_outputs() -> None:
         assert f"`{name}`" in readme
     assert "Minimal static/canonical example kept deliberately small" in readme
     assert "Specialized static scale and Compose validation" in readme
-    assert "Comprehensive Emu + Simu reference for final manual review" in readme
-    assert "Topology, Zone and five-view Dynamic Slice" in readme
-    assert dynamic.DEFAULT_OUTPUT == (
-        EXAMPLES_ROOT / "dynamic_slice_network/output"
+    assert "Small but reasonably rich reusable satellite Internet" in readme
+    assert "Topology, Zone, Dynamic Slice and Planner" in readme
+    assert mini.DEFAULT_OUTPUT == (
+        EXAMPLES_ROOT / "mini_satellite_internet/output"
     )
-    assert dynamic.COMPOSE_PROJECT_NAME == "skyseed_v2_dynamic_slice_network"
+    assert mini.COMPOSE_PROJECT_NAME == "skyseed_v2_mini_satellite_internet"
+    assert not (EXAMPLES_ROOT / "dynamic_slice_network").exists()
 
 
 @pytest.mark.parametrize("name", tuple(EXPERIMENTS))
@@ -265,9 +266,9 @@ def test_example_output_preparation_replaces_only_the_owned_root(
         ("complete_static_emulator", complete, ("topology", "zone")),
         ("large_static_network", large, ()),
         (
-            "dynamic_slice_network",
-            dynamic,
-            ("topology", "zone", "dynamic-slice"),
+            "mini_satellite_internet",
+            mini,
+            ("topology", "zone", "dynamic-slice", "planner"),
         ),
     ),
 )
@@ -342,7 +343,12 @@ def test_formal_examples_emit_one_user_facing_output_tree(
     for tool_name in inspection_tools:
         assert (inspection / tool_name / "index.html").is_file()
     assert not any(
-        path.name in {"topology.json", "probes.json", "dynamic-slice.json"}
+        path.name in {
+            "topology.json",
+            "probes.json",
+            "dynamic-slice.json",
+            "planner-inspection.json",
+        }
         for path in output.iterdir()
     )
 
