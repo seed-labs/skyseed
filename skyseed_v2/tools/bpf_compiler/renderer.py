@@ -15,6 +15,7 @@ def render_bpf_compiler_page(data: dict[str, Any]) -> str:
     ):
         raise TypeError("data must be final BPF Compiler inspection view data")
     inventory = data["inventory"]
+    eyebrow = f"{inventory['plans']} continuous Plans · offline · read-only"
     stats = "".join(
         f'<div class="card stat"><span class="muted">{label}</span>'
         f'<strong>{inventory[key]}</strong></div>'
@@ -110,9 +111,65 @@ table {{ min-width:650px; }}
 """
     return standalone_page(
         title="BPF Compiler Inspection Tool",
-        eyebrow=f"{inventory['plans']} continuous Plans · offline · read-only",
+        eyebrow=eyebrow,
         body=body,
         script=_SCRIPT.replace("__BPF_DATA__", json_for_script(data)),
+        language_strings={
+            "BPF Compiler Inspection Tool": "BPF Compiler 检查工具",
+            eyebrow: f"{inventory['plans']} 个连续 Plan · 离线 · 只读",
+            "COMPILED OUTPUT OBSERVED": "已观测编译输出",
+            "Compiled backend operations / symbolic BPF realization": "已编译 backend operation / 符号化 BPF realization",
+            "This page reads already-produced Plan and BpfCompiledRealization values. It does not compile, lower, query Simulator state, or infer concrete runtime/kernel bindings.": "本页读取已经产生的 Plan 与 BpfCompiledRealization；不会执行编译、lowering、查询 Simulator state 或推断具体 runtime / kernel binding。",
+            "Inspection inventory": "检查内容概览",
+            "Review boundary:": "审核边界：",
+            "exact mapping is shown only where current compiled fields support it. Zone-edge rows are mechanical Compiler output and do not claim a nonexistent Plan transition provenance.": "只有当前 compiled field 支持时才展示精确映射。Zone-edge 行是 Compiler 的机械输出，不会声称不存在的 Plan transition provenance。",
+            "Continuous Plan intervals": "连续 Plan 区间",
+            "Selected interval": "所选区间",
+            "Backend operations": "Backend operation",
+            "Plan → BPF provenance": "Plan → BPF provenance",
+            "Connections / resources": "Connection / resource",
+            "Parameters / qdisc": "参数 / qdisc",
+            "Forwarding": "转发",
+            "Zone edges": "Zone edge",
+            "Ordering": "排序约束",
+            "Intended end state": "预期结束状态",
+            "Raw deterministic inspection snapshot": "原始确定性检查快照",
+            "Plan intervals": "Plan 区间",
+            "Resources": "资源",
+            "Qdisc intents": "Qdisc intent",
+            "Constraints": "约束",
+            "No values in this interval.": "此区间中没有值。",
+            "Initial complete target": "初始完整目标",
+            "Sparse parameter update": "稀疏参数更新",
+            "Direction": "方向",
+            "RouteKey lowering": "RouteKey lowering",
+            "Previous next hop": "此前 next hop",
+            "New next hop": "新的 next hop",
+            "Resolved symbolic egress": "已解析符号 egress",
+            "Interval Zone-edge changes": "区间 Zone-edge 变化",
+            "Planned Zone edge at interval end": "区间结束时的 planned Zone edge",
+            "No compiled Zone-edge change.": "没有 compiled Zone-edge 变化。",
+            "No active Zone edge.": "没有 active Zone edge。",
+            "Plan forwarding precedence": "Plan forwarding precedence",
+            "Exact semantic precedence retained by Compiler.": "Compiler 保留的精确语义 precedence。",
+            "Backend technical constraints": "Backend 技术约束",
+            "Mechanical readiness, use, retirement, and Zone-edge ordering.": "机械 readiness、use、retirement 与 Zone-edge 排序。",
+            "Active logical resources": "Active 逻辑资源",
+            "Directional parameter state": "方向参数状态",
+            "Forwarding state": "转发状态",
+            "Zone edges": "Zone edge",
+            "Connection": "Connection",
+            "Endpoint A": "端点 A",
+            "Endpoint B": "端点 B",
+            "Bandwidth": "带宽",
+            "Delay": "时延",
+            "Loss": "丢包",
+            "Source": "源节点",
+            "Target": "目标",
+            "Next hop": "下一跳",
+            "Synthetic identity": "合成 identity",
+            "Planned terminal": "Planned terminal",
+        },
     )
 
 

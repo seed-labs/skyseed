@@ -1,4 +1,4 @@
-"""Define replaceable horizon-aware Planner algorithms."""
+"""Define replaceable planning-window-aware Planner algorithms."""
 
 from __future__ import annotations
 
@@ -28,41 +28,42 @@ from .values import (
 
 
 @runtime_checkable
-class PlanningHorizonPolicy(Protocol):
-    """Select visible planning input and the next publication prefix.
+class PlanningWindowPolicy(Protocol):
+    """Select the planning window and the next publication window.
 
-    Layer: replaceable Simulator Planner horizon algorithm. Planner invokes it
+    Layer: replaceable Simulator Planner window algorithm. Planner invokes it
     with immutable not-yet-published Differences. Models and Coordination see
-    ``select_differences`` output; ``select_publication_differences`` chooses a
-    non-empty prefix of that visible input for the next Plan. It is not Slice
+    ``select_planning_differences`` output;
+    ``select_publication_differences`` chooses a non-empty prefix of that
+    planning window for the next Plan. It is not Slice
     generation, retention ownership or runtime scheduling and is public from
     ``skyseed_v2.simulator``.
     """
 
-    def select_differences(
+    def select_planning_differences(
         self,
         available_differences: tuple[TopologyDifference, ...],
     ) -> tuple[TopologyDifference, ...]:
-        """Return a non-empty visible prefix when input is available."""
+        """Return a non-empty planning-window prefix when input is available."""
 
     def select_publication_differences(
         self,
-        visible_differences: tuple[TopologyDifference, ...],
+        planning_differences: tuple[TopologyDifference, ...],
     ) -> tuple[TopologyDifference, ...]:
-        """Return the non-empty visible prefix owned by the next Plan."""
+        """Return the non-empty planning-window prefix owned by the next Plan."""
 
 
-class AllAvailablePlanningHorizonPolicy:
+class AllAvailablePlanningWindowPolicy:
     """Select every currently available Difference for planning.
 
-    Layer: default Simulator Planner horizon algorithm. It is a replaceable
+    Layer: default Simulator Planner window algorithm. It is a replaceable
     policy choice, not hard-coded Planner behavior, Slicer retention policy or
     fixed-duration scheduler and is public from ``skyseed_v2.simulator``.
     """
 
     __slots__ = ()
 
-    def select_differences(
+    def select_planning_differences(
         self,
         available_differences: tuple[TopologyDifference, ...],
     ) -> tuple[TopologyDifference, ...]:
@@ -70,26 +71,26 @@ class AllAvailablePlanningHorizonPolicy:
 
     def select_publication_differences(
         self,
-        visible_differences: tuple[TopologyDifference, ...],
+        planning_differences: tuple[TopologyDifference, ...],
     ) -> tuple[TopologyDifference, ...]:
-        return tuple(visible_differences)
+        return tuple(planning_differences)
 
 
 @runtime_checkable
 class ConnectionPlanningModel(Protocol):
-    """Plan logical Connection transitions over a selected horizon.
+    """Plan logical Connection transitions over a planning window.
 
     Layer: replaceable Simulator Planner Connection algorithm. It is public
     from ``skyseed_v2.simulator`` and does not own formal Connection state,
     backend operations, or the published Plan.
 
-    ``differences`` is the complete Difference sequence visible for the
-    selected planning horizon and lookahead. ``affected_differences`` is the
-    newly added or otherwise affected suffix that requires incremental
+    ``differences`` is the complete Difference sequence in the planning
+    window. ``affected_differences`` is the newly added or otherwise affected
+    suffix that requires incremental
     algorithm work; it is call information, not a new network domain object.
     ``previous_transitions`` is previously planned, still-unpublished work that
     may be reused or locally adjusted; it is not a second Plan or owner.
-    Implementations return the complete visible result.
+    Implementations return the complete planning-window result.
     """
 
     def plan_connection_transitions(
@@ -99,7 +100,7 @@ class ConnectionPlanningModel(Protocol):
         affected_differences: tuple[TopologyDifference, ...],
         previous_transitions: tuple[ConnectionTransition, ...],
     ) -> tuple[ConnectionTransition, ...]:
-        """Return the complete selected-horizon Connection result."""
+        """Return the complete planning-window Connection result."""
 
     def is_suppression_candidate(
         self,
@@ -193,14 +194,14 @@ class MidpointConnectionPlanningModel:
 
 @runtime_checkable
 class ParameterPlanningModel(Protocol):
-    """Plan sparse parameter targets over a selected horizon.
+    """Plan sparse parameter targets over a planning window.
 
     Layer: replaceable Simulator Planner Parameter algorithm. It is public
     from ``skyseed_v2.simulator`` and does not own formal parameters, backend
     traffic control, or the published Plan.
 
     ``differences``, ``affected_differences`` and ``previous_transitions`` have
-    the same visible-horizon, incremental-suffix and reusable-unpublished
+    the same planning-window, incremental-suffix and reusable-unpublished
     meanings as the Connection Model inputs. The two immutable mappings
     describe state immediately before ``affected_differences``: observed means
     the latest formal Simulator/Slicer parameters, while planned means the
@@ -224,7 +225,7 @@ class ParameterPlanningModel(Protocol):
             DirectionalConnectionParameters,
         ],
     ) -> tuple[ParameterTransition, ...]:
-        """Return the complete selected-horizon Parameter result."""
+        """Return the complete planning-window Parameter result."""
 
 
 class AccumulatedDeadbandParameterPlanningModel:
@@ -357,7 +358,7 @@ class ForwardingPlanningModel(Protocol):
     from ``skyseed_v2.simulator`` and does not own Slicer, RouteModel, or
     backend routing authority.
 
-    ``differences`` is the complete visible horizon,
+    ``differences`` is the complete planning window,
     ``affected_differences`` is its currently affected incremental suffix, and
     ``previous_transitions`` is reusable still-unpublished planning work.
     Planner performs every Slicer query and supplies the narrow read-only
@@ -377,7 +378,7 @@ class ForwardingPlanningModel(Protocol):
             int, Mapping[RouteKey, tuple[ConnectionId, ...]]
         ],
     ) -> tuple[ForwardingTransition, ...]:
-        """Return the complete selected-horizon Forwarding result."""
+        """Return the complete planning-window Forwarding result."""
 
     def plan_forwarding_precedences(
         self,
@@ -556,7 +557,7 @@ class DependencyAwareForwardingPlanningModel:
 
 @runtime_checkable
 class CoordinationPolicy(Protocol):
-    """Produce one coherent cross-domain result for the selected horizon.
+    """Produce one coherent cross-domain result for the planning window.
 
     Layer: replaceable Simulator Planner cross-domain policy. It is public
     from ``skyseed_v2.simulator`` and transforms Model results. It does not
@@ -1044,7 +1045,7 @@ def _difference_for_time(
             <= difference.current_timestamp
         ):
             return difference
-    raise ValueError("transition nominal time is outside selected horizon")
+    raise ValueError("transition nominal time is outside planning window")
 
 
 def _forwarding_order_key(
@@ -1117,7 +1118,7 @@ def _validate_threshold(value: int, field_name: str) -> int:
 
 __all__ = [
     "AccumulatedDeadbandParameterPlanningModel",
-    "AllAvailablePlanningHorizonPolicy",
+    "AllAvailablePlanningWindowPolicy",
     "ConnectionPlanningModel",
     "CoordinationPolicy",
     "DefaultCoordinationPolicy",
@@ -1125,6 +1126,6 @@ __all__ = [
     "ForwardingPlanningModel",
     "MidpointConnectionPlanningModel",
     "ParameterPlanningModel",
-    "PlanningHorizonPolicy",
+    "PlanningWindowPolicy",
     "SampleBoundaryConnectionPlanningModel",
 ]

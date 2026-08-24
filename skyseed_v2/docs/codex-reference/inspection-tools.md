@@ -7,8 +7,8 @@ recorded only in [`CURRENT.md`](../CURRENT.md).
 
 ## Scope
 
-Repository-local Topology, Zone, Dynamic Slice, Planner, and BPF Compiler
-inspection pipelines.
+Repository-local Topology, Zone, Slice / Difference, Planner, BPF Compiler,
+post-run BPF Runner, and post-run Traffic / Path Replay inspection pipelines.
 Tools are read-only consumers and are not installed `skyseed_v2` product API.
 
 ## Owners and consumers
@@ -31,6 +31,29 @@ The BPF Compiler reader instead consumes consecutive immutable Plans and the
 aligned `BpfCompiledRealization` values already produced by an explicit
 backend-side caller. Its facade never invokes `compile_bpf`, queries Simulator
 facts, or binds runtime/kernel resources.
+
+The Runner Tool needs no formal-object reader: private generated execution
+supplies the plain detached result of `BpfRunner.inspection_snapshot()` plus
+its plain invocation-outcome mapping after cleanup. Projection owns event
+classification, stable monotonic-time ordering, timing derivation, the frozen
+runtime-binding view, and the current-default-dataplane recorded-evidence view.
+The two evidence domains remain separate. The Tool never retains a live
+Runner, invokes lifecycle methods, or performs fresh Docker/kernel reads.
+
+Traffic Replay instead reads three required already-written artifacts:
+Runner-owned traffic JSONL, Slice / Difference private JSON, and BPF Compiler
+inspection JSON. An example-owned planned workload is optional context.
+Its reader validates timeline, NodeId, Zone prefix, nominal boundary, and
+generation identity; it reconstructs exact ACTIVE-generation physical network
+context only from reciprocal telemetry interface identities. Projection pairs
+only unambiguous supported ICMP request/reply records, maps kernel monotonic
+time through the persisted simulation clock anchor, and uses retained ECEF
+Position samples. It derives observed ICMP flows directly from telemetry; a
+workload never supplies the primary traffic identity. A Zone remains a stable logical endpoint and its current
+service satellite is the physical path endpoint. Linear ECEF interpolation is
+explicitly display-only; the Tool never invokes a Compiler or calls/copies a
+PositionModel. Scheduled slots without tc-BPF observation remain qualified
+gaps, not claimed timeouts or packet loss.
 
 ## Contract
 
@@ -67,6 +90,18 @@ interpolate sub-slice geometry.
 - Tools never mutate formal values, synchronize Planner, or invoke Models;
 - the BPF Compiler Tool never invokes the Compiler or accepts responsibility
   for producing compiled realizations;
+- the Runner Tool receives only detached summary/frozen-binding scalars/events
+  and never invokes `prepare()`, `run()`, `activate_next()`, or `cleanup()`;
+- Runner lifecycle/control-plane inspection, fresh kernel/dataplane
+  inspection, traffic telemetry, and active validation remain separate
+  evidence domains;
+- Traffic Replay does not collect packets or inspect live state; inferred
+  source/first-link facts remain visibly distinct from tc-ingress observations;
+- Traffic Replay excludes future-prepared links from ACTIVE context and never
+  renders a logical Zone as a geographic packet hop;
+- Traffic Replay keeps shared Position/network/Zone facts global, uses one
+  simulation timeline, and confines visualization-expanded packet playback to
+  a selected-Ping drill-down;
 - only readers import or call formal Topology/Slicer APIs;
 - read snapshots contain detached Tool-owned primitives/values, not Topology,
   Slicer, Slice, Difference, or entity instances;
@@ -90,7 +125,11 @@ No Model execution, position propagation, authoritative connection/routing/
 membership/Difference computation, formal object retained past the reader,
 formal API call outside a reader, browser driver inside a Tool, generic
 registry/plugin framework, renderer-side read, writer-side render, stale
-artifact fallback, or production-to-Tools dependency.
+artifact fallback, production-to-Tools dependency, live Runner control,
+packet injection, or fresh kernel reconstruction in the Runner Tool.
+Traffic Replay additionally prohibits live collection, packet injection,
+Compiler or PositionModel execution, hidden packet identity guesses, and
+treating visual animation duration as recorded network time.
 
 ## Extension points
 
@@ -101,6 +140,13 @@ final-view/render, and file-only-write boundaries remain testable. A new
 formal read belongs in the formal-reader responsibility and requires a
 boundary test. Shared abstractions require a concrete repeated contract and
 cannot introduce a registry or authority.
+
+Runner Tool v1 is a post-run view. It obtains current/last-known scalar facts
+and the bounded recent window from `inspection_snapshot()`, while standard
+generated execution supplies the complete append-only `runner-events.jsonl`
+directly to its reader. Large-history indexing/streaming presentation remains
+future Tool work; the Runner does not materialize full durable history merely
+for this Tool.
 
 ## Maintenance
 

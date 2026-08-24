@@ -1,4 +1,4 @@
-"""Run the canonical Skyseed v2 Dynamic Slice main chain."""
+"""Run the canonical Skyseed v2 Slice / Difference main chain."""
 
 from __future__ import annotations
 

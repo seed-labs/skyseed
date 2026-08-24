@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from skyseed_v2.backend.bpf import BpfCompiledRealization
@@ -11,6 +12,7 @@ from skyseed_v2.simulator import (
     Plan,
     ZoneRouteTarget,
 )
+from tools._history import read_jsonl_records
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,6 +20,27 @@ class BpfCompilerInspectionRead:
     """Hold only detached scalar/container data read from formal values."""
 
     snapshot: dict[str, Any]
+
+
+def read_bpf_compiler_history(path: Path) -> dict[str, Any]:
+    """Read complete one-shot Compiler handoffs from durable JSONL."""
+
+    records = read_jsonl_records(path)
+    headers = tuple(
+        value for value in records if value.get("record_type") == "history_header"
+    )
+    if len(headers) != 1 or headers[0].get("owner") != "BPF Compiler handoff":
+        raise ValueError("durable BPF Compiler history header is invalid")
+    realizations = tuple(
+        value
+        for value in records
+        if value.get("record_type") == "compiled_realization"
+    )
+    if tuple(value.get("realization_index") for value in realizations) != tuple(
+        range(len(realizations))
+    ):
+        raise ValueError("durable compiled realization history is not continuous")
+    return {"header": headers[0], "realizations": realizations}
 
 
 def read_bpf_compiler_inspection(
@@ -425,4 +448,8 @@ def _require_aligned_continuous_sequence(
             raise ValueError("compiled realizations must have continuous coverage")
 
 
-__all__ = ["BpfCompilerInspectionRead", "read_bpf_compiler_inspection"]
+__all__ = [
+    "BpfCompilerInspectionRead",
+    "read_bpf_compiler_history",
+    "read_bpf_compiler_inspection",
+]

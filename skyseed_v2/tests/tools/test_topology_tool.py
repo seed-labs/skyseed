@@ -213,6 +213,12 @@ def test_topology_renderer_writes_embedded_offline_artifacts(
     assert "不表示任一时刻的卫星位置" in html
     assert "GroundStation" in html
     assert "spherePoint(gs.latitude_deg,gs.longitude_deg" in html
+    assert "const orbitPoint=(ring,angle)" in html
+    assert "ring.inclination_deg" in html
+    assert "ring.right_ascension_deg" in html
+    assert "ring.altitude_km" in html
+    assert "canvas.dataset.orbitSegments" in html
+    assert 'canvas.addEventListener("pointermove"' in html
     assert "orbit-reset" in html
     assert "单位半径" in html
     assert "没有执行 Satellite propagation" in html

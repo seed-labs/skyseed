@@ -72,13 +72,13 @@ replaceable algorithm role; the role does not own Planner.
 ```mermaid
 classDiagram
     class Planner
-    class PlanningHorizonPolicy
+    class PlanningWindowPolicy
     class ConnectionPlanningModel
     class ParameterPlanningModel
     class ForwardingPlanningModel
     class CoordinationPolicy
 
-    Planner ..> PlanningHorizonPolicy : selects visibility and publication
+    Planner ..> PlanningWindowPolicy : selects planning and publication windows
     Planner ..> ConnectionPlanningModel : plans lifetime boundaries
     Planner ..> ParameterPlanningModel : plans sparse targets
     Planner ..> ForwardingPlanningModel : plans formal route changes
@@ -94,7 +94,7 @@ Standalone public values and implementations expanded below:
 `ConnectionTransition`, `ConnectionTransitionOperation`,
 `ParameterTransition`, `ForwardingTransition`,
 `ForwardingTransitionPrecedence`, `PlanningDecision`,
-`AllAvailablePlanningHorizonPolicy`,
+`AllAvailablePlanningWindowPolicy`,
 `SampleBoundaryConnectionPlanningModel`,
 `MidpointConnectionPlanningModel`,
 `AccumulatedDeadbandParameterPlanningModel`,
@@ -196,9 +196,9 @@ ownership or call relationship between the algorithms.
 
 ```mermaid
 classDiagram
-    class PlanningHorizonPolicy {
+    class PlanningWindowPolicy {
         <<Protocol role>>
-        +select_differences()
+        +select_planning_differences()
         +select_publication_differences()
     }
     class ConnectionPlanningModel {
@@ -225,14 +225,14 @@ Legend: `..|>` means the public class implements the named Protocol role.
 
 ```mermaid
 classDiagram
-    class PlanningHorizonPolicy
+    class PlanningWindowPolicy
     class ConnectionPlanningModel
     class ParameterPlanningModel
     class ForwardingPlanningModel
     class CoordinationPolicy
-    class AllAvailablePlanningHorizonPolicy {
-        <<default horizon algorithm>>
-        +select_differences()
+    class AllAvailablePlanningWindowPolicy {
+        <<default planning-window algorithm>>
+        +select_planning_differences()
         +select_publication_differences()
     }
     class SampleBoundaryConnectionPlanningModel {
@@ -259,7 +259,7 @@ classDiagram
         +coordinate_transitions()
     }
 
-    PlanningHorizonPolicy <|.. AllAvailablePlanningHorizonPolicy
+    PlanningWindowPolicy <|.. AllAvailablePlanningWindowPolicy
     ConnectionPlanningModel <|.. SampleBoundaryConnectionPlanningModel
     ConnectionPlanningModel <|.. MidpointConnectionPlanningModel
     ParameterPlanningModel <|.. AccumulatedDeadbandParameterPlanningModel
@@ -277,8 +277,8 @@ classDiagram
 | `ParameterTransition` | `skyseed_v2.simulator.planning.ParameterTransition` | `nominal_time`, `connection_id`, `direction`, `bandwidth_bps`, `delay_us`, `packet_loss_ppm` |
 | `ForwardingTransition` | `skyseed_v2.simulator.planning.ForwardingTransition` | `nominal_time`, `route_key`, `operation`, `next_hop` |
 | `ForwardingTransitionPrecedence` | `skyseed_v2.simulator.planning.ForwardingTransitionPrecedence` | `predecessor`, `successor` |
-| `PlanningHorizonPolicy` | `skyseed_v2.simulator.planning.PlanningHorizonPolicy` | `select_differences()`, `select_publication_differences()` |
-| `AllAvailablePlanningHorizonPolicy` | `skyseed_v2.simulator.planning.AllAvailablePlanningHorizonPolicy` | `select_differences()`, `select_publication_differences()` |
+| `PlanningWindowPolicy` | `skyseed_v2.simulator.planning.PlanningWindowPolicy` | `select_planning_differences()`, `select_publication_differences()` |
+| `AllAvailablePlanningWindowPolicy` | `skyseed_v2.simulator.planning.AllAvailablePlanningWindowPolicy` | `select_planning_differences()`, `select_publication_differences()` |
 | `ConnectionPlanningModel` | `skyseed_v2.simulator.planning.ConnectionPlanningModel` | `plan_connection_transitions()`, `is_suppression_candidate()` |
 | `SampleBoundaryConnectionPlanningModel` | `skyseed_v2.simulator.planning.SampleBoundaryConnectionPlanningModel` | `plan_connection_transitions()`, `is_suppression_candidate()` |
 | `MidpointConnectionPlanningModel` | `skyseed_v2.simulator.planning.MidpointConnectionPlanningModel` | `plan_connection_transitions()`, `is_suppression_candidate()` |
@@ -301,22 +301,25 @@ it does not express object ownership.
 
 ```mermaid
 flowchart LR
-    D["not-yet-published Differences"] --> H["select visible future"]
-    H --> P["select publication prefix"]
-    P --> M["Models see full visible future"]
-    M --> C["coordinate all three domains"]
-    C --> V["fixed Planner invariants"]
-    V --> S["publish immutable prefix Plan"]
-    V --> R["retain private continuous planned state"]
+    D["available Difference values"] -->|read by| POLICY["PlanningWindowPolicy"]
+    POLICY -->|selects| W["planning window"]
+    W -->|selects non-empty prefix| P["publication window"]
+    W -->|full window supplied to| M["planning Models"]
+    M -->|produce candidate transitions for| C["CoordinationPolicy"]
+    C -->|returns coordinated candidates to| V["fixed Planner validation"]
+    P -->|defines published coverage for| V
+    V -->|produces| S["immutable prefix Plan"]
+    V -->|commits| R["private continuous planned state"]
 ```
 
-Horizon selection occurs before any Model call. `select_differences()` chooses
-the visible future and `select_publication_differences()` chooses its non-empty
-publication prefix. Every Model and Coordination see the complete visible
-range, including unpublished lookahead. Settled historical Differences are not
+Planning-window selection occurs before any Model call.
+`select_planning_differences()` chooses the planning window and
+`select_publication_differences()` chooses its non-empty publication window.
+Every Model and Coordination see the complete planning window, including its
+unpublished portion. Settled historical Differences are not
 replayed: reusable unpublished overlap and private planned baselines are
 extended by the affected tail. Publishing trims that prefix and preserves the
-remaining lookahead plus planned Connection, parameter, Forwarding and
+remaining planning window plus planned Connection, parameter, Forwarding and
 deadband state.
 
 Planner alone queries its Slicer. ForwardingPlanningModel receives immutable
@@ -332,9 +335,9 @@ new owner or network domain object.
 
 | Input | Provider / authority | Why the Model receives it | It is not |
 |---|---|---|---|
-| `differences` | Planner passes the complete formal Difference sequence selected as visible horizon/lookahead | permits cross-Difference reasoning over everything currently visible | settled history replay or Model-owned Slice state |
-| `affected_differences` | Planner identifies the newly added or otherwise affected suffix of that visible sequence | limits normal incremental algorithm work | a new network object, Plan, or ownership boundary |
-| `previous_transitions` | Planner passes previously planned but still-unpublished transitions | permits reuse or local revision of lookahead work | a second Plan or another transition owner |
+| `differences` | Planner passes the complete formal Difference sequence in the planning window | permits cross-Difference reasoning over the complete planning window | settled history replay or Model-owned Slice state |
+| `affected_differences` | Planner identifies the newly added or otherwise affected suffix of that planning window | limits normal incremental algorithm work | a new network object, Plan, or ownership boundary |
+| `previous_transitions` | Planner passes previously planned but still-unpublished transitions | permits reuse or local revision of unpublished planning-window work | a second Plan or another transition owner |
 | `observed_parameters` | Planner projects the latest formal Simulator/Slicer directional parameter state before the affected suffix | supplies the sampled value reached by formal evolution | the target already selected for realization |
 | `planned_parameters` | Planner supplies the latest directional target it actually decided should be realized | preserves accumulated-deadband comparison across Plan boundaries | a raw boundary Slice reset |
 | `route_path_connection_ids` | Planner derives a narrow read-only RouteKey-to-Connection-ID mapping from sibling Slicer facts | supports Forwarding dependency and precedence reasoning without handing over Slicer | RouteModel authority, path recomputation capability, or Model-owned state |
@@ -370,10 +373,10 @@ rollback of private mutations made inside an arbitrary third-party stateful
 strategy.
 
 Plan owns each `ForwardingTransitionPrecedence`; the ForwardingPlanningModel
-produces it through Planner after Coordination has finalized the visible
-transition set. Future approved Plan consumers such as a Compiler may consume
-it. No Compiler/Runtime class, operation cost or execution mechanism is part of
-this package.
+produces it through Planner after Coordination has finalized the
+planning-window transition set. Future approved Plan consumers such as a
+Compiler may consume it. No Compiler/Runtime class, operation cost or execution
+mechanism is part of this package.
 
 ## Examples and tests
 

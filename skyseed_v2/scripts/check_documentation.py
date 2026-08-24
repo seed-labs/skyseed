@@ -67,9 +67,11 @@ TOOL_READMES = (
     PROJECT_ROOT / "tools/README.md",
     PROJECT_ROOT / "tools/topology/README.md",
     PROJECT_ROOT / "tools/zone/README.md",
-    PROJECT_ROOT / "tools/dynamic_slice/README.md",
+    PROJECT_ROOT / "tools/slice/README.md",
     PROJECT_ROOT / "tools/planner/README.md",
     PROJECT_ROOT / "tools/bpf_compiler/README.md",
+    PROJECT_ROOT / "tools/runner/README.md",
+    PROJECT_ROOT / "tools/traffic/README.md",
 )
 
 AUTHORITATIVE_ROOT_FILES = (
@@ -336,26 +338,54 @@ def _check_anchor_consistency() -> None:
     ):
         if required not in accepted:
             raise AssertionError(f"accepted anchor missing: {required}")
-    if "Dynamic Slice A–G" not in current:
-        raise AssertionError("Dynamic Slice A–G status missing from CURRENT")
-    if "implemented and accepted" not in current:
-        raise AssertionError("accepted Dynamic Slice status missing from CURRENT")
-    for deferred in (
-        "runtime binding",
-        "BPF preparation/load/activation/maintenance",
-        "dynamic execution",
-        "future names, owners, packages, inputs, outputs",
-        "execution chains are not frozen",
+    if "Slice / Difference semantics: **implemented and accepted**" not in current:
+        raise AssertionError("accepted Slice / Difference status missing from CURRENT")
+    for runner_fact in (
+        "Runner milestone: **implemented, runtime-validated, and manually accepted**",
+        "rolling Slicer →",
+        "Preparation binds",
+        "Main alone",
+        "Maintenance prepares",
+        "inputs/execution.json",
+        "append-only JSONL",
+        "60-second preparation lookahead",
+        "eight-boundary future depth",
+        "K = boundary depth + 1",
+        "64 Slices / 64 Differences",
+        "16 Plans / 16",
+        "75 nominal boundaries / 75 Main",
+        "Final canonical Mini runtime: **PASS**",
+        "seven formal repository-local",
+        "two maintained runnable examples",
+        "Manual Tool acceptance is complete",
+        "next major milestone is **S4 / 300+ scale qualification**",
+        "Traffic / Path Replay",
+        "traffic-telemetry.jsonl",
+        "Normal generated `run.sh` neither reads nor starts that",
     ):
-        if deferred not in current:
-            raise AssertionError(f"CURRENT deferred status missing: {deferred}")
+        if runner_fact not in current:
+            raise AssertionError(
+                f"CURRENT accepted Runner fact missing: {runner_fact}"
+            )
+    for runner_future in (
+        "automatic rollback",
+        "public dataplane plugin API",
+        "large-network performance",
+        "realtime/live traffic visualization",
+    ):
+        if runner_future not in current:
+            raise AssertionError(
+                f"CURRENT Runner future boundary missing: {runner_future}"
+            )
     combined_current = "\n".join(
         path.read_text(encoding="utf-8") for path in _current_documents()
     )
     for stale in (
         "G candidate",
         "G final review",
-        "Dynamic Slice A–G: candidate",
+        "Dynamic" + " Slice A–G: candidate",
+        "pending " + "acceptance",
+        "BPF Runner " + "Vertical Slice",
     ):
         if stale in combined_current:
             raise AssertionError(f"stale accepted status: {stale}")
@@ -384,7 +414,7 @@ def _check_anchor_consistency() -> None:
             "implemented and accepted",
             "remains deferred",
             "are deferred",
-            "Accepted Dynamic Slice",
+            "Accepted Slice / Difference",
             "Accepted current",
             "Accepted implemented",
         ):
@@ -403,7 +433,7 @@ def _check_anchor_consistency() -> None:
                 "implemented and accepted",
                 "remains deferred",
                 "are deferred",
-                "Accepted Dynamic Slice",
+                "Accepted Slice / Difference",
             ):
                 if duplicate_state in source:
                     raise AssertionError(
@@ -422,7 +452,7 @@ def _check_anchor_consistency() -> None:
             "implemented and accepted",
             "remains deferred",
             "are deferred",
-            "Accepted Dynamic Slice",
+            "Accepted Slice / Difference",
         ):
             if duplicate_state in source:
                 raise AssertionError(
@@ -1310,9 +1340,11 @@ def _check_maintenance_mapping() -> None:
         "emulator_to_simulator.py",
         "simulator/topology/",
         "simulator/slicing/",
-        "tools/dynamic_slice/",
+        "tools/slice/",
         "tools/planner/",
         "tools/bpf_compiler/",
+        "tools/runner/",
+        "tools/traffic/",
         "src/skyseed_v2/simulator/models/README.md",
         "src/skyseed_v2/shared/README.md",
     ):

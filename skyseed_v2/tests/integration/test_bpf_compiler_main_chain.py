@@ -18,6 +18,7 @@ def test_canonical_emulator_simulator_planner_compiles_consecutive_bpf_chain():
     emulator = build_mini_satellite_internet_emulator()
     simulator = create_mini_satellite_internet_simulator(emulator)
     slicer = simulator.get_slicer()
+    slicer.create_all_slices()
     _, plans, _ = prepare_mini_satellite_internet_planning(simulator)
 
     compiled = []
@@ -28,11 +29,7 @@ def test_canonical_emulator_simulator_planner_compiles_consecutive_bpf_chain():
         previous = result
 
     assert [(value.start_slice_id, value.end_slice_id) for value in plans] == [
-        (0, 4),
-        (4, 8),
-        (8, 12),
-        (12, 16),
-        (16, 20),
+        (start, start + 4) for start in range(0, 64, 4)
     ]
     assert {
         value.operation

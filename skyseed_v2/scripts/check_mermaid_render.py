@@ -19,7 +19,7 @@ from check_documentation import (
     _current_documents,
     _full_repository_documents,
 )
-from check_dynamic_slice_tool_browser import (
+from check_slice_tool_browser import (
     _available_port,
     _execute,
     _request,

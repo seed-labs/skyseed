@@ -11,7 +11,7 @@ from .planning import (
     ForwardingPlanningModel,
     ParameterPlanningModel,
     Planner,
-    PlanningHorizonPolicy,
+    PlanningWindowPolicy,
 )
 from .slicing import ConnectionModel, PositionModel, RouteModel, Slicer
 from .timeline import SimulationTimeline
@@ -101,14 +101,14 @@ class Simulator:
         parameter_model: ParameterPlanningModel,
         forwarding_model: ForwardingPlanningModel,
         coordination_policy: CoordinationPolicy,
-        horizon_policy: PlanningHorizonPolicy | None = None,
+        planning_window_policy: PlanningWindowPolicy | None = None,
     ) -> Planner:
         if self._planner is not None:
             raise RuntimeError("Planner has already been created")
         slicer = self.get_slicer()
         planner = Planner._create(
             slicer=slicer,
-            horizon_policy=horizon_policy,
+            planning_window_policy=planning_window_policy,
             connection_model=connection_model,
             parameter_model=parameter_model,
             forwarding_model=forwarding_model,

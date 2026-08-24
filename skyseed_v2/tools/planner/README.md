@@ -34,7 +34,7 @@ display-alias map supplies compact labels such as `O3-S6`, `GS-Yamaguchi`, and
 `Z:north-america-east`. The Connection view has dual sampled/planned lifetime
 lanes; Parameter uses formal samples plus a Plan-derived target step line;
 Forwarding uses formal/published next-hop lanes and only actual precedence
-edges. The shared rotatable spatial panel reuses the Dynamic Slice Tool's ECEF
+edges. The shared rotatable spatial panel reuses the Slice / Difference Tool's ECEF
 canvas projection convention and reads exact retained Slice positions. For a
 midpoint transition it explicitly toggles the surrounding Before/After Slice
 samples and never interpolates a formal position.

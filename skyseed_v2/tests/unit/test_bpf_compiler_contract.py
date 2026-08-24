@@ -100,19 +100,19 @@ class _SequenceRouteModel:
 
 
 class _OneDifferenceAtATime:
-    def select_differences(self, available_differences):
+    def select_planning_differences(self, available_differences):
         return tuple(available_differences)
 
-    def select_publication_differences(self, visible_differences):
-        return tuple(visible_differences[:1])
+    def select_publication_differences(self, planning_differences):
+        return tuple(planning_differences[:1])
 
 
 class _PublishAllDifferences:
-    def select_differences(self, available_differences):
+    def select_planning_differences(self, available_differences):
         return tuple(available_differences)
 
-    def select_publication_differences(self, visible_differences):
-        return tuple(visible_differences)
+    def select_publication_differences(self, planning_differences):
+        return tuple(planning_differences)
 
 
 @pytest.fixture(scope="module")
@@ -209,7 +209,7 @@ def compiled_chain():
     )
     slicer.create_all_slices()
     planner = simulator.create_planner(
-        horizon_policy=_OneDifferenceAtATime(),
+        planning_window_policy=_OneDifferenceAtATime(),
         connection_model=MidpointConnectionPlanningModel(
             minimum_dwell=timedelta(seconds=20)
         ),
@@ -227,8 +227,12 @@ def compiled_chain():
     return slicer, tuple(plans), tuple(results)
 
 
-def test_public_surface_is_only_compile_entry_and_immutable_result() -> None:
-    assert bpf.__all__ == ["BpfCompiledRealization", "compile_bpf"]
+def test_compiler_surface_and_separate_runner_owner_are_exact() -> None:
+    assert bpf.__all__ == [
+        "BpfCompiledRealization",
+        "BpfRunner",
+        "compile_bpf",
+    ]
     assert bpf.compile_bpf is compile_bpf
     assert bpf.BpfCompiledRealization is BpfCompiledRealization
     with pytest.raises(TypeError, match="created by compile_bpf"):
@@ -517,7 +521,7 @@ def test_zone_edge_follows_planned_state_across_suppressed_transient() -> None:
     )
     slicer.create_all_slices()
     planner = simulator.create_planner(
-        horizon_policy=_PublishAllDifferences(),
+        planning_window_policy=_PublishAllDifferences(),
         connection_model=MidpointConnectionPlanningModel(
             minimum_dwell=timedelta(seconds=20)
         ),

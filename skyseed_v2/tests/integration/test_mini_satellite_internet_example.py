@@ -6,6 +6,7 @@ from inspect import Parameter, signature
 from pathlib import Path
 from subprocess import run
 import sys
+from types import SimpleNamespace
 
 import pytest
 from seedemu.core import Emulator
@@ -28,7 +29,7 @@ from skyseed_v2.simulator.geometry import (
     geodetic_to_ecef,
     has_earth_line_of_sight,
 )
-from tools.dynamic_slice import collect_dynamic_slice_data
+from tools.slice import collect_slice_difference_data
 from tools.zone import collect_zone_data
 
 
@@ -43,12 +44,14 @@ def reference_emulator():
 
 @pytest.fixture(scope="module")
 def reference_slicer(reference_emulator) -> Slicer:
-    return simu.create_mini_satellite_internet_slicer(reference_emulator)
+    slicer = simu.create_mini_satellite_internet_slicer(reference_emulator)
+    slicer.create_all_slices()
+    return slicer
 
 
 @pytest.fixture(scope="module")
 def reference_view_data(reference_slicer: Slicer) -> dict[str, object]:
-    return collect_dynamic_slice_data(reference_slicer)
+    return collect_slice_difference_data(reference_slicer)
 
 
 def test_richer_reference_uses_the_formal_bounded_a_f_chain(
@@ -57,6 +60,10 @@ def test_richer_reference_uses_the_formal_bounded_a_f_chain(
     topology = reference_slicer.get_topology()
     retained_ids = reference_slicer.get_retained_slice_ids()
 
+    assert simu.DEFAULT_START_TIME.isoformat() == "2026-01-01T00:00:30+00:00"
+    assert simu.DEFAULT_END_TIME.isoformat() == "2026-01-01T00:11:00+00:00"
+    assert simu.DEFAULT_SLICE_INTERVAL.total_seconds() == 10
+    assert simu.REAL_SLICE_COUNT == 64
     assert retained_ids == tuple(range(simu.REAL_SLICE_COUNT + 1))
     assert reference_slicer.is_exhausted()
     assert reference_slicer.get_slice(0).timestamp is None
@@ -145,7 +152,7 @@ def test_cross_plane_pairing_is_one_predecessor_and_one_successor_candidate(
         for counts in candidate_sides.values()
     )
 
-    expected_degree_distribution = Counter({1: 24, 0: 4, 2: 4})
+    observed_degree_distributions = Counter()
     for slice_id in reference_slicer.get_retained_slice_ids()[1:]:
         active_cross_pairs = set()
         active_sides = defaultdict(Counter)
@@ -175,9 +182,19 @@ def test_cross_plane_pairing_is_one_predecessor_and_one_successor_candidate(
             and max(counts.values(), default=0) <= 1
             for counts in active_sides.values()
         )
-        assert Counter(
+        degree_distribution = Counter(
             active_degree.get(node_id, 0) for node_id in parent_by_node
-        ) == expected_degree_distribution
+        )
+        observed_degree_distributions[
+            tuple(sorted(degree_distribution.items()))
+        ] += 1
+
+    assert observed_degree_distributions == Counter(
+        {
+            ((0, 4), (1, 24), (2, 4)): 56,
+            ((0, 8), (1, 24)): 8,
+        }
+    )
 
     assert model._prepared_isl_pairs is prepared
 
@@ -216,7 +233,8 @@ def test_richer_example_has_one_emulator_builder_and_fail_closed_projection() ->
         "Simulator(",
     ):
         assert forbidden not in emu_source
-    assert "mini_satellite_internet.emu" not in simu_source
+    assert simu_source.count("mini_satellite_internet.emu") == 1
+    assert "def create_mini_satellite_internet_progression(" in simu_source
     assert "def build_mini_satellite_internet_emulator(" not in main_source
 
     with pytest.raises(TypeError):
@@ -225,17 +243,19 @@ def test_richer_example_has_one_emulator_builder_and_fail_closed_projection() ->
         simu.create_mini_satellite_internet_slicer(object())
 
 
-def test_richer_main_builds_once_and_emits_static_and_dynamic_outputs(
+def test_richer_main_builds_once_and_emits_static_and_slice_outputs(
     tmp_path: Path,
     monkeypatch,
     capsys,
 ) -> None:
     output = tmp_path / "output"
     built = []
+    build_paths = []
     compiled = []
     projected = []
     created_simulators = []
     projection_inputs = []
+    projection_zone_paths = []
     created_slicers = []
     topology_tool_inputs = []
     zone_tool_inputs = []
@@ -244,11 +264,11 @@ def test_richer_main_builds_once_and_emits_static_and_dynamic_outputs(
     bpf_tool_inputs = []
     real_build = reference_main.build_mini_satellite_internet_emulator
     real_compile = Emulator.compile
-    real_project = reference_main.create_mini_satellite_internet_simulator
+    real_progression = reference_main.create_mini_satellite_internet_progression
     real_input_projection = simu.create_simulator_static_input
     real_topology_tool = reference_main.write_topology_tool
     real_zone_tool = reference_main.write_zone_tool
-    real_dynamic_tool = reference_main.write_dynamic_slice_tool
+    real_slice_tool = reference_main.write_slice_difference_tool
     real_prepare_planning = (
         reference_main.prepare_mini_satellite_internet_planning
     )
@@ -261,6 +281,7 @@ def test_richer_main_builds_once_and_emits_static_and_dynamic_outputs(
     def build_spy(path):
         emulator = real_build(path)
         built.append(emulator)
+        build_paths.append(Path(path))
         return emulator
 
     def compile_spy(self, compiler, directory, override=False):
@@ -272,12 +293,16 @@ def test_richer_main_builds_once_and_emits_static_and_dynamic_outputs(
         projection_inputs.append(exact_owners)
         return real_input_projection(exact_owners)
 
-    def projection_spy(emulator, **kwargs):
+    def progression_spy(input_directory, *, emulator=None):
         projected.append(emulator)
-        simulator = real_project(emulator, **kwargs)
+        projection_zone_paths.append(Path(input_directory) / "zones.yaml")
+        simulator, planner = real_progression(
+            input_directory,
+            emulator=emulator,
+        )
         created_simulators.append(simulator)
         created_slicers.append(simulator.get_slicer())
-        return simulator
+        return simulator, planner
 
     def topology_tool_spy(topology, directory):
         topology_tool_inputs.append(topology)
@@ -289,14 +314,14 @@ def test_richer_main_builds_once_and_emits_static_and_dynamic_outputs(
 
     def dynamic_tool_spy(slicer, directory):
         dynamic_tool_inputs.append(slicer)
-        return real_dynamic_tool(slicer, directory)
+        return real_slice_tool(slicer, directory)
 
     planner_tool_inputs = []
     planning_inputs = []
 
-    def planning_spy(simulator):
+    def planning_spy(simulator, planner=None):
         planning_inputs.append(simulator)
-        return real_prepare_planning(simulator)
+        return real_prepare_planning(simulator, planner)
 
     def planner_tool_spy(slicer, planner, plans, configuration, directory):
         planner_tool_inputs.append((slicer, planner, plans, configuration))
@@ -329,8 +354,8 @@ def test_richer_main_builds_once_and_emits_static_and_dynamic_outputs(
     )
     monkeypatch.setattr(
         reference_main,
-        "create_mini_satellite_internet_simulator",
-        projection_spy,
+        "create_mini_satellite_internet_progression",
+        progression_spy,
     )
     monkeypatch.setattr(
         reference_main,
@@ -340,7 +365,7 @@ def test_richer_main_builds_once_and_emits_static_and_dynamic_outputs(
     monkeypatch.setattr(reference_main, "write_zone_tool", zone_tool_spy)
     monkeypatch.setattr(
         reference_main,
-        "write_dynamic_slice_tool",
+        "write_slice_difference_tool",
         dynamic_tool_spy,
     )
     monkeypatch.setattr(
@@ -375,8 +400,10 @@ def test_richer_main_builds_once_and_emits_static_and_dynamic_outputs(
 
     assert reference_main.main() == 0
     assert len(built) == 1
+    assert build_paths == [output / "inputs/scenario.yaml"]
     assert len(projected) == 1
     assert projected[0] is built[0]
+    assert projection_zone_paths == [output / "inputs/zones.yaml"]
     assert len(compiled) == 1
     assert compiled[0] is built[0]
     assert len(projection_inputs) == 1
@@ -420,7 +447,7 @@ def test_richer_main_builds_once_and_emits_static_and_dynamic_outputs(
     runtime_output = output / "runtime"
     topology_output = output / "inspection/topology"
     zone_output = output / "inspection/zone"
-    dynamic_output = output / "inspection/dynamic-slice"
+    slice_output = output / "inspection/slice"
     planner_output = output / "inspection/planner"
     bpf_compiler_output = output / "inspection/bpf-compiler"
     compose_file = runtime_output / "docker-compose.yml"
@@ -442,29 +469,97 @@ def test_richer_main_builds_once_and_emits_static_and_dynamic_outputs(
     ) == 3
 
     start = (output / "start.sh").read_text(encoding="utf-8")
+    run_script = (output / "run.sh").read_text(encoding="utf-8")
+    launch = (output / "launch.sh").read_text(encoding="utf-8")
     cleanup = (output / "cleanup.sh").read_text(encoding="utf-8")
-    assert "skyseed_v2_mini_satellite_internet" in start
+    project_name = (output / ".compose-project-name").read_text(
+        encoding="utf-8"
+    ).strip()
+    assert project_name.startswith("skyseed_v2_mini_satellite_internet-")
+    assert project_name in start
+    assert project_name in cleanup
     assert "config --quiet" in start
     assert "up -d --build" in start
     assert "down --remove-orphans" in cleanup
+    assert "docker compose" not in run_script
+    assert "-m skyseed_v2._generated_bpf_execution" in run_script
+    assert "-m tools.runner" in run_script
+    assert "-m tools.traffic" in run_script
+    assert "runner-invocation.json" in run_script
+    assert "runtime.py" not in run_script
+    assert "traffic_workload" not in run_script
+    assert "traffic-workload.json" not in run_script
+    assert '"$SCRIPT_DIR/start.sh"' in launch
+    assert 'exec "$SCRIPT_DIR/run.sh"' in launch
+    assert "cleanup" not in launch
+    assert "docker" not in launch
+    assert "run.sh" not in start
+    assert "runtime.py" not in start + cleanup
     assert 'COMPOSE_FILE="$SCRIPT_DIR/runtime/docker-compose.yml"' in start
     assert 'COMPOSE_FILE="$SCRIPT_DIR/runtime/docker-compose.yml"' in cleanup
-    assert (output / "start.sh").stat().st_mode & 0o111
-    assert (output / "cleanup.sh").stat().st_mode & 0o111
+    for script_name in ("start.sh", "run.sh", "launch.sh", "cleanup.sh"):
+        script = output / script_name
+        assert script.stat().st_mode & 0o111
+        syntax = run(
+            ("bash", "-n", str(script)),
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert syntax.returncode == 0, syntax.stderr
     assert {path.name for path in output.iterdir()} == {
+        ".compose-project-name",
         "start.sh",
+        "run.sh",
+        "launch.sh",
         "cleanup.sh",
+        "inputs",
         "runtime",
         "inspection",
     }
+    assert (output / "inputs/scenario.yaml").read_bytes() == (
+        EXAMPLE_ROOT / "scenario.yaml"
+    ).read_bytes()
+    assert (output / "inputs/zones.yaml").read_bytes() == (
+        EXAMPLE_ROOT / "zones.yaml"
+    ).read_bytes()
+    execution = json.loads(
+        (output / "inputs/execution.json").read_text(encoding="utf-8")
+    )
+    assert execution["generated_output_identity"] == project_name
+    assert execution["progression_builder"] == {
+        "module": "examples.mini_satellite_internet.simu",
+        "callable": "create_mini_satellite_internet_progression",
+        "input_directory": "inputs",
+    }
+    assert execution["simulation"]["generation_lookahead_seconds"] == 300
+    assert execution["runner"] == {
+        "preparation_lookahead_seconds": 60,
+        "preparation_boundary_depth": 8,
+    }
+    assert execution["source_fingerprint"]["algorithm"] == "sha256"
+    assert [
+        scope["label"] for scope in execution["source_fingerprint"]["scopes"]
+    ] == ["skyseed", "example-progression", "seedemu"]
+    input_scope = next(
+        scope
+        for scope in execution["generated_inputs"]["scopes"]
+        if scope["label"] == "input-snapshots"
+    )
+    assert input_scope["excludes"] == [
+        "execution.json",
+        "traffic-workload.json",
+    ]
     assert {path.name for path in (output / "inspection").iterdir()} == {
         "topology",
         "zone",
-        "dynamic-slice",
+        "slice",
         "planner",
         "bpf-compiler",
     }
-    for forbidden in ("emulator", "simulator", "dynamic-slice", "tools"):
+    assert (output / "inputs/traffic-workload.json").is_file()
+    assert not (output / "inspection/traffic").exists()
+    for forbidden in ("emulator", "simulator", "slice", "tools"):
         assert not (output / forbidden).exists()
 
     for directory, names in (
@@ -475,12 +570,12 @@ def test_richer_main_builds_once_and_emits_static_and_dynamic_outputs(
             assert (directory / name).is_file()
     for name in (
         "index.html",
-        "dynamic-slice.json",
+        "slice-difference.json",
         "summary.txt",
         "inventory.json",
         "checksums.sha256",
     ):
-        assert (dynamic_output / name).is_file()
+        assert (slice_output / name).is_file()
     for name in (
         "index.html",
         "planner-inspection.json",
@@ -505,7 +600,7 @@ def test_richer_main_builds_once_and_emits_static_and_dynamic_outputs(
         (zone_output / "probes.json").read_text(encoding="utf-8")
     )
     dynamic_payload = json.loads(
-        (dynamic_output / "dynamic-slice.json").read_text(encoding="utf-8")
+        (slice_output / "slice-difference.json").read_text(encoding="utf-8")
     )
     expected_asns = {
         autonomous_system.asn
@@ -577,7 +672,7 @@ def test_richer_main_builds_once_and_emits_static_and_dynamic_outputs(
     assert f"Topology Tool entry: {topology_output / 'index.html'}" in output_text
     assert f"Zone Tool entry: {zone_output / 'index.html'}" in output_text
     assert (
-        f"Dynamic Tool entry: {dynamic_output / 'index.html'}"
+        f"Slice / Difference Tool entry: {slice_output / 'index.html'}"
         in output_text
     )
     assert f"Planner Tool entry: {planner_output / 'index.html'}" in output_text
@@ -589,12 +684,137 @@ def test_richer_main_builds_once_and_emits_static_and_dynamic_outputs(
     main_source = (EXAMPLE_ROOT / "main.py").read_text(encoding="utf-8")
     for removed_regression_logic in (
         "_validate_compose_structure",
-        "safe_load",
         "satellite_services",
         "ground_station_services",
         "_behavior_summary",
     ):
         assert removed_regression_logic not in main_source
+
+
+def test_generation_guard_preserves_a_live_or_unverifiable_generation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    output = tmp_path / "output"
+    output.mkdir()
+    identity = output / ".compose-project-name"
+    identity.write_text("mini-generation-one\n", encoding="utf-8")
+    sentinel = output / "preserve-me"
+    sentinel.write_text("original", encoding="utf-8")
+    commands = []
+
+    def live_project(command, **kwargs):
+        commands.append((tuple(command), kwargs))
+        return SimpleNamespace(
+            returncode=0,
+            stdout="container-id\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(reference_main.subprocess, "run", live_project)
+    with pytest.raises(RuntimeError, match="cleanup.sh"):
+        reference_main._guard_existing_output(output, override=True)
+    assert identity.read_text(encoding="utf-8") == "mini-generation-one\n"
+    assert sentinel.read_text(encoding="utf-8") == "original"
+    assert commands == [
+        (
+            (
+                "docker",
+                "ps",
+                "--all",
+                "--quiet",
+                "--filter",
+                "label=com.docker.compose.project=mini-generation-one",
+            ),
+            {"check": False, "capture_output": True, "text": True},
+        )
+    ]
+
+    monkeypatch.setattr(
+        reference_main.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="daemon unavailable",
+        ),
+    )
+    with pytest.raises(RuntimeError, match="cannot verify|failed"):
+        reference_main._guard_existing_output(output, override=True)
+    assert sentinel.read_text(encoding="utf-8") == "original"
+
+
+def test_generation_guard_rejects_legacy_output_and_replaces_incomplete_output(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    output = tmp_path / "output"
+    output.mkdir()
+    sentinel = output / "preserve-me"
+    sentinel.write_text("legacy", encoding="utf-8")
+
+    def unexpected_docker(*_args, **_kwargs):
+        raise AssertionError("legacy output must not guess a Compose project")
+
+    monkeypatch.setattr(reference_main.subprocess, "run", unexpected_docker)
+    reference_main._guard_existing_output(
+        tmp_path / "absent-output",
+        override=True,
+    )
+    with pytest.raises(RuntimeError, match="unsupported older layout"):
+        reference_main._guard_existing_output(output, override=True)
+    assert sentinel.read_text(encoding="utf-8") == "legacy"
+
+    (output / ".compose-project-name").write_text(
+        "mini-incomplete\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        reference_main.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout="",
+            stderr="",
+        ),
+    )
+    reference_main._guard_existing_output(output, override=True)
+    runtime = reference_main.prepare_example_output(output, override=True)
+    assert runtime == output / "runtime"
+    assert tuple(output.iterdir()) == ()
+
+
+def test_supported_external_ground_station_input_is_snapshotted_relatively(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    (source / "ground").mkdir(parents=True)
+    scenario = source / "scenario.yaml"
+    zones = source / "zones.yaml"
+    stations = source / "ground/stations.yaml"
+    scenario.write_text(
+        "skyseed_autonomous_systems:\n"
+        "  - ground_stations_file: ground/stations.yaml\n"
+        "  - ground_stations_file: ground/stations.yaml\n",
+        encoding="utf-8",
+    )
+    zones.write_text("zones: []\n", encoding="utf-8")
+    stations.write_text("ground_stations: []\n", encoding="utf-8")
+
+    snapshots = reference_main._capture_input_files(scenario, zones)
+    output = tmp_path / "output"
+    reference_main._write_input_snapshots(output, snapshots)
+
+    assert set(snapshots) == {
+        Path("scenario.yaml"),
+        Path("zones.yaml"),
+        Path("ground/stations.yaml"),
+    }
+    assert (output / "inputs/scenario.yaml").read_bytes() == scenario.read_bytes()
+    assert (output / "inputs/zones.yaml").read_bytes() == zones.read_bytes()
+    assert (output / "inputs/ground/stations.yaml").read_bytes() == (
+        stations.read_bytes()
+    )
 
 
 def test_richer_reference_naturally_exercises_representative_behavior(
@@ -606,21 +826,21 @@ def test_richer_reference_naturally_exercises_representative_behavior(
         "ground_stations": 3,
         "orbits": 4,
         "zones": 5,
-        "slices": 21,
-        "differences": 20,
-        "paths": 3475,
+        "slices": 65,
+        "differences": 64,
+        "paths": 11264,
     }
     assert reference_view_data["behavior"] == {
-        "later_nonempty_differences": 19,
-        "connection_additions": 42,
-        "connection_removals": 42,
-        "directional_parameter_patches": 690,
-        "zone_assignment_additions": 12,
-        "zone_assignment_changes": 4,
-        "zone_assignment_removals": 12,
-        "route_additions": 719,
-        "route_changes": 305,
-        "route_removals": 684,
+        "later_nonempty_differences": 63,
+        "connection_additions": 11,
+        "connection_removals": 14,
+        "directional_parameter_patches": 2530,
+        "zone_assignment_additions": 4,
+        "zone_assignment_changes": 1,
+        "zone_assignment_removals": 4,
+        "route_additions": 169,
+        "route_changes": 137,
+        "route_removals": 239,
         "maximum_path_hops": 7,
     }
     slices = reference_view_data["slices"]
@@ -818,7 +1038,7 @@ def test_reference_ground_stations_copy_v1_reference_values_without_runtime_depe
                 frozenset(per_station[station_id])
             )
     assert all(any(values) for values in access_sets.values())
-    assert all(len(set(values)) > 1 for values in access_sets.values())
+    assert sum(len(set(values)) > 1 for values in access_sets.values()) == 3
 
     later_differences = [
         record["difference_from_previous"]
@@ -846,9 +1066,13 @@ def test_reference_ground_stations_copy_v1_reference_values_without_runtime_depe
     readme_source = (EXAMPLE_ROOT / "README.md").read_text(encoding="utf-8")
     assert "starlink_gateways.json" in scenario_source
     assert "s4_visualization_gateway_binding_12.json" in scenario_source
-    assert "does not establish current operational status" in scenario_source
+    assert "Reference Ground Station - Porto Alegre, Brazil" in scenario_source
+    assert "Reference Ground Station - Marsala, Italy" in scenario_source
+    assert "Reference Ground Station - Yamaguchi, Japan" in scenario_source
+    assert "Starlink Gateway -" not in scenario_source
+    assert "commercial operator's current" in scenario_source
     assert "external source URL" in readme_source
-    assert "currently\noperational sites" in readme_source
+    assert "commercial\noperator's current in-service facilities" in readme_source
     for path in ("emu.py", "simu.py", "main.py"):
         assert "skyseed_v1" not in (
             EXAMPLE_ROOT / path
@@ -860,20 +1084,18 @@ def test_richer_reference_core_identities_and_counts_repeat_deterministically(
 ) -> None:
     repeated_emulator = build_mini_satellite_internet_emulator()
     repeated = simu.create_mini_satellite_internet_slicer(repeated_emulator)
+    repeated.create_all_slices()
 
-    assert collect_dynamic_slice_data(repeated) == reference_view_data
+    assert collect_slice_difference_data(repeated) == reference_view_data
 
 
-def test_richer_reference_sources_do_not_construct_formal_dynamic_results() -> None:
+def test_richer_reference_sources_do_not_construct_formal_slice_results() -> None:
     source = (EXAMPLE_ROOT / "simu.py").read_text(encoding="utf-8")
     for forbidden in (
         "argparse",
-        "build_mini_satellite_internet_emulator",
-        "examples.mini_satellite_internet.emu",
-        "scenario_path",
         "write_topology_tool",
         "write_zone_tool",
-        "write_dynamic_slice_tool",
+        "write_slice_difference_tool",
         "_behavior_summary",
         "def main(",
         "__main__",
@@ -898,14 +1120,29 @@ def test_richer_reference_sources_do_not_construct_formal_dynamic_results() -> N
         "Simulator(",
         ".create_topology(",
         ".create_slicer(",
-        ".create_all_slices(",
     ):
         assert required in source
     main_source = (EXAMPLE_ROOT / "main.py").read_text(encoding="utf-8")
+    bootstrap_source = (
+        PROJECT_ROOT / "src/skyseed_v2/_generated_bpf_execution.py"
+    ).read_text(encoding="utf-8")
     assert main_source.count("write_topology_tool(") == 1
     assert main_source.count("write_zone_tool(") == 1
-    assert main_source.count("write_dynamic_slice_tool(") == 1
+    assert main_source.count("write_slice_difference_tool(") == 1
+    assert main_source.count("write_canonical_traffic_workload(") == 1
+    assert main_source.count("slicer.create_all_slices()") == 1
     assert main_source.count(".get_topology()") == 1
+    assert main_source.index(
+        "(arguments.output / _PROJECT_NAME_FILE).write_text"
+    ) < main_source.index("_write_input_snapshots(arguments.output, snapshots)")
+    assert main_source.index(
+        "_write_input_snapshots(arguments.output, snapshots)"
+    ) < main_source.index(
+        "emulator = build_mini_satellite_internet_emulator(snapshot_scenario)"
+    )
+    assert main_source.index("if not all(result[") < main_source.index(
+        "write_compose_project_scripts("
+    )
     for forbidden in (
         "AccumulatedDeadbandParameterPlanningModel",
         "DefaultCoordinationPolicy",
@@ -919,6 +1156,46 @@ def test_richer_reference_sources_do_not_construct_formal_dynamic_results() -> N
         "create_simulator_static_input(",
     ):
         assert forbidden not in main_source
+    for forbidden in (
+        "ComposeProjectLauncher",
+        "ComposeServiceExpectations",
+        "ComposeMaterializationResult",
+        "dummies",
+    ):
+        assert forbidden not in main_source
+    assert bootstrap_source.count("runner._enable_traffic_telemetry(") == 1
+    for forbidden in (
+        "BpfRunner",
+        "_materialize_runtime",
+        "_run_bpf_vertical_slice",
+        "--run-bpf",
+    ):
+        assert forbidden not in main_source
+    assert bootstrap_source.count("runner.prepare()") == 1
+    assert bootstrap_source.count("runner.run()") == 1
+    assert bootstrap_source.count("runner.cleanup()") == 1
+    assert bootstrap_source.count("_write_runner_inspection_handoff(") == 2
+    assert bootstrap_source.index("runner.cleanup()") < bootstrap_source.index(
+        "_write_runner_inspection_handoff("
+    )
+    for forbidden in (
+        "from tools",
+        "import tools",
+        "write_runner_tool",
+        "write_traffic_replay_tool",
+        "realization_observer",
+        "automatic_run",
+        "finalizer",
+        "_MiniZoneServiceProgression",
+        "traffic_workload",
+    ):
+        assert forbidden not in bootstrap_source
+    assert bootstrap_source.count('"traffic-workload.json"') == 1
+    assert (
+        'excludes=("execution.json", "traffic-workload.json")'
+        in bootstrap_source
+    )
+    assert not (EXAMPLE_ROOT / "_compose_support.py").exists()
     parameters = signature(
         simu.create_mini_satellite_internet_slicer
     ).parameters
@@ -931,9 +1208,43 @@ def test_richer_reference_sources_do_not_construct_formal_dynamic_results() -> N
         "emu.py",
         "simu.py",
         "main.py",
+        "traffic_workload.py",
         "README.md",
     ):
         assert (EXAMPLE_ROOT / name).is_file()
+    for retired in ("runtime.py", "run.py", "canonical_run.py"):
+        assert not (EXAMPLE_ROOT / retired).exists()
+
+
+def test_generation_and_generated_execution_compile_loops_stay_separate() -> None:
+    main_source = (EXAMPLE_ROOT / "main.py").read_text(encoding="utf-8")
+    bootstrap_source = (
+        PROJECT_ROOT / "src/skyseed_v2/_generated_bpf_execution.py"
+    ).read_text(encoding="utf-8")
+
+    assert main_source.count("def _compile_bpf_realizations(") == 1
+    assert "_RollingRealizationSupplier(" in bootstrap_source
+    assert main_source.count("result = compile_bpf(") == 1
+    assert bootstrap_source.count("realization = compile_bpf(") == 1
+    for forbidden in (
+        "create_all_slices(",
+        "prepare_mini_satellite_internet_planning(",
+        "iter(realizations)",
+        "_probe_ground_station_access_peer(",
+        "_probe_zone_ground_round_trip(",
+        "_probe_",
+    ):
+        assert forbidden not in bootstrap_source
+    for mini_specific in (
+        "examples.mini_satellite_internet",
+        "north-america-east",
+        "Marsala",
+        "gs-marsala-reference",
+        "2026, 1, 1",
+        "O4 Sat-0002",
+        "O1 Sat-0001",
+    ):
+        assert mini_specific not in bootstrap_source
 
 
 def test_richer_simu_has_no_standalone_assembly_or_cli() -> None:
@@ -960,3 +1271,4 @@ def test_richer_main_supports_direct_file_execution() -> None:
     assert main_result.returncode == 0, main_result.stderr
     assert "--scenario" in main_result.stdout
     assert "--zones" in main_result.stdout
+    assert "--run-bpf" not in main_result.stdout

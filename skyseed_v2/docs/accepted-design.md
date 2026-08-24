@@ -18,18 +18,91 @@
 - Models execute Position → Connection → Route;
 - `Slicer` owns retained `TopologySlice` values and creates
   `TopologyDifference` only from retained formal slices;
-- `Planner` is the persistent sibling of Slicer, incrementally consumes
-  already-generated Differences, and publishes immutable backend-independent
-  semantic `Plan` intervals without advancing Slicer; published intervals are
-  continuous/non-overlapping while private planned state and visible lookahead
-  continue across their boundaries;
+- `Planner` is the persistent Simulator-owned peer of Topology and Slicer. Its
+  `synchronize()` method requests newly available adjacent Differences from the
+  exact sibling Slicer over already-generated retained Slices, consumes those
+  immutable values, and publishes backend-independent semantic `Plan` intervals
+  without advancing Slicer; published intervals are
+  continuous/non-overlapping while private planned state and the unpublished
+  portion of the planning window continue across their boundaries;
 - the top-level `backend` domain is downstream of Simulator; its BPF Compiler
   is a one-shot deterministic lowering from `Plan`, approved read-only
   Simulator facts, and an explicit previous intended baseline into an
   immutable symbolic realization;
 - BPF compilation owns no Simulator semantics, deployment, runtime/kernel
   binding, hidden progression, or lifecycle service;
-- Tools are repository-local, read-only, and non-authoritative.
+- `BpfRunner` is the sole live BPF backend lifecycle owner. Callers hand it an
+  already-started Compose project identity and future `BpfCompiledRealization`
+  work. It independently discovers, validates, and freezes its required live
+  runtime foundation, then owns concrete NodeId→container/PID/netns bindings,
+  dynamic physical resources, READY/active frontiers, runtime timing/failure
+  evidence, and scoped cleanup, but not Compose compilation/startup/teardown;
+- generated BPF output records one small execution definition naming the same
+  example progression builder used at generation time, its backend/runtime
+  bounds, output identity, bounded/unbounded Timeline facts, compact
+  source-scope fingerprints, and generated-input fingerprints. The private root
+  generated-BPF-execution application composition uses SHA256 only as a deterministic
+  source/output consistency guard: definition drift or stale generated output
+  fails clearly with an instruction to rerun `main.py`. It then composes lazy
+  Slicer → Planner → Compiler input with the unchanged BpfRunner lifecycle; it
+  is not part of the BPF backend, a security mechanism, or a new public runtime
+  authority;
+- rolling owners retain only facts still needed beyond their successful
+  handoff. Slicer and Planner release obsolete owner-local working entries,
+  Runner and its private realization reclaim retired input/boundary/generation
+  state, and complete semantic/runtime history is written sequentially under
+  `output/inspection/` before release. Tools read that evidence but neither
+  control retention nor become authoritative writers;
+- Runner Preparation establishes all preparation-safe runtime state required
+  for READY without prematurely changing current active network semantics. It
+  performs necessary runtime capacity/readiness checks before formal execution;
+  capacity or resource optimization must not alter upstream simulation
+  semantics. Main
+  alone changes current active semantics and advances the active frontier. Main
+  does not create resources, rediscover bindings, compile/attach BPF,
+  bulk-populate forwarding, or use a fallback path;
+- an ACTIVE GroundStation-access Connection includes bidirectional direct-peer
+  reachability between those two endpoints. The current private tc-BPF runtime
+  realization provides the GroundStation-to-Satellite half as Main-owned
+  node-local Linux route/neighbour state; it is not a new backbone target,
+  public Compiler concept, or constellation-wide Satellite routing rule;
+- simulation semantics take priority over control-plane optimization: resource
+  lifetime, parameter, forwarding, Zone-edge, and explicit ordering decisions
+  already made upstream remain observable at their exact nominal boundaries;
+- Runner performance is part of simulation correctness: it must keep pace with
+  the nominal semantic transition schedule required by the target simulation
+  profile. Simulation sampling resolution, Planner publication cadence, Plan
+  nominal transition timing, and Runner execution cadence are separate;
+- Preparation/Main/Maintenance are internal Runner capabilities, not separate
+  public authorities. Exact-next readiness is the minimum correctness
+  requirement. In rolling mode Maintenance extends one gap-free READY prefix
+  until either the explicit nominal-time preparation lookahead or the explicit
+  positive future-boundary depth is reached; bounded full-range mode instead
+  uses `None` for both bounds and requires finite input. Maintenance also
+  advances input and reclaims retired state/resources. Main alone validates and
+  activates the exact next READY boundary, publishes the active frontier, and
+  schedules retirement. Manual stepping and relative monotonic-clock execution
+  are mutually exclusive modes of the same Runner incarnation;
+- shared Runner lifecycle is isolated from the private default tc-BPF
+  dataplane mechanism; there is no public dataplane plugin contract. The
+  default fixed-map implementation derives its private maximum resident
+  generations from the public boundary depth and sizes generation-keyed maps
+  from topology-stable per-generation bounds rather than startup occupancy;
+- traffic telemetry is a non-authoritative Runner-private capability of the
+  current default tc-BPF runtime realization, not a fourth Runner phase or
+  public backend subsystem. Existing ingress programs may emit bounded packet
+  evidence to one Runner-owned shared ring; output/loss/collector failure must
+  not change forwarding action or grant scheduling authority. BpfRunner
+  supervises collection and ordinary-user durable recording across Preparation
+  and cleanup/final drain. Offline replay is a current consumer; any future
+  live visualization remains a consumer, and neither is a collection or
+  forwarding authority;
+- Tools are repository-local, read-only, and non-authoritative. BpfRunner hands
+  a detached summary, scalar projections of frozen runtime bindings, and a
+  bounded recent event window to callers. Standard generated execution appends
+  the complete Runner event history to durable JSONL, which the post-run Runner
+  Inspection Tool reads directly; the Tool gains no lifecycle, kernel,
+  dataplane, or traffic-observation authority.
 - candidate and provenance material is non-authoritative and never a default
   implementation source.
 
@@ -43,25 +116,38 @@ Emulator configuration
 → SimulatorStaticInput
 → SimulationDefinition
 → Simulator
-→ Topology
-→ Slicer
-→ PositionModel → ConnectionModel → RouteModel
-→ TopologySlice / TopologyDifference
-→ Planner(Connection / Parameter / Forwarding planning + Coordination)
-→ Plan
-→ compile_bpf(Plan + approved read-only Simulator facts
-  + explicit previous baseline)
+→ creates/owns peer components Topology + Slicer + optional Planner
+Slicer → calls PositionModel → ConnectionModel → RouteModel
+       → produces/retains TopologySlice
+Planner.synchronize() → calls Slicer.create_difference()
+                     → consumes on-request TopologyDifference values
+                     → produces Plan
+compile_bpf(Plan + approved read-only Simulator facts exposed through exact
+  Slicer get_slice()/get_topology() access + explicit previous baseline)
 → BpfCompiledRealization
+→ BpfRunner Preparation
+→ READY
+→ BpfRunner Main activation ∥ Maintenance future preparation/reclaim
+→ live kernel forwarding state
 ```
+
+`Slicer` retains the adjacent `TopologySlice` values needed for these calls;
+it does not retain the immutable `TopologyDifference` results. The Planner is
+the Difference consumer and `Planner.synchronize()` is the Plan producer. The
+BPF Compiler consumes the Plan, not the Difference.
 
 Static deployment is separate:
 
 ```text
 Emulator → upstream SEED Docker compiler → Compose project
-→ ComposeProjectLauncher
+→ caller-selected deployment startup → live Compose project
+→ caller hands the live project identity to BpfRunner
+→ BpfRunner independently validates and freezes its runtime foundation
 ```
 
-`ComposeProjectLauncher` is not a dynamic simulation Runner.
+`ComposeProjectLauncher` remains an optional programmatic deployment utility;
+it is not a Runner prerequisite or dynamic simulation Runner. `BpfRunner` does
+not own `docker compose up` or `docker compose down`.
 
 Static identity is projected by entities/construction through public Node
 labels and geo APIs. A future Skyseed functional Layer may inject shared

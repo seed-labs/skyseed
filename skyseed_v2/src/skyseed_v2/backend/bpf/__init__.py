@@ -1,6 +1,7 @@
-"""Expose the one-shot BPF lowering capability and its immutable result."""
+"""Expose BPF compilation and its live Runner lifecycle owner."""
 
 from .compiler import compile_bpf
-from .values import BpfCompiledRealization
+from .runner import BpfRunner
+from .compiled_realization import BpfCompiledRealization
 
-__all__ = ["BpfCompiledRealization", "compile_bpf"]
+__all__ = ["BpfCompiledRealization", "BpfRunner", "compile_bpf"]

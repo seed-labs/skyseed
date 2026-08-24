@@ -11,10 +11,10 @@ TOOLS_ROOT = PROJECT_ROOT / "tools"
 COMPLETE_MAIN = (
     PROJECT_ROOT / "examples/complete_static_emulator/main.py"
 )
-DYNAMIC_TOOL = TOOLS_ROOT / "dynamic_slice/inspection.py"
-DYNAMIC_TOOL_UI = TOOLS_ROOT / "dynamic_slice/renderer.py"
-DYNAMIC_TOOL_SOURCES = tuple(
-    sorted((TOOLS_ROOT / "dynamic_slice").glob("*.py"))
+SLICE_TOOL = TOOLS_ROOT / "slice/inspection.py"
+SLICE_TOOL_UI = TOOLS_ROOT / "slice/renderer.py"
+SLICE_TOOL_SOURCES = tuple(
+    sorted((TOOLS_ROOT / "slice").glob("*.py"))
 )
 
 
@@ -27,14 +27,39 @@ def test_tools_are_repository_local_and_dependency_direction_is_one_way() -> Non
     assert not hasattr(skyseed_v2, "Tool")
     assert not hasattr(skyseed_v2, "TopologyTool")
     assert not hasattr(skyseed_v2, "ZoneTool")
-    assert not hasattr(skyseed_v2, "DynamicSliceTool")
     assert not hasattr(skyseed_v2, "PlannerTool")
     assert not hasattr(skyseed_v2, "BpfCompilerTool")
+    assert not hasattr(skyseed_v2, "RunnerTool")
+    assert not hasattr(skyseed_v2, "TrafficReplayTool")
 
     for path in (PROJECT_ROOT / "src/skyseed_v2").rglob("*.py"):
         source = path.read_text(encoding="utf-8")
         assert "from tools" not in source, path
         assert "import tools" not in source, path
+
+    runner_sources = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (TOOLS_ROOT / "runner").glob("*.py")
+    )
+    assert "skyseed_v2.backend" not in runner_sources
+    assert "_TcBpfRuntimeRealization" not in runner_sources
+
+    traffic_sources = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (TOOLS_ROOT / "traffic").glob("*.py")
+    )
+    assert "skyseed_v2" not in traffic_sources
+    for forbidden in (
+        "PositionModel",
+        "compute_positions(",
+        "BpfRunner(",
+        "docker exec",
+        "bpftool",
+        "tcpdump",
+        "WebSocket",
+        "EventSource",
+    ):
+        assert forbidden not in traffic_sources
 
 
 def test_tooling_has_no_unapproved_general_framework() -> None:
@@ -55,12 +80,35 @@ def test_tooling_has_no_unapproved_general_framework() -> None:
         assert forbidden not in source
 
 
+def test_formal_tool_renderers_share_one_small_bilingual_surface() -> None:
+    for tool_name in (
+        "topology",
+        "zone",
+        "slice",
+        "planner",
+        "bpf_compiler",
+        "traffic",
+    ):
+        source = (TOOLS_ROOT / tool_name / "renderer.py").read_text(
+            encoding="utf-8"
+        )
+        assert "language_strings=" in source, tool_name
+    runner = (TOOLS_ROOT / "runner/renderer.py").read_text(encoding="utf-8")
+    assert "const STRINGS=" in runner
+    assert 'data-language="zh"' in runner
+    shared = (TOOLS_ROOT / "_html.py").read_text(encoding="utf-8")
+    assert "skyseedSetLanguage" in shared
+    assert "fetch(" not in shared
+    assert "WebSocket" not in shared
+
+
 def test_browser_smoke_remains_outside_tool_responsibilities() -> None:
     browser_source = "\n".join(
         path.read_text(encoding="utf-8")
         for path in (
-            PROJECT_ROOT / "scripts/check_dynamic_slice_tool_browser.py",
+            PROJECT_ROOT / "scripts/check_slice_tool_browser.py",
             PROJECT_ROOT / "scripts/check_bpf_compiler_tool_browser.py",
+            PROJECT_ROOT / "scripts/check_inspection_visuals_browser.py",
         )
     )
     assert "geckodriver" in browser_source
@@ -125,7 +173,7 @@ def test_tool_files_are_shaped_by_responsibility_not_a_uniform_template() -> Non
         "resolve_path",
         "create_difference",
     )
-    for tool_name in ("topology", "zone", "dynamic_slice", "planner"):
+    for tool_name in ("topology", "zone", "slice", "planner"):
         root = TOOLS_ROOT / tool_name
         sources = {
             path: path.read_text(encoding="utf-8")
@@ -137,7 +185,7 @@ def test_tool_files_are_shaped_by_responsibility_not_a_uniform_template() -> Non
             if _called_attributes(source) & set(formal_calls)
             or (
                 "class PlannerInspectionRead" in source
-                and "read_dynamic_slices(" in source
+                and "read_slice_differences(" in source
             )
         }
         assert formal_readers, tool_name
@@ -189,14 +237,14 @@ def test_tool_files_are_shaped_by_responsibility_not_a_uniform_template() -> Non
             assert "standalone_page(" not in source, path
 
     display_only_helpers = {
-        "_fit_origin_plane": "dynamic_slice",
-        "_symmetric_eigendecomposition": "dynamic_slice",
+        "_fit_origin_plane": "slice",
+        "_symmetric_eigendecomposition": "slice",
         "sample_rectangle_boundary": "zone",
         "_annotate_focus_visibility": "zone",
     }
     all_sources = {
         (tool_name, path): path.read_text(encoding="utf-8")
-        for tool_name in ("topology", "zone", "dynamic_slice", "planner")
+        for tool_name in ("topology", "zone", "slice", "planner")
         for path in (TOOLS_ROOT / tool_name).glob("*.py")
     }
     for helper, owner_tool in display_only_helpers.items():
@@ -239,7 +287,7 @@ def test_dynamic_tool_boundary_allows_readonly_results_without_generation() -> N
 
     source = "\n".join(
         path.read_text(encoding="utf-8")
-        for path in DYNAMIC_TOOL_SOURCES
+        for path in SLICE_TOOL_SOURCES
     )
     for required_read in (
         ".get_topology(",

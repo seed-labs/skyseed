@@ -3,7 +3,7 @@
 This handwritten example shows the complete public composition: two planned
 Satellites, one GroundStation, one ordinary SEED AS/Network/Router, one IX, one
 explicit eBGP peering, immutable Emulator-to-Simulator input, the accepted
-Dynamic Slice A–E chain, accepted F TopologyDifference evidence, the
+Slice / Difference A–E chain, accepted F TopologyDifference evidence, the
 Simulator-owned semantic Planner, and the upstream SEED `Docker` compiler.
 
 `emu.py` contains only `build_emulator() -> Emulator`. `main.py` builds that

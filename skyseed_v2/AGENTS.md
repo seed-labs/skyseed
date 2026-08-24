@@ -30,9 +30,11 @@
 测试通过不能单独代表切片完成。调查、合同冻结、架构审计、人工可读
 入口、真实执行证据和文档同步都是接受条件。
 
-语义 Planner 已由 Simulator 正式拥有；后端准备/编译和动态执行能力仍未
-正式设计。它们未来的名称、owner、package、输入输出和执行链必须单独批准。
-`ComposeProjectLauncher` 仅负责当前静态 Compose project 的启动与验证。
+语义 Planner 由 Simulator 正式拥有；BPF Compiler 与 `BpfRunner` 的正式
+所有权和边界记录在 `docs/accepted-design.md`。改变这些已冻结的所有权/
+公共合同，或引入新的 backend、dataplane、公共 plugin 或 lifecycle authority，
+必须先获得明确设计批准。`ComposeProjectLauncher` 是可选 deployment utility，
+不拥有 `BpfRunner` lifecycle。
 
 ## 2. 已批准范围内的实现自主权
 
@@ -67,8 +69,9 @@
 - 正式执行路径；
 - 新运行模式或 fallback；
 - 类图中的主体类或重要关系；
-- Emulator、Simulator、Topology、Planner、`SkyseedDockerCompiler`、
-  `ComposeProjectLauncher` 或任何未来后端准备/编译、动态执行能力之间的职责。
+- Emulator、Simulator、Topology、Planner、`SkyseedDockerCompiler`、BPF Compiler、
+  `BpfRunner`、`ComposeProjectLauncher` 或任何新 backend、dataplane、公共
+  plugin、lifecycle authority 之间的职责。
 
 禁止先提交实现，再在完成报告中解释新概念。与争议无关且已经批准
 的工作可以继续，但争议部分必须停留在提案状态。
@@ -196,11 +199,14 @@ Service
 
 `SkyseedDockerCompiler` 将 Emulator/SEED 静态模型降低为 Docker、
 Compose、service 和 network 等静态部署配置。
-`ComposeProjectLauncher` 仅负责当前静态 Compose project 的启动与验证。
+`ComposeProjectLauncher` 是已编译 Compose project 的可选 deployment utility，
+不拥有 `BpfRunner` lifecycle。
 
-Simulator 语义 Planner 已正式设计；后端准备/编译和动态执行能力仍未正式
-设计。它们未来的名称、owner、package、输入输出和执行链必须单独批准。不得通过文档、空目录、
-公共类型、模糊父类、fallback 或第二条成功路径提前冻结其设计。
+Simulator 正式拥有语义 Planner；BPF Compiler 与 `BpfRunner` 的所有权和
+公共合同已经批准，以 `docs/accepted-design.md` 为权威记录。改变这些
+冻结边界，或引入新 backend、dataplane、公共 plugin、lifecycle authority，
+必须先获得明确设计批准；不得通过文档、空目录、模糊父类、fallback 或
+第二条成功路径绕过这一要求。
 
 Simulator 静态输入类型是接收侧定义的跨层边界数据，只能依赖中性纯值和
 自身数据类型；它们不是 Simulator 内部长久使用的完整领域模型。了解

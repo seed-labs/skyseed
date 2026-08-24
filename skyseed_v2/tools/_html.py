@@ -5,6 +5,7 @@ from __future__ import annotations
 from html import escape
 import json
 from pathlib import Path
+from typing import Mapping
 
 
 _BASE_CSS = """
@@ -80,7 +81,93 @@ canvas, svg {
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; border-bottom: 1px solid var(--line); padding: 7px; }
 footer { color: var(--muted); padding: 28px 0 42px; }
+.language-switch {
+  position: fixed; z-index: 50; top: 18px; right: max(16px, calc((100vw - 1440px) / 2));
+  display: inline-flex; gap: 4px; padding: 4px; border: 1px solid var(--line);
+  border-radius: 10px; background: #07111fe8; box-shadow: 0 8px 25px #0006;
+}
+.language-switch button { padding: 5px 9px; border: 0; background: transparent; }
+.language-switch button[aria-pressed="true"] { color: #031a22; background: var(--cyan); }
 @media (max-width: 820px) { .two { grid-template-columns: 1fr; } }
+"""
+
+_COMMON_LANGUAGE_STRINGS = {
+    "Skyseed v2 repository-local offline inspection artifact": (
+        "Skyseed v2 仓库本地离线检查产物"
+    ),
+    "Tool failure": "工具失败",
+    "Current snapshot": "当前快照",
+    "Raw JSON": "原始 JSON",
+    "Previous": "上一个",
+    "Next": "下一个",
+    "Reset view": "重置视角",
+    "None": "无",
+}
+
+
+def _language_script(strings: Mapping[str, str]) -> str:
+    pairs = tuple((str(english), str(chinese)) for english, chinese in strings.items())
+    return rf"""
+const SKYSEED_LANGUAGE_PAIRS={json_for_script(pairs)};
+const SKYSEED_TEXT_STATE=new WeakMap();
+const SKYSEED_ATTR_STATE=new WeakMap();
+const SKYSEED_SKIP_LANGUAGE=new Set(["SCRIPT","STYLE","PRE","CODE"]);
+let SKYSEED_LANGUAGE="zh-CN";
+const skyseedNormalized=value=>String(value).replace(/\s+/g," ").trim();
+function skyseedLanguagePair(value){{
+  const normalized=skyseedNormalized(value);
+  return SKYSEED_LANGUAGE_PAIRS.find(pair=>skyseedNormalized(pair[0])===normalized||skyseedNormalized(pair[1])===normalized)||null;
+}}
+function skyseedRegisterText(node){{
+  if(SKYSEED_TEXT_STATE.has(node)||!node.parentElement||SKYSEED_SKIP_LANGUAGE.has(node.parentElement.tagName))return;
+  const raw=node.nodeValue??"",trimmed=raw.trim(),pair=skyseedLanguagePair(trimmed);
+  if(!pair)return;
+  const start=raw.indexOf(trimmed),end=raw.length-start-trimmed.length;
+  SKYSEED_TEXT_STATE.set(node,{{en:pair[0],zh:pair[1],prefix:raw.slice(0,start),suffix:end?raw.slice(raw.length-end):""}});
+}}
+function skyseedRegisterAttributes(element){{
+  if(SKYSEED_ATTR_STATE.has(element))return;
+  const values={{}};
+  for(const name of ["title","placeholder","aria-label"]){{
+    if(!element.hasAttribute(name))continue;
+    const pair=skyseedLanguagePair(element.getAttribute(name));
+    if(pair)values[name]={{en:pair[0],zh:pair[1]}};
+  }}
+  SKYSEED_ATTR_STATE.set(element,values);
+}}
+function skyseedTranslateText(node){{
+  skyseedRegisterText(node);
+  const value=SKYSEED_TEXT_STATE.get(node);
+  if(value)node.nodeValue=value.prefix+(SKYSEED_LANGUAGE==="zh-CN"?value.zh:value.en)+value.suffix;
+}}
+function skyseedTranslateRoot(root){{
+  if(root.nodeType===Node.TEXT_NODE){{skyseedTranslateText(root);return;}}
+  const elements=[];
+  if(root.nodeType===Node.ELEMENT_NODE)elements.push(root);
+  if(root.querySelectorAll)elements.push(...root.querySelectorAll("*"));
+  for(const element of elements){{
+    skyseedRegisterAttributes(element);
+    const attrs=SKYSEED_ATTR_STATE.get(element)||{{}};
+    for(const [name,value] of Object.entries(attrs))element.setAttribute(name,SKYSEED_LANGUAGE==="zh-CN"?value.zh:value.en);
+  }}
+  const walker=document.createTreeWalker(root,NodeFilter.SHOW_TEXT);
+  const nodes=[];while(walker.nextNode())nodes.push(walker.currentNode);
+  for(const node of nodes)skyseedTranslateText(node);
+}}
+function skyseedSetLanguage(language){{
+  SKYSEED_LANGUAGE=language==="en"?"en":"zh-CN";
+  document.documentElement.lang=SKYSEED_LANGUAGE;
+  const titlePair=skyseedLanguagePair(document.title);
+  if(titlePair)document.title=SKYSEED_LANGUAGE==="zh-CN"?titlePair[1]:titlePair[0];
+  document.querySelectorAll(".language-switch button").forEach(button=>button.setAttribute("aria-pressed",String(button.dataset.language===SKYSEED_LANGUAGE)));
+  skyseedTranslateRoot(document.body);
+}}
+document.querySelectorAll(".language-switch button").forEach(button=>button.addEventListener("click",()=>skyseedSetLanguage(button.dataset.language)));
+const SKYSEED_LANGUAGE_OBSERVER=new MutationObserver(records=>{{
+  for(const record of records)for(const node of record.addedNodes)skyseedTranslateRoot(node);
+}});
+SKYSEED_LANGUAGE_OBSERVER.observe(document.body,{{childList:true,subtree:true}});
+skyseedSetLanguage("zh-CN");
 """
 
 
@@ -100,9 +187,20 @@ def standalone_page(
     eyebrow: str,
     body: str,
     script: str = "",
+    language_strings: Mapping[str, str] | None = None,
 ) -> str:
     """Return one dependency-free, directly openable HTML page."""
 
+    language_switch = ""
+    language_script = ""
+    if language_strings:
+        merged_language_strings = dict(_COMMON_LANGUAGE_STRINGS)
+        merged_language_strings.update(language_strings)
+        language_switch = """<nav class="language-switch" aria-label="界面语言 / Interface language">
+<button type="button" data-language="zh-CN" aria-pressed="true">中文</button>
+<button type="button" data-language="en" aria-pressed="false">EN</button>
+</nav>"""
+        language_script = _language_script(merged_language_strings)
     return f"""<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -112,10 +210,11 @@ def standalone_page(
 <style>{_BASE_CSS}</style>
 </head>
 <body>
+{language_switch}
 <header><div class="eyebrow">{escape(eyebrow)}</div><h1>{escape(title)}</h1></header>
 <main>{body}</main>
 <footer>Skyseed v2 repository-local offline inspection artifact</footer>
-<script>{script}</script>
+<script>{script}\n{language_script}</script>
 </body>
 </html>
 """
@@ -153,6 +252,11 @@ def write_failed_tool(directory: Path, tool_name: str, error: BaseException) -> 
             title=f"{tool_name} — FAILED",
             eyebrow="Tool failure",
             body=body,
+            language_strings={
+                f"{tool_name} — FAILED": f"{tool_name} — 失败",
+                f"{tool_name} generation failed": f"{tool_name} 生成失败",
+                "This run produced no successful result and used neither a stale artifact nor substitute computation.": "本次运行没有产生成功结果，也没有使用旧 artifact 或替代计算。",
+            },
         ),
     )
     write_text(
@@ -224,8 +328,18 @@ def write_aggregate_index(
     write_text(
         directory / "index.html",
         standalone_page(
-            title="Skyseed v2 Tooling 总览",
+            title="Skyseed v2 Tool Overview",
             eyebrow="Current snapshot",
             body=body,
+            language_strings={
+                "Skyseed v2 Tool Overview": "Skyseed v2 工具总览",
+                "Tool snapshot": "本次工具快照",
+                "Core object inventory": "核心对象数量",
+                "Inspection entries": "检查入口",
+                "Topology Tool": "Topology 工具",
+                "Zone Tool": "Zone 工具",
+                "Inspect the static object tree, orbit planes, GroundStations, and consistency.": "查看静态对象树、轨道平面、地面站与一致性。",
+                "Inspect Zone boundaries, automatic probes, physical matches, and formal resolution.": "查看 Zone 边界、自动探针、physical matches 与正式 resolution。",
+            },
         ),
     )

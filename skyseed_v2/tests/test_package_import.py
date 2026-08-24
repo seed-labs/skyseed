@@ -67,10 +67,14 @@ def test_identity_and_generation_exports_stay_with_their_owner_modules() -> None
     )
 
     assert node_id.__all__ == ["NodeId"]
-    assert bpf.__all__ == ["BpfCompiledRealization", "compile_bpf"]
+    assert bpf.__all__ == [
+        "BpfCompiledRealization",
+        "BpfRunner",
+        "compile_bpf",
+    ]
     assert set(simulator.__all__) == {
         "AccumulatedDeadbandParameterPlanningModel",
-        "AllAvailablePlanningHorizonPolicy",
+        "AllAvailablePlanningWindowPolicy",
         "CircularOrbitPositionModel",
         "Connection",
         "ConnectionDirection",
@@ -104,7 +108,7 @@ def test_identity_and_generation_exports_stay_with_their_owner_modules() -> None
         "Plan",
         "Planner",
         "PlanningDecision",
-        "PlanningHorizonPolicy",
+        "PlanningWindowPolicy",
         "PositionModel",
         "RouteKey",
         "RouteModel",
@@ -163,6 +167,7 @@ def test_identity_and_generation_exports_stay_with_their_owner_modules() -> None
         "Planner",
         "Plan",
         "BpfCompiledRealization",
+        "BpfRunner",
         "compile_bpf",
     ):
         assert not hasattr(package, simulator_owned_name)

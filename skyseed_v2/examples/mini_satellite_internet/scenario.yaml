@@ -17,12 +17,13 @@ skyseed_autonomous_systems:
             step_deg: 45.0
             alternating_orbit_offset_deg: 22.5
     ground_stations:
-      # Historical/reference provenance: copied from the v1
+      # Canonical reference locations copied from historical v1
       # data/ground/starlink_gateways.json catalog entries selected by
       # s4_visualization_gateway_binding_12.json and V1StaticInputAdapter.
-      # The v1 repository does not establish current operational status.
+      # These coordinates do not claim any commercial operator's current
+      # in-service facilities.
       - ground_station_id: gs-porto-alegre-reference
-        display_name: Starlink Gateway - Porto Alegre, Brazil
+        display_name: Reference Ground Station - Porto Alegre, Brazil
         latitude_deg: -30.0346
         longitude_deg: -51.2177
         elevation_m: 0.0
@@ -32,7 +33,7 @@ skyseed_autonomous_systems:
           - ix_id: 110
             address: 10.110.0.101
       - ground_station_id: gs-marsala-reference
-        display_name: Starlink Gateway - Marsala, Italy
+        display_name: Reference Ground Station - Marsala, Italy
         latitude_deg: 37.7986
         longitude_deg: 12.4357
         elevation_m: 0.0
@@ -42,7 +43,7 @@ skyseed_autonomous_systems:
           - ix_id: 110
             address: 10.110.0.102
       - ground_station_id: gs-yamaguchi-reference
-        display_name: Starlink Gateway - Yamaguchi, Japan
+        display_name: Reference Ground Station - Yamaguchi, Japan
         latitude_deg: 34.1861
         longitude_deg: 131.4706
         elevation_m: 0.0

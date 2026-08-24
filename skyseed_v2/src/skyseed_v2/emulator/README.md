@@ -53,10 +53,10 @@ or Tools.
 
 ## Examples and tests
 
-Examples:
-`complete_static_emulator`, `mini_satellite_internet`, and
-`large_static_network`. Tests: static construction, path equivalence, entity
-ownership, and SEED integration tests.
+Maintained examples: the minimal two-Satellite `complete_static_emulator` and
+the comprehensive `mini_satellite_internet`. Tests cover static construction,
+path equivalence, entity ownership, configuration loading, and SEED
+integration independently of a separate scale-only example.
 
 ## Maintenance checklist
 

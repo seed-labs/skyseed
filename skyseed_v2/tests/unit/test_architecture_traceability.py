@@ -28,6 +28,10 @@ DOCS_ROOT = PROJECT_ROOT / "docs"
 ACCEPTED_DESIGN = DOCS_ROOT / "accepted-design.md"
 CURRENT = DOCS_ROOT / "CURRENT.md"
 PUBLIC_IMPORTS = DOCS_ROOT / "codex-reference/public-imports.md"
+BPF_PACKAGE_ROOT = PROJECT_ROOT / "src/skyseed_v2/backend/bpf"
+GENERATED_BPF_EXECUTION = (
+    PROJECT_ROOT / "src/skyseed_v2/_generated_bpf_execution.py"
+)
 PUBLIC_MODULES = (
     entities,
     compose,
@@ -44,7 +48,7 @@ PUBLIC_MODULES = (
 )
 DYNAMIC_TYPES = (
     "AccumulatedDeadbandParameterPlanningModel",
-    "AllAvailablePlanningHorizonPolicy",
+    "AllAvailablePlanningWindowPolicy",
     "CircularOrbitPositionModel",
     "Connection",
     "ConnectionDirection",
@@ -74,7 +78,7 @@ DYNAMIC_TYPES = (
     "Plan",
     "Planner",
     "PlanningDecision",
-    "PlanningHorizonPolicy",
+    "PlanningWindowPolicy",
     "PositionModel",
     "RouteKey",
     "RouteModel",
@@ -136,6 +140,109 @@ def test_document_identity_is_explicit_in_paths() -> None:
         assert audience in documentation_index
 
 
+def test_bpf_package_layout_and_private_residue_are_exact() -> None:
+    assert {
+        path.name
+        for path in (PROJECT_ROOT / "src/skyseed_v2").glob("*generated*execution.py")
+    } == {"_generated_bpf_execution.py"}
+    assert {
+        path.name
+        for path in BPF_PACKAGE_ROOT.iterdir()
+        if path.is_file() and path.suffix in {".py", ".md"}
+    } == {
+        "README.md",
+        "__init__.py",
+        "compiled_realization.py",
+        "compiler.py",
+        "runner.py",
+    }
+    runner_private = BPF_PACKAGE_ROOT / "_runner"
+    assert {
+        path.name for path in runner_private.iterdir() if path.suffix == ".py"
+    } == {
+        "__init__.py",
+        "privileged_runtime_command.py",
+        "runtime_realization.py",
+        "traffic_telemetry.py",
+        "traffic_telemetry_abi.py",
+        "traffic_telemetry_collector.py",
+    }
+
+    source = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(BPF_PACKAGE_ROOT.rglob("*.py"))
+    )
+    for retired in (
+        "_PrivilegedWorker",
+        "_wait_for_maintenance_idle",
+        "_probe_representative_packet_path",
+        "_probe_ground_station_access_peer",
+        "_probe_zone_ground_round_trip",
+        "_probe_next_future_resource_inactive",
+        "_inspect_resource",
+        "_probe_next_forwarding_transition",
+        "_probe_activated_forwarding_transition",
+        "_runtime_snapshot",
+        "_evidence_snapshot",
+        "_resolve_first_nominal_boundary",
+        "_working_set_snapshot",
+        "_retained_slice_peak",
+        "_retained_difference_peak",
+        "_retained_route_context_peak",
+        "_retained_decision_peak",
+        "_observe_current_working_set",
+        "_observe_working_set",
+        "simulator._durable_history",
+        "_traffic_telemetry_protocol",
+    ):
+        assert retired not in source
+
+    generated_source = GENERATED_BPF_EXECUTION.read_text(encoding="utf-8")
+    for required in (
+        "class _RollingRealizationSupplier:",
+        ".create_next_slice()",
+        ".synchronize()",
+        "compile_bpf(",
+        "BpfRunner(",
+        "runner.prepare()",
+        "runner.run()",
+        "runner.cleanup()",
+    ):
+        assert required in generated_source
+    for forbidden in (
+        "_RollingRealizationSupplier",
+        "create_next_slice",
+        ".synchronize(",
+        "progression_builder",
+    ):
+        assert forbidden not in source
+    assert "_generated_bpf_execution" not in skyseed_v2.__all__
+
+
+def test_simulator_history_codec_and_jsonl_mechanics_have_distinct_owners() -> None:
+    codec = (
+        PROJECT_ROOT / "src/skyseed_v2/simulator/_history_codec.py"
+    ).read_text(encoding="utf-8")
+    planner = (
+        PROJECT_ROOT / "src/skyseed_v2/simulator/planning/planner.py"
+    ).read_text(encoding="utf-8")
+
+    assert "shared._durable_evidence" not in codec
+    for generic_helper in (
+        "_append_jsonl",
+        "_read_jsonl",
+        "_reset_jsonl",
+        "_semantic_value",
+    ):
+        assert generic_helper not in codec
+        assert generic_helper in planner
+    assert "from skyseed_v2.shared._durable_evidence import" in planner
+    assert "from .._history_codec import" in planner
+    assert not (
+        PROJECT_ROOT / "src/skyseed_v2/simulator/_durable_history.py"
+    ).exists()
+
+
 def test_accepted_anchor_and_current_have_distinct_roles() -> None:
     accepted = ACCEPTED_DESIGN.read_text(encoding="utf-8")
     current = CURRENT.read_text(encoding="utf-8")
@@ -147,25 +254,46 @@ def test_accepted_anchor_and_current_have_distinct_roles() -> None:
         "second authoritative computation path",
     ):
         assert required in accepted
-    assert "Dynamic Slice A–G: **implemented and accepted**" in current
+    assert "Slice / Difference semantics: **implemented and accepted**" in current
+    for implemented in (
+        "Runner milestone: **implemented, runtime-validated, and manually accepted**",
+        "rolling Slicer →",
+        "Preparation binds",
+        "Main alone",
+        "Maintenance prepares",
+        "inputs/execution.json",
+        "append-only JSONL",
+        "60-second preparation lookahead",
+        "eight-boundary future depth",
+        "K = boundary depth + 1",
+        "64 Slices / 64 Differences",
+        "16 Plans / 16",
+        "75 nominal boundaries / 75 Main",
+        "Final canonical Mini runtime: **PASS**",
+        "seven formal repository-local",
+        "two maintained runnable examples",
+        "Manual Tool acceptance is complete",
+        "next major milestone is **S4 / 300+ scale qualification**",
+        "Traffic / Path Replay",
+        "traffic-telemetry.jsonl",
+        "Normal generated `run.sh` neither reads nor starts that",
+    ):
+        assert implemented in current
     for deferred in (
-        "runtime binding",
-        "BPF preparation/load/activation/maintenance",
-        "dynamic execution",
-        "future names, owners, packages, inputs, outputs",
-        "execution chains are not frozen",
+        "automatic rollback",
+        "public dataplane plugin API",
+        "large-network performance",
+        "realtime/live traffic visualization",
     ):
         assert deferred in current
     assert "EmulatorStaticInput" not in PUBLIC_IMPORTS.read_text(
         encoding="utf-8"
     )
-    assert (
-        "BPF Compiler minimal vertical slice: **implemented and accepted**"
-        in current
-    )
+    assert "`compile_bpf(...)` is a one-shot, stateless lowering" in current
     assert "`skyseed_v2.backend.bpf`" in PUBLIC_IMPORTS.read_text(
         encoding="utf-8"
     )
+    assert "`BpfRunner`" in PUBLIC_IMPORTS.read_text(encoding="utf-8")
 
 
 def test_current_reference_has_no_accepted_g_candidate_status() -> None:
@@ -177,7 +305,9 @@ def test_current_reference_has_no_accepted_g_candidate_status() -> None:
     for stale in (
         "G candidate",
         "G final review",
-        "Dynamic Slice A–G: candidate",
+        "Dynamic" + " Slice A–G: candidate",
+        "pending " + "acceptance",
+        "BPF Runner " + "Vertical Slice",
     ):
         assert stale not in authoritative
 

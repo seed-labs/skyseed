@@ -101,5 +101,5 @@ a different approved Model; it is never inferred from access Connections.
 ## Maintenance
 
 Update `slicing/route.py`, `_routing_policy.py`, Slicer validation/path code,
-Route Model tests, path failure tests, Dynamic Tool projection, public imports,
+Route Model tests, path failure tests, Slice / Difference Tool projection, public imports,
 and this reference.

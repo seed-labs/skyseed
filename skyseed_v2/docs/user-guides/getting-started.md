@@ -22,19 +22,18 @@ Tools:
 python examples/complete_static_emulator/main.py
 ```
 
-Mini satellite Internet reference with Topology, Zone, Dynamic Slice, and
+Mini satellite Internet reference with Topology, Zone, Slice / Difference, and
 Planner Tools:
 
 ```bash
 python examples/mini_satellite_internet/main.py
 ```
 
-Other focused entries:
-
-- `examples/isolated_satellites/main.py`: SEED-isolated Satellite compilation;
-- `examples/large_static_network/main.py`: larger configuration/construction
-  and Compose project flow;
-- `examples/reference/`: adapters/investigation helpers, not production API.
+`complete_static_emulator` is the maintained minimal two-Satellite teaching
+and smoke reference. `mini_satellite_internet` is the maintained comprehensive
+rolling reference. `examples/reference/` contains historical
+provenance/investigation helpers and is not a formal runnable example or public
+API.
 
 Generated example output is ignored under `examples/*/output/`.
 

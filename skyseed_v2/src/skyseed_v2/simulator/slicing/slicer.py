@@ -1,9 +1,10 @@
-"""Orchestrate dynamic Slice publication and retained queries."""
+"""Orchestrate Slice publication and retained queries."""
 
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
 from datetime import datetime
+from pathlib import Path
 from threading import RLock
 from types import MappingProxyType
 from weakref import WeakValueDictionary
@@ -33,6 +34,11 @@ from .route import (
 from .slice import TopologySlice
 from ..timeline import SimulationTimeline
 from ..topology import GroundStation, Satellite, Topology
+from skyseed_v2.shared._durable_evidence import (
+    _append_jsonl,
+    _reset_jsonl,
+    _semantic_value,
+)
 
 
 _MODEL_OWNERS: WeakValueDictionary[int, Slicer] = WeakValueDictionary()
@@ -61,6 +67,8 @@ class Slicer:
         "_timestamp_iterator",
         "_pending_timestamp",
         "_next_slice_id",
+        "_durable_history_path",
+        "_archived_difference_through",
     )
 
     def __init__(self) -> None:
@@ -114,6 +122,8 @@ class Slicer:
             timestamp_iterator
         )
         instance._next_slice_id = 1
+        instance._durable_history_path = None
+        instance._archived_difference_through = 0
         _claim_model_owners(models, instance)
         connection_context_claimed = False
         try:
@@ -193,6 +203,16 @@ class Slicer:
         self._latest_slice = candidate
         self._next_slice_id = slice_id + 1
         self._pending_timestamp = next_timestamp
+        if self._durable_history_path is not None:
+            _append_jsonl(
+                self._durable_history_path,
+                {
+                    "record_type": "slice",
+                    "slice_id": candidate.slice_id,
+                    "timestamp": candidate.timestamp.isoformat(),
+                    "semantic": _semantic_value(candidate),
+                },
+            )
         return candidate
 
     def create_slices(self, count: int) -> tuple[TopologySlice, ...]:
@@ -283,7 +303,90 @@ class Slicer:
             current,
             current_slice_id,
         )
-        return _compare_topology_slices(previous, current)
+        difference = _compare_topology_slices(previous, current)
+        if (
+            self._durable_history_path is not None
+            and current_slice_id > self._archived_difference_through
+        ):
+            if current_slice_id != self._archived_difference_through + 1:
+                raise RuntimeError(
+                    "durable Difference history must advance continuously"
+                )
+            _append_jsonl(
+                self._durable_history_path,
+                {
+                    "record_type": "difference",
+                    "previous_slice_id": previous_slice_id,
+                    "current_slice_id": current_slice_id,
+                    "semantic": _semantic_value(difference),
+                },
+            )
+            self._archived_difference_through = current_slice_id
+        return difference
+
+    def _enable_durable_history(self, path: Path) -> None:
+        """Enable private append-only history before rolling progression."""
+
+        if self._latest_slice.slice_id != 0 or self._durable_history_path is not None:
+            raise RuntimeError(
+                "Slicer durable history must be enabled before progression"
+            )
+        self._durable_history_path = _reset_jsonl(
+            path,
+            {
+                "record_type": "history_header",
+                "format_version": 1,
+                "owner": "Slicer",
+                "timeline": {
+                    "start_time": self._timeline.start_time.isoformat(),
+                    "end_time": (
+                        None
+                        if self._timeline.end_time is None
+                        else self._timeline.end_time.isoformat()
+                    ),
+                    "slice_interval_seconds": (
+                        self._timeline.slice_interval.total_seconds()
+                    ),
+                },
+            },
+        )
+        _append_jsonl(
+            self._durable_history_path,
+            {
+                "record_type": "slice",
+                "slice_id": 0,
+                "timestamp": None,
+                "semantic": _semantic_value(self._latest_slice),
+            },
+        )
+
+    def _release_before(self, retained_from_slice_id: int) -> dict[str, int]:
+        """Release old indexed Slices after every consumer crossed a frontier."""
+
+        if (
+            isinstance(retained_from_slice_id, bool)
+            or not isinstance(retained_from_slice_id, int)
+            or retained_from_slice_id < 0
+        ):
+            raise ValueError("retained_from_slice_id must be non-negative")
+        if retained_from_slice_id not in self._slices:
+            raise KeyError(
+                f"retention frontier is not retained: {retained_from_slice_id}"
+            )
+        released = tuple(
+            slice_id
+            for slice_id in self._slices
+            if slice_id < retained_from_slice_id
+        )
+        for slice_id in released:
+            value = self._slices.pop(slice_id)
+            if value.timestamp is not None:
+                self._slices_by_timestamp.pop(value.timestamp, None)
+        return {
+            "released_slice_count": len(released),
+            "retained_slice_count": len(self._slices),
+            "timestamp_index_count": len(self._slices_by_timestamp),
+        }
 
     def get_topology(self) -> Topology:
         return self._topology

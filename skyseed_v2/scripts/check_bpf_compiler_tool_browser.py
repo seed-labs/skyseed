@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 
 try:
-    from scripts.check_dynamic_slice_tool_browser import (
+    from scripts.check_slice_tool_browser import (
         _available_port,
         _capture_screenshot,
         _execute,
@@ -18,7 +18,7 @@ try:
         _wait_for_driver,
     )
 except ModuleNotFoundError:
-    from check_dynamic_slice_tool_browser import (  # type: ignore[no-redef]
+    from check_slice_tool_browser import (  # type: ignore[no-redef]
         _available_port,
         _capture_screenshot,
         _execute,
@@ -89,6 +89,9 @@ def run_bpf_compiler_browser_smoke(
                 """
 const failures=[];
 window.addEventListener("error",event=>failures.push(event.message));
+const chineseTitle=document.title;
+document.querySelector('[data-language="en"]').click();
+const englishTitle=document.title;
 const initialActive=document.querySelector(".view.active").id;
 const tabs=[...document.querySelectorAll(".tab")];
 const viewCounts={};
@@ -103,7 +106,8 @@ selector.dispatchEvent(new Event("change",{bubbles:true}));
 document.querySelector('[data-view="operations"]').click();
 document.getElementById("plan-timeline").scrollIntoView({block:"start"});
 return {
-  title:document.title,
+  chineseTitle,
+  englishTitle,
   plans:selector.options.length,
   timelineButtons:document.querySelectorAll(".plan-button").length,
   selected:Number(selector.value),
@@ -120,7 +124,8 @@ return {
 """,
             )
             if (
-                observed["title"] != "BPF Compiler Inspection Tool"
+                observed["chineseTitle"] != "BPF Compiler 检查工具"
+                or observed["englishTitle"] != "BPF Compiler Inspection Tool"
                 or observed["plans"] < 1
                 or observed["timelineButtons"] != observed["plans"]
                 or observed["selected"] != observed["plans"] - 1

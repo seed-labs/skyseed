@@ -7,19 +7,32 @@ files. This page does not replace the exact import graph in
 
 ## Local assembly / ownership map
 
-Legend: `-->` is the ordered data/assembly handoff.
+Legend: every edge is labeled with its exact relationship; creation/ownership, calls,
+projection, compilation, and immutable-value delivery are not interchangeable.
 
 ```mermaid
 flowchart LR
-    EC["configuration/emulator"] --> CONSTRUCT["emulator.create_static_emulator()"]
-    CONSTRUCT --> EMULATOR["upstream Emulator object graph"]
-    EMULATOR --> BRIDGE["emulator_to_simulator"]
-    BRIDGE --> INPUT["SimulatorStaticInput"]
-    INPUT --> SIMULATOR["simulator"]
-    ZONES["configuration/simulator"] --> SIMULATOR
-    EMULATOR --> COMPILER["emulator/seedemu compiler"]
-    COMPILER --> PROJECT["compiled Compose project"]
-    PROJECT --> COMPOSE["compose"]
+    EC["configuration/emulator"] -->|configures call| CONSTRUCT["emulator.create_static_emulator()"]
+    CONSTRUCT -->|creates| EMULATOR["upstream Emulator object graph"]
+    EMULATOR -->|projected by| BRIDGE["emulator_to_simulator"]
+    BRIDGE -->|produces| INPUT["SimulatorStaticInput"]
+    INPUT -->|constructs definition for| SIMULATOR["Simulator composition root"]
+    ZONES["configuration/simulator"] -->|configures Topology materialization| SIMULATOR
+    SIMULATOR -->|creates and owns| TOPOLOGY["Topology peer component"]
+    SIMULATOR -->|creates and owns| SLICER["Slicer peer component"]
+    SIMULATOR -->|creates and owns after Slicer| PLANNER["Planner peer component"]
+    PLANNER -->|calls exact sibling for Differences| SLICER
+    PLANNER -->|synchronize produces Plan consumed by| BPF["backend/bpf Compiler"]
+    SLICER -->|read-only facts accessed by| BPF
+    BPF -->|produces| REALIZATION["BpfCompiledRealization"]
+    REALIZATION -->|future supplier delivers to| RUNNER["backend/bpf BpfRunner"]
+    GENERATED["_generated_bpf_execution"] -->|calls rolling Slice progression| SLICER
+    GENERATED -->|calls Planner synchronization| PLANNER
+    GENERATED -->|calls one-shot compilation| BPF
+    GENERATED -->|constructs and drives lifecycle| RUNNER
+    EMULATOR -->|compiled by| COMPILER["emulator/seedemu compiler"]
+    COMPILER -->|produces| PROJECT["compiled Compose project"]
+    PROJECT -->|optionally launched through| COMPOSE["compose"]
 ```
 
 ## Detailed public class/member diagrams
@@ -30,15 +43,21 @@ is detailed in its implementation owner package README.
 
 ## Entry points
 
-Primary assembly entries are `emulator/construction.py`,
-`emulator_to_simulator.py`, `simulator/simulator.py`, and
+`emulator_to_simulator.py` is the explicit Emulator → Simulator cross-domain
+projection boundary. `_generated_bpf_execution.py` is the private generated-
+application composition root: it connects rolling Slicer → Planner → BPF
+Compiler work to `BpfRunner` without making `backend/bpf` own upstream
+progression. Other primary entries are `emulator/construction.py`,
+`simulator/simulator.py`, and optional deployment utility
 `compose/launcher.py`.
 
 ## Dependencies
 
 Production dependency direction is configuration → Emulator construction /
-SEED extension → immutable bridge input → Simulator. Compose launching is an
-isolated consumer of an already-compiled project.
+SEED extension → immutable bridge input → Simulator. `backend/bpf` owns the
+approved Compiler/Runner contracts but not Simulator/Planner progression; the
+private root composition connects them for generated execution. Compose
+launching remains an isolated optional consumer of an already-compiled project.
 
 ## Examples and tests
 

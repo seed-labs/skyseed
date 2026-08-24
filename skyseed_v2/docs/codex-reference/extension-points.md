@@ -22,14 +22,21 @@ Tools.
 | `PositionModel` | Slicer | complete Position mapping | Slice publication |
 | `ConnectionModel` | Slicer | complete ConnectionSlice | Route or publication |
 | `RouteModel` | Slicer | complete RouteSlice | path validation/publication |
-| `PlanningHorizonPolicy` | Planner | select visible not-yet-published Difference prefix and its publication prefix before Models run | Slicer retention, Slice creation or execution scheduling |
-| `ConnectionPlanningModel` | Planner | horizon-aware nominal time and short-lifetime candidates | visibility or final suppression |
+| `PlanningWindowPolicy` | Planner | select a planning window from available Differences and its publication window before Models run | Slicer retention, Slice creation or execution scheduling |
+| `ConnectionPlanningModel` | Planner | planning-window-aware nominal time and short-lifetime candidates | planning-window selection or final suppression |
 | `ParameterPlanningModel` | Planner | cross-Difference sparse targets against last planned values | Connection lifetime or backend control |
 | `ForwardingPlanningModel` | Planner | timing and minimal same-time precedences from formal RoutePatch and narrow immutable path facts | Slicer, RouteModel, route selection or execution scheduling |
 | `CoordinationPolicy` | Planner | transform all three typed Model results into one coherent keep/suppress result | fixed Planner validity |
 | YAML loader data | receiving configuration package | accepted schema values | domain runtime objects |
 | Compose strategy | ComposeProjectLauncher | explicit single/batched project startup | compile/edit/fallback |
 | Inspection projection/UI | repository `tools/` | non-authoritative display | formal computation |
+
+The root-private generated BPF execution composition reads a definition that
+records one explicit Python
+module/callable identity for the experiment's existing progression builder.
+That direct reference is not a plugin registry, model registry, or new public
+extension hierarchy; generation and execution call the same example-owned
+builder source, and source drift requires output regeneration.
 
 ## Contract
 
@@ -65,7 +72,7 @@ There is no compatibility adapter to an older path.
 ## Prohibited behavior
 
 No plugin discovery/framework, generic ToolRegistry, Simulator logic inside
-SEED integration, Dynamic Slice semantics in a compiler hook, or example-only
+SEED integration, Slice / Difference semantics in a compiler hook, or example-only
 branch.
 
 ## Extension points

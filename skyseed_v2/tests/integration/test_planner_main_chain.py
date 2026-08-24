@@ -217,30 +217,30 @@ class _LateForwardingPlanningModel:
         return ()
 
 
-class _LatestDifferenceHorizonPolicy:
-    def select_differences(self, available_differences):
+class _PublishOneDifferenceWindowPolicy:
+    def select_planning_differences(self, available_differences):
         return tuple(available_differences)
 
-    def select_publication_differences(self, visible_differences):
-        return tuple(visible_differences[:1])
+    def select_publication_differences(self, planning_differences):
+        return tuple(planning_differences[:1])
 
 
-class _OneDifferenceLookaheadHorizonPolicy:
-    def select_differences(self, available_differences):
+class _RetainOnePlanningDifferenceWindowPolicy:
+    def select_planning_differences(self, available_differences):
         return tuple(available_differences)
 
-    def select_publication_differences(self, visible_differences):
-        if len(visible_differences) == 1:
-            return tuple(visible_differences)
-        return tuple(visible_differences[:-1])
+    def select_publication_differences(self, planning_differences):
+        if len(planning_differences) == 1:
+            return tuple(planning_differences)
+        return tuple(planning_differences[:-1])
 
 
-class _TwoDifferencePublicationHorizonPolicy:
-    def select_differences(self, available_differences):
+class _PublishTwoDifferencesWindowPolicy:
+    def select_planning_differences(self, available_differences):
         return tuple(available_differences)
 
-    def select_publication_differences(self, visible_differences):
-        return tuple(visible_differences[:2])
+    def select_publication_differences(self, planning_differences):
+        return tuple(planning_differences[:2])
 
 
 class _SubSliceParameterPlanningModel:
@@ -313,24 +313,30 @@ class _FailSecondCoordinationPolicy:
         return connections, parameters, forwarding[:-1], decisions
 
 
-class _RecordingHorizonPolicy:
+class _RecordingWindowPolicy:
     def __init__(self, events):
         self.events = events
 
-    def select_differences(self, available_differences):
+    def select_planning_differences(self, available_differences):
         self.events.append(
-            ("horizon", tuple(d.current_slice_id for d in available_differences))
+            (
+                "planning_window",
+                tuple(d.current_slice_id for d in available_differences),
+            )
         )
         return tuple(available_differences)
 
-    def select_publication_differences(self, visible_differences):
+    def select_publication_differences(self, planning_differences):
         self.events.append(
-            ("publication", tuple(d.current_slice_id for d in visible_differences))
+            (
+                "publication_window",
+                tuple(d.current_slice_id for d in planning_differences),
+            )
         )
-        return tuple(visible_differences)
+        return tuple(planning_differences)
 
 
-class _HorizonSensitiveConnectionModel:
+class _PlanningWindowSensitiveConnectionModel:
     def __init__(self, events):
         self.events = events
         self.delegate = MidpointConnectionPlanningModel()
@@ -357,7 +363,7 @@ class _HorizonSensitiveConnectionModel:
         return False
 
 
-class _HorizonSensitiveParameterModel:
+class _PlanningWindowSensitiveParameterModel:
     def __init__(self, events):
         self.events = events
 
@@ -372,7 +378,7 @@ class _HorizonSensitiveParameterModel:
         ).plan_parameter_transitions(**kwargs)
 
 
-class _HorizonSensitiveForwardingModel:
+class _PlanningWindowSensitiveForwardingModel:
     def __init__(self, events):
         self.events = events
         self.delegate = DependencyAwareForwardingPlanningModel()
@@ -404,11 +410,11 @@ class _SharedAlgorithms:
         self.parameter = AccumulatedDeadbandParameterPlanningModel()
         self.forwarding = DependencyAwareForwardingPlanningModel()
 
-    def select_differences(self, available_differences):
+    def select_planning_differences(self, available_differences):
         return tuple(available_differences)
 
-    def select_publication_differences(self, visible_differences):
-        return tuple(visible_differences)
+    def select_publication_differences(self, planning_differences):
+        return tuple(planning_differences)
 
     def plan_connection_transitions(self, **kwargs):
         return self.connection.plan_connection_transitions(**kwargs)
@@ -657,7 +663,7 @@ def test_planner_owns_exact_sibling_and_processes_only_new_difference_tail() -> 
     )
 
 
-def test_horizon_is_selected_before_all_models_and_models_see_full_range() -> None:
+def test_planning_window_is_selected_before_models_and_seen_in_full() -> None:
     events = []
     second_route = RouteKey(SATELLITE_2, TARGET)
     connection_slices = (
@@ -695,17 +701,17 @@ def test_horizon_is_selected_before_all_models_and_models_see_full_range() -> No
     route_model_calls = slicer.get_route_model().calls
 
     planner = simulator.create_planner(
-        horizon_policy=_RecordingHorizonPolicy(events),
-        connection_model=_HorizonSensitiveConnectionModel(events),
-        parameter_model=_HorizonSensitiveParameterModel(events),
-        forwarding_model=_HorizonSensitiveForwardingModel(events),
+        planning_window_policy=_RecordingWindowPolicy(events),
+        connection_model=_PlanningWindowSensitiveConnectionModel(events),
+        parameter_model=_PlanningWindowSensitiveParameterModel(events),
+        forwarding_model=_PlanningWindowSensitiveForwardingModel(events),
         coordination_policy=_RetainCoordinationPolicy(),
     )
     plan = planner.get_plan()
 
     assert events == [
-        ("horizon", (1, 2, 3)),
-        ("publication", (1, 2, 3)),
+        ("planning_window", (1, 2, 3)),
+        ("publication_window", (1, 2, 3)),
         ("connection", (1, 2, 3)),
         ("parameter", (1, 2, 3)),
         ("forwarding", (1, 2, 3)),
@@ -727,7 +733,7 @@ def test_horizon_is_selected_before_all_models_and_models_see_full_range() -> No
     assert slicer.get_route_model().calls == route_model_calls
 
 
-def test_visible_lookahead_retains_unsafe_cross_boundary_suppression() -> None:
+def test_unpublished_planning_window_retains_cross_boundary_suppression() -> None:
     simulator, slicer, _ = _short_connection_fixture()
     slicer.create_all_slices()
     connection_model = _CountingConnectionPlanningModel(
@@ -736,7 +742,7 @@ def test_visible_lookahead_retains_unsafe_cross_boundary_suppression() -> None:
     parameter_model = _CountingParameterPlanningModel(1)
     forwarding_model = _CountingForwardingPlanningModel()
     planner = simulator.create_planner(
-        horizon_policy=_OneDifferenceLookaheadHorizonPolicy(),
+        planning_window_policy=_RetainOnePlanningDifferenceWindowPolicy(),
         connection_model=connection_model,
         parameter_model=parameter_model,
         forwarding_model=forwarding_model,
@@ -759,7 +765,7 @@ def test_visible_lookahead_retains_unsafe_cross_boundary_suppression() -> None:
     assert ISL_ID in planner._published_active_establishments
     assert tuple(
         difference.current_slice_id
-        for difference in planner._selected_differences
+        for difference in planner._planning_differences
     ) == (4,)
 
     second = planner.synchronize()
@@ -798,7 +804,7 @@ def test_parameter_planned_target_continues_across_publication_boundary() -> Non
     slicer.create_all_slices()
     parameter_model = _CountingParameterPlanningModel(5)
     planner = simulator.create_planner(
-        horizon_policy=_TwoDifferencePublicationHorizonPolicy(),
+        planning_window_policy=_PublishTwoDifferencesWindowPolicy(),
         connection_model=_CountingConnectionPlanningModel(),
         parameter_model=parameter_model,
         forwarding_model=_CountingForwardingPlanningModel(),
@@ -836,7 +842,7 @@ def test_shared_boundary_transition_is_published_exactly_once() -> None:
     )
     slicer.create_slices(2)
     planner = simulator.create_planner(
-        horizon_policy=_LatestDifferenceHorizonPolicy(),
+        planning_window_policy=_PublishOneDifferenceWindowPolicy(),
         connection_model=_CountingConnectionPlanningModel(),
         parameter_model=_CountingParameterPlanningModel(5),
         forwarding_model=_CountingForwardingPlanningModel(),
@@ -879,7 +885,7 @@ def test_parameter_model_may_use_valid_sub_slice_time_but_not_outside_interval()
         connection_slices, (route, route)
     )
     invalid_slicer.create_slices(2)
-    with pytest.raises(ValueError, match="outside selected horizon"):
+    with pytest.raises(ValueError, match="outside planning window"):
         invalid_simulator.create_planner(
             connection_model=_CountingConnectionPlanningModel(),
             parameter_model=_SubSliceParameterPlanningModel(
@@ -1206,7 +1212,7 @@ def test_one_object_may_implement_multiple_planning_roles() -> None:
     shared = _SharedAlgorithms()
 
     planner = simulator.create_planner(
-        horizon_policy=shared,
+        planning_window_policy=shared,
         connection_model=shared,
         parameter_model=shared,
         forwarding_model=shared,
@@ -1216,7 +1222,7 @@ def test_one_object_may_implement_multiple_planning_roles() -> None:
     assert planner.get_plan().end_slice_id == 1
 
 
-def test_replaceable_horizon_publishes_complete_selected_coverage() -> None:
+def test_replaceable_window_publishes_complete_selected_coverage() -> None:
     connection_slices = (
         ConnectionSlice((_connection(10),)),
         ConnectionSlice((_connection(10),)),
@@ -1232,7 +1238,7 @@ def test_replaceable_horizon_publishes_complete_selected_coverage() -> None:
         parameter_model=_CountingParameterPlanningModel(1),
         forwarding_model=_CountingForwardingPlanningModel(),
         coordination_policy=DefaultCoordinationPolicy(),
-        horizon_policy=_LatestDifferenceHorizonPolicy(),
+        planning_window_policy=_PublishOneDifferenceWindowPolicy(),
     )
 
     first = planner.get_plan()
@@ -1351,7 +1357,7 @@ def test_mixed_forwarding_change_publishes_minimal_acyclic_precedence() -> None:
     formal_change = slicer.create_difference(1, 2)
     route_model_calls = slicer.get_route_model().calls
     planner = simulator.create_planner(
-        horizon_policy=_LatestDifferenceHorizonPolicy(),
+        planning_window_policy=_PublishOneDifferenceWindowPolicy(),
         connection_model=SampleBoundaryConnectionPlanningModel(),
         parameter_model=_CountingParameterPlanningModel(1),
         forwarding_model=_CountingForwardingPlanningModel(),

@@ -207,6 +207,12 @@ classDiagram
         +slice_id
         +timestamp
     }
+    class TopologyDifference {
+        <<immutable on-request value; not retained by Slicer>>
+        +previous_slice_id
+        +current_slice_id
+        +is_empty
+    }
     class EarthFixedPosition {
         <<position value>>
         +x_m
@@ -265,6 +271,21 @@ classDiagram
     TopologySlice "1" *-- "1" RouteSlice : routes
 ```
 
+Topology, Slicer, and Planner are peer-level components inside the Simulator
+domain. Their peer status does not remove the explicit composition relation:
+the one `Simulator` creates and retains all three, while Planner references the
+exact sibling Slicer rather than owning it.
+
+Legend: `A ..> B` is a boundary projection that creates a receiver-owned B
+value; it retains no A object or cross-domain ownership.
+
+```mermaid
+classDiagram
+    class UpstreamEmulator
+    class SimulatorStaticInput
+    UpstreamEmulator ..> SimulatorStaticInput : projected by boundary function
+```
+
 ## Exact references
 
 Legend: `A --> B` means A retains the exact B instance. It is neither
@@ -282,17 +303,73 @@ classDiagram
     Planner "1" --> "1" Slicer : exact Simulator sibling
 ```
 
-## Creation, projection, and calls
-
-Legend: `A ..> B` is a creation, projection, or call dependency named on the
-edge; it does not imply retained ownership.
+Legend: `A ..> B` means A consumes separately supplied immutable B values; it
+does not express composition, ownership transfer, or lifecycle control.
 
 ```mermaid
 classDiagram
-    class UpstreamEmulator
-    class SimulatorStaticInput
-    class Simulator
-    class Topology
+    class BpfCompiledRealization {
+        <<immutable symbolic handoff>>
+        +start_slice_id
+        +end_slice_id
+    }
+    class BpfRunner {
+        <<sole live BPF lifecycle owner>>
+        +prepare()
+        +run()
+        +cleanup()
+    }
+    BpfRunner ..> BpfCompiledRealization : consumes supplied future work
+```
+
+## Creation, projection, calls, and value handoff
+
+Legend: every edge below is labeled with its exact relationship. No edge implies
+retained ownership unless it explicitly says `creates and owns`; the ownership
+cardinalities remain in the class diagram above.
+
+```mermaid
+flowchart LR
+    EMU["upstream Emulator"] -->|projected into| INPUT["SimulatorStaticInput"]
+    INPUT -->|supplied through SimulationDefinition to construct| SIM["Simulator"]
+    SIM -->|creates and owns| TOP["Topology"]
+    SIM -->|creates and owns| SLI["Slicer"]
+    SIM -->|creates and owns after Slicer| PLA["Planner"]
+
+    SLI -->|1 calls| POS["PositionModel"]
+    SLI -->|2 calls| CON["ConnectionModel"]
+    SLI -->|3 calls| ROUTE["RouteModel"]
+    SLI -->|produces and retains| SLICE["TopologySlice"]
+    PLA -->|calls create_difference on exact sibling| SLI
+    SLI -->|produces on request; does not retain| DIFF["TopologyDifference"]
+    DIFF -->|consumed by synchronize| PLA
+    PLA -->|synchronize produces; Planner retains current| PLAN["Plan"]
+
+    PLAN -->|semantic input consumed by| COMPILE["compile_bpf"]
+    SLI -->|exact read-only get_slice / get_topology access| COMPILE
+    PREVIOUS["optional previous BpfCompiledRealization"] -->|explicit baseline consumed by| COMPILE
+    COMPILE -->|creates| REAL["BpfCompiledRealization"]
+    SUPPLIER["caller-owned future-work supplier"] -->|delivers value| RUNNER["BpfRunner"]
+    REAL -->|returned through supplier; consumed by| RUNNER
+    CALLER["runtime caller"] -->|calls prepare / run or activate_next / cleanup| RUNNER
+    CALLER -->|"after cleanup attempt calls inspection_snapshot() on"| RUNNER
+    RUNNER -->|returns detached projection without lifecycle side effect| SNAP["detached Runner evidence"]
+```
+
+`compile_bpf` has no separate `SlicerFacts` DTO. Its architectural input is
+`Plan + approved read-only Simulator facts + optional previous baseline`; the
+current public API exposes those Simulator facts through the exact `Slicer`'s
+`get_slice()` and `get_topology()` methods. The caller/supplier, not an immutable
+`BpfCompiledRealization` value, invokes or controls `BpfRunner`.
+
+The projection carries no Emulator/SEED reference. No Model calls another
+Model.
+
+Legend: `Slicer ..> Model` is a numbered direct call to an injected Protocol
+role; it does not express ownership and no Model calls another Model.
+
+```mermaid
+classDiagram
     class Slicer
     class PositionModel {
         <<Protocol role>>
@@ -306,32 +383,10 @@ classDiagram
         <<Protocol role>>
         +compute_route_slice()
     }
-    class TopologyDifference {
-        <<adjacent-slice difference>>
-        +previous_slice_id
-        +current_slice_id
-    }
-    class Plan
-    class BpfCompiledRealization {
-        <<immutable symbolic backend handoff>>
-        +start_slice_id
-        +end_slice_id
-        +constraints
-    }
-
-    UpstreamEmulator ..> SimulatorStaticInput : scalar projection
-    Simulator ..> Topology : create_topology
-    Simulator ..> Slicer : create_slicer
     Slicer ..> PositionModel : 1 calls
     Slicer ..> ConnectionModel : 2 calls
     Slicer ..> RouteModel : 3 calls
-    Slicer ..> TopologyDifference : creates on request
-    Plan ..> BpfCompiledRealization : compile_bpf semantic input
-    Slicer ..> BpfCompiledRealization : compile_bpf read-only facts
 ```
-
-The projection carries no Emulator/SEED reference. No Model calls another
-Model.
 
 ## Protocol realization
 
@@ -395,6 +450,7 @@ classDiagram
 | `GeometricConnectionModel` | `skyseed_v2.simulator.models.GeometricConnectionModel` |
 | `HopCountRouteModel` | `skyseed_v2.simulator.models.HopCountRouteModel` |
 | `BpfCompiledRealization` | `skyseed_v2.backend.bpf.BpfCompiledRealization` |
+| `BpfRunner` | `skyseed_v2.backend.bpf.BpfRunner` |
 
 Each mapped class has one detailed maintenance source: the README in the
 package that owns its implementation. See

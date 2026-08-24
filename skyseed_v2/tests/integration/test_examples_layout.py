@@ -14,8 +14,6 @@ from examples.complete_static_emulator import emu
 from examples.complete_static_emulator import main as complete
 from examples.complete_static_emulator import simu
 from examples.mini_satellite_internet import main as mini
-from examples.isolated_satellites import main as isolated
-from examples.large_static_network import main as large
 from seedemu.core import Emulator
 from seedemu.layers import Base
 
@@ -23,17 +21,9 @@ from seedemu.layers import Base
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 EXAMPLES_ROOT = PROJECT_ROOT / "examples"
 EXPERIMENTS = {
-    "isolated_satellites": (
-        isolated,
-        "skyseed_v2_isolated_satellites",
-    ),
     "complete_static_emulator": (
         complete,
         "skyseed_v2_complete_static_emulator",
-    ),
-    "large_static_network": (
-        large,
-        "skyseed_v2_large_static_network",
     ),
 }
 FORMAL_EXAMPLES = (*EXPERIMENTS, "mini_satellite_internet")
@@ -47,9 +37,7 @@ def test_formal_examples_generate_controls_into_unique_project_outputs() -> None
         assert module.DEFAULT_OUTPUT == root / "output"
         assert module.COMPOSE_PROJECT_NAME == expected_project
         project_names.append(module.COMPOSE_PROJECT_NAME)
-        required_files = ["main.py", "README.md"]
-        if name == "complete_static_emulator":
-            required_files.extend(("emu.py", "simu.py"))
+        required_files = ["main.py", "README.md", "emu.py", "simu.py"]
         for required in required_files:
             assert (root / required).is_file()
         assert not (root / "start.sh").exists()
@@ -64,16 +52,8 @@ def test_formal_examples_generate_controls_into_unique_project_outputs() -> None
         assert "write_compose_project_scripts(" in source
 
     assert len(set(project_names)) == len(project_names)
-    for module, name in (
-        (isolated, "isolated_satellites"),
-        (complete, "complete_static_emulator"),
-    ):
-        assert not hasattr(module, "DEFAULT_SCENARIO")
-        assert not (EXAMPLES_ROOT / name / "scenario.yaml").exists()
-    assert large.DEFAULT_SCENARIO == (
-        EXAMPLES_ROOT / "large_static_network/scenario.yaml"
-    )
-    assert (EXAMPLES_ROOT / "large_static_network/ground_stations.yaml").is_file()
+    assert not hasattr(complete, "DEFAULT_SCENARIO")
+    assert not (EXAMPLES_ROOT / "complete_static_emulator/scenario.yaml").exists()
     assert "examples/*/output/" in (PROJECT_ROOT / ".gitignore").read_text()
 
 
@@ -83,14 +63,12 @@ def test_examples_readme_indexes_current_long_term_roles_and_outputs() -> None:
     for name in FORMAL_EXAMPLES:
         assert f"`{name}`" in readme
     assert "Minimal static/canonical example kept deliberately small" in readme
-    assert "Specialized static scale and Compose validation" in readme
     assert "Small but reasonably rich reusable satellite Internet" in readme
-    assert "Topology, Zone, Dynamic Slice, Planner and BPF Compiler" in readme
+    assert "Topology, Zone, Slice / Difference, Planner, BPF Compiler" in readme
     assert mini.DEFAULT_OUTPUT == (
         EXAMPLES_ROOT / "mini_satellite_internet/output"
     )
-    assert mini.COMPOSE_PROJECT_NAME == "skyseed_v2_mini_satellite_internet"
-    assert not (EXAMPLES_ROOT / "dynamic_slice_network").exists()
+    assert mini.COMPOSE_PROJECT_PREFIX == "skyseed_v2_mini_satellite_internet"
 
 
 @pytest.mark.parametrize("name", tuple(EXPERIMENTS))
@@ -171,6 +149,20 @@ def test_generated_shell_scripts_are_scoped_executable_and_syntax_valid(
         assert "find " not in cleanup_text
 
 
+def test_shared_compose_script_helper_remains_deployment_only() -> None:
+    source = (
+        EXAMPLES_ROOT / "_compose_project_scripts.py"
+    ).read_text(encoding="utf-8")
+    for forbidden in (
+        "BpfRunner",
+        "runtime.py",
+        "run.sh",
+        "launch.sh",
+        "mini_satellite_internet",
+    ):
+        assert forbidden not in source
+
+
 def test_generated_shell_scripts_resolve_runtime_from_any_working_directory(
     tmp_path: Path,
 ) -> None:
@@ -245,7 +237,7 @@ def test_example_output_preparation_replaces_only_the_owned_root(
     output.mkdir()
     (output / "emulator").mkdir()
     (output / "simulator").mkdir()
-    (output / "dynamic-slice").mkdir()
+    (output / "slice").mkdir()
     outside = tmp_path / "outside"
     outside.write_text("preserved", encoding="utf-8")
 
@@ -262,16 +254,14 @@ def test_example_output_preparation_replaces_only_the_owned_root(
 @pytest.mark.parametrize(
     ("name", "module", "inspection_tools"),
     (
-        ("isolated_satellites", isolated, ()),
         ("complete_static_emulator", complete, ("topology", "zone")),
-        ("large_static_network", large, ()),
         (
             "mini_satellite_internet",
             mini,
             (
                 "topology",
                 "zone",
-                "dynamic-slice",
+                "slice",
                 "planner",
                 "bpf-compiler",
             ),
@@ -320,24 +310,45 @@ def test_formal_examples_emit_one_user_facing_output_tree(
     result = module.main()
     assert result in (None, 0)
     expected_root = {"start.sh", "cleanup.sh", "runtime"}
+    if name == "mini_satellite_internet":
+        expected_root.update(
+            {
+                ".compose-project-name",
+                "inputs",
+                "run.sh",
+                "launch.sh",
+            }
+        )
     if inspection_tools:
         expected_root.add("inspection")
     assert {path.name for path in output.iterdir()} == expected_root
     assert not any(
         (output / forbidden).exists()
-        for forbidden in ("emulator", "simulator", "dynamic-slice", "tools")
+        for forbidden in ("emulator", "simulator", "slice", "tools")
     )
     assert {
         path.name for path in (output / "runtime").iterdir()
     } == {"docker-compose.yml", "compiler-output.txt"}
-    for script_name in ("start.sh", "cleanup.sh"):
+    script_names = ["start.sh", "cleanup.sh"]
+    if name == "mini_satellite_internet":
+        script_names.extend(("run.sh", "launch.sh"))
+        assert {
+            path.name for path in (output / "inputs").iterdir()
+        } == {
+            "execution.json",
+            "scenario.yaml",
+            "traffic-workload.json",
+            "zones.yaml",
+        }
+    for script_name in script_names:
         script = output / script_name
         assert script.is_file()
         assert script.stat().st_mode & 0o111
-        assert (
-            'COMPOSE_FILE="$SCRIPT_DIR/runtime/docker-compose.yml"'
-            in script.read_text(encoding="utf-8")
-        )
+        if script_name in {"start.sh", "cleanup.sh"}:
+            assert (
+                'COMPOSE_FILE="$SCRIPT_DIR/runtime/docker-compose.yml"'
+                in script.read_text(encoding="utf-8")
+            )
 
     if not inspection_tools:
         return
@@ -345,14 +356,18 @@ def test_formal_examples_emit_one_user_facing_output_tree(
     tool_directories = {
         path.name for path in inspection.iterdir() if path.is_dir()
     }
-    assert tool_directories == set(inspection_tools)
+    expected_directories = set(inspection_tools)
+    if name == "mini_satellite_internet":
+        assert (output / "inputs/traffic-workload.json").is_file()
+        assert not (inspection / "traffic").exists()
+    assert tool_directories == expected_directories
     for tool_name in inspection_tools:
         assert (inspection / tool_name / "index.html").is_file()
     assert not any(
         path.name in {
             "topology.json",
             "probes.json",
-            "dynamic-slice.json",
+            "slice-difference.json",
             "planner-inspection.json",
             "bpf-compiler-inspection.json",
         }
@@ -385,19 +400,10 @@ def test_formal_examples_and_package_have_no_v1_or_constellation_path() -> None:
 
 
 def test_small_examples_show_public_construction_without_file_facades() -> None:
-    isolated_source = Path(isolated.__file__).read_text(encoding="utf-8")
     emu_source = Path(emu.__file__).read_text(encoding="utf-8")
     complete_source = Path(complete.__file__).read_text(encoding="utf-8")
 
-    for forbidden_boundary in (
-        "NodeId",
-        "SimulatorStaticInput",
-        "create_simulator_static_input",
-        "create_emulator_node_index",
-    ):
-        assert forbidden_boundary not in isolated_source
-
-    for source in (isolated_source, emu_source):
+    for source in (emu_source,):
         assert "load_static_emulator_config" not in source
         assert "create_static_emulator" not in source
         assert "scenario.yaml" not in source
@@ -524,38 +530,3 @@ def test_canonical_simu_bounds_unbounded_timeline_display(
     assert timestamp_line.count("2026-01-01T") == (
         simu.UNBOUNDED_TIMESTAMPS_TO_DISPLAY
     )
-
-
-def test_large_example_shows_load_create_and_input_generation_directly() -> None:
-    source = Path(large.__file__).read_text(encoding="utf-8")
-
-    assert "load_static_emulator_config" in source
-    assert "create_static_emulator" in source
-    assert "create_simulator_static_input" in source
-    assert "create_emulator_node_index" not in source
-    assert "emulator_node_index" not in source
-    assert "from skyseed_v2.configuration.emulator import" in source
-    assert "from skyseed_v2.emulator import create_static_emulator" in source
-    assert "from skyseed_v2.emulator.construction import" not in source
-    assert "from skyseed_v2.emulator_to_simulator import" in source
-    assert "from skyseed_v2.application import" not in source
-    assert "from skyseed_v2.serialization import" not in source
-    assert "from skyseed_v2 import" not in source
-    assert "@dataclass" not in source
-    assert "safe_load" not in source
-    assert "scenario-summary.json" not in source
-    assert "LargeStaticScenario" not in source
-    assert "LargeStaticSummary" not in source
-
-    readme = (EXAMPLES_ROOT / "large_static_network/README.md").read_text(
-        encoding="utf-8"
-    )
-    for required_explanation in (
-        "specialized example uses YAML",
-        "not an Emulator subclass",
-        "result wrapper",
-        "immutable static input consumed by Simulator",
-        "Config, a SEED Registry",
-        "container inventory",
-    ):
-        assert required_explanation in readme

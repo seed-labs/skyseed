@@ -1,4 +1,4 @@
-"""Construct the Emulator for the richer Dynamic Slice reference example."""
+"""Construct the Emulator for the richer Slice / Difference reference example."""
 
 from __future__ import annotations
 

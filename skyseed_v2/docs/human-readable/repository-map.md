@@ -8,6 +8,7 @@ collapsed. The gate derives this exact graph from production AST imports.
 ```mermaid
 flowchart LR
     ROOT["skyseed_v2 facade"]
+    APP["private generated BPF application composition"]
     SHARED["shared"]
     CONFIG["configuration facade/shared YAML"]
     CONFIG_EMU["configuration/emulator"]
@@ -26,6 +27,9 @@ flowchart LR
     COMPOSE["compose"]
     BPF["backend/bpf"]
 
+    APP --> BPF
+    APP --> SHARED
+    APP --> SIM
     BRIDGE --> ENTITIES
     BRIDGE --> INPUT
     BRIDGE --> SEED
@@ -64,6 +68,7 @@ flowchart LR
     SLICING --> SIM
     SLICING --> TOPOLOGY
     PLANNING --> SHARED
+    PLANNING --> SIM
     PLANNING --> SLICING
     TOPOLOGY --> CONFIG_SIM
     TOPOLOGY --> INPUT
@@ -72,9 +77,11 @@ flowchart LR
     BPF --> SIM
 ```
 
-`COMPOSE` is intentionally isolated from other production packages. `BPF` is
-an intentionally one-way downstream consumer of public Simulator and shared
-facts; Simulator has no reverse edge. External
+`APP` is the single root-private generated-experiment composition entry and is
+not a BPF backend package. `COMPOSE` has no outgoing production-package
+dependency. `BPF` consumes public
+Simulator/shared facts and no Compose package object. Simulator and Compose
+have no reverse edge into BPF. External
 stdlib/dependency imports, including upstream SEED, are outside this internal
 graph. Module-level dependency validation remains acyclic even where collapsed
 facade groups show edges in both directions.

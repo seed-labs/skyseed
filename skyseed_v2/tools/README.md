@@ -1,20 +1,30 @@
 # Repository-local Inspection Tools
 
 These packages generate private, offline views from already-created formal
-objects. They are not installed as `skyseed_v2`, do not mutate domain objects,
-and never provide fallback results.
+objects or already-persisted post-run evidence. They are not installed as
+`skyseed_v2`, do not mutate domain objects, and never provide fallback results.
 
-Legend: `A --> B` means the output of Tool stage A is the only input of stage
-B.
+Legend: every edge below is labeled with its exact read/write relationship. The first
+lane is generation-time formal-object inspection; the other two are post-run
+evidence inspection. None of the Tools owns production lifecycle or fact
+retention.
 
 ```mermaid
 flowchart LR
-    FORMAL["formal Topology / Slicer / Plan results"] --> READ["reader: detached read snapshot"]
-    READ --> PROJECT["projection: private view data"]
-    PROJECT --> ANALYZE["non-authoritative display analysis"]
-    ANALYZE --> UI["renderer: final view to offline UI"]
-    UI --> WRITE["writer: filesystem artifacts"]
+    FORMAL["Topology / Slicer / Plan / compiled values"] -->|generation-time read by| GTOOLS["Topology / Zone / Slice / Planner / BPF Compiler Tools"]
+    GTOOLS -->|write static non-authoritative views| GART["generation-time inspection artifacts"]
+
+    RUNNER["detached Runner handoff + runner-events.jsonl"] -->|post-run read by| RTOOL["Runner Inspection Tool"]
+    RTOOL -->|writes static non-authoritative view| RART["Runner inspection artifact"]
+
+    TRAFFIC["traffic JSONL + Slice/Compiler evidence"] -->|post-run read by| TTOOL["Traffic / Path Replay Tool"]
+    TTOOL -->|writes static non-authoritative replay| TART["Traffic replay artifact"]
 ```
+
+Within each Tool, the applicable implementation responsibilities remain:
+`reader → projection → optional display_analysis → renderer → artifact_writer`.
+Runner and Traffic readers consume detached files/mappings rather than live
+formal objects, and a small Tool may colocate adjacent responsibilities.
 
 Legend: `A -.-> B` means validation A consumes the already-written artifact B;
 it is not a Tool pipeline stage.
@@ -24,23 +34,34 @@ flowchart LR
     SMOKE["browser smoke in scripts/"] -.-> ARTIFACT["written HTML artifact"]
 ```
 
-The five tools remain deliberately separate:
+The seven tools remain deliberately separate:
 
 - `topology/` reads the static owner tree and facade identity;
 - `zone/` selects observation probes, then records authoritative membership
   and resolution returned by Topology;
-- `dynamic_slice/` reads one exact Slicer's retained Slice, resolved paths,
+- `slice/` reads one exact Slicer's retained Slice, resolved paths,
   and adjacent Difference results.
 - `planner/` reads one exact Slicer plus consecutive immutable Plans and
   retained PlanningDecisions, then compares those formal results directly.
 - `bpf_compiler/` reads consecutive immutable Plans plus already-produced
   `BpfCompiledRealization` values and displays their exact supported lowering
   relationships without invoking the Compiler.
+- `runner/` consumes a detached post-cleanup Runner summary, complete recorded
+  event history, and thin runtime-invocation outcome; it presents lifecycle,
+  timing, Maintenance, reclaim, failure, and cleanup evidence without
+  controlling Runner or freshly inspecting kernel/dataplane state.
+- `traffic/` consumes the durable tc-BPF traffic stream, retained Slice
+  Position evidence, and the
+  already-written BPF Compiler inspection artifact; it validates exact
+  generation/boundary/network identity, pairs unambiguous ICMP request/reply
+  records, derives observed flows from telemetry, and renders dependency-free
+  simulation/packet replay without controlling runtime or recomputing satellite
+  positions. The example-owned planned workload is optional schedule context.
 
 Only the Slicer calls Position, Connection, and Route Models. Tools do not
 propagate Position, form Connections, compute Routes, compare slices, update
 the static container network, or create a second authoritative computation
-path. The Dynamic Slice UI's orbit guides and classifications are display-only.
+path. The Slice / Difference UI's orbit guides and classifications are display-only.
 
 Run the compact example:
 
@@ -48,7 +69,7 @@ Run the compact example:
 python examples/complete_static_emulator/main.py
 ```
 
-Run the richer Dynamic Slice reference:
+Run the richer Slice / Difference reference:
 
 ```bash
 python examples/mini_satellite_internet/main.py
@@ -59,6 +80,14 @@ Run the complete Planner inspection workflow as one command:
 ```bash
 python -m examples.mini_satellite_internet.main
 ```
+
+After starting the generated Mini deployment, `output/run.sh` writes the
+post-run Runner bundle to `output/inspection/runner/` on completion,
+controlled interruption, or ordinary Runner failure when finalization can run.
+It also writes `output/inspection/traffic/index.html` from the same run's
+traffic stream, generation-time Slice / Difference artifact, and pre-existing BPF
+Compiler inspection artifact when those inputs form one valid replay evidence
+set; a planned workload augments only its collapsed schedule comparison.
 
 Outputs are written under each example's ignored `output/inspection/`
 directory. Browser validation is performed by the matching smoke scripts in

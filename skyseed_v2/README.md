@@ -131,13 +131,14 @@ CURRENT 和验证记录。只有全部接受条件满足且工作区 clean，当
 
 实现过程中发现设计问题时，应明确提出设计变更，而不是通过代码细节悄悄改变系统行为。
 
-### 未来能力必须单独批准
+### 冻结能力变更必须单独批准
 
-Simulator 语义 Planner 已正式设计并进入首个实现切片；后端准备/编译和
-动态执行能力仍未正式设计。它们未来的名称、owner、package、输入输出和
-执行链必须单独批准。
-`ComposeProjectLauncher` 仅负责当前静态 Compose project 的启动与验证。
-不得通过候选类图、空类型、fallback 或第二条成功路径提前冻结未来设计。
+Simulator 正式拥有语义 Planner；BPF Compiler 与 `BpfRunner` 的所有权和
+边界已获批准。权威架构见 [`docs/accepted-design.md`](docs/accepted-design.md)，
+当前状态见 [`docs/CURRENT.md`](docs/CURRENT.md)。改变已冻结的所有权/公共合同，
+或引入新 backend、dataplane、公共 plugin、lifecycle authority，必须先获得
+明确设计批准。`ComposeProjectLauncher` 是可选 deployment utility，不拥有
+`BpfRunner` lifecycle。
 v1 只能围绕当前切片做定向事实调查，不能整体迁移。测试 PASS 也不能
 替代真实执行证据。
 

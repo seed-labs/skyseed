@@ -20,12 +20,22 @@ for exact semantics.
 | TopologySlice | one atomically published immutable Position/Connection/Route result | [Timeline/Slice/Difference](../codex-reference/timeline-slice-difference-contracts.md) |
 | TopologyDifference | on-request sparse change for retained adjacent Slices | [Timeline/Slice/Difference](../codex-reference/timeline-slice-difference-contracts.md) |
 | Planner | persistent Simulator sibling that incrementally converts Difference evolution into semantic plans | [planning](../codex-reference/planning-contracts.md) |
+| available Differences | exact not-yet-published `TopologyDifference` values available to the Planner policy | [planning](../codex-reference/planning-contracts.md) |
+| planning window | exact available-Difference prefix selected for Models and Coordination in one synchronization | [planning](../codex-reference/planning-contracts.md) |
+| publication window | non-empty planning-window prefix owned by the next published Plan | [planning](../codex-reference/planning-contracts.md) |
 | Plan | immutable backend-independent Connection/Parameter/Forwarding transition publication for one continuous non-overlapping `(start, end]` interval | [planning](../codex-reference/planning-contracts.md) |
 | Forwarding precedence | Plan-owned same-time `predecessor → successor` semantic constraint; not tuple order or an execution schedule | [planning](../codex-reference/planning-contracts.md) |
 | nominal semantic time | simulation timestamp to which Planner assigns a transition, not runtime completion time | [planning](../codex-reference/planning-contracts.md) |
 | BPF Compiler | one-shot deterministic downstream lowering over Plan and approved read-only Simulator facts | [BPF Compiler](../codex-reference/bpf-compiler.md) |
 | BpfCompiledRealization | immutable symbolic interval handoff and next-compilation intended baseline; not live runtime state | [BPF Compiler](../codex-reference/bpf-compiler.md) |
+| BpfRunner | sole stateful live BPF lifecycle owner attached by exact live Compose project identity; independently validates/freezes its required foundation and owns rolling Preparation/Maintenance, Main activation, reclaim, timing and scoped cleanup | [ownership](../codex-reference/ownership-lifecycle.md) |
+| preparation lookahead | explicit rolling nominal-time bound for extending the continuous READY prefix beyond ACTIVE; exact-next readiness remains mandatory | [accepted design](../accepted-design.md) |
+| preparation boundary depth | explicit positive rolling count bound on continuous READY future boundaries; startup counts bootstrap, while ACTIVE itself never counts | [accepted design](../accepted-design.md) |
+| ready frontier | nominal timestamp of the last boundary in the continuous prepared inactive prefix; it may be limited by time, depth, or input and is not a realization end Slice ID | [accepted design](../accepted-design.md) |
+| active frontier | latest nominal timestamp whose prepared semantics Main has activated; no boundary is active before bootstrap activation | [accepted design](../accepted-design.md) |
+| input frontier | highest boundary covered by Runner-consumed future compiled work | [accepted design](../accepted-design.md) |
 | Inspection Tool | repository-local read-only projection/display/artifact pipeline | [user guide](../user-guides/inspection-tools.md) |
+| Traffic / Path Replay Tool | post-run read-only consumer of durable tc-BPF traffic, retained Slice Position/on-request Difference evidence, existing BPF Compiler inspection evidence, and optional example-owned planned-workload comparison context; it is neither a generator, collector, Compiler, nor forwarding authority | [user guide](../user-guides/inspection-tools.md) |
 | ComposeProjectLauncher | launcher/verifier for an already compiled static Compose project | [system overview](system-overview.md) |
 
 The object names and owner cardinalities are in

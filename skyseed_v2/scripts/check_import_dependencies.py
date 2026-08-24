@@ -36,6 +36,8 @@ RETIRED_PATHS = (
 def _collapsed_group(module_name: str) -> str:
     if module_name == "skyseed_v2":
         return "ROOT"
+    if module_name == "skyseed_v2._generated_bpf_execution":
+        return "APP"
     if module_name == "skyseed_v2.emulator_to_simulator":
         return "BRIDGE"
     if module_name == "skyseed_v2.backend" or module_name.startswith(

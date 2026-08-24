@@ -7,30 +7,38 @@ recorded only in [`CURRENT.md`](../CURRENT.md).
 
 ## Scope
 
-Simulator-owned semantic planning from already-generated adjacent
-`TopologyDifference` facts into one immutable backend-independent `Plan`.
+Simulator-owned semantic planning in which `Planner.synchronize()` requests
+new adjacent `TopologyDifference` values from its exact sibling `Slicer`, then
+consumes them to publish one immutable backend-independent `Plan`.
 
 ## Ownership and lifecycle
 
 ```text
 Simulator → create_topology() → create_slicer(models)
-→ create Slice/Difference state → create_planner(algorithms)
+→ optionally create_planner(algorithms)
+→ create Slice state and synchronize Planner as facts become available
 ```
 
 Simulator owns at most one Planner and binds it to its own exact sibling
-Slicer. Planner does not advance Slicer, generate Slice values, compare Slice
-values independently, call RouteModel, or orchestrate continuous execution.
+Slicer. Topology, Slicer, and Planner are peer-level components inside the
+Simulator domain. Planner does not advance Slicer, generate Slice values,
+compare Slice values independently, call RouteModel, or orchestrate continuous
+execution; during synchronization it asks Slicer to create each newly available
+adjacent Difference from retained Slice values.
 Planner retains the five injected Policy/Model role references, owns its
 private continuous planning state and current published Plan, and references
 the sibling Slicer. Plan owns coverage, three transition tuples, Forwarding
 precedences and its temporal index; Model inputs do not become owner objects.
 
-Creation discovers Differences currently available from retained Slice
-`0..N`. HorizonPolicy first selects the visible future, then a non-empty prefix
-for publication. Models and Coordination see the full visible range; the Plan
-contains only its publication prefix. Later `synchronize()` extends or consumes
-the not-yet-published suffix without replaying settled history. A Planner may
-exist before Slice 1; `get_plan()` then fails until a Difference is available.
+Planner creation requires the exact sibling Slicer but no real Slice or
+Difference. Creation and later `synchronize()` discover available Differences
+by calling that Slicer over retained Slice `0..N`.
+PlanningWindowPolicy first selects the planning window, then a non-empty
+publication window from its prefix. Models and Coordination see the full
+planning window; the Plan contains only its publication window. Later
+`synchronize()` extends or consumes the not-yet-published suffix without
+replaying settled history. A Planner may exist before Slice 1; `get_plan()`
+then fails until a Difference is available.
 
 ## Plan and transition contract
 
@@ -71,10 +79,10 @@ interval. It is semantic planning time, not runtime completion time.
 
 | Role | First implementation | Boundary |
 |---|---|---|
-| `PlanningHorizonPolicy` | `AllAvailablePlanningHorizonPolicy` | select one exact visible prefix and one non-empty publication prefix |
-| `ConnectionPlanningModel` | sample-boundary and midpoint models | receive selected/affected ranges and reusable transitions; retain exact add/remove evolution, estimate time, mark matched short lifetimes as candidates |
-| `ParameterPlanningModel` | accumulated absolute deadband | receive selected/affected ranges, reusable transitions, and immutable observed/planned baselines; compare observed values with last planned target |
-| `ForwardingPlanningModel` | dependency-aware formal-path planning | receive selected/affected ranges, reusable transitions, and narrow immutable formal path identities; produce transitions plus required same-time precedences; never receive Slicer or invoke RouteModel |
+| `PlanningWindowPolicy` | `AllAvailablePlanningWindowPolicy` | select one exact planning-window prefix from available Differences and one non-empty publication-window prefix |
+| `ConnectionPlanningModel` | sample-boundary and midpoint models | receive planning-window/affected ranges and reusable transitions; retain exact add/remove evolution, estimate time, mark matched short lifetimes as candidates |
+| `ParameterPlanningModel` | accumulated absolute deadband | receive planning-window/affected ranges, reusable transitions, and immutable observed/planned baselines; compare observed values with last planned target |
+| `ForwardingPlanningModel` | dependency-aware formal-path planning | receive planning-window/affected ranges, reusable transitions, and narrow immutable formal path identities; produce transitions plus required same-time precedences; never receive Slicer or invoke RouteModel |
 | `CoordinationPolicy` | `DefaultCoordinationPolicy` | receive all three Model results and narrow route facts; return coherent transition collections and decisions without replacing fixed validity |
 
 Minimum dwell only identifies a candidate. Planner gives CoordinationPolicy
@@ -84,7 +92,7 @@ retain them or jointly suppress the lifetime, related parameters, and transient
 forwarding states. Planner validates the returned result.
 
 The public Model contracts deliberately expose `differences`, the complete
-formal Difference sequence visible for the selected horizon/lookahead;
+formal Difference sequence in the planning window;
 `affected_differences`, the newly added or otherwise affected suffix requiring
 incremental algorithm work; and `previous_transitions`, previously planned but
 still-unpublished work available for reuse or local adjustment. The latter two
@@ -104,18 +112,20 @@ or candidate DTO.
 
 ## Incremental state
 
-Planner privately retains consumed Differences, uncommitted visible overlap,
-active planned Connections, observed parameters, last-planned targets, compact
+Planner privately retains consumed Differences, the unpublished
+planning-window overlap, active planned Connections, observed parameters,
+last-planned targets, compact
 pending deadband ranges, current planned Forwarding state, per-Slice formal
 route/path evidence, and decisions. It also retains the corresponding planned
 baseline at the last published boundary. None of that state is public Plan
 payload.
 
 On a tail extension, Models receive only the affected new suffix alongside
-reusable unpublished coordinated transitions and state at the end of prior
-lookahead. Coordination may revise that still-unpublished overlap. After fixed
-validation, Planner publishes only the selected prefix, advances its private
-published baseline from planned transitions, and retains any later lookahead.
+reusable unpublished coordinated transitions and state at the end of the prior
+planning window. Coordination may revise that still-unpublished overlap. After
+fixed validation, Planner publishes only the publication window, advances its
+private published baseline from planned transitions, and retains any later
+planning-window portion.
 It may rebuild outer immutable collections/index for the new Plan, but does not
 replay already-settled Differences or reset to the raw Slice at a Plan boundary.
 
@@ -127,7 +137,8 @@ coverage or content.
 
 ## Fixed invariants
 
-- visible and publication Differences are exact consumed identity prefixes;
+- planning-window and publication-window Differences are exact available
+  identity prefixes;
 - published coverage begins at the prior Plan end and is non-overlapping;
 - planned Connection evolution is non-contradictory and never exceeds the
   coverage-end formal Connection identities;
@@ -177,7 +188,7 @@ prepare/commit/discard protocol.
 
 No backend/resource fields, heterogeneous canonical transition store, fake
 time offsets, route recomputation, Slicer advancement, settled-history model
-replay, public lookahead/window/baseline/checkpoint DTO, generic dependency
+replay, public planning-window/baseline/checkpoint DTO, generic dependency
 graph, implicit fallback, or root-package Planner export.
 
 ## Maintenance

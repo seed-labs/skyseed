@@ -30,9 +30,9 @@ from skyseed_v2.emulator_to_simulator import create_simulator_static_input
 
 
 EXAMPLE_ROOT = Path(__file__).resolve().parent
-DEFAULT_START_TIME = datetime(2026, 1, 1, tzinfo=timezone.utc)
-DEFAULT_SLICE_INTERVAL = timedelta(seconds=120)
-REAL_SLICE_COUNT = 20
+DEFAULT_START_TIME = datetime(2026, 1, 1, 0, 0, 30, tzinfo=timezone.utc)
+DEFAULT_SLICE_INTERVAL = timedelta(seconds=10)
+REAL_SLICE_COUNT = 64
 DEFAULT_END_TIME = (
     DEFAULT_START_TIME + (REAL_SLICE_COUNT - 1) * DEFAULT_SLICE_INTERVAL
 )
@@ -62,16 +62,16 @@ PARAMETER_THRESHOLDS = {
 }
 
 
-class _VisibleAllPublishFour:
-    """Keep all generated future visible and publish four Differences."""
+class _PlanAllAvailablePublishFour:
+    """Plan all available Differences and publish four Differences."""
 
     __slots__ = ()
 
-    def select_differences(self, available_differences):
+    def select_planning_differences(self, available_differences):
         return tuple(available_differences)
 
-    def select_publication_differences(self, visible_differences):
-        return tuple(visible_differences[:PUBLICATION_DIFFERENCE_COUNT])
+    def select_publication_differences(self, planning_differences):
+        return tuple(planning_differences[:PUBLICATION_DIFFERENCE_COUNT])
 
 
 def create_mini_satellite_internet_simulator(
@@ -79,7 +79,7 @@ def create_mini_satellite_internet_simulator(
     *,
     zone_layout_path: Path = ZONE_LAYOUT_FILE,
 ) -> Simulator:
-    """Create the real bounded Simulator and publish its complete Slice range."""
+    """Create and configure the Mini Simulator without advancing its Slicer."""
 
     if not isinstance(emulator, Emulator):
         raise TypeError("emulator must be an upstream Emulator")
@@ -123,9 +123,6 @@ def create_mini_satellite_internet_simulator(
         ),
         route_model=HopCountRouteModel(),
     )
-    created = slicer.create_all_slices()
-    if len(created) != REAL_SLICE_COUNT:
-        raise AssertionError("bounded reference Timeline produced wrong count")
     return simulator
 
 
@@ -134,7 +131,7 @@ def create_mini_satellite_internet_slicer(
     *,
     zone_layout_path: Path = ZONE_LAYOUT_FILE,
 ) -> Slicer:
-    """Project one Emulator into the formal bounded A-F chain."""
+    """Create the configured Mini Slicer without advancing its Timeline."""
 
     return create_mini_satellite_internet_simulator(
         emulator,
@@ -144,14 +141,67 @@ def create_mini_satellite_internet_slicer(
 
 def prepare_mini_satellite_internet_planning(
     simulator: Simulator,
+    planner: Planner | None = None,
 ) -> tuple[Planner, tuple[Plan, ...], dict[str, object]]:
     """Create, configure, and fully progress the reference Planner branch."""
 
     if not isinstance(simulator, Simulator):
         raise TypeError("simulator must be a Simulator")
     slicer = simulator.get_slicer()
-    planner = simulator.create_planner(
-        horizon_policy=_VisibleAllPublishFour(),
+    created_planner = planner is None
+    if created_planner:
+        planner = _create_mini_satellite_internet_planner(simulator)
+    elif not isinstance(planner, Planner):
+        raise TypeError("planner must be a Planner or None")
+    plans = [planner.get_plan() if created_planner else planner.synchronize()]
+    while plans[-1].end_slice_id < slicer.get_latest_slice_id():
+        plans.append(planner.synchronize())
+    configuration = {
+        "scenario_identity": "mini_satellite_internet",
+        "slice_interval_seconds": DEFAULT_SLICE_INTERVAL.total_seconds(),
+        "real_slice_count": REAL_SLICE_COUNT,
+        "planning_window": "all generated unpublished Differences",
+        "planning_through_slice_id": slicer.get_latest_slice_id(),
+        "publication_difference_count": PUBLICATION_DIFFERENCE_COUNT,
+        "connection_timing": "midpoint",
+        "minimum_dwell_seconds": MINIMUM_DWELL_SECONDS,
+        "parameter_thresholds": PARAMETER_THRESHOLDS,
+        "forwarding_model": "DependencyAwareForwardingPlanningModel",
+        "coordination_policy": "DefaultCoordinationPolicy",
+    }
+    return planner, tuple(plans), configuration
+
+
+def create_mini_satellite_internet_progression(
+    input_directory: Path,
+    *,
+    emulator: Emulator | None = None,
+) -> tuple[Simulator, Planner]:
+    """Restore the one shared Mini simulation/progression definition."""
+
+    inputs = Path(input_directory)
+    from examples.mini_satellite_internet.emu import (
+        build_mini_satellite_internet_emulator,
+    )
+
+    if emulator is None:
+        emulator = build_mini_satellite_internet_emulator(inputs / "scenario.yaml")
+    elif not isinstance(emulator, Emulator):
+        raise TypeError("emulator must be an upstream Emulator or None")
+    simulator = create_mini_satellite_internet_simulator(
+        emulator,
+        zone_layout_path=inputs / "zones.yaml",
+    )
+    return simulator, _create_mini_satellite_internet_planner(simulator)
+
+
+def _create_mini_satellite_internet_planner(simulator: Simulator) -> Planner:
+    """Bind the canonical Planner models without advancing the Slicer."""
+
+    if not isinstance(simulator, Simulator):
+        raise TypeError("simulator must be a Simulator")
+    return simulator.create_planner(
+        planning_window_policy=_PlanAllAvailablePublishFour(),
         connection_model=MidpointConnectionPlanningModel(
             minimum_dwell=timedelta(seconds=MINIMUM_DWELL_SECONDS),
         ),
@@ -165,26 +215,10 @@ def prepare_mini_satellite_internet_planning(
         forwarding_model=DependencyAwareForwardingPlanningModel(),
         coordination_policy=DefaultCoordinationPolicy(),
     )
-    plans = [planner.get_plan()]
-    while plans[-1].end_slice_id < slicer.get_latest_slice_id():
-        plans.append(planner.synchronize())
-    configuration = {
-        "scenario_identity": "mini_satellite_internet",
-        "slice_interval_seconds": DEFAULT_SLICE_INTERVAL.total_seconds(),
-        "real_slice_count": REAL_SLICE_COUNT,
-        "horizon_visibility": "all generated unpublished Differences",
-        "visible_through_slice_id": slicer.get_latest_slice_id(),
-        "publication_difference_count": PUBLICATION_DIFFERENCE_COUNT,
-        "connection_timing": "midpoint",
-        "minimum_dwell_seconds": MINIMUM_DWELL_SECONDS,
-        "parameter_thresholds": PARAMETER_THRESHOLDS,
-        "forwarding_model": "DependencyAwareForwardingPlanningModel",
-        "coordination_policy": "DefaultCoordinationPolicy",
-    }
-    return planner, tuple(plans), configuration
 
 
 __all__ = [
     "create_mini_satellite_internet_simulator",
     "create_mini_satellite_internet_slicer",
+    "create_mini_satellite_internet_progression",
 ]

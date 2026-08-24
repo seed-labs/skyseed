@@ -143,5 +143,5 @@ implementation state is recorded only in
 ## Maintenance
 
 Update Timeline/Slicer/Slice/Difference code, atomic retry and retention tests,
-Difference tests, Dynamic Tool projections, Simulator diagrams, failure
+Difference tests, Slice / Difference Tool projections, Simulator diagrams, failure
 reference, and this file.

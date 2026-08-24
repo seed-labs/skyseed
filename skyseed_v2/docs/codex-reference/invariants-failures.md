@@ -29,8 +29,9 @@ or guess an alternative identity.
 | Zone membership | owned distinct matches; owned winner | `LookupError` / `ValueError` |
 | Slicer Model chain | complete typed output; atomic publication | `TypeError` / `ValueError` |
 | path/Difference | retained lineage, valid chain, adjacent IDs | `KeyError` / `LookupError` / `ValueError` |
-| Planner | visibility/publication selected before Models, exact input prefixes, continuous `(start, end]` coverage, planned-state continuity, active-lifetime parameters, supported forwarding and valid same-time precedences | `TypeError` / `ValueError` / `RuntimeError` |
+| Planner | planning/publication windows selected before Models, exact input prefixes, continuous `(start, end]` coverage, planned-state continuity, active-lifetime parameters, supported forwarding and valid same-time precedences | `TypeError` / `ValueError` / `RuntimeError` |
 | Compose launcher | exact project/file/services/digest/final states | `ComposeMaterializationError` |
+| BPF Runner | exact-next plus gap-free dual-bound rolling READY coverage; exact frozen Compose/container/PID/netns incarnation; real Preparation before READY; Main-only active transition; owned-resource cleanup | `TypeError` / `ValueError` / `RuntimeError`; invalid bound combinations fail at construction, stale evidence fails before mutation, resident-capacity deadlock fails before preload, and partial activation failure stops progression without claiming rollback |
 | Tools | current-run artifact or conspicuous failure artifact | no stale/fallback success |
 
 ## Invariants

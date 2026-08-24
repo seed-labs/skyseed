@@ -2,8 +2,9 @@
 
 This package owns the three replaceable Model Protocols, the `Slicer`
 lifecycle, published `TopologySlice` values, route/connection values, and
-exact `TopologyDifference` values. Built-in algorithms are owned by
-`../models/`.
+the exact `TopologyDifference` value contract. Slicer creates each Difference
+on request from retained adjacent Slices but does not retain it; its caller
+owns the returned immutable value. Built-in algorithms are owned by `../models/`.
 
 ## Local assembly / ownership map
 
@@ -306,7 +307,7 @@ Built-in realizations live in `../models/`; no Model calls another Model.
 ## Examples and tests
 
 The readable assembly is `examples/mini_satellite_internet/simu.py`. Focused
-tests are `tests/unit/test_dynamic_slice_main_chain.py` and
+tests are `tests/unit/test_slice_difference_main_chain.py` and
 `tests/unit/test_topology_difference.py`; Tool tests verify read-only
 consumption.
 

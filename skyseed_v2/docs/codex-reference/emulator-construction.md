@@ -64,7 +64,7 @@ legacy constructor, compatibility alias, or partial return.
 ## Prohibited behavior
 
 No Simulator projection, static-input DTO creation, Docker compilation,
-Compose launch, dynamic Slice calculation, example-specific branch, mutable
+Compose launch, Slice calculation, example-specific branch, mutable
 global registry, forwarding import, or alternative owner tree.
 
 ## Extension points

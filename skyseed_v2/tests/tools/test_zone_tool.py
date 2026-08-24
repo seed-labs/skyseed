@@ -541,8 +541,15 @@ def test_zone_renderer_writes_embedded_offline_audit_artifacts(
     assert 'id="zone-globe"' in html
     assert 'id="zone-map"' in html
     assert "display_boundary" in html
-    assert "longitudeAt" in html
     assert "spherePoint(station.latitude_deg,station.longitude_deg" in html
+    assert "function drawGlobe(probes)" in html
+    assert "function drawMap(probes)" in html
+    assert "function boundaryPaths(boundary)" in html
+    assert "function renderTable(probes)" in html
+    assert "const visibleProbes=()" in html
+    assert "canvas.dataset.boundarySegments" in html
+    assert "map.dataset.boundaryPaths" in html
+    assert 'canvas.addEventListener("pointermove"' in html
     assert "球体采用单位半径" in html
     assert "不声称是大圆线" in html
     assert "不重新调用正式 API" in html

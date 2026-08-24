@@ -16,9 +16,10 @@ Difference rules live in the focused references linked below.
 Simulator creates one Slicer with one distinct instance per Model role. Slicer
 owns the call order, atomic publication, and retained-slice queries. Callers
 and read-only Tools consume exact retained `TopologySlice`,
-`ConnectionSlice`, `RouteSlice`, and on-request `TopologyDifference` values.
-read-only Tools consume exact retained values; they do not create a parallel
-calculation.
+`ConnectionSlice`, and `RouteSlice` values. The sibling Planner asks Slicer to
+create adjacent `TopologyDifference` values on request and consumes them;
+Slicer does not retain those values. Read-only Tools consume the same formal
+facts without creating a parallel calculation.
 
 ## Contract
 
@@ -66,7 +67,8 @@ ID nor pending timestamp.
 ## Prohibited behavior
 
 No Model calls outside Slicer, fallback Model, partial Slice, non-adjacent
-Difference, Tool-side comparator, backend operation, Planner, or Runner.
+Difference, Tool-side comparator, backend operation, Planner-owned Slice/
+Difference production, or Runner involvement.
 
 ## Extension points
 

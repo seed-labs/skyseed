@@ -47,7 +47,7 @@ object model.
 | Public package | Owner classification | Local README |
 |---|---|---|
 | `skyseed_v2` | narrow root entity facade | `src/skyseed_v2/README.md` |
-| `skyseed_v2.backend.bpf` | one-shot symbolic BPF Compiler and immutable handoff | `src/skyseed_v2/backend/bpf/README.md` |
+| `skyseed_v2.backend.bpf` | symbolic BPF Compiler/immutable handoff and live BpfRunner lifecycle | `src/skyseed_v2/backend/bpf/README.md` |
 | `skyseed_v2.compose` | compiled Compose project launcher/evidence | `src/skyseed_v2/compose/README.md` |
 | `skyseed_v2.configuration` | declaration namespace boundary | `src/skyseed_v2/configuration/README.md` |
 | `skyseed_v2.configuration.emulator` | Emulator declarations and YAML | `src/skyseed_v2/configuration/emulator/README.md` |
@@ -68,27 +68,31 @@ object model.
 
 | Changed path | Owner/contract | Human diagram | Example/Tool consumer | Required focused verification |
 |---|---|---|---|---|
-| `backend/bpf/` | downstream symbolic BPF lowering | `src/skyseed_v2/backend/bpf/README.md` | canonical mini Emulator/Simulator/Planner chain; future runtime consumer | focused Compiler contracts, architecture gates, canonical main-chain smoke |
-| `configuration/emulator/` | Emulator declarations/YAML | `src/skyseed_v2/configuration/emulator/README.md` | complete/dynamic/large examples | static configuration and YAML tests |
-| `configuration/simulator/` | Zone declarations/YAML | `src/skyseed_v2/configuration/simulator/README.md` | dynamic example, Zone Tool | Zone and YAML tests |
-| `emulator/entities/` | Emulator entity owner tree | `src/skyseed_v2/emulator/entities/README.md` | all Emulator examples, compiler/projector | entity, identity, integration tests |
-| `emulator/seedemu/` | upstream SEED extension boundary | `src/skyseed_v2/emulator/seedemu/README.md` | complete/isolated/large examples | SEED lifecycle, query helper, standard compiler tests |
-| `emulator/construction.py` | config-driven Emulator entry | `src/skyseed_v2/emulator/README.md` | complete/dynamic/large examples | creation/equivalence tests |
+| `backend/` | non-facade downstream backend namespace; BPF is the primary implemented backend | `src/skyseed_v2/backend/README.md` | package navigation only | import/architecture gates; another backend requires prior architecture approval |
+| `backend/bpf/` | downstream symbolic BPF lowering plus live Runner lifecycle | `src/skyseed_v2/backend/bpf/README.md` | canonical mini Emulator/Simulator/Planner/Compiler/Runner chain | focused Compiler/Runner contracts, architecture gates, canonical main-chain and real runtime smoke |
+| `backend/bpf/_runner/` | private BpfRunner runtime-realization, privilege-command and telemetry implementation grouping | `src/skyseed_v2/backend/bpf/_runner/README.md` | no direct example/public consumer; used only by BpfRunner | focused Runner/telemetry contracts and privilege-boundary tests |
+| `configuration/emulator/` | Emulator declarations/YAML | `src/skyseed_v2/configuration/emulator/README.md` | both maintained runnable examples | static configuration and YAML tests |
+| `configuration/simulator/` | Zone declarations/YAML | `src/skyseed_v2/configuration/simulator/README.md` | canonical Mini, Zone Tool | Zone and YAML tests |
+| `emulator/entities/` | Emulator entity owner tree | `src/skyseed_v2/emulator/entities/README.md` | both maintained runnable examples, compiler/projector | entity, identity, integration tests |
+| `emulator/seedemu/` | upstream SEED extension boundary | `src/skyseed_v2/emulator/seedemu/README.md` | both maintained runnable examples | SEED lifecycle, query helper, standard compiler tests |
+| `emulator/construction.py` | config-driven Emulator entry | `src/skyseed_v2/emulator/README.md` | both maintained runnable examples | creation/equivalence tests |
 | `emulator_to_simulator.py` | sole cross-layer projection | `human-readable/system-overview.md` | all Simulator examples | static-input construction and boundary tests |
 | `simulator/input/` | receiver-owned immutable DTO | `src/skyseed_v2/simulator/input/README.md` | bridge/definition | static-input and dependency tests |
 | `simulator/topology/` | static aggregate/Zone owner | `src/skyseed_v2/simulator/topology/README.md` | Models and all Tools | topology and Zone tests |
-| `simulator/geometry/` | ECEF/geodetic/distance/LOS | `src/skyseed_v2/simulator/geometry/README.md` | built-in Models, Dynamic Tool views | geometry/model tests and SCC |
-| `simulator/slicing/` | dynamic contracts, Slicer, Slice, Difference | `src/skyseed_v2/simulator/slicing/README.md` | Models/Dynamic Tool | main-chain, Difference, Tool boundaries |
-| `simulator/models/` | built-in Position/Connection/Route algorithms | `src/skyseed_v2/simulator/models/README.md` | dynamic example | focused main-chain/model tests |
+| `simulator/geometry/` | ECEF/geodetic/distance/LOS | `src/skyseed_v2/simulator/geometry/README.md` | built-in Models, Slice / Difference Tool views | geometry/model tests and SCC |
+| `simulator/slicing/` | dynamic contracts, Slicer, Slice, Difference | `src/skyseed_v2/simulator/slicing/README.md` | Models/Slice / Difference Tool | main-chain, Difference, Tool boundaries |
+| `simulator/models/` | built-in Position/Connection/Route algorithms | `src/skyseed_v2/simulator/models/README.md` | canonical Mini | focused main-chain/model tests |
 | `simulator/planning/` | semantic Planner, Plan and planning algorithms | `src/skyseed_v2/simulator/planning/README.md` | complete canonical `simu.py` | planning value/algorithm/main-chain tests |
 | `simulator/{definition,timeline,simulator}.py` | Simulator composition/lifecycle | `src/skyseed_v2/simulator/README.md` | Simulator examples | lifecycle/timeline/Planner tests |
-| `compose/launcher.py` | compiled Compose project lifecycle | `src/skyseed_v2/compose/README.md` | complete/large examples | launcher and large integration tests |
-| `shared/` | neutral identity/time primitives | `src/skyseed_v2/shared/README.md` | configuration, Emulator, Simulator | identity/time tests |
-| `tools/topology/` | read-only static projection/UI/artifacts | `human-readable/traceability-map.md` | complete/dynamic examples | Topology Tool and tooling-boundary tests |
-| `tools/zone/` | probes + formal Zone observation/UI/artifacts | `human-readable/traceability-map.md` | complete/dynamic examples | Zone Tool and tooling-boundary tests |
-| `tools/dynamic_slice/` | formal Slicer reads + display/UI/artifacts | `human-readable/traceability-map.md` | dynamic example | Dynamic Tool tests and browser smoke |
+| `compose/launcher.py` | compiled Compose project lifecycle | `src/skyseed_v2/compose/README.md` | maintained examples | launcher and integration tests |
+| `shared/` | neutral identity/time and authority-free durable-evidence mechanics | `src/skyseed_v2/shared/README.md` | configuration, Emulator, Simulator, generated execution, BpfRunner | identity/time plus continuous-progression/Runner history tests |
+| `tools/topology/` | read-only static projection/UI/artifacts | `human-readable/traceability-map.md` | both maintained runnable examples | Topology Tool and tooling-boundary tests |
+| `tools/zone/` | probes + formal Zone observation/UI/artifacts | `human-readable/traceability-map.md` | both maintained runnable examples | Zone Tool and tooling-boundary tests |
+| `tools/slice/` | formal Slicer reads + display/UI/artifacts | `human-readable/traceability-map.md` | canonical Mini | Slice / Difference Tool tests and browser smoke |
 | `tools/planner/` | formal Slicer/Plan/decision reads + private comparison UI/artifacts | `human-readable/traceability-map.md` | dynamic Planner inspection entry | Planner Tool and tooling-boundary tests |
 | `tools/bpf_compiler/` | immutable Plan/compiled-result reads + private lowering UI/artifacts | `human-readable/traceability-map.md` | Mini backend branch and inspection entry | BPF Compiler Tool tests and browser smoke |
+| `tools/runner/` | detached post-run Runner event projection/UI/artifacts | `human-readable/traceability-map.md` | generated Mini automatic runtime | Runner Tool, runtime-finalization and tooling-boundary tests plus controlled-interruption page review |
+| `tools/traffic/` | durable traffic/Slice / Difference/Compiler-evidence read plus optional planned-workload comparison context, exact-generation network validation, ICMP sustained-series/path projection, offline simulation/packet replay UI/artifacts | `human-readable/traceability-map.md` | generated Mini automatic runtime | Traffic replay focused tests plus canonical page review |
 | public package `__init__.py` | import surface | `human-readable/repository-map.md` | all users | public import/export + wheel checks |
 | `docs/accepted-design.md` | architecture anchor | system diagram links | all maintenance | focused anchor consistency |
 | `docs/CURRENT.md` | implementation state | none | all maintenance | focused status consistency |

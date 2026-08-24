@@ -19,7 +19,7 @@ from skyseed_v2.simulator import (
     ForwardingTransition,
     GroundStationRouteTarget,
     MidpointConnectionPlanningModel,
-    PlanningHorizonPolicy,
+    PlanningWindowPolicy,
     SampleBoundaryConnectionPlanningModel,
     RouteKey,
     RoutePatch,
@@ -297,18 +297,18 @@ def test_forwarding_planning_protocol_has_no_slicer_authority() -> None:
     assert "route_path_connection_ids" in precedence_parameters
 
 
-def test_horizon_policy_separates_visibility_from_publication_prefix() -> None:
-    visible_parameters = signature(
-        PlanningHorizonPolicy.select_differences
+def test_window_policy_separates_planning_from_publication_window() -> None:
+    planning_parameters = signature(
+        PlanningWindowPolicy.select_planning_differences
     ).parameters
     publication_parameters = signature(
-        PlanningHorizonPolicy.select_publication_differences
+        PlanningWindowPolicy.select_publication_differences
     ).parameters
 
-    assert tuple(visible_parameters) == ("self", "available_differences")
+    assert tuple(planning_parameters) == ("self", "available_differences")
     assert tuple(publication_parameters) == (
         "self",
-        "visible_differences",
+        "planning_differences",
     )
 
 

@@ -402,7 +402,7 @@ class Topology:
 
     Layer: immutable Simulator aggregate root and query facade. ``Simulator``
     creates it explicitly from ``SimulatorStaticInput`` and then owns it. It is
-    not boundary input, a global resource registry, dynamic Slice or planning
+    not boundary input, a global resource registry, Slice or planning
     service. It is public from ``skyseed_v2.simulator`` because callers consume
     its stable read-only queries.
     """

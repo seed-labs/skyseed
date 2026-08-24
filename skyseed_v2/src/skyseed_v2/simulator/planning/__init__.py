@@ -2,7 +2,7 @@
 
 from .algorithms import (
     AccumulatedDeadbandParameterPlanningModel,
-    AllAvailablePlanningHorizonPolicy,
+    AllAvailablePlanningWindowPolicy,
     ConnectionPlanningModel,
     CoordinationPolicy,
     DefaultCoordinationPolicy,
@@ -10,7 +10,7 @@ from .algorithms import (
     ForwardingPlanningModel,
     MidpointConnectionPlanningModel,
     ParameterPlanningModel,
-    PlanningHorizonPolicy,
+    PlanningWindowPolicy,
     SampleBoundaryConnectionPlanningModel,
 )
 from .planner import Planner
@@ -27,7 +27,7 @@ from .values import (
 
 __all__ = [
     "AccumulatedDeadbandParameterPlanningModel",
-    "AllAvailablePlanningHorizonPolicy",
+    "AllAvailablePlanningWindowPolicy",
     "ConnectionPlanningModel",
     "ConnectionTransition",
     "ConnectionTransitionOperation",
@@ -43,6 +43,6 @@ __all__ = [
     "Plan",
     "Planner",
     "PlanningDecision",
-    "PlanningHorizonPolicy",
+    "PlanningWindowPolicy",
     "SampleBoundaryConnectionPlanningModel",
 ]

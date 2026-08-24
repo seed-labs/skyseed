@@ -18,11 +18,11 @@ ordering constraints, and interval-end intended dynamic state.
 | Fact/capability | Owner | Compiler use / consumer |
 |---|---|---|
 | `Plan` | Simulator Planner | immutable semantic input |
-| retained `TopologySlice` / Topology facts | Simulator Slicer | approved read-only deterministic lookup |
+| retained `TopologySlice` / Topology facts | Simulator Slicer | current API receives the exact Slicer and uses only `get_slice()` / `get_topology()` read-only lookup |
 | `compile_bpf` | BPF backend | one-shot lowering only |
 | `BpfCompiledRealization` | BPF backend | downstream immutable handoff and explicit next-call baseline |
 | container software/files/commands/daemon | future functional Layer through SEED deployment | not installed or modified by BPF backend |
-| PID/netns/ifindex/MAC/veth/bridge/BPF object/map/generation | future runtime owner | never compile-time bound here |
+| PID/netns/ifindex/MAC/veth/BPF object/map state | `BpfRunner` | never compile-time bound here |
 
 ## Contract
 
@@ -30,6 +30,13 @@ Slice-0 compilation starts from the canonical empty dynamic-realization state.
 A nonzero Plan start requires a previous compiled result with an exactly
 matching end Slice/timestamp and topology/Zone-identity signature. There is no
 hidden progression or implicit reconstruction from the current Slice.
+
+The architecture-level input is `Plan + approved read-only Simulator facts +
+explicit previous intended baseline`. The current public API is
+`compile_bpf(plan, *, slicer=exact_slicer, previous=...)`; no separate
+`SlicerFacts` DTO exists. Receiving the exact Slicer is only the present
+read-only access path to retained coverage Slices and static Topology facts. It
+does not make the Compiler a consumer or owner of Slicer progression.
 
 Connection transitions produce symbolic per-direction attachment demands.
 Initial full directional qdisc targets accompany establishment; later
@@ -69,7 +76,9 @@ forwarding change.
 - baseline lineage, Plan/Slice provenance, unique connection resolution,
   planned-resource use, and interval-end consistency fail closed;
 - intended end state is sufficient for deterministic consecutive compilation;
-- only `compile_bpf` and `BpfCompiledRealization` are public BPF concepts.
+- the Compiler's public concepts remain only `compile_bpf` and
+  `BpfCompiledRealization`; the same backend facade separately exports the
+  approved stateful `BpfRunner` lifecycle owner.
 
 ## Failure semantics
 
@@ -81,8 +90,8 @@ failure publishes no object and mutates no input.
 ## Prohibited behavior
 
 No generic backend framework, Compiler owner inside Simulator, semantic route
-recomputation, runtime binding, Runner/preparer/maintenance lifecycle, shell
-command generation, container installation, v1 adapter/object migration, UT
+recomputation, compile-time runtime binding, Runner lifecycle inside the
+Compiler, shell command generation, container installation, v1 adapter/object migration, UT
 prerequisite, or public Context/Resolver/Registry/Manager/Model/Bundle/Slot/
 Generation/OperationGraph.
 
@@ -90,8 +99,8 @@ Generation/OperationGraph.
 
 The private symbolic intent formats, qdisc mechanism, Zone allocator, and
 technical constraint construction may evolve without creating a public
-architecture concept. Runtime binding and functional-Layer deployment are
-separate future approvals.
+architecture concept. Runtime binding belongs to `BpfRunner`; functional-Layer
+deployment remains a separate future approval.
 
 ## Maintenance
 

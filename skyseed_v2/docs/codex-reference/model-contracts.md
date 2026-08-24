@@ -137,5 +137,5 @@ owner validation, atomicity, and failure semantics.
 ## Maintenance
 
 Update `simulator/{slicing,models}/`, focused Model/main-chain tests, routing
-contract when transit changes, Dynamic Tool projections, Simulator diagrams,
+contract when transit changes, Slice / Difference Tool projections, Simulator diagrams,
 public imports, and this reference.

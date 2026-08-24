@@ -27,7 +27,7 @@ from skyseed_v2.simulator import (
     ZoneRouteTarget,
 )
 
-from .values import (
+from .compiled_realization import (
     BpfCompiledRealization,
     _AttachmentDemand,
     _ForwardingBinding,

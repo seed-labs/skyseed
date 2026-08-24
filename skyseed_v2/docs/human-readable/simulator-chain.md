@@ -1,21 +1,24 @@
 # Simulator, Topology, Slicer, Models, and Planner
 
-Legend: `A --> B` means A directly creates B. It does not express a Model
-call or retained reference.
+Legend: every edge in this diagram carries its exact relationship. Topology, Slicer,
+and Planner are peer-level components inside the Simulator domain; `Simulator`
+creates and owns each of them. Planner is not a Slicer child, and Difference is
+an immutable on-request value rather than a retained component.
 
 ```mermaid
 flowchart TD
-    SIM["Simulator"] -->|creates exactly once| TOP["Topology"]
-    TOP --> OWNER["AS → Shell/GS → Orbit → Satellite"]
-    TOP --> ZL["optional ZoneLayout → Zone"]
-    SIM -->|creates after Topology, exactly once| SLI["Slicer"]
-    SLI --> TS["TopologySlice"]
-    SLI --> DIFF["TopologyDifference on request"]
-    SIM -->|creates after Slicer, at most once| PLA["Planner"]
-    DIFF --> PLA
-    PLA --> STATE["continuous private planned state"]
-    PLA --> PLAN["continuous non-overlapping immutable Plan"]
-    PLAN --> ORDER["minimal Forwarding precedence"]
+    SIM["Simulator"] -->|creates and owns exactly once| TOP["Topology"]
+    TOP -->|owns| OWNER["AS → Shell/GS → Orbit → Satellite"]
+    TOP -->|owns when configured| ZL["ZoneLayout → Zone"]
+    SIM -->|creates and owns after Topology, exactly once| SLI["Slicer"]
+    SIM -->|creates and owns after Slicer, at most once| PLA["Planner"]
+    SLI -->|calls Models; produces and retains| TS["TopologySlice"]
+    PLA -->|calls create_difference on exact sibling| SLI
+    SLI -->|produces on request; does not retain| DIFF["TopologyDifference"]
+    DIFF -->|consumed by synchronize| PLA
+    PLA -->|owns| STATE["continuous private planned state"]
+    PLA -->|synchronize produces; retains current| PLAN["continuous non-overlapping immutable Plan"]
+    PLAN -->|owns| ORDER["minimal Forwarding precedence"]
 ```
 
 Legend: every `A ->> B` message is a direct call from A to B; returns are
@@ -31,26 +34,34 @@ sequenceDiagram
     participant Connection
     participant Route
     participant Planner
-    participant HorizonPolicy
+    participant WindowPolicy
     participant PlanningModels
     participant CoordinationPolicy
     User->>Simulator: create_topology()
     User->>Simulator: create_slicer(models)
-    User->>Slicer: create_next_slice()
-    Slicer->>Position: compute_positions
-    Slicer->>Connection: compute_connection_slice
-    Slicer->>Route: compute_route_slice
-    User->>Simulator: create_planner(algorithms)
+    User->>Simulator: optionally create_planner(algorithms) before real Slices
     Simulator->>Planner: bind exact sibling Slicer
-    User->>Planner: synchronize()
-    Planner->>Slicer: create_difference / resolve_path
-    Planner->>HorizonPolicy: select visible future / publication prefix
-    Planner->>PlanningModels: plan with full visible future
-    Planner->>CoordinationPolicy: coordinate visible transitions
+    loop Slice generation and Planner synchronization may interleave
+        User->>Slicer: create_next_slice()
+        Slicer->>Position: compute_positions
+        Slicer->>Connection: compute_connection_slice
+        Slicer->>Route: compute_route_slice
+        User->>Planner: synchronize()
+        Planner->>Slicer: create_difference / resolve_path
+        Planner->>WindowPolicy: select planning window / publication window
+        Planner->>PlanningModels: plan with full planning window
+        Planner->>CoordinationPolicy: coordinate planning-window transitions
+    end
 ```
 
-Planner selects visible future and its publication prefix before invoking any
-planning Model. Models and Coordination see lookahead beyond the Plan end;
+The strict construction prerequisite is `Topology → Slicer → optional
+Planner`. A Planner may therefore exist while the Slicer retains only synthetic
+Slice 0; `synchronize()` cannot publish a Plan until at least one real adjacent
+Slice Difference is available.
+
+Planner selects a planning window from available Differences and then its
+publication window before invoking any planning Model. Models and Coordination
+see the unpublished planning-window portion beyond the Plan end;
 fixed validation then publishes a continuous non-overlapping `(start, end]`
 Plan while private planned state continues across the boundary. Reusable
 unpublished overlap is extended rather than replaying settled Differences, and

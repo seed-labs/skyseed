@@ -5,9 +5,16 @@ from __future__ import annotations
 from collections import ChainMap, Counter
 from collections.abc import Mapping
 from datetime import datetime
+from pathlib import Path
 from types import MappingProxyType
 
 from skyseed_v2.shared import NodeId
+from skyseed_v2.shared._durable_evidence import (
+    _append_jsonl,
+    _read_jsonl,
+    _reset_jsonl,
+    _semantic_value,
+)
 
 from ..slicing import (
     Connection,
@@ -20,12 +27,12 @@ from ..slicing import (
     TopologyDifference,
 )
 from .algorithms import (
-    AllAvailablePlanningHorizonPolicy,
+    AllAvailablePlanningWindowPolicy,
     ConnectionPlanningModel,
     CoordinationPolicy,
     ForwardingPlanningModel,
     ParameterPlanningModel,
-    PlanningHorizonPolicy,
+    PlanningWindowPolicy,
 )
 from .values import (
     ConnectionTransition,
@@ -35,6 +42,12 @@ from .values import (
     ParameterTransition,
     Plan,
     PlanningDecision,
+)
+from .._history_codec import (
+    _difference_data,
+    _difference_from_data,
+    _planning_decision_data,
+    _planning_decision_from_data,
 )
 
 
@@ -54,7 +67,7 @@ class Planner:
 
     __slots__ = (
         "_slicer",
-        "_horizon_policy",
+        "_planning_window_policy",
         "_connection_model",
         "_parameter_model",
         "_forwarding_model",
@@ -62,7 +75,7 @@ class Planner:
         "_processed_through_slice_id",
         "_published_through_slice_id",
         "_differences",
-        "_selected_differences",
+        "_planning_differences",
         "_connection_transitions",
         "_parameter_transitions",
         "_forwarding_transitions",
@@ -84,6 +97,7 @@ class Planner:
         "_decisions",
         "_plan",
         "_publication_count",
+        "_durable_history_path",
     )
 
     def __init__(self) -> None:
@@ -94,7 +108,7 @@ class Planner:
         cls,
         *,
         slicer: Slicer,
-        horizon_policy: PlanningHorizonPolicy | None,
+        planning_window_policy: PlanningWindowPolicy | None,
         connection_model: ConnectionPlanningModel,
         parameter_model: ParameterPlanningModel,
         forwarding_model: ForwardingPlanningModel,
@@ -102,11 +116,11 @@ class Planner:
     ) -> "Planner":
         if not isinstance(slicer, Slicer):
             raise TypeError("slicer must be a Slicer")
-        if horizon_policy is None:
-            horizon_policy = AllAvailablePlanningHorizonPolicy()
-        if not isinstance(horizon_policy, PlanningHorizonPolicy):
+        if planning_window_policy is None:
+            planning_window_policy = AllAvailablePlanningWindowPolicy()
+        if not isinstance(planning_window_policy, PlanningWindowPolicy):
             raise TypeError(
-                "horizon_policy must implement PlanningHorizonPolicy"
+                "planning_window_policy must implement PlanningWindowPolicy"
             )
         if not isinstance(connection_model, ConnectionPlanningModel):
             raise TypeError(
@@ -127,7 +141,7 @@ class Planner:
 
         instance = object.__new__(cls)
         instance._slicer = slicer
-        instance._horizon_policy = horizon_policy
+        instance._planning_window_policy = planning_window_policy
         instance._connection_model = connection_model
         instance._parameter_model = parameter_model
         instance._forwarding_model = forwarding_model
@@ -135,7 +149,7 @@ class Planner:
         instance._processed_through_slice_id = 0
         instance._published_through_slice_id = 0
         instance._differences: list[TopologyDifference] = []
-        instance._selected_differences: tuple[TopologyDifference, ...] = ()
+        instance._planning_differences: tuple[TopologyDifference, ...] = ()
         instance._connection_transitions: tuple[ConnectionTransition, ...] = ()
         instance._parameter_transitions: tuple[ParameterTransition, ...] = ()
         instance._forwarding_transitions: tuple[ForwardingTransition, ...] = ()
@@ -183,6 +197,7 @@ class Planner:
         instance._decisions: list[PlanningDecision] = []
         instance._plan: Plan | None = None
         instance._publication_count = 0
+        instance._durable_history_path = None
         instance._synchronize_available()
         return instance
 
@@ -202,12 +217,82 @@ class Planner:
     def get_consumed_differences(self) -> tuple[TopologyDifference, ...]:
         """Return exact immutable Difference facts consumed successfully."""
 
+        if self._durable_history_path is not None:
+            return tuple(
+                _difference_from_data(value["semantic"])
+                for value in _read_jsonl(self._durable_history_path)
+                if value.get("record_type") == "difference_consumed"
+            )
         return tuple(self._differences)
 
     def get_planning_decisions(self) -> tuple[PlanningDecision, ...]:
         """Return compact merge/suppression evidence outside Plan payload."""
 
+        if self._durable_history_path is not None:
+            return tuple(
+                _planning_decision_from_data(value["semantic"])
+                for value in _read_jsonl(self._durable_history_path)
+                if value.get("record_type") == "planning_decision"
+            )
         return tuple(self._decisions)
+
+    def _enable_durable_history(self, path: Path) -> None:
+        """Enable private append-only history before Planner progression."""
+
+        if self._processed_through_slice_id != 0 or self._durable_history_path is not None:
+            raise RuntimeError(
+                "Planner durable history must be enabled before progression"
+            )
+        self._durable_history_path = _reset_jsonl(
+            path,
+            {
+                "record_type": "history_header",
+                "format_version": 1,
+                "owner": "Planner",
+            },
+        )
+
+    def _release_compiled_through(self, slice_id: int) -> dict[str, int]:
+        """Release published working facts after successful compilation."""
+
+        if (
+            isinstance(slice_id, bool)
+            or not isinstance(slice_id, int)
+            or slice_id < 0
+        ):
+            raise ValueError("slice_id must be non-negative")
+        if slice_id > self._published_through_slice_id:
+            raise ValueError("compiled frontier exceeds published Planner coverage")
+        if any(
+            value.current_slice_id <= slice_id
+            for value in self._planning_differences
+        ):
+            raise RuntimeError(
+                "compiled retention frontier overlaps unpublished planning work"
+            )
+        self._differences = [
+            value
+            for value in self._differences
+            if value.current_slice_id > slice_id
+        ]
+        for key in tuple(self._route_next_hops):
+            if key <= slice_id:
+                self._route_next_hops.pop(key, None)
+        for key in tuple(self._route_path_connection_ids):
+            if key <= slice_id:
+                self._route_path_connection_ids.pop(key, None)
+        self._decisions = [
+            value
+            for value in self._decisions
+            if any(source > slice_id for source in value.source_difference_ids)
+        ]
+        return {
+            "retained_difference_count": len(self._differences),
+            "retained_route_context_count": len(
+                set(self._route_next_hops) | set(self._route_path_connection_ids)
+            ),
+            "retained_decision_count": len(self._decisions),
+        }
 
     def _synchronize_available(self) -> None:
         latest_slice_id = self._slicer.get_latest_slice_id()
@@ -227,18 +312,25 @@ class Planner:
         if not available:
             return
 
-        selected = tuple(self._horizon_policy.select_differences(available))
-        _validate_selected_horizon(available, selected)
-        if not _identity_prefix(self._selected_differences, selected):
-            raise ValueError(
-                "PlanningHorizonPolicy must preserve already-planned visible input"
-            )
-        publication = tuple(
-            self._horizon_policy.select_publication_differences(selected)
+        planning_window = tuple(
+            self._planning_window_policy.select_planning_differences(available)
         )
-        _validate_publication_horizon(selected, publication)
+        _validate_planning_window(available, planning_window)
+        if not _identity_prefix(
+            self._planning_differences, planning_window
+        ):
+            raise ValueError(
+                "PlanningWindowPolicy must preserve the already-planned "
+                "planning window"
+            )
+        publication_window = tuple(
+            self._planning_window_policy.select_publication_differences(
+                planning_window
+            )
+        )
+        _validate_publication_window(planning_window, publication_window)
 
-        affected = selected[len(self._selected_differences) :]
+        affected = planning_window[len(self._planning_differences) :]
         previous_connections = self._connection_transitions
         previous_parameters = self._parameter_transitions
         previous_forwarding = self._forwarding_transitions
@@ -248,7 +340,7 @@ class Planner:
 
         new_route_next_hops, new_route_paths = _collect_route_context(
             self._slicer,
-            selected,
+            planning_window,
             self._route_next_hops,
             self._route_path_connection_ids,
         )
@@ -262,7 +354,7 @@ class Planner:
         if affected:
             model_connections = tuple(
                 self._connection_model.plan_connection_transitions(
-                    differences=selected,
+                    differences=planning_window,
                     affected_differences=affected,
                     previous_transitions=previous_connections,
                 )
@@ -271,13 +363,13 @@ class Planner:
                 previous_connections,
                 model_connections,
                 affected,
-                selected,
+                planning_window,
             )
             _validate_connection_model_output(*connection_validation)
 
             model_parameters = tuple(
                 self._parameter_model.plan_parameter_transitions(
-                    differences=selected,
+                    differences=planning_window,
                     affected_differences=affected,
                     previous_transitions=previous_parameters,
                     observed_parameters=MappingProxyType(observed_before),
@@ -288,7 +380,7 @@ class Planner:
                 previous_parameters,
                 model_parameters,
                 affected,
-                selected,
+                planning_window,
             )
             _validate_parameter_model_output(
                 self._slicer, *parameter_validation
@@ -296,7 +388,7 @@ class Planner:
 
             model_forwarding = tuple(
                 self._forwarding_model.plan_forwarding_transitions(
-                    differences=selected,
+                    differences=planning_window,
                     affected_differences=affected,
                     previous_transitions=previous_forwarding,
                     connection_transitions=model_connections,
@@ -307,7 +399,7 @@ class Planner:
                 previous_forwarding,
                 model_forwarding,
                 affected,
-                selected,
+                planning_window,
             )
             _validate_forwarding_model_output(*forwarding_validation)
 
@@ -315,7 +407,7 @@ class Planner:
                 self._connection_transitions, model_connections
             )
             candidate_differences = (
-                affected if connection_model_reuse else selected
+                affected if connection_model_reuse else planning_window
             )
             candidate_transitions = (
                 model_connections[len(self._connection_transitions) :]
@@ -334,7 +426,7 @@ class Planner:
                 self._connection_model,
             )
             coordinated = self._coordination_policy.coordinate_transitions(
-                differences=selected,
+                differences=planning_window,
                 suppression_candidates=candidates,
                 connection_transitions=model_connections,
                 parameter_transitions=model_parameters,
@@ -355,7 +447,7 @@ class Planner:
             )
             forwarding_precedences = tuple(
                 self._forwarding_model.plan_forwarding_precedences(
-                    differences=selected,
+                    differences=planning_window,
                     forwarding_transitions=forwarding_transitions,
                     route_path_connection_ids=route_paths,
                 )
@@ -380,7 +472,7 @@ class Planner:
             candidate_pending,
             _,
         ) = _advance_parameter_state(
-            selected,
+            planning_window,
             connection_transitions,
             parameter_transitions,
             self._published_observed_parameters,
@@ -392,7 +484,7 @@ class Planner:
             candidate_planned_routes,
             candidate_planned_paths,
         ) = _advance_forwarding_state(
-            selected,
+            planning_window,
             forwarding_transitions,
             self._published_route_next_hops,
             self._published_route_path_connection_ids,
@@ -400,7 +492,7 @@ class Planner:
             route_paths,
         )
         _validate_plan_region(
-            selected,
+            planning_window,
             connection_transitions,
             parameter_transitions,
             forwarding_transitions,
@@ -412,13 +504,13 @@ class Planner:
             {
                 connection.connection_id
                 for connection in self._slicer.get_slice(
-                    selected[-1].current_slice_id
+                    planning_window[-1].current_slice_id
                 ).connection_slice.connections
             },
         )
 
-        first = publication[0]
-        last = publication[-1]
+        first = publication_window[0]
+        last = publication_window[-1]
         publication_connections = _transitions_through(
             connection_transitions, last.current_timestamp
         )
@@ -458,7 +550,7 @@ class Planner:
             published_pending,
             parameter_decisions,
         ) = _advance_parameter_state(
-            publication,
+            publication_window,
             candidate_plan.connection_transitions,
             candidate_plan.parameter_transitions,
             self._published_observed_parameters,
@@ -467,7 +559,7 @@ class Planner:
             type(self._parameter_model).__name__,
         )
         published_routes, published_paths = _advance_forwarding_state(
-            publication,
+            publication_window,
             candidate_plan.forwarding_transitions,
             self._published_route_next_hops,
             self._published_route_path_connection_ids,
@@ -475,7 +567,7 @@ class Planner:
             route_paths,
         )
         retained_decision = _retained_connection_decision(
-            publication,
+            publication_window,
             candidate_plan.connection_transitions,
             type(self._connection_model).__name__,
         )
@@ -485,7 +577,7 @@ class Planner:
             *coordination_decisions,
         )
 
-        retained_selected = selected[len(publication) :]
+        retained_planning = planning_window[len(publication_window) :]
         retained_connections = _transitions_after(
             connection_transitions, last.current_timestamp
         )
@@ -503,10 +595,44 @@ class Planner:
             and id(precedence.successor) in retained_forwarding_ids
         )
 
+        accepted_decisions = []
+        for decision in new_decisions:
+            if decision not in self._decisions and decision not in accepted_decisions:
+                accepted_decisions.append(decision)
+        accepted_new_decisions = tuple(accepted_decisions)
+        if self._durable_history_path is not None:
+            for difference in new_differences:
+                _append_jsonl(
+                    self._durable_history_path,
+                    {
+                        "record_type": "difference_consumed",
+                        "current_slice_id": difference.current_slice_id,
+                        "semantic": _difference_data(difference),
+                    },
+                )
+            _append_jsonl(
+                self._durable_history_path,
+                {
+                    "record_type": "plan_published",
+                    "publication_index": self._publication_count,
+                    "start_slice_id": candidate_plan.start_slice_id,
+                    "end_slice_id": candidate_plan.end_slice_id,
+                    "semantic": _semantic_value(candidate_plan),
+                },
+            )
+            for decision in accepted_new_decisions:
+                _append_jsonl(
+                    self._durable_history_path,
+                    {
+                        "record_type": "planning_decision",
+                        "semantic": _planning_decision_data(decision),
+                    },
+                )
+
         self._route_next_hops.update(new_route_next_hops)
         self._route_path_connection_ids.update(new_route_paths)
         self._differences.extend(new_differences)
-        self._selected_differences = retained_selected
+        self._planning_differences = retained_planning
         self._connection_transitions = retained_connections
         self._parameter_transitions = retained_parameters
         self._forwarding_transitions = retained_forwarding
@@ -523,24 +649,24 @@ class Planner:
         self._published_active_establishments = published_active
         self._published_route_next_hops = published_routes
         self._published_route_path_connection_ids = published_paths
-        for decision in new_decisions:
-            if decision not in self._decisions:
-                self._decisions.append(decision)
+        self._decisions.extend(accepted_new_decisions)
         self._processed_through_slice_id = latest_slice_id
         self._published_through_slice_id = last.current_slice_id
         self._plan = candidate_plan
         self._publication_count += 1
 
 
-def _validate_selected_horizon(
+def _validate_planning_window(
     available: tuple[TopologyDifference, ...],
-    selected: tuple[TopologyDifference, ...],
+    planning: tuple[TopologyDifference, ...],
 ) -> None:
-    if not selected:
-        raise ValueError("PlanningHorizonPolicy must select a non-empty range")
-    if any(not isinstance(value, TopologyDifference) for value in selected):
+    if not planning:
+        raise ValueError(
+            "PlanningWindowPolicy must select a non-empty planning window"
+        )
+    if any(not isinstance(value, TopologyDifference) for value in planning):
         raise TypeError(
-            "PlanningHorizonPolicy must return TopologyDifference values"
+            "PlanningWindowPolicy must return TopologyDifference values"
         )
     available_positions: dict[int, tuple[TopologyDifference, int]] = {}
     duplicate_identities = set()
@@ -552,7 +678,7 @@ def _validate_selected_horizon(
             available_positions[identity] = (candidate, index)
 
     positions = []
-    for value in selected:
+    for value in planning:
         identity = id(value)
         match = available_positions.get(identity)
         if (
@@ -561,26 +687,27 @@ def _validate_selected_horizon(
             or match[0] is not value
         ):
             raise ValueError(
-                "PlanningHorizonPolicy must select exact consumed Differences"
+                "PlanningWindowPolicy must select exact available Differences"
             )
         positions.append(match[1])
     if positions != list(range(len(positions))):
         raise ValueError(
-            "PlanningHorizonPolicy must select a visible Difference prefix"
+            "PlanningWindowPolicy must select an available Difference prefix"
         )
 
 
-def _validate_publication_horizon(
-    visible: tuple[TopologyDifference, ...],
+def _validate_publication_window(
+    planning: tuple[TopologyDifference, ...],
     publication: tuple[TopologyDifference, ...],
 ) -> None:
     if not publication:
         raise ValueError(
-            "PlanningHorizonPolicy must select a non-empty publication prefix"
+            "PlanningWindowPolicy must select a non-empty publication window"
         )
-    if not _identity_prefix(publication, visible):
+    if not _identity_prefix(publication, planning):
         raise ValueError(
-            "PlanningHorizonPolicy publication must be an exact visible prefix"
+            "PlanningWindowPolicy publication must be an exact planning-window "
+            "prefix"
         )
 
 
@@ -594,11 +721,11 @@ def _incremental_validation_region(
     previous: tuple,
     current: tuple,
     affected: tuple[TopologyDifference, ...],
-    selected: tuple[TopologyDifference, ...],
+    planning: tuple[TopologyDifference, ...],
 ) -> tuple[tuple[TopologyDifference, ...], tuple]:
     if _identity_prefix(previous, current):
         return affected, current[len(previous) :]
-    return selected, current
+    return planning, current
 
 
 def _collect_route_context(
@@ -722,7 +849,7 @@ def _validate_connection_model_output(
         ] += 1
     if actual != expected:
         raise ValueError(
-            "ConnectionPlanningModel must preserve exact selected-horizon "
+            "ConnectionPlanningModel must preserve exact planning-window "
             "Difference evolution"
         )
 
@@ -810,7 +937,7 @@ def _validate_forwarding_model_output(
         ] += 1
     if actual != expected:
         raise ValueError(
-            "ForwardingPlanningModel must preserve exact selected-horizon "
+            "ForwardingPlanningModel must preserve exact planning-window "
             "RoutePatch states"
         )
 
@@ -1242,7 +1369,7 @@ def _retained_connection_decision(
         decided_by=decided_by,
         reason=(
             f"planned {len(transitions)} Connection transitions across the "
-            "affected selected-horizon region"
+            "affected planning-window region"
         ),
     )
 
@@ -1392,7 +1519,7 @@ def _difference_for_time(
     for difference in differences:
         if _time_belongs_to_difference(difference, nominal_time):
             return difference
-    raise ValueError("transition nominal time is outside selected horizon")
+    raise ValueError("transition nominal time is outside planning window")
 
 
 def _time_belongs_to_difference(

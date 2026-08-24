@@ -93,6 +93,7 @@ class _SequenceRouteModel:
 def canonical_compilation():
     emulator = build_mini_satellite_internet_emulator()
     simulator = create_mini_satellite_internet_simulator(emulator)
+    simulator.get_slicer().create_all_slices()
     _, plans, _ = prepare_mini_satellite_internet_planning(simulator)
     realizations = _compile_sequence(simulator.get_slicer(), plans)
     return plans, realizations
@@ -124,13 +125,9 @@ def test_projection_reads_continuous_compiled_sequence_without_recompiling(
         "runtime": "not bound or inferred by this Tool",
     }
     assert [value["coverage"] for value in data["intervals"]] == [
-        "(0,4]",
-        "(4,8]",
-        "(8,12]",
-        "(12,16]",
-        "(16,20]",
+        f"({start},{start + 4}]" for start in range(0, 64, 4)
     ]
-    assert data["inventory"]["plans"] == 5
+    assert data["inventory"]["plans"] == 16
     assert data["inventory"]["resource_intents"] > 0
     assert data["inventory"]["parameter_intents"] > 0
     assert data["inventory"]["forwarding_intents"] > 0
@@ -181,10 +178,10 @@ def test_zone_constraints_and_end_state_are_compiled_facts(generated) -> None:
     assert data["observed_behavior"]["plan_forwarding_precedences"] > 0
     assert data["observed_behavior"]["backend_technical_constraints"] > 0
     assert data["observed_behavior"]["runtime_bindings_claimed"] is False
-    assert all(
-        interval["constraint_groups"]["plan-forwarding-precedence"]
+    assert sum(
+        len(interval["constraint_groups"]["plan-forwarding-precedence"])
         for interval in data["intervals"]
-    )
+    ) == data["observed_behavior"]["plan_forwarding_precedences"]
     assert any(
         interval["end_state"]["resources"]
         and interval["end_state"]["parameters"]
@@ -326,7 +323,7 @@ def test_canonical_bpf_compiler_page_browser_smoke(
         )
 
         assert result["status"] == "PASS"
-        assert result["plans"] == 5
+        assert result["plans"] == 16
         assert (screenshots / result["screenshot"]).is_file()
     finally:
         shutil.rmtree(browser_root)

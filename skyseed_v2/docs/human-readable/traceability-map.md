@@ -10,12 +10,12 @@ flowchart LR
     CE --> TZ["Topology / Zone Tools"]
     CE --> PL["Simulator Planner canonical path"]
     DN["mini_satellite_internet"] --> DS["Simulator + Slicer + Models"]
-    DN --> DT["Topology / Zone / Dynamic Slice Tools"]
+    DN --> DT["Topology / Zone / Slice / Difference Tools"]
     DN --> PT["Planner Inspection Tool"]
     DN --> BT["BPF Compiler + Inspection Tool"]
-    IS["isolated_satellites"] --> SE["SEED entity and compiler boundary"]
-    LS["large_static_network"] --> SC["configuration + scale construction"]
-
+    DN --> BR["BpfRunner runtime"]
+    DN --> RI["post-run Runner Inspection Tool"]
+    DN --> TR["post-run Traffic / Path Replay Tool"]
     EM --> ITEST["integration tests"]
     DS --> UTEST["focused unit tests"]
     PL --> PTEST["planning unit + integration tests"]
@@ -24,8 +24,9 @@ flowchart LR
     DT --> BROWSER["browser smoke script"]
     PT --> TTEST
     BT --> BTEST["Compiler/Tool focused + browser tests"]
-    SE --> ITEST
-    SC --> ITEST
+    BR --> RTEST["Runner focused + real kernel/packet validation"]
+    RI --> RITEST["Runner Tool + runtime finalization tests"]
+    TR --> TRTEST["Traffic replay grouping/interpolation/artifact tests + page review"]
 ```
 
 | Change area | Human entry | Primary verification |
@@ -36,8 +37,11 @@ flowchart LR
 | Planner/Plan/planning algorithms | `mini_satellite_internet/simu.py` | planning value, algorithm and main-chain tests |
 | Planner human inspection | `mini_satellite_internet/main.py` | Planner Tool tests and visual artifact inspection |
 | BPF Compiler inspection | `mini_satellite_internet/main.py` | Compiler/Tool focused tests and browser smoke |
-| Inspection Tools | both complete and dynamic examples | `tests/tools`, tooling boundaries, browser smoke |
-| Compose launcher | complete/large examples | launcher and large-network integration |
+| BPF Runner live lifecycle | generated Mini `start.sh` → `run.sh` → root-private `_generated_bpf_execution` application composition → `BpfRunner` | Runner contract/main-chain tests and focused real generated-workflow validation |
+| BPF Runner human inspection | generated Mini `run.sh` → `inspection/runner/index.html` | Runner Tool projection/artifact tests, runtime finalization tests, controlled-interruption page review |
+| Traffic/path replay | generated Mini `run.sh` → `inspection/traffic/index.html` | clock/grouping/identity/interpolation/artifact tests plus canonical packet-path page review |
+| Inspection Tools | both maintained examples | `tests/tools`, tooling boundaries, browser smoke |
+| Compose launcher | `complete_static_emulator` and canonical Mini | launcher and integration tests |
 
 Exact file-level maintenance ownership lives only in
 `../codex-reference/maintenance-map.md`.

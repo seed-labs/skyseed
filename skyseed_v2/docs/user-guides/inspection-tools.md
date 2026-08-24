@@ -6,18 +6,22 @@ Tools are repository-local read-only views, not installed product APIs.
 |---|---|---|
 | Topology | one created `Topology` | `inspection/topology/` |
 | Zone | the same `Topology` | `inspection/zone/` |
-| Dynamic Slice | one exact `Slicer` with retained slices | `inspection/dynamic-slice/` |
+| Slice / Difference | one exact `Slicer` with retained slices | `inspection/slice/` |
 | Planner | that exact `Slicer`, consecutive `Plan` publications, retained `PlanningDecision` values | `inspection/planner/` |
 | BPF Compiler | consecutive `Plan` publications and their already-produced `BpfCompiledRealization` values | `inspection/bpf-compiler/` |
+| BPF Runner | post-cleanup detached Runner summary/frozen-binding scalars/events plus runtime invocation outcome | `inspection/runner/` |
+| Traffic / Path Replay | durable tc-BPF traffic records, retained Slice Position/on-request Difference evidence, existing BPF Compiler inspection evidence, and optional planned-workload context | `inspection/traffic/` |
 
 The normal imports are:
 
 ```python
 from tools.topology import write_topology_tool
 from tools.zone import write_zone_tool
-from tools.dynamic_slice import write_dynamic_slice_tool
+from tools.slice import write_slice_difference_tool
 from tools.planner import write_planner_tool
 from tools.bpf_compiler import write_bpf_compiler_tool
+from tools.runner import write_runner_tool
+from tools.traffic import write_traffic_replay_tool
 ```
 
 The output contains standalone HTML, private JSON audit data, and summaries.
@@ -31,12 +35,12 @@ Run the rich bundle:
 python examples/mini_satellite_internet/main.py
 ```
 
-Validate the generated Dynamic Slice page in Firefox without keeping a
+Validate the generated Slice / Difference page in Firefox without keeping a
 screenshot:
 
 ```bash
-python scripts/check_dynamic_slice_tool_browser.py \
-  examples/mini_satellite_internet/output/inspection/dynamic-slice/index.html
+python scripts/check_slice_tool_browser.py \
+  examples/mini_satellite_internet/output/inspection/slice/index.html
 ```
 
 Browser smoke validates the UI only and never enters the Tool's formal object
@@ -68,5 +72,33 @@ Validate that page in Firefox with:
 python scripts/check_bpf_compiler_tool_browser.py \
   examples/mini_satellite_internet/output/inspection/bpf-compiler/index.html
 ```
+
+The canonical Mini `main.py` remains generation-only and does not create a
+placeholder Runner artifact. After `start.sh`, `run.sh` uses public automatic
+Runner execution and writes `inspection/runner/index.html` after cleanup for a
+completed, controlled-interruption, ordinary-failure, or cleanup-failure
+outcome when finalization can run. The page shows final/last-known lifecycle
+facts, curated history, timing, Maintenance/reclaim, failure/cleanup, and
+recorded current-default-tc-BPF evidence. It is static after opening and does
+not inspect the kernel, collect traffic telemetry, inject packets, or control
+Runner.
+
+The same post-run finalization writes `inspection/traffic/index.html` when its
+JSONL simulation clock, exact-generation interface identities,
+Slice / Difference timeline, and BPF Compiler nominal boundaries form one consistent
+evidence set. The replay pairs only unambiguous ICMP echo request/reply records
+into Ping transactions, groups endpoint pairs into observed flows without
+requiring a workload, distinguishes inferred facts from observed ingress
+hops, and shows logical Zone identity separately from the generation-specific
+service satellite used by the physical path. One draggable simulation timeline
+scrubs the shared ACTIVE network, Zone state, and moving nodes. Selecting a Ping
+pauses at its time and uses its recorded generation; Replay Ping expands its
+request then reply without adding a second permanent player. The globe shows
+exact current ACTIVE links as muted context and reconstructs recent observed
+traffic from a simulation-time window. Exact retained Position samples remain formal evidence; linear
+ECEF interpolation between them is visualization-only. The standalone page
+never connects to Runner, collector, kernel, Compiler, InternetMap, or a
+server. Optional workload schedule IDs and qualified no-observation slots are
+shown only in a collapsed comparison.
 
 Implementation state is recorded only in [`CURRENT.md`](../CURRENT.md).

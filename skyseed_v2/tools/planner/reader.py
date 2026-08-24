@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
+from pathlib import Path
 
 from skyseed_v2.simulator import (
     Connection,
@@ -21,7 +22,8 @@ from skyseed_v2.simulator import (
     ZoneRouteTarget,
 )
 
-from tools.dynamic_slice.reader import read_dynamic_slices
+from tools.slice.reader import read_slice_differences
+from tools._history import read_jsonl_records
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +31,31 @@ class PlannerInspectionRead:
     """Hold only Tool-owned scalars and containers read from formal values."""
 
     snapshot: dict[str, Any]
+
+
+def read_planner_history(path: Path) -> dict[str, Any]:
+    """Read complete durable Planner publications after working release."""
+
+    records = read_jsonl_records(path)
+    headers = tuple(
+        value for value in records if value.get("record_type") == "history_header"
+    )
+    if len(headers) != 1 or headers[0].get("owner") != "Planner":
+        raise ValueError("durable Planner history header is invalid")
+    return {
+        "header": headers[0],
+        "differences": tuple(
+            value
+            for value in records
+            if value.get("record_type") == "difference_consumed"
+        ),
+        "plans": tuple(
+            value for value in records if value.get("record_type") == "plan_published"
+        ),
+        "decisions": tuple(
+            value for value in records if value.get("record_type") == "planning_decision"
+        ),
+    }
 
 
 def read_planner_inspection(
@@ -51,7 +78,7 @@ def read_planner_inspection(
         raise TypeError("configuration must be a Mapping")
     _require_continuous_plans(plan_values)
 
-    dynamic = read_dynamic_slices(slicer).snapshot
+    slice_evidence = read_slice_differences(slicer).snapshot
     slices = tuple(
         {
             "slice_id": value["slice_id"],
@@ -64,7 +91,7 @@ def read_planner_inspection(
                 value["difference_from_previous"]
             ),
         }
-        for value in dynamic["slices"]
+        for value in slice_evidence["slices"]
     )
     return PlannerInspectionRead(
         {
@@ -78,11 +105,11 @@ def read_planner_inspection(
                 "models": "not invoked by this Tool",
             },
             "configuration": deepcopy(dict(configuration)),
-            "timeline": deepcopy(dynamic["timeline"]),
+            "timeline": deepcopy(slice_evidence["timeline"]),
             "topology": {
-                "nodes": deepcopy(dynamic["topology"]["nodes"]),
-                "orbits": deepcopy(dynamic["topology"]["orbits"]),
-                "zones": deepcopy(dynamic["topology"]["zones"]),
+                "nodes": deepcopy(slice_evidence["topology"]["nodes"]),
+                "orbits": deepcopy(slice_evidence["topology"]["orbits"]),
+                "zones": deepcopy(slice_evidence["topology"]["zones"]),
             },
             "slices": slices,
             "plans": tuple(_read_plan(index, plan) for index, plan in enumerate(plan_values)),
@@ -282,4 +309,8 @@ def _require_continuous_plans(plans: tuple[Plan, ...]) -> None:
             raise ValueError("plans must have continuous non-overlapping coverage")
 
 
-__all__ = ["PlannerInspectionRead", "read_planner_inspection"]
+__all__ = [
+    "PlannerInspectionRead",
+    "read_planner_history",
+    "read_planner_inspection",
+]

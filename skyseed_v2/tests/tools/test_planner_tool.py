@@ -22,6 +22,7 @@ def generated(tmp_path_factory):
     output = tmp_path_factory.mktemp("planner-tool")
     emulator = build_mini_satellite_internet_emulator()
     simulator = create_mini_satellite_internet_simulator(emulator)
+    simulator.get_slicer().create_all_slices()
     planner, plans, configuration = prepare_mini_satellite_internet_planning(
         simulator
     )
@@ -53,25 +54,21 @@ def test_complex_scenario_uses_real_formal_scale_and_consecutive_plans(
     }
     assert data["inventory"]["satellites"] == 32
     assert data["inventory"]["ground_stations"] == 3
-    assert data["inventory"]["real_slices"] == 20
-    assert data["inventory"]["differences"] == 20
+    assert data["inventory"]["real_slices"] == 64
+    assert data["inventory"]["differences"] == 64
     assert data["configuration"]["scenario_identity"] == (
         "mini_satellite_internet"
     )
     assert data["slices"][1]["positions"]
     assert [value["coverage"] for value in data["plans"]] == [
-        "(0,4]",
-        "(4,8]",
-        "(8,12]",
-        "(12,16]",
-        "(16,20]",
+        f"({start},{start + 4}]" for start in range(0, 64, 4)
     ]
     for previous, current in zip(data["plans"], data["plans"][1:]):
         assert previous["end_slice_id"] == current["start_slice_id"]
         assert previous["end_timestamp"] == current["start_timestamp"]
 
 
-def test_projection_exposes_midpoint_merge_repeated_identity_and_precedence(
+def test_projection_exposes_midpoint_merge_and_precedence(
     generated,
 ) -> None:
     _, _, data = generated
@@ -79,7 +76,7 @@ def test_projection_exposes_midpoint_merge_repeated_identity_and_precedence(
 
     assert behavior["midpoint_connection_transitions"] > 0
     assert behavior["parameter_merges"] > 0
-    assert behavior["repeated_connection_ids"] > 0
+    assert behavior["repeated_connection_ids"] == 0
     assert behavior["accepted_suppressions"] == 0
     assert behavior["unmatched_forwarding_transitions"] == 0
     assert behavior["synthetic_forwarding_claimed"] is False
@@ -89,8 +86,7 @@ def test_projection_exposes_midpoint_merge_repeated_identity_and_precedence(
         for value in data["connections"]
         if len(value["formal_occurrences"]) > 1
     ]
-    assert repeated
-    assert all(len(value["planned_occurrences"]) > 1 for value in repeated)
+    assert repeated == []
     assert any(value["planned"] for value in data["parameter_series"])
     assert any(
         value["planned_state_occurrences"]
@@ -143,6 +139,7 @@ def test_primary_page_contains_all_required_semantic_views(generated) -> None:
         "nominal-events",
         "spatial-driver-title",
         "spatial-detail",
+        "parameter-overview",
     ):
         assert f'id="{identifier}"' in page
     assert "Sampled timeline ≠ publication timeline" in page
@@ -155,6 +152,16 @@ def test_primary_page_contains_all_required_semantic_views(generated) -> None:
     assert "0 real transitions" in page
     assert "drawZoneFootprint" in page
     assert "No fake satellite-to-Zone network link" in page
+    assert "Formal observations vs published parameter targets" in page
+    assert "Not individually published" in page
+    assert "Publication batching" in page
+    assert "Parameter deadband/coalescing" in page
+    assert "Same-time forwarding dependency" in page
+    assert "data-selected-precedence" in page
+    assert "BEFORE next hop" in page
+    assert "Current service/path-terminal satellite" in page
+    assert "no Zone footprint is expected" in page
+    assert "Actual local semantic precedence" not in page
     assert data["representatives"]["connection_ref"] in page
 
 

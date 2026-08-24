@@ -32,7 +32,7 @@ from .models import (
 )
 from .planning import (
     AccumulatedDeadbandParameterPlanningModel,
-    AllAvailablePlanningHorizonPolicy,
+    AllAvailablePlanningWindowPolicy,
     ConnectionPlanningModel,
     ConnectionTransition,
     ConnectionTransitionOperation,
@@ -48,7 +48,7 @@ from .planning import (
     Plan,
     Planner,
     PlanningDecision,
-    PlanningHorizonPolicy,
+    PlanningWindowPolicy,
     SampleBoundaryConnectionPlanningModel,
 )
 from .simulator import Simulator
@@ -72,7 +72,7 @@ from .topology import (
 
 __all__ = [
     "AccumulatedDeadbandParameterPlanningModel",
-    "AllAvailablePlanningHorizonPolicy",
+    "AllAvailablePlanningWindowPolicy",
     "CircularOrbitPositionModel",
     "Connection",
     "ConnectionDirection",
@@ -106,7 +106,7 @@ __all__ = [
     "Plan",
     "Planner",
     "PlanningDecision",
-    "PlanningHorizonPolicy",
+    "PlanningWindowPolicy",
     "PositionModel",
     "RouteKey",
     "RouteModel",
