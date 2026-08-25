@@ -8,8 +8,8 @@ recorded only in [`CURRENT.md`](../CURRENT.md).
 ## Scope
 
 The three replaceable Protocols, their lifecycle, and the exact supported
-semantics of `CircularOrbitPositionModel`, `GeometricConnectionModel`, and
-`HopCountRouteModel`.
+semantics of `CircularOrbitPositionModel`, `GeometricConnectionModel`,
+`HopCountRouteModel`, and `GatewayHopCountRouteModel`.
 
 ## Owners and consumers
 
@@ -76,8 +76,41 @@ same prepared start-time pairing for retry.
 Each Slice activates fixed ISL candidates only with complete finite Positions,
 Earth LOS, and distance within the configured maximum. For each GroundStation,
 eligible Satellites meet elevation/LOS/optional-distance bounds and sort by
-descending elevation then structural NodeId; the first configured N are
-selected. Zero access is legal.
+descending elevation then structural NodeId. The built-in model's configured
+maximum remains algorithm/experiment policy. Its effective per-site selection
+limit is that model maximum when the GroundStation capability is `None`, or
+the minimum of the model maximum and
+`GroundStation.max_simultaneous_satellite_accesses` otherwise. Zero model
+access is legal.
+
+Satellite `max_simultaneous_ground_station_accesses` is a separate optional
+hard cap on GroundStation-access Connections terminating at that Satellite.
+It does not constrain ISLs or total Satellite degree. If no Satellite has an
+explicit cap, each GroundStation independently keeps its highest-elevation
+eligible Satellites exactly as before. Otherwise, the built-in model performs
+a deterministic two-phase capacitated bipartite assignment over the unchanged
+eligible candidates. Primary allocation gives each GroundStation at most one
+request, maximizes covered GroundStations, and then minimizes aggregate
+candidate rank among all maximum-cardinality primary matchings. Candidate rank
+is exactly descending elevation followed by ascending structural Satellite
+NodeId. The resulting primary assignments are frozen.
+
+Redundancy allocation then uses only residual Satellite capacity and each
+covered site's remaining effective limit. It maximizes additional access
+links with the same deterministic candidate traversal and augmenting fallback,
+but frozen primaries are never movable occupants: redundancy cannot displace
+or degrade one to admit another link. Requests within each redundant slot use
+descending structural GroundStation NodeId, and movable redundant occupants
+use descending `(slot, GroundStation NodeId)` order. This is a simple
+deterministic Skyseed baseline, not an optimal operational constellation
+scheduler, active/standby declaration, or handover-state model.
+
+Slicer validates every complete ConnectionModel output before RouteModel runs
+or a Slice is published. A custom model may select Satellites differently, but
+formal `GROUND_STATION_ACCESS` Connections may not exceed an explicit
+GroundStation site capability or an explicit Satellite GroundStation-access
+capability. Over-cap output fails closed without publishing the candidate
+Slice. Neither capability is a physical antenna count; ISLs are excluded.
 
 Zone selection uses each Satellite subpoint and temporary `SphericalCap` for a
 coarse Topology/ZoneLayout intersection query. Formal eligibility additionally
@@ -88,13 +121,19 @@ the representative point, not every possible terminal in the Zone. Gateway
 hops, Route evidence, capacity/load balancing, mutable dwell, hysteresis, and
 composite scoring are excluded.
 
+GroundStation and Zone spatial indexes are private conservative candidate
+pruning only. Every retained candidate still passes the exact formal
+ECEF/LOS/elevation/distance predicates, and exhaustive-reference equivalence
+tests cover representative S4 timestamps.
+
 Built-in Connection bandwidth/loss come from explicit per-kind configuration;
 delay is current ECEF distance divided by fixed propagation speed and
 deterministically converted to integer microseconds. Both directions are equal
 in this implementation although the public value is asymmetric. The previous
 ConnectionSlice input is accepted and ignored.
 
-`HopCountRouteModel` is explicit and stateless. It treats every current
+`HopCountRouteModel` is the explicit, stateless full-reachability baseline and
+small-scale reference. It treats every current
 Connection as bidirectional for eligible edge existence, applies the
 GroundStation transit rule in
 [routing contracts](routing-path-contracts.md), computes reverse-BFS minimum
@@ -102,6 +141,18 @@ hop next hops, and breaks ties by structural NodeId independently of
 Connection enumeration. It accepts and ignores previous RouteSlice; it does
 not use directional metric values. Delay-weighted, previous-stable, ground
 relay, ECMP, and multipath algorithms are separate future choices.
+
+`GatewayHopCountRouteModel` is the satellite-Internet default. Its positive
+`gateway_candidate_count` and optional positive finite
+`gateway_candidate_max_distance_m` are explicit routing-policy parameters.
+Once for one exact Topology, it ranks each Zone representative point's
+GroundStations by static great-circle distance then structural NodeId, applies
+the optional cutoff, and retains the first configured count. Each Slice uses
+shared deterministic hop-count trees to materialize only currently reachable
+Zone-to-candidate-GroundStation and independently computed reverse-direction
+paths with demand-bounded graph traversal. It neither dynamically substitutes
+another Gateway nor stores full paths; UT/traffic endpoint selection is
+outside Simulator progression.
 
 ## Invariants
 
@@ -111,7 +162,9 @@ relay, ECMP, and multipath algorithms are separate future choices.
   timestamp Positions of the owning Slicer;
 - prepared pairing remains fixed across Slices and retries;
 - every configured parameter is explicit, finite, and in its valid range;
-- built-in results are independent of input insertion/enumeration order.
+- built-in results are independent of input insertion/enumeration order;
+- Slicer validates every published Route chain but does not prescribe or
+  reconstruct a RouteModel demand universe.
 
 ## Failure semantics
 
@@ -124,9 +177,9 @@ Zones are legal non-activation.
 ## Prohibited behavior
 
 No shared base class/Model bundle, hidden default, Model fallback, second
-invocation chain, Model-owned publication/history, dynamic re-pairing,
-per-Slice nearest-neighbour/global matching, GroundStation relay hidden in
-access, or Tool-side Model execution.
+invocation chain, Model-owned publication/history, dynamic ISL re-pairing,
+dynamic Gateway-candidate substitution, GroundStation relay hidden in access,
+or Tool-side Model execution.
 
 ## Extension points
 

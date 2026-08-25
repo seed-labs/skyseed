@@ -85,9 +85,9 @@ def read_planner_inspection(
             "timestamp": value["timestamp"],
             "positions": deepcopy(value["positions"]),
             "connections": deepcopy(value["connections"]),
-            "routes": deepcopy(value["routes"]),
-            "paths": deepcopy(value["paths"]),
-            "difference_from_previous": deepcopy(
+            "routes": _expand_routes(value["routes"]),
+            "paths": _restore_paths_for_planner(value),
+            "difference_from_previous": _expand_difference(
                 value["difference_from_previous"]
             ),
         }
@@ -125,6 +125,99 @@ def read_planner_inspection(
             },
         }
     )
+
+
+def _expand_routes(
+    routes: tuple[tuple[str, str, str], ...],
+) -> tuple[dict[str, object], ...]:
+    return tuple(
+        {
+            "route_ref": f"{source}|{target_reference}",
+            "source": source,
+            "target": _expand_target(target_reference),
+            "next_hop": next_hop,
+        }
+        for source, target_reference, next_hop in routes
+    )
+
+
+def _restore_paths_for_planner(
+    slice_record: Mapping[str, object],
+) -> tuple[dict[str, object], ...]:
+    """Preserve the existing Planner Tool view from compact Slice reads."""
+
+    routes = tuple(slice_record["routes"])
+    assignments = {
+        str(value["zone_id"]): str(value["service_satellite_id"])
+        for value in slice_record["zone_service_assignments"]
+    }
+    next_hops = {
+        (str(source), str(target_reference)): str(next_hop)
+        for source, target_reference, next_hop in routes
+    }
+    paths = []
+    for source, target_reference, _next_hop in routes:
+        target = _expand_target(target_reference)
+        terminal = (
+            str(target["ground_station_id"])
+            if target["kind"] == "G"
+            else assignments.get(str(target["zone_id"]))
+        )
+        if terminal is None:
+            continue
+        nodes = [str(source)]
+        seen = {str(source)}
+        current = str(source)
+        while current != terminal:
+            next_value = next_hops.get((current, str(target_reference)))
+            if next_value is None or next_value in seen:
+                nodes = []
+                break
+            nodes.append(next_value)
+            seen.add(next_value)
+            current = next_value
+        if nodes:
+            paths.append(
+                {
+                    "path_id": f"{source}|{target_reference}",
+                    "source": source,
+                    "target": target,
+                    "nodes": nodes,
+                    "hop_count": len(nodes) - 1,
+                }
+            )
+    return tuple(paths)
+
+
+def _expand_difference(
+    difference: object,
+) -> dict[str, object] | None:
+    if difference is None:
+        return None
+    assert isinstance(difference, dict)
+    result = deepcopy(difference)
+    result["route_patches"] = tuple(
+        {
+            "route_ref": f"{source}|{target_reference}",
+            "source": source,
+            "target": _expand_target(target_reference),
+            "operation": operation,
+            "next_hop": next_hop,
+        }
+        for operation, source, target_reference, next_hop in difference[
+            "route_patches"
+        ]
+    )
+    return result
+
+
+def _expand_target(reference: str) -> dict[str, str]:
+    kind, identity = reference.split("|", 1)
+    if kind == "G":
+        return {"kind": "G", "ground_station_id": identity}
+    if kind == "Z":
+        return {"kind": "Z", "zone_id": identity}
+    raise ValueError("compact Slice route target is invalid")
 
 
 def _read_plan(index: int, plan: Plan) -> dict[str, object]:

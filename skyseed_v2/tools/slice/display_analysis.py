@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
-from math import atan2, cos, hypot, sin
+from math import acos, atan2, ceil, cos, hypot, radians, sin
+from statistics import median
 
 from skyseed_v2.simulator.geometry import (
     EarthFixedPosition,
+    ecef_distance_m,
     elevation_deg,
     geodetic_to_ecef,
+)
+from tools._display_geometry import (
+    EARTH_REFERENCE_RADIUS_M,
+    WGS84_SEMI_MAJOR_AXIS_M,
 )
 
 
@@ -33,6 +39,13 @@ def add_slice_display_analysis(data: dict[str, object]) -> None:
         for node in nodes
         if node["kind"] == "satellite"
     }
+    node_kinds = {
+        str(node["node_id"]): str(node["kind"])
+        for node in nodes
+    }
+    ground_station_count = sum(
+        node["kind"] == "ground-station" for node in nodes
+    )
     adjacent_orbit_sides = _adjacent_orbit_sides(orbits)
     for slice_record in slices:
         connections = slice_record["connections"]
@@ -63,6 +76,31 @@ def add_slice_display_analysis(data: dict[str, object]) -> None:
             orbits,
             positions,
         )
+        connected_nodes = {
+            str(endpoint)
+            for connection in connections
+            for endpoint in (
+                connection["connection_id"]["endpoint_a"],
+                connection["connection_id"]["endpoint_b"],
+            )
+        }
+        slice_record["diagnostics"] = tuple(
+            {
+                "kind": "isolated-satellite",
+                "node_id": node["node_id"],
+                "message": "Satellite has no current Connection",
+            }
+            for node in nodes
+            if node["kind"] == "satellite"
+            and node["node_id"] not in connected_nodes
+            and slice_record["slice_id"] != 0
+        )
+        slice_record["summary"] = _slice_summary(
+            slice_record,
+            node_kinds=node_kinds,
+            total_zones=len(zones),
+            total_ground_stations=ground_station_count,
+        )
 
     data["inventory"] = {
         "nodes": len(nodes),
@@ -76,9 +114,24 @@ def add_slice_display_analysis(data: dict[str, object]) -> None:
         "zones": len(zones),
         "slices": len(slices),
         "differences": len(slices) - 1,
-        "paths": sum(len(item["paths"]) for item in slices),
+        "route_entries": sum(len(item["routes"]) for item in slices),
     }
     data["behavior"] = _behavior_inventory(slices)
+    data["model_context"] = _model_context(
+        data["model_context"],
+        nodes,
+        orbits,
+        zones,
+    )
+    data["slice_manifest"] = [
+        {
+            "slice_id": item["slice_id"],
+            "timestamp": item["timestamp"],
+            "summary": item["summary"],
+            "chunk": f"chunks/slice-{int(item['slice_id']):06d}.js",
+        }
+        for item in slices
+    ]
     data["display_notes"] = {
         "projection": (
             "The rotatable globe is a non-authoritative display projection "
@@ -157,12 +210,56 @@ def _add_zone_assignment_display_data(
             representative_position,
             satellite_position,
         ),
+        "surface_separation_km": _surface_separation_km(
+            float(representative_point[0]),
+            float(representative_point[1]),
+            satellite_position.latitude_deg,
+            satellite_position.longitude_deg,
+        ),
+        "slant_distance_km": (
+            ecef_distance_m(
+                representative_position,
+                satellite_position,
+            )
+            / 1_000.0
+        ),
+        "surface_separation_authority": (
+            "Tool-derived IUGG mean-Earth spherical approximation"
+        ),
+        "slant_distance_authority": (
+            "derived from formal representative-point and Satellite ECEF"
+        ),
         "subpoint_inside_zone": bool(inputs["subpoint_inside_zone"]),
         "eligibility_basis": (
             "formal assignment uses representative-point visibility and "
             "minimum elevation; subpoint containment is not eligibility"
         ),
     }
+
+
+def _surface_separation_km(
+    first_latitude_deg: float,
+    first_longitude_deg: float,
+    second_latitude_deg: float,
+    second_longitude_deg: float,
+) -> float:
+    first_latitude = radians(first_latitude_deg)
+    second_latitude = radians(second_latitude_deg)
+    delta_latitude = second_latitude - first_latitude
+    delta_longitude = radians(
+        second_longitude_deg - first_longitude_deg
+    )
+    haversine = sin(delta_latitude / 2.0) ** 2 + (
+        cos(first_latitude)
+        * cos(second_latitude)
+        * sin(delta_longitude / 2.0) ** 2
+    )
+    bounded_haversine = min(1.0, max(0.0, haversine))
+    central_angle = 2.0 * atan2(
+        bounded_haversine ** 0.5,
+        (1.0 - bounded_haversine) ** 0.5,
+    )
+    return EARTH_REFERENCE_RADIUS_M * central_angle / 1_000.0
 
 
 def _adjacent_orbit_sides(
@@ -486,13 +583,8 @@ def _behavior_inventory(
             "route_patches",
             "removed",
         ),
-        "maximum_path_hops": max(
-            (
-                len(path["nodes"]) - 1
-                for item in slices
-                for path in item["paths"]
-            ),
-            default=0,
+        "route_patches": sum(
+            len(value["route_patches"]) for value in values
         ),
     }
 
@@ -503,10 +595,242 @@ def _operation_count(
     operation: str,
 ) -> int:
     return sum(
-        patch["operation"] == operation
+        (
+            patch[0] == operation
+            if isinstance(patch, tuple)
+            else patch["operation"] == operation
+        )
         for difference in differences
         for patch in difference[field_name]
     )
+
+
+def _slice_summary(
+    slice_record: dict[str, object],
+    *,
+    node_kinds: dict[str, str],
+    total_zones: int,
+    total_ground_stations: int,
+) -> dict[str, object]:
+    connections = slice_record["connections"]
+    assignments = slice_record["zone_service_assignments"]
+    assert isinstance(connections, tuple)
+    assert isinstance(assignments, tuple)
+    state_available = slice_record["slice_id"] != 0
+    connection_counts = {
+        "same_orbit_isl": 0,
+        "cross_plane_isl": 0,
+        "ground_station_access": 0,
+    }
+    covered_ground_stations: set[str] = set()
+    for connection in connections:
+        display_kind = connection["display_kind"]
+        if display_kind == "same-orbit-isl":
+            connection_counts["same_orbit_isl"] += 1
+        elif display_kind == "cross-orbit-isl":
+            connection_counts["cross_plane_isl"] += 1
+        elif display_kind == "ground-station-access":
+            connection_counts["ground_station_access"] += 1
+            identity = connection["connection_id"]
+            assert isinstance(identity, dict)
+            for endpoint in (
+                str(identity["endpoint_a"]),
+                str(identity["endpoint_b"]),
+            ):
+                if node_kinds.get(endpoint) == "ground-station":
+                    covered_ground_stations.add(endpoint)
+
+    explanations = [
+        assignment["display_explanation"] for assignment in assignments
+    ]
+    elevation_statistics = _numeric_statistics(
+        [
+            float(value["representative_point_elevation_deg"])
+            for value in explanations
+        ],
+        ("p5", 0.05),
+        ("median", 0.5),
+    )
+    surface_statistics = _numeric_statistics(
+        [float(value["surface_separation_km"]) for value in explanations],
+        ("median", 0.5),
+        ("p95", 0.95),
+        ("max", 1.0),
+    )
+    slant_statistics = _numeric_statistics(
+        [float(value["slant_distance_km"]) for value in explanations],
+        ("median", 0.5),
+        ("p95", 0.95),
+        ("max", 1.0),
+    )
+    difference = slice_record["difference_from_previous"]
+    difference_counts = None
+    if isinstance(difference, dict):
+        difference_counts = {
+            "connection_additions": len(difference["added_connections"]),
+            "connection_removals": len(difference["removed_connection_ids"]),
+            "connection_parameter_patches": len(
+                difference["connection_parameter_patches"]
+            ),
+            "zone_patches": len(
+                difference["zone_service_assignment_patches"]
+            ),
+            "route_patches": len(difference["route_patches"]),
+        }
+    return {
+        "state_available": state_available,
+        "positions": len(slice_record["positions"]),
+        "connections": len(slice_record["connections"]),
+        "served_zones": len(slice_record["zone_service_assignments"]),
+        "unserved_zones": (
+            total_zones - len(slice_record["zone_service_assignments"])
+        ),
+        "total_zones": total_zones,
+        "distinct_service_satellites": len(
+            {
+                assignment["service_satellite_id"]
+                for assignment in assignments
+            }
+        ),
+        "covered_ground_stations": len(covered_ground_stations),
+        "total_ground_stations": total_ground_stations,
+        "connection_counts": connection_counts,
+        "route_entries": len(slice_record["routes"]),
+        "zone_service_geometry": {
+            "elevation_deg": elevation_statistics,
+            "surface_separation_km": surface_statistics,
+            "slant_distance_km": slant_statistics,
+        },
+        "diagnostics": len(slice_record["diagnostics"]),
+        "difference": difference_counts,
+    }
+
+
+def _numeric_statistics(
+    values: list[float],
+    *requested: tuple[str, float],
+) -> dict[str, float | None]:
+    if not values:
+        return {label: None for label, _ in requested}
+    ordered = sorted(values)
+    result: dict[str, float | None] = {}
+    for label, percentile in requested:
+        if percentile == 0.5:
+            result[label] = median(ordered)
+            continue
+        index = max(0, min(len(ordered) - 1, ceil(percentile * len(ordered)) - 1))
+        result[label] = ordered[index]
+    return result
+
+
+def _model_context(
+    raw_context: object,
+    nodes: tuple[dict[str, object], ...],
+    orbits: tuple[dict[str, object], ...],
+    zones: tuple[dict[str, object], ...],
+) -> dict[str, object]:
+    """Combine supplied policy facts with Tool-derived topology context."""
+
+    if not isinstance(raw_context, dict):
+        raise TypeError("model_context must be a dictionary after reading")
+    context = dict(raw_context)
+    grouped_orbits: dict[tuple[int, str], list[dict[str, object]]] = {}
+    for orbit in orbits:
+        grouped_orbits.setdefault(
+            (int(orbit["asn"]), str(orbit["shell_id"])),
+            [],
+        ).append(orbit)
+    shells = []
+    for (asn, shell_id), shell_orbits in sorted(grouped_orbits.items()):
+        satellite_counts = {
+            len(orbit["satellite_ids"]) for orbit in shell_orbits
+        }
+        altitudes = {float(orbit["altitude_km"]) for orbit in shell_orbits}
+        inclinations = {
+            float(orbit["inclination_deg"]) for orbit in shell_orbits
+        }
+        shells.append(
+            {
+                "asn": asn,
+                "shell_id": shell_id,
+                "satellite_count": sum(
+                    len(orbit["satellite_ids"]) for orbit in shell_orbits
+                ),
+                "orbit_count": len(shell_orbits),
+                "satellites_per_orbit": (
+                    next(iter(satellite_counts))
+                    if len(satellite_counts) == 1
+                    else None
+                ),
+                "altitude_km": (
+                    next(iter(altitudes)) if len(altitudes) == 1 else None
+                ),
+                "inclination_deg": (
+                    next(iter(inclinations))
+                    if len(inclinations) == 1
+                    else None
+                ),
+            }
+        )
+    context["satellite_shells"] = shells
+    context["zone_count"] = len(zones)
+
+    satellite_capacities = {
+        int(node["max_simultaneous_ground_station_accesses"])
+        for node in nodes
+        if node["kind"] == "satellite"
+        and node["max_simultaneous_ground_station_accesses"] is not None
+    }
+    access_context = context.get("ground_station_access")
+    if isinstance(access_context, dict) and len(satellite_capacities) == 1:
+        access_context = dict(access_context)
+        access_context["satellite_capacity"] = next(
+            iter(satellite_capacities)
+        )
+        context["ground_station_access"] = access_context
+
+    zone_context = context.get("zone_service")
+    if isinstance(zone_context, dict) and len(shells) == 1:
+        altitude_km = shells[0]["altitude_km"]
+        minimum_elevation_deg = zone_context.get("minimum_elevation_deg")
+        if altitude_km is not None and minimum_elevation_deg is not None:
+            raw_radius_km = _service_envelope_surface_radius_km(
+                float(altitude_km),
+                float(minimum_elevation_deg),
+            )
+            zone_context = dict(zone_context)
+            zone_context.update(
+                {
+                    "approx_service_envelope_surface_radius_km": (
+                        ceil(raw_radius_km / 10.0) * 10.0
+                    ),
+                    "unrounded_service_envelope_surface_radius_km": (
+                        raw_radius_km
+                    ),
+                    "service_envelope_authority": (
+                        "Tool-derived spherical/WGS84 explanatory geometry; "
+                        "formal ECEF elevation and LOS remain authoritative"
+                    ),
+                }
+            )
+            context["zone_service"] = zone_context
+    context["authority"] = {
+        "projected": "scenario/model facts supplied at artifact generation",
+        "derived": "Tool-private explanatory geometry and counts",
+    }
+    return context
+
+
+def _service_envelope_surface_radius_km(
+    altitude_km: float,
+    minimum_elevation_deg: float,
+) -> float:
+    elevation = radians(minimum_elevation_deg)
+    orbital_radius_m = WGS84_SEMI_MAJOR_AXIS_M + altitude_km * 1_000.0
+    central_angle = acos(
+        EARTH_REFERENCE_RADIUS_M / orbital_radius_m * cos(elevation)
+    ) - elevation
+    return EARTH_REFERENCE_RADIUS_M * central_angle / 1_000.0
 
 
 __all__ = ["add_slice_display_analysis"]

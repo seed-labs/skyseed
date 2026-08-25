@@ -50,7 +50,13 @@ def satellite_input(
     )
 
 
-def ground_station_input(asn: int, station_id: str) -> GroundStationSimulationInput:
+def ground_station_input(
+    asn: int,
+    station_id: str,
+    *,
+    operator: str | None = "Skyseed",
+    max_simultaneous_satellite_accesses: int | None = None,
+) -> GroundStationSimulationInput:
     return GroundStationSimulationInput(
         node_id=NodeId(asn, "ground-station", station_id),
         ground_station_id=station_id,
@@ -58,7 +64,10 @@ def ground_station_input(asn: int, station_id: str) -> GroundStationSimulationIn
         longitude_deg=-74.0,
         elevation_m=10.0,
         station_type="gateway",
-        operator="Skyseed",
+        operator=operator,
+        max_simultaneous_satellite_accesses=(
+            max_simultaneous_satellite_accesses
+        ),
     )
 
 
@@ -99,8 +108,16 @@ def multi_hierarchy_input() -> SimulatorStaticInput:
             satellite_input(65002, "sat-a0", "shell-a", "orbit-shared", 0),
         ),
         ground_stations=(
-            ground_station_input(65001, "gs-shared"),
-            ground_station_input(65002, "gs-shared"),
+            ground_station_input(
+                65001,
+                "gs-shared",
+                max_simultaneous_satellite_accesses=2,
+            ),
+            ground_station_input(
+                65002,
+                "gs-shared",
+                max_simultaneous_satellite_accesses=5,
+            ),
         ),
     )
 
@@ -199,6 +216,13 @@ def test_topology_materializes_multi_as_shell_and_orbit_hierarchy() -> None:
     assert station.elevation_m == 10.0
     assert station.station_type == "gateway"
     assert station.operator == "Skyseed"
+    assert station.max_simultaneous_satellite_accesses == 2
+    assert (
+        topology.get_ground_station(
+            NodeId(65002, "ground-station", "gs-shared")
+        ).max_simultaneous_satellite_accesses
+        == 5
+    )
 
 
 def test_topology_collections_and_static_entities_are_immutable() -> None:
@@ -259,6 +283,38 @@ def test_topology_collections_and_static_entities_are_immutable() -> None:
         orbit._satellites = ()
     with pytest.raises(FrozenInstanceError):
         topology._autonomous_systems = ()
+
+
+def test_topology_preserves_nullable_ground_station_operator() -> None:
+    simulation_input = SimulatorStaticInput(
+        ground_stations=(
+            ground_station_input(65001, "gs-no-known-operator", operator=None),
+        )
+    )
+
+    station = Simulator(definition_for(simulation_input)).create_topology().get_ground_station(
+        NodeId(65001, "ground-station", "gs-no-known-operator")
+    )
+    assert station.operator is None
+    assert station.max_simultaneous_satellite_accesses is None
+
+
+@pytest.mark.parametrize("capability", (0, -1, True))
+def test_topology_ground_station_rejects_invalid_access_capability(
+    capability: int,
+) -> None:
+    with pytest.raises(
+        ValueError, match="max_simultaneous_satellite_accesses"
+    ):
+        GroundStation(
+            node_id=NodeId(65001, "ground-station", "invalid-capability"),
+            latitude_deg=40.0,
+            longitude_deg=-74.0,
+            elevation_m=10.0,
+            station_type="gateway",
+            operator=None,
+            max_simultaneous_satellite_accesses=capability,
+        )
 
 
 def test_topology_facade_fails_closed_on_wrong_kinds_types_and_missing_values() -> None:

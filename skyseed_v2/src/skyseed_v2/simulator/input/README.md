@@ -58,6 +58,7 @@ classDiagram
         +right_ascension_deg
         +mean_anomaly_deg
         +epoch_utc
+        +max_simultaneous_ground_station_accesses
     }
     class GroundStationSimulationInput {
         <<immutable GroundStation input DTO>>
@@ -68,6 +69,7 @@ classDiagram
         +elevation_m
         +station_type
         +operator
+        +max_simultaneous_satellite_accesses
     }
 
     SimulatorStaticInput "1" *-- "0..*" SatelliteSimulationInput : satellites
@@ -77,8 +79,17 @@ classDiagram
 | Diagram class | Public contract | Required public members |
 |---|---|---|
 | `SimulatorStaticInput` | `skyseed_v2.simulator.input.SimulatorStaticInput` | `get()`, `get_satellite()`, `get_ground_station()`, `list_satellites()`, `list_ground_stations()`, `list_nodes()` |
-| `SatelliteSimulationInput` | `skyseed_v2.simulator.input.SatelliteSimulationInput` | `node_id`, `satellite_id`, `shell_id`, `orbit_id`, `orbit_index`, `altitude_km`, `inclination_deg`, `right_ascension_deg`, `mean_anomaly_deg`, `epoch_utc` |
-| `GroundStationSimulationInput` | `skyseed_v2.simulator.input.GroundStationSimulationInput` | `node_id`, `ground_station_id`, `latitude_deg`, `longitude_deg`, `elevation_m`, `station_type`, `operator` |
+| `SatelliteSimulationInput` | `skyseed_v2.simulator.input.SatelliteSimulationInput` | `node_id`, `satellite_id`, `shell_id`, `orbit_id`, `orbit_index`, `altitude_km`, `inclination_deg`, `right_ascension_deg`, `mean_anomaly_deg`, `epoch_utc`, `max_simultaneous_ground_station_accesses` |
+| `GroundStationSimulationInput` | `skyseed_v2.simulator.input.GroundStationSimulationInput` | `node_id`, `ground_station_id`, `latitude_deg`, `longitude_deg`, `elevation_m`, `station_type`, `operator`, `max_simultaneous_satellite_accesses` |
+
+`GroundStationSimulationInput.operator` remains an explicit field and is
+`str | None`: `None` preserves the absence of known operator metadata without
+inventing a sentinel value.
+`max_simultaneous_satellite_accesses` is `int | None` and copies the optional
+site-level simulation capability without interpreting it as antenna count.
+`SatelliteSimulationInput.max_simultaneous_ground_station_accesses` is the
+independent `int | None` Satellite-side cap for GroundStation-access
+Connections; it does not limit ISLs or total degree.
 
 ## Entry points
 

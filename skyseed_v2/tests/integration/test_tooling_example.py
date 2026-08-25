@@ -15,7 +15,7 @@ EXPECTED_ARTIFACTS = {
     "topology/topology.json",
     "topology/summary.txt",
     "zone/index.html",
-    "zone/probes.json",
+    "zone/zones.json",
     "zone/summary.txt",
 }
 
@@ -72,6 +72,19 @@ def test_main_builds_once_creates_one_topology_and_shares_it_after_compile(
         if path.is_file()
     }
     assert artifacts == EXPECTED_ARTIFACTS
+    aggregate = (output / "inspection/index.html").read_text(encoding="utf-8")
+    topology_page = (
+        output / "inspection/topology/index.html"
+    ).read_text(encoding="utf-8")
+    zone_page = (output / "inspection/zone/index.html").read_text(
+        encoding="utf-8"
+    )
+    assert 'href="topology/index.html"' in aggregate
+    assert 'href="zone/index.html"' in aggregate
+    assert "直接选择静态 Zone 边界与几何信息" in aggregate
+    assert "探针" not in aggregate
+    assert 'href="../index.html"' in topology_page
+    assert 'href="../index.html"' in zone_page
     terminal = capsys.readouterr().out
     assert str(output / "inspection/index.html") in terminal
     assert str(output / "inspection/topology/index.html") in terminal
@@ -141,7 +154,7 @@ def test_tool_failure_writes_current_failed_artifact_continues_and_returns_nonze
     assert "FAILED" in topology_failure
     assert "forced topology failure" in topology_failure
     assert "FAIL" in aggregate
-    assert (output / "inspection/zone/probes.json").is_file()
+    assert (output / "inspection/zone/zones.json").is_file()
     terminal = capsys.readouterr().out
     assert "Topology Tool: FAILED" in terminal
     assert "Zone Tool: PASS" in terminal

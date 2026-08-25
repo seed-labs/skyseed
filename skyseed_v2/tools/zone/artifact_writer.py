@@ -15,7 +15,7 @@ def write_zone_artifacts(
         raise TypeError("page must be rendered text")
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
-    write_json(directory / "probes.json", data)
+    write_json(directory / "zones.json", data)
     write_text(directory / "index.html", page)
     counts = data["counts"]
     assert isinstance(counts, dict)
@@ -28,23 +28,15 @@ def write_zone_artifacts(
                     "zone_layout_configured="
                     f"{str(data['zone_layout_configured']).lower()}"
                 ),
-                f"model_type={data['model_type']}",
                 f"allow_overlap={data['allow_overlap']}",
                 *(f"{key}={value}" for key, value in counts.items()),
-                (
-                    "resolution=OBSERVED (authoritative result comes from "
-                    "Topology.resolve_zone)"
-                ),
                 "",
             )
         ),
     )
     return {
         "status": data["status"],
-        "message": (
-            f"{counts['zones']} Zone / {counts['probes']} probes / "
-            f"{counts['failed']} FAIL / {counts['multi_match']} multi-match"
-        ),
+        "message": f"{counts['zones']} Zones / static layout geometry",
         "counts": counts,
     }
 

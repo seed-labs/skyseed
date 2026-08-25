@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
 from typing import Any
 
 from .display_analysis import add_slice_display_analysis
@@ -16,7 +15,10 @@ def project_slice_difference_data(
 
     if not isinstance(observation, SliceDifferenceRead):
         raise TypeError("observation must be a SliceDifferenceRead")
-    data = deepcopy(observation.snapshot)
+    # Reader values are already detached Tool-owned containers. Projection is
+    # the sole consumer in the normal pipeline, so a second full history copy
+    # would add memory without adding an authority boundary.
+    data = observation.snapshot
     add_slice_display_analysis(data)
     return data
 

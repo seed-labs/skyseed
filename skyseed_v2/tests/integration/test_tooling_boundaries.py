@@ -240,7 +240,6 @@ def test_tool_files_are_shaped_by_responsibility_not_a_uniform_template() -> Non
         "_fit_origin_plane": "slice",
         "_symmetric_eigendecomposition": "slice",
         "sample_rectangle_boundary": "zone",
-        "_annotate_focus_visibility": "zone",
     }
     all_sources = {
         (tool_name, path): path.read_text(encoding="utf-8")
@@ -279,8 +278,10 @@ def test_dynamic_tool_boundary_allows_readonly_results_without_generation() -> N
         "TopologyDifference",
     ):
         assert readable_result in contract
-    assert "read-only Tools consume exact retained values" in " ".join(
-        contract.split()
+    assert (
+        "read-only Tools consume exact retained `TopologySlice`, "
+        "`ConnectionSlice`, and `RouteSlice` values"
+        in " ".join(contract.split())
     )
     assert "No Model calls outside Slicer" in contract
     assert "Tool-side comparator" in contract
@@ -292,10 +293,11 @@ def test_dynamic_tool_boundary_allows_readonly_results_without_generation() -> N
     for required_read in (
         ".get_topology(",
         ".get_slice(",
-        ".resolve_path(",
         ".create_difference(",
     ):
         assert required_read in source
+    assert ".resolve_path(" not in source
+    assert "restoreSelectedPath" in source
     for forbidden_generation in (
         "CircularOrbitPositionModel",
         "GeometricConnectionModel",

@@ -33,7 +33,11 @@ from skyseed_v2.simulator import (
     Slicer,
 )
 from skyseed_v2.shared import NodeId
-from skyseed_v2.simulator.geometry import elevation_deg, geodetic_to_ecef
+from skyseed_v2.simulator.geometry import (
+    ecef_distance_m,
+    elevation_deg,
+    geodetic_to_ecef,
+)
 from skyseed_v2.simulator.input import (
     SatelliteSimulationInput,
     SimulatorStaticInput,
@@ -52,15 +56,12 @@ TOOL_PIPELINE_SOURCES = tuple(
 )
 EXPECTED_FILES = {
     "checksums.sha256",
-    "slice-difference.json",
+    "slice-manifest.json",
+    "chunks",
     "index.html",
     "inventory.json",
     "summary.txt",
 }
-CANONICAL_SLICE_DIFFERENCE_SHA256 = (
-    "07d72b4da968da24f63ed71b62a10c0b7"
-    "500c8a08fe521cce47d3211c96a680e"
-)
 PORTABILITY_EPOCH = datetime(2026, 2, 1, tzinfo=timezone.utc)
 
 
@@ -125,6 +126,14 @@ def _route_ref(route_key: RouteKey) -> str:
         else f"Z|{target.zone_id}"
     )
     return f"{route_key.source.value}|{target_ref}"
+
+
+def _target_ref(target: RouteTarget) -> str:
+    return (
+        f"G|{target.ground_station_id.value}"
+        if isinstance(target, GroundStationRouteTarget)
+        else f"Z|{target.zone_id}"
+    )
 
 
 def _portable_satellite(
@@ -222,7 +231,10 @@ def test_projector_matches_formal_slice_position_connection_route_and_difference
         "status": "non-authoritative-view",
         "source": "retained public results from one exact Slicer",
         "position": "EarthFixedPosition with formal geographic views",
-        "paths": "Slicer.resolve_path",
+        "paths": (
+            "selected browser display restoration from projected formal "
+            "next-hop facts"
+        ),
         "differences": "Slicer.create_difference",
     }
     records = {
@@ -299,6 +311,17 @@ def test_projector_matches_formal_slice_position_connection_route_and_difference
                     abs=1e-12,
                 )
             )
+            assert explanation["slant_distance_km"] == pytest.approx(
+                ecef_distance_m(representative, satellite_position) / 1_000.0,
+                abs=1e-9,
+            )
+            assert explanation["surface_separation_km"] >= 0.0
+            assert explanation["surface_separation_authority"] == (
+                "Tool-derived IUGG mean-Earth spherical approximation"
+            )
+            assert explanation["slant_distance_authority"] == (
+                "derived from formal representative-point and Satellite ECEF"
+            )
             assert explanation["subpoint_inside_zone"] is zone.contains(
                 satellite_position.latitude_deg,
                 satellite_position.longitude_deg,
@@ -308,50 +331,11 @@ def test_projector_matches_formal_slice_position_connection_route_and_difference
                 == "formal assignment uses representative-point visibility "
                 "and minimum elevation; subpoint containment is not eligibility"
             )
-        assert {
-            value["route_ref"]: value for value in record["routes"]
-        } == {
-            _route_ref(RouteKey(source, target)): {
-                "route_ref": _route_ref(RouteKey(source, target)),
-                "source": source.value,
-                "target": _target_data(target),
-                "next_hop": next_hop.value,
-            }
+        assert set(record["routes"]) == {
+            (source.value, _target_ref(target), next_hop.value)
             for source, targets in formal.route_slice.routes.items()
             for target, next_hop in targets.items()
         }
-
-        for path in record["paths"]:
-            target_data = path["target"]
-            formal_path = next(
-                (
-                    (source, target)
-                    for source, targets in formal.route_slice.routes.items()
-                    for target in targets
-                    if source.value == path["source"]
-                    and (
-                        (
-                            target_data["kind"] == "G"
-                            and getattr(
-                                target, "ground_station_id", None
-                            ).value
-                            == target_data["ground_station_id"]
-                        )
-                        or (
-                            target_data["kind"] == "Z"
-                            and getattr(target, "zone_id", None)
-                            == target_data["zone_id"]
-                        )
-                    )
-                ),
-                None,
-            )
-            assert formal_path is not None
-            source, target = formal_path
-            assert path["nodes"] == [
-                node_id.value
-                for node_id in slicer.resolve_path(slice_id, source, target)
-            ]
 
         if slice_id == 0:
             assert record["difference_from_previous"] is None
@@ -428,17 +412,16 @@ def test_projector_matches_formal_slice_position_connection_route_and_difference
                 for patch in difference.zone_service_assignment_patches
             ]
             assert projected["route_patches"] == [
-                {
-                    "route_ref": _route_ref(patch.route_key),
-                    "source": patch.route_key.source.value,
-                    "target": _target_data(patch.route_key.target),
-                    "operation": patch.operation.value,
-                    "next_hop": (
+                (
+                    patch.operation.value,
+                    patch.route_key.source.value,
+                    _target_ref(patch.route_key.target),
+                    (
                         None
                         if patch.next_hop is None
                         else patch.next_hop.value
                     ),
-                }
+                )
                 for patch in difference.route_patches
             ]
 
@@ -454,6 +437,8 @@ def test_slice_zero_and_all_timeline_entries_are_explicit(
     )
     assert timeline["slice_count_including_zero"] == len(slices) == 65
     zero = slices[0]
+    total_zones = len(collected["topology"]["zones"])
+    total_ground_stations = collected["inventory"]["ground_stations"]
     assert zero == {
         "slice_id": 0,
         "timestamp": None,
@@ -462,8 +447,40 @@ def test_slice_zero_and_all_timeline_entries_are_explicit(
         "connections": (),
         "zone_service_assignments": (),
         "routes": (),
-        "paths": (),
         "difference_from_previous": None,
+        "diagnostics": (),
+        "summary": {
+            "state_available": False,
+            "positions": 0,
+            "connections": 0,
+            "served_zones": 0,
+            "unserved_zones": total_zones,
+            "total_zones": total_zones,
+            "distinct_service_satellites": 0,
+            "covered_ground_stations": 0,
+            "total_ground_stations": total_ground_stations,
+            "connection_counts": {
+                "same_orbit_isl": 0,
+                "cross_plane_isl": 0,
+                "ground_station_access": 0,
+            },
+            "route_entries": 0,
+            "zone_service_geometry": {
+                "elevation_deg": {"p5": None, "median": None},
+                "surface_separation_km": {
+                    "median": None,
+                    "p95": None,
+                    "max": None,
+                },
+                "slant_distance_km": {
+                    "median": None,
+                    "p95": None,
+                    "max": None,
+                },
+            },
+            "diagnostics": 0,
+            "difference": None,
+        },
     }
 
 
@@ -550,6 +567,49 @@ def test_projector_is_deterministic_and_does_not_change_slicer(
     assert after == before
 
 
+def test_model_context_is_detached_and_tool_derived(
+    slicer: Slicer,
+) -> None:
+    supplied = {
+        "zone_service": {"minimum_elevation_deg": 25.0},
+        "ground_station_access": {
+            "minimum_elevation_deg": 5.0,
+            "maximum_slant_distance_km": 3_000.0,
+            "ground_station_capacity": 8,
+        },
+        "interpretation_notes": ["projected note"],
+    }
+    projected = collect_slice_difference_data(
+        slicer,
+        model_context=supplied,
+    )
+
+    assert supplied == {
+        "zone_service": {"minimum_elevation_deg": 25.0},
+        "ground_station_access": {
+            "minimum_elevation_deg": 5.0,
+            "maximum_slant_distance_km": 3_000.0,
+            "ground_station_capacity": 8,
+        },
+        "interpretation_notes": ["projected note"],
+    }
+    context = projected["model_context"]
+    assert context["zone_count"] == projected["inventory"]["zones"]
+    assert sum(
+        shell["satellite_count"] for shell in context["satellite_shells"]
+    ) == projected["inventory"]["satellites"]
+    assert (
+        context["zone_service"][
+            "approx_service_envelope_surface_radius_km"
+        ]
+        % 10.0
+        == 0.0
+    )
+    assert "Tool-derived" in context["zone_service"][
+        "service_envelope_authority"
+    ]
+
+
 def test_portability_uses_composite_orbit_refs_and_input_derived_counts(
     tmp_path: Path,
     portable_slicer: Slicer,
@@ -563,7 +623,7 @@ def test_portability_uses_composite_orbit_refs_and_input_derived_counts(
         "zones": 0,
         "slices": 4,
         "differences": 3,
-        "paths": 0,
+        "route_entries": 0,
     }
     orbits = collected["topology"]["orbits"]
     assert [orbit["orbit_id"] for orbit in orbits] == [
@@ -599,8 +659,8 @@ def test_portability_uses_composite_orbit_refs_and_input_derived_counts(
     html = (output / "index.html").read_text(encoding="utf-8")
     assert "65201|alpha-shell|shared-orbit" in html
     assert "65202|beta-shell|shared-orbit" in html
-    assert "No formal path" in html
-    assert "No patch in this category." in html
+    assert "Select a Zone" in html
+    assert "Difference from previous Slice" in html
 
     production_source = "\n".join(
         path.read_text(encoding="utf-8")
@@ -649,12 +709,13 @@ def test_portability_browser_smoke_handles_duplicate_orbits_and_empty_state(
 
         assert result["status"] == "PASS"
         assert result["profile"] == "portability"
-        assert result["orbit_refs"] == [
-            "65201|alpha-shell|shared-orbit",
-            "65202|beta-shell|shared-orbit",
-        ]
         assert result["inventory"]["nodes"] == 2
         assert result["inventory"]["slices"] == 4
+        assert result["chunk_object_count"] == 1
+        assert result["stale_completion_guard"] == {
+            "loadedSliceId": 3,
+            "chunkIds": [3],
+        }
         assert (screenshots / result["screenshot"]).is_file()
     finally:
         shutil.rmtree(browser_root)
@@ -680,7 +741,6 @@ def test_dynamic_tool_is_repository_local_readonly_and_not_exported() -> None:
     for required in (
         ".get_topology(",
         ".get_slice(",
-        ".resolve_path(",
         ".create_difference(",
     ):
         assert required in source
@@ -699,91 +759,99 @@ def test_dynamic_tool_is_repository_local_readonly_and_not_exported() -> None:
         assert "import tools" not in core_source
 
 
-def test_frontend_has_five_focused_presets_with_shared_context() -> None:
+def test_frontend_is_selection_driven_and_lazy_chunked() -> None:
     source = TOOL_UI_SOURCE.read_text(encoding="utf-8")
-    for view in ("topology", "isl", "service", "routing", "difference"):
-        assert f'data-panel="{view}"' in source
-        assert f'data-view="{view}"' in source
-    for canvas_id in (
-        "topology-globe",
-        "isl-globe",
-        "service-globe",
-        "routing-globe",
-        "difference-globe",
+    for identifier in (
+        "slice-globe",
+        "slice-range",
+        "pick-node",
+        "pick-connection",
+        "pick-zone",
+        "clear-inspection",
+        "show-difference",
+        "selected-detail",
+        "path-detail",
+        "gateway-route-zone",
+        "gateway-route-gateway",
+        "gateway-route-direction",
+        "node-select",
+        "connection-select",
+        "zone-select",
+        "route-source",
+        "route-target",
+        "difference-counts",
+        "difference-context",
+        "diagnostics",
+        "slice-context",
+        "slice-physical-context",
+        "model-context",
     ):
-        assert f'id="{canvas_id}"' in source
-    assert 'id="globe"' not in source
-    assert "difference-overlay" not in source
-    assert '<option value="connection-structure">' in source
-    assert '<option value="parameters">' in source
-    assert '<option value="zone">' in source
-    assert '<option value="route">' in source
-    assert '<option value="all">' not in source
-    assert "static RAAN is identity detail only" in source
-    assert "Unrelated Connections are hidden." in source
-    assert "previous / predecessor Orbit" in source
-    assert "next / successor Orbit" in source
-    assert "predecessor-orbit" in source
-    assert "successor-orbit" in source
-    assert "subpoint inside Zone" in source
-    assert "it is not subpoint containment" in source
-    for context_control in (
-        "sync-camera",
-        "isl-orbit-layer",
-        "isl-satellite-layer",
-        "service-orbit-layer",
-        "service-satellite-layer",
-        "routing-orbit-layer",
-        "routing-satellite-layer",
-        "routing-ground-layer",
-        "difference-orbit-layer",
-        "difference-satellite-layer",
-    ):
-        assert f'id="{context_control}"' in source
-    assert 'id="timeline-rail"' in source
-    assert "setTimelineIndex" in source
-    assert "displayDifference" in source
-    assert "displayPreviousSlice" in source
-    assert "displayCurrentSlice" in source
-    assert "displayBaseSlice" in source
-    assert "currentSlice()" not in source
-    assert "comparisonSlice" in source
-    assert "comparisonPositionMap" in source
-    assert "stableComparisonLayerNames" in source
-    assert "comparison-geometry-current-fallback" in source
-    assert "No discrete network-state change" in source
-    assert "Show full constellation context" in source
+        assert f'id="{identifier}"' in source
+    assert "window.__SKYSEED_SLICE_CHUNKS__" in source
+    assert "element.src=entry.chunk" in source
+    assert "requestedSliceId=null,loadGeneration=0" in source
+    assert "generation=++loadGeneration" in source
+    assert "generation===loadGeneration&&id===requestedSliceId" in source
+    assert "else if(id!==requestedSliceId)delete" in source
+    assert "return promise.then(activateIfCurrent)" in source
     assert (
-        '<input id="difference-satellite-layer" type="checkbox">'
+        "window.__SKYSEED_SLICE_CHUNKS__[value.slice_id]=value" in source
+    )
+    assert "delete window.__SKYSEED_SLICE_CHUNKS__[key]" in source
+    assert "function restoreSelectedPath()" in source
+    assert "browser display restoration from current compact next-hop tuples" in source
+    assert "function selectAt(clientX,clientY)" in source
+    assert "function hitAt(x,y,mode=pickMode)" in source
+    assert "selectedNodeId=id" in source
+    assert "selectedConnectionRef=ref" in source
+    assert "selectedZoneId=id" in source
+    assert "function renderDifferenceContext()" in source
+    assert "function renderSliceContext()" in source
+    assert "routeChangedSegments" in source
+    assert "affectedRouteSource" in source
+    assert "function drawSelectedLabel(" in source
+    assert "selectedLabelText" in source
+    assert "hoverLabelText" in source
+    assert "const DISPLAY_GEOMETRY=" in source
+    assert (
+        "1+Number(heightM)/DISPLAY_GEOMETRY.earth_reference_radius_m"
         in source
     )
-    assert source.count("drawPositionComparisonOrbitContext(") == 2
-    assert source.count("drawPositionComparisonSatelliteContext(") == 2
-    assert "drawTimelineOrbitContext" not in source
-    assert "drawTimelineSatelliteContext" not in source
-    assert "position-motion-vectors" in source
-    assert "stable-ecef-orbit-guides" in source
-    assert "full-constellation-stable-context" in source
-    assert "WGS84_DISPLAY_RADIUS_M=6378137" in source
-    assert "position.ecef_m" in source
-    assert "guide.mean_radius_m/WGS84_DISPLAY_RADIUS_M" in source
-    assert "const raan=orbit.right_ascension_deg" not in source
-    assert "formal-ecef-positions" in (
-        PROJECT_ROOT / "tools/slice/display_analysis.py"
-    ).read_text(encoding="utf-8")
-    assert "orbitsByRef" in source
-    assert "orbitRefBySatellite" in source
-    assert "selectedOrbitRef" in source
-    assert "orbit.orbit_ref" in source
-    assert "orbitsById" not in source
-    assert "orbitBySatellite" not in source
-    assert "selectedOrbitId" not in source
-    assert "Directional parameter transition" in source
-    assert "Zone service transition" in source
-    assert "Route next-hop transition" in source
-    assert "<table" in source
-    assert "<details" in source
-    assert "Raw JSON / Audit View" in source
+    assert "canvas.dataset.firstSatelliteDisplayRadius" in source
+    assert "canvas.dataset.selectedConnectionX" in source
+    assert "function switchVisualSelection(kind)" in source
+    assert "function clearActiveSelection()" in source
+    assert "function clearInspection()" in source
+    assert 'applyGatewayRouteSelection(true)' not in source
+    assert "if(same){clearActiveSelection();return;}" in source
+    assert 'event.key==="Escape"' in source
+    assert "function gatewayCandidatesForZone(" in source
+    assert "function routeEvidenceRows(" in source
+    assert "Gateway ingress Satellite" in source
+    assert "formal path composition" in source
+    assert "direct Gateway/terminal formal access" in source
+    assert "incidentContextConnections" in source
+    assert "endpointContextNodes" in source
+    assert 'color="#93aeb8"' in source
+    assert 'routeDirection="zone-to-gateway"' in source
+    assert "other Zones served by that Satellite" in source
+    assert "representative point only; full-area coverage is not guaranteed" in source
+    assert "multiple Zones may validly share one service Satellite" in source
+    assert 'currentSlice.difference_from_previous?.removed_connection_ids' in source
+    assert 'servedZonesForSatellite(selectedNodeId)' in source
+    assert "difference-patch" not in source
+    activate_source = source[
+        source.index("function activateSlice") : source.index(
+            "function populateFallbacks"
+        )
+    ]
+    assert "selectedNodeId=\"\"" not in activate_source
+    assert "selectedConnectionRef=\"\"" not in activate_source
+    assert "selectedZoneId=\"\"" not in activate_source
+    assert "fetch(" not in source
+    assert "XMLHttpRequest" not in source
+    assert "Raw JSON / Audit View" not in source
+    assert "DATA.slices" not in source
 
 
 def test_bundle_is_complete_self_contained_and_checksum_valid(
@@ -798,11 +866,9 @@ def test_bundle_is_complete_self_contained_and_checksum_valid(
     inventory = json.loads(
         (output / "inventory.json").read_text(encoding="utf-8")
     )
-    assert {item["path"] for item in inventory["files"]} == {
-        "index.html",
-        "slice-difference.json",
-        "summary.txt",
-    }
+    paths = {item["path"] for item in inventory["files"]}
+    assert {"index.html", "slice-manifest.json", "summary.txt"} <= paths
+    assert sum(path.startswith("chunks/") for path in paths) == 65
     for item in inventory["files"]:
         path = output / item["path"]
         assert item["size_bytes"] == path.stat().st_size
@@ -811,15 +877,15 @@ def test_bundle_is_complete_self_contained_and_checksum_valid(
     checksum_lines = (
         output / "checksums.sha256"
     ).read_text(encoding="utf-8").splitlines()
-    assert len(checksum_lines) == 4
+    assert len(checksum_lines) == len(inventory["files"]) + 1
     for line in checksum_lines:
         digest, relative = line.split("  ", 1)
         assert digest == sha256((output / relative).read_bytes()).hexdigest()
 
-    data_text = (output / "slice-difference.json").read_text(encoding="utf-8")
-    assert sha256(data_text.encode("utf-8")).hexdigest() == (
-            CANONICAL_SLICE_DIFFERENCE_SHA256
-    )
+    data_text = (output / "slice-manifest.json").read_text(encoding="utf-8")
+    manifest = json.loads(data_text)
+    assert "slices" not in manifest
+    assert len(manifest["slice_manifest"]) == 65
     html = (output / "index.html").read_text(encoding="utf-8")
     for forbidden in (
         "NodeId(",
@@ -838,17 +904,23 @@ def test_bundle_is_complete_self_contained_and_checksum_valid(
         'id="slice-range"',
         'id="previous-slice"',
         'id="next-slice"',
-        'id="play-pause"',
-        'id="orbit-select"',
-        'id="isl-node-filter"',
-        'id="route-source"',
-        'id="route-target"',
-        'id="difference-category"',
-        'id="difference-detail"',
-        'id="topology-globe"',
-        'id="isl-globe"',
-        'id="service-globe"',
-        'id="routing-globe"',
-        'id="difference-globe"',
+        'id="clear-inspection"',
+        'id="node-select"',
+        'id="connection-select"',
+        'id="zone-select"',
+            'id="route-source"',
+            'id="route-target"',
+            'id="show-difference"',
+            'id="difference-counts"',
+            'id="difference-context"',
+            'id="slice-context"',
+            'id="slice-physical-context"',
+            'id="model-context"',
+            'id="selected-detail"',
+            'id="path-detail"',
+            'id="gateway-route-zone"',
+            'id="gateway-route-gateway"',
+            'id="gateway-route-direction"',
+            'id="slice-globe"',
     ):
         assert required_id in html

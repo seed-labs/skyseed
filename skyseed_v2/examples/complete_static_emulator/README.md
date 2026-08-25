@@ -15,7 +15,8 @@ upstream `Base` owner with `get_skyseed_autonomous_systems(base)` and passes
 that collection to
 `create_simulator_static_input(...)`. The ordinary AS is excluded by that
 owner query. No NodeId-to-Emulator-entity mapping or resolution path is
-created. `operator` is descriptive metadata only. The Simulator path loads the
+created. `operator` is explicit `str | None` descriptive metadata only; this
+example supplies a known string. The Simulator path loads the
 static Zone layout from `zones.yaml`; formal dynamic Connections remain
 Simulator results and do not mutate Emulator entities.
 

@@ -440,6 +440,39 @@ def _compiler_artifact(*, zone_source: bool, second_boundary: bool) -> dict[str,
     }
 
 
+def test_chunked_slice_bundle_is_accepted_without_a_legacy_monolith(
+    tmp_path: Path,
+) -> None:
+    telemetry, dynamic, compiler, workload = _inputs(tmp_path)
+    payload = json.loads(dynamic.read_text(encoding="utf-8"))
+    slices = payload.pop("slices")
+    chunks = dynamic.parent / "chunks"
+    chunks.mkdir()
+    payload["slice_manifest"] = []
+    for slice_record in slices:
+        slice_id = slice_record["slice_id"]
+        name = f"chunks/slice-{slice_id:06d}.js"
+        payload["slice_manifest"].append(
+            {"slice_id": slice_id, "chunk": name}
+        )
+        compact = json.dumps(slice_record, separators=(",", ":"))
+        (dynamic.parent / name).write_text(
+            "window.__SKYSEED_SLICE_CHUNKS__="
+            "window.__SKYSEED_SLICE_CHUNKS__||{};"
+            f"window.__SKYSEED_SLICE_CHUNKS__[{slice_id}]={compact};\n",
+            encoding="utf-8",
+        )
+    manifest = dynamic.with_name("slice-manifest.json")
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+
+    data = collect_traffic_replay_data(
+        telemetry, manifest, compiler, workload
+    )
+
+    assert len(data["position_samples"]) == 2
+    assert [value["slice_id"] for value in data["position_samples"]] == [1, 2]
+
+
 def test_node_endpoint_transaction_clock_and_active_graph(tmp_path: Path) -> None:
     traffic, dynamic, compiler, workload = _inputs(tmp_path, reply_generation=1)
 
@@ -1289,7 +1322,7 @@ def test_latest_canonical_artifact_is_v3_or_explicitly_stale_before_rerun() -> N
     )
     telemetry = root / "traffic/traffic-telemetry.jsonl"
     workload = root.parent / "inputs/traffic-workload.json"
-    dynamic = root / "slice/slice-difference.json"
+    dynamic = root / "slice/slice-manifest.json"
     compiler = root / "bpf-compiler/bpf-compiler-inspection.json"
     replay = root / "traffic/traffic-replay.json"
     if not workload.is_file():

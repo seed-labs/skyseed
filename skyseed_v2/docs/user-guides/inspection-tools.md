@@ -24,16 +24,52 @@ from tools.runner import write_runner_tool
 from tools.traffic import write_traffic_replay_tool
 ```
 
-The output contains standalone HTML, private JSON audit data, and summaries.
-It is non-authoritative: formal Zone membership/resolution, path lookup, and
-Difference creation are read from production objects. Tools never execute
-Models or create fallback results.
+The output contains standalone HTML, private audit data, and summaries. The
+Slice Tool uses `slice-manifest.json` plus offline `chunks/slice-*.js`;
+opening its page loads only the selected Slice. Its 3D Earth supports direct
+node, Connection, and Zone selection, contextual Zone service and Difference
+overlays, and a Zone/Gateway/direction Route workflow restored from that
+chunk's sparse next-hop tuples. Generic source/target selection is an advanced
+fallback. Topology orbit rings and Slice Satellite positions use one
+Tool-private spherical display approximation: unit Earth plus formal altitude
+divided by the IUGG mean Earth radius. It does not reinterpret Simulator
+geometry; marker and hit-test sizes remain independent display values.
+It is non-authoritative. The Zone Tool reads static layout geometry and uses
+browser-only hit testing for direct selection; it does not execute the Zone
+membership Model. Where other Tools report formal path, Difference, or model
+results, those results are read from production objects rather than recreated.
 
 Run the rich bundle:
 
 ```bash
 python examples/mini_satellite_internet/main.py
 ```
+
+Run the static S4 scale-review bundle without entering the dynamic or BPF
+pipeline (the default):
+
+```bash
+python examples/s4_satellite_internet/main.py
+```
+
+Its existing-tool outputs are
+`examples/s4_satellite_internet/output/inspection/topology/index.html` and
+`examples/s4_satellite_internet/output/inspection/zone/index.html`. Select an
+orbit ring or GroundStation on the Topology globe, or select a Zone directly
+on either Zone view, to inspect the existing static fields. The subtle
+Natural Earth coastline is embedded for offline orientation only; it is not
+simulation or Zone authority.
+
+Opt into the bounded dynamic Simulator branch with:
+
+```bash
+python examples/s4_satellite_internet/main.py --dynamic
+```
+
+That adds the maintained `output/inspection/slice/index.html` alongside the
+Topology and Zone Tools. Compact run metrics remain separate under
+`output/qualification/`; lazy per-Slice scripts prevent the browser page from
+becoming a monolithic second simulation authority.
 
 Validate the generated Slice / Difference page in Firefox without keeping a
 screenshot:

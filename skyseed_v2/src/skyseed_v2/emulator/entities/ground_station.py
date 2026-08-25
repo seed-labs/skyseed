@@ -59,10 +59,11 @@ class GroundStation(Router):
         asn: int,
         location: GroundStationLocation,
         station_type: str,
-        operator: str,
+        operator: str | None,
         display_name: str | None = None,
         service_config: Mapping[str, str] | None = None,
         routing_backend: str = "bird",
+        max_simultaneous_satellite_accesses: int | None = None,
     ) -> None:
         self._ground_station_id = validate_identifier(
             ground_station_id, "ground_station_id"
@@ -71,7 +72,13 @@ class GroundStation(Router):
             raise TypeError("location must be a GroundStationLocation")
         self._location = location
         self._station_type = self._validate_text(station_type, "station_type")
-        self._operator = self._validate_text(operator, "operator")
+        self._operator = self._validate_optional_text(operator, "operator")
+        self._max_simultaneous_satellite_accesses = (
+            self._validate_optional_positive_integer(
+                max_simultaneous_satellite_accesses,
+                "max_simultaneous_satellite_accesses",
+            )
+        )
         copied_config = dict(service_config or {})
         if any(
             not isinstance(key, str) or not isinstance(value, str)
@@ -95,7 +102,8 @@ class GroundStation(Router):
         self.setLabel("skyseed.entity_type", "GroundStation")
         self.setLabel("skyseed.ground_station_id", self.ground_station_id)
         self.setLabel("skyseed.station_type", self.station_type)
-        self.setLabel("skyseed.operator", self.operator)
+        if self.operator is not None:
+            self.setLabel("skyseed.operator", self.operator)
         self.setLabel("skyseed.latitude_deg", str(location.latitude_deg))
         self.setLabel("skyseed.longitude_deg", str(location.longitude_deg))
         if location.elevation_m is not None:
@@ -106,6 +114,24 @@ class GroundStation(Router):
         if not isinstance(value, str) or not value.strip():
             raise ValueError(f"{field_name} must be a non-empty string")
         return value.strip()
+
+    @classmethod
+    def _validate_optional_text(
+        cls, value: str | None, field_name: str
+    ) -> str | None:
+        if value is None:
+            return None
+        return cls._validate_text(value, field_name)
+
+    @staticmethod
+    def _validate_optional_positive_integer(
+        value: int | None, field_name: str
+    ) -> int | None:
+        if value is None:
+            return None
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise ValueError(f"{field_name} must be a positive integer")
+        return value
 
     @property
     def ground_station_id(self) -> str:
@@ -120,8 +146,12 @@ class GroundStation(Router):
         return self._station_type
 
     @property
-    def operator(self) -> str:
+    def operator(self) -> str | None:
         return self._operator
+
+    @property
+    def max_simultaneous_satellite_accesses(self) -> int | None:
+        return self._max_simultaneous_satellite_accesses
 
     @property
     def service_config(self) -> Mapping[str, str]:

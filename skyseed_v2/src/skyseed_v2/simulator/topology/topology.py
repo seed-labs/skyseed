@@ -41,6 +41,7 @@ class Satellite:
     node_id: NodeId
     orbit_index: int
     mean_anomaly_deg: float
+    max_simultaneous_ground_station_accesses: int | None = None
 
     def __post_init__(self) -> None:
         _validate_node_identity(self.node_id, _SATELLITE_KIND)
@@ -54,6 +55,13 @@ class Satellite:
             self,
             "mean_anomaly_deg",
             _validate_angle(self.mean_anomaly_deg, "mean_anomaly_deg"),
+        )
+        capability = _validate_optional_positive_integer(
+            self.max_simultaneous_ground_station_accesses,
+            "max_simultaneous_ground_station_accesses",
+        )
+        object.__setattr__(
+            self, "max_simultaneous_ground_station_accesses", capability
         )
 
     @property
@@ -76,7 +84,8 @@ class GroundStation:
     longitude_deg: float
     elevation_m: float
     station_type: str
-    operator: str
+    operator: str | None
+    max_simultaneous_satellite_accesses: int | None = None
 
     def __post_init__(self) -> None:
         _validate_node_identity(self.node_id, _GROUND_STATION_KIND)
@@ -88,10 +97,18 @@ class GroundStation:
         if not -180.0 <= longitude <= 180.0:
             raise ValueError("longitude_deg must be between -180 and 180")
         _validate_text(self.station_type, "station_type")
-        _validate_text(self.operator, "operator")
+        operator = _validate_optional_text(self.operator, "operator")
+        capability = _validate_optional_positive_integer(
+            self.max_simultaneous_satellite_accesses,
+            "max_simultaneous_satellite_accesses",
+        )
         object.__setattr__(self, "latitude_deg", latitude)
         object.__setattr__(self, "longitude_deg", longitude)
         object.__setattr__(self, "elevation_m", elevation)
+        object.__setattr__(self, "operator", operator)
+        object.__setattr__(
+            self, "max_simultaneous_satellite_accesses", capability
+        )
 
     @property
     def ground_station_id(self) -> str:
@@ -513,6 +530,9 @@ class Topology:
                     node_id=simulation_input.node_id,
                     orbit_index=simulation_input.orbit_index,
                     mean_anomaly_deg=simulation_input.mean_anomaly_deg,
+                    max_simultaneous_ground_station_accesses=(
+                        simulation_input.max_simultaneous_ground_station_accesses
+                    ),
                 )
                 for simulation_input in sorted(
                     satellite_inputs_by_orbit[orbit_key],
@@ -557,6 +577,9 @@ class Topology:
                     elevation_m=simulation_input.elevation_m,
                     station_type=simulation_input.station_type,
                     operator=simulation_input.operator,
+                    max_simultaneous_satellite_accesses=(
+                        simulation_input.max_simultaneous_satellite_accesses
+                    ),
                 )
                 for simulation_input in sorted(
                     ground_station_inputs_by_asn.get(asn, ()),
@@ -738,6 +761,9 @@ def _validate_ground_station_input(
         elevation_m=value.elevation_m,
         station_type=value.station_type,
         operator=value.operator,
+        max_simultaneous_satellite_accesses=(
+            value.max_simultaneous_satellite_accesses
+        ),
     )
 
 
@@ -750,6 +776,16 @@ def _validate_node_identity(
         raise ValueError(f"node_id kind must be {expected_kind}")
     if entity_id is not None and node_id.entity_id != entity_id:
         raise ValueError("node_id entity ID must match the input entity ID")
+
+
+def _validate_optional_positive_integer(
+    value: int | None, field_name: str
+) -> int | None:
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise ValueError(f"{field_name} must be a positive integer")
+    return value
 
 
 def _validate_query_node_id(
@@ -788,6 +824,15 @@ def _validate_angle(value: float, field_name: str) -> float:
 def _validate_text(value: str, field_name: str) -> None:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field_name} must be a non-empty string")
+
+
+def _validate_optional_text(
+    value: str | None, field_name: str
+) -> str | None:
+    if value is None:
+        return None
+    _validate_text(value, field_name)
+    return value.strip()
 
 
 __all__ = [

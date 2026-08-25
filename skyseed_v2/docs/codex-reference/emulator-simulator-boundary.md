@@ -31,6 +31,22 @@ explicit SkyseedAutonomousSystem values
 The two one-entity functions copy the same approved scalar values. `NodeId`
 uses the sole `(asn, entity_kind, entity_id)` derivation rule.
 
+GroundStation `operator` is copied unchanged as explicit descriptive metadata.
+A stripped non-empty string means known; `None` means the experiment input does
+not know the operator. No layer invents a string sentinel.
+
+GroundStation `max_simultaneous_satellite_accesses` is likewise copied from
+Config through the site-level Emulator entity and
+`GroundStationSimulationInput` into Topology. `None` means no per-site cap fact
+is specified; a positive integer is a hard simulation capability. It is not
+derived from physical antenna count.
+
+Satellite `max_simultaneous_ground_station_accesses` is copied through the
+same configuration → Emulator entity → `SatelliteSimulationInput` → Topology
+chain. `None` means no explicit Satellite-side Gateway-access cap; a positive
+integer limits only simultaneous GroundStation-access Connections, not ISLs,
+UT service, or total degree.
+
 ## Invariants
 
 - formal type is `SimulatorStaticInput`;

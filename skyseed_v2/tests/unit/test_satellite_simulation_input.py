@@ -64,6 +64,7 @@ def test_input_contains_only_static_values_not_seed_or_container_objects() -> No
         "right_ascension_deg",
         "mean_anomaly_deg",
         "epoch_utc",
+        "max_simultaneous_ground_station_accesses",
     }
     assert all(
         not isinstance(value, Node)

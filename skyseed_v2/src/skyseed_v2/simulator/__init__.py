@@ -27,6 +27,7 @@ from .definition import SimulationDefinition
 from .geometry import EarthFixedPosition
 from .models import (
     CircularOrbitPositionModel,
+    GatewayHopCountRouteModel,
     GeometricConnectionModel,
     HopCountRouteModel,
 )
@@ -91,6 +92,7 @@ __all__ = [
     "DifferenceOperation",
     "EarthFixedPosition",
     "GeometricConnectionModel",
+    "GatewayHopCountRouteModel",
     "GroundStation",
     "GroundStationRouteTarget",
     "ForwardingPlanningModel",

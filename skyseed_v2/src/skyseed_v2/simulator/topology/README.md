@@ -130,6 +130,7 @@ classDiagram
         +orbit_index
         +mean_anomaly_deg
         +satellite_id
+        +max_simultaneous_ground_station_accesses
     }
     class GroundStation {
         <<immutable Topology GroundStation>>
@@ -139,6 +140,7 @@ classDiagram
         +elevation_m
         +station_type
         +operator
+        +max_simultaneous_satellite_accesses
         +ground_station_id
     }
     Topology "1" *-- "*" SkyseedAutonomousSystem : autonomous systems
@@ -238,14 +240,25 @@ classDiagram
 | `SkyseedAutonomousSystem` | `skyseed_v2.simulator.topology.SkyseedAutonomousSystem` | `asn`, `shells`, `ground_stations`, `get_shell()`, `get_ground_station()` |
 | `Shell` | `skyseed_v2.simulator.topology.Shell` | `asn`, `shell_id`, `orbits`, `get_orbit()` |
 | `Orbit` | `skyseed_v2.simulator.topology.Orbit` | `asn`, `shell_id`, `orbit_id`, `altitude_km`, `inclination_deg`, `right_ascension_deg`, `epoch_utc`, `satellites`, `get_satellite()` |
-| `Satellite` | `skyseed_v2.simulator.topology.Satellite` | `node_id`, `orbit_index`, `mean_anomaly_deg`, `satellite_id` |
-| `GroundStation` | `skyseed_v2.simulator.topology.GroundStation` | `node_id`, `latitude_deg`, `longitude_deg`, `elevation_m`, `station_type`, `operator`, `ground_station_id` |
+| `Satellite` | `skyseed_v2.simulator.topology.Satellite` | `node_id`, `orbit_index`, `mean_anomaly_deg`, `satellite_id`, `max_simultaneous_ground_station_accesses` |
+| `GroundStation` | `skyseed_v2.simulator.topology.GroundStation` | `node_id`, `latitude_deg`, `longitude_deg`, `elevation_m`, `station_type`, `operator`, `max_simultaneous_satellite_accesses`, `ground_station_id` |
 | `ZoneLayout` | `skyseed_v2.simulator.topology.ZoneLayout` | `zones`, `allow_overlap`, `get_membership_model()`, `get_zone()`, `find_zones()`, `resolve_zone()`, `find_intersecting_zones()` |
 | `Zone` | `skyseed_v2.simulator.topology.Zone` | `zone_id`, `priority`, `geometry`, `representative_point`, `contains()` |
 | `LatitudeLongitudeRectangle` | `skyseed_v2.simulator.topology.LatitudeLongitudeRectangle` | `south_latitude_deg`, `north_latitude_deg`, `west_longitude_deg`, `east_longitude_deg`, `representative_center`, `contains()` |
 | `SphericalCap` | `skyseed_v2.simulator.topology.SphericalCap` | `center`, `angular_radius_deg` |
 | `ZoneMembershipModel` | `skyseed_v2.simulator.topology.ZoneMembershipModel` | `find_zones()`, `resolve_zone()` |
 | `DefaultZoneMembershipModel` | `skyseed_v2.simulator.topology.DefaultZoneMembershipModel` | `find_zones()`, `resolve_zone()` |
+
+Simulator `GroundStation.operator` is `str | None`. Topology preserves an
+explicit `None` from `GroundStationSimulationInput`; it does not infer an
+operator from station type, identity, or location.
+`max_simultaneous_satellite_accesses` preserves the optional positive-integer
+site capability. It is a simulation-level maximum on simultaneous Satellite
+access Connections, not a physical antenna count.
+Satellite `max_simultaneous_ground_station_accesses` independently preserves
+the optional positive-integer maximum on simultaneous GroundStation-access
+Connections terminating at that Satellite. It does not apply to ISLs or total
+Satellite degree.
 
 ## Entry points
 

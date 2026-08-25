@@ -19,7 +19,7 @@ from skyseed_v2.simulator.input import (
 )
 
 
-def build_rendered_ground_scenario():
+def build_rendered_ground_scenario(*, operator: str | None = "Skyseed"):
     emulator = Emulator()
     base = Base()
     base.createInternetExchange(100, create_rs=False)
@@ -39,7 +39,7 @@ def build_rendered_ground_scenario():
         "gs-1",
         location=GroundStationLocation(40.0, -74.0, 12.5),
         station_type="gateway",
-        operator="Skyseed",
+        operator=operator,
         service_config={"endpoint": "uplink-a"},
     )
     input_before_ix = create_ground_station_simulation_input(station)
@@ -262,6 +262,33 @@ def test_ground_station_compiles_through_standard_router_path_with_metadata(
             f"org.seedsecuritylabs.seedemu.meta.{key}:"
         ) == 1
     assert "skyseed.runtime_node_ref" not in service_text
+
+
+def test_unknown_ground_station_operator_creates_no_seed_or_compose_label(
+    tmp_path: Path,
+) -> None:
+    emulator, _, station, _, _, simulation_input = (
+        build_rendered_ground_scenario(operator=None)
+    )
+    assert station.operator is None
+    assert simulation_input.operator is None
+    assert "skyseed.operator" not in station.getLabel()
+
+    output = tmp_path / "output"
+    emulator.compile(
+        Docker(
+            namingScheme="as{asn}{role}-{displayName}",
+            internetMapEnabled=False,
+        ),
+        str(output),
+    )
+    _, service = ground_station_service(
+        safe_load((output / "docker-compose.yml").read_text())
+    )
+    assert (
+        "org.seedsecuritylabs.seedemu.meta.skyseed.operator"
+        not in service["labels"]
+    )
 
 
 def test_satellites_remain_isolated_in_ground_station_scenario() -> None:

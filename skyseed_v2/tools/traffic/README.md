@@ -4,7 +4,7 @@ This repository-local Tool consumes only durable post-run evidence:
 
 ```text
 inspection/traffic/traffic-telemetry.jsonl
-inspection/slice/slice-difference.json
+inspection/slice/slice-manifest.json + chunks/slice-*.js
 inspection/bpf-compiler/bpf-compiler-inspection.json
 inputs/traffic-workload.json              # optional planned context
         ↓

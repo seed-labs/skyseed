@@ -136,7 +136,7 @@ def read_traffic_replay(
     if len(recorder_ends) > 1:
         raise ValueError("traffic telemetry contains multiple recorder endings")
 
-    dynamic = _read_json(dynamic_path, "Slice / Difference")
+    dynamic = _read_slice_inspection(dynamic_path)
     if dynamic.get("tool") != "slice-difference-inspection":
         raise ValueError("traffic replay requires Slice / Difference inspection data")
     timeline = dict(dynamic.get("timeline", {}))
@@ -725,6 +725,46 @@ def _read_position_samples(
     if not samples:
         raise ValueError("Slice / Difference inspection contains no real Positions")
     return tuple(samples)
+
+
+def _read_slice_inspection(path: Path) -> dict[str, Any]:
+    """Read either the legacy monolith or the offline chunked Slice bundle."""
+
+    dynamic = _read_json(path, "Slice / Difference")
+    manifest = dynamic.get("slice_manifest")
+    if "slices" in dynamic or manifest is None:
+        return dynamic
+    if not isinstance(manifest, list):
+        raise ValueError("Slice / Difference chunk manifest is invalid")
+    slices = []
+    for entry in manifest:
+        if not isinstance(entry, dict):
+            raise ValueError("Slice / Difference chunk entry is invalid")
+        slice_id = _non_negative_int(entry.get("slice_id"), "chunk slice_id")
+        relative = entry.get("chunk")
+        if not isinstance(relative, str) or not relative:
+            raise ValueError("Slice / Difference chunk path is invalid")
+        chunk_path = path.parent / relative
+        try:
+            source = chunk_path.read_text(encoding="utf-8")
+        except OSError as error:
+            raise RuntimeError(
+                f"cannot read Slice / Difference chunk: {chunk_path}"
+            ) from error
+        marker = f"window.__SKYSEED_SLICE_CHUNKS__[{slice_id}]="
+        marker_index = source.find(marker)
+        if marker_index < 0 or not source.endswith(";\n"):
+            raise ValueError("Slice / Difference chunk wrapper is invalid")
+        payload = source[marker_index + len(marker) : -2]
+        try:
+            value = json.loads(payload)
+        except json.JSONDecodeError as error:
+            raise ValueError("Slice / Difference chunk JSON is invalid") from error
+        if not isinstance(value, dict) or value.get("slice_id") != slice_id:
+            raise ValueError("Slice / Difference chunk identity is invalid")
+        slices.append(value)
+    dynamic["slices"] = slices
+    return dynamic
 
 
 def _read_json_lines(path: Path) -> tuple[dict[str, Any], ...]:

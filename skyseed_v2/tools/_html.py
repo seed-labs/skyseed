@@ -270,7 +270,7 @@ def write_aggregate_index(
     tool_results: dict[str, dict[str, object]],
     counts: dict[str, int],
 ) -> None:
-    """Write the two-tool landing page without introducing a framework."""
+    """Write the available-tool landing page without introducing a framework."""
 
     overall = (
         "PASS"
@@ -280,9 +280,16 @@ def write_aggregate_index(
     )
     cards = []
     for key, title, description in (
-        ("topology", "Topology Tool", "查看静态对象树、轨道平面、地面站与一致性。"),
-        ("zone", "Zone Tool", "查看 Zone 边界、自动探针、physical matches 与正式 resolution。"),
+        ("topology", "Topology Tool", "查看可选择的静态轨道平面、地面站与一致性。"),
+        ("zone", "Zone Tool", "查看并直接选择静态 Zone 边界与几何信息。"),
+        (
+            "slice",
+            "Slice / Difference Tool",
+            "逐 Slice 查看动态网络、Zone 服务、Route 与 Difference。",
+        ),
     ):
+        if key == "slice" and key not in tool_results:
+            continue
         result = tool_results.get(key, {"status": "FAILED", "message": "未执行"})
         status = str(result.get("status", "FAILED"))
         message = escape(str(result.get("message", "")))
@@ -314,7 +321,7 @@ def write_aggregate_index(
         + escape("；".join(failures))
         + "</div>"
         if failures
-        else '<p class="muted">两个工具均完成，详情与完整结果位于各自页面。</p>'
+        else '<p class="muted">可用工具均完成，详情与完整结果位于各自页面。</p>'
     )
     body = f"""
 <section class="card">
@@ -338,8 +345,9 @@ def write_aggregate_index(
                 "Inspection entries": "检查入口",
                 "Topology Tool": "Topology 工具",
                 "Zone Tool": "Zone 工具",
-                "Inspect the static object tree, orbit planes, GroundStations, and consistency.": "查看静态对象树、轨道平面、地面站与一致性。",
-                "Inspect Zone boundaries, automatic probes, physical matches, and formal resolution.": "查看 Zone 边界、自动探针、physical matches 与正式 resolution。",
+                "Slice / Difference Tool": "Slice / Difference 工具",
+                "Inspect selectable static orbit planes, GroundStations, and consistency.": "查看可选择的静态轨道平面、地面站与一致性。",
+                "Inspect and select static Zone boundaries and geometry.": "查看并直接选择静态 Zone 边界与几何信息。",
             },
         ),
     )

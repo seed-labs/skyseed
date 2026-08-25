@@ -69,6 +69,26 @@ classDiagram
 reads retained `TopologySlice` N and N+1 when creating a requested
 `TopologyDifference`.
 
+Before RouteModel runs or a candidate Slice is published, Slicer validates
+the complete ConnectionModel output against Topology. This includes the hard
+per-site `GroundStation.max_simultaneous_satellite_accesses` and per-Satellite
+`Satellite.max_simultaneous_ground_station_accesses` capabilities when
+present; over-cap GroundStation-access output fails without advancing the
+Slice frontier. Inter-Satellite Connections do not consume either cap.
+Primary-quality and residual-redundancy selection are ConnectionModel policy;
+Slicer neither identifies primary links nor recomputes that allocation. It
+only validates the complete published Connection set against the hard caps.
+
+Slicer validates each published Route entry and its complete functional chain
+against current Connections, terminals, identities, and the GroundStation
+transit rule. The RouteModel owns which source/target demands exist; Slicer
+does not require or recompute a universal reachable-pair matrix.
+
+`create_difference()` resolves same-Slicer adjacent retained values and checks
+their cheap identity, ID, timestamp, and Timeline-lineage metadata. Already
+validated, atomically published, immutable retained contents are authoritative
+and are not fully revalidated for comparison.
+
 Standalone local values expanded below: `Connection`, `ConnectionId`,
 `ConnectionKind`, `DirectionalConnectionParameters`, `RouteKey`,
 `GroundStationRouteTarget`, `ZoneRouteTarget`,

@@ -42,6 +42,7 @@ def test_orbit_creates_and_queries_satellite() -> None:
         orbit_index=7,
         mean_anomaly_deg=45.0,
         payload={"profile": "test"},
+        max_simultaneous_ground_station_accesses=2,
     )
 
     assert orbit.get_satellite("satellite-7") is satellite
@@ -52,6 +53,7 @@ def test_orbit_creates_and_queries_satellite() -> None:
     assert not hasattr(satellite, "orbit_parameters")
     assert not hasattr(satellite, "_orbit_parameters")
     assert satellite.payload == {"profile": "test"}
+    assert satellite.max_simultaneous_ground_station_accesses == 2
     assert isinstance(satellite, Satellite)
     assert isinstance(satellite, Node)
     assert satellite.getName() == satellite.satellite_id
@@ -59,6 +61,17 @@ def test_orbit_creates_and_queries_satellite() -> None:
 
     with pytest.raises(TypeError):
         satellite.payload["profile"] = "changed"
+
+    for index, invalid in enumerate((0, -1, True), start=100):
+        with pytest.raises(
+            ValueError, match="max_simultaneous_ground_station_accesses"
+        ):
+            orbit.create_satellite(
+                f"invalid-{index}",
+                orbit_index=index,
+                mean_anomaly_deg=90.0,
+                max_simultaneous_ground_station_accesses=invalid,
+            )
 
 
 def test_batch_creation_is_deterministic_and_evenly_spaced() -> None:

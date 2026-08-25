@@ -87,25 +87,28 @@ class RouteSlice:
         routes: Mapping[NodeId, Mapping[RouteTarget, NodeId]]
         | Iterable[tuple[RouteKey, NodeId]] = (),
     ) -> None:
-        flat: list[tuple[RouteKey, NodeId]]
-        if isinstance(routes, Mapping):
-            flat = [
-                (RouteKey(source, target), next_hop)
-                for source, targets in routes.items()
-                for target, next_hop in targets.items()
-            ]
-        else:
-            flat = list(routes)
-
         nested: dict[NodeId, dict[RouteTarget, NodeId]] = {}
-        for route_key, next_hop in flat:
-            if not isinstance(route_key, RouteKey):
-                raise TypeError("routes must contain RouteKey values")
-            _require_node_id(next_hop, "next_hop")
-            target_routes = nested.setdefault(route_key.source, {})
-            if route_key.target in target_routes:
-                raise ValueError(f"duplicate RouteKey: {route_key!r}")
-            target_routes[route_key.target] = next_hop
+        if isinstance(routes, Mapping):
+            for source, targets in routes.items():
+                _require_node_id(source, "route source")
+                if not isinstance(targets, Mapping):
+                    raise TypeError(
+                        "route target collections must be mappings"
+                    )
+                target_routes = nested.setdefault(source, {})
+                for target, next_hop in targets.items():
+                    _require_target(target)
+                    _require_node_id(next_hop, "next_hop")
+                    target_routes[target] = next_hop
+        else:
+            for route_key, next_hop in routes:
+                if not isinstance(route_key, RouteKey):
+                    raise TypeError("routes must contain RouteKey values")
+                _require_node_id(next_hop, "next_hop")
+                target_routes = nested.setdefault(route_key.source, {})
+                if route_key.target in target_routes:
+                    raise ValueError(f"duplicate RouteKey: {route_key!r}")
+                target_routes[route_key.target] = next_hop
 
         ordered = {}
         for source in sorted(nested, key=_node_key):

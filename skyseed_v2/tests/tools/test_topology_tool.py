@@ -19,6 +19,8 @@ from skyseed_v2.simulator.input import (
     SatelliteSimulationInput,
     SimulatorStaticInput,
 )
+from tools._display_geometry import EARTH_REFERENCE_RADIUS_M, physical_display_radius
+from tools._earth_reference import _natural_earth_coastline_lines
 from tools._html import write_failed_tool
 from tools.topology import collect_topology_data, write_topology_tool
 
@@ -68,6 +70,8 @@ def ground_station_input(
     station_id: str,
     latitude: float,
     longitude: float,
+    *,
+    operator: str | None = "fixture",
 ) -> GroundStationSimulationInput:
     return GroundStationSimulationInput(
         node_id=NodeId(asn, "ground-station", station_id),
@@ -76,7 +80,7 @@ def ground_station_input(
         longitude_deg=longitude,
         elevation_m=25.0,
         station_type="gateway",
-        operator="fixture",
+        operator=operator,
     )
 
 
@@ -107,10 +111,7 @@ def test_collector_counts_public_tuples_and_checks_owner_facade_identity(
     assert data["counts"] == expected
     assert data["status"] == "PASS"
     assert data["consistency"]["failed"] == 0
-    assert all(
-        check["status"] == "PASS"
-        for check in data["consistency"]["checks"]
-    )
+    assert data["consistency"]["checks"] == []
 
 
 def test_collector_handles_empty_and_multi_owner_topologies() -> None:
@@ -149,7 +150,7 @@ def test_collector_handles_empty_and_multi_owner_topologies() -> None:
         "ground_stations": 3,
         "zones": 0,
     }
-    assert len(data["hierarchy"]) == 3
+    assert "hierarchy" not in data
     assert len(data["orbit_rings"]) == 3
     assert len(data["ground_stations"]) == 3
     assert data["consistency"]["failed"] == 0
@@ -194,6 +195,37 @@ def test_ground_station_records_are_the_public_topology_values(topology) -> None
         }
     ]
 
+    nullable = collect_topology_data(
+        topology_from_input(
+            SimulatorStaticInput(
+                ground_stations=(
+                    ground_station_input(
+                        65110,
+                        "no-known-operator",
+                        10,
+                        -120,
+                        operator=None,
+                    ),
+                )
+            )
+        )
+    )
+    assert nullable["ground_stations"][0]["operator"] is None
+
+
+def test_frozen_natural_earth_reference_is_minimal_coordinate_data() -> None:
+    lines = _natural_earth_coastline_lines()
+
+    assert len(lines) == 134
+    assert sum(len(line) for line in lines) == 5_128
+    assert all(len(coordinate) == 2 for line in lines for coordinate in line)
+
+
+def test_shared_tool_private_display_radius_preserves_physical_altitude() -> None:
+    assert EARTH_REFERENCE_RADIUS_M == 6_371_008.8
+    assert physical_display_radius(0.0) == 1.0
+    assert physical_display_radius(560_000.0) == pytest.approx(1.0878981743)
+
 
 def test_topology_renderer_writes_embedded_offline_artifacts(
     topology,
@@ -209,21 +241,61 @@ def test_topology_renderer_writes_embedded_offline_artifacts(
     assert result["status"] == "PASS"
     assert payload["format_version"] == 1
     assert "const DATA=" in html
+    assert "const COASTLINES=" in html
+    assert 'href="../index.html"' in html
     assert "静态轨道平面" in html
     assert "不表示任一时刻的卫星位置" in html
     assert "GroundStation" in html
     assert "spherePoint(gs.latitude_deg,gs.longitude_deg" in html
     assert "const orbitPoint=(ring,angle)" in html
+    assert "const DISPLAY_GEOMETRY=" in html
     assert "ring.inclination_deg" in html
     assert "ring.right_ascension_deg" in html
     assert "ring.altitude_km" in html
+    assert (
+        "Number(ring.altitude_km)*1000/"
+        "DISPLAY_GEOMETRY.earth_reference_radius_m" in html
+    )
+    assert "Math.min(.24" not in html
+    assert "canvas.dataset.firstOrbitDisplayRadius" in html
+    assert "canvas.dataset.firstOrbitAltitudeKm" in html
     assert "canvas.dataset.orbitSegments" in html
+    assert "canvas.dataset.coastlineSegments" in html
+    assert "window.devicePixelRatio" in html
+    assert "backingWidth/logicalWidth" in html
+    assert "x=clientX-box.left" in html
+    assert 'id="selected-object"' in html
+    assert "Selected static object" in html
+    assert "orbitHitRegions" in html
+    assert "groundStationHitRegions" in html
+    assert "function showSelection(kind,value)" in html
+    assert "function selectAtCanvas(clientX,clientY)" in html
+    assert "showSelection(hit.kind,hit.value)" in html
+    assert "value.satellite_count" in html
+    assert "value.ground_station_id" in html
+    assert "value.station_type" in html
+    assert "canvas.dataset.selectedLabel=selectedLabelText" in html
+    assert "canvas.dataset.hoverLabel=hoverLabelText" in html
+    assert 'selectedLabelText=ring.orbit_id' in html
+    assert 'selectedLabelText=gs.ground_station_id' in html
+    assert "function clearSelection()" in html
+    assert "selected?.kind===hit.kind&&selected.id===hit.id" in html
+    assert 'event.key==="Escape"' in html
+    assert "hsla(" not in html
+    assert "(index*47)%360" not in html
     assert 'canvas.addEventListener("pointermove"' in html
+    assert "if(total>5)pointer.moved=true" in html
+    assert "const wasClick=pointer&&!pointer.moved" in html
     assert "orbit-reset" in html
     assert "单位半径" in html
-    assert "没有执行 Satellite propagation" in html
-    assert "一致性摘要" in html
+    assert "不执行 Satellite propagation" in html
+    assert "诊断" in html
+    assert "无一致性异常" in html
+    assert "<table" not in html
     assert "mean_anomaly_deg" not in html
+    assert "Static object tree" not in html
+    assert "Object details" not in html
+    assert "JSON.stringify" not in html
     assert "http://" not in html
     assert "https://" not in html
     assert "fetch(" not in html

@@ -70,6 +70,7 @@ def ground_station(
     *,
     ix_id: int | None = None,
     address: str | None = None,
+    max_simultaneous_satellite_accesses: int | None = None,
 ) -> GroundStationConfig:
     attachments = ()
     if ix_id is not None:
@@ -84,6 +85,9 @@ def ground_station(
         operator="descriptive-only",
         station_type="gateway",
         ix_attachments=attachments,
+        max_simultaneous_satellite_accesses=(
+            max_simultaneous_satellite_accesses
+        ),
     )
 
 
@@ -116,7 +120,11 @@ def test_creation_supports_satellite_only_ground_only_and_multiple_skyseed_as() 
             ),
             SkyseedAutonomousSystemConfig(
                 65002,
-                ground_stations=(ground_station("gs-a"),),
+                ground_stations=(
+                    ground_station(
+                        "gs-a", max_simultaneous_satellite_accesses=4
+                    ),
+                ),
             ),
         )
     )
@@ -139,8 +147,18 @@ def test_creation_supports_satellite_only_ground_only_and_multiple_skyseed_as() 
     assert tuple(
         station.ground_station_id for station in station_as.ground_stations()
     ) == ("gs-a",)
+    assert (
+        station_as.ground_stations()[0].max_simultaneous_satellite_accesses
+        == 4
+    )
     assert len(simulator_input.list_satellites()) == 1
     assert len(simulator_input.list_ground_stations()) == 1
+    assert (
+        simulator_input.list_ground_stations()[
+            0
+        ].max_simultaneous_satellite_accesses
+        == 4
+    )
     orbit = satellite_as.get_shell("shell-a").get_orbit("shell-a-orbit")
     assert orbit.parameters.epoch_utc == datetime(
         2026, 1, 1, tzinfo=timezone.utc
@@ -170,6 +188,51 @@ def test_generated_shell_copies_common_epoch_into_every_orbit() -> None:
         for orbit in orbits
     )
     assert len({id(orbit.parameters) for orbit in orbits}) == 2
+    assert [orbit.satellites[0].mean_anomaly_deg for orbit in orbits] == [
+        0.0,
+        5.0,
+    ]
+
+
+def test_generated_shell_applies_linear_phase_progression_per_orbit() -> None:
+    shell_config = ShellConfig(
+        shell_id="linear",
+        altitude_km=560.0,
+        inclination_deg=97.6,
+        epoch_utc=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        generated_orbit_layout=GeneratedOrbitLayout(
+            orbit_count=4,
+            satellites_per_orbit=3,
+            in_orbit_phase_distribution=InOrbitPhaseDistribution(
+                start_deg=10.0,
+                step_deg=120.0,
+                orbit_phase_step_deg=7.5,
+            ),
+        ),
+    )
+    emulator = create_static_emulator(
+        StaticEmulatorConfig(
+            skyseed_autonomous_systems=(
+                SkyseedAutonomousSystemConfig(65001, shells=(shell_config,)),
+            )
+        )
+    )
+    orbits = skyseed_autonomous_systems_for(emulator)[0].get_shell(
+        "linear"
+    ).orbits
+
+    assert [orbit.satellites[0].mean_anomaly_deg for orbit in orbits] == [
+        10.0,
+        17.5,
+        25.0,
+        32.5,
+    ]
+    assert [orbit.satellites[1].mean_anomaly_deg for orbit in orbits] == [
+        130.0,
+        137.5,
+        145.0,
+        152.5,
+    ]
 
 
 def test_creation_calls_the_approved_public_entity_creation_methods(

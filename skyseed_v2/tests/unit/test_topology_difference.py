@@ -694,7 +694,7 @@ def test_difference_rejects_missing_nonadjacent_reverse_and_foreign_inputs() -> 
     assert "_compare_topology_slices" not in difference_module.__all__
 
 
-def test_difference_fails_closed_on_retained_metadata_or_data_corruption() -> None:
+def test_difference_checks_retained_metadata_but_trusts_published_contents() -> None:
     first, second = _changing_connection_slices()
     slicer = _build_slicer((first, second))
     published = slicer.get_slice(1)
@@ -728,6 +728,11 @@ def test_difference_fails_closed_on_retained_metadata_or_data_corruption() -> No
     assert slicer.get_slice(1) is corrupt_id
 
     slicer = _build_slicer((first, second))
+    del slicer._retained_publication_timestamps[1]
+    with pytest.raises(RuntimeError, match="publication metadata is missing"):
+        slicer.create_difference(0, 1)
+
+    slicer = _build_slicer((first, second))
     published = slicer.get_slice(2)
     foreign_node = NodeId(65002, "satellite", "foreign")
     foreign_connection = _connection(
@@ -744,8 +749,8 @@ def test_difference_fails_closed_on_retained_metadata_or_data_corruption() -> No
     )
     slicer._slices[2] = corrupt_data
 
-    with pytest.raises(ValueError, match="foreign"):
-        slicer.create_difference(1, 2)
+    difference = slicer.create_difference(1, 2)
+    assert foreign_connection in difference.added_connections
     assert slicer.get_slice(2) is corrupt_data
 
 

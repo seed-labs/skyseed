@@ -111,6 +111,7 @@ class Orbit:
         orbit_index: int,
         mean_anomaly_deg: float,
         payload: Mapping[str, str] | None = None,
+        max_simultaneous_ground_station_accesses: int | None = None,
     ) -> Satellite:
         """Create and own one Satellite with the Orbit's AS identity."""
 
@@ -133,6 +134,9 @@ class Orbit:
             mean_anomaly_deg=mean_anomaly_deg,
             asn=self._asn,
             payload=payload or {},
+            max_simultaneous_ground_station_accesses=(
+                max_simultaneous_ground_station_accesses
+            ),
         )
         # Orbit organization and the AS lifecycle index receive this same
         # Satellite instance; neither side creates a wrapper or copy.
@@ -152,6 +156,7 @@ class Orbit:
         mean_anomaly_start_deg: float = 0.0,
         mean_anomaly_step_deg: float | None = None,
         payload: Mapping[str, str] | None = None,
+        max_simultaneous_ground_station_accesses: int | None = None,
     ) -> tuple[Satellite, ...]:
         """Plan a deterministic batch, then delegate each entity creation."""
 
@@ -198,6 +203,9 @@ class Orbit:
                 orbit_index=orbit_index,
                 mean_anomaly_deg=mean_anomaly,
                 payload=payload,
+                max_simultaneous_ground_station_accesses=(
+                    max_simultaneous_ground_station_accesses
+                ),
             )
             for satellite_id, orbit_index, mean_anomaly in planned_satellites
         )

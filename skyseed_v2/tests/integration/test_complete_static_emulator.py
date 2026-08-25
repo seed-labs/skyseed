@@ -63,6 +63,7 @@ def test_complete_example_input_matches_registry_and_compiler_output(
     simulator_input = create_simulator_static_input(skyseed_autonomous_systems)
     ground_station = skyseed_as.get_ground_station("gs-new-york")
 
+    assert ground_station.max_simultaneous_satellite_accesses is None
     assert len(simulator_input.list_nodes()) == 3
     assert all(
         isinstance(item, (SatelliteSimulationInput, GroundStationSimulationInput))
@@ -89,6 +90,12 @@ def test_complete_example_input_matches_registry_and_compiler_output(
     assert simulator_input.get_ground_station(
         NodeId(65001, "ground-station", "gs-new-york")
     ).ground_station_id == ground_station.ground_station_id
+    assert (
+        simulator_input.get_ground_station(
+            NodeId(65001, "ground-station", "gs-new-york")
+        ).max_simultaneous_satellite_accesses
+        is None
+    )
 
     output = tmp_path / "output"
     emulator.compile(
@@ -164,7 +171,7 @@ def test_complete_example_cli_creates_a_new_output_parent(
         "inspection/topology/topology.json",
         "inspection/topology/summary.txt",
         "inspection/zone/index.html",
-        "inspection/zone/probes.json",
+        "inspection/zone/zones.json",
         "inspection/zone/summary.txt",
     ):
         assert (output / relative_path).is_file()

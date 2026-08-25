@@ -76,10 +76,11 @@ class SkyseedAutonomousSystem(AutonomousSystem):
         *,
         location: GroundStationLocation,
         station_type: str,
-        operator: str,
+        operator: str | None,
         display_name: str | None = None,
         service_config: Mapping[str, str] | None = None,
         routing_backend: str = "bird",
+        max_simultaneous_satellite_accesses: int | None = None,
     ) -> GroundStation:
         """Create and own one GroundStation through the public domain entry point."""
 
@@ -99,6 +100,9 @@ class SkyseedAutonomousSystem(AutonomousSystem):
             display_name=display_name,
             service_config=service_config,
             routing_backend=routing_backend,
+            max_simultaneous_satellite_accesses=(
+                max_simultaneous_satellite_accesses
+            ),
         )
         self._ground_stations[ground_station_id] = ground_station
         return ground_station

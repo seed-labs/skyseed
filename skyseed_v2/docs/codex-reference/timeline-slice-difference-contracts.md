@@ -52,7 +52,7 @@ continuous ID:
 pending timestamp
 → PositionModel → validate
 → ConnectionModel → validate
-→ RouteModel → validate complete chains
+→ RouteModel → validate every published chain
 → construct complete TopologySlice
 → atomically publish
 → advance iterator / ID
@@ -82,8 +82,8 @@ exact Topology/Timeline/Model references, path resolution, and adjacent
 Difference. There is no ambiguous `current` API.
 
 `create_difference(previous_id, current_id)` first resolves two retained
-Slices from the same Slicer, validates exact metadata/contents and strict
-`N → N+1`, invokes one fixed pure comparator, and returns an independent
+Slices from the same Slicer, checks their identity/type, Timeline-derived
+metadata and strict `N → N+1`, invokes one fixed pure comparator, and returns an independent
 frozen `TopologyDifference`. Slicer does not retain it and TopologySlice does
 not create it. The sibling Planner is the first formal retained consumer: it
 requests each newly available adjacent Difference exactly once and does not
@@ -113,13 +113,15 @@ change. Output ordering is deterministic.
 - retry uses the identical pending ID/timestamp;
 - retained storage cannot define generated progress;
 - Difference inputs are retained, same-lineage, and strictly adjacent;
+- already-published immutable retained contents are authoritative and are not
+  revalidated during Difference creation;
 - Difference patches carry new values/removals only.
 
 ## Failure semantics
 
 Naive/invalid Timeline input raises `TypeError`/`ValueError`; exhaustion raises
 `StopIteration`; unbounded all-generation raises `RuntimeError`; missing
-retained IDs/timestamps raise `KeyError`; corrupt retained metadata/content or
+retained IDs/timestamps raise `KeyError`; corrupt retained metadata or
 non-adjacent/reverse Difference requests raise `TypeError`/`ValueError`.
 Candidate failure propagates after preserving pending progress and publication
 state.
@@ -128,7 +130,8 @@ state.
 
 No arbitrary Slice timestamp, duplicated timestamp formula, partial
 publication, consumed progress on failure, retention-length-derived next ID,
-permanent-retention promise, non-adjacent comparator, Difference retention,
+permanent-retention promise, full retained-content revalidation for a
+Difference request, non-adjacent comparator, Difference retention,
 Position patch, full-Slice duplication, rollback/backend operation, or
 Tool-side comparison.
 

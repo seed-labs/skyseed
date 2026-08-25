@@ -12,6 +12,12 @@ def _text(value: str, field_name: str) -> str:
     return value.strip()
 
 
+def _optional_text(value: str | None, field_name: str) -> str | None:
+    if value is None:
+        return None
+    return _text(value, field_name)
+
+
 def _angle(value: float, field_name: str) -> float:
     normalized = float(value)
     if not isfinite(normalized) or not 0.0 <= normalized < 360.0:

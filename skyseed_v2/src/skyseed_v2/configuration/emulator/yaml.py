@@ -265,6 +265,7 @@ def _parse_generation(value: Any, parent: str) -> GeneratedOrbitLayout:
     _fields(
         mapping,
         required={"orbit_count", "satellites_per_orbit", "raan", "phase"},
+        optional={"max_simultaneous_ground_station_accesses"},
         context=context,
     )
     raan = _mapping(mapping["raan"], f"{context}.raan")
@@ -276,13 +277,22 @@ def _parse_generation(value: Any, parent: str) -> GeneratedOrbitLayout:
     phase = _mapping(mapping["phase"], f"{context}.phase")
     _fields(
         phase,
-        required={
-            "start_deg",
-            "step_deg",
+        required={"start_deg", "step_deg"},
+        optional={
             "alternating_orbit_offset_deg",
+            "orbit_phase_step_deg",
         },
         context=f"{context}.phase",
     )
+    phase_policy_fields = {
+        "alternating_orbit_offset_deg",
+        "orbit_phase_step_deg",
+    }
+    if len(phase_policy_fields.intersection(phase)) != 1:
+        raise StaticEmulatorConfigLoadError(
+            f"{context}.phase must specify exactly one of "
+            "alternating_orbit_offset_deg or orbit_phase_step_deg"
+        )
     return GeneratedOrbitLayout(
         orbit_count=mapping["orbit_count"],
         satellites_per_orbit=mapping["satellites_per_orbit"],
@@ -293,9 +303,14 @@ def _parse_generation(value: Any, parent: str) -> GeneratedOrbitLayout:
         in_orbit_phase_distribution=InOrbitPhaseDistribution(
             start_deg=phase["start_deg"],
             step_deg=phase["step_deg"],
-            alternating_orbit_offset_deg=phase[
-                "alternating_orbit_offset_deg"
-            ],
+            alternating_orbit_offset_deg=phase.get(
+                "alternating_orbit_offset_deg",
+                0.0,
+            ),
+            orbit_phase_step_deg=phase.get("orbit_phase_step_deg"),
+        ),
+        max_simultaneous_ground_station_accesses=mapping.get(
+            "max_simultaneous_ground_station_accesses"
         ),
     )
 
@@ -332,7 +347,7 @@ def _parse_satellite(
     _fields(
         mapping,
         required={"satellite_id", "index_in_orbit", "mean_anomaly_deg"},
-        optional={"payload"},
+        optional={"payload", "max_simultaneous_ground_station_accesses"},
         context=context,
     )
     payload = _mapping(mapping.get("payload", {}), f"{context}.payload")
@@ -348,6 +363,9 @@ def _parse_satellite(
         index_in_orbit=mapping["index_in_orbit"],
         mean_anomaly_deg=mapping["mean_anomaly_deg"],
         payload_items=tuple(payload.items()),
+        max_simultaneous_ground_station_accesses=mapping.get(
+            "max_simultaneous_ground_station_accesses"
+        ),
     )
 
 def _parse_ground_station(
@@ -367,7 +385,12 @@ def _parse_ground_station(
             "operator",
             "station_type",
         },
-        optional={"ground_station_id", "identity_key", "ix_attachments"},
+        optional={
+            "ground_station_id",
+            "identity_key",
+            "ix_attachments",
+            "max_simultaneous_satellite_accesses",
+        },
         context=context,
     )
     return GroundStationConfig(
@@ -379,6 +402,9 @@ def _parse_ground_station(
         station_type=mapping["station_type"],
         ground_station_id=mapping.get("ground_station_id"),
         identity_key=mapping.get("identity_key"),
+        max_simultaneous_satellite_accesses=mapping.get(
+            "max_simultaneous_satellite_accesses"
+        ),
         ix_attachments=tuple(
             _parse_ix_attachment(item, attachment_index, context)
             for attachment_index, item in enumerate(

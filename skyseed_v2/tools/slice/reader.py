@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 from pathlib import Path
@@ -54,11 +56,17 @@ def read_slice_history(path: Path) -> dict[str, Any]:
     }
 
 
-def read_slice_differences(slicer: Slicer) -> SliceDifferenceRead:
+def read_slice_differences(
+    slicer: Slicer,
+    *,
+    model_context: Mapping[str, object] | None = None,
+) -> SliceDifferenceRead:
     """Call every formal API and retain no Slicer/Topology/result object."""
 
     if not isinstance(slicer, Slicer):
         raise TypeError("slicer must be a Slicer")
+    if model_context is not None and not isinstance(model_context, Mapping):
+        raise TypeError("model_context must be a mapping or None")
     retained_ids = slicer.get_retained_slice_ids()
     if not retained_ids or retained_ids[0] != 0:
         raise ValueError("Slice / Difference inspection requires retained Slice 0")
@@ -118,11 +126,6 @@ def read_slice_differences(slicer: Slicer) -> SliceDifferenceRead:
             for source, targets in topology_slice.route_slice.routes.items()
             for target, next_hop in targets.items()
         )
-        paths = tuple(
-            _read_path(slicer, slice_id, source, target)
-            for source, targets in topology_slice.route_slice.routes.items()
-            for target in targets
-        )
         difference = (
             None
             if slice_id == 0
@@ -140,7 +143,6 @@ def read_slice_differences(slicer: Slicer) -> SliceDifferenceRead:
                 "connections": connections,
                 "zone_service_assignments": assignments,
                 "routes": routes,
-                "paths": paths,
                 "difference_from_previous": difference,
             }
         )
@@ -155,7 +157,10 @@ def read_slice_differences(slicer: Slicer) -> SliceDifferenceRead:
                 "position": (
                     "EarthFixedPosition with formal geographic views"
                 ),
-                "paths": "Slicer.resolve_path",
+                "paths": (
+                    "selected browser display restoration from projected "
+                    "formal next-hop facts"
+                ),
                 "differences": "Slicer.create_difference",
             },
             "timeline": {
@@ -177,6 +182,7 @@ def read_slice_differences(slicer: Slicer) -> SliceDifferenceRead:
                 "orbits": orbits,
                 "zones": zones,
             },
+            "model_context": deepcopy(dict(model_context or {})),
             "slices": slice_records,
         }
     )
@@ -211,6 +217,9 @@ def _read_static_nodes(
                             "orbit_ref": orbit_ref,
                             "orbit_index": satellite.orbit_index,
                             "mean_anomaly_deg": satellite.mean_anomaly_deg,
+                            "max_simultaneous_ground_station_accesses": (
+                                satellite.max_simultaneous_ground_station_accesses
+                            ),
                         }
                     )
                 orbits.append(
@@ -340,41 +349,12 @@ def _parameters_data(parameters: Any) -> dict[str, int]:
 def _read_route(
     route_key: RouteKey,
     next_hop: NodeId,
-) -> dict[str, object]:
-    return {
-        "route_ref": _route_reference(route_key),
-        "source": route_key.source.value,
-        "target": _target_data(route_key.target),
-        "next_hop": next_hop.value,
-    }
-
-
-def _read_path(
-    slicer: Slicer,
-    slice_id: int,
-    source: NodeId,
-    target: RouteTarget,
-) -> dict[str, object]:
-    route_key = RouteKey(source, target)
-    path = slicer.resolve_path(slice_id, source, target)
-    return {
-        "path_id": _route_reference(route_key),
-        "source": source.value,
-        "target": _target_data(target),
-        "nodes": [node_id.value for node_id in path],
-        "hop_count": len(path) - 1,
-    }
-
-
-def _target_data(target: RouteTarget) -> dict[str, str]:
-    if isinstance(target, GroundStationRouteTarget):
-        return {
-            "kind": "G",
-            "ground_station_id": target.ground_station_id.value,
-        }
-    if isinstance(target, ZoneRouteTarget):
-        return {"kind": "Z", "zone_id": target.zone_id}
-    raise TypeError("unsupported RouteTarget")
+) -> tuple[str, str, str]:
+    return (
+        route_key.source.value,
+        _target_reference(route_key.target),
+        next_hop.value,
+    )
 
 
 def _read_difference(
@@ -433,15 +413,12 @@ def _read_difference(
             for patch in difference.zone_service_assignment_patches
         ],
         "route_patches": [
-            {
-                "route_ref": _route_reference(patch.route_key),
-                "source": patch.route_key.source.value,
-                "target": _target_data(patch.route_key.target),
-                "operation": patch.operation.value,
-                "next_hop": (
-                    None if patch.next_hop is None else patch.next_hop.value
-                ),
-            }
+            (
+                patch.operation.value,
+                patch.route_key.source.value,
+                _target_reference(patch.route_key.target),
+                None if patch.next_hop is None else patch.next_hop.value,
+            )
             for patch in difference.route_patches
         ],
     }
@@ -457,14 +434,12 @@ def _connection_reference(identity: ConnectionId) -> str:
     )
 
 
-def _route_reference(route_key: RouteKey) -> str:
-    target = route_key.target
-    target_value = (
+def _target_reference(target: RouteTarget) -> str:
+    return (
         f"G|{target.ground_station_id.value}"
         if isinstance(target, GroundStationRouteTarget)
         else f"Z|{target.zone_id}"
     )
-    return f"{route_key.source.value}|{target_value}"
 
 
 def _orbit_reference(asn: int, shell_id: str, orbit_id: str) -> str:

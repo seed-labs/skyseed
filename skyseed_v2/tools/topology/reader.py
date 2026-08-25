@@ -21,7 +21,7 @@ def read_topology(topology: Topology) -> TopologyRead:
     if not isinstance(topology, Topology):
         raise TypeError("topology must be a Topology")
     checks: list[dict[str, object]] = []
-    hierarchy: list[dict[str, object]] = []
+    check_count = 0
     orbit_rings: list[dict[str, object]] = []
     ground_stations: list[dict[str, object]] = []
     counts = {
@@ -34,9 +34,10 @@ def read_topology(topology: Topology) -> TopologyRead:
     }
 
     def check(label: str, condition: bool) -> None:
-        checks.append(
-            {"label": label, "status": "PASS" if condition else "FAIL"}
-        )
+        nonlocal check_count
+        check_count += 1
+        if not condition:
+            checks.append({"label": label, "status": "FAIL"})
 
     for autonomous_system in topology.autonomous_systems:
         counts["autonomous_systems"] += 1
@@ -45,13 +46,6 @@ def read_topology(topology: Topology) -> TopologyRead:
             topology.get_autonomous_system(autonomous_system.asn)
             is autonomous_system,
         )
-        as_record: dict[str, object] = {
-            "asn": autonomous_system.asn,
-            "shells": [],
-            "ground_stations": [],
-        }
-        shell_records = as_record["shells"]
-        assert isinstance(shell_records, list)
         for shell in autonomous_system.shells:
             counts["shells"] += 1
             check(
@@ -63,13 +57,6 @@ def read_topology(topology: Topology) -> TopologyRead:
                 )
                 is shell,
             )
-            shell_record: dict[str, object] = {
-                "shell_id": shell.shell_id,
-                "asn": shell.asn,
-                "orbits": [],
-            }
-            orbit_records = shell_record["orbits"]
-            assert isinstance(orbit_records, list)
             for orbit in shell.orbits:
                 counts["orbits"] += 1
                 check(
@@ -85,7 +72,6 @@ def read_topology(topology: Topology) -> TopologyRead:
                     )
                     is orbit,
                 )
-                satellite_records = []
                 for satellite in orbit.satellites:
                     counts["satellites"] += 1
                     check(
@@ -94,13 +80,6 @@ def read_topology(topology: Topology) -> TopologyRead:
                         and topology.get_satellite(satellite.node_id)
                         is satellite
                         and topology.get_node(satellite.node_id) is satellite,
-                    )
-                    satellite_records.append(
-                        {
-                            "satellite_id": satellite.satellite_id,
-                            "node_id": satellite.node_id.value,
-                            "orbit_index": satellite.orbit_index,
-                        }
                     )
                 ring = {
                     "asn": orbit.asn,
@@ -116,13 +95,7 @@ def read_topology(topology: Topology) -> TopologyRead:
                     ],
                 }
                 orbit_rings.append(ring)
-                orbit_records.append(
-                    {**ring, "satellites": satellite_records}
-                )
-            shell_records.append(shell_record)
 
-        station_records = as_record["ground_stations"]
-        assert isinstance(station_records, list)
         for ground_station in autonomous_system.ground_stations:
             counts["ground_stations"] += 1
             check(
@@ -145,8 +118,6 @@ def read_topology(topology: Topology) -> TopologyRead:
                 "operator": ground_station.operator,
             }
             ground_stations.append(record)
-            station_records.append(record)
-        hierarchy.append(as_record)
 
     try:
         zone_layout = topology.get_zone_layout()
@@ -191,7 +162,7 @@ def read_topology(topology: Topology) -> TopologyRead:
     check("public tuple enumeration counts", counts == expected)
     status = (
         "PASS"
-        if all(item["status"] == "PASS" for item in checks)
+        if not checks
         else "FAIL"
     )
     return TopologyRead(
@@ -202,18 +173,13 @@ def read_topology(topology: Topology) -> TopologyRead:
             "topology_created": True,
             "zone_layout_configured": zone_layout is not None,
             "counts": counts,
-            "hierarchy": hierarchy,
             "orbit_rings": orbit_rings,
             "ground_stations": ground_stations,
             "consistency": {
                 "status": status,
                 "checks": checks,
-                "passed": sum(
-                    item["status"] == "PASS" for item in checks
-                ),
-                "failed": sum(
-                    item["status"] == "FAIL" for item in checks
-                ),
+                "passed": check_count - len(checks),
+                "failed": len(checks),
             },
         }
     )

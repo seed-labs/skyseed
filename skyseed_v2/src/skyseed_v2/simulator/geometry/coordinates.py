@@ -47,13 +47,27 @@ def geodetic_to_ecef(
         raise ValueError("latitude_deg must be between -90 and 90")
     if not -180.0 <= longitude <= 180.0:
         raise ValueError("longitude_deg must be between -180 and 180")
+    x_m, y_m, z_m = _geodetic_coordinates_to_ecef(
+        latitude, longitude, height
+    )
+    return EarthFixedPosition(x_m, y_m, z_m)
+
+
+@lru_cache(maxsize=4096)
+def _geodetic_coordinates_to_ecef(
+    latitude_deg: float,
+    longitude_deg: float,
+    ellipsoidal_height_m: float,
+) -> tuple[float, float, float]:
+    """Return cached WGS84 Cartesian coordinates for validated scalars."""
+
     x, y, z = EarthLocation.from_geodetic(
-        lon=longitude * u.deg,
-        lat=latitude * u.deg,
-        height=height * u.m,
+        lon=longitude_deg * u.deg,
+        lat=latitude_deg * u.deg,
+        height=ellipsoidal_height_m * u.m,
         ellipsoid="WGS84",
     ).geocentric
-    return EarthFixedPosition(
+    return (
         x.to_value(u.m),
         y.to_value(u.m),
         z.to_value(u.m),

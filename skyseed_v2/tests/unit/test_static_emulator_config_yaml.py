@@ -29,6 +29,7 @@ def valid_payload() -> dict:
                         "generation": {
                             "orbit_count": 2,
                             "satellites_per_orbit": 3,
+                            "max_simultaneous_ground_station_accesses": 2,
                             "raan": {"start_deg": 0.0, "step_deg": 180.0},
                             "phase": {
                                 "start_deg": 0.0,
@@ -108,9 +109,19 @@ def test_valid_yaml_loads_only_immutable_static_config(
     shell = result.skyseed_autonomous_systems[0].shells[0]
     assert shell.generated_orbit_layout is not None
     assert shell.generated_orbit_layout.orbit_count == 2
+    assert (
+        shell.generated_orbit_layout.max_simultaneous_ground_station_accesses
+        == 2
+    )
     assert shell.epoch_utc.isoformat() == "2026-01-01T00:00:00+00:00"
     assert result.skyseed_autonomous_systems[0].ground_stations[0].operator == (
         "Descriptive Operator"
+    )
+    assert (
+        result.skyseed_autonomous_systems[0]
+        .ground_stations[0]
+        .max_simultaneous_satellite_accesses
+        is None
     )
     assert result.ordinary_autonomous_systems[0].networks[0].prefix == (
         "10.202.0.0/24"
@@ -120,6 +131,139 @@ def test_valid_yaml_loads_only_immutable_static_config(
     assert not hasattr(result, "compiler")
     with pytest.raises(FrozenInstanceError):
         result.internet_exchanges = ()
+
+
+def test_yaml_requires_exactly_one_inter_orbit_phase_policy(
+    tmp_path: Path,
+) -> None:
+    alternating = load_static_emulator_config(
+        write_payload(tmp_path, valid_payload(), "alternating.yaml")
+    )
+    alternating_phase = alternating.skyseed_autonomous_systems[0].shells[
+        0
+    ].generated_orbit_layout.in_orbit_phase_distribution
+    assert alternating_phase.alternating_orbit_offset_deg == 5.0
+    assert alternating_phase.orbit_phase_step_deg is None
+
+    linear_payload = valid_payload()
+    linear_phase = linear_payload["skyseed_autonomous_systems"][0]["shells"][
+        0
+    ]["generation"]["phase"]
+    linear_phase.pop("alternating_orbit_offset_deg")
+    linear_phase["orbit_phase_step_deg"] = 7.5
+    linear = load_static_emulator_config(
+        write_payload(tmp_path, linear_payload, "linear.yaml")
+    )
+    loaded_linear_phase = linear.skyseed_autonomous_systems[0].shells[
+        0
+    ].generated_orbit_layout.in_orbit_phase_distribution
+    assert loaded_linear_phase.alternating_orbit_offset_deg == 0.0
+    assert loaded_linear_phase.orbit_phase_step_deg == 7.5
+
+    missing_payload = valid_payload()
+    missing_payload["skyseed_autonomous_systems"][0]["shells"][0][
+        "generation"
+    ]["phase"].pop("alternating_orbit_offset_deg")
+    with pytest.raises(StaticEmulatorConfigLoadError, match="exactly one"):
+        load_static_emulator_config(
+            write_payload(tmp_path, missing_payload, "missing-policy.yaml")
+        )
+
+    ambiguous_payload = valid_payload()
+    ambiguous_payload["skyseed_autonomous_systems"][0]["shells"][0][
+        "generation"
+    ]["phase"]["orbit_phase_step_deg"] = 7.5
+    with pytest.raises(StaticEmulatorConfigLoadError, match="exactly one"):
+        load_static_emulator_config(
+            write_payload(tmp_path, ambiguous_payload, "ambiguous-policy.yaml")
+        )
+
+
+def test_ground_station_operator_key_is_required_and_yaml_null_is_valid(
+    tmp_path: Path,
+) -> None:
+    nullable = valid_payload()
+    nullable["skyseed_autonomous_systems"][0]["ground_stations"][0][
+        "operator"
+    ] = None
+    loaded = load_static_emulator_config(
+        write_payload(tmp_path, nullable, "nullable-operator.yaml")
+    )
+    assert loaded.skyseed_autonomous_systems[0].ground_stations[0].operator is None
+
+    missing = valid_payload()
+    del missing["skyseed_autonomous_systems"][0]["ground_stations"][0][
+        "operator"
+    ]
+    with pytest.raises(StaticEmulatorConfigLoadError, match="missing required"):
+        load_static_emulator_config(
+            write_payload(tmp_path, missing, "missing-operator.yaml")
+        )
+
+    blank = valid_payload()
+    blank["skyseed_autonomous_systems"][0]["ground_stations"][0][
+        "operator"
+    ] = "   "
+    with pytest.raises(StaticEmulatorConfigLoadError, match="operator"):
+        load_static_emulator_config(
+            write_payload(tmp_path, blank, "blank-operator.yaml")
+        )
+
+
+@pytest.mark.parametrize("capability", (0, -1, True))
+def test_ground_station_optional_access_capability_is_validated_from_yaml(
+    tmp_path: Path,
+    capability: int,
+) -> None:
+    payload = valid_payload()
+    payload["skyseed_autonomous_systems"][0]["ground_stations"][0][
+        "max_simultaneous_satellite_accesses"
+    ] = capability
+    with pytest.raises(
+        StaticEmulatorConfigLoadError,
+        match="max_simultaneous_satellite_accesses",
+    ):
+        load_static_emulator_config(
+            write_payload(tmp_path, payload, "invalid-capability.yaml")
+        )
+
+
+def test_ground_station_positive_access_capability_loads_from_yaml(
+    tmp_path: Path,
+) -> None:
+    payload = valid_payload()
+    payload["skyseed_autonomous_systems"][0]["ground_stations"][0][
+        "max_simultaneous_satellite_accesses"
+    ] = 4
+
+    loaded = load_static_emulator_config(
+        write_payload(tmp_path, payload, "site-capability.yaml")
+    )
+
+    assert (
+        loaded.skyseed_autonomous_systems[0]
+        .ground_stations[0]
+        .max_simultaneous_satellite_accesses
+        == 4
+    )
+
+
+@pytest.mark.parametrize("capability", (0, -1, True))
+def test_satellite_access_capability_is_validated_from_yaml(
+    tmp_path: Path,
+    capability: int,
+) -> None:
+    payload = valid_payload()
+    payload["skyseed_autonomous_systems"][0]["shells"][0]["generation"][
+        "max_simultaneous_ground_station_accesses"
+    ] = capability
+    with pytest.raises(
+        StaticEmulatorConfigLoadError,
+        match="max_simultaneous_ground_station_accesses",
+    ):
+        load_static_emulator_config(
+            write_payload(tmp_path, payload, "invalid-satellite-capability.yaml")
+        )
 
 
 def test_unknown_schema_missing_field_and_unknown_field_fail_closed(

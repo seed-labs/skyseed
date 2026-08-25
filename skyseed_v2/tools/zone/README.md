@@ -11,14 +11,20 @@ flowchart LR
     U --> W["write files"]
 ```
 
-Only reader calls formal membership/resolution APIs and stores their results
-in a detached Tool-owned snapshot. Its private `probe_read_plan.py` chooses
-deterministic coordinates needed for those formal calls; it does not read a
-formal object. Rectangle boundary sampling, focus visibility, and summaries
-live in `display_analysis.py`. Projection never receives Topology.
+The reader copies the formal static Zone layout into a detached Tool-owned
+snapshot. It does not choose coordinates, query membership, execute the
+membership Model, or include GroundStations. Rectangle boundary sampling and
+layout summaries live in `display_analysis.py`. The globe and map use those
+existing fields for display-only direct selection; browser hit testing is not
+a formal membership result. Projection never receives Topology.
 The Tool facade composes the responsibilities; rendering accepts final view
 data and artifact writing only writes files. The current files may remain
 separate, but their count and names are not the contract.
+
+The renderer uses one subdued Zone color family, labels only the selected
+Zone, and draws its 3D view on a DPR-scaled backing canvas. The shared
+Tool-private Natural Earth coastline reference supplies offline orientation
+only and never enters the Zone reader payload or formal membership semantics.
 
 Tests: `tests/tools/test_zone_tool.py` and
 `tests/integration/test_tooling_boundaries.py`.

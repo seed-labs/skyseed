@@ -26,16 +26,17 @@ timestamp, path, and backend generation are not target/key fields.
 `RouteKey` is exactly `(source NodeId, RouteTarget)`.
 
 `RouteSlice` is a frozen, slotted, deeply immutable sparse
-`source → target → next-hop NodeId` table. Its source universe is every
-Topology Satellite and GroundStation. It stores no entry at a terminal and no
+`source → target → next-hop NodeId` table. A Model may publish sources from the
+Topology Satellite/GroundStation universe according to its own demand policy.
+It stores no entry at a terminal and no
 full path, metric, candidate, alternate, label, interface, or Slice ID. Empty
 is legal.
 
-G targets are all Topology GroundStations. Z targets are only Zones currently
-assigned a service Satellite. Satellites get routes for every reachable G and
-served Z target. GroundStations get no G-to-G routes and may get routes to
-reachable served Z targets. A G target GroundStation and a Z service Satellite
-are terminals and therefore have no self entry.
+G targets identify Topology GroundStations. Z targets identify Zones currently
+assigned a service Satellite. A G target GroundStation and a Z service
+Satellite are terminals and therefore have no self entry. Which source/target
+pairs are demanded is RouteModel policy, not a universal Slicer matrix.
+GroundStations get no G-to-G routes in the built-in policies.
 
 GroundStation access does not grant backbone-transit capability:
 
@@ -48,12 +49,24 @@ GroundStation access does not grant backbone-transit capability:
 - `Satellite → GroundStation → Satellite` is unreachable even if both
   undirected access Connections exist.
 
-The built-in HopCount model uses reverse BFS over that eligible graph,
-minimizes hops, and chooses the structural-NodeId-minimum next hop on a tie.
-Directional parameters may differ but this algorithm uses edge existence only.
+The built-in `HopCountRouteModel` is the full-reachability baseline/small-scale
+reference. It emits every reachable Satellite-to-G and
+Satellite/GroundStation-to-served-Z forwarding tree allowed by the transit
+rule. Reverse BFS minimizes hops and chooses the structural-NodeId-minimum next
+hop on a tie. Directional parameters may differ but this algorithm uses edge
+existence only.
 
-A missing sparse entry is legal current unreachability unless the source is
-already the terminal. `Slicer.resolve_path(slice_id, source, target)` first
+`GatewayHopCountRouteModel` is the satellite-Internet default. Once per exact
+Topology it ranks GroundStations for each Zone representative point by
+great-circle distance and stable GroundStation identity, applies optional
+distance and candidate-count limits, and retains that ordered candidate list
+as RouteModel policy. Each Slice independently materializes currently
+reachable Zone-to-candidate-G and candidate-G-to-Z paths using shared
+deterministic hop-count trees. It does not dynamically substitute a different
+Gateway, force path reversal, or materialize unrelated reachable pairs.
+
+A missing sparse entry can mean current unreachability or intentional absence
+from the selected Model's demand policy. `Slicer.resolve_path(slice_id, source, target)` first
 loads the retained Slice and exact owner Topology, resolves the G terminal or
 current Z service Satellite, then follows formal next hops over current
 Connections. It returns the source-through-terminal tuple without storing it
@@ -74,29 +87,32 @@ Connection, and ineligible GroundStation transit remain distinct outcomes.
 - every source/next hop belongs to exact Topology;
 - every next-hop direction has a current effective Connection;
 - no terminal route entry exists;
-- every reachable required source/target pair has a complete entry chain;
+- every published source/target entry has a complete chain;
 - route chains are loop-free, terminal-correct, and transit-eligible;
 - insertion/Connection enumeration order cannot change the result.
 
 ## Failure semantics
 
-Unknown retained Slice/node/G target/Zone raises `KeyError`; a known unserved
-Zone or currently unreachable source-target raises `LookupError`; malformed
-targets, foreign next hops/sources, duplicate RouteKey, missing current edge,
-omitted reachable route, incomplete chain, loop, wrong terminal, or prohibited
+Unknown retained Slice/node/G target/Zone raises `KeyError`; a known but
+currently unserved Zone or currently unreachable source-target (including an
+undemanded pair) raises `LookupError`;
+malformed targets, foreign next hops/sources, duplicate RouteKey, missing
+current edge, incomplete chain, loop, wrong terminal, or prohibited
 GroundStation transit raises `TypeError` or `ValueError`.
 
 ## Prohibited behavior
 
-No GroundStation backbone relay, implicit G-to-G routes, terminal entries,
-path storage, metric/alternate/backend state, visibility rerun, Tool-side
-routing, or fallback route algorithm.
+No Slicer-owned demand matrix, GroundStation backbone relay, implicit G-to-G
+routes, terminal entries, path storage, metric/alternate/backend state,
+visibility rerun, Tool-side routing authority, or fallback route algorithm.
 
 ## Extension points
 
-Alternative RouteModel algorithms may use different eligible metrics only as
-an explicitly chosen Model. Ground relay requires an explicit capability and
-a different approved Model; it is never inferred from access Connections.
+Alternative RouteModel algorithms may choose a different demand universe or
+eligible metric only as an explicitly chosen Model. Slicer validates every
+published entry structurally but does not reproduce Model policy. Ground relay
+requires an explicit capability and a different approved Model; it is never
+inferred from access Connections.
 
 ## Maintenance
 

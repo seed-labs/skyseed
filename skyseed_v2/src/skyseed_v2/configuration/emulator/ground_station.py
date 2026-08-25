@@ -8,7 +8,7 @@ from math import isfinite
 
 from skyseed_v2.shared.identifier import validate_identifier
 
-from ._validation import _text
+from ._validation import _optional_text, _positive_integer, _text
 from .attachments import InternetExchangeAttachment
 
 
@@ -26,17 +26,20 @@ class GroundStationConfig:
     latitude_deg: float
     longitude_deg: float
     elevation_m: float
-    operator: str
+    operator: str | None
     station_type: str
     ground_station_id: str | None = None
     identity_key: str | None = None
     ix_attachments: tuple[InternetExchangeAttachment, ...] = ()
+    max_simultaneous_satellite_accesses: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
             self, "display_name", _text(self.display_name, "display_name")
         )
-        object.__setattr__(self, "operator", _text(self.operator, "operator"))
+        object.__setattr__(
+            self, "operator", _optional_text(self.operator, "operator")
+        )
         object.__setattr__(
             self, "station_type", _text(self.station_type, "station_type")
         )
@@ -88,6 +91,15 @@ class GroundStationConfig:
             "ix_attachments",
             tuple(sorted(attachments, key=lambda item: item.ix_id)),
         )
+        if self.max_simultaneous_satellite_accesses is not None:
+            object.__setattr__(
+                self,
+                "max_simultaneous_satellite_accesses",
+                _positive_integer(
+                    self.max_simultaneous_satellite_accesses,
+                    "max_simultaneous_satellite_accesses",
+                ),
+            )
 
 
 def _derive_ground_station_id(config: GroundStationConfig) -> str:

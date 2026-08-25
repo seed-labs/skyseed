@@ -22,6 +22,7 @@ def create_station() -> GroundStation:
         operator="Skyseed",
         display_name="Ground Station One",
         service_config={"profile": "minimal"},
+        max_simultaneous_satellite_accesses=3,
     )
 
 
@@ -33,6 +34,7 @@ def test_ground_station_is_the_unique_router_object_with_static_fields() -> None
     assert station.location == GroundStationLocation(40.0, -74.0, 12.5)
     assert station.station_type == "gateway"
     assert station.operator == "Skyseed"
+    assert station.max_simultaneous_satellite_accesses == 3
     assert station.getDisplayName() == "Ground Station One"
     assert dict(station.service_config) == {"profile": "minimal"}
     with pytest.raises(TypeError):
@@ -52,6 +54,7 @@ def test_ground_station_as_rejects_duplicate_stable_ids() -> None:
 
     assert station_as.get_ground_station("gs-1") is created
     assert station_as.getRouter("gs-1") is created
+    assert created.max_simultaneous_satellite_accesses is None
     with pytest.raises(ValueError, match="already exists"):
         station_as.create_ground_station(
             "gs-1",
@@ -85,6 +88,57 @@ def test_ground_station_omits_missing_elevation_label() -> None:
     assert "skyseed.elevation_m" not in station.getLabel()
 
 
+def test_ground_station_nullable_operator_omits_only_operator_metadata() -> None:
+    station = GroundStation(
+        ground_station_id="gs-no-known-operator",
+        asn=151,
+        location=GroundStationLocation(40.0, -74.0),
+        station_type="gateway",
+        operator=None,
+    )
+
+    assert station.operator is None
+    assert "skyseed.operator" not in station.getLabel()
+    assert station.getLabel()["skyseed.station_type"] == "gateway"
+    assert create_ground_station_simulation_input(station).operator is None
+
+    known = GroundStation(
+        ground_station_id="gs-known-operator",
+        asn=151,
+        location=GroundStationLocation(41.0, -73.0),
+        station_type="gateway",
+        operator="  Skyseed  ",
+    )
+    assert known.operator == "Skyseed"
+    assert known.getLabel()["skyseed.operator"] == "Skyseed"
+
+    with pytest.raises(ValueError, match="operator"):
+        GroundStation(
+            ground_station_id="gs-invalid-operator",
+            asn=151,
+            location=GroundStationLocation(42.0, -72.0),
+            station_type="gateway",
+            operator="   ",
+        )
+
+
+@pytest.mark.parametrize("capability", (0, -1, True))
+def test_ground_station_rejects_invalid_optional_access_capability(
+    capability: int,
+) -> None:
+    with pytest.raises(
+        ValueError, match="max_simultaneous_satellite_accesses"
+    ):
+        GroundStation(
+            ground_station_id="gs-invalid-capability",
+            asn=151,
+            location=GroundStationLocation(42.0, -72.0),
+            station_type="gateway",
+            operator=None,
+            max_simultaneous_satellite_accesses=capability,
+        )
+
+
 def test_ground_station_simulation_input_is_immutable_and_restricted() -> None:
     station = create_station()
     simulation_input = create_ground_station_simulation_input(station)
@@ -97,6 +151,7 @@ def test_ground_station_simulation_input_is_immutable_and_restricted() -> None:
         elevation_m=12.5,
         station_type="gateway",
         operator="Skyseed",
+        max_simultaneous_satellite_accesses=3,
     )
     with pytest.raises(FrozenInstanceError):
         simulation_input.operator = "changed"
@@ -125,6 +180,7 @@ def test_ground_station_simulation_input_is_immutable_and_restricted() -> None:
         "elevation_m",
         "station_type",
         "operator",
+        "max_simultaneous_satellite_accesses",
     }
 
 

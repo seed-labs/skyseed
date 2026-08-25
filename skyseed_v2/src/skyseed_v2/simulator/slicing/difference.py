@@ -433,34 +433,38 @@ def _compare_topology_slices(
                 )
             )
 
-    previous_routes = _flatten_routes(previous)
-    current_routes = _flatten_routes(current)
+    previous_routes = previous.route_slice.routes
+    current_routes = current.route_slice.routes
     route_patches: list[RoutePatch] = []
-    for route_key in set(previous_routes) | set(current_routes):
-        if route_key not in previous_routes:
-            route_patches.append(
-                RoutePatch(
-                    route_key,
-                    DifferenceOperation.ADDED,
-                    current_routes[route_key],
+    for source in set(previous_routes) | set(current_routes):
+        previous_targets = previous_routes.get(source, {})
+        current_targets = current_routes.get(source, {})
+        for target in set(previous_targets) | set(current_targets):
+            route_key = RouteKey(source, target)
+            if target not in previous_targets:
+                route_patches.append(
+                    RoutePatch(
+                        route_key,
+                        DifferenceOperation.ADDED,
+                        current_targets[target],
+                    )
                 )
-            )
-        elif route_key not in current_routes:
-            route_patches.append(
-                RoutePatch(
-                    route_key,
-                    DifferenceOperation.REMOVED,
-                    None,
+            elif target not in current_targets:
+                route_patches.append(
+                    RoutePatch(
+                        route_key,
+                        DifferenceOperation.REMOVED,
+                        None,
+                    )
                 )
-            )
-        elif previous_routes[route_key] != current_routes[route_key]:
-            route_patches.append(
-                RoutePatch(
-                    route_key,
-                    DifferenceOperation.CHANGED,
-                    current_routes[route_key],
+            elif previous_targets[target] != current_targets[target]:
+                route_patches.append(
+                    RoutePatch(
+                        route_key,
+                        DifferenceOperation.CHANGED,
+                        current_targets[target],
+                    )
                 )
-            )
 
     return TopologyDifference(
         previous_slice_id=previous.slice_id,
@@ -473,14 +477,6 @@ def _compare_topology_slices(
         zone_service_assignment_patches=zone_patches,
         route_patches=route_patches,
     )
-
-
-def _flatten_routes(topology_slice: TopologySlice) -> dict[RouteKey, NodeId]:
-    return {
-        RouteKey(source, target): next_hop
-        for source, targets in topology_slice.route_slice.routes.items()
-        for target, next_hop in targets.items()
-    }
 
 
 def _validate_patch_identities(

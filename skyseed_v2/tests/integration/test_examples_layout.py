@@ -14,6 +14,7 @@ from examples.complete_static_emulator import emu
 from examples.complete_static_emulator import main as complete
 from examples.complete_static_emulator import simu
 from examples.mini_satellite_internet import main as mini
+from examples.s4_satellite_internet import main as s4
 from seedemu.core import Emulator
 from seedemu.layers import Base
 
@@ -26,7 +27,11 @@ EXPERIMENTS = {
         "skyseed_v2_complete_static_emulator",
     ),
 }
-FORMAL_EXAMPLES = (*EXPERIMENTS, "mini_satellite_internet")
+FORMAL_EXAMPLES = (
+    *EXPERIMENTS,
+    "mini_satellite_internet",
+    "s4_satellite_internet",
+)
 
 
 def test_formal_examples_generate_controls_into_unique_project_outputs() -> None:
@@ -64,11 +69,13 @@ def test_examples_readme_indexes_current_long_term_roles_and_outputs() -> None:
         assert f"`{name}`" in readme
     assert "Minimal static/canonical example kept deliberately small" in readme
     assert "Small but reasonably rich reusable satellite Internet" in readme
+    assert "S4 static-by-default review plus opt-in bounded Simulator" in readme
     assert "Topology, Zone, Slice / Difference, Planner, BPF Compiler" in readme
     assert mini.DEFAULT_OUTPUT == (
         EXAMPLES_ROOT / "mini_satellite_internet/output"
     )
     assert mini.COMPOSE_PROJECT_PREFIX == "skyseed_v2_mini_satellite_internet"
+    assert s4.DEFAULT_OUTPUT == EXAMPLES_ROOT / "s4_satellite_internet/output"
 
 
 @pytest.mark.parametrize("name", tuple(EXPERIMENTS))
@@ -366,8 +373,8 @@ def test_formal_examples_emit_one_user_facing_output_tree(
     assert not any(
         path.name in {
             "topology.json",
-            "probes.json",
-            "slice-difference.json",
+            "zones.json",
+            "slice-manifest.json",
             "planner-inspection.json",
             "bpf-compiler-inspection.json",
         }

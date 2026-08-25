@@ -18,6 +18,15 @@ never propagates Position. Rendering accepts final view data and artifact
 writing only writes files. This responsibility chain does not require a fixed
 number or naming pattern of Python files.
 
+The renderer draws thin CSS-pixel orbit/marker styling on a DPR-scaled backing
+canvas, labels only the selected or hovered orbit or GroundStation, and embeds
+the shared Tool-private Natural Earth coastline reference. Orbit altitude uses
+the shared Tool-private spherical display policy: unit Earth plus formal
+altitude divided by the IUGG mean Earth radius. This is a WGS84 display
+approximation only; marker size and CSS-pixel hit testing remain independent
+from radial position and use only existing projected orbit/ground-station
+fields. Selecting the active object again clears it.
+
 Tests: `tests/tools/test_topology_tool.py` and
 `tests/integration/test_tooling_boundaries.py`.
 

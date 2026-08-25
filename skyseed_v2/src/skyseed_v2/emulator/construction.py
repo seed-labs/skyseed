@@ -24,7 +24,7 @@ from skyseed_v2.emulator.seedemu import (
 __all__ = ["create_static_emulator"]
 
 
-_SatelliteInput = tuple[str, int, float, dict[str, str]]
+_SatelliteInput = tuple[str, int, float, dict[str, str], int | None]
 _OrbitInput = tuple[str, OrbitParameters, tuple[_SatelliteInput, ...]]
 
 
@@ -67,12 +67,21 @@ def _create_skyseed_autonomous_system(
         shell = autonomous_system.create_shell(shell_config.shell_id)
         for orbit_id, parameters, satellite_inputs in orbit_inputs:
             orbit = shell.create_orbit(orbit_id, parameters=parameters)
-            for satellite_id, orbit_index, anomaly, payload in satellite_inputs:
+            for (
+                satellite_id,
+                orbit_index,
+                anomaly,
+                payload,
+                max_ground_station_accesses,
+            ) in satellite_inputs:
                 orbit.create_satellite(
                     satellite_id,
                     orbit_index=orbit_index,
                     mean_anomaly_deg=anomaly,
                     payload=payload,
+                    max_simultaneous_ground_station_accesses=(
+                        max_ground_station_accesses
+                    ),
                 )
 
     for station_config in config.ground_stations:
@@ -86,6 +95,9 @@ def _create_skyseed_autonomous_system(
             station_type=station_config.station_type,
             operator=station_config.operator,
             display_name=station_config.display_name,
+            max_simultaneous_satellite_accesses=(
+                station_config.max_simultaneous_satellite_accesses
+            ),
         )
         for attachment in station_config.ix_attachments:
             station.joinNetwork(f"ix{attachment.ix_id}", attachment.address)
@@ -155,6 +167,7 @@ def _expand_orbit_inputs(config: ShellConfig) -> tuple[_OrbitInput, ...]:
                         satellite.index_in_orbit,
                         satellite.mean_anomaly_deg,
                         dict(satellite.payload_items),
+                        satellite.max_simultaneous_ground_station_accesses,
                     )
                     for satellite in orbit.satellites
                 ),
@@ -186,10 +199,17 @@ def _expand_orbit_inputs(config: ShellConfig) -> tuple[_OrbitInput, ...]:
     inputs: list[_OrbitInput] = []
     for orbit_index, right_ascension in enumerate(raan_values):
         orbit_id = f"{config.shell_id}-orbit-{orbit_index + 1:03d}"
-        orbit_start = (
-            in_orbit_phase_distribution.start_deg
-            + (orbit_index % 2)
+        orbit_phase_step = (
+            in_orbit_phase_distribution.orbit_phase_step_deg
+        )
+        orbit_offset = (
+            (orbit_index % 2)
             * in_orbit_phase_distribution.alternating_orbit_offset_deg
+            if orbit_phase_step is None
+            else orbit_index * orbit_phase_step
+        )
+        orbit_start = (
+            in_orbit_phase_distribution.start_deg + orbit_offset
         ) % 360.0
         anomalies = tuple(
             (orbit_start + index * phase_step) % 360.0
@@ -201,6 +221,7 @@ def _expand_orbit_inputs(config: ShellConfig) -> tuple[_OrbitInput, ...]:
                 satellite_index,
                 mean_anomaly,
                 {},
+                generated_orbit_layout.max_simultaneous_ground_station_accesses,
             )
             for satellite_index, mean_anomaly in enumerate(anomalies)
         )

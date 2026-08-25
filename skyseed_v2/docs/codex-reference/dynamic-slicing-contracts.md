@@ -46,9 +46,10 @@ Read the detailed contracts by task:
 - Position mapping covers every and only spatial Topology node;
 - Connection endpoints and Zone assignments belong to Topology;
 - every next hop has a current Connection direction;
-- route chains are complete, loop-free, terminal-correct, and obey transit
-  policy;
-- all reachable required source/target routes are present;
+- every published route chain is complete, loop-free, terminal-correct, and
+  obeys transit policy;
+- the selected RouteModel, not Slicer, owns the demanded source/target
+  universe;
 - publication occurs only after cross-result validation;
 - generated IDs are continuous and monotonic even if a future retention policy
   removes an older retained prefix;

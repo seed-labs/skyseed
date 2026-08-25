@@ -21,7 +21,7 @@ from .difference import TopologyDifference, _compare_topology_slices
 from ..geometry import EarthFixedPosition
 from .position import PositionModel
 from ._routing_policy import (
-    eligible_shortest_next_hops,
+    _prepare_routing_policy_context,
     route_step_allows_transit,
 )
 from .route import (
@@ -45,6 +45,18 @@ _MODEL_OWNERS: WeakValueDictionary[int, Slicer] = WeakValueDictionary()
 _MODEL_OWNER_LOCK = RLock()
 
 
+class _PublishedSliceHistoryError(RuntimeError):
+    """Report archive failure without implying Slice publication rolled back."""
+
+    def __init__(self, slice_id: int) -> None:
+        self.slice_id = slice_id
+        super().__init__(
+            f"Slice {slice_id} is already published, but its durable history "
+            "append failed; Slicer operations cannot continue and that Slice "
+            "must not be retried"
+        )
+
+
 class Slicer:
     """Coordinate the sole dynamic Model chain and publish complete Slices.
 
@@ -63,11 +75,13 @@ class Slicer:
         "_route_model",
         "_slices",
         "_slices_by_timestamp",
+        "_retained_publication_timestamps",
         "_latest_slice",
         "_timestamp_iterator",
         "_pending_timestamp",
         "_next_slice_id",
         "_durable_history_path",
+        "_durable_history_failed_after_slice_id",
         "_archived_difference_through",
     )
 
@@ -116,6 +130,7 @@ class Slicer:
         timestamp_iterator = timeline.iter_timestamps()
         instance._slices = {0: slice_zero}
         instance._slices_by_timestamp = {}
+        instance._retained_publication_timestamps = {0: None}
         instance._latest_slice = slice_zero
         instance._timestamp_iterator = timestamp_iterator
         instance._pending_timestamp = _next_timeline_timestamp(
@@ -123,6 +138,7 @@ class Slicer:
         )
         instance._next_slice_id = 1
         instance._durable_history_path = None
+        instance._durable_history_failed_after_slice_id = None
         instance._archived_difference_through = 0
         _claim_model_owners(models, instance)
         connection_context_claimed = False
@@ -150,6 +166,7 @@ class Slicer:
         return instance
 
     def create_next_slice(self) -> TopologySlice:
+        self._require_durable_history_healthy()
         timestamp = self.get_next_timestamp()
         if timestamp is None:
             raise StopIteration("SimulationTimeline is exhausted")
@@ -200,19 +217,24 @@ class Slicer:
         next_timestamp = _next_timeline_timestamp(self._timestamp_iterator)
         self._slices[slice_id] = candidate
         self._slices_by_timestamp[timestamp] = candidate
+        self._retained_publication_timestamps[slice_id] = timestamp
         self._latest_slice = candidate
         self._next_slice_id = slice_id + 1
         self._pending_timestamp = next_timestamp
         if self._durable_history_path is not None:
-            _append_jsonl(
-                self._durable_history_path,
-                {
-                    "record_type": "slice",
-                    "slice_id": candidate.slice_id,
-                    "timestamp": candidate.timestamp.isoformat(),
-                    "semantic": _semantic_value(candidate),
-                },
-            )
+            try:
+                _append_jsonl(
+                    self._durable_history_path,
+                    {
+                        "record_type": "slice",
+                        "slice_id": candidate.slice_id,
+                        "timestamp": candidate.timestamp.isoformat(),
+                        "semantic": _semantic_value(candidate),
+                    },
+                )
+            except Exception as error:
+                self._durable_history_failed_after_slice_id = slice_id
+                raise _PublishedSliceHistoryError(slice_id) from error
         return candidate
 
     def create_slices(self, count: int) -> tuple[TopologySlice, ...]:
@@ -282,6 +304,7 @@ class Slicer:
     ) -> TopologyDifference:
         """Compare two retained adjacent Slices without retaining the result."""
 
+        self._require_durable_history_healthy()
         previous = self.get_slice(previous_slice_id)
         current = self.get_slice(current_slice_id)
         if current_slice_id != previous_slice_id + 1:
@@ -289,19 +312,29 @@ class Slicer:
                 "TopologyDifference requires strictly adjacent Slice IDs"
             )
 
-        # Both values came from this Slicer's owner-scoped retained window, so
-        # no foreign-lineage Slice can enter the private comparator.
-        _validate_retained_slice(
-            self._topology,
-            self._timeline,
+        # Publication validation plus immutable owner-scoped retention makes
+        # the contents authoritative. Difference checks only cheap lineage
+        # metadata before comparing the two retained values.
+        try:
+            previous_timestamp = self._retained_publication_timestamps[
+                previous_slice_id
+            ]
+            current_timestamp = self._retained_publication_timestamps[
+                current_slice_id
+            ]
+        except KeyError as error:
+            raise RuntimeError(
+                "retained Slice publication metadata is missing"
+            ) from error
+        _validate_retained_slice_metadata(
             previous,
             previous_slice_id,
+            previous_timestamp,
         )
-        _validate_retained_slice(
-            self._topology,
-            self._timeline,
+        _validate_retained_slice_metadata(
             current,
             current_slice_id,
+            current_timestamp,
         )
         difference = _compare_topology_slices(previous, current)
         if (
@@ -331,7 +364,7 @@ class Slicer:
             raise RuntimeError(
                 "Slicer durable history must be enabled before progression"
             )
-        self._durable_history_path = _reset_jsonl(
+        durable_history_path = _reset_jsonl(
             path,
             {
                 "record_type": "history_header",
@@ -351,7 +384,7 @@ class Slicer:
             },
         )
         _append_jsonl(
-            self._durable_history_path,
+            durable_history_path,
             {
                 "record_type": "slice",
                 "slice_id": 0,
@@ -359,6 +392,12 @@ class Slicer:
                 "semantic": _semantic_value(self._latest_slice),
             },
         )
+        self._durable_history_path = durable_history_path
+
+    def _require_durable_history_healthy(self) -> None:
+        failed_slice_id = self._durable_history_failed_after_slice_id
+        if failed_slice_id is not None:
+            raise _PublishedSliceHistoryError(failed_slice_id)
 
     def _release_before(self, retained_from_slice_id: int) -> dict[str, int]:
         """Release old indexed Slices after every consumer crossed a frontier."""
@@ -380,6 +419,7 @@ class Slicer:
         )
         for slice_id in released:
             value = self._slices.pop(slice_id)
+            self._retained_publication_timestamps.pop(slice_id, None)
             if value.timestamp is not None:
                 self._slices_by_timestamp.pop(value.timestamp, None)
         return {
@@ -500,37 +540,17 @@ def _validated_positions(
     )
 
 
-def _validate_retained_slice(
-    topology: Topology,
-    timeline: SimulationTimeline,
+def _validate_retained_slice_metadata(
     topology_slice: TopologySlice,
     expected_slice_id: int,
+    expected_timestamp: datetime | None,
 ) -> None:
     if not isinstance(topology_slice, TopologySlice):
         raise TypeError("retained value must be a TopologySlice")
     if topology_slice.slice_id != expected_slice_id:
         raise ValueError("retained Slice ID metadata is inconsistent")
-    expected_timestamp = _timeline_timestamp_for_slice_id(
-        timeline, expected_slice_id
-    )
     if topology_slice.timestamp != expected_timestamp:
         raise ValueError("retained Slice timestamp metadata is inconsistent")
-    if expected_slice_id == 0:
-        if (
-            topology_slice.positions
-            or topology_slice.connection_slice.connections
-            or topology_slice.connection_slice.zone_service_assignments
-            or topology_slice.route_slice.routes
-        ):
-            raise ValueError("synthetic Slice 0 dynamic state is inconsistent")
-    else:
-        _validated_positions(topology, topology_slice.positions)
-    _validate_connection_slice(topology, topology_slice.connection_slice)
-    _validate_route_slice(
-        topology,
-        topology_slice.connection_slice,
-        topology_slice.route_slice,
-    )
 
 
 def _validate_connection_slice(
@@ -540,6 +560,8 @@ def _validate_connection_slice(
     if not isinstance(connection_slice, ConnectionSlice):
         raise TypeError("ConnectionModel must return a ConnectionSlice")
     known_nodes = _topology_node_ids(topology)
+    ground_station_access_counts: dict[NodeId, int] = {}
+    satellite_ground_station_access_counts: dict[NodeId, int] = {}
     for connection in connection_slice.connections:
         identifier = connection.connection_id
         first, second = identifier.endpoint_a, identifier.endpoint_b
@@ -558,6 +580,43 @@ def _validate_connection_slice(
             raise ValueError(
                 "GROUND_STATION_ACCESS requires Satellite and GroundStation"
             )
+        if identifier.kind is ConnectionKind.GROUND_STATION_ACCESS:
+            ground_station_id = (
+                first if first.entity_kind == "ground-station" else second
+            )
+            satellite_id = (
+                first if first.entity_kind == "satellite" else second
+            )
+            count = ground_station_access_counts.get(ground_station_id, 0) + 1
+            ground_station_access_counts[ground_station_id] = count
+            capability = topology.get_ground_station(
+                ground_station_id
+            ).max_simultaneous_satellite_accesses
+            if capability is not None and count > capability:
+                raise ValueError(
+                    "ConnectionModel output exceeds GroundStation "
+                    "max_simultaneous_satellite_accesses for "
+                    f"{ground_station_id.value}"
+                )
+            satellite_count = (
+                satellite_ground_station_access_counts.get(satellite_id, 0)
+                + 1
+            )
+            satellite_ground_station_access_counts[satellite_id] = (
+                satellite_count
+            )
+            satellite_capability = topology.get_satellite(
+                satellite_id
+            ).max_simultaneous_ground_station_accesses
+            if (
+                satellite_capability is not None
+                and satellite_count > satellite_capability
+            ):
+                raise ValueError(
+                    "ConnectionModel output exceeds Satellite "
+                    "max_simultaneous_ground_station_accesses for "
+                    f"{satellite_id.value}"
+                )
     try:
         zone_layout = topology.get_zone_layout()
     except RuntimeError:
@@ -582,7 +641,12 @@ def _validate_route_slice(
 ) -> None:
     if not isinstance(route_slice, RouteSlice):
         raise TypeError("RouteModel must return a RouteSlice")
-    known_nodes = _topology_node_ids(topology)
+    routing_context = _prepare_routing_policy_context(
+        topology, connection_slice
+    )
+    known_nodes = routing_context.nodes
+    terminals: dict[RouteTarget, NodeId] = {}
+    routes_by_target: dict[RouteTarget, dict[NodeId, NodeId]] = {}
     for source, target_routes in route_slice.routes.items():
         if source not in known_nodes:
             raise ValueError("Route source is foreign to Topology")
@@ -596,101 +660,80 @@ def _validate_route_slice(
                 )
             if next_hop not in known_nodes:
                 raise ValueError("Route next hop is foreign to Topology")
-            if not _has_connection(connection_slice, source, next_hop):
+            if next_hop not in routing_context.graph[source]:
                 raise ValueError(
                     "Route next hop has no current Connection direction"
                 )
-            terminal = _resolve_terminal(topology, connection_slice, target)
+            if target not in terminals:
+                terminals[target] = _resolve_terminal(
+                    topology, connection_slice, target
+                )
+            terminal = terminals[target]
             if source == terminal:
                 raise ValueError("RouteSlice contains an entry at its terminal")
-            _validate_route_chain(
-                topology,
-                connection_slice,
-                route_slice,
+            if (
+                isinstance(target, GroundStationRouteTarget)
+                and next_hop.entity_kind == "ground-station"
+                and next_hop != terminal
+            ):
+                raise ValueError("Route chain reaches the wrong terminal")
+            if not route_step_allows_transit(
                 source,
+                source,
+                next_hop,
                 target,
                 terminal,
-            )
-
-    ground_station_ids = {
-        node_id for node_id in known_nodes
-        if node_id.entity_kind == "ground-station"
-    }
-    required_targets: list[tuple[RouteTarget, NodeId]] = [
-        (
-            GroundStationRouteTarget(ground_station_id),
-            ground_station_id,
-        )
-        for ground_station_id in sorted(
-            ground_station_ids, key=_node_key
-        )
-    ]
-    required_targets.extend(
-        (
-            ZoneRouteTarget(zone_id),
-            service_satellite,
-        )
-        for zone_id, service_satellite in (
-            connection_slice.zone_service_assignments.items()
-        )
-    )
-    for target, terminal in required_targets:
-        reachable_sources = eligible_shortest_next_hops(
-            topology,
-            connection_slice,
-            target,
-            terminal,
-        )
-        for source in reachable_sources:
-            try:
-                route_slice.get_next_hop(source, target)
-            except KeyError as error:
-                raise ValueError(
-                    "RouteSlice omits a reachable source-target route"
-                ) from error
-
-
-def _validate_route_chain(
-    topology: Topology,
-    connection_slice: ConnectionSlice,
-    route_slice: RouteSlice,
-    source: NodeId,
-    target: RouteTarget,
-    terminal: NodeId,
-) -> None:
-    current = source
-    seen = {source}
-    while current != terminal:
-        try:
-            next_hop = route_slice.get_next_hop(current, target)
-        except KeyError as error:
-            if _is_other_terminal(
-                topology, connection_slice, current, terminal
             ):
-                raise ValueError("Route chain reaches the wrong terminal") from error
-            raise ValueError("Route chain is incomplete") from error
-        if not _has_connection(connection_slice, current, next_hop):
-            raise ValueError("Route chain uses an absent current Connection")
-        if (
-            isinstance(target, GroundStationRouteTarget)
-            and next_hop.entity_kind == "ground-station"
-            and next_hop != terminal
-        ):
-            raise ValueError("Route chain reaches the wrong terminal")
-        if not route_step_allows_transit(
-            source,
-            current,
-            next_hop,
-            target,
-            terminal,
-        ):
-            raise ValueError(
-                "Route chain uses ineligible GroundStation transit"
-            )
-        if next_hop in seen:
-            raise ValueError("Route chain contains a loop")
-        seen.add(next_hop)
-        current = next_hop
+                raise ValueError(
+                    "Route chain uses ineligible GroundStation transit"
+                )
+            routes_by_target.setdefault(target, {})[source] = next_hop
+
+    other_terminals = routing_context.ground_stations | frozenset(
+        connection_slice.zone_service_assignments.values()
+    )
+    for target, target_routes in routes_by_target.items():
+        _validate_route_tree(
+            target_routes,
+            terminals[target],
+            other_terminals,
+        )
+
+
+def _validate_route_tree(
+    routes: Mapping[NodeId, NodeId],
+    terminal: NodeId,
+    other_terminals: frozenset[NodeId],
+) -> None:
+    # Each target is one functional graph. Publication-time adjacency and
+    # transit checks above validated every edge once; these memoized walks now
+    # prove that every published source reaches the exact terminal.
+    resolved = {terminal}
+    state: dict[NodeId, int] = {terminal: 2}
+    for source in routes:
+        if state.get(source) == 2:
+            continue
+        current = source
+        chain: list[NodeId] = []
+        while current not in resolved:
+            if state.get(current) == 1:
+                raise ValueError("Route chain contains a loop")
+            state[current] = 1
+            chain.append(current)
+            try:
+                next_hop = routes[current]
+            except KeyError as error:
+                if current in other_terminals and current != terminal:
+                    raise ValueError(
+                        "Route chain reaches the wrong terminal"
+                    ) from error
+                raise ValueError("Route chain is incomplete") from error
+            if state.get(next_hop) == 1:
+                raise ValueError("Route chain contains a loop")
+            current = next_hop
+        for node_id in chain:
+            state[node_id] = 2
+            resolved.add(node_id)
 
 
 def _resolve_terminal(
@@ -744,14 +787,15 @@ def _has_connection(
     first: NodeId,
     second: NodeId,
 ) -> bool:
-    return any(
-        {
-            connection.connection_id.endpoint_a,
-            connection.connection_id.endpoint_b,
-        }
-        == {first, second}
-        for connection in connection_slice.get_connections_for_node(first)
-    )
+    for kind in ConnectionKind:
+        try:
+            connection_slice.get_connection_for_endpoints(
+                kind, first, second
+            )
+        except KeyError:
+            continue
+        return True
+    return False
 
 
 def _claim_model_owners(
@@ -821,21 +865,6 @@ def _next_timeline_timestamp(
     except StopIteration:
         return None
     return normalize_utc_datetime(timestamp, "Timeline timestamp")
-
-
-def _timeline_timestamp_for_slice_id(
-    timeline: SimulationTimeline,
-    slice_id: int,
-) -> datetime | None:
-    if slice_id == 0:
-        return None
-    for current_slice_id, timestamp in enumerate(
-        timeline.iter_timestamps(),
-        start=1,
-    ):
-        if current_slice_id == slice_id:
-            return timestamp
-    raise ValueError("retained Slice ID is outside SimulationTimeline")
 
 
 __all__ = ["Slicer"]

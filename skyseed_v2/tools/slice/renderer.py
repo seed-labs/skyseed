@@ -1,1518 +1,460 @@
-"""Render a non-authoritative Slice / Difference projection offline."""
+"""Render the lazy offline Slice / Difference inspection UI."""
 
 from __future__ import annotations
 
 from html import escape
 from typing import Any
 
+from .._display_geometry import display_geometry_policy
+from .._earth_reference import _natural_earth_coastline_lines
 from .._html import json_for_script, standalone_page
 
 
 def render_slice_difference_page(data: dict[str, Any]) -> str:
-    """Render five focused presets over shared spatial and timeline context."""
+    """Render one compact manifest; detailed Slice state stays in chunks."""
 
     inventory = data["inventory"]
+    assert isinstance(inventory, dict)
+    manifest = {key: value for key, value in data.items() if key != "slices"}
     stats = "".join(
-        f'<div class="card stat"><span class="muted">{escape(label)}</span>'
-        f"<strong>{inventory[key]}</strong></div>"
+        '<div class="card stat"><span class="muted">'
+        f"{escape(label)}</span><strong>{inventory[key]}</strong></div>"
         for key, label in (
-            ("satellites", "Satellite"),
-            ("ground_stations", "GroundStation"),
-            ("orbits", "Orbit"),
-            ("zones", "Zone"),
-            ("slices", "Slice"),
-            ("differences", "Difference"),
-            ("paths", "Resolved path"),
+            ("slices", "Slices"),
+            ("differences", "Differences"),
+            ("satellites", "Satellites"),
+            ("ground_stations", "Ground Stations"),
+            ("zones", "Zones"),
         )
     )
+    model_context = _render_model_context(data)
     body = f"""
 <style>
-.timeline {{ display:grid; grid-template-columns:auto auto auto 1fr auto; gap:9px; align-items:center; }}
+.tool-navigation {{ margin-bottom:12px; }}
+.timeline {{ display:grid; grid-template-columns:auto auto 1fr auto; gap:8px; align-items:center; }}
 .timeline input {{ width:100%; }}
-.timeline-rail {{ display:flex; align-items:center; gap:4px; overflow-x:auto; padding:8px 0 3px; }}
-.timeline-marker {{ min-width:max-content; padding:5px 8px; border-radius:99px; font-size:12px; }}
-.timeline-marker.difference {{ border-style:dashed; color:#ffbd73; }}
-.timeline-marker[aria-current="true"] {{ border-color:var(--cyan); color:var(--cyan); }}
-.view-tabs {{ display:flex; flex-wrap:wrap; gap:8px; margin:12px 0; }}
-.view-tab[aria-selected="true"] {{ border-color:var(--cyan); color:var(--cyan); }}
-.view-panel[hidden] {{ display:none; }}
-.view-grid {{ display:grid; grid-template-columns:minmax(0,2fr) minmax(330px,1fr); gap:14px; }}
-.globe {{ min-height:590px; touch-action:none; }}
-.toolbar {{ display:flex; flex-wrap:wrap; gap:9px; align-items:center; margin:10px 0; }}
-.toolbar label {{ display:flex; gap:6px; align-items:center; }}
-.toolbar select {{ max-width:360px; }}
-.legend {{ display:flex; flex-wrap:wrap; gap:12px; margin:10px 0; }}
-.swatch {{ display:inline-block; width:13px; height:4px; margin-right:5px; vertical-align:middle; }}
-.structured {{ max-height:590px; overflow:auto; }}
-.structured table {{ font-size:13px; margin-bottom:16px; }}
-.structured h3 {{ margin-top:18px; }}
-.audit pre {{ max-height:320px; overflow:auto; font-size:12px; }}
-.difference-items {{ display:grid; gap:7px; margin:10px 0; max-height:260px; overflow:auto; }}
-.difference-item {{ text-align:left; width:100%; }}
-.difference-item[aria-selected="true"] {{ border-color:var(--cyan); }}
-.transition-note {{ border-left:3px solid #ffbd73; padding:7px 10px; }}
-.empty {{ color:var(--muted); padding:12px 0; }}
-@media (max-width:980px) {{ .view-grid {{ grid-template-columns:1fr; }} }}
+.slice-context-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(145px,1fr)); gap:8px; }}
+.slice-context-metric {{ padding:9px 10px; border:1px solid #20425a; border-radius:8px; background:#071c2d; }}
+.slice-context-metric span {{ display:block; color:var(--muted); font-size:.78rem; }}
+.slice-context-metric strong {{ display:block; margin-top:3px; font-size:1rem; overflow-wrap:anywhere; }}
+.physical-context {{ margin:10px 0 0; line-height:1.65; }}
+.model-context-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:12px; margin-top:12px; }}
+.model-context-group {{ padding:10px; border:1px solid #20425a; border-radius:8px; }}
+.model-context-group h3 {{ margin:0 0 8px; font-size:.96rem; }}
+.model-context-group dl {{ margin:0; }}
+.model-context-notes {{ margin-bottom:0; }}
+.globe-toolbar {{ display:flex; flex-wrap:wrap; gap:7px; align-items:center; margin:9px 0; }}
+.globe-toolbar button.active {{ border-color:var(--cyan); color:var(--cyan); box-shadow:0 0 0 1px var(--cyan) inset; }}
+#clear-inspection {{ border-color:#ffbd73; color:#ffdcad; font-weight:700; }}
+.globe-wrap {{ position:relative; }}
+#slice-globe {{ touch-action:none; cursor:grab; aspect-ratio:55/28; min-height:420px; }}
+#slice-globe.dragging {{ cursor:grabbing; }}
+#slice-globe.inspecting {{ cursor:pointer; }}
+#hover-label {{ position:absolute; left:12px; bottom:12px; max-width:calc(100% - 24px); padding:6px 9px; border-radius:7px; background:#061621e8; color:#e7f7ff; pointer-events:none; opacity:0; transition:opacity .12s; overflow-wrap:anywhere; }}
+#hover-label.visible {{ opacity:1; }}
+.legend {{ display:flex; flex-wrap:wrap; gap:10px; margin-left:auto; font-size:.84rem; color:var(--muted); }}
+.legend span::before {{ content:""; display:inline-block; width:14px; height:3px; margin:0 5px 3px 0; background:var(--legend); }}
+.context-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:12px; }}
+.route-controls {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin-bottom:12px; }}
+.route-controls label {{ display:grid; gap:4px; color:var(--muted); }}
+.route-controls select {{ width:100%; }}
+.detail-grid {{ display:grid; grid-template-columns:max-content 1fr; gap:5px 14px; margin:0; }}
+.detail-grid dt {{ color:var(--muted); }}
+.detail-grid dd {{ margin:0; overflow-wrap:anywhere; }}
+.detail-actions {{ display:flex; flex-wrap:wrap; gap:7px; margin-top:12px; }}
+.object-status {{ display:inline-block; margin:0 0 9px; padding:3px 8px; border-radius:999px; background:#123247; color:#aeeaff; }}
+.object-status.absent {{ background:#552a2a; color:#ffc9c9; }}
+.secondary-controls {{ margin-top:12px; }}
+.control-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:9px; }}
+.control-grid label {{ display:grid; gap:4px; color:var(--muted); }}
+.control-grid select {{ width:100%; }}
+.difference-legend {{ display:flex; flex-wrap:wrap; gap:12px; margin:10px 0; }}
+.difference-legend span {{ white-space:nowrap; }}
+.swatch {{ display:inline-block; width:15px; height:4px; margin:0 5px 3px 0; }}
+.diagnostic {{ border-left:3px solid var(--amber); padding-left:9px; }}
+.loading {{ color:var(--cyan); }}
+@media(max-width:700px) {{ .timeline {{ grid-template-columns:auto auto 1fr; }} .timeline strong {{ grid-column:1/-1; }} .route-controls {{ grid-template-columns:1fr; }} #slice-globe {{ min-height:310px; }} }}
 </style>
+<nav class="tool-navigation"><a href="../index.html">← Tool Overview</a></nav>
 <section class="card">
-  <span class="status PASS">NON-AUTHORITATIVE VIEW</span>
-  <h2>Accepted A–F results · focused read-only presets</h2>
-  <p>All five presets combine shared static spatial context with one focused
-  task overlay. They share the formal Slice/Difference timeline, camera and
-  applicable selections. The page does not run a Model, propagate Position,
-  form Connections, route, compare Slices or update the static container
-  network.</p>
+  <span class="status PASS">PASS</span>
+  <h2>Slice / Difference timeline</h2>
+  <p class="muted">One offline chunk is loaded at a time. Selection and display-only path restoration persist while the timeline moves.</p>
+  <div class="grid stats">{stats}</div>
 </section>
-<section><h2>Bundle inventory</h2><div class="grid stats">{stats}</div></section>
-<section class="card" id="shared-timeline">
-  <h2>Shared timeline</h2>
+<section class="card">
   <div class="timeline">
     <button id="previous-slice" type="button">Previous</button>
-    <button id="play-pause" type="button">Play</button>
     <button id="next-slice" type="button">Next</button>
-    <input id="slice-range" type="range" min="0"
-      max="{2 * inventory['slices'] - 2}" value="0" step="1">
-    <label><input id="sync-camera" type="checkbox" checked>Sync camera</label>
-  </div>
-  <div id="timeline-rail" class="timeline-rail"
-    aria-label="Interleaved Slice and Difference timeline"></div>
-  <p><strong id="slice-label"></strong> · <span id="timestamp-label"></span></p>
-  <p id="difference-summary" class="muted"></p>
-</section>
-<nav class="view-tabs card" aria-label="Slice and Difference inspection views">
-  <button class="view-tab" data-view="topology" aria-selected="true">Topology / Orbit</button>
-  <button class="view-tab" data-view="isl" aria-selected="false">ISL Connections</button>
-  <button class="view-tab" data-view="service" aria-selected="false">Ground / Zone Service</button>
-  <button class="view-tab" data-view="routing" aria-selected="false">Routing</button>
-  <button class="view-tab" data-view="difference" aria-selected="false">Difference</button>
-</nav>
-
-<section class="view-panel" data-panel="topology">
-  <div class="view-grid">
-    <div class="card">
-      <h2>Topology / Orbit view · <span class="view-context"></span></h2>
-      <div class="toolbar">
-        <label>Orbit <select id="orbit-select"></select></label>
-        <label><input id="topology-ground-layer" type="checkbox" checked>GroundStations</label>
-        <label><input id="topology-zone-layer" type="checkbox" checked>Zones</label>
-        <button class="reset-view" data-canvas="topology-globe" type="button">Reset</button>
-      </div>
-      <div class="legend">
-        <span>Orbit colors distinguish public Orbit ownership</span>
-        <span><i class="swatch" style="background:#ffb454"></i>GroundStation</span>
-        <span><i class="swatch" style="background:#d7f171"></i>Zone boundary</span>
-      </div>
-      <canvas class="globe" id="topology-globe" width="1200" height="650"></canvas>
-      <p class="muted">Orbit guides are non-authoritative presentation
-      helpers fitted through Earth center from each formal Slice's Satellite
-      ECEF Positions. A Δ frame shows only its two formal endpoints; it does
-      not interpolate Position.</p>
-    </div>
-    <div class="card structured" id="orbit-detail"></div>
+    <input id="slice-range" type="range" min="0" max="0" value="0" aria-label="Slice timeline">
+    <strong id="slice-label" class="loading">Loading…</strong>
   </div>
 </section>
-
-<section class="view-panel" data-panel="isl" hidden>
-  <div class="view-grid">
-    <div class="card">
-      <h2>ISL Connection view · <span class="view-context"></span></h2>
-      <div class="toolbar">
-        <label>Orbit filter <select id="isl-orbit-filter"></select></label>
-        <label>Local node <select id="isl-node-filter"></select></label>
-        <label><input id="isl-orbit-layer" type="checkbox" checked>Stable Orbit context</label>
-        <label><input id="isl-satellite-layer" type="checkbox" checked>Stable constellation context</label>
-        <button class="reset-view" data-canvas="isl-globe" type="button">Reset</button>
-      </div>
-      <div class="legend">
-        <span><i class="swatch" style="background:#4fd1c5"></i>same-orbit ISL</span>
-        <span><i class="swatch" style="background:#7aa7ff"></i>cross-orbit ISL</span>
-        <span><i class="swatch" style="background:#9b8cff"></i>previous / predecessor Orbit</span>
-        <span><i class="swatch" style="background:#5ab4ff"></i>next / successor Orbit</span>
-        <span><i class="swatch" style="background:#ff6464"></i>removed</span>
-        <span><i class="swatch" style="background:#5dff8b"></i>added</span>
-        <span><i class="swatch" style="background:#ff9f43"></i>parameters</span>
-      </div>
-      <canvas class="globe" id="isl-globe" width="1200" height="650"></canvas>
-      <p class="muted">No GroundStation access, Zone service or Route is
-      rendered. At a Δ marker, only the relevant formal ISL Difference
-      overlays are added to the previous Slice base.</p>
-    </div>
-    <div class="card structured" id="isl-detail"></div>
-  </div>
+<section class="card" aria-labelledby="slice-context-heading">
+  <h2 id="slice-context-heading">Current Slice context</h2>
+  <div id="slice-context" class="slice-context-grid"><p class="muted loading">Loading current Slice context…</p></div>
+  <p id="slice-physical-context" class="muted physical-context"></p>
 </section>
-
-<section class="view-panel" data-panel="service" hidden>
-  <div class="view-grid">
-    <div class="card">
-      <h2>Ground Access / Zone Service view · <span class="view-context"></span></h2>
-      <div class="toolbar">
-        <label><input id="service-orbit-layer" type="checkbox" checked>Stable Orbit context</label>
-        <label><input id="service-satellite-layer" type="checkbox" checked>Stable constellation context</label>
-        <button class="reset-view" data-canvas="service-globe" type="button">Reset</button>
-      </div>
-      <div class="legend">
-        <span><i class="swatch" style="background:#ffd166"></i>GroundStation access</span>
-        <span><i class="swatch" style="background:#e879f9"></i>Zone service</span>
-        <span><i class="swatch" style="background:#ff6464"></i>unserved Zone</span>
-        <span><i class="swatch" style="background:#ff6464"></i>previous/removed</span>
-        <span><i class="swatch" style="background:#5dff8b"></i>current/added</span>
-      </div>
-      <canvas class="globe" id="service-globe" width="1200" height="650"></canvas>
-      <p class="muted">ISLs and Routes are absent. At a Δ marker, only formal
-      GroundStation-access and Zone-service Difference overlays are shown.</p>
-    </div>
-    <div class="card structured" id="service-detail"></div>
-  </div>
-</section>
-
-<section class="view-panel" data-panel="routing" hidden>
-  <div class="view-grid">
-    <div class="card">
-      <h2>Routing view · <span class="view-context"></span></h2>
-      <div class="toolbar">
-        <label>Source <select id="route-source"></select></label>
-        <label>G/Z target <select id="route-target"></select></label>
-        <label><input id="routing-orbit-layer" type="checkbox" checked>Stable Orbit context</label>
-        <label><input id="routing-satellite-layer" type="checkbox" checked>Stable constellation context</label>
-        <label><input id="routing-ground-layer" type="checkbox" checked>GroundStations</label>
-        <button class="reset-view" data-canvas="routing-globe" type="button">Reset</button>
-      </div>
-      <div class="legend">
-        <span><i class="swatch" style="background:#ffffff"></i>formal resolved path</span>
-        <span><i class="swatch" style="background:#5dff8b"></i>source</span>
-        <span><i class="swatch" style="background:#ffb454"></i>G/Z target</span>
-        <span><i class="swatch" style="background:#ff6464"></i>previous path at Δ</span>
-        <span><i class="swatch" style="background:#5dff8b"></i>current path at Δ</span>
-      </div>
-      <canvas class="globe" id="routing-globe" width="1200" height="650"></canvas>
-      <p class="muted">Unrelated Connections are hidden. Every displayed path
-      is the recorded result of Slicer.resolve_path().</p>
-    </div>
-    <div class="card structured" id="route-detail"></div>
-  </div>
-</section>
-
-<section class="view-panel" data-panel="difference" hidden>
-  <div class="view-grid">
-    <div class="card">
-      <h2>Transition Inspector · <span class="view-context"></span></h2>
-      <div class="toolbar">
-        <label>Category
-          <select id="difference-category">
-            <option value="connection-structure">Connection add/remove</option>
-            <option value="parameters">Parameter patches</option>
-            <option value="zone">Zone patches</option>
-            <option value="route">Route patches</option>
-          </select>
-        </label>
-        <label><input id="difference-orbit-layer" type="checkbox" checked>Relevant Orbit context</label>
-        <label><input id="difference-satellite-layer" type="checkbox">Show full constellation context</label>
-        <button class="reset-view" data-canvas="difference-globe" type="button">Reset</button>
-      </div>
-      <canvas class="globe" id="difference-globe" width="1200" height="650"></canvas>
-      <p class="muted">Detailed audit of the same previous-base Transition
-      shown by every task view. Exactly one Difference category and selected
-      structured item are emphasized at a time.</p>
-    </div>
-    <div class="card structured">
-      <div id="difference-list"></div>
-      <div id="difference-detail"></div>
+{model_context}
+<section class="card">
+  <h2>Dynamic Earth</h2>
+  <p class="muted">Drag to rotate. Choose an inspection mode, then click a generously sized node, link, or Zone representative point.</p>
+  <div class="globe-toolbar" role="toolbar" aria-label="Earth inspection mode">
+    <button id="pick-node" class="active" data-pick-mode="node" type="button">Inspect nodes</button>
+    <button id="pick-connection" data-pick-mode="connection" type="button">Inspect Connections</button>
+    <button id="pick-zone" data-pick-mode="zone" type="button">Inspect Zones</button>
+    <button id="clear-inspection" type="button">Clear inspection</button>
+    <label><input id="show-difference" type="checkbox"> Difference mode</label>
+    <div class="legend">
+      <span style="--legend:#8be6f5">Satellite</span>
+      <span style="--legend:#ffd08a">GroundStation</span>
+      <span style="--legend:#7dffb2">Route</span>
+      <span style="--legend:#ef8cff">Zone service</span>
     </div>
   </div>
+  <div class="globe-wrap">
+    <canvas id="slice-globe" width="1100" height="560"></canvas>
+    <div id="hover-label" role="status"></div>
+  </div>
 </section>
-
-<details class="card audit">
-  <summary>Raw JSON / Audit View for the current timeline item</summary>
-  <pre id="audit-json"></pre>
+<div class="context-grid">
+  <section class="card">
+    <h2>Selected object</h2>
+    <div id="selected-detail" data-selection-kind="" data-selection-status="none"><p class="muted">Click an object on Dynamic Earth.</p></div>
+  </section>
+  <section class="card">
+    <h2>Zone / Gateway Route</h2>
+    <div class="route-controls">
+      <label>Zone<select id="gateway-route-zone"><option value="">Select Zone</option></select></label>
+      <label>Gateway<select id="gateway-route-gateway"><option value="">Select relevant Gateway</option></select></label>
+      <label>Direction<select id="gateway-route-direction"><option value="zone-to-gateway">Zone → Gateway</option><option value="gateway-to-zone">Gateway → Zone</option></select></label>
+    </div>
+    <div id="path-detail" data-route-status="none"><p class="muted">Select a Zone, a currently published Gateway, and a direction.</p></div>
+  </section>
+</div>
+<details class="card secondary-controls">
+  <summary>Search / accessibility fallbacks</summary>
+  <p class="muted">These locators mirror the click-first workflow; they do not create facts.</p>
+  <div class="control-grid">
+    <label>Satellite / GroundStation<select id="node-select"><option value="">Locate node</option></select></label>
+    <label>Connection<select id="connection-select"><option value="">Locate Connection</option></select></label>
+    <label>Zone<select id="zone-select"><option value="">Locate Zone</option></select></label>
+    <label>Advanced Route source<select id="route-source"><option value="">Locate source</option></select></label>
+    <label>Advanced G/Z target<select id="route-target"><option value="">Locate target</option></select></label>
+  </div>
+</details>
+<details id="difference-panel" class="card">
+  <summary>Difference from previous Slice</summary>
+  <div id="difference-counts" class="muted">Slice 0 has no predecessor.</div>
+  <div class="difference-legend">
+    <span><i class="swatch" style="background:#59e391"></i>added Connection</span>
+    <span><i class="swatch" style="background:#ff6f7d"></i>removed Connection</span>
+    <span><i class="swatch" style="background:#ffd166"></i>parameter changed</span>
+    <span><i class="swatch" style="background:#ef8cff"></i>Zone assignment changed</span>
+  </div>
+  <div id="difference-context"><p class="muted">Enable Difference mode or select an affected object for contextual details.</p></div>
+</details>
+<details class="card">
+  <summary>Diagnostics</summary>
+  <div id="diagnostics"><p class="muted">No current anomalies.</p></div>
 </details>
 """
-    script = _SCRIPT.replace("__SLICE_DATA__", json_for_script(data))
+    script = (
+        f"window.SKYSEED_SLICE_MANIFEST={json_for_script(manifest)};\n"
+        f"const COASTLINES={json_for_script(_natural_earth_coastline_lines())};\n"
+        f"const DISPLAY_GEOMETRY={json_for_script(display_geometry_policy())};\n"
+        + r"""
+const MANIFEST=window.SKYSEED_SLICE_MANIFEST;
+window.__SKYSEED_SLICE_CHUNKS__=window.__SKYSEED_SLICE_CHUNKS__||{};
+const canvas=document.getElementById("slice-globe"),ctx=canvas.getContext("2d"),hoverLabel=document.getElementById("hover-label");
+const manifestById=new Map(MANIFEST.slice_manifest.map(item=>[Number(item.slice_id),item]));
+const orderedIds=MANIFEST.slice_manifest.map(item=>Number(item.slice_id));
+const staticNodes=new Map(MANIFEST.topology.nodes.map(node=>[node.node_id,node]));
+const orbitByRef=new Map(MANIFEST.topology.orbits.map(orbit=>[orbit.orbit_ref,orbit]));
+const zonesById=new Map(MANIFEST.topology.zones.map(zone=>[zone.zone_id,zone]));
+const INITIAL_CAMERA={yaw:-.55,pitch:.28},MAX_PITCH=89*Math.PI/180;
+let camera={...INITIAL_CAMERA},pointer=null,currentSlice=null,currentIndex=Math.max(0,orderedIds.findIndex(id=>id===1)),requestedSliceId=null,loadGeneration=0;
+let logicalWidth=1100,logicalHeight=560,nodeHits=[],connectionHits=[],zoneHits=[],hoverHit=null,pickMode="node";
+let selectedNodeId="",selectedConnectionRef="",selectedZoneId="",activeSelectionKind="",showSatelliteZones=false;
+let routeSourceId="",routeTargetRef="",selectedPath=[],routeStatus="none",differenceMode=false;
+let routeZoneId="",routeGatewayId="",routeDirection="zone-to-gateway";
+const pendingLoads=new Map(),range=document.getElementById("slice-range");range.max=String(Math.max(0,orderedIds.length-1));range.value=String(currentIndex);
+const spherePoint=(lat,lon,r=1)=>{const a=lat*Math.PI/180,b=lon*Math.PI/180;return [r*Math.cos(a)*Math.cos(b),r*Math.sin(a),r*Math.cos(a)*Math.sin(b)];};
+const rotate=point=>{const [x,y,z]=point,cy=Math.cos(camera.yaw),sy=Math.sin(camera.yaw),cp=Math.cos(camera.pitch),sp=Math.sin(camera.pitch),x1=x*cy+z*sy,z1=-x*sy+z*cy;return [x1,y*cp-z1*sp,y*sp+z1*cp];};
+function prepareCanvas(){const box=canvas.getBoundingClientRect(),dpr=Math.max(1,window.devicePixelRatio||1);logicalWidth=Math.max(1,box.width);logicalHeight=Math.max(1,box.height);const w=Math.round(logicalWidth*dpr),h=Math.round(logicalHeight*dpr);if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h;}ctx.setTransform(w/logicalWidth,0,0,h/logicalHeight,0,0);}
+const scale=()=>Math.min(logicalWidth,logicalHeight)*.36;
+const project=point=>{const [x,y,z]=rotate(point),s=scale();return [logicalWidth/2+x*s,logicalHeight/2-y*s,z];};
+function drawEarth(){const radius=scale(),gradient=ctx.createRadialGradient(logicalWidth*.45,logicalHeight*.42,10,logicalWidth/2,logicalHeight/2,radius);gradient.addColorStop(0,"#174a68");gradient.addColorStop(1,"#071c2d");ctx.fillStyle=gradient;ctx.beginPath();ctx.arc(logicalWidth/2,logicalHeight/2,radius,0,Math.PI*2);ctx.fill();}
+function drawPolyline(points,color,width,opacity=1,dashed=false){ctx.save();ctx.strokeStyle=color;ctx.lineWidth=width;ctx.globalAlpha=opacity;ctx.setLineDash(dashed?[7,5]:[]);ctx.beginPath();let previous=null;for(const value of points){const point=project(value);if(point[2]<0){previous=null;continue;}if(previous)ctx.lineTo(point[0],point[1]);else ctx.moveTo(point[0],point[1]);previous=point;}ctx.stroke();ctx.restore();}
+function drawSegment(a,b,color,width,opacity=1,dashed=false){const pa=project(a),pb=project(b);if(pa[2]<0||pb[2]<0)return null;ctx.save();ctx.strokeStyle=color;ctx.lineWidth=width;ctx.globalAlpha=opacity;ctx.setLineDash(dashed?[7,5]:[]);ctx.beginPath();ctx.moveTo(pa[0],pa[1]);ctx.lineTo(pb[0],pb[1]);ctx.stroke();ctx.restore();return {x1:pa[0],y1:pa[1],x2:pb[0],y2:pb[1]};}
+const shortNodeLabel=id=>{const node=staticNodes.get(id),suffix=id.split("/").at(-1);return `${node?.kind==="ground-station"?"GroundStation":"Satellite"} ${suffix}`;};
+function drawSelectedLabel(x,y,text,color="#ffffff"){ctx.save();ctx.font="600 12px system-ui, sans-serif";const padding=6,width=Math.min(logicalWidth-16,ctx.measureText(text).width+padding*2),left=Math.max(8,Math.min(logicalWidth-width-8,x+12)),top=Math.max(8,Math.min(logicalHeight-28,y-30));ctx.fillStyle="#061621ed";ctx.strokeStyle=color;ctx.lineWidth=1.5;ctx.beginPath();ctx.roundRect(left,top,width,24,6);ctx.fill();ctx.stroke();ctx.fillStyle="#f4fbff";ctx.textBaseline="middle";ctx.fillText(text,left+padding,top+12,width-padding*2);ctx.restore();}
+const positionMap=()=>new Map((currentSlice?.positions||[]).map(position=>[position.node_id,position]));
+const connectionByRef=ref=>(currentSlice?.connections||[]).find(value=>value.connection_ref===ref)||null;
+const assignmentByZone=id=>(currentSlice?.zone_service_assignments||[]).find(value=>value.zone_id===id)||null;
+const servedZonesForSatellite=id=>(currentSlice?.zone_service_assignments||[]).filter(value=>value.service_satellite_id===id);
+const physicalDisplayRadius=heightM=>1+Number(heightM)/DISPLAY_GEOMETRY.earth_reference_radius_m;
+function nodePoint(id,positions,markerOffset=0){const value=positions.get(id),node=staticNodes.get(id);if(!value)return null;const physical=physicalDisplayRadius(value.geographic.ellipsoidal_height_m),surfaceOffset=node?.kind==="ground-station"?DISPLAY_GEOMETRY.surface_marker_offset_radii:0;return spherePoint(value.geographic.latitude_deg,value.geographic.longitude_deg,physical+surfaceOffset+markerOffset);}
+function zoneBoundary(zone,r=1+DISPLAY_GEOMETRY.zone_marker_offset_radii){const g=zone.geometry,west=Number(g.west_longitude_deg),span=(Number(g.east_longitude_deg)-west+360)%360,south=Number(g.south_latitude_deg),north=Number(g.north_latitude_deg),points=[];for(let i=0;i<=24;i++)points.push(spherePoint(south,west+span*i/24,r));for(let i=1;i<=12;i++)points.push(spherePoint(south+(north-south)*i/12,west+span,r));for(let i=23;i>=0;i--)points.push(spherePoint(north,west+span*i/24,r));for(let i=11;i>=0;i--)points.push(spherePoint(south+(north-south)*i/12,west,r));return points;}
+function drawOrbitGuides(){for(const guide of currentSlice?.orbit_guides||[]){const u=guide.basis_u_ecef_unit,v=guide.basis_v_ecef_unit,orbit=orbitByRef.get(guide.orbit_ref),radius=physicalDisplayRadius(Number(orbit?.altitude_km||0)*1000),points=[];for(let i=0;i<=96;i++){const a=i*Math.PI*2/96;points.push([(u.x*Math.cos(a)+v.x*Math.sin(a))*radius,(u.y*Math.cos(a)+v.y*Math.sin(a))*radius,(u.z*Math.cos(a)+v.z*Math.sin(a))*radius]);}drawPolyline(points,"#6b9bb0",.65,.16);}}
+function differenceSets(){const d=currentSlice?.difference_from_previous;if(!d)return {added:new Set(),removed:new Set(),parameter:new Set(),zones:new Map()};return {added:new Set(d.added_connections.map(value=>value.connection_ref)),removed:new Set(d.removed_connection_ids.map(value=>value.connection_ref)),parameter:new Set(d.connection_parameter_patches.map(value=>value.connection_ref)),zones:new Map(d.zone_service_assignment_patches.map(value=>[value.zone_id,value]))};}
+function drawZone(zone,color,width,opacity=.9,dashed=false){if(zone)drawPolyline(zoneBoundary(zone),color,width,opacity,dashed);}
+function draw(){prepareCanvas();ctx.clearRect(0,0,logicalWidth,logicalHeight);nodeHits=[];connectionHits=[];zoneHits=[];drawEarth();for(const line of COASTLINES)drawPolyline(line.map(([lat,lon])=>spherePoint(lat,lon,1.002)),"#b7c9cf",.62,.3);if(!currentSlice)return;drawOrbitGuides();const positions=positionMap(),diff=differenceSets(),selectedConnectionValue=connectionByRef(selectedConnectionRef),selectedConnectionPresent=Boolean(selectedConnectionValue),selectedLabels=[];let diffAdded=0,diffRemoved=0,diffParameter=0,diffZones=0,zoneTethers=0,incidentContextDrawn=0,endpointContextDrawn=0,selectedConnectionHit=null;
+for(const zone of MANIFEST.topology.zones){const rep=zone.representative_point,point=project(spherePoint(rep.latitude_deg,rep.longitude_deg,1+DISPLAY_GEOMETRY.zone_marker_offset_radii));if(point[2]>=0){zoneHits.push({kind:"zone",id:zone.zone_id,label:`Zone ${zone.zone_id}`,x:point[0],y:point[1]});ctx.save();ctx.globalAlpha=pickMode==="zone"?.38:.13;ctx.fillStyle="#d79cff";ctx.beginPath();ctx.arc(point[0],point[1],pickMode==="zone"?2.4:1.25,0,Math.PI*2);ctx.fill();ctx.restore();}}
+if(selectedZoneId){const zone=zonesById.get(selectedZoneId);drawZone(zone,"#ffbd73",3,1);if(activeSelectionKind==="zone"){const rep=zone.representative_point,point=project(spherePoint(rep.latitude_deg,rep.longitude_deg,1+DISPLAY_GEOMETRY.zone_marker_offset_radii));if(point[2]>=0)selectedLabels.push({x:point[0],y:point[1],text:`Zone ${selectedZoneId}`,color:"#ffbd73"});}}
+if(showSatelliteZones&&selectedNodeId&&staticNodes.get(selectedNodeId)?.kind==="satellite")for(const assignment of servedZonesForSatellite(selectedNodeId))drawZone(zonesById.get(assignment.zone_id),"#ef8cff",2,.78);
+if(differenceMode)for(const [zoneId,patch] of diff.zones){drawZone(zonesById.get(zoneId),patch.operation==="removed"?"#ff6f7d":patch.operation==="added"?"#59e391":"#ef8cff",1.8,.75,true);diffZones++;}
+for(const connection of currentSlice.connections){const id=connection.connection_id,a=nodePoint(id.endpoint_a,positions),b=nodePoint(id.endpoint_b,positions);if(!a||!b)continue;const selected=connection.connection_ref===selectedConnectionRef,hovered=hoverHit?.kind==="connection"&&hoverHit.id===connection.connection_ref,added=differenceMode&&diff.added.has(connection.connection_ref),parameter=differenceMode&&diff.parameter.has(connection.connection_ref),incidentContext=activeSelectionKind==="node"&&Boolean(selectedNodeId)&&(id.endpoint_a===selectedNodeId||id.endpoint_b===selectedNodeId);let color=id.kind==="inter-satellite"?"#5ea6c0":"#d4aa63",width=1,opacity=selectedConnectionPresent ? .08 : .24;if(selected){color="#f7fbff";width=4;opacity=1;}else if(hovered){color="#9cecff";width=3;opacity=.95;}else if(added){color="#59e391";width=2.4;opacity=.9;diffAdded++;}else if(parameter){color="#ffd166";width=2.2;opacity=.88;diffParameter++;}else if(incidentContext){color="#93aeb8";width=1.7;opacity=.58;}const segment=drawSegment(a,b,color,width,opacity);if(segment){if(incidentContext)incidentContextDrawn++;connectionHits.push({kind:"connection",id:connection.connection_ref,label:`${id.kind}: ${id.endpoint_a} ↔ ${id.endpoint_b}`,value:connection,...segment});if(selected){selectedConnectionHit=segment;if(activeSelectionKind==="connection")selectedLabels.push({x:(segment.x1+segment.x2)/2,y:(segment.y1+segment.y2)/2,text:`${id.kind}: ${shortNodeLabel(id.endpoint_a)} ↔ ${shortNodeLabel(id.endpoint_b)}`,color:"#ffffff"});}}}
+if(differenceMode)for(const removed of currentSlice.difference_from_previous?.removed_connection_ids||[]){const id=removed.connection_id,a=nodePoint(id.endpoint_a,positions),b=nodePoint(id.endpoint_b,positions);if(!a||!b)continue;const segment=drawSegment(a,b,"#ff6f7d",2.3,.92,true);if(segment){connectionHits.push({kind:"connection",id:removed.connection_ref,label:`removed ${id.kind}: ${id.endpoint_a} ↔ ${id.endpoint_b}`,value:removed,removed:true,...segment});if(removed.connection_ref===selectedConnectionRef){selectedConnectionHit=segment;if(activeSelectionKind==="connection")selectedLabels.push({x:(segment.x1+segment.x2)/2,y:(segment.y1+segment.y2)/2,text:`removed ${id.kind}: ${shortNodeLabel(id.endpoint_a)} ↔ ${shortNodeLabel(id.endpoint_b)}`,color:"#ff6f7d"});}diffRemoved++;}}
+const selectedAssignment=selectedZoneId?assignmentByZone(selectedZoneId):null;if(selectedZoneId&&selectedAssignment){const zone=zonesById.get(selectedZoneId),rep=zone.representative_point,a=spherePoint(rep.latitude_deg,rep.longitude_deg,1+DISPLAY_GEOMETRY.zone_marker_offset_radii),b=nodePoint(selectedAssignment.service_satellite_id,positions,DISPLAY_GEOMETRY.route_marker_offset_radii);if(b&&drawSegment(a,b,"#ef8cff",3,.95,true))zoneTethers++;}
+if(differenceMode)for(const patch of diff.zones.values()){if(!patch.service_satellite_id)continue;const zone=zonesById.get(patch.zone_id),rep=zone.representative_point,b=nodePoint(patch.service_satellite_id,positions,DISPLAY_GEOMETRY.route_marker_offset_radii);if(b&&drawSegment(spherePoint(rep.latitude_deg,rep.longitude_deg,1+DISPLAY_GEOMETRY.zone_marker_offset_radii),b,"#ef8cff",1.5,.55,true))zoneTethers++;}
+let routeChangedSegments=0;if(selectedPath.length>1)for(let index=1;index<selectedPath.length;index++){const source=selectedPath[index-1],patch=differenceMode&&currentSlice.difference_from_previous?.route_patches.find(value=>value[1]===source&&value[2]===routeTargetRef),a=nodePoint(source,positions,DISPLAY_GEOMETRY.route_marker_offset_radii),b=nodePoint(selectedPath[index],positions,DISPLAY_GEOMETRY.route_marker_offset_radii);if(patch)routeChangedSegments++;if(a&&b)drawSegment(a,b,patch?"#ffd166":"#7dffb2",patch?5:4,.98);}
+for(const position of currentSlice.positions){const node=staticNodes.get(position.node_id),projected=project(nodePoint(position.node_id,positions,DISPLAY_GEOMETRY.route_marker_offset_radii));if(projected[2]<0)continue;const ground=node?.kind==="ground-station",selected=position.node_id===selectedNodeId,pathNode=selectedPath.includes(position.node_id),serviceNode=selectedAssignment?.service_satellite_id===position.node_id,endpointContext=activeSelectionKind==="connection"&&selectedConnectionPresent&&(selectedConnectionValue.connection_id.endpoint_a===position.node_id||selectedConnectionValue.connection_id.endpoint_b===position.node_id),hovered=hoverHit?.kind==="node"&&hoverHit.id===position.node_id,radius=ground?4.2:3.1;if(endpointContext)endpointContextDrawn++;ctx.save();ctx.globalAlpha=.92;ctx.fillStyle=ground?"#ffd08a":"#8be6f5";ctx.beginPath();ctx.arc(projected[0],projected[1],radius,0,Math.PI*2);ctx.fill();if(selected||pathNode||serviceNode||endpointContext||hovered){ctx.strokeStyle=selected?"#ffffff":serviceNode?"#ef8cff":pathNode?"#7dffb2":endpointContext?"#93aeb8":"#9cecff";ctx.lineWidth=selected?3:endpointContext?1.5:2;ctx.beginPath();ctx.arc(projected[0],projected[1],selected?9:endpointContext?6.5:7,0,Math.PI*2);ctx.stroke();}ctx.restore();if(selected&&activeSelectionKind==="node")selectedLabels.push({x:projected[0],y:projected[1],text:shortNodeLabel(position.node_id),color:ground?"#ffd08a":"#8be6f5"});nodeHits.push({kind:"node",id:position.node_id,label:`${node?.kind||"node"}: ${position.node_id}`,position,node,x:projected[0],y:projected[1]});}
+const hoverRegion=hoverHit?.kind==="node"?nodeHits.find(item=>item.id===hoverHit.id):hoverHit?.kind==="connection"?connectionHits.find(item=>item.id===hoverHit.id):hoverHit?.kind==="zone"?zoneHits.find(item=>item.id===hoverHit.id):null,hoverText=hoverRegion?.kind==="node"?shortNodeLabel(hoverRegion.id):hoverRegion?.kind==="connection"?`${hoverRegion.value?.connection_id?.kind||"Connection"}: ${shortNodeLabel(hoverRegion.value?.connection_id?.endpoint_a||"")} ↔ ${shortNodeLabel(hoverRegion.value?.connection_id?.endpoint_b||"")}`:hoverRegion?.kind==="zone"?`Zone ${hoverRegion.id}`:"";for(const label of selectedLabels)drawSelectedLabel(label.x,label.y,label.text,label.color);if(hoverRegion&&hoverText&&!(hoverRegion.kind===activeSelectionKind&&((hoverRegion.kind==="node"&&hoverRegion.id===selectedNodeId)||(hoverRegion.kind==="connection"&&hoverRegion.id===selectedConnectionRef)||(hoverRegion.kind==="zone"&&hoverRegion.id===selectedZoneId))))drawSelectedLabel(hoverRegion.kind==="connection"?(hoverRegion.x1+hoverRegion.x2)/2:hoverRegion.x,hoverRegion.kind==="connection"?(hoverRegion.y1+hoverRegion.y2)/2:hoverRegion.y,hoverText,"#9cecff");canvas.dataset.selectedLabelKind=activeSelectionKind;canvas.dataset.selectedLabelText=selectedLabels[0]?.text||"";canvas.dataset.hoverLabelText=hoverText;
+const firstSatellitePosition=currentSlice.positions.find(position=>staticNodes.get(position.node_id)?.kind==="satellite");canvas.dataset.earthReferenceRadiusM=String(DISPLAY_GEOMETRY.earth_reference_radius_m);canvas.dataset.firstSatelliteDisplayRadius=firstSatellitePosition?String(physicalDisplayRadius(firstSatellitePosition.geographic.ellipsoidal_height_m)):"";canvas.dataset.selectedConnectionId=selectedConnectionRef;canvas.dataset.selectedConnectionX=selectedConnectionHit?String((selectedConnectionHit.x1+selectedConnectionHit.x2)/2):"";canvas.dataset.selectedConnectionY=selectedConnectionHit?String((selectedConnectionHit.y1+selectedConnectionHit.y2)/2):"";
+const affectedRoute=currentSlice.difference_from_previous?.route_patches.find(patch=>patch[0]!=="removed"&&currentSlice.routes.some(route=>route[0]===patch[1]&&route[1]===patch[2]));canvas.dataset.loadedSliceId=String(currentSlice.slice_id);canvas.dataset.loadedRouteEntries=String(currentSlice.routes.length);canvas.dataset.selectedNodeId=selectedNodeId;canvas.dataset.selectedConnectionRef=selectedConnectionRef;canvas.dataset.selectedZoneId=selectedZoneId;canvas.dataset.selectedZoneServiceSatellite=selectedAssignment?.service_satellite_id||"";canvas.dataset.selectedZoneOtherServiceZones=String(selectedAssignment?Math.max(0,servedZonesForSatellite(selectedAssignment.service_satellite_id).length-1):0);canvas.dataset.selectedZoneTethers=String(zoneTethers);canvas.dataset.satelliteServedZones=String(showSatelliteZones?servedZonesForSatellite(selectedNodeId).length:0);canvas.dataset.incidentContextConnections=String(incidentContextDrawn);canvas.dataset.endpointContextNodes=String(endpointContextDrawn);canvas.dataset.routeZoneId=routeZoneId;canvas.dataset.routeGatewayId=routeGatewayId;canvas.dataset.routeDirection=routeDirection;canvas.dataset.routeGatewayChoices=String(routeZoneId?gatewayCandidatesForZone(routeZoneId).length:0);canvas.dataset.routePathNodes=String(selectedPath.length);canvas.dataset.routeStatus=routeStatus;canvas.dataset.routeChangedSegments=String(routeChangedSegments);canvas.dataset.affectedRouteSource=affectedRoute?.[1]||"";canvas.dataset.affectedRouteTarget=affectedRoute?.[2]||"";canvas.dataset.differenceMode=String(differenceMode);canvas.dataset.differenceAddedDrawn=String(diffAdded);canvas.dataset.differenceRemovedDrawn=String(diffRemoved);canvas.dataset.differenceParameterDrawn=String(diffParameter);canvas.dataset.differenceZonesDrawn=String(diffZones);canvas.dataset.firstRemovedConnectionRef=currentSlice.difference_from_previous?.removed_connection_ids?.[0]?.connection_ref||"";publishHitTestData();}
+const pointSegmentDistance=(px,py,s)=>{const dx=s.x2-s.x1,dy=s.y2-s.y1,n=dx*dx+dy*dy,t=n===0?0:Math.max(0,Math.min(1,((px-s.x1)*dx+(py-s.y1)*dy)/n));return Math.hypot(px-(s.x1+t*dx),py-(s.y1+t*dy));};
+function hitAt(x,y,mode=pickMode){if(mode==="node"){let hit=null,d=Infinity;for(const item of nodeHits){const q=Math.hypot(x-item.x,y-item.y);if(q<d){hit=item;d=q;}}return d<=15?hit:null;}if(mode==="connection"){let hit=null,d=Infinity;for(const item of connectionHits){const q=pointSegmentDistance(x,y,item);if(q<d){hit=item;d=q;}}return d<=11?hit:null;}let hit=null,d=Infinity;for(const item of zoneHits){const q=Math.hypot(x-item.x,y-item.y);if(q<d){hit=item;d=q;}}return d<=12?hit:null;}
+function publishHitTestData(){const positions=positionMap(),node=nodeHits[0],groundStation=nodeHits.find(item=>item.node?.kind==="ground-station"),zone=zoneHits[0],edge=connectionHits.find(item=>Math.hypot(item.x2-item.x1,item.y2-item.y1)>24)||connectionHits[0],connectedNode=edge?nodeHits.find(item=>item.id===edge.value?.connection_id?.endpoint_a||item.id===edge.value?.connection_id?.endpoint_b):null,visibleServiceZone=item=>{const assignment=assignmentByZone(item.id),point=assignment?nodePoint(assignment.service_satellite_id,positions):null;return point&&project(point)[2]>=0;},serviceZone=zoneHits.find(item=>visibleServiceZone(item)&&servedZonesForSatellite(assignmentByZone(item.id).service_satellite_id).length>1)||zoneHits.find(visibleServiceZone),serviceSatellite=nodeHits.find(item=>item.node?.kind==="satellite"&&servedZonesForSatellite(item.id).length);for(const [prefix,item,x,y] of [["firstNode",node,node?.x,node?.y],["connectedNode",connectedNode,connectedNode?.x,connectedNode?.y],["groundStation",groundStation,groundStation?.x,groundStation?.y],["firstZone",zone,zone?.x,zone?.y],["firstConnection",edge,edge?(edge.x1+edge.x2)/2:null,edge?(edge.y1+edge.y2)/2:null],["serviceZone",serviceZone,serviceZone?.x,serviceZone?.y],["serviceSatellite",serviceSatellite,serviceSatellite?.x,serviceSatellite?.y]]){canvas.dataset[`${prefix}Id`]=item?.id||"";canvas.dataset[`${prefix}X`]=x==null?"":String(x);canvas.dataset[`${prefix}Y`]=y==null?"":String(y);}}
+function selectAt(clientX,clientY){const box=canvas.getBoundingClientRect(),hit=hitAt(clientX-box.left,clientY-box.top);if(!hit){clearActiveSelection();return;}const same=(hit.kind==="node"&&activeSelectionKind==="node"&&selectedNodeId===hit.id)||(hit.kind==="connection"&&activeSelectionKind==="connection"&&selectedConnectionRef===hit.id)||(hit.kind==="zone"&&activeSelectionKind==="zone"&&selectedZoneId===hit.id);if(same){clearActiveSelection();return;}switchVisualSelection(hit.kind);if(hit.kind==="node")showNode(hit.id);else if(hit.kind==="connection")showConnection(hit.id);else showZone(hit.id);}
+function updateHover(clientX,clientY){const box=canvas.getBoundingClientRect(),next=hitAt(clientX-box.left,clientY-box.top);if(next?.kind===hoverHit?.kind&&next?.id===hoverHit?.id)return;hoverHit=next;hoverLabel.textContent=next?.label||"";hoverLabel.classList.toggle("visible",Boolean(next));canvas.classList.toggle("inspecting",Boolean(next));draw();}
+canvas.addEventListener("pointerdown",event=>{pointer={startX:event.clientX,startY:event.clientY,lastX:event.clientX,lastY:event.clientY,moved:false};canvas.classList.add("dragging");canvas.setPointerCapture(event.pointerId);});
+canvas.addEventListener("pointermove",event=>{if(!pointer){updateHover(event.clientX,event.clientY);return;}if(Math.hypot(event.clientX-pointer.startX,event.clientY-pointer.startY)>5)pointer.moved=true;if(pointer.moved){camera.yaw+=(event.clientX-pointer.lastX)*.008;camera.pitch=Math.max(-MAX_PITCH,Math.min(MAX_PITCH,camera.pitch+(event.clientY-pointer.lastY)*.008));hoverHit=null;draw();}pointer.lastX=event.clientX;pointer.lastY=event.clientY;});
+canvas.addEventListener("pointerleave",()=>{if(!pointer){hoverHit=null;hoverLabel.classList.remove("visible");canvas.classList.remove("inspecting");draw();}});
+canvas.addEventListener("pointerup",event=>{const click=pointer&&!pointer.moved;pointer=null;canvas.classList.remove("dragging");if(canvas.hasPointerCapture(event.pointerId))canvas.releasePointerCapture(event.pointerId);if(click)selectAt(event.clientX,event.clientY);});canvas.addEventListener("pointercancel",()=>{pointer=null;canvas.classList.remove("dragging");});window.addEventListener("resize",draw);
+document.addEventListener("keydown",event=>{if(event.key==="Escape")clearActiveSelection();});
+function setPickMode(mode){pickMode=mode;for(const button of document.querySelectorAll("[data-pick-mode]"))button.classList.toggle("active",button.dataset.pickMode===mode);hoverHit=null;hoverLabel.classList.remove("visible");draw();}
+function replaceOptions(select,values,placeholder,preserved=""){const options=[new Option(placeholder,"")];for(const [label,value] of values)options.push(new Option(label,value));if(preserved&&!values.some(([,value])=>value===preserved))options.push(new Option(`${preserved} (not current)`,preserved));select.replaceChildren(...options);select.value=preserved;}
+function loadSlice(index){currentIndex=Math.max(0,Math.min(orderedIds.length-1,index));range.value=String(currentIndex);const id=orderedIds[currentIndex],generation=++loadGeneration;requestedSliceId=id;const known=window.__SKYSEED_SLICE_CHUNKS__[id];document.getElementById("slice-label").textContent=`Loading S${id}…`;const activateIfCurrent=value=>{if(generation===loadGeneration&&id===requestedSliceId)activateSlice(value);else if(id!==requestedSliceId)delete window.__SKYSEED_SLICE_CHUNKS__[id];return value;};if(known)return Promise.resolve(activateIfCurrent(known));let promise=pendingLoads.get(id);if(!promise){const entry=manifestById.get(id);promise=new Promise((resolve,reject)=>{const element=document.createElement("script");element.src=entry.chunk;element.onload=()=>{const value=window.__SKYSEED_SLICE_CHUNKS__[id];element.remove();if(!value){reject(new Error(`Slice chunk ${id} did not register`));return;}resolve(value);};element.onerror=()=>reject(new Error(`Unable to load offline Slice chunk ${entry.chunk}`));document.head.append(element);}).finally(()=>pendingLoads.delete(id));pendingLoads.set(id,promise);}return promise.then(activateIfCurrent);}
+function gatewayCandidatesForZone(zoneId){const target=`Z|${zoneId}`,assignment=assignmentByZone(zoneId),candidates=[...new Set(currentSlice.routes.filter(([source,routeTarget])=>routeTarget===target&&staticNodes.get(source)?.kind==="ground-station").map(([source])=>source))].sort();return routeDirection==="gateway-to-zone"?candidates:candidates.filter(gateway=>assignment&&currentSlice.routes.some(([source,routeTarget])=>source===assignment.service_satellite_id&&routeTarget===`G|${gateway}`));}
+function applyGatewayRouteSelection(chooseDefault=false){if(!routeZoneId)return;const candidates=gatewayCandidatesForZone(routeZoneId);if(chooseDefault&&!candidates.includes(routeGatewayId))routeGatewayId=candidates[0]||"";const assignment=assignmentByZone(routeZoneId);if(!routeGatewayId||!candidates.includes(routeGatewayId)||!assignment){routeSourceId="";routeTargetRef="";return;}if(routeDirection==="zone-to-gateway"){routeSourceId=assignment.service_satellite_id;routeTargetRef=`G|${routeGatewayId}`;}else{routeSourceId=routeGatewayId;routeTargetRef=`Z|${routeZoneId}`;}}
+function addSliceContextMetric(root,label,value){const item=document.createElement("div"),name=document.createElement("span"),strong=document.createElement("strong");item.className="slice-context-metric";name.textContent=label;strong.textContent=value;item.append(name,strong);root.append(item);}
+const contextPercent=(count,total)=>total?`${(100*count/total).toFixed(1)}%`:"n/a";
+const contextNumber=(value,digits=1)=>value==null?"n/a":Number(value).toFixed(digits);
+function renderSliceContext(){const root=document.getElementById("slice-context"),physical=document.getElementById("slice-physical-context"),summary=currentSlice?.summary;root.replaceChildren();if(!summary?.state_available){root.dataset.stateAvailable="false";addSliceContextMetric(root,"Dynamic state","Slice 0 · no materialized state");physical.textContent="Slice 0 is the formal empty predecessor for Difference production.";return;}root.dataset.stateAvailable="true";root.dataset.servedZones=String(summary.served_zones);root.dataset.unservedZones=String(summary.unserved_zones);root.dataset.coveredGroundStations=String(summary.covered_ground_stations);root.dataset.routeEntries=String(summary.route_entries);addSliceContextMetric(root,"Served Zones",`${summary.served_zones} / ${summary.total_zones} · ${contextPercent(summary.served_zones,summary.total_zones)}`);addSliceContextMetric(root,"Unserved Zones",`${summary.unserved_zones} / ${summary.total_zones} · ${contextPercent(summary.unserved_zones,summary.total_zones)}`);addSliceContextMetric(root,"Service Satellites",String(summary.distinct_service_satellites));addSliceContextMetric(root,"Covered GroundStations",`${summary.covered_ground_stations} / ${summary.total_ground_stations} · ${contextPercent(summary.covered_ground_stations,summary.total_ground_stations)}`);const connections=summary.connection_counts;addSliceContextMetric(root,"Active Connections",`${summary.connections} total · ${connections.same_orbit_isl} same-orbit · ${connections.cross_plane_isl} cross-plane · ${connections.ground_station_access} GS`);addSliceContextMetric(root,"Published Route entries",String(summary.route_entries));const geometry=summary.zone_service_geometry,elevation=geometry.elevation_deg,surface=geometry.surface_separation_km,slant=geometry.slant_distance_km;physical.textContent=`Zone → service-Satellite · elevation p5 ${contextNumber(elevation.p5)}° / median ${contextNumber(elevation.median)}° · surface separation p50 ${contextNumber(surface.median)} / p95 ${contextNumber(surface.p95)} / max ${contextNumber(surface.max)} km · ECEF slant p50 ${contextNumber(slant.median)} / p95 ${contextNumber(slant.p95)} / max ${contextNumber(slant.max)} km.`;}
+function activateSlice(value){currentSlice=value;window.__SKYSEED_SLICE_CHUNKS__[value.slice_id]=value;for(const key of Object.keys(window.__SKYSEED_SLICE_CHUNKS__))if(Number(key)!==Number(value.slice_id))delete window.__SKYSEED_SLICE_CHUNKS__[key];document.getElementById("slice-label").textContent=`S${value.slice_id} · ${value.timestamp||"synthetic"}`;renderSliceContext();applyGatewayRouteSelection(false);populateFallbacks();refreshSelectedObject();restoreSelectedPath();renderDifference();renderDiagnostics();draw();}
+function populateFallbacks(){const positions=currentSlice.positions||[],zones=MANIFEST.topology.zones.map(z=>[z.zone_id,z.zone_id]);replaceOptions(document.getElementById("gateway-route-zone"),zones,"Select Zone",routeZoneId);const gateways=routeZoneId?gatewayCandidatesForZone(routeZoneId):[];replaceOptions(document.getElementById("gateway-route-gateway"),gateways.map(id=>[shortNodeLabel(id),id]),gateways.length?"Select relevant Gateway":"No published Gateway",gateways.includes(routeGatewayId)?routeGatewayId:"");document.getElementById("gateway-route-direction").value=routeDirection;replaceOptions(document.getElementById("node-select"),positions.map(p=>[p.node_id,p.node_id]),"Locate node",selectedNodeId);replaceOptions(document.getElementById("connection-select"),currentSlice.connections.map(c=>[c.connection_ref,c.connection_ref]),"Locate Connection",selectedConnectionRef);replaceOptions(document.getElementById("zone-select"),zones,"Locate Zone",selectedZoneId);const sources=[...new Set(currentSlice.routes.map(route=>route[0]))].sort();replaceOptions(document.getElementById("route-source"),sources.map(v=>[v,v]),"Locate source",routeSourceId);const targets=routeSourceId?[...new Set(currentSlice.routes.filter(route=>route[0]===routeSourceId).map(route=>route[1]))].sort():[];replaceOptions(document.getElementById("route-target"),targets.map(v=>[v,v]),"Locate target",routeTargetRef);}
+function detailRows(values){const list=document.createElement("dl");list.className="detail-grid";for(const [label,value] of values){const dt=document.createElement("dt"),dd=document.createElement("dd");dt.textContent=label;dd.textContent=String(value);list.append(dt,dd);}return list;}
+function actionButton(id,label,action){const button=document.createElement("button");button.id=id;button.type="button";button.textContent=label;button.addEventListener("click",action);return button;}
+function setObjectDetail(kind,status,rows,actions=[]){const root=document.getElementById("selected-detail");root.dataset.selectionKind=kind;root.dataset.selectionStatus=status;root.replaceChildren();const badge=document.createElement("span");badge.className=`object-status${status==="absent"?" absent":""}`;badge.textContent=status==="present"?`present in Slice ${currentSlice.slice_id}`:`absent in Slice ${currentSlice.slice_id}`;root.append(badge,detailRows(rows));if(actions.length){const box=document.createElement("div");box.className="detail-actions";box.append(...actions);root.append(box);}}
+function switchVisualSelection(kind){if(kind!=="node"){selectedNodeId="";showSatelliteZones=false;}if(kind!=="connection")selectedConnectionRef="";if(kind!=="zone")selectedZoneId="";activeSelectionKind=kind;}
+function clearActiveSelection(){const clearedNode=activeSelectionKind==="node"?selectedNodeId:"",clearedZone=activeSelectionKind==="zone"?selectedZoneId:"",routeDependsOnSelection=(clearedNode&&(routeGatewayId===clearedNode||routeSourceId===clearedNode))||(clearedZone&&routeZoneId===clearedZone);selectedNodeId="";selectedConnectionRef="";selectedZoneId="";showSatelliteZones=false;activeSelectionKind="";const root=document.getElementById("selected-detail");root.dataset.selectionKind="";root.dataset.selectionStatus="none";root.innerHTML='<p class="muted">Click an object on Dynamic Earth.</p>';if(routeDependsOnSelection){routeZoneId="";routeGatewayId="";routeSourceId="";routeTargetRef="";populateFallbacks();restoreSelectedPath();}else{renderDifferenceContext();draw();}}
+function clearInspection(){selectedNodeId="";selectedConnectionRef="";selectedZoneId="";activeSelectionKind="";showSatelliteZones=false;routeZoneId="";routeGatewayId="";routeSourceId="";routeTargetRef="";selectedPath=[];routeStatus="none";differenceMode=false;document.getElementById("show-difference").checked=false;document.getElementById("difference-panel").open=false;const root=document.getElementById("selected-detail");root.dataset.selectionKind="";root.dataset.selectionStatus="none";root.innerHTML='<p class="muted">Click an object on Dynamic Earth.</p>';populateFallbacks();restoreSelectedPath();renderDifferenceContext();draw();}
+function currentNodeFacts(id){const connections=currentSlice.connections.filter(value=>value.connection_id.endpoint_a===id||value.connection_id.endpoint_b===id),isl=connections.filter(value=>value.connection_id.kind==="inter-satellite"),access=connections.filter(value=>value.connection_id.kind==="ground-station-access"),zones=servedZonesForSatellite(id);return {connections,isl,access,zones};}
+function zoneServiceGeometry(_zone,assignment){if(!assignment)return null;const explanation=assignment.display_explanation;return {surface_separation_km:explanation.surface_separation_km,slant_distance_km:explanation.slant_distance_km};}
+function showNode(id){if(!id)return;selectedNodeId=id;activeSelectionKind="node";const position=(currentSlice.positions||[]).find(value=>value.node_id===id),node=staticNodes.get(id),facts=currentNodeFacts(id),actions=[];if(node?.kind==="ground-station"&&routeZoneId&&gatewayCandidatesForZone(routeZoneId).includes(id))actions.push(actionButton("gateway-from-selection","Use as selected Zone's Gateway",()=>setGatewayRouteGateway(id)));if(node?.kind==="satellite")actions.push(actionButton("toggle-served-zones",showSatelliteZones?"Hide served Zones":"Highlight served Zones",()=>{showSatelliteZones=!showSatelliteZones;showNode(id);}));const rows=[["node_id",id],["kind",node?.kind||"unknown"]];if(node?.kind==="satellite")rows.push(["Orbit",node.orbit_ref],["Connection degree",facts.connections.length],["ISL degree",facts.isl.length],["GroundStation-access degree",facts.access.length],["served Zones",facts.zones.length]);else rows.push(["access degree",facts.access.length],["connected Satellites",facts.access.map(value=>value.connection_id.endpoint_a===id?value.connection_id.endpoint_b:value.connection_id.endpoint_a).join(", ")||"none"]);if(position)rows.push(["latitude / longitude",`${position.geographic.latitude_deg.toFixed(5)}° / ${position.geographic.longitude_deg.toFixed(5)}°`],["height",`${position.geographic.ellipsoidal_height_m.toFixed(1)} m`]);setObjectDetail("node",position?"present":"absent",rows,actions);document.getElementById("node-select").value=id;renderDifferenceContext();draw();}
+function showConnection(ref){if(!ref)return;selectedConnectionRef=ref;activeSelectionKind="connection";const value=connectionByRef(ref),difference=currentSlice.difference_from_previous,removed=difference?.removed_connection_ids.find(item=>item.connection_ref===ref),identity=value?.connection_id||removed?.connection_id||{kind:ref.split("|")[0],endpoint_a:ref.split("|")[1]||"unknown",endpoint_b:ref.split("|")[2]||"unknown"},rows=[["connection",ref],["kind",identity.kind],["endpoint A",identity.endpoint_a],["endpoint B",identity.endpoint_b]];if(value)rows.push(["A → B delay / bandwidth / loss",`${value.endpoint_a_to_b.delay_us} μs / ${value.endpoint_a_to_b.bandwidth_bps} bps / ${value.endpoint_a_to_b.packet_loss_ppm} ppm`],["B → A delay / bandwidth / loss",`${value.endpoint_b_to_a.delay_us} μs / ${value.endpoint_b_to_a.bandwidth_bps} bps / ${value.endpoint_b_to_a.packet_loss_ppm} ppm`]);else rows.push(["current state",removed?"removed since previous Slice":"not present in current Slice"]);const actions=[actionButton("select-endpoint-a","Inspect endpoint A",()=>showNode(identity.endpoint_a)),actionButton("select-endpoint-b","Inspect endpoint B",()=>showNode(identity.endpoint_b))];setObjectDetail("connection",value?"present":"absent",rows,actions);populateFallbacks();renderDifferenceContext();draw();}
+function showZone(id){if(!id)return;selectedZoneId=id;activeSelectionKind="zone";if(routeZoneId!==id){routeZoneId=id;routeGatewayId="";}applyGatewayRouteSelection(false);const zone=zonesById.get(id),assignment=assignmentByZone(id),serviceCount=assignment?servedZonesForSatellite(assignment.service_satellite_id).length:0,serviceGeometry=zoneServiceGeometry(zone,assignment),g=zone.geometry,rows=[["zone_id",id],["state",assignment?"served":"unserved"],["service Satellite",assignment?.service_satellite_id||"none"],["current representative-point elevation",assignment?`${assignment.display_explanation.representative_point_elevation_deg.toFixed(2)}°`:"n/a"],["approximate surface separation",serviceGeometry?`${serviceGeometry.surface_separation_km.toFixed(1)} km (Tool-derived sphere)`:"n/a"],["slant distance",serviceGeometry?`${serviceGeometry.slant_distance_km.toFixed(1)} km (formal ECEF-derived)`:"n/a"],["Zones served by that Satellite",assignment?serviceCount:"n/a"],["other Zones served by that Satellite",assignment?Math.max(0,serviceCount-1):"n/a"],["service eligibility","representative point only; full-area coverage is not guaranteed"],["shared service","multiple Zones may validly share one service Satellite"],["bounds",`${g.south_latitude_deg}, ${g.west_longitude_deg} → ${g.north_latitude_deg}, ${g.east_longitude_deg}`],["representative",`${zone.representative_point.latitude_deg}°, ${zone.representative_point.longitude_deg}°`],["priority",zone.priority]],actions=[];if(assignment)actions.push(actionButton("inspect-service-satellite","Inspect service Satellite",()=>showNode(assignment.service_satellite_id)));setObjectDetail("zone","present",rows,actions);populateFallbacks();restoreSelectedPath();renderDifferenceContext();draw();}
+function refreshSelectedObject(){if(activeSelectionKind==="node"&&selectedNodeId)showNode(selectedNodeId);else if(activeSelectionKind==="connection"&&selectedConnectionRef)showConnection(selectedConnectionRef);else if(activeSelectionKind==="zone"&&selectedZoneId)showZone(selectedZoneId);}
+function setGatewayRouteGateway(id){routeGatewayId=id;applyGatewayRouteSelection(false);populateFallbacks();restoreSelectedPath();}
+function setGatewayRouteDirection(direction){routeDirection=direction;applyGatewayRouteSelection(false);populateFallbacks();restoreSelectedPath();}
+function setRouteSource(id){routeZoneId="";routeGatewayId="";routeSourceId=id;populateFallbacks();restoreSelectedPath();}
+function setRouteTarget(ref){routeZoneId="";routeGatewayId="";routeTargetRef=ref;populateFallbacks();restoreSelectedPath();}
+function targetTerminal(ref){if(ref.startsWith("G|"))return ref.slice(2);const assignment=assignmentByZone(ref.slice(2));return assignment?.service_satellite_id||null;}
+function routeEvidenceRows(assignment){if(!routeZoneId||!routeGatewayId||!assignment||selectedPath.length<2)return [];const terminal=assignment.service_satellite_id,ingress=routeDirection==="gateway-to-zone"?selectedPath[1]:selectedPath.at(-2);let sameOrbit=0,crossOrbit=0;for(let index=1;index<selectedPath.length;index++){const first=staticNodes.get(selectedPath[index-1]),second=staticNodes.get(selectedPath[index]);if(first?.kind!=="satellite"||second?.kind!=="satellite")continue;if(first.orbit_ref===second.orbit_ref)sameOrbit++;else crossOrbit++;}const direct=currentSlice.connections.some(value=>value.connection_id.kind==="ground-station-access"&&new Set([value.connection_id.endpoint_a,value.connection_id.endpoint_b]).has(routeGatewayId)&&new Set([value.connection_id.endpoint_a,value.connection_id.endpoint_b]).has(terminal)),terminalAccess=currentSlice.connections.filter(value=>value.connection_id.kind==="ground-station-access"&&(value.connection_id.endpoint_a===terminal||value.connection_id.endpoint_b===terminal)).map(value=>value.connection_id.endpoint_a===terminal?value.connection_id.endpoint_b:value.connection_id.endpoint_a);return [["Gateway ingress Satellite",ingress],["Zone terminal Satellite",terminal],["formal path composition",`${sameOrbit} same-Orbit ISL / ${crossOrbit} cross-Orbit ISL / 1 GroundStation access`],["direct Gateway/terminal formal access",direct?"selected":"not selected; geometric eligibility/rank is not a retained Slice fact"],["terminal GS-access occupancy",terminalAccess.length?`${terminalAccess.length}: ${terminalAccess.join(", ")}`:"none"],...(!direct&&terminalAccess.length?[["allocation context","terminal access capacity is occupied by the listed formal GroundStations; this Tool does not recompute ConnectionModel candidates"]]:[])];}
+function restoreSelectedPath(){const detail=document.getElementById("path-detail");selectedPath=[];routeStatus="none";const primaryRows=routeZoneId?[["Zone",routeZoneId],["Gateway",routeGatewayId||"none"],["direction",routeDirection==="zone-to-gateway"?"Zone → Gateway":"Gateway → Zone"]]:[];if(!routeSourceId||!routeTargetRef){const candidates=routeZoneId?gatewayCandidatesForZone(routeZoneId):[];detail.dataset.routeStatus="none";detail.replaceChildren(detailRows([...primaryRows,["state",routeZoneId&&routeGatewayId&&!candidates.includes(routeGatewayId)?"selected Gateway is not published for this Zone in the current Slice":routeZoneId&&!candidates.length?"no relevant/published Gateway for this Zone in the current Slice":"select a Zone, relevant Gateway, and direction"]]));draw();return;}const terminal=targetTerminal(routeTargetRef),routes=new Map(currentSlice.routes.map(([source,target,next])=>[`${source}\u0000${target}`,next]));if(!terminal){routeStatus="target-unserved";detail.dataset.routeStatus=routeStatus;detail.replaceChildren(detailRows([...primaryRows,["source",routeSourceId],["target",routeTargetRef],["state","Zone is not currently served"]]));renderDifferenceContext();draw();return;}const seen=new Set([routeSourceId]);let current=routeSourceId;selectedPath=[routeSourceId];while(current!==terminal){const next=routes.get(`${current}\u0000${routeTargetRef}`);if(!next){selectedPath=[];routeStatus="absent";detail.dataset.routeStatus=routeStatus;detail.replaceChildren(detailRows([...primaryRows,["source",routeSourceId],["target",routeTargetRef],["terminal",terminal],["state","no complete published route in this Slice"]]));renderDifferenceContext();draw();return;}if(seen.has(next)){selectedPath=[];routeStatus="invalid";detail.dataset.routeStatus=routeStatus;detail.textContent="Projected formal next-hop chain contains a loop.";draw();return;}seen.add(next);selectedPath.push(next);current=next;}routeStatus="present";detail.dataset.routeStatus=routeStatus;const assignment=routeZoneId?assignmentByZone(routeZoneId):null;detail.replaceChildren(detailRows([...primaryRows,...(routeZoneId?[["Zone edge",`representative point ↔ ${assignment?.service_satellite_id||"unserved"}`]]:[]),["source",routeSourceId],["target",routeTargetRef],["terminal",terminal],["hop count",selectedPath.length-1],...routeEvidenceRows(assignment),["path",selectedPath.join(" → ")],["authority","browser display restoration from current compact next-hop tuples"]]));const actions=document.createElement("div");actions.className="detail-actions";actions.append(actionButton("clear-route","Clear Route",()=>{routeZoneId="";routeGatewayId="";routeSourceId="";routeTargetRef="";populateFallbacks();restoreSelectedPath();}));detail.append(actions);renderDifferenceContext();draw();}
+function renderDifference(){const difference=currentSlice.difference_from_previous,counts=document.getElementById("difference-counts");if(!difference){counts.textContent="Slice 0 has no predecessor.";renderDifferenceContext();return;}const summary=currentSlice.summary.difference;counts.textContent=`+${summary.connection_additions} / −${summary.connection_removals} Connections · ${summary.connection_parameter_patches} parameter · ${summary.zone_patches} Zone · ${summary.route_patches} Route patches`;renderDifferenceContext();}
+function renderDifferenceContext(){const root=document.getElementById("difference-context"),d=currentSlice?.difference_from_previous;root.replaceChildren();if(!d){root.innerHTML='<p class="muted">Slice 0 has no predecessor.</p>';return;}const rows=[];if(selectedConnectionRef){const added=d.added_connections.some(value=>value.connection_ref===selectedConnectionRef),removed=d.removed_connection_ids.some(value=>value.connection_ref===selectedConnectionRef),parameters=d.connection_parameter_patches.filter(value=>value.connection_ref===selectedConnectionRef);rows.push(["selected Connection",added?"added":removed?"removed":parameters.length?`parameter changed (${parameters.length} directions)`:"unchanged"]);}if(selectedZoneId){const patch=d.zone_service_assignment_patches.find(value=>value.zone_id===selectedZoneId);rows.push(["selected Zone",patch?`${patch.operation} → ${patch.service_satellite_id||"unserved"}`:"unchanged"]);}if(routeSourceId&&routeTargetRef){const patches=d.route_patches.filter(value=>value[1]===routeSourceId&&value[2]===routeTargetRef),counts={added:0,changed:0,removed:0};for(const patch of patches)counts[patch[0]]=(counts[patch[0]]||0)+1;rows.push(["selected Route",patches.length?`${patches.length} patches: +${counts.added||0} / ~${counts.changed||0} / −${counts.removed||0}`:"unchanged"]);}if(!rows.length)rows.push(["context","Select a Connection, Zone, or Route to inspect its Difference."]);root.append(detailRows(rows));}
+function renderDiagnostics(){const root=document.getElementById("diagnostics");root.replaceChildren();if(!currentSlice.diagnostics.length){const p=document.createElement("p");p.className="muted";p.textContent="No current anomalies.";root.append(p);return;}for(const item of currentSlice.diagnostics){const p=document.createElement("p");p.className="diagnostic";p.textContent=`${item.kind}: ${item.node_id} — ${item.message}`;root.append(p);}}
+for(const button of document.querySelectorAll("[data-pick-mode]"))button.addEventListener("click",()=>setPickMode(button.dataset.pickMode));
+document.getElementById("clear-inspection").addEventListener("click",clearInspection);
+document.getElementById("gateway-route-zone").addEventListener("change",event=>showZone(event.target.value));document.getElementById("gateway-route-gateway").addEventListener("change",event=>setGatewayRouteGateway(event.target.value));document.getElementById("gateway-route-direction").addEventListener("change",event=>setGatewayRouteDirection(event.target.value));document.getElementById("node-select").addEventListener("change",event=>showNode(event.target.value));document.getElementById("connection-select").addEventListener("change",event=>showConnection(event.target.value));document.getElementById("zone-select").addEventListener("change",event=>showZone(event.target.value));document.getElementById("route-source").addEventListener("change",event=>setRouteSource(event.target.value));document.getElementById("route-target").addEventListener("change",event=>setRouteTarget(event.target.value));
+range.addEventListener("input",event=>loadSlice(Number(event.target.value)));document.getElementById("previous-slice").addEventListener("click",()=>loadSlice(currentIndex-1));document.getElementById("next-slice").addEventListener("click",()=>loadSlice(currentIndex+1));document.getElementById("show-difference").addEventListener("change",event=>{differenceMode=event.target.checked;document.getElementById("difference-panel").open=differenceMode;draw();});
+loadSlice(currentIndex).catch(error=>{document.getElementById("slice-label").textContent=`FAILED: ${error.message}`;});
+"""
+    )
     return standalone_page(
-        title="Slice / Difference Inspection Tool",
-        eyebrow="Accepted results · offline read-only views",
+        title="Slice / Difference Inspection",
+        eyebrow="Slice / Difference inspection",
         body=body,
         script=script,
         language_strings={
-            "Slice / Difference Inspection Tool": "切片 / 差异检查工具",
-            "Accepted results · offline read-only views": "已接受结果 · 离线只读视图",
-            "Accepted A–F results · focused read-only presets": "已接受的 A–F 结果 · 聚焦只读预设",
-            "All five presets combine shared static spatial context with one focused task overlay. They share the formal Slice/Difference timeline, camera and applicable selections. The page does not run a Model, propagate Position, form Connections, route, compare Slices or update the static container network.": "五个预设将共享的静态空间上下文与一个聚焦任务叠层组合在一起，并共享正式的 Slice / Difference 时间轴、相机和适用选择。页面不会运行 Model、传播 Position、形成 Connection、计算路由、比较 Slice 或更新静态容器网络。",
-            "Bundle inventory": "产物内容概览",
-            "Shared timeline": "共享时间轴",
-            "Play": "播放",
-            "Sync camera": "同步相机",
-            "Interleaved Slice and Difference timeline": "交错的 Slice 与 Difference 时间轴",
-            "Slice and Difference inspection views": "Slice 与 Difference 检查视图",
-            "Topology / Orbit": "拓扑 / 轨道",
-            "ISL Connections": "ISL 连接",
-            "Ground / Zone Service": "地面接入 / Zone 服务",
-            "Routing": "路由",
-            "Difference": "差异",
-            "Orbit": "轨道",
-            "GroundStations": "地面站",
-            "Zones": "Zone",
-            "Reset": "重置视角",
-            "Orbit colors distinguish public Orbit ownership": "轨道颜色区分 public Orbit ownership",
-            "Zone boundary": "Zone 边界",
-            "Orbit filter": "轨道筛选",
-            "Local node": "本地节点",
-            "Stable Orbit context": "稳定轨道上下文",
-            "Stable constellation context": "稳定星座上下文",
-            "same-orbit ISL": "同轨 ISL",
-            "cross-orbit ISL": "跨轨 ISL",
-            "previous / predecessor Orbit": "上一 / 前驱轨道",
-            "next / successor Orbit": "下一 / 后继轨道",
-            "removed": "已移除",
-            "added": "已添加",
-            "parameters": "参数",
-            "GroundStation access": "地面站接入",
-            "Zone service": "Zone 服务",
-            "unserved Zone": "未服务 Zone",
-            "previous/removed": "此前 / 已移除",
-            "current/added": "当前 / 已添加",
-            "Source": "源节点",
-            "G/Z target": "G/Z 目标",
-            "formal resolved path": "正式解析路径",
-            "source": "源节点",
-            "previous path at Δ": "Δ 前路径",
-            "current path at Δ": "Δ 后路径",
-            "Transition Inspector": "Transition 检查",
-            "Category": "类别",
-            "Connection add/remove": "Connection 添加 / 移除",
-            "Parameter patches": "参数补丁",
-            "Zone patches": "Zone 补丁",
-            "Route patches": "路由补丁",
-            "Relevant Orbit context": "相关轨道上下文",
-            "Show full constellation context": "显示完整星座上下文",
-            "Raw JSON / Audit View for the current timeline item": "当前时间轴项目的原始 JSON / 审核视图",
+            "Tool Overview": "工具总览",
+            "Slice / Difference timeline": "Slice / Difference 时间线",
+            "Previous": "上一个",
+            "Next": "下一个",
+            "Dynamic Earth": "动态 Earth",
+            "Selected object": "所选对象",
+            "Zone / Gateway Route": "Zone / Gateway Route",
+            "Difference from previous Slice": "与上一 Slice 的 Difference",
+            "Diagnostics": "诊断",
+            "No current anomalies.": "当前无异常。",
         },
     )
 
 
-_SCRIPT = r"""
-var DATA=__SLICE_DATA__;
-var nodesById=Object.fromEntries(DATA.topology.nodes.map(value=>[value.node_id,value]));
-var zonesById=Object.fromEntries(DATA.topology.zones.map(value=>[value.zone_id,value]));
-var orbitsByRef=Object.fromEntries(DATA.topology.orbits.map(value=>[value.orbit_ref,value]));
-var orbitRefBySatellite=Object.fromEntries(
-  DATA.topology.orbits.flatMap(orbit=>orbit.satellite_ids.map(node=>[node,orbit.orbit_ref]))
-);
-var WGS84_DISPLAY_RADIUS_M=6378137;
-const orbitColors=["#4fd1c5","#7aa7ff","#e879f9","#ffd166","#5dff8b","#ff8f70"];
-const canvasIds=["topology-globe","isl-globe","service-globe","routing-globe","difference-globe"];
-const viewState=Object.fromEntries(
-  canvasIds.map(id=>[id,{yaw:-.65,pitch:.28,drag:null}])
-);
-var sharedCamera={yaw:-.65,pitch:.28,drag:null};
-let timelineIndex=0;
-let activeView="topology";
-let timer=null;
-let selectedDifferenceIndex=0;
-let selectedNodeId="*";
-let selectedOrbitRef="*";
-let selectedRouteSource="";
-let selectedRouteTarget="";
-const range=document.getElementById("slice-range");
+def _render_model_context(data: dict[str, Any]) -> str:
+    context = data.get("model_context")
+    if not isinstance(context, dict):
+        return ""
+    groups: list[str] = []
+    shells = context.get("satellite_shells")
+    if isinstance(shells, list) and shells:
+        for shell_index, shell in enumerate(shells, start=1):
+            if not isinstance(shell, dict):
+                continue
+            orbit_shape = f"{shell['orbit_count']} Orbits"
+            if shell.get("satellites_per_orbit") is not None:
+                orbit_shape += f" × {shell['satellites_per_orbit']} Satellites"
+            groups.append(
+                _model_context_group(
+                    (
+                        "Satellite shell"
+                        if len(shells) == 1
+                        else f"Satellite shell {shell_index}"
+                    ),
+                    (
+                        ("Satellites", shell["satellite_count"]),
+                        ("layout", orbit_shape),
+                        ("altitude", _unit(shell.get("altitude_km"), "km")),
+                        (
+                            "inclination",
+                            _unit(shell.get("inclination_deg"), "°"),
+                        ),
+                    ),
+                )
+            )
+    zone_service = context.get("zone_service")
+    if isinstance(zone_service, dict):
+        groups.append(
+            _model_context_group(
+                "Zone service",
+                (
+                    ("Zones", context.get("zone_count", "n/a")),
+                    (
+                        "minimum elevation",
+                        _unit(
+                            zone_service.get("minimum_elevation_deg"), "°"
+                        ),
+                    ),
+                    (
+                        "Approx. service-envelope surface radius",
+                        "≈ "
+                        + _unit(
+                            zone_service.get(
+                                "approx_service_envelope_surface_radius_km"
+                            ),
+                            "km",
+                        ),
+                    ),
+                    (
+                        "authority",
+                        zone_service.get(
+                            "service_envelope_authority", "projected fact"
+                        ),
+                    ),
+                ),
+            )
+        )
+    ground_station_access = context.get("ground_station_access")
+    if isinstance(ground_station_access, dict):
+        groups.append(
+            _model_context_group(
+                "GroundStation access",
+                (
+                    (
+                        "minimum elevation",
+                        _unit(
+                            ground_station_access.get(
+                                "minimum_elevation_deg"
+                            ),
+                            "°",
+                        ),
+                    ),
+                    (
+                        "maximum slant distance",
+                        _unit(
+                            ground_station_access.get(
+                                "maximum_slant_distance_km"
+                            ),
+                            "km",
+                        ),
+                    ),
+                    (
+                        "GroundStation capacity",
+                        ground_station_access.get("ground_station_capacity"),
+                    ),
+                    (
+                        "Satellite capacity",
+                        ground_station_access.get("satellite_capacity"),
+                    ),
+                ),
+            )
+        )
+    isl = context.get("isl")
+    if isinstance(isl, dict):
+        groups.append(
+            _model_context_group(
+                "ISL",
+                (
+                    ("same orbit", isl.get("same_orbit_policy")),
+                    ("cross plane", isl.get("cross_plane_policy")),
+                    (
+                        "maximum distance",
+                        _unit(isl.get("maximum_distance_km"), "km"),
+                    ),
+                    ("Earth clearance", isl.get("earth_clearance")),
+                ),
+            )
+        )
+    routing = context.get("routing")
+    if isinstance(routing, dict):
+        groups.append(
+            _model_context_group(
+                "Routing",
+                (
+                    ("model", routing.get("model")),
+                    (
+                        "Gateway candidates / Zone",
+                        routing.get("gateway_candidates_per_zone"),
+                    ),
+                    ("metric", routing.get("metric")),
+                ),
+            )
+        )
+    notes = context.get("interpretation_notes")
+    note_markup = ""
+    if isinstance(notes, list):
+        note_markup = (
+            '<ul class="muted model-context-notes">'
+            + "".join(f"<li>{escape(str(note))}</li>" for note in notes)
+            + "</ul>"
+        )
+    if not groups:
+        return ""
+    return (
+        '<details id="model-context" class="card">'
+        "<summary>Model context · Why this Slice looks like this</summary>"
+        '<p class="muted">Scenario/model values are projected at artifact '
+        "generation. Approximate geometry is display-only and does not alter "
+        "formal eligibility.</p>"
+        f'<div class="model-context-grid">{"".join(groups)}</div>'
+        f"{note_markup}</details>"
+    )
 
-function isTransition(){return timelineIndex%2===1;}
-function displayBaseSliceIndex(){return Math.floor(timelineIndex/2);}
-function displayCurrentSliceIndex(){return Math.ceil(timelineIndex/2);}
-function displayBaseSlice(){return DATA.slices[displayBaseSliceIndex()];}
-function displayPreviousSlice(){return isTransition()?displayBaseSlice():null;}
-function displayCurrentSlice(){return DATA.slices[displayCurrentSliceIndex()];}
-function displayDifference(){
-  return isTransition()?displayCurrentSlice().difference_from_previous:null;
-}
-function timelineLabel(){
-  return isTransition()
-    ?`Δ${displayPreviousSlice().slice_id}→${displayCurrentSlice().slice_id}`
-    :`Slice ${displayBaseSlice().slice_id}`;
-}
-const positionMap=(slice=displayBaseSlice())=>Object.fromEntries(
-  slice.positions.map(value=>[value.node_id,value])
-);
-const escapeHtml=value=>String(value??"").replace(/[&<>"']/g,char=>({
-  "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
-}[char]));
-const table=(headers,rows)=>rows.length
-  ?`<table><thead><tr>${headers.map(value=>`<th>${escapeHtml(value)}</th>`).join("")}</tr></thead>
-    <tbody>${rows.map(row=>`<tr>${row.map(value=>`<td>${escapeHtml(value)}</td>`).join("")}</tr>`).join("")}</tbody></table>`
-  :'<p class="empty">None for this Slice/filter.</p>';
-const section=(title,content)=>`<h3>${escapeHtml(title)}</h3>${content}`;
-const targetLabel=target=>target.kind==="G"
-  ?`G · ${target.ground_station_id}`:`Z · ${target.zone_id}`;
-const targetIdentity=target=>target.kind==="G"
-  ?target.ground_station_id:target.zone_id;
-const parameters=value=>`${value.bandwidth_bps} bps · ${value.delay_us} µs · ${value.packet_loss_ppm} ppm`;
 
-function cameraFor(canvas){
-  return document.getElementById("sync-camera").checked
-    ?sharedCamera:viewState[canvas.id];
-}
-function rotate(point,state){
-  const [x,y,z]=point,cy=Math.cos(state.yaw),sy=Math.sin(state.yaw);
-  const cp=Math.cos(state.pitch),sp=Math.sin(state.pitch);
-  const x1=x*cy+z*sy,z1=-x*sy+z*cy;
-  return [x1,y*cp-z1*sp,y*sp+z1*cp];
-}
-function sphere(latitude,longitude,radius=1){
-  const a=latitude*Math.PI/180,b=longitude*Math.PI/180;
-  return [radius*Math.cos(a)*Math.cos(b),radius*Math.sin(a),
-    radius*Math.cos(a)*Math.sin(b)];
-}
-function project(canvas,point){
-  const state=cameraFor(canvas),[x,y,z]=rotate(point,state),scale=245;
-  return [canvas.width/2+x*scale,canvas.height/2-y*scale,z];
-}
-function ecefToDisplay(vector,scale=1/WGS84_DISPLAY_RADIUS_M){
-  return [Number(vector.x)*scale,Number(vector.z)*scale,Number(vector.y)*scale];
-}
-function nodePoint(nodeId,positions=positionMap()){
-  const position=positions[nodeId];
-  if(!position)return null;
-  return ecefToDisplay(position.ecef_m);
-}
-function drawPolyline(canvas,values,color,width=1,dashed=false,opacity=1){
-  const ctx=canvas.getContext("2d");
-  ctx.save();ctx.globalAlpha=opacity;ctx.strokeStyle=color;ctx.lineWidth=width;
-  ctx.setLineDash(dashed?[9,7]:[]);ctx.beginPath();
-  let open=false;
-  values.forEach(value=>{
-    const point=project(canvas,value);
-    if(point[2]<0){open=false;return;}
-    if(!open){ctx.moveTo(point[0],point[1]);open=true;}
-    else ctx.lineTo(point[0],point[1]);
-  });
-  ctx.stroke();ctx.restore();
-}
-function drawSegment(canvas,first,second,color,width=2,dashed=false,opacity=1){
-  if(!first||!second)return;
-  const ctx=canvas.getContext("2d"),a=project(canvas,first),b=project(canvas,second);
-  if(a[2]<-.2&&b[2]<-.2)return;
-  ctx.save();ctx.globalAlpha=opacity;ctx.strokeStyle=color;ctx.lineWidth=width;
-  ctx.setLineDash(dashed?[9,7]:[]);
-  ctx.beginPath();ctx.moveTo(a[0],a[1]);ctx.lineTo(b[0],b[1]);ctx.stroke();ctx.restore();
-}
-function drawPoint(canvas,point,color,radius=6,label=null,opacity=1){
-  if(!point)return;
-  const ctx=canvas.getContext("2d"),value=project(canvas,point);
-  if(value[2]<0)return;
-  ctx.save();ctx.globalAlpha=opacity;ctx.fillStyle=color;
-  ctx.beginPath();ctx.arc(value[0],value[1],radius,0,Math.PI*2);
-  ctx.fill();ctx.strokeStyle="#07111f";ctx.lineWidth=2;ctx.stroke();
-  if(label){ctx.fillStyle="#edf6ff";ctx.font="12px system-ui";ctx.fillText(label,value[0]+8,value[1]-8);}
-  ctx.restore();
-}
-function drawHollowPoint(canvas,point,color,radius=7,label=null,opacity=.72){
-  if(!point)return;
-  const ctx=canvas.getContext("2d"),value=project(canvas,point);
-  if(value[2]<0)return;
-  ctx.save();ctx.globalAlpha=opacity;ctx.strokeStyle=color;ctx.lineWidth=2.5;
-  ctx.beginPath();ctx.arc(value[0],value[1],radius,0,Math.PI*2);ctx.stroke();
-  if(label){ctx.fillStyle=color;ctx.font="12px system-ui";ctx.fillText(label,value[0]+9,value[1]-9);}
-  ctx.restore();
-}
-function drawBase(canvas){
-  const ctx=canvas.getContext("2d");
-  ctx.clearRect(0,0,canvas.width,canvas.height);
-  const gradient=ctx.createRadialGradient(canvas.width*.43,canvas.height*.39,12,
-    canvas.width/2,canvas.height/2,245);
-  gradient.addColorStop(0,"#27739d");gradient.addColorStop(1,"#08233a");
-  ctx.fillStyle=gradient;ctx.beginPath();ctx.arc(canvas.width/2,canvas.height/2,245,0,Math.PI*2);ctx.fill();
-  for(let lat=-60;lat<=60;lat+=30)
-    drawPolyline(canvas,Array.from({length:73},(_,i)=>sphere(lat,-180+i*5)),"#8dc6dd44");
-  for(let lon=-150;lon<180;lon+=30)
-    drawPolyline(canvas,Array.from({length:37},(_,i)=>sphere(-90+i*5,lon)),"#8dc6dd44");
-}
-function zoneBoundary(zone){
-  const g=zone.geometry,values=[];let east=g.east_longitude_deg;
-  if(east<=g.west_longitude_deg)east+=360;
-  for(let i=0;i<=20;i++)values.push([g.south_latitude_deg,g.west_longitude_deg+(east-g.west_longitude_deg)*i/20]);
-  for(let i=1;i<=12;i++)values.push([g.south_latitude_deg+(g.north_latitude_deg-g.south_latitude_deg)*i/12,east]);
-  for(let i=1;i<=20;i++)values.push([g.north_latitude_deg,east-(east-g.west_longitude_deg)*i/20]);
-  for(let i=1;i<=12;i++)values.push([g.north_latitude_deg-(g.north_latitude_deg-g.south_latitude_deg)*i/12,g.west_longitude_deg]);
-  return values.map(([lat,lon])=>sphere(lat,lon,1.006));
-}
-function orbitGuide(guide){
-  const basisU=guide.basis_u_ecef_unit,basisV=guide.basis_v_ecef_unit;
-  const radius=guide.mean_radius_m/WGS84_DISPLAY_RADIUS_M;
-  return Array.from({length:145},(_,index)=>{
-    const phase=index*Math.PI*2/144;
-    const ecef={
-      x:radius*(basisU.x*Math.cos(phase)+basisV.x*Math.sin(phase)),
-      y:radius*(basisU.y*Math.cos(phase)+basisV.y*Math.sin(phase)),
-      z:radius*(basisU.z*Math.cos(phase)+basisV.z*Math.sin(phase))
-    };
-    return ecefToDisplay(ecef,1);
-  });
-}
-function orbitGuideMap(slice){
-  return Object.fromEntries(slice.orbit_guides.map(value=>[value.orbit_ref,value]));
-}
-function focusNodes(canvasId,nodeIds){
-  const positions=comparisonPositionMap();
-  const values=nodeIds.map(id=>positions[id]?.geographic).filter(Boolean);
-  focusLocations(canvasId,values,nodeIds.join("|"));
-}
-function focusLocations(canvasId,values,focusLabel){
-  if(!values.length)return;
-  const latitude=values.reduce((total,value)=>total+value.latitude_deg,0)/values.length;
-  const longitude=values.reduce((total,value)=>total+value.longitude_deg,0)/values.length;
-  const state=cameraFor(document.getElementById(canvasId));
-  state.yaw=longitude*Math.PI/180-Math.PI/2;
-  state.pitch=latitude*Math.PI/180;
-  document.getElementById(canvasId).dataset.focus=focusLabel;
-}
-function focusPath(path){
-  const positions=comparisonPositionMap();
-  const values=path.nodes.map(id=>positions[id]?.geographic).filter(Boolean);
-  if(path.target.kind==="Z"){
-    values.push(zonesById[path.target.zone_id].representative_point);
-  }
-  focusLocations("routing-globe",values,path.path_id);
-}
-function identityRows(nodeId){
-  const node=nodesById[nodeId];
-  if(!node)return [];
-  return [
-    ["NodeId",node.node_id],["kind",node.kind],["AS",node.asn],
-    ["Shell",node.shell_id??"—"],["Orbit",node.orbit_id??"—"],
-    ["Orbit ref",node.orbit_ref??"—"]
-  ];
-}
-function positionRows(nodeId,positions=positionMap()){
-  const position=positions[nodeId];
-  if(!position)return [];
-  return [
-    ["ECEF X",`${position.ecef_m.x} m`],["ECEF Y",`${position.ecef_m.y} m`],
-    ["ECEF Z",`${position.ecef_m.z} m`],
-    ["latitude",`${position.geographic.latitude_deg}°`],
-    ["longitude",`${position.geographic.longitude_deg}°`],
-    ["ellipsoidal height",`${position.geographic.ellipsoidal_height_m} m`]
-  ];
-}
-function connectionFor(first,second,slice=displayBaseSlice()){
-  return slice.connections.find(value=>{
-    const id=value.connection_id;
-    return (id.endpoint_a===first&&id.endpoint_b===second)||
-      (id.endpoint_a===second&&id.endpoint_b===first);
-  })??null;
-}
-function orbitColor(orbitRef){
-  const index=DATA.topology.orbits.findIndex(value=>value.orbit_ref===orbitRef);
-  return orbitColors[(index<0?0:index)%orbitColors.length];
-}
-function drawOrbitContext(canvas,slice,{strong=false,orbitRef="*",color=null,dashed=false,opacity=null}={}){
-  const orbits=orbitRef==="*"
-    ?DATA.topology.orbits:DATA.topology.orbits.filter(value=>value.orbit_ref===orbitRef);
-  const guides=orbitGuideMap(slice);
-  let drawn=0;
-  orbits.forEach(orbit=>{
-    const guide=guides[orbit.orbit_ref];
-    if(guide){
-      drawPolyline(
-        canvas,orbitGuide(guide),color??orbitColor(orbit.orbit_ref),
-        strong?2.4:1.2,dashed,opacity??(strong?.9:.28)
-      );
-      drawn+=1;
-    }
-  });
-  return drawn;
-}
-function drawSatelliteContext(canvas,positions,{strong=false,orbitRef="*"}={}){
-  DATA.topology.nodes.filter(value=>
-    value.kind==="satellite"&&(orbitRef==="*"||value.orbit_ref===orbitRef)
-  ).forEach(node=>drawPoint(
-    canvas,nodePoint(node.node_id,positions),orbitColor(node.orbit_ref),
-    strong?5:3,null,strong ? .95 : .35
-  ));
-}
-function drawGroundContext(canvas,positions,{strong=false}={}){
-  DATA.topology.nodes.filter(value=>value.kind==="ground-station").forEach(node=>
-    drawPoint(canvas,nodePoint(node.node_id,positions),"#ffb454",strong?8:5,
-      strong?node.node_id.split("/").at(-1):null,strong?1:.48)
-  );
-}
-function drawZoneContext(canvas,{strong=false,zoneId=null}={}){
-  DATA.topology.zones.filter(zone=>zoneId===null||zone.zone_id===zoneId).forEach(zone=>
-    drawPolyline(canvas,zoneBoundary(zone),"#d7f171",strong?3:1.4,false,strong?1:.42)
-  );
-}
-function comparisonSlice(){
-  if(isTransition()&&displayBaseSlice().positions.length===0){
-    return displayCurrentSlice();
-  }
-  return displayBaseSlice();
-}
-function comparisonPositionMap(){return positionMap(comparisonSlice());}
-function stableComparisonLayerNames(){
-  if(!isTransition())return [];
-  return [
-    "transition-previous-network-base",
-    "stable-comparison-geometry",
-    ...(displayBaseSlice().positions.length===0
-      ?["comparison-geometry-current-fallback"]:["comparison-geometry-previous"])
-  ];
-}
-function drawStableOrbitContext(canvas,{strong=false,orbitRef="*",color=null}={}){
-  return drawOrbitContext(
-    canvas,comparisonSlice(),{strong,orbitRef,color,opacity:strong?.9:.2}
-  );
-}
-function drawStableSatelliteContext(canvas,{strong=false,orbitRef="*"}={}){
-  drawSatelliteContext(canvas,comparisonPositionMap(),{strong,orbitRef});
-}
-function drawPositionComparisonOrbitContext(canvas,{strong=false,orbitRef="*"}={}){
-  const base=displayBaseSlice();
-  const previousCount=drawOrbitContext(canvas,base,{strong,orbitRef});
-  let currentCount=0;
-  if(isTransition()){
-    currentCount=drawOrbitContext(
-      canvas,displayCurrentSlice(),
-      {strong:true,orbitRef,color:"#5dff8b",dashed:true,opacity:.6}
-    );
-  }
-  return {previousCount,currentCount};
-}
-function drawPositionComparisonSatelliteContext(canvas,{strong=false,orbitRef="*"}={}){
-  const previousPositions=positionMap(displayBaseSlice());
-  drawSatelliteContext(canvas,previousPositions,{strong,orbitRef});
-  if(!isTransition())return;
-  const currentPositions=positionMap(displayCurrentSlice());
-  DATA.topology.nodes.filter(value=>
-    value.kind==="satellite"&&(orbitRef==="*"||value.orbit_ref===orbitRef)
-  ).forEach(node=>{
-    const previous=nodePoint(node.node_id,previousPositions);
-    const current=nodePoint(node.node_id,currentPositions);
-    drawSegment(canvas,previous,current,"#ffbd73",1.5,true,.55);
-    drawHollowPoint(
-      canvas,current,orbitColor(node.orbit_ref),strong?6:4,null,strong?.82:.52
-    );
-  });
-}
-function positionComparisonLayerNames(){
-  return isTransition()
-    ?[
-      "transition-previous-base",
-      "transition-current-reference",
-      "position-motion-vectors",
-      "position-comparison-endpoints",
-      "no-position-interpolation"
-    ]
-    :[];
-}
-function drawSelectedNodePositionComparison(canvas,nodeId){
-  if(!isTransition()||!nodeId||nodeId==="*")return false;
-  const previousPositions=positionMap(displayPreviousSlice());
-  const currentPositions=positionMap(displayCurrentSlice());
-  const previous=nodePoint(nodeId,previousPositions);
-  const current=nodePoint(nodeId,currentPositions);
-  if(!previous||!current)return false;
-  drawSegment(canvas,previous,current,"#ffbd73",2,true,.75);
-  drawPoint(canvas,previous,"#ff8a8a",7,"previous");
-  drawHollowPoint(canvas,current,"#5dff8b",8,"current",.9);
-  return true;
-}
-function orbitRefsForNodes(nodeIds){
-  return [...new Set(
-    nodeIds.map(nodeId=>orbitRefBySatellite[nodeId]).filter(Boolean)
-  )];
-}
+def _model_context_group(
+    title: str,
+    rows: tuple[tuple[str, object], ...],
+) -> str:
+    visible = [row for row in rows if row[1] is not None]
+    return (
+        '<section class="model-context-group">'
+        f"<h3>{escape(title)}</h3><dl class=\"detail-grid\">"
+        + "".join(
+            f"<dt>{escape(label)}</dt><dd>{escape(str(value))}</dd>"
+            for label, value in visible
+        )
+        + "</dl></section>"
+    )
 
-function drawTopology(){
-  const canvas=document.getElementById("topology-globe");
-  drawBase(canvas);
-  const selected=selectedOrbitRef;
-  const orbits=selected==="*" ? DATA.topology.orbits : DATA.topology.orbits.filter(value=>value.orbit_ref===selected);
-  const guideCounts=drawPositionComparisonOrbitContext(
-    canvas,{strong:true,orbitRef:selected}
-  );
-  drawPositionComparisonSatelliteContext(
-    canvas,{strong:true,orbitRef:selected}
-  );
-  const layers=["satellites",...positionComparisonLayerNames()];
-  if(guideCounts.previousCount)layers.push("ecef-orbit-guides-previous");
-  if(guideCounts.currentCount)layers.push("ecef-orbit-guides-current");
-  if(document.getElementById("topology-ground-layer").checked){
-    drawGroundContext(canvas,positionMap(displayBaseSlice()),{strong:true});
-    layers.push("ground-stations");
-  }
-  if(document.getElementById("topology-zone-layer").checked){
-    drawZoneContext(canvas,{strong:true});
-    layers.push("zones");
-  }
-  canvas.dataset.layers=layers.join(",");
-  const detail=selected==="*" ? DATA.topology.orbits : orbits;
-  document.getElementById("orbit-detail").innerHTML=
-    (isTransition()?'<p class="transition-note">Previous formal Slice is the base. Hollow points and dashed green guides are the current formal Slice reference; short vectors connect only the two formal endpoints. No intermediate Position exists.</p>':"")
-    +section("Orbit identity and static parameters",table(
-      ["Orbit","AS / Shell","RAAN","inclination","altitude","epoch","Satellites"],
-      detail.map(orbit=>[
-        orbit.orbit_id,`AS${orbit.asn} / ${orbit.shell_id}`,
-        `${orbit.right_ascension_deg}°`,`${orbit.inclination_deg}°`,
-        `${orbit.altitude_km} km`,orbit.epoch_utc,orbit.satellite_ids.length
-      ])
-    ))+section("View boundary",displayBaseSlice().orbit_guides.length
-      ?"Guides are fitted from formal ECEF Positions; static RAAN is identity detail only."
-      :"No dynamic Orbit guide exists because this formal Slice has no Position.");
-}
 
-function connectionMatchesIslFilter(value,orbit,node){
-  if(value.connection_id.kind!=="inter-satellite")return false;
-  const id=value.connection_id;
-  if(orbit!=="*"&&orbitRefBySatellite[id.endpoint_a]!==orbit&&orbitRefBySatellite[id.endpoint_b]!==orbit)return false;
-  return node==="*"||id.endpoint_a===node||id.endpoint_b===node;
-}
-function crossPlaneSide(value,node){
-  if(value.display_kind!=="cross-orbit-isl"||!value.cross_plane_sides)return "—";
-  const id=value.connection_id;
-  if(node===id.endpoint_a)return value.cross_plane_sides.endpoint_a;
-  if(node===id.endpoint_b)return value.cross_plane_sides.endpoint_b;
-  return `A: ${value.cross_plane_sides.endpoint_a} / B: ${value.cross_plane_sides.endpoint_b}`;
-}
-function islDisplayColor(value,node){
-  if(value.display_kind==="same-orbit-isl")return "#4fd1c5";
-  const side=crossPlaneSide(value,node);
-  if(side==="predecessor-orbit")return "#9b8cff";
-  if(side==="successor-orbit")return "#5ab4ff";
-  return "#7aa7ff";
-}
-function drawIsl(){
-  const canvas=document.getElementById("isl-globe");
-  const baseSlice=displayBaseSlice(),positions=comparisonPositionMap();
-  drawBase(canvas);
-  const orbit=selectedOrbitRef;
-  const node=selectedNodeId;
-  const layers=[...stableComparisonLayerNames()];
-  if(document.getElementById("isl-orbit-layer").checked){
-    if(drawStableOrbitContext(canvas,{orbitRef:orbit})){
-      layers.push("stable-ecef-orbit-guides");
-    }
-  }
-  if(document.getElementById("isl-satellite-layer").checked){
-    drawStableSatelliteContext(canvas,{orbitRef:orbit});
-    layers.push("stable-satellite-context");
-  }
-  const connections=baseSlice.connections.filter(
-    value=>connectionMatchesIslFilter(value,orbit,node)
-  );
-  connections.forEach(value=>{
-    const id=value.connection_id;
-    drawSegment(canvas,nodePoint(id.endpoint_a,positions),nodePoint(id.endpoint_b,positions),
-      islDisplayColor(value,node),
-      isTransition()?1.5:(node==="*"?2:5),false,isTransition()?.3:1);
-  });
-  if(isTransition()){
-    const difference=displayDifference();
-    difference.removed_connection_ids.filter(
-      value=>connectionMatchesIslFilter(value,orbit,node)
-    ).forEach(value=>{
-      const id=value.connection_id;
-      drawSegment(
-        canvas,nodePoint(id.endpoint_a,positions),nodePoint(id.endpoint_b,positions),
-        "#ff6464",6,true,.95
-      );
-    });
-    difference.added_connections.filter(
-      value=>connectionMatchesIslFilter(value,orbit,node)
-    ).forEach(value=>{
-      const id=value.connection_id;
-      drawSegment(
-        canvas,nodePoint(id.endpoint_a,positions),nodePoint(id.endpoint_b,positions),
-        "#5dff8b",6,true,.9
-      );
-    });
-    difference.connection_parameter_patches.filter(
-      value=>connectionMatchesIslFilter(value,orbit,node)
-    ).forEach(value=>{
-      const id=value.connection_id;
-      drawSegment(
-        canvas,nodePoint(id.endpoint_a,positions),nodePoint(id.endpoint_b,positions),
-        "#ff9f43",6,false,.95
-      );
-    });
-    layers.push("isl-removed","isl-added","isl-parameter-patch");
-    if(drawSelectedNodePositionComparison(canvas,node)){
-      layers.push("selected-node-position-comparison");
-    }
-  }
-  const visible=new Set(connections.flatMap(value=>[
-    value.connection_id.endpoint_a,value.connection_id.endpoint_b
-  ]));
-  visible.forEach(id=>drawPoint(
-    canvas,nodePoint(id,positions),orbitColor(orbitRefBySatellite[id]),id===node?9:5,
-    id===node?id.split("/").at(-1):null
-  ));
-  layers.push("same-orbit-isl","cross-orbit-isl","filtered-satellites");
-  canvas.dataset.layers=layers.join(",");
-  const rows=connections.map(value=>{
-    const id=value.connection_id,fromA=node==="*"||id.endpoint_a===node;
-    return [
-      value.display_kind,crossPlaneSide(value,node),id.endpoint_a,id.endpoint_b,
-      parameters(fromA?value.endpoint_a_to_b:value.endpoint_b_to_a),
-      parameters(fromA?value.endpoint_b_to_a:value.endpoint_a_to_b)
-    ];
-  });
-  let detail=section("Filtered ISLs",table(
-    ["class","adjacent Orbit side","endpoint A","endpoint B","A/local outbound","B/local inbound"],rows
-  ));
-  if(node!=="*"){
-    detail=section("Selected node",table(["field","value"],identityRows(node)))
-      +section(isTransition()?"Comparison Position":"Current Position",
-        table(["field","value"],positionRows(node,positions)))+detail;
-  }
-  if(isTransition()){
-    detail='<p class="transition-note">Previous formal ISLs are the weak network base. All logical relations use one Tool-local comparison geometry ('+escapeHtml(comparisonSlice().slice_id===displayCurrentSlice().slice_id&&displayBaseSlice().positions.length===0?"current Slice fallback for Δ0→1":"previous Slice formal Positions")+'). Removed, added and parameter-patched ISLs are Difference overlays; no full-constellation Position movement is shown.</p>'+detail;
-  }
-  document.getElementById("isl-detail").innerHTML=detail;
-}
-
-function drawService(){
-  const canvas=document.getElementById("service-globe");
-  const baseSlice=displayBaseSlice(),positions=comparisonPositionMap();
-  drawBase(canvas);
-  const layers=[...stableComparisonLayerNames()];
-  if(document.getElementById("service-orbit-layer").checked){
-    if(drawStableOrbitContext(canvas))layers.push("stable-ecef-orbit-guides");
-  }
-  if(document.getElementById("service-satellite-layer").checked){
-    drawStableSatelliteContext(canvas);layers.push("stable-satellite-context");
-  }
-  drawGroundContext(canvas,positions,{strong:true});
-  drawZoneContext(canvas,{strong:true});
-  layers.push("ground-stations","zones");
-  const access=baseSlice.connections.filter(value=>value.connection_id.kind==="ground-station-access");
-  access.forEach(value=>{
-    const id=value.connection_id;
-    drawSegment(
-      canvas,nodePoint(id.endpoint_a,positions),nodePoint(id.endpoint_b,positions),
-      "#ffd166",isTransition()?2:4,false,isTransition()?.3:1
-    );
-    drawPoint(canvas,nodePoint(id.endpoint_a,positions),"#ffb454",8);
-    drawPoint(canvas,nodePoint(id.endpoint_b,positions),"#72f1e1",6);
-  });
-  const assignmentRecords=new Map(
-    baseSlice.zone_service_assignments.map(value=>[value.zone_id,value])
-  );
-  const assigned=new Map(
-    [...assignmentRecords].map(([zoneId,value])=>[
-      zoneId,value.service_satellite_id
-    ])
-  );
-  DATA.topology.zones.forEach(zone=>{
-    const center=zone.representative_point;
-    const zonePoint=sphere(center.latitude_deg,center.longitude_deg,1.008);
-    const satellite=assigned.get(zone.zone_id);
-    if(satellite){
-      drawSegment(
-        canvas,nodePoint(satellite,positions),zonePoint,"#e879f9",
-        isTransition()?2:4,true,isTransition()?.3:1
-      );
-      drawPoint(canvas,zonePoint,"#e879f9",8,zone.zone_id);
-      drawPoint(canvas,nodePoint(satellite,positions),"#72f1e1",6);
-    }else drawPoint(canvas,zonePoint,"#ff6464",8,zone.zone_id);
-  });
-  if(isTransition()){
-    const difference=displayDifference();
-    difference.removed_connection_ids.filter(
-      value=>value.connection_id.kind==="ground-station-access"
-    ).forEach(value=>{
-      const id=value.connection_id;
-      drawSegment(
-        canvas,nodePoint(id.endpoint_a,positions),nodePoint(id.endpoint_b,positions),
-        "#ff6464",6,true,.95
-      );
-    });
-    difference.added_connections.filter(
-      value=>value.connection_id.kind==="ground-station-access"
-    ).forEach(value=>{
-      const id=value.connection_id;
-      drawSegment(
-        canvas,nodePoint(id.endpoint_a,positions),nodePoint(id.endpoint_b,positions),
-        "#5dff8b",6,false,.9
-      );
-    });
-    difference.connection_parameter_patches.filter(
-      value=>value.connection_id.kind==="ground-station-access"
-    ).forEach(value=>{
-      const id=value.connection_id;
-      drawSegment(
-        canvas,nodePoint(id.endpoint_a,positions),nodePoint(id.endpoint_b,positions),
-        "#ff9f43",6,false,.95
-      );
-    });
-    difference.zone_service_assignment_patches.forEach(patch=>{
-      const zone=zonesById[patch.zone_id],center=zone.representative_point;
-      const zonePoint=sphere(center.latitude_deg,center.longitude_deg,1.008);
-      const previousSatellite=assigned.get(patch.zone_id);
-      const currentSatellite=displayCurrentSlice().zone_service_assignments.find(
-        value=>value.zone_id===patch.zone_id
-      )?.service_satellite_id;
-      orbitRefsForNodes([previousSatellite,currentSatellite].filter(Boolean))
-        .forEach(orbitRef=>drawStableOrbitContext(
-          canvas,{strong:true,orbitRef}
-        ));
-      if(previousSatellite){
-        drawSegment(
-          canvas,nodePoint(previousSatellite,positions),zonePoint,
-          "#ff6464",7,true,.95
-        );
-        drawPoint(canvas,nodePoint(previousSatellite,positions),"#ff6464",9,"previous");
-      }
-      if(currentSatellite){
-        drawSegment(
-          canvas,nodePoint(currentSatellite,positions),zonePoint,
-          "#5dff8b",7,false,.95
-        );
-        drawPoint(
-          canvas,nodePoint(currentSatellite,positions),"#5dff8b",10,"current",.95
-        );
-      }
-    });
-    layers.push(
-      "access-removed","access-added","access-parameter-patch",
-      "zone-service-transition","focused-service-orbits"
-    );
-  }
-  layers.push("ground-station-access","zone-service");
-  canvas.dataset.layers=layers.join(",");
-  const accessRows=access.map(value=>[
-    value.connection_id.endpoint_a,value.connection_id.endpoint_b,
-    parameters(value.endpoint_a_to_b),parameters(value.endpoint_b_to_a)
-  ]);
-  const zoneRows=DATA.topology.zones.map(zone=>{
-    const assignment=assignmentRecords.get(zone.zone_id);
-    const explanation=assignment?.display_explanation;
-    return [
-      zone.zone_id,assignment?"served":"unserved",
-      assignment?.service_satellite_id??"—",
-      explanation
-        ?`${Number(explanation.representative_point_elevation_deg).toFixed(3)}°`
-        :"—",
-      explanation
-        ?(explanation.subpoint_inside_zone?"yes":"no")
-        :"—"
-    ];
-  });
-  document.getElementById("service-detail").innerHTML=
-    (isTransition()?'<p class="transition-note">Previous access and service relations are the network base. Old/new relations share one stable comparison geometry; removals/old assignments are red and additions/new assignments are green. Unrelated Satellite Position movement is not rendered.</p>':"")
-    +section("GroundStation access",table(
-      ["endpoint A","endpoint B","A→B","B→A"],accessRows
-    ))+section("Zone service",table(
-      ["Zone","status","service Satellite","representative-point elevation","subpoint inside Zone"],zoneRows
-    ))+'<p class="muted">The assignment is the formal ConnectionSlice result. Representative-point elevation and subpoint containment are non-authoritative explanations derived from that Slice’s formal Position. Eligibility uses representative-point visibility/minimum elevation; it is not subpoint containment.</p>';
-}
-
-function displayPaths(){
-  if(!isTransition())return displayBaseSlice().paths;
-  const paths=new Map(displayPreviousSlice().paths.map(path=>[path.path_id,path]));
-  displayCurrentSlice().paths.forEach(path=>{
-    if(!paths.has(path.path_id))paths.set(path.path_id,path);
-  });
-  return [...paths.values()];
-}
-function populateRouteTargets(){
-  const source=document.getElementById("route-source").value;
-  const target=document.getElementById("route-target");
-  const available=displayPaths().filter(path=>path.source===source);
-  target.replaceChildren();
-  available.forEach(path=>{
-    const option=document.createElement("option");
-    option.value=path.path_id;option.textContent=targetLabel(path.target);
-    target.append(option);
-  });
-  if(available.some(path=>path.path_id===selectedRouteTarget)){
-    target.value=selectedRouteTarget;
-  }
-  selectedRouteTarget=target.value;
-}
-function selectedPath(){
-  const reference=document.getElementById("route-target").value;
-  return displayPaths().find(path=>path.path_id===reference)??null;
-}
-function selectedPathPair(){
-  const reference=document.getElementById("route-target").value;
-  return {
-    previous:(isTransition()?displayPreviousSlice():displayBaseSlice()).paths.find(
-      path=>path.path_id===reference
-    )??null,
-    current:displayCurrentSlice().paths.find(path=>path.path_id===reference)??null
-  };
-}
-function drawRouting(){
-  const canvas=document.getElementById("routing-globe");
-  const baseSlice=displayBaseSlice(),positions=comparisonPositionMap();
-  drawBase(canvas);
-  const layers=[...stableComparisonLayerNames()];
-  if(document.getElementById("routing-orbit-layer").checked){
-    if(drawStableOrbitContext(canvas))layers.push("stable-ecef-orbit-guides");
-  }
-  if(document.getElementById("routing-satellite-layer").checked){
-    drawStableSatelliteContext(canvas);layers.push("stable-satellite-context");
-  }
-  if(document.getElementById("routing-ground-layer").checked){
-    drawGroundContext(canvas,positions);layers.push("ground-stations");
-  }
-  const pair=selectedPathPair();
-  const path=isTransition()?(pair.current??pair.previous):pair.current;
-  if(!path){
-    layers.push("selected-path");
-    canvas.dataset.layers=layers.join(",");
-    document.getElementById("route-detail").innerHTML='<p class="empty">No formal path in Slice 0 or for this source.</p>';
-    return;
-  }
-  const edgeRows=[];
-  if(isTransition()){
-    drawFormalPath(canvas,pair.previous,positions,"#ff6464",6,true);
-    drawFormalPath(canvas,pair.current,positions,"#5dff8b",6,false);
-    (pair.previous?.nodes??[]).forEach(id=>
-      drawPoint(canvas,nodePoint(id,positions),"#ff8a8a",6)
-    );
-    (pair.current?.nodes??[]).forEach(id=>
-      drawPoint(canvas,nodePoint(id,positions),"#5dff8b",8)
-    );
-    if(document.getElementById("routing-orbit-layer").checked){
-      orbitRefsForNodes([
-        ...(pair.previous?.nodes??[]),...(pair.current?.nodes??[])
-      ]).forEach(orbitRef=>drawStableOrbitContext(
-        canvas,{strong:true,orbitRef}
-      ));
-    }
-    layers.push("previous-formal-path","current-formal-path");
-  }else{
-    for(let index=0;index<path.nodes.length-1;index++){
-      const first=path.nodes[index],second=path.nodes[index+1];
-      drawSegment(canvas,nodePoint(first,positions),nodePoint(second,positions),"#ffffff",6);
-      const connection=connectionFor(first,second,baseSlice);
-      edgeRows.push([
-        index+1,first,second,connection?.display_kind??"terminal",
-        connection?parameters(
-          connection.connection_id.endpoint_a===first
-            ?connection.endpoint_a_to_b:connection.endpoint_b_to_a
-        ):"—"
-      ]);
-    }
-    path.nodes.forEach((id,index)=>drawPoint(
-      canvas,nodePoint(id,positions),index===0?"#5dff8b":"#ffffff",index===0?10:7
-    ));
-  }
-  if(path.target.kind==="G"){
-    drawPoint(
-      canvas,nodePoint(path.target.ground_station_id,positions),
-      "#ffb454",11,"G target"
-    );
-    layers.push("g-target");
-  }else{
-    const zone=zonesById[path.target.zone_id],center=zone.representative_point;
-    drawZoneContext(canvas,{strong:true,zoneId:zone.zone_id});
-    drawPoint(canvas,sphere(center.latitude_deg,center.longitude_deg,1.01),"#ffb454",11,"Z target");
-    const assignment=displayBaseSlice().zone_service_assignments.find(
-      value=>value.zone_id===zone.zone_id
-    );
-    if(assignment){
-      const servicePoint=nodePoint(assignment.service_satellite_id,positions);
-      drawPoint(canvas,servicePoint,"#e879f9",11,"service Satellite");
-      drawSegment(
-        canvas,servicePoint,sphere(center.latitude_deg,center.longitude_deg,1.01),
-        "#e879f9",3,true
-      );
-    }
-    layers.push("target-zone","zone-service-satellite");
-  }
-  layers.push("selected-path","path-nodes");
-  canvas.dataset.layers=layers.join(",");
-  const route=displayBaseSlice().routes.find(value=>value.route_ref===path.path_id);
-  const serviceAssignment=path.target.kind==="Z"
-    ?displayBaseSlice().zone_service_assignments.find(
-      value=>value.zone_id===path.target.zone_id
-    ):null;
-  document.getElementById("route-detail").innerHTML=
-    (isTransition()?'<p class="transition-note">Previous formal resolved path is red/dashed; current formal resolved path is green. Both recorded paths use the same Tool-local comparison geometry, so topology change—not Satellite motion—is emphasized. The browser does not recalculate routing.</p>':"")
-    +section("Source identity",table(["field","value"],identityRows(path.source)))
-    +section(isTransition()?"Source comparison Position":"Source Position",
-      table(["field","value"],positionRows(path.source,positions)))
-    +section("Selected target",table(["field","value"],[
-      ["identity",targetIdentity(path.target)],["kind",path.target.kind],
-      ["next hop",route?.next_hop??"terminal"],["hop count",path.hop_count],
-      ["service Satellite",serviceAssignment?.service_satellite_id??"—"]
-    ]))
-    +(isTransition()?section("Formal path transition",table(
-      ["endpoint","previous Slice","current Slice"],[
-        ["resolved path",pair.previous?.nodes.join(" → ")??"unavailable",
-          pair.current?.nodes.join(" → ")??"unavailable"],
-        ["hop count",pair.previous?.hop_count??"—",pair.current?.hop_count??"—"]
-      ]
-    )):section("Formal resolved path",table(
-      ["hop","from","to","Connection class","outbound parameters"],edgeRows
-    )));
-}
-
-function differenceItems(){
-  const difference=displayDifference();
-  if(!difference)return [];
-  const category=document.getElementById("difference-category").value;
-  if(category==="connection-structure")return [
-    ...difference.added_connections.map(value=>({
-      kind:"added",value,previousConnection:null,currentConnection:value,
-      nodes:[value.connection_id.endpoint_a,value.connection_id.endpoint_b]
-    })),
-    ...difference.removed_connection_ids.map(value=>({
-      kind:"removed",value,
-      previousConnection:displayPreviousSlice().connections.find(
-        connection=>connection.connection_ref===value.connection_ref
-      )??null,
-      currentConnection:null,
-      nodes:[value.connection_id.endpoint_a,value.connection_id.endpoint_b]
-    }))
-  ];
-  if(category==="parameters")return difference.connection_parameter_patches.map(value=>({
-    kind:"parameters",value,
-    previousConnection:displayPreviousSlice().connections.find(
-      connection=>connection.connection_ref===value.connection_ref
-    )??null,
-    currentConnection:displayCurrentSlice().connections.find(
-      connection=>connection.connection_ref===value.connection_ref
-    )??null,
-    nodes:[value.connection_id.endpoint_a,value.connection_id.endpoint_b]
-  }));
-  if(category==="zone")return difference.zone_service_assignment_patches.map(value=>{
-    const previousAssignment=displayPreviousSlice().zone_service_assignments.find(
-      item=>item.zone_id===value.zone_id
-    )?.service_satellite_id??null;
-    const currentAssignment=displayCurrentSlice().zone_service_assignments.find(
-      item=>item.zone_id===value.zone_id
-    )?.service_satellite_id??null;
-    return {
-      kind:"zone",value,previousAssignment,currentAssignment,
-      nodes:[previousAssignment,currentAssignment].filter(Boolean)
-    };
-  });
-  return difference.route_patches.map(value=>{
-    const previousRoute=displayPreviousSlice().routes.find(
-      route=>route.route_ref===value.route_ref
-    )??null;
-    const currentRoute=displayCurrentSlice().routes.find(
-      route=>route.route_ref===value.route_ref
-    )??null;
-    return {
-      kind:"route",value,previousRoute,currentRoute,
-      previousPath:displayPreviousSlice().paths.find(path=>path.path_id===value.route_ref)??null,
-      currentPath:displayCurrentSlice().paths.find(path=>path.path_id===value.route_ref)??null,
-      nodes:[...new Set([
-        value.source,previousRoute?.next_hop,currentRoute?.next_hop,
-        ...(displayPreviousSlice().paths.find(
-          path=>path.path_id===value.route_ref
-        )?.nodes??[]),
-        ...(displayCurrentSlice().paths.find(
-          path=>path.path_id===value.route_ref
-        )?.nodes??[])
-      ].filter(Boolean))]
-    };
-  });
-}
-function differenceLabel(item){
-  const value=item.value;
-  if(item.kind==="added")return `ADDED · ${value.connection_ref}`;
-  if(item.kind==="removed")return `REMOVED · ${value.connection_ref}`;
-  if(item.kind==="parameters")return `${value.direction} · ${value.connection_ref}`;
-  if(item.kind==="zone")return `${value.operation.toUpperCase()} · Zone ${value.zone_id}`;
-  return `${value.operation.toUpperCase()} · ${value.route_ref}`;
-}
-function renderDifferenceList(){
-  const container=document.getElementById("difference-list"),items=differenceItems();
-  selectedDifferenceIndex=Math.min(selectedDifferenceIndex,Math.max(0,items.length-1));
-  container.innerHTML=section(
-    "Category items",
-    items.length
-      ?`<div class="difference-items">${items.map((item,index)=>
-        `<button class="difference-item" data-difference-index="${index}"
-          aria-selected="${index===selectedDifferenceIndex}">${escapeHtml(differenceLabel(item))}</button>`
-      ).join("")}</div>`
-      :'<p class="empty">No patch in this category.</p>'
-  );
-  container.querySelectorAll(".difference-item").forEach(button=>{
-    button.addEventListener("click",()=>{
-      selectedDifferenceIndex=Number(button.dataset.differenceIndex);
-      const item=differenceItems()[selectedDifferenceIndex];
-      if(item)focusDifferenceItem(item);
-      drawDifference();
-    });
-  });
-}
-function focusDifferenceItem(item){
-  const positions=comparisonPositionMap();
-  const values=item.nodes.map(id=>positions[id]?.geographic).filter(Boolean);
-  if(item.kind==="zone"){
-    values.push(zonesById[item.value.zone_id].representative_point);
-  }else if(item.kind==="route"&&item.value.target.kind==="Z"){
-    values.push(zonesById[item.value.target.zone_id].representative_point);
-  }else if(item.kind==="route"&&item.value.target.kind==="G"){
-    const target=positions[item.value.target.ground_station_id]?.geographic;
-    if(target)values.push(target);
-  }
-  focusLocations("difference-globe",values,differenceLabel(item));
-}
-function directionalParameters(connection,direction){
-  if(!connection)return null;
-  return direction==="endpoint-a-to-b"
-    ?connection.endpoint_a_to_b:connection.endpoint_b_to_a;
-}
-function drawFormalPath(canvas,path,positions,color,width,dashed=false){
-  if(!path)return;
-  for(let index=0;index<path.nodes.length-1;index++){
-    drawSegment(
-      canvas,nodePoint(path.nodes[index],positions),
-      nodePoint(path.nodes[index+1],positions),color,width,dashed
-    );
-  }
-}
-function differenceDetail(item){
-  if(!item){
-    if(displayDifference()?.is_empty){
-      return '<p class="empty"><strong>No discrete network-state change.</strong> The stable comparison context is retained; Position endpoint movement is not presented as Difference content.</p>';
-    }
-    return isTransition()
-      ?'<p class="empty">No patch in this category.</p>'
-      :'<p class="empty">Select a Δ marker to inspect a formal transition.</p>';
-  }
-  if(item.kind==="added"||item.kind==="removed"){
-    const connection=item.currentConnection??item.previousConnection;
-    return section("Connection transition",table(["field","previous","current"],[
-      ["operation",item.kind==="added"?"absent":"present",item.kind==="added"?"present":"absent"],
-      ["Connection",connection.connection_ref,connection.connection_ref],
-      ["A→B",item.previousConnection?parameters(item.previousConnection.endpoint_a_to_b):"—",
-        item.currentConnection?parameters(item.currentConnection.endpoint_a_to_b):"—"],
-      ["B→A",item.previousConnection?parameters(item.previousConnection.endpoint_b_to_a):"—",
-        item.currentConnection?parameters(item.currentConnection.endpoint_b_to_a):"—"]
-    ]));
-  }
-  if(item.kind==="parameters"){
-    const previous=directionalParameters(item.previousConnection,item.value.direction);
-    const current=directionalParameters(item.currentConnection,item.value.direction);
-    return section("Directional parameter transition",table(
-      ["field","previous","current","changed by Difference"],
-      ["bandwidth_bps","delay_us","packet_loss_ppm"].map(field=>[
-        field,previous?.[field]??"—",current?.[field]??"—",
-        Object.hasOwn(item.value.changed,field)?item.value.changed[field]:"unchanged"
-      ])
-    ))+section("Identity",table(["field","value"],[
-      ["Connection",item.value.connection_ref],["direction",item.value.direction]
-    ]));
-  }
-  if(item.kind==="zone"){
-    return section("Zone service transition",table(["field","previous","current"],[
-      ["Zone",item.value.zone_id,item.value.zone_id],
-      ["service Satellite",item.previousAssignment??"unassigned",item.currentAssignment??"unassigned"],
-      ["operation","—",item.value.operation]
-    ]));
-  }
-  return section("Route next-hop transition",table(["field","previous","current"],[
-    ["RouteKey",item.value.route_ref,item.value.route_ref],
-    ["next hop",item.previousRoute?.next_hop??"removed",item.currentRoute?.next_hop??"removed"],
-    ["formal resolved path",item.previousPath?.nodes.join(" → ")??"unavailable",
-      item.currentPath?.nodes.join(" → ")??"unavailable"]
-  ]));
-}
-function drawDifference(){
-  const canvas=document.getElementById("difference-globe");
-  const positions=comparisonPositionMap();
-  drawBase(canvas);
-  const category=document.getElementById("difference-category").value;
-  const items=differenceItems();
-  const layers=[...stableComparisonLayerNames()];
-  renderDifferenceList();
-  const item=items[selectedDifferenceIndex];
-  if(document.getElementById("difference-orbit-layer").checked){
-    const relevantOrbitRefs=item?orbitRefsForNodes(item.nodes):[];
-    if(relevantOrbitRefs.length){
-      relevantOrbitRefs.forEach(orbitRef=>
-        drawStableOrbitContext(canvas,{strong:true,orbitRef})
-      );
-      layers.push("focused-relevant-orbits");
-    }else if(displayDifference()?.is_empty&&drawStableOrbitContext(canvas)){
-      layers.push("empty-difference-stable-orbits");
-    }
-  }
-  if(document.getElementById("difference-satellite-layer").checked){
-    drawStableSatelliteContext(canvas);
-    layers.push("full-constellation-stable-context");
-  }
-  if(item){
-    const selected=true,width=7;
-    if(item.kind==="added"||item.kind==="removed"||item.kind==="parameters"){
-      drawSegment(canvas,nodePoint(item.nodes[0],positions),nodePoint(item.nodes[1],positions),
-        item.kind==="added"?"#5dff8b":item.kind==="removed"?"#ff6464":"#ff9f43",
-        width,item.kind!=="added");
-      item.nodes.forEach(id=>drawPoint(
-        canvas,nodePoint(id,positions),item.kind==="removed"?"#ff8a8a":"#ffffff",
-        selected?8:5
-      ));
-    }else if(item.kind==="zone"){
-      const zone=zonesById[item.value.zone_id],center=zone.representative_point;
-      const point=sphere(center.latitude_deg,center.longitude_deg,1.01);
-      drawZoneContext(canvas,{strong:selected,zoneId:zone.zone_id});
-      drawPoint(canvas,point,"#ffb454",selected?13:9,zone.zone_id);
-      if(item.previousAssignment){
-        drawSegment(
-          canvas,nodePoint(item.previousAssignment,positions),point,
-          "#ff6464",width,true,.9
-        );
-        drawPoint(canvas,nodePoint(item.previousAssignment,positions),"#ff6464",selected?9:6,"previous");
-      }
-      if(item.currentAssignment){
-        drawSegment(
-          canvas,nodePoint(item.currentAssignment,positions),point,
-          "#5dff8b",width,false,.9
-        );
-        drawPoint(canvas,nodePoint(item.currentAssignment,positions),"#5dff8b",selected?9:6,"current");
-      }
-    }else{
-      const source=item.value.source;
-      drawPoint(canvas,nodePoint(source,positions),"#ffffff",selected?11:7,"source");
-      if(item.value.target.kind==="G"){
-        drawPoint(
-          canvas,nodePoint(item.value.target.ground_station_id,positions),
-          "#ffb454",selected?10:7,"G target"
-        );
-      }else{
-        const zone=zonesById[item.value.target.zone_id],center=zone.representative_point;
-        drawZoneContext(canvas,{strong:selected,zoneId:zone.zone_id});
-        drawPoint(
-          canvas,sphere(center.latitude_deg,center.longitude_deg,1.01),
-          "#ffb454",selected?10:7,"Z target"
-        );
-      }
-      if(item.previousRoute){
-        drawSegment(
-          canvas,nodePoint(source,positions),
-          nodePoint(item.previousRoute.next_hop,positions),
-          "#ff6464",width,true
-        );
-      }
-      if(item.currentRoute){
-        drawSegment(
-          canvas,nodePoint(source,positions),nodePoint(item.currentRoute.next_hop,positions),
-          "#5dff8b",width,false
-        );
-      }
-      if(selected){
-        drawFormalPath(canvas,item.previousPath,positions,"#ff646488",3,true);
-        drawFormalPath(canvas,item.currentPath,positions,"#5dff8b99",3,false);
-      }
-    }
-    layers.push("focused-selected-item");
-  }else if(displayDifference()?.is_empty){
-    layers.push("no-discrete-network-state-change");
-  }
-  layers.push(`difference-${category}`);
-  canvas.dataset.layers=layers.join(",");
-  document.getElementById("difference-detail").innerHTML=differenceDetail(item);
-}
-
-function populateStaticControls(){
-  const orbitControls=[
-    document.getElementById("orbit-select"),
-    document.getElementById("isl-orbit-filter")
-  ];
-  orbitControls.forEach(select=>{
-    select.append(new Option("All Orbits","*"));
-    DATA.topology.orbits.forEach(orbit=>select.append(new Option(
-      `AS${orbit.asn} / ${orbit.shell_id} / ${orbit.orbit_id}`,orbit.orbit_ref
-    )));
-    select.value=selectedOrbitRef;
-  });
-  const node=document.getElementById("isl-node-filter");
-  node.append(new Option("All ISL nodes","*"));
-  DATA.topology.nodes.filter(value=>value.kind==="satellite")
-    .forEach(value=>node.append(new Option(value.node_id,value.node_id)));
-}
-function populateRouteSources(){
-  const select=document.getElementById("route-source");
-  const sources=[...new Set(displayPaths().map(path=>path.source))];
-  select.replaceChildren();
-  sources.forEach(value=>select.append(new Option(value,value)));
-  if(sources.includes(selectedRouteSource))select.value=selectedRouteSource;
-  selectedRouteSource=select.value;
-  populateRouteTargets();
-}
-function differenceSummary(difference){
-  if(!difference)return displayBaseSlice().slice_id===0
-    ?"Slice 0 is the synthetic baseline; no previous Difference."
-    :"Formal Slice after-state. Select an adjacent Δ marker for transition inspection.";
-  if(difference.is_empty){
-    return "No discrete network-state change · stable comparison geometry only";
-  }
-  return [
-    `added Connections ${difference.added_connections.length}`,
-    `removed Connections ${difference.removed_connection_ids.length}`,
-    `parameter patches ${difference.connection_parameter_patches.length}`,
-    `Zone patches ${difference.zone_service_assignment_patches.length}`,
-    `Route patches ${difference.route_patches.length}`
-  ].join(" · ");
-}
-function populateTimelineRail(){
-  const rail=document.getElementById("timeline-rail");
-  rail.replaceChildren();
-  DATA.slices.forEach((slice,index)=>{
-    if(index>0){
-      const difference=document.createElement("button");
-      difference.type="button";difference.className="timeline-marker difference";
-      difference.dataset.timelineIndex=String(index*2-1);
-      difference.dataset.kind="difference";
-      difference.textContent=`Δ${index-1}→${index}`;
-      rail.append(difference);
-    }
-    const marker=document.createElement("button");
-    marker.type="button";marker.className="timeline-marker slice";
-    marker.dataset.timelineIndex=String(index*2);
-    marker.dataset.kind="slice";marker.textContent=`S${slice.slice_id}`;
-    rail.append(marker);
-  });
-  rail.querySelectorAll(".timeline-marker").forEach(marker=>
-    marker.addEventListener("click",()=>setTimelineIndex(Number(marker.dataset.timelineIndex)))
-  );
-}
-function renderAll(){
-  const baseSlice=displayBaseSlice();
-  const currentSlice=displayCurrentSlice();
-  range.value=String(timelineIndex);
-  const label=timelineLabel();
-  document.getElementById("slice-label").textContent=label;
-  document.getElementById("timestamp-label").textContent=isTransition()
-    ?`${displayPreviousSlice().timestamp??"none"} → ${currentSlice.timestamp}`
-    :(baseSlice.timestamp??"timestamp: none (synthetic baseline)");
-  document.getElementById("difference-summary").textContent=
-    differenceSummary(displayDifference());
-  document.querySelectorAll(".view-context").forEach(value=>value.textContent=label);
-  document.querySelectorAll(".timeline-marker").forEach(marker=>
-    marker.setAttribute("aria-current",String(Number(marker.dataset.timelineIndex)===timelineIndex))
-  );
-  document.getElementById("audit-json").textContent=JSON.stringify(
-    isTransition()?{
-      mode:"non-authoritative-transition-view",
-      base_state:displayPreviousSlice(),
-      difference:displayDifference(),
-      reference_after_state:currentSlice,
-      position_interpolation:false
-    }:{
-      mode:"formal-slice",
-      slice:baseSlice
-    },null,2
-  );
-  populateRouteSources();
-  drawTopology();drawIsl();drawService();drawRouting();drawDifference();
-}
-function setTimelineIndex(index){
-  timelineIndex=Math.max(0,Math.min(DATA.slices.length*2-2,index));
-  selectedDifferenceIndex=0;renderAll();
-}
-function setSlice(index){
-  setTimelineIndex(Math.max(0,Math.min(DATA.slices.length-1,index))*2);
-}
-function activateView(view){
-  activeView=view;
-  document.querySelectorAll(".view-tab").forEach(button=>
-    button.setAttribute("aria-selected",String(button.dataset.view===view))
-  );
-  document.querySelectorAll(".view-panel").forEach(panel=>
-    panel.hidden=panel.dataset.panel!==view
-  );
-  const canvas=document.querySelector(`[data-panel="${view}"] canvas`);
-  if(canvas)requestAnimationFrame(()=>canvas.scrollIntoView({block:"center"}));
-}
-
-populateStaticControls();
-populateTimelineRail();
-document.querySelectorAll(".view-tab").forEach(button=>
-  button.addEventListener("click",()=>activateView(button.dataset.view))
-);
-range.addEventListener("input",()=>setTimelineIndex(Number(range.value)));
-document.getElementById("previous-slice").addEventListener("click",()=>setTimelineIndex(timelineIndex-1));
-document.getElementById("next-slice").addEventListener("click",()=>setTimelineIndex(timelineIndex+1));
-document.getElementById("play-pause").addEventListener("click",event=>{
-  if(timer){clearInterval(timer);timer=null;event.target.textContent="Play";return;}
-  event.target.textContent="Pause";
-  timer=setInterval(()=>setTimelineIndex((timelineIndex+1)%(DATA.slices.length*2-1)),900);
-});
-function setOrbitFocus(value){
-  selectedOrbitRef=value;
-  document.getElementById("orbit-select").value=value;
-  document.getElementById("isl-orbit-filter").value=value;
-  drawTopology();drawIsl();
-}
-document.getElementById("orbit-select").addEventListener("change",event=>
-  setOrbitFocus(event.target.value)
-);
-document.getElementById("topology-ground-layer").addEventListener("change",drawTopology);
-document.getElementById("topology-zone-layer").addEventListener("change",drawTopology);
-document.getElementById("isl-orbit-filter").addEventListener("change",event=>
-  setOrbitFocus(event.target.value)
-);
-document.getElementById("isl-orbit-layer").addEventListener("change",drawIsl);
-document.getElementById("isl-satellite-layer").addEventListener("change",drawIsl);
-document.getElementById("isl-node-filter").addEventListener("change",event=>{
-  selectedNodeId=event.target.value;
-  if(selectedNodeId!=="*")focusNodes("isl-globe",[selectedNodeId]);
-  drawIsl();
-});
-document.getElementById("service-orbit-layer").addEventListener("change",drawService);
-document.getElementById("service-satellite-layer").addEventListener("change",drawService);
-document.getElementById("route-source").addEventListener("change",()=>{
-  selectedRouteSource=document.getElementById("route-source").value;
-  populateRouteTargets();
-  selectedRouteTarget=document.getElementById("route-target").value;
-  const path=selectedPath();
-  if(path)focusPath(path);
-  drawRouting();
-});
-document.getElementById("route-target").addEventListener("change",()=>{
-  selectedRouteTarget=document.getElementById("route-target").value;
-  const path=selectedPath();
-  if(path)focusPath(path);
-  drawRouting();
-});
-document.getElementById("routing-orbit-layer").addEventListener("change",drawRouting);
-document.getElementById("routing-satellite-layer").addEventListener("change",drawRouting);
-document.getElementById("routing-ground-layer").addEventListener("change",drawRouting);
-document.getElementById("difference-category").addEventListener("change",()=>{
-  selectedDifferenceIndex=0;drawDifference();
-});
-document.getElementById("difference-orbit-layer").addEventListener("change",drawDifference);
-document.getElementById("difference-satellite-layer").addEventListener("change",drawDifference);
-document.getElementById("sync-camera").addEventListener("change",event=>{
-  if(event.target.checked){
-    const activeCanvas=document.querySelector(`[data-panel="${activeView}"] canvas`);
-    const state=viewState[activeCanvas.id];
-    sharedCamera={yaw:state.yaw,pitch:state.pitch,drag:null};
-  }else{
-    canvasIds.forEach(id=>{
-      viewState[id]={yaw:sharedCamera.yaw,pitch:sharedCamera.pitch,drag:null};
-    });
-  }
-  renderAll();
-});
-document.querySelectorAll(".reset-view").forEach(button=>button.addEventListener("click",()=>{
-  const canvas=document.getElementById(button.dataset.canvas);
-  const state=cameraFor(canvas);
-  state.yaw=-.65;state.pitch=.28;state.drag=null;
-  renderAll();
-}));
-document.querySelectorAll("canvas.globe").forEach(canvas=>{
-  canvas.addEventListener("pointerdown",event=>{
-    cameraFor(canvas).drag=[event.clientX,event.clientY];
-    canvas.setPointerCapture(event.pointerId);
-  });
-  canvas.addEventListener("pointermove",event=>{
-    const state=cameraFor(canvas);
-    if(!state.drag)return;
-    state.yaw+=(event.clientX-state.drag[0])*.009;
-    state.pitch=Math.max(-1.3,Math.min(1.3,state.pitch+(event.clientY-state.drag[1])*.009));
-    state.drag=[event.clientX,event.clientY];renderAll();
-  });
-  canvas.addEventListener("pointerup",()=>cameraFor(canvas).drag=null);
-});
-renderAll();
-"""
+def _unit(value: object, suffix: str) -> str:
+    if value is None:
+        return "n/a"
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    return f"{value} {suffix}"
 
 
 __all__ = ["render_slice_difference_page"]

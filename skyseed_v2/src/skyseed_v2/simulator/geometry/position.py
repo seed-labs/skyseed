@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from math import isfinite
 
 import astropy.units as u
@@ -56,10 +57,25 @@ def ecef_to_geodetic(
 
     if not isinstance(position, EarthFixedPosition):
         raise TypeError("position must be an EarthFixedPosition")
+    return _ecef_coordinates_to_geodetic(
+        position.x_m,
+        position.y_m,
+        position.z_m,
+    )
+
+
+@lru_cache(maxsize=4096)
+def _ecef_coordinates_to_geodetic(
+    x_m: float,
+    y_m: float,
+    z_m: float,
+) -> tuple[float, float, float]:
+    """Return a cached WGS84 geodetic view for validated ECEF scalars."""
+
     geodetic = EarthLocation.from_geocentric(
-        position.x_m * u.m,
-        position.y_m * u.m,
-        position.z_m * u.m,
+        x_m * u.m,
+        y_m * u.m,
+        z_m * u.m,
     ).to_geodetic(ellipsoid="WGS84")
     return (
         float(geodetic.lat.to_value(u.deg)),

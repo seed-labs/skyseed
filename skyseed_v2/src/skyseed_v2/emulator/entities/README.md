@@ -73,6 +73,7 @@ classDiagram
         +orbit_index
         +mean_anomaly_deg
         +payload
+        +max_simultaneous_ground_station_accesses
     }
     class GroundStation {
         <<Emulator and SEED router>>
@@ -80,6 +81,7 @@ classDiagram
         +location
         +station_type
         +operator
+        +max_simultaneous_satellite_accesses
         +service_config
     }
     Shell "1" *-- "*" Orbit : orbits
@@ -118,8 +120,8 @@ classDiagram
 |---|---|---|
 | `Shell` | `skyseed_v2.emulator.entities.Shell` | `shell_id`, `orbits`, `create_orbit()`, `get_orbit()`, `iter_satellites()` |
 | `Orbit` | `skyseed_v2.emulator.entities.Orbit` | `orbit_id`, `shell_id`, `parameters`, `satellites`, `get_satellite()`, `create_satellite()`, `create_satellites()` |
-| `Satellite` | `skyseed_v2.emulator.entities.Satellite` | `satellite_id`, `shell_id`, `orbit_id`, `orbit_index`, `mean_anomaly_deg`, `payload` |
-| `GroundStation` | `skyseed_v2.emulator.entities.GroundStation` | `ground_station_id`, `location`, `station_type`, `operator`, `service_config` |
+| `Satellite` | `skyseed_v2.emulator.entities.Satellite` | `satellite_id`, `shell_id`, `orbit_id`, `orbit_index`, `mean_anomaly_deg`, `payload`, `max_simultaneous_ground_station_accesses` |
+| `GroundStation` | `skyseed_v2.emulator.entities.GroundStation` | `ground_station_id`, `location`, `station_type`, `operator`, `max_simultaneous_satellite_accesses`, `service_config` |
 | `GroundStationLocation` | `skyseed_v2.emulator.entities.GroundStationLocation` | `latitude_deg`, `longitude_deg`, `elevation_m` |
 | `OrbitParameters` | `skyseed_v2.emulator.entities.OrbitParameters` | `altitude_km`, `inclination_deg`, `right_ascension_deg`, `epoch_utc` |
 
@@ -127,8 +129,18 @@ Satellite projects `skyseed.entity_type`, `skyseed.satellite_id`,
 `skyseed.shell_id`, and `skyseed.orbit_id` through public Node labels.
 GroundStation keeps standard Router/BorderRouter role and projects
 `skyseed.entity_type`, `skyseed.ground_station_id`,
-`skyseed.station_type`, `skyseed.operator`, latitude, longitude, and elevation
-labels; it also uses public `setGeo()`.
+`skyseed.station_type`, latitude, longitude, and elevation labels; it also uses
+public `setGeo()`. The descriptive `skyseed.operator` label is projected only
+when `operator` is a known non-empty string; `operator=None` emits no label.
+
+A GroundStation represents one site-level terrestrial satellite-network
+endpoint. A site may contain multiple physical antennas, but
+`max_simultaneous_satellite_accesses` is only an optional positive-integer
+simulation capability; it does not record or infer antenna count.
+
+Satellite `max_simultaneous_ground_station_accesses` is an optional
+positive-integer cap on simultaneous GroundStation-access Connections. It is
+not total Satellite degree, an ISL limit, a UT-beam limit, or antenna count.
 
 ## Entry points
 

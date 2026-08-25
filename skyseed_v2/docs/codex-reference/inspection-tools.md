@@ -41,8 +41,9 @@ The two evidence domains remain separate. The Tool never retains a live
 Runner, invokes lifecycle methods, or performs fresh Docker/kernel reads.
 
 Traffic Replay instead reads three required already-written artifacts:
-Runner-owned traffic JSONL, Slice / Difference private JSON, and BPF Compiler
-inspection JSON. An example-owned planned workload is optional context.
+Runner-owned traffic JSONL, the Slice / Difference manifest plus offline Slice
+chunks, and BPF Compiler inspection JSON. An example-owned planned workload is
+optional context.
 Its reader validates timeline, NodeId, Zone prefix, nominal boundary, and
 generation identity; it reconstructs exact ACTIVE-generation physical network
 context only from reciprocal telemetry interface identities. Projection pairs
@@ -59,9 +60,6 @@ gaps, not claimed timeouts or packet loss.
 
 - the formal-reader responsibility performs every Topology/Slicer lookup and
   returns a Tool-owned read snapshot with no retained formal object;
-- a private read-plan helper may choose deterministic coordinates required by
-  a reader's formal queries, but cannot read a formal object or perform
-  display annotation;
 - the projection responsibility converts only that snapshot into private
   serializable view data and never imports or invokes a formal domain object;
 - display analysis adds explicitly non-authoritative display values,
@@ -73,12 +71,31 @@ gaps, not claimed timeouts or packet loss.
 - the Tool facade composes the responsibilities and preserves its Tool-facing
   function.
 
-Dynamic and Planner reads use retained Slice, path-resolution, and
-adjacent-Difference APIs. Planner inspection reads actual Plan transitions,
+The Slice Tool reads retained Slice next-hop facts and adjacent Differences;
+it does not eagerly resolve every route. It writes one small manifest plus one
+offline script chunk per retained Slice so normal page load materializes only
+the selected Slice. Its renderer may preserve selected object identities,
+visualize contextual Zone service and Difference facts, and restore one
+explicitly selected path for display, but does not acquire routing authority.
+The generation facade may receive a detached scenario/model-context mapping
+for compact human explanation. Display analysis combines that mapping with
+read Topology/Slice facts to produce current counts and physical summaries;
+derived envelope/separation values remain Tool-private and are labeled as
+such. No Tool-context field enters a formal Simulator value or public schema.
+Planner inspection may adapt
+the same compact read snapshot for its existing focused view and reads actual Plan transitions,
 temporal indexes, precedence edges, and retained decisions; it never
-reconstructs rejected candidates or an expected Plan. Zone reads use formal
-membership/resolution results. Display analysis
-may explain or arrange those results but cannot replace them.
+reconstructs rejected candidates or an expected Plan. Zone inspection reads
+only the formal static layout/geometry. Its browser hit testing is
+display-only navigation and is not a membership result.
+
+Topology and Zone rendering may embed the frozen Tool-private Natural Earth
+1:110m coastline coordinate asset for offline orientation. The asset never
+enters a reader snapshot, formal geometry, membership, or public data contract.
+Topology orbit rings and Slice Satellite positions share a Tool-private
+spherical display projection using unit Earth and the IUGG mean Earth radius.
+It consumes formal altitude/Position facts without changing them; display
+marker offsets, marker sizes, and hit-test radii remain non-authoritative.
 
 Planner display aliases, lifetime/state lanes, and spatial selection are
 Tool-owned projections. Its spatial panel uses exact retained ECEF positions

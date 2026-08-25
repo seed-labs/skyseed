@@ -30,7 +30,6 @@ from skyseed_v2.simulator.geometry import (
     has_earth_line_of_sight,
 )
 from tools.slice import collect_slice_difference_data
-from tools.zone import collect_zone_data
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -52,6 +51,39 @@ def reference_slicer(reference_emulator) -> Slicer:
 @pytest.fixture(scope="module")
 def reference_view_data(reference_slicer: Slicer) -> dict[str, object]:
     return collect_slice_difference_data(reference_slicer)
+
+
+def test_mini_generated_anomalies_preserve_the_alternating_policy(
+    reference_emulator,
+) -> None:
+    topology = simu.create_mini_satellite_internet_simulator(
+        reference_emulator
+    ).get_topology()
+    orbits = sorted(
+        topology.autonomous_systems[0].shells[0].orbits,
+        key=lambda orbit: orbit.orbit_id,
+    )
+
+    assert [
+        [
+            satellite.mean_anomaly_deg
+            for satellite in sorted(
+                orbit.satellites,
+                key=lambda satellite: satellite.orbit_index,
+            )
+        ]
+        for orbit in orbits
+    ] == [
+        [0.0, 45.0, 90.0, 135.0, 180.0, 225.0, 270.0, 315.0],
+        [22.5, 67.5, 112.5, 157.5, 202.5, 247.5, 292.5, 337.5],
+        [0.0, 45.0, 90.0, 135.0, 180.0, 225.0, 270.0, 315.0],
+        [22.5, 67.5, 112.5, 157.5, 202.5, 247.5, 292.5, 337.5],
+    ]
+    assert all(
+        station.max_simultaneous_satellite_accesses is None
+        for autonomous_system in topology.autonomous_systems
+        for station in autonomous_system.ground_stations
+    )
 
 
 def test_richer_reference_uses_the_formal_bounded_a_f_chain(
@@ -564,13 +596,13 @@ def test_richer_main_builds_once_and_emits_static_and_slice_outputs(
 
     for directory, names in (
         (topology_output, ("index.html", "topology.json", "summary.txt")),
-        (zone_output, ("index.html", "probes.json", "summary.txt")),
+        (zone_output, ("index.html", "zones.json", "summary.txt")),
     ):
         for name in names:
             assert (directory / name).is_file()
     for name in (
         "index.html",
-        "slice-difference.json",
+        "slice-manifest.json",
         "summary.txt",
         "inventory.json",
         "checksums.sha256",
@@ -597,10 +629,10 @@ def test_richer_main_builds_once_and_emits_static_and_slice_outputs(
         (topology_output / "topology.json").read_text(encoding="utf-8")
     )
     zone_payload = json.loads(
-        (zone_output / "probes.json").read_text(encoding="utf-8")
+        (zone_output / "zones.json").read_text(encoding="utf-8")
     )
     dynamic_payload = json.loads(
-        (slice_output / "slice-difference.json").read_text(encoding="utf-8")
+        (slice_output / "slice-manifest.json").read_text(encoding="utf-8")
     )
     expected_asns = {
         autonomous_system.asn
@@ -619,6 +651,13 @@ def test_richer_main_builds_once_and_emits_static_and_slice_outputs(
         for orbit in shell.orbits
         for satellite in orbit.satellites
     }
+    expected_satellite_ids = {
+        satellite.satellite_id
+        for autonomous_system in exact_topology.autonomous_systems
+        for shell in autonomous_system.shells
+        for orbit in shell.orbits
+        for satellite in orbit.satellites
+    }
     expected_ground_stations = {
         ground_station.node_id.value
         for autonomous_system in exact_topology.autonomous_systems
@@ -628,28 +667,26 @@ def test_richer_main_builds_once_and_emits_static_and_slice_outputs(
         zone.zone_id for zone in exact_topology.get_zone_layout().zones
     }
     assert {
-        item["asn"] for item in topology_payload["hierarchy"]
+        item["asn"] for item in topology_payload["orbit_rings"]
+    } | {
+        item["asn"] for item in topology_payload["ground_stations"]
     } == expected_asns
     assert {
         (item["asn"], item["shell_id"], item["orbit_id"])
         for item in topology_payload["orbit_rings"]
     } == expected_orbits
     assert {
-        satellite["node_id"]
-        for autonomous_system in topology_payload["hierarchy"]
-        for shell in autonomous_system["shells"]
-        for orbit in shell["orbits"]
-        for satellite in orbit["satellites"]
-    } == expected_satellites
+        satellite_id
+        for orbit in topology_payload["orbit_rings"]
+        for satellite_id in orbit["satellite_ids"]
+    } == expected_satellite_ids
     assert {
         item["node_id"] for item in topology_payload["ground_stations"]
     } == expected_ground_stations
     assert {
         item["zone_id"] for item in zone_payload["zones"]
     } == expected_zones
-    assert {
-        item["node_id"] for item in zone_payload["ground_stations"]
-    } == expected_ground_stations
+    assert "ground_stations" not in zone_payload
     assert {
         item["node_id"]
         for item in dynamic_payload["topology"]["nodes"]
@@ -828,7 +865,7 @@ def test_richer_reference_naturally_exercises_representative_behavior(
         "zones": 5,
         "slices": 65,
         "differences": 64,
-        "paths": 11264,
+        "route_entries": 11264,
     }
     assert reference_view_data["behavior"] == {
         "later_nonempty_differences": 63,
@@ -841,7 +878,7 @@ def test_richer_reference_naturally_exercises_representative_behavior(
         "route_additions": 169,
         "route_changes": 137,
         "route_removals": 239,
-        "maximum_path_hops": 7,
+        "route_patches": 545,
     }
     slices = reference_view_data["slices"]
     first_connections = slices[1]["connections"]
@@ -876,7 +913,7 @@ def test_richer_reference_naturally_exercises_representative_behavior(
         for topology_slice in slices[2:]
     )
     route_operations = {
-        patch["operation"]
+        patch[0]
         for difference in later_differences
         for patch in difference["route_patches"]
     }
@@ -962,22 +999,6 @@ def test_reference_zone_overlap_preserves_all_memberships_and_priority_winner(
     for zone_id in ("north-america-east", "northeast-priority"):
         zone = layout.get_zone(zone_id)
         assert zone.contains(*zone.representative_point)
-
-    tool_data = collect_zone_data(topology)
-    overlap_probes = [
-        value
-        for value in tool_data["probes"]
-        if {
-            match["zone_id"] for match in value["physical_matches"]
-        }
-        == {"north-america-east", "northeast-priority"}
-    ]
-    assert overlap_probes
-    assert all(
-        value["authoritative_result"]["zone_id"] == "northeast-priority"
-        for value in overlap_probes
-    )
-
 
 def test_reference_ground_stations_copy_v1_reference_values_without_runtime_dependency(
     reference_slicer: Slicer,

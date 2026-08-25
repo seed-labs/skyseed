@@ -88,6 +88,68 @@ return {{x:Math.round(box.left+box.width/2),y:Math.round(box.top+box.height/2)}}
     )
 
 
+def _click_at(
+    base_url: str,
+    session_id: str,
+    x: int,
+    y: int,
+) -> None:
+    _request(
+        f"{base_url}/session/{session_id}/actions",
+        method="POST",
+        value={
+            "actions": [
+                {
+                    "type": "pointer",
+                    "id": "inspection-click",
+                    "parameters": {"pointerType": "mouse"},
+                    "actions": [
+                        {
+                            "type": "pointerMove",
+                            "duration": 0,
+                            "origin": "viewport",
+                            "x": x,
+                            "y": y,
+                        },
+                        {"type": "pointerDown", "button": 0},
+                        {"type": "pointerUp", "button": 0},
+                    ],
+                }
+            ]
+        },
+    )
+
+
+def _move_at(
+    base_url: str,
+    session_id: str,
+    x: int,
+    y: int,
+) -> None:
+    _request(
+        f"{base_url}/session/{session_id}/actions",
+        method="POST",
+        value={
+            "actions": [
+                {
+                    "type": "pointer",
+                    "id": "inspection-hover",
+                    "parameters": {"pointerType": "mouse"},
+                    "actions": [
+                        {
+                            "type": "pointerMove",
+                            "duration": 80,
+                            "origin": "viewport",
+                            "x": x,
+                            "y": y,
+                        }
+                    ],
+                }
+            ]
+        },
+    )
+
+
 def _topology(base_url: str, session_id: str, page: Path) -> dict[str, object]:
     _navigate(base_url, session_id, page)
     initial = _execute(
@@ -95,6 +157,7 @@ def _topology(base_url: str, session_id: str, page: Path) -> dict[str, object]:
         session_id,
         """
 const canvas=document.getElementById("orbit-canvas"),ctx=canvas.getContext("2d");
+canvas.scrollIntoView({block:"center"});
 const pixels=ctx.getImageData(0,0,canvas.width,canvas.height).data;
 const radius=Math.min(canvas.width,canvas.height)*.34;
 let outside=0;
@@ -102,14 +165,92 @@ for(let y=0;y<canvas.height;y+=2)for(let x=0;x<canvas.width;x+=2){
   if(Math.hypot(x-canvas.width/2,y-canvas.height/2)>radius+3&&pixels[(y*canvas.width+x)*4+3])outside++;
 }
 const chinese=document.title;document.querySelector('[data-language="en"]').click();
-return {chinese,english:document.title,yaw:Number(canvas.dataset.cameraYaw),pitch:Number(canvas.dataset.cameraPitch),orbitSegments:Number(canvas.dataset.orbitSegments),gridSegments:Number(canvas.dataset.gridSegments),outside};
+const box=canvas.getBoundingClientRect();
+const viewport=(x,y)=>({x:Math.round(box.left+x),y:Math.round(box.top+y)});
+return {chinese,english:document.title,yaw:Number(canvas.dataset.cameraYaw),pitch:Number(canvas.dataset.cameraPitch),orbitSegments:Number(canvas.dataset.orbitSegments),gridSegments:Number(canvas.dataset.gridSegments),coastlineSegments:Number(canvas.dataset.coastlineSegments),outside,dpr:Number(canvas.dataset.devicePixelRatio),logicalWidth:Number(canvas.dataset.logicalWidth),logicalHeight:Number(canvas.dataset.logicalHeight),backingWidth:canvas.width,backingHeight:canvas.height,earthReferenceRadiusM:Number(canvas.dataset.earthReferenceRadiusM),orbitAltitudeKm:Number(canvas.dataset.firstOrbitAltitudeKm),orbitDisplayRadius:Number(canvas.dataset.firstOrbitDisplayRadius),expectedOrbitDisplayRadius:1+Number(canvas.dataset.firstOrbitAltitudeKm)*1000/Number(canvas.dataset.earthReferenceRadiusM),station:viewport(Number(canvas.dataset.firstGroundStationX),Number(canvas.dataset.firstGroundStationY))};
 """,
+    )
+    _move_at(
+        base_url,
+        session_id,
+        int(initial["station"]["x"]),
+        int(initial["station"]["y"]),
+    )
+    station_hover = _execute(
+        base_url,
+        session_id,
+        'return document.getElementById("orbit-canvas").dataset.hoverLabel;',
+    )
+    _click_at(
+        base_url,
+        session_id,
+        int(initial["station"]["x"]),
+        int(initial["station"]["y"]),
+    )
+    station = _execute(
+        base_url,
+        session_id,
+        """
+const canvas=document.getElementById("orbit-canvas"),detail=document.getElementById("selected-object");canvas.scrollIntoView({block:"center"});const box=canvas.getBoundingClientRect();
+return {kind:detail.dataset.selectedKind,id:detail.dataset.selectedId,text:detail.textContent,label:canvas.dataset.selectedLabel,orbit:{x:Math.round(box.left+Number(canvas.dataset.firstOrbitX)),y:Math.round(box.top+Number(canvas.dataset.firstOrbitY))}};
+""",
+    )
+    _click_at(
+        base_url,
+        session_id,
+        int(initial["station"]["x"]),
+        int(initial["station"]["y"]),
+    )
+    station_cleared = _execute(
+        base_url,
+        session_id,
+        'const c=document.getElementById("orbit-canvas"),d=document.getElementById("selected-object");return {kind:d.dataset.selectedKind,id:d.dataset.selectedId,label:c.dataset.selectedLabel};',
+    )
+    orbit_target = _execute(
+        base_url,
+        session_id,
+        'const c=document.getElementById("orbit-canvas"),b=c.getBoundingClientRect();return {x:Math.round(b.left+Number(c.dataset.firstOrbitX)),y:Math.round(b.top+Number(c.dataset.firstOrbitY))};',
+    )
+    _click_at(
+        base_url,
+        session_id,
+        int(orbit_target["x"]),
+        int(orbit_target["y"]),
+    )
+    orbit = _execute(
+        base_url,
+        session_id,
+        """
+const detail=document.getElementById("selected-object"),canvas=document.getElementById("orbit-canvas");return {kind:detail.dataset.selectedKind,id:detail.dataset.selectedId,text:detail.textContent,label:canvas.dataset.selectedLabel};
+""",
+    )
+    _click_at(
+        base_url,
+        session_id,
+        int(orbit_target["x"]),
+        int(orbit_target["y"]),
+    )
+    orbit_cleared = _execute(
+        base_url,
+        session_id,
+        'const c=document.getElementById("orbit-canvas"),d=document.getElementById("selected-object");return {kind:d.dataset.selectedKind,id:d.dataset.selectedId,label:c.dataset.selectedLabel};',
+    )
+    orbit_reselect_target = _execute(
+        base_url,
+        session_id,
+        'const c=document.getElementById("orbit-canvas"),b=c.getBoundingClientRect();return {x:Math.round(b.left+Number(c.dataset.firstOrbitX)),y:Math.round(b.top+Number(c.dataset.firstOrbitY))};',
+    )
+    _click_at(
+        base_url,
+        session_id,
+        int(orbit_reselect_target["x"]),
+        int(orbit_reselect_target["y"]),
     )
     _drag(base_url, session_id, "orbit-canvas", 95, 54)
     moved = _execute(
         base_url,
         session_id,
-        """const c=document.getElementById("orbit-canvas");return {yaw:Number(c.dataset.cameraYaw),pitch:Number(c.dataset.cameraPitch)};""",
+        """const c=document.getElementById("orbit-canvas"),d=document.getElementById("selected-object");return {yaw:Number(c.dataset.cameraYaw),pitch:Number(c.dataset.cameraPitch),kind:d.dataset.selectedKind,id:d.dataset.selectedId};""",
     )
     reset = _execute(
         base_url,
@@ -121,15 +262,65 @@ return {chinese,english:document.title,yaw:Number(canvas.dataset.cameraYaw),pitc
         or initial["english"] != "Topology Inspection"
         or initial["orbitSegments"] < 1
         or initial["gridSegments"] < 1
+        or initial["coastlineSegments"] < 1
         or initial["outside"] < 10
-        or moved == {"yaw": initial["yaw"], "pitch": initial["pitch"]}
+        or abs(initial["earthReferenceRadiusM"] - 6_371_008.8) > 0.1
+        or abs(
+            initial["orbitDisplayRadius"]
+            - initial["expectedOrbitDisplayRadius"]
+        )
+        > 1e-12
+        or not 1.0 < initial["orbitDisplayRadius"] < 1.2
+        or abs(
+            initial["backingWidth"]
+            - round(initial["logicalWidth"] * initial["dpr"])
+        )
+        > 1
+        or abs(
+            initial["backingHeight"]
+            - round(initial["logicalHeight"] * initial["dpr"])
+        )
+        > 1
+        or station["kind"] != "ground-station"
+        or station_hover != station["id"].split("/")[-1]
+        or not station["label"]
+        or not all(
+            value in station["text"]
+            for value in ("ground_station_id", "latitude / longitude", "station_type")
+        )
+        or orbit["kind"] != "orbit"
+        or not orbit["label"]
+        or not all(
+            value in orbit["text"]
+            for value in ("orbit_id", "inclination", "right ascension", "satellite_count")
+        )
+        or station_cleared != {"kind": "", "id": "", "label": ""}
+        or orbit_cleared != {"kind": "", "id": "", "label": ""}
+        or (
+            moved["yaw"] == initial["yaw"]
+            and moved["pitch"] == initial["pitch"]
+        )
+        or moved["kind"] != orbit["kind"]
+        or moved["id"] != orbit["id"]
         or abs(reset["yaw"] - initial["yaw"]) > 1e-9
         or abs(reset["pitch"] - initial["pitch"]) > 1e-9
     ):
         raise AssertionError(
-            f"Topology visual regression: {initial=} {moved=} {reset=}"
+            "Topology visual regression: "
+            f"{initial=} {station_hover=} {station=} {station_cleared=} "
+            f"{orbit=} {orbit_cleared=} {moved=} {reset=}"
         )
-    return {"outside_orbit_pixels": initial["outside"]}
+    return {
+        "outside_orbit_pixels": initial["outside"],
+        "selected_ground_station": station["id"],
+        "selected_orbit": orbit["id"],
+        "operator_row_present": "operator" in station["text"],
+        "device_pixel_ratio": initial["dpr"],
+        "coastline_segments": initial["coastlineSegments"],
+        "earth_reference_radius_m": initial["earthReferenceRadiusM"],
+        "orbit_display_radius": initial["orbitDisplayRadius"],
+        "selection_toggle": "PASS",
+    }
 
 
 def _zone(base_url: str, session_id: str, page: Path) -> dict[str, object]:
@@ -140,47 +331,137 @@ def _zone(base_url: str, session_id: str, page: Path) -> dict[str, object]:
         """
 const canvas=document.getElementById("zone-globe"),map=document.getElementById("zone-map");
 const chinese=document.title;document.querySelector('[data-language="en"]').click();
-return {chinese,english:document.title,count:Number(document.getElementById("probe-visible").textContent),rows:document.querySelectorAll("#probe-table tr").length,mapBoundaries:document.querySelectorAll("#zone-map .zone-boundary").length,mapProbes:document.querySelectorAll("#zone-map .zone-probe").length,boundarySegments:Number(canvas.dataset.boundarySegments),yaw:Number(canvas.dataset.cameraYaw),pitch:Number(canvas.dataset.cameraPitch)};
+const area=map.querySelector(".zone-area");area.scrollIntoView({block:"center"});
+const areaBox=area.getBoundingClientRect();
+return {chinese,english:document.title,mapBoundaries:map.querySelectorAll(".zone-boundary").length,mapAreas:map.querySelectorAll(".zone-area").length,boundarySegments:Number(canvas.dataset.boundarySegments),coastlineSegments:Number(canvas.dataset.coastlineSegments),yaw:Number(canvas.dataset.cameraYaw),pitch:Number(canvas.dataset.cameraPitch),dpr:Number(canvas.dataset.devicePixelRatio),logicalWidth:Number(canvas.dataset.logicalWidth),logicalHeight:Number(canvas.dataset.logicalHeight),backingWidth:canvas.width,backingHeight:canvas.height,mapTarget:{x:Math.round(areaBox.left+areaBox.width/2),y:Math.round(areaBox.top+areaBox.height/2)}};
 """,
     )
-    filtered = _execute(
+    _click_at(
+        base_url,
+        session_id,
+        int(initial["mapTarget"]["x"]),
+        int(initial["mapTarget"]["y"]),
+    )
+    map_selection = _execute(
         base_url,
         session_id,
         """
-const zone=document.getElementById("zone-filter"),category=document.getElementById("category-filter"),status=document.getElementById("status-filter");
-zone.value=zone.options[1].value;zone.dispatchEvent(new Event("change",{bubbles:true}));
-const zoneCount=Number(document.getElementById("probe-visible").textContent);
-category.value=[...category.options].find(value=>value.value==="representative-center")?.value||category.options[1].value;category.dispatchEvent(new Event("change",{bubbles:true}));
-status.value="all";status.dispatchEvent(new Event("change",{bubbles:true}));
-const categoryCount=Number(document.getElementById("probe-visible").textContent);
-status.value="multi";status.dispatchEvent(new Event("change",{bubbles:true}));
-return {zoneCount,categoryCount,multiCount:Number(document.getElementById("probe-visible").textContent),rows:document.querySelectorAll("#probe-table tr").length,mapProbes:document.querySelectorAll("#zone-map .zone-probe").length,mapBoundaries:document.querySelectorAll("#zone-map .zone-boundary").length,canvasProbes:Number(document.getElementById("zone-globe").dataset.visibleProbes)};
+const canvas=document.getElementById("zone-globe"),map=document.getElementById("zone-map"),detail=document.getElementById("selected-zone");canvas.scrollIntoView({block:"center"});const box=canvas.getBoundingClientRect();return {id:detail.dataset.selectedZone,text:detail.textContent,mapLabel:map.dataset.selectedLabel,globeTarget:{x:Math.round(box.left+Number(canvas.dataset.firstZoneX)),y:Math.round(box.top+Number(canvas.dataset.firstZoneY))}};
 """,
+    )
+    _click_at(
+        base_url,
+        session_id,
+        int(initial["mapTarget"]["x"]),
+        int(initial["mapTarget"]["y"]),
+    )
+    map_cleared = _execute(
+        base_url,
+        session_id,
+        'const d=document.getElementById("selected-zone"),m=document.getElementById("zone-map"),c=document.getElementById("zone-globe");return {id:d.dataset.selectedZone,map:m.dataset.selectedZone,label:c.dataset.selectedLabel};',
+    )
+    _move_at(
+        base_url,
+        session_id,
+        int(map_selection["globeTarget"]["x"]),
+        int(map_selection["globeTarget"]["y"]),
+    )
+    globe_hover = _execute(
+        base_url,
+        session_id,
+        'return document.getElementById("zone-globe").dataset.hoverLabel;',
+    )
+    _click_at(
+        base_url,
+        session_id,
+        int(map_selection["globeTarget"]["x"]),
+        int(map_selection["globeTarget"]["y"]),
+    )
+    globe_selection = _execute(
+        base_url,
+        session_id,
+        """const detail=document.getElementById("selected-zone"),canvas=document.getElementById("zone-globe");return {id:detail.dataset.selectedZone,text:detail.textContent,label:canvas.dataset.selectedLabel,yaw:Number(canvas.dataset.cameraYaw),pitch:Number(canvas.dataset.cameraPitch)};""",
+    )
+    selected_zone_target = _execute(
+        base_url,
+        session_id,
+        'const c=document.getElementById("zone-globe");c.scrollIntoView({block:"center"});const b=c.getBoundingClientRect();return {x:Math.round(b.left+Number(c.dataset.selectedZoneX)),y:Math.round(b.top+Number(c.dataset.selectedZoneY))};',
+    )
+    _click_at(
+        base_url,
+        session_id,
+        int(selected_zone_target["x"]),
+        int(selected_zone_target["y"]),
+    )
+    globe_cleared = _execute(
+        base_url,
+        session_id,
+        'const d=document.getElementById("selected-zone"),c=document.getElementById("zone-globe");return {id:d.dataset.selectedZone,label:c.dataset.selectedLabel};',
+    )
+    globe_reselect_target = _execute(
+        base_url,
+        session_id,
+        'const c=document.getElementById("zone-globe");c.scrollIntoView({block:"center"});const b=c.getBoundingClientRect();return {x:Math.round(b.left+Number(c.dataset.firstZoneX)),y:Math.round(b.top+Number(c.dataset.firstZoneY))};',
+    )
+    _click_at(
+        base_url,
+        session_id,
+        int(globe_reselect_target["x"]),
+        int(globe_reselect_target["y"]),
     )
     _drag(base_url, session_id, "zone-globe", -88, 47)
     moved = _execute(
         base_url,
         session_id,
-        """const c=document.getElementById("zone-globe");return {yaw:Number(c.dataset.cameraYaw),pitch:Number(c.dataset.cameraPitch)};""",
+        """const c=document.getElementById("zone-globe"),d=document.getElementById("selected-zone");return {yaw:Number(c.dataset.cameraYaw),pitch:Number(c.dataset.cameraPitch),id:d.dataset.selectedZone};""",
     )
     if (
         initial["chinese"] != "Zone 检查"
         or initial["english"] != "Zone Inspection"
         or initial["boundarySegments"] < 1
         or initial["mapBoundaries"] < 1
-        or initial["count"] != initial["rows"]
-        or initial["count"] != initial["mapProbes"]
-        or filtered["zoneCount"] >= initial["count"]
-        or filtered["categoryCount"] >= filtered["zoneCount"]
-        or filtered["multiCount"] != filtered["rows"]
-        or filtered["multiCount"] != filtered["mapProbes"]
-        or filtered["mapBoundaries"] < 1
-        or moved == {"yaw": initial["yaw"], "pitch": initial["pitch"]}
+        or initial["mapAreas"] < 1
+        or initial["coastlineSegments"] < 1
+        or abs(
+            initial["backingWidth"]
+            - round(initial["logicalWidth"] * initial["dpr"])
+        )
+        > 1
+        or abs(
+            initial["backingHeight"]
+            - round(initial["logicalHeight"] * initial["dpr"])
+        )
+        > 1
+        or not map_selection["id"]
+        or map_selection["mapLabel"] != map_selection["id"]
+        or not all(
+            value in map_selection["text"]
+            for value in ("zone_id", "south / north", "representative center", "priority", "wrapped")
+        )
+        or not globe_selection["id"]
+        or not globe_hover
+        or globe_selection["label"] != globe_selection["id"]
+        or globe_hover != globe_selection["id"]
+        or map_cleared != {"id": "", "map": "", "label": ""}
+        or globe_cleared != {"id": "", "label": ""}
+        or (
+            moved["yaw"] == globe_selection["yaw"]
+            and moved["pitch"] == globe_selection["pitch"]
+        )
+        or moved["id"] != globe_selection["id"]
     ):
         raise AssertionError(
-            f"Zone visual regression: {initial=} {filtered=} {moved=}"
+            "Zone visual regression: "
+            f"{initial=} {map_selection=} {map_cleared=} {globe_hover=} "
+            f"{globe_selection=} {globe_cleared=} {moved=}"
         )
-    return {"initial_visible": initial["count"], "filtered": filtered}
+    return {
+        "map_selected": map_selection["id"],
+        "globe_selected": globe_selection["id"],
+        "device_pixel_ratio": initial["dpr"],
+        "coastline_segments": initial["coastlineSegments"],
+        "selection_toggle": "PASS",
+    }
 
 
 def _traffic(base_url: str, session_id: str, page: Path) -> dict[str, object]:
@@ -280,11 +561,18 @@ def run_visual_browser_gate(
     *,
     geckodriver: str,
     timeout: float = 45.0,
+    static_only: bool = False,
 ) -> dict[str, object]:
     """Run the accepted manual-review interaction assertions in real Firefox."""
 
     root = Path(inspection_root).resolve()
-    pages = {name: root / name / "index.html" for name in ("topology", "zone", "planner", "traffic")}
+    tool_names = ("topology", "zone") if static_only else (
+        "topology",
+        "zone",
+        "planner",
+        "traffic",
+    )
+    pages = {name: root / name / "index.html" for name in tool_names}
     port = _available_port()
     base_url = f"http://127.0.0.1:{port}"
     with tempfile.TemporaryFile() as driver_log:
@@ -296,10 +584,22 @@ def run_visual_browser_gate(
         session_id = None
         try:
             _wait_for_driver(base_url, timeout)
+            firefox_options: dict[str, object] = {"args": ["-headless"]}
+            if static_only:
+                firefox_options["prefs"] = {
+                    "layout.css.devPixelsPerPx": "2.0"
+                }
             session = _request(
                 f"{base_url}/session",
                 method="POST",
-                value={"capabilities": {"alwaysMatch": {"browserName": "firefox", "moz:firefoxOptions": {"args": ["-headless"]}}}},
+                value={
+                    "capabilities": {
+                        "alwaysMatch": {
+                            "browserName": "firefox",
+                            "moz:firefoxOptions": firefox_options,
+                        }
+                    }
+                },
                 timeout=timeout,
             )
             session_id = session["sessionId"]
@@ -308,15 +608,29 @@ def run_visual_browser_gate(
                 method="POST",
                 value={"width": 1600, "height": 1200},
             )
-            return {
+            result = {
                 "status": "PASS",
                 "browser": session["capabilities"]["browserName"],
                 "browser_version": session["capabilities"]["browserVersion"],
                 "topology": _topology(base_url, session_id, pages["topology"]),
                 "zone": _zone(base_url, session_id, pages["zone"]),
-                "planner": _planner(base_url, session_id, pages["planner"]),
-                "traffic": _traffic(base_url, session_id, pages["traffic"]),
             }
+            if not static_only:
+                result["planner"] = _planner(
+                    base_url, session_id, pages["planner"]
+                )
+                result["traffic"] = _traffic(
+                    base_url, session_id, pages["traffic"]
+                )
+            elif (
+                result["topology"]["device_pixel_ratio"] < 1.5
+                or result["zone"]["device_pixel_ratio"] < 1.5
+                or result["topology"]["operator_row_present"]
+            ):
+                raise AssertionError(
+                    "static Tool gate high-DPI/operator display regression"
+                )
+            return result
         finally:
             if session_id is not None:
                 try:
@@ -330,8 +644,19 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("inspection_root", type=Path)
     parser.add_argument("--geckodriver", default="geckodriver")
+    parser.add_argument(
+        "--static-only",
+        action="store_true",
+        help="check only Topology and Zone pages",
+    )
     arguments = parser.parse_args()
-    print(run_visual_browser_gate(arguments.inspection_root, geckodriver=arguments.geckodriver))
+    print(
+        run_visual_browser_gate(
+            arguments.inspection_root,
+            geckodriver=arguments.geckodriver,
+            static_only=arguments.static_only,
+        )
+    )
     return 0
 
 

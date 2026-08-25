@@ -102,6 +102,7 @@ classDiagram
         +ground_station_id
         +identity_key
         +ix_attachments
+        +max_simultaneous_satellite_accesses
     }
     class GeneratedOrbitLayout {
         <<immutable generated layout declaration>>
@@ -109,6 +110,7 @@ classDiagram
         +satellites_per_orbit
         +right_ascension_distribution
         +in_orbit_phase_distribution
+        +max_simultaneous_ground_station_accesses
     }
     class OrbitConfig {
         <<immutable explicit Orbit declaration>>
@@ -122,6 +124,7 @@ classDiagram
         +index_in_orbit
         +mean_anomaly_deg
         +payload_items
+        +max_simultaneous_ground_station_accesses
     }
     SkyseedAutonomousSystemConfig "1" *-- "*" ShellConfig : shells
     SkyseedAutonomousSystemConfig "1" *-- "*" GroundStationConfig : stations
@@ -149,10 +152,17 @@ classDiagram
         +start_deg
         +step_deg
         +alternating_orbit_offset_deg
+        +orbit_phase_step_deg
     }
     GeneratedOrbitLayout "1" *-- "1" RightAscensionDistribution : RAAN
     GeneratedOrbitLayout "1" *-- "1" InOrbitPhaseDistribution : phase
 ```
+
+`InOrbitPhaseDistribution.step_deg` is the mean-anomaly increment between
+successive Satellites in one Orbit. Generated YAML selects exactly one
+inter-Orbit policy: `alternating_orbit_offset_deg` applies the existing parity
+offset, while `orbit_phase_step_deg` advances the Orbit start anomaly linearly
+with Orbit index. The two policies are not combined.
 
 Legend: `A *-- B` means ground-network declaration A contains B.
 
@@ -202,9 +212,9 @@ classDiagram
 |---|---|---|
 | `EbgpPeeringConfig` | `skyseed_v2.configuration.emulator.EbgpPeeringConfig` | `ix_id`, `peer_routers`, `relationship`, `sort_key` |
 | `EbgpRouterReference` | `skyseed_v2.configuration.emulator.EbgpRouterReference` | `asn`, `router_id` |
-| `GeneratedOrbitLayout` | `skyseed_v2.configuration.emulator.GeneratedOrbitLayout` | `orbit_count`, `satellites_per_orbit`, `right_ascension_distribution`, `in_orbit_phase_distribution` |
-| `GroundStationConfig` | `skyseed_v2.configuration.emulator.GroundStationConfig` | `display_name`, `latitude_deg`, `longitude_deg`, `elevation_m`, `operator`, `station_type`, `ground_station_id`, `identity_key`, `ix_attachments` |
-| `InOrbitPhaseDistribution` | `skyseed_v2.configuration.emulator.InOrbitPhaseDistribution` | `start_deg`, `step_deg`, `alternating_orbit_offset_deg` |
+| `GeneratedOrbitLayout` | `skyseed_v2.configuration.emulator.GeneratedOrbitLayout` | `orbit_count`, `satellites_per_orbit`, `right_ascension_distribution`, `in_orbit_phase_distribution`, `max_simultaneous_ground_station_accesses` |
+| `GroundStationConfig` | `skyseed_v2.configuration.emulator.GroundStationConfig` | `display_name`, `latitude_deg`, `longitude_deg`, `elevation_m`, `operator`, `station_type`, `ground_station_id`, `identity_key`, `ix_attachments`, `max_simultaneous_satellite_accesses` |
+| `InOrbitPhaseDistribution` | `skyseed_v2.configuration.emulator.InOrbitPhaseDistribution` | `start_deg`, `step_deg`, `alternating_orbit_offset_deg`, `orbit_phase_step_deg` |
 | `InternetExchangeAttachment` | `skyseed_v2.configuration.emulator.InternetExchangeAttachment` | `ix_id`, `address` |
 | `InternetExchangeConfig` | `skyseed_v2.configuration.emulator.InternetExchangeConfig` | `ix_id`, `prefix`, `route_server` |
 | `LocalNetworkAttachment` | `skyseed_v2.configuration.emulator.LocalNetworkAttachment` | `network_id`, `address` |
@@ -213,11 +223,27 @@ classDiagram
 | `NetworkConfig` | `skyseed_v2.configuration.emulator.NetworkConfig` | `network_id`, `prefix` |
 | `RouterConfig` | `skyseed_v2.configuration.emulator.RouterConfig` | `router_id`, `network_attachments`, `ix_attachments` |
 | `RightAscensionDistribution` | `skyseed_v2.configuration.emulator.RightAscensionDistribution` | `start_deg`, `step_deg` |
-| `SatelliteConfig` | `skyseed_v2.configuration.emulator.SatelliteConfig` | `satellite_id`, `index_in_orbit`, `mean_anomaly_deg`, `payload_items` |
+| `SatelliteConfig` | `skyseed_v2.configuration.emulator.SatelliteConfig` | `satellite_id`, `index_in_orbit`, `mean_anomaly_deg`, `payload_items`, `max_simultaneous_ground_station_accesses` |
 | `ShellConfig` | `skyseed_v2.configuration.emulator.ShellConfig` | `shell_id`, `altitude_km`, `inclination_deg`, `epoch_utc`, `generated_orbit_layout`, `explicit_orbits` |
 | `SkyseedAutonomousSystemConfig` | `skyseed_v2.configuration.emulator.SkyseedAutonomousSystemConfig` | `asn`, `shells`, `ground_stations` |
 | `StaticEmulatorConfig` | `skyseed_v2.configuration.emulator.StaticEmulatorConfig` | `skyseed_autonomous_systems`, `internet_exchanges`, `ordinary_autonomous_systems`, `ebgp_peerings` |
 | `StaticEmulatorConfigLoadError` | `skyseed_v2.configuration.emulator.StaticEmulatorConfigLoadError` | — |
+
+`GroundStationConfig.operator` is an explicit `str | None` metadata field.
+YAML must contain the `operator` key: a non-empty string records a known
+operator, while `null` records that the experiment input does not know it.
+Omitting the key remains an error.
+
+`max_simultaneous_satellite_accesses` is an optional positive-integer
+simulation capability of the declared GroundStation site. YAML may omit it or
+use `null` for no specified site cap. It is not a physical antenna-count field.
+
+`max_simultaneous_ground_station_accesses` is the corresponding optional
+positive-integer Satellite capability for GroundStation-access Connections.
+Generated layouts apply one value to every generated Satellite; explicit
+Satellite declarations may set it individually. YAML omission or `null` means
+no explicit cap. It is not total degree, ISL capacity, UT capacity, or antenna
+count.
 
 ## Entry points
 

@@ -43,11 +43,13 @@ classDiagram
     class EmulatorSatellite {
         <<Emulator leaf entity>>
         +satellite_id
+        +max_simultaneous_ground_station_accesses
     }
     class EmulatorGroundStation["GroundStation"]
     class EmulatorGroundStation {
         <<Emulator leaf entity>>
         +ground_station_id
+        +max_simultaneous_satellite_accesses
     }
 
     UpstreamEmulator "1" *-- "1" UpstreamBase : layer
@@ -76,9 +78,11 @@ classDiagram
     }
     class SatelliteEntity["Satellite"] {
         <<Emulator entity and ExtensionNode>>
+        +max_simultaneous_ground_station_accesses
     }
     class GroundStationEntity["GroundStation"] {
         <<Emulator entity and Router>>
+        +max_simultaneous_satellite_accesses
     }
 
     SeedNode <|-- SeedRouter
@@ -181,11 +185,13 @@ classDiagram
     class SimulatorSatellite {
         <<static Satellite>>
         +node_id
+        +max_simultaneous_ground_station_accesses
     }
     class SimulatorGroundStation["GroundStation"]
     class SimulatorGroundStation {
         <<static GroundStation>>
         +node_id
+        +max_simultaneous_satellite_accesses
     }
     class ZoneLayout {
         <<Zone owner>>
@@ -410,10 +416,15 @@ classDiagram
         <<built-in implementation>>
         +compute_route_slice()
     }
+    class GatewayHopCountRouteModel {
+        <<built-in implementation>>
+        +compute_route_slice()
+    }
 
     CircularOrbitPositionModel ..|> PositionModel
     GeometricConnectionModel ..|> ConnectionModel
     HopCountRouteModel ..|> RouteModel
+    GatewayHopCountRouteModel ..|> RouteModel
 ```
 
 ## Public-contract and local-detail mapping
@@ -449,6 +460,7 @@ classDiagram
 | `CircularOrbitPositionModel` | `skyseed_v2.simulator.models.CircularOrbitPositionModel` |
 | `GeometricConnectionModel` | `skyseed_v2.simulator.models.GeometricConnectionModel` |
 | `HopCountRouteModel` | `skyseed_v2.simulator.models.HopCountRouteModel` |
+| `GatewayHopCountRouteModel` | `skyseed_v2.simulator.models.GatewayHopCountRouteModel` |
 | `BpfCompiledRealization` | `skyseed_v2.backend.bpf.BpfCompiledRealization` |
 | `BpfRunner` | `skyseed_v2.backend.bpf.BpfRunner` |
 

@@ -1,0 +1,20 @@
+schema_version: skyseed-static-emulator/v1
+skyseed_autonomous_systems:
+  - asn: 65040
+    shells:
+      - shell_id: s4-shell
+        altitude_km: 560.0
+        inclination_deg: 97.6
+        epoch_utc: "2026-01-01T00:00:00+00:00"
+        generation:
+          orbit_count: 6
+          satellites_per_orbit: 58
+          max_simultaneous_ground_station_accesses: 2
+          raan:
+            start_deg: 63.7
+            step_deg: 60.0
+          phase:
+            start_deg: 0.0
+            step_deg: 6.206896551724138
+            orbit_phase_step_deg: 1.0344827586206897
+    ground_stations_file: ground_stations.yaml

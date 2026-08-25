@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Smoke-test a generated Slice / Difference Tool with Firefox WebDriver."""
+"""Smoke-test the chunked Slice / Difference Tool with Firefox WebDriver."""
 
 from __future__ import annotations
 
@@ -36,9 +36,7 @@ def _request(
             result = json.loads(response.read().decode("utf-8"))
     except HTTPError as error:
         body = error.read().decode("utf-8", errors="replace")
-        raise RuntimeError(
-            f"WebDriver HTTP {error.code}: {body}"
-        ) from error
+        raise RuntimeError(f"WebDriver HTTP {error.code}: {body}") from error
     if isinstance(result, dict) and isinstance(result.get("value"), dict):
         error = result["value"].get("error")
         if error:
@@ -59,19 +57,12 @@ def _default_geckodriver() -> str | None:
 
 
 def _stop_snap_driver_scope(port: int) -> bool:
-    """Stop only the snap scope whose command owns this smoke-test port."""
-
-    proc_root = Path("/proc")
-    for process_directory in proc_root.iterdir():
+    for process_directory in Path("/proc").iterdir():
         if not process_directory.name.isdigit():
             continue
         try:
-            command = (
-                process_directory / "cmdline"
-            ).read_bytes().split(b"\0")
-            cgroup = (
-                process_directory / "cgroup"
-            ).read_text(encoding="utf-8")
+            command = (process_directory / "cmdline").read_bytes().split(b"\0")
+            cgroup = (process_directory / "cgroup").read_text(encoding="utf-8")
         except (FileNotFoundError, PermissionError, ProcessLookupError):
             continue
         if (
@@ -140,6 +131,25 @@ def _execute(base_url: str, session_id: str, script: str) -> Any:
     )
 
 
+def _wait_for_slice(
+    base_url: str,
+    session_id: str,
+    expected_slice_id: int,
+    timeout: float,
+) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        loaded = _execute(
+            base_url,
+            session_id,
+            'return document.getElementById("slice-globe").dataset.loadedSliceId||"";',
+        )
+        if loaded == str(expected_slice_id):
+            return
+        time.sleep(0.1)
+    raise TimeoutError(f"Slice {expected_slice_id} chunk did not load")
+
+
 def _capture_screenshot(
     base_url: str,
     session_id: str,
@@ -150,8 +160,7 @@ def _capture_screenshot(
         return None
     directory.mkdir(parents=True, exist_ok=True)
     encoded = _request(
-        f"{base_url}/session/{session_id}/screenshot",
-        timeout=30.0,
+        f"{base_url}/session/{session_id}/screenshot", timeout=30.0
     )
     if not isinstance(encoded, str):
         raise RuntimeError("WebDriver screenshot response is not base64 text")
@@ -160,119 +169,759 @@ def _capture_screenshot(
     return path.name
 
 
-def _run_portability_profile(
+def _click_canvas_dataset(
     base_url: str,
     session_id: str,
-    screenshot_directory: Path | None,
-) -> dict[str, object]:
-    result = _execute(
+    prefix: str,
+) -> str:
+    target = _execute(
         base_url,
         session_id,
-        """
-setSlice(1);
-const orbit=document.getElementById("orbit-select");
-const options=[...orbit.options].filter(value=>value.value!=="*");
-const refs=options.map(value=>value.value);
-const labels=options.map(value=>value.textContent);
-const firstRef=refs[0],secondRef=refs[1];
-orbit.value=firstRef;orbit.dispatchEvent(new Event("change",{bubbles:true}));
-const firstSatellites=DATA.topology.nodes.filter(
-  node=>node.kind==="satellite"&&node.orbit_ref===firstRef
-).map(node=>node.node_id);
-const secondSatellites=DATA.topology.nodes.filter(
-  node=>node.kind==="satellite"&&node.orbit_ref===secondRef
-).map(node=>node.node_id);
-document.querySelector('[data-view="isl"]').click();
-const islLayers=document.getElementById("isl-globe").dataset.layers;
-const islDetail=document.getElementById("isl-detail").textContent;
-document.querySelector('[data-view="service"]').click();
-const serviceDetail=document.getElementById("service-detail").textContent;
-document.querySelector('[data-view="routing"]').click();
-const routeDetail=document.getElementById("route-detail").textContent;
-setTimelineIndex(1);
-document.querySelector('[data-view="difference"]').click();
-const differenceCounts={};
-for(const category of ["connection-structure","parameters","zone","route"]){
-  const control=document.getElementById("difference-category");
-  control.value=category;control.dispatchEvent(new Event("change",{bubbles:true}));
-  differenceCounts[category]=document.querySelectorAll(".difference-item").length;
-}
-const differenceDetail=document.getElementById("difference-detail").textContent;
-const differenceLayers=document.getElementById("difference-globe").dataset.layers;
-const differenceSummary=document.getElementById("difference-summary").textContent;
-const fullContext=document.getElementById("difference-satellite-layer").checked;
-document.getElementById("shared-timeline").scrollIntoView({block:"start"});
+        f"""
+const canvas=document.getElementById("slice-globe");
+canvas.scrollIntoView({{block:"center"}});
+const box=canvas.getBoundingClientRect();
+const id=canvas.dataset.{prefix}Id||"";
+return {{id,x:box.left+Number(canvas.dataset.{prefix}X),y:box.top+Number(canvas.dataset.{prefix}Y)}};
+""",
+    )
+    if not target["id"]:
+        raise AssertionError(f"no visible {prefix} hit-test target")
+    _request(
+        f"{base_url}/session/{session_id}/actions",
+        method="POST",
+        value={
+            "actions": [
+                {
+                    "type": "pointer",
+                    "id": "mouse",
+                    "parameters": {"pointerType": "mouse"},
+                    "actions": [
+                        {
+                            "type": "pointerMove",
+                            "duration": 0,
+                            "origin": "viewport",
+                            "x": round(target["x"]),
+                            "y": round(target["y"]),
+                        },
+                        {"type": "pointerDown", "button": 0},
+                        {"type": "pointerUp", "button": 0},
+                    ],
+                }
+            ]
+        },
+    )
+    return str(target["id"])
+
+
+def _hover_canvas_dataset(
+    base_url: str,
+    session_id: str,
+    prefix: str,
+) -> str:
+    return str(
+        _execute(
+            base_url,
+            session_id,
+            f"""
+const canvas=document.getElementById("slice-globe"),box=canvas.getBoundingClientRect();
+updateHover(box.left+Number(canvas.dataset.{prefix}X),box.top+Number(canvas.dataset.{prefix}Y));
+return canvas.dataset.hoverLabelText||"";
+""",
+        )
+    )
+
+
+def _exercise_page(
+    base_url: str,
+    session_id: str,
+    timeout: float,
+    profile: str,
+) -> dict[str, object]:
+    initial_id = _execute(
+        base_url,
+        session_id,
+        "return Number(window.SKYSEED_SLICE_MANIFEST.slice_manifest.find(value=>value.slice_id===1)?.slice_id||0);",
+    )
+    _wait_for_slice(base_url, session_id, int(initial_id), timeout)
+    initial = _execute(
+        base_url,
+        session_id,
+        r"""
 return {
-  inventory:DATA.inventory,
-  refs,labels,firstSatellites,secondSatellites,
-  selectedOrbit:orbit.value,
-  synchronizedOrbit:document.getElementById("isl-orbit-filter").value,
-  colors:[orbitColor(firstRef),orbitColor(secondRef)],
-  sliceMarkers:document.querySelectorAll(".timeline-marker.slice").length,
-  differenceMarkers:document.querySelectorAll(".timeline-marker.difference").length,
-  label:document.getElementById("slice-label").textContent,
-  islLayers,islDetail,serviceDetail,routeDetail,differenceCounts,differenceDetail,
-  differenceLayers,differenceSummary,fullContext,
-  comparisonSliceId:comparisonSlice().slice_id,
-  baseSliceId:displayBaseSlice().slice_id
+  inventory:window.SKYSEED_SLICE_MANIFEST.inventory,
+  manifestHasSlices:Object.prototype.hasOwnProperty.call(window.SKYSEED_SLICE_MANIFEST,"slices"),
+  loadedSliceId:Number(document.getElementById("slice-globe").dataset.loadedSliceId),
+  loadedRouteEntries:Number(document.getElementById("slice-globe").dataset.loadedRouteEntries),
+  chunkObjectCount:Object.keys(window.__SKYSEED_SLICE_CHUNKS__).length,
+  nodeDetail:document.getElementById("selected-detail").textContent,
+  pathDetail:document.getElementById("path-detail").textContent,
+  diagnostics:document.getElementById("diagnostics").textContent,
+  sliceContext:document.getElementById("slice-context").textContent,
+  sliceContextState:document.getElementById("slice-context").dataset.stateAvailable,
+  servedZones:Number(document.getElementById("slice-context").dataset.servedZones),
+  unservedZones:Number(document.getElementById("slice-context").dataset.unservedZones),
+  coveredGroundStations:Number(document.getElementById("slice-context").dataset.coveredGroundStations),
+  routeEntries:Number(document.getElementById("slice-context").dataset.routeEntries),
+  physicalContext:document.getElementById("slice-physical-context").textContent,
+  modelContext:document.getElementById("model-context")?.textContent||"",
+  externalScripts:[...document.scripts].map(value=>value.src).filter(Boolean),
+  rangeMax:Number(document.getElementById("slice-range").max),
+  earthReferenceRadiusM:Number(document.getElementById("slice-globe").dataset.earthReferenceRadiusM),
+  firstSatelliteDisplayRadius:Number(document.getElementById("slice-globe").dataset.firstSatelliteDisplayRadius)
 };
 """,
     )
-    inventory = result["inventory"]
-    if (
-        len(result["refs"]) != 2
-        or len(set(result["refs"])) != 2
-        or not all("AS" in label and "shared-orbit" in label for label in result["labels"])
-        or result["selectedOrbit"] != result["refs"][0]
-        or result["synchronizedOrbit"] != result["refs"][0]
-        or len(result["firstSatellites"]) != 1
-        or len(result["secondSatellites"]) != 1
-        or result["firstSatellites"] == result["secondSatellites"]
-        or result["colors"][0] == result["colors"][1]
-        or inventory["nodes"] != 2
-        or inventory["orbits"] != 2
-        or inventory["zones"] != 0
-        or inventory["paths"] != 0
-        or result["sliceMarkers"] != inventory["slices"]
-        or result["differenceMarkers"] != inventory["slices"] - 1
-        or "ecef-orbit-guides" in result["islLayers"]
-        or "None for this Slice/filter." not in result["islDetail"]
-        or "None for this Slice/filter." not in result["serviceDetail"]
-        or "No formal path" not in result["routeDetail"]
-        or any(result["differenceCounts"].values())
-        or "No discrete network-state change." not in result["differenceDetail"]
-        or "No discrete network-state change" not in result["differenceSummary"]
-        or "comparison-geometry-current-fallback"
-        not in result["differenceLayers"]
-        or "no-discrete-network-state-change"
-        not in result["differenceLayers"]
-        or result["fullContext"]
-        or result["baseSliceId"] != 0
-        or result["comparisonSliceId"] != 1
-        or any(
-            value in result["differenceLayers"]
-            for value in (
-                "position-motion-vectors",
-                "ecef-orbit-guides-current",
-                "position-comparison-endpoints",
-            )
-        )
-        or not result["label"].startswith("Δ")
-    ):
-        raise AssertionError(f"portability profile is invalid: {result}")
-    screenshot = _capture_screenshot(
+    interactions: dict[str, object] = {}
+    _execute(
         base_url,
         session_id,
-        screenshot_directory,
-        "portability-duplicate-orbit-empty-state.png",
+        'document.getElementById("pick-node").click();return true;',
     )
+    node_hover = _hover_canvas_dataset(base_url, session_id, "firstNode")
+    if not node_hover:
+        raise AssertionError("direct node hover label was not rendered")
+    selected_node = _click_canvas_dataset(base_url, session_id, "firstNode")
+    node_state = _execute(
+        base_url,
+        session_id,
+        r"""
+const canvas=document.getElementById("slice-globe");
+return {id:canvas.dataset.selectedNodeId,label:canvas.dataset.selectedLabelText,labelKind:canvas.dataset.selectedLabelKind,detail:document.getElementById("selected-detail").textContent};
+""",
+    )
+    if (
+        node_state["id"] != selected_node
+        or node_state["labelKind"] != "node"
+        or not node_state["label"]
+        or "degree" not in node_state["detail"]
+    ):
+        raise AssertionError(f"direct node selection failed: {node_state}")
+    interactions["direct_node"] = node_state
+    interactions["direct_node_hover"] = node_hover
+    _click_canvas_dataset(base_url, session_id, "firstNode")
+    node_cleared = _execute(
+        base_url,
+        session_id,
+        r"""
+const canvas=document.getElementById("slice-globe"),detail=document.getElementById("selected-detail");
+return {node:canvas.dataset.selectedNodeId,kind:canvas.dataset.selectedLabelKind,label:canvas.dataset.selectedLabelText,status:detail.dataset.selectionStatus,text:detail.textContent};
+""",
+    )
+    if node_cleared != {
+        "node": "",
+        "kind": "",
+        "label": "",
+        "status": "none",
+        "text": "Click an object on Dynamic Earth.",
+    }:
+        raise AssertionError(f"same-node toggle did not clear selection: {node_cleared}")
+    interactions["direct_node_toggle"] = node_cleared
+
+    if profile == "rich":
+        connected_node = _click_canvas_dataset(
+            base_url, session_id, "connectedNode"
+        )
+        node_context = _execute(
+            base_url,
+            session_id,
+            r'''
+const canvas=document.getElementById("slice-globe");
+return {
+  id:canvas.dataset.selectedNodeId,
+  incident:Number(canvas.dataset.incidentContextConnections),
+  endpoints:Number(canvas.dataset.endpointContextNodes)
+};
+''',
+        )
+        if (
+            node_context["id"] != connected_node
+            or node_context["incident"] < 1
+            or node_context["endpoints"] != 0
+        ):
+            raise AssertionError(
+                f"selected-node Connection context failed: {node_context}"
+            )
+        interactions["node_connection_context"] = node_context
+
+        selected_ground_station = _click_canvas_dataset(
+            base_url, session_id, "groundStation"
+        )
+        ground_station_state = _execute(
+            base_url,
+            session_id,
+            r"""
+const canvas=document.getElementById("slice-globe");
+return {id:canvas.dataset.selectedNodeId,label:canvas.dataset.selectedLabelText,labelKind:canvas.dataset.selectedLabelKind,detail:document.getElementById("selected-detail").textContent};
+""",
+        )
+        if (
+            ground_station_state["id"] != selected_ground_station
+            or ground_station_state["labelKind"] != "node"
+            or not ground_station_state["label"].startswith("GroundStation ")
+            or "connected Satellites" not in ground_station_state["detail"]
+        ):
+            raise AssertionError(
+                f"GroundStation selection failed: {ground_station_state}"
+            )
+        _click_canvas_dataset(base_url, session_id, "groundStation")
+        ground_station_cleared = _execute(
+            base_url,
+            session_id,
+            'const c=document.getElementById("slice-globe");return {id:c.dataset.selectedNodeId,label:c.dataset.selectedLabelText,kind:c.dataset.selectedLabelKind};',
+        )
+        if ground_station_cleared != {"id": "", "label": "", "kind": ""}:
+            raise AssertionError(
+                "same-GroundStation toggle did not clear selection: "
+                f"{ground_station_cleared}"
+            )
+        interactions["ground_station_toggle"] = {
+            "selected": ground_station_state,
+            "cleared": ground_station_cleared,
+        }
+
+        _execute(
+            base_url,
+            session_id,
+            'document.getElementById("pick-connection").click();return true;',
+        )
+        connection_hover = _hover_canvas_dataset(
+            base_url, session_id, "firstConnection"
+        )
+        if not connection_hover:
+            raise AssertionError("direct Connection hover label was not rendered")
+        selected_connection = _click_canvas_dataset(
+            base_url, session_id, "firstConnection"
+        )
+        connection_state = _execute(
+            base_url,
+            session_id,
+            r"""
+const canvas=document.getElementById("slice-globe");
+return {id:canvas.dataset.selectedConnectionRef,label:canvas.dataset.selectedLabelText,labelKind:canvas.dataset.selectedLabelKind,status:document.getElementById("selected-detail").dataset.selectionStatus,incident:Number(canvas.dataset.incidentContextConnections),endpoints:Number(canvas.dataset.endpointContextNodes),detail:document.getElementById("selected-detail").textContent};
+""",
+        )
+        if (
+            not connection_state["id"]
+            or connection_state["labelKind"] != "connection"
+            or not connection_state["label"]
+            or connection_state["status"] != "present"
+            or connection_state["incident"] != 0
+            or connection_state["endpoints"] != 2
+            or "bandwidth" not in connection_state["detail"]
+        ):
+            raise AssertionError(
+                "direct Connection selection failed: "
+                f"published_target={selected_connection!r}, {connection_state}"
+            )
+        interactions["direct_connection"] = connection_state
+        interactions["direct_connection_hover"] = connection_hover
+        if (
+            _click_canvas_dataset(base_url, session_id, "selectedConnection")
+            != connection_state["id"]
+        ):
+            raise AssertionError("selected Connection hit-test identity changed")
+        connection_cleared = _execute(
+            base_url,
+            session_id,
+            r"""
+const canvas=document.getElementById("slice-globe"),detail=document.getElementById("selected-detail");
+return {id:canvas.dataset.selectedConnectionRef,label:canvas.dataset.selectedLabelText,kind:canvas.dataset.selectedLabelKind,status:detail.dataset.selectionStatus,incident:Number(canvas.dataset.incidentContextConnections),endpoints:Number(canvas.dataset.endpointContextNodes)};
+""",
+        )
+        if connection_cleared != {
+            "id": "",
+            "label": "",
+            "kind": "",
+            "status": "none",
+            "incident": 0,
+            "endpoints": 0,
+        }:
+            raise AssertionError(
+                "same-Connection toggle did not clear selection: "
+                f"{connection_cleared}"
+            )
+        interactions["direct_connection_toggle"] = connection_cleared
+
+        _execute(
+            base_url,
+            session_id,
+            'document.getElementById("pick-zone").click();return true;',
+        )
+        zone_hover = _hover_canvas_dataset(base_url, session_id, "serviceZone")
+        if not zone_hover.startswith("Zone "):
+            raise AssertionError(f"direct Zone hover label failed: {zone_hover!r}")
+        selected_zone = _click_canvas_dataset(base_url, session_id, "serviceZone")
+        zone_state = _execute(
+            base_url,
+            session_id,
+            r"""
+const canvas=document.getElementById("slice-globe");
+const detail=document.getElementById("selected-detail").textContent;
+return {id:canvas.dataset.selectedZoneId,label:canvas.dataset.selectedLabelText,labelKind:canvas.dataset.selectedLabelKind,service:canvas.dataset.selectedZoneServiceSatellite,tethers:Number(canvas.dataset.selectedZoneTethers),otherZoneCount:Number(canvas.dataset.selectedZoneOtherServiceZones),otherZones:detail.includes("other Zones served by that Satellite"),elevation:detail.includes("current representative-point elevation"),surface:detail.includes("approximate surface separation"),slant:detail.includes("slant distance"),representativeScope:detail.includes("representative point only"),detail};
+""",
+        )
+        if (
+            zone_state["id"] != selected_zone
+            or zone_state["labelKind"] != "zone"
+            or zone_state["label"] != f"Zone {selected_zone}"
+            or not zone_state["service"]
+            or zone_state["tethers"] < 1
+            or not zone_state["otherZones"]
+            or zone_state["otherZoneCount"] < 1
+            or not zone_state["elevation"]
+            or not zone_state["surface"]
+            or not zone_state["slant"]
+            or not zone_state["representativeScope"]
+        ):
+            raise AssertionError(f"Zone service selection failed: {zone_state}")
+        interactions["zone_service"] = zone_state
+        interactions["zone_hover"] = zone_hover
+
+        route_state = _execute(
+            base_url,
+            session_id,
+            r"""
+const canvas=document.getElementById("slice-globe"),gateway=document.getElementById("gateway-route-gateway"),direction=document.getElementById("gateway-route-direction");
+const beforeGateway={zone:canvas.dataset.routeZoneId,gateway:canvas.dataset.routeGatewayId,status:canvas.dataset.routeStatus,nodes:Number(canvas.dataset.routePathNodes)};
+gateway.value=[...gateway.options].map(option=>option.value).find(Boolean)||"";
+gateway.dispatchEvent(new Event("change",{bubbles:true}));
+const zoneToGateway={zone:canvas.dataset.routeZoneId,gateway:canvas.dataset.routeGatewayId,gatewayChoices:Number(canvas.dataset.routeGatewayChoices),direction:canvas.dataset.routeDirection,source:document.getElementById("route-source").value,target:document.getElementById("route-target").value,status:canvas.dataset.routeStatus,nodes:Number(canvas.dataset.routePathNodes),detail:document.getElementById("path-detail").textContent};
+direction.value="gateway-to-zone";direction.dispatchEvent(new Event("change",{bubbles:true}));
+const gatewayToZone={zone:canvas.dataset.routeZoneId,gateway:canvas.dataset.routeGatewayId,gatewayChoices:Number(canvas.dataset.routeGatewayChoices),direction:canvas.dataset.routeDirection,source:document.getElementById("route-source").value,target:document.getElementById("route-target").value,status:canvas.dataset.routeStatus,nodes:Number(canvas.dataset.routePathNodes),detail:document.getElementById("path-detail").textContent};
+return {beforeGateway,optionValues:[...gateway.options].map(option=>option.value).filter(Boolean),zoneToGateway,gatewayToZone};
+""",
+        )
+        zone_to_gateway = route_state["zoneToGateway"]
+        gateway_to_zone = route_state["gatewayToZone"]
+        if (
+            route_state["beforeGateway"]
+            != {
+                "zone": selected_zone,
+                "gateway": "",
+                "status": "none",
+                "nodes": 0,
+            }
+            or zone_to_gateway["zone"] != selected_zone
+            or zone_to_gateway["gatewayChoices"] < 1
+            or len(route_state["optionValues"])
+            != zone_to_gateway["gatewayChoices"]
+            or zone_to_gateway["gateway"] not in route_state["optionValues"]
+            or zone_to_gateway["direction"] != "zone-to-gateway"
+            or zone_to_gateway["source"] != zone_state["service"]
+            or zone_to_gateway["target"]
+            != f'G|{zone_to_gateway["gateway"]}'
+            or zone_to_gateway["status"] != "present"
+            or zone_to_gateway["nodes"] < 1
+            or gateway_to_zone["direction"] != "gateway-to-zone"
+            or gateway_to_zone["source"] != zone_to_gateway["gateway"]
+            or gateway_to_zone["target"] != f"Z|{selected_zone}"
+            or gateway_to_zone["status"] != "present"
+            or gateway_to_zone["nodes"] < 1
+            or "Gateway ingress Satellite" not in gateway_to_zone["detail"]
+            or "formal path composition" not in gateway_to_zone["detail"]
+            or "direct Gateway/terminal formal access"
+            not in gateway_to_zone["detail"]
+        ):
+            raise AssertionError(
+                f"Zone/Gateway Route workflow failed: {route_state}"
+            )
+        interactions["visual_route"] = route_state
+
+        _click_canvas_dataset(base_url, session_id, "serviceZone")
+        zone_cleared = _execute(
+            base_url,
+            session_id,
+            r"""
+const canvas=document.getElementById("slice-globe"),detail=document.getElementById("selected-detail");
+return {id:canvas.dataset.selectedZoneId,label:canvas.dataset.selectedLabelText,kind:canvas.dataset.selectedLabelKind,tethers:Number(canvas.dataset.selectedZoneTethers),routeZone:canvas.dataset.routeZoneId,routeGateway:canvas.dataset.routeGatewayId,routeNodes:Number(canvas.dataset.routePathNodes),status:detail.dataset.selectionStatus};
+""",
+        )
+        if zone_cleared != {
+            "id": "",
+            "label": "",
+            "kind": "",
+            "tethers": 0,
+            "routeZone": "",
+            "routeGateway": "",
+            "routeNodes": 0,
+            "status": "none",
+        }:
+            raise AssertionError(
+                f"same-Zone toggle did not clear service/Route context: {zone_cleared}"
+            )
+        interactions["zone_toggle"] = zone_cleared
+        if _click_canvas_dataset(base_url, session_id, "serviceZone") != selected_zone:
+            raise AssertionError("reselecting the service Zone changed identity")
+        _execute(
+            base_url,
+            session_id,
+            r'''
+const gateway=document.getElementById("gateway-route-gateway");
+gateway.value=[...gateway.options].map(option=>option.value).find(Boolean)||"";
+gateway.dispatchEvent(new Event("change",{bubbles:true}));
+return true;
+''',
+        )
+
+        _execute(
+            base_url,
+            session_id,
+            'document.getElementById("pick-node").click();return true;',
+        )
+        selected_satellite = _click_canvas_dataset(
+            base_url, session_id, "serviceSatellite"
+        )
+        _execute(
+            base_url,
+            session_id,
+            'document.getElementById("toggle-served-zones").click();return true;',
+        )
+        served_state = _execute(
+            base_url,
+            session_id,
+            'const c=document.getElementById("slice-globe");return {satellite:c.dataset.selectedNodeId,label:c.dataset.selectedLabelText,labelKind:c.dataset.selectedLabelKind,count:Number(c.dataset.satelliteServedZones)};',
+        )
+        if (
+            served_state["satellite"] != selected_satellite
+            or served_state["labelKind"] != "node"
+            or not served_state["label"].startswith("Satellite ")
+            or served_state["count"] < 1
+        ):
+            raise AssertionError(
+                f"Satellite served-Zone highlighting failed: {served_state}"
+            )
+        interactions["satellite_served_zones"] = served_state
+        _click_canvas_dataset(base_url, session_id, "serviceSatellite")
+        satellite_cleared = _execute(
+            base_url,
+            session_id,
+            r"""
+const canvas=document.getElementById("slice-globe"),detail=document.getElementById("selected-detail");
+return {id:canvas.dataset.selectedNodeId,label:canvas.dataset.selectedLabelText,kind:canvas.dataset.selectedLabelKind,served:Number(canvas.dataset.satelliteServedZones),routeZone:canvas.dataset.routeZoneId,routeGateway:canvas.dataset.routeGatewayId,routeNodes:Number(canvas.dataset.routePathNodes),status:detail.dataset.selectionStatus};
+""",
+        )
+        if (
+            satellite_cleared["id"]
+            or satellite_cleared["label"]
+            or satellite_cleared["kind"]
+            or satellite_cleared["served"] != 0
+            or satellite_cleared["status"] != "none"
+            or satellite_cleared["routeZone"] != selected_zone
+            or not satellite_cleared["routeGateway"]
+            or satellite_cleared["routeNodes"] < 1
+        ):
+            raise AssertionError(
+                "same-Satellite toggle did not clear object state while "
+                f"preserving independent Route context: {satellite_cleared}"
+            )
+        if (
+            _click_canvas_dataset(base_url, session_id, "serviceSatellite")
+            != selected_satellite
+        ):
+            raise AssertionError("reselecting the service Satellite changed identity")
+        _execute(
+            base_url,
+            session_id,
+            'document.getElementById("toggle-served-zones").click();return true;',
+        )
+        interactions["satellite_toggle"] = satellite_cleared
+    last_index = int(initial["rangeMax"])
+    stale_completion_guard = None
+    if last_index > 1:
+        race = _execute(
+            base_url,
+            session_id,
+            f"""
+const originalAppend=document.head.append.bind(document.head);
+let delayedChunk=true;
+document.head.append=(...nodes)=>{{
+  const node=nodes[0];
+  if(delayedChunk&&node?.tagName==="SCRIPT"){{
+    delayedChunk=false;
+    setTimeout(()=>originalAppend(...nodes),350);
+    return;
+  }}
+  originalAppend(...nodes);
+}};
+const olderId=Number(window.SKYSEED_SLICE_MANIFEST.slice_manifest[0].slice_id);
+const intendedId=Number(window.SKYSEED_SLICE_MANIFEST.slice_manifest[{last_index}].slice_id);
+loadSlice(0);
+loadSlice({last_index});
+return {{olderId,intendedId}};
+""",
+        )
+        _wait_for_slice(
+            base_url,
+            session_id,
+            int(race["intendedId"]),
+            timeout,
+        )
+        time.sleep(0.6)
+        stale_completion_guard = _execute(
+            base_url,
+            session_id,
+            r"""
+return {
+  loadedSliceId:Number(document.getElementById("slice-globe").dataset.loadedSliceId),
+  chunkIds:Object.keys(window.__SKYSEED_SLICE_CHUNKS__).map(Number).sort((a,b)=>a-b)
+};
+""",
+        )
+        if (
+            stale_completion_guard["loadedSliceId"]
+            != int(race["intendedId"])
+            or stale_completion_guard["chunkIds"]
+            != [int(race["intendedId"])]
+        ):
+            raise AssertionError(
+                "stale Slice chunk completion replaced the intended "
+                f"selection: {race}, {stale_completion_guard}"
+            )
+    elif last_index > 0:
+        expected = _execute(
+            base_url,
+            session_id,
+            f"return Number(window.SKYSEED_SLICE_MANIFEST.slice_manifest[{last_index}].slice_id);",
+        )
+        _execute(
+            base_url,
+            session_id,
+            f'document.getElementById("slice-range").value="{last_index}";'
+            'document.getElementById("slice-range").dispatchEvent('
+            'new Event("input",{bubbles:true}));return true;',
+        )
+        _wait_for_slice(base_url, session_id, int(expected), timeout)
+    final = _execute(
+        base_url,
+        session_id,
+        r"""
+const difference=document.getElementById("show-difference");difference.checked=true;difference.dispatchEvent(new Event("change",{bubbles:true}));
+return {
+  loadedSliceId:Number(document.getElementById("slice-globe").dataset.loadedSliceId),
+  chunkObjectCount:Object.keys(window.__SKYSEED_SLICE_CHUNKS__).length,
+  differenceCounts:document.getElementById("difference-counts").textContent,
+  differenceContext:document.getElementById("difference-context").textContent,
+  differenceMode:document.getElementById("slice-globe").dataset.differenceMode,
+  differenceAddedDrawn:Number(document.getElementById("slice-globe").dataset.differenceAddedDrawn),
+  differenceRemovedDrawn:Number(document.getElementById("slice-globe").dataset.differenceRemovedDrawn),
+  differenceParameterDrawn:Number(document.getElementById("slice-globe").dataset.differenceParameterDrawn),
+  differenceZonesDrawn:Number(document.getElementById("slice-globe").dataset.differenceZonesDrawn),
+  selectedNodeId:document.getElementById("slice-globe").dataset.selectedNodeId,
+  selectedConnectionRef:document.getElementById("slice-globe").dataset.selectedConnectionRef,
+  selectedZoneId:document.getElementById("slice-globe").dataset.selectedZoneId,
+  routeZoneId:document.getElementById("slice-globe").dataset.routeZoneId,
+  routeGatewayId:document.getElementById("slice-globe").dataset.routeGatewayId,
+  routeDirection:document.getElementById("slice-globe").dataset.routeDirection,
+  routeGatewayChoices:Number(document.getElementById("slice-globe").dataset.routeGatewayChoices),
+  routeStatus:document.getElementById("slice-globe").dataset.routeStatus,
+  sliceContextState:document.getElementById("slice-context").dataset.stateAvailable,
+  servedZones:Number(document.getElementById("slice-context").dataset.servedZones),
+  routeEntries:Number(document.getElementById("slice-context").dataset.routeEntries),
+  physicalContext:document.getElementById("slice-physical-context").textContent,
+  status:document.querySelector(".status").textContent,
+  canvasWidth:document.getElementById("slice-globe").width
+};
+""",
+    )
+    if (
+        initial["manifestHasSlices"]
+        or initial["chunkObjectCount"] != 1
+        or final["chunkObjectCount"] != 1
+        or initial["loadedSliceId"] != initial_id
+        or final["status"] != "PASS"
+        or final["canvasWidth"] <= 0
+        or any(not value.startswith("file:") for value in initial["externalScripts"])
+        or abs(initial["earthReferenceRadiusM"] - 6_371_008.8) > 0.1
+        or not 1.0 < initial["firstSatelliteDisplayRadius"] < 1.2
+        or initial["sliceContextState"] != "true"
+        or initial["unservedZones"] < 0
+        or initial["coveredGroundStations"] < 0
+        or initial["routeEntries"] != initial["loadedRouteEntries"]
+        or "elevation p5" not in initial["physicalContext"]
+        or "surface separation p50" not in initial["physicalContext"]
+        or "ECEF slant p50" not in initial["physicalContext"]
+        or final["sliceContextState"] != "true"
+        or "ECEF slant p50" not in final["physicalContext"]
+        or (
+            profile == "rich"
+            and (
+                not 1.087 < initial["firstSatelliteDisplayRadius"] < 1.089
+                or initial["servedZones"] < 1
+                or final["servedZones"] < 1
+                or final["routeEntries"] < 1
+                or "348" not in initial["modelContext"]
+                or "6 Orbits × 58 Satellites" not in initial["modelContext"]
+                or "25 °" not in initial["modelContext"]
+                or "≈ 970 km" not in initial["modelContext"]
+                or "GatewayHopCountRouteModel" not in initial["modelContext"]
+                or "6000 km" not in initial["modelContext"]
+            )
+        )
+    ):
+        raise AssertionError(
+            f"chunked Slice Tool browser state is invalid: {initial}, {final}"
+        )
+    if profile == "rich":
+        if (
+            final["differenceMode"] != "true"
+            or final["differenceAddedDrawn"] < 1
+            or final["differenceRemovedDrawn"] < 1
+            or final["differenceParameterDrawn"] < 1
+            or final["differenceZonesDrawn"] < 1
+            or final["selectedNodeId"]
+            != interactions["satellite_served_zones"]["satellite"]
+            or final["selectedConnectionRef"]
+            or final["selectedZoneId"]
+            or final["routeZoneId"]
+            != interactions["visual_route"]["gatewayToZone"]["zone"]
+            or final["routeGatewayId"]
+            != interactions["visual_route"]["gatewayToZone"]["gateway"]
+            or final["routeDirection"] != "gateway-to-zone"
+            or final["routeGatewayChoices"] < 1
+            or final["routeStatus"]
+            not in {"present", "absent", "target-unserved"}
+        ):
+            raise AssertionError(
+                f"timeline continuity or visual Difference failed: {final}"
+            )
+        affected_route = _execute(
+            base_url,
+            session_id,
+            r"""
+const canvas=document.getElementById("slice-globe"),source=canvas.dataset.affectedRouteSource,target=canvas.dataset.affectedRouteTarget;
+if(!source||!target)return null;
+setRouteSource(source);setRouteTarget(target);
+return {source,target,status:canvas.dataset.routeStatus,changedSegments:Number(canvas.dataset.routeChangedSegments),context:document.getElementById("difference-context").textContent};
+""",
+        )
+        if (
+            not affected_route
+            or affected_route["status"] != "present"
+            or affected_route["changedSegments"] < 1
+            or "patches:" not in affected_route["context"]
+        ):
+            raise AssertionError(
+                f"contextual Route Difference failed: {affected_route}"
+            )
+        interactions["contextual_route_difference"] = affected_route
+        clear_state = _execute(
+            base_url,
+            session_id,
+            r'''
+document.getElementById("clear-inspection").click();
+const canvas=document.getElementById("slice-globe");
+return {
+  node:canvas.dataset.selectedNodeId,
+  connection:canvas.dataset.selectedConnectionRef,
+  zone:canvas.dataset.selectedZoneId,
+  routeZone:canvas.dataset.routeZoneId,
+  routeGateway:canvas.dataset.routeGatewayId,
+  routeNodes:Number(canvas.dataset.routePathNodes),
+  routeStatus:canvas.dataset.routeStatus,
+  differenceMode:canvas.dataset.differenceMode,
+  incident:Number(canvas.dataset.incidentContextConnections),
+  endpoints:Number(canvas.dataset.endpointContextNodes),
+  selectionStatus:document.getElementById("selected-detail").dataset.selectionStatus,
+  differenceContext:document.getElementById("difference-context").textContent
+};
+''',
+        )
+        if (
+            clear_state["node"]
+            or clear_state["connection"]
+            or clear_state["zone"]
+            or clear_state["routeZone"]
+            or clear_state["routeGateway"]
+            or clear_state["routeNodes"] != 0
+            or clear_state["routeStatus"] != "none"
+            or clear_state["differenceMode"] != "false"
+            or clear_state["incident"] != 0
+            or clear_state["endpoints"] != 0
+            or clear_state["selectionStatus"] != "none"
+            or "Select a Connection, Zone, or Route"
+            not in clear_state["differenceContext"]
+        ):
+            raise AssertionError(
+                f"Clear inspection did not restore neutral state: {clear_state}"
+            )
+        interactions["clear_inspection"] = clear_state
+        disappearance = _execute(
+            base_url,
+            session_id,
+            r"""
+const ref=document.getElementById("slice-globe").dataset.firstRemovedConnectionRef;
+if(!ref)return null;
+showConnection(ref);
+return {id:ref,status:document.getElementById("selected-detail").dataset.selectionStatus,endpoints:Number(document.getElementById("slice-globe").dataset.endpointContextNodes),detail:document.getElementById("selected-detail").textContent};
+""",
+        )
+        if (
+            not disappearance
+            or disappearance["status"] != "absent"
+            or disappearance["endpoints"] != 0
+            or "removed" not in disappearance["detail"]
+        ):
+            raise AssertionError(
+                f"Connection disappearance was not explicit: {disappearance}"
+            )
+        previous_id = _execute(
+            base_url,
+            session_id,
+            f"return Number(window.SKYSEED_SLICE_MANIFEST.slice_manifest[{last_index - 1}].slice_id);",
+        )
+        _execute(
+            base_url,
+            session_id,
+            f"loadSlice({last_index - 1});return true;",
+        )
+        _wait_for_slice(base_url, session_id, int(previous_id), timeout)
+        before_removal = _execute(
+            base_url,
+            session_id,
+            r"""
+const canvas=document.getElementById("slice-globe");
+return {id:canvas.dataset.selectedConnectionRef,status:document.getElementById("selected-detail").dataset.selectionStatus,endpoints:Number(canvas.dataset.endpointContextNodes)};
+""",
+        )
+        _execute(
+            base_url,
+            session_id,
+            f"loadSlice({last_index});return true;",
+        )
+        _wait_for_slice(base_url, session_id, int(final["loadedSliceId"]), timeout)
+        after_removal = _execute(
+            base_url,
+            session_id,
+            r"""
+const canvas=document.getElementById("slice-globe");
+return {id:canvas.dataset.selectedConnectionRef,status:document.getElementById("selected-detail").dataset.selectionStatus,endpoints:Number(canvas.dataset.endpointContextNodes)};
+""",
+        )
+        if (
+            before_removal["id"] != disappearance["id"]
+            or before_removal["status"] != "present"
+            or after_removal
+            != {
+                "id": disappearance["id"],
+                "status": "absent",
+                "endpoints": 0,
+            }
+        ):
+            raise AssertionError(
+                "Connection identity did not persist across disappearance: "
+                f"{before_removal}, {after_removal}"
+            )
+        interactions["connection_disappearance"] = {
+            **disappearance,
+            "before": before_removal,
+            "after": after_removal,
+        }
     return {
-        "status": "PASS",
-        "profile": "portability",
-        "orbit_refs": result["refs"],
-        "inventory": inventory,
-        "timeline_label": result["label"],
-        "screenshot": screenshot,
+        "initial": initial,
+        "final": final,
+        "interactions": interactions,
+        "stale_completion_guard": stale_completion_guard,
     }
 
 
@@ -284,8 +933,10 @@ def run_browser_smoke(
     screenshot_directory: Path | None = None,
     profile: str = "rich",
 ) -> dict[str, object]:
-    """Exercise shared-context presets and transitions in real Firefox."""
+    """Exercise lazy chunks, selection, path and Difference UI in Firefox."""
 
+    if profile not in {"rich", "portability"}:
+        raise ValueError(f"unsupported browser profile: {profile}")
     resolved_page = page.resolve()
     if not resolved_page.is_file():
         raise FileNotFoundError(f"Slice / Difference page not found: {resolved_page}")
@@ -330,960 +981,38 @@ def run_browser_smoke(
                 value={"url": resolved_page.as_uri()},
                 timeout=timeout,
             )
-
-            if profile == "portability":
-                result = _run_portability_profile(
-                    base_url,
-                    session_id,
-                    screenshot_directory,
-                )
-                result.update(
-                    {
-                        "browser": session["capabilities"]["browserName"],
-                        "browser_version": session["capabilities"][
-                            "browserVersion"
-                        ],
-                        "geckodriver_version": session["capabilities"][
-                            "moz:geckodriverVersion"
-                        ],
-                    }
-                )
-                return result
-            if profile != "rich":
-                raise ValueError(f"unsupported browser profile: {profile}")
-
-            initial = _execute(
+            exercised = _exercise_page(base_url, session_id, timeout, profile)
+            screenshot = _capture_screenshot(
                 base_url,
                 session_id,
-                """
-const canvas=document.getElementById("topology-globe");
-const chineseTitle=document.title;
-document.querySelector('[data-language="en"]').click();
-return {
-  chineseTitle,
-  englishTitle:document.title,
-  label:document.getElementById("slice-label").textContent,
-  timestamp:document.getElementById("timestamp-label").textContent,
-  active:document.querySelector('.view-tab[aria-selected="true"]').dataset.view,
-  layers:canvas.dataset.layers,
-  sliceMarkers:document.querySelectorAll('.timeline-marker.slice').length,
-  differenceMarkers:document.querySelectorAll('.timeline-marker.difference').length,
-  currentMarkers:document.querySelectorAll('.timeline-marker[aria-current="true"]').length,
-  syncCamera:document.getElementById("sync-camera").checked,
-  structured:document.querySelectorAll(".structured").length,
-  rawAudit:document.querySelector(".audit summary").textContent
-};
-""",
+                screenshot_directory,
+                f"{profile}-chunked-slice-tool.png",
             )
-            if (
-                initial["chineseTitle"] != "切片 / 差异检查工具"
-                or initial["englishTitle"] != "Slice / Difference Inspection Tool"
-                or initial["label"] != "Slice 0"
-                or "synthetic baseline" not in initial["timestamp"]
-                or initial["active"] != "topology"
-                or "ecef-orbit-guides" in initial["layers"]
-                or initial["differenceMarkers"] != initial["sliceMarkers"] - 1
-                or initial["currentMarkers"] != 1
-                or not initial["syncCamera"]
-                or initial["structured"] != 5
-                or "Raw JSON / Audit View" not in initial["rawAudit"]
-            ):
-                raise AssertionError(f"initial shared timeline is invalid: {initial}")
-
-            topology = _execute(
-                base_url,
-                session_id,
-                """
-setSlice(1);
-const orbit=document.getElementById("orbit-select");
-orbit.value=orbit.options[1].value;
-orbit.dispatchEvent(new Event("change",{bubbles:true}));
-const formalOrbit=orbitsByRef[orbit.value];
-const guideData=displayBaseSlice().orbit_guides.find(
-  value=>value.orbit_ref===formalOrbit.orbit_ref
-);
-const guide=orbitGuide(guideData);
-const norm=value=>Math.hypot(...value);
-const guideRadius=norm(guide[0]);
-const satelliteRadii=formalOrbit.satellite_ids.map(id=>norm(nodePoint(id)));
-const normal=guideData.plane_normal_ecef_unit;
-const dot=(a,b)=>a.x*b.x+a.y*b.y+a.z*b.z;
-const unit=value=>{
-  const magnitude=Math.hypot(value.x,value.y,value.z);
-  return {x:value.x/magnitude,y:value.y/magnitude,z:value.z/magnitude};
-};
-const maximumResidual=Math.max(...formalOrbit.satellite_ids.map(id=>
-  Math.abs(dot(unit(Object.fromEntries(
-    displayBaseSlice().positions.map(value=>[value.node_id,value])
-  )[id].ecef_m),normal))
-));
-const nextGuide=DATA.slices[2].orbit_guides.find(
-  value=>value.orbit_ref===formalOrbit.orbit_ref
-);
-const normalChange=1-Math.abs(dot(normal,nextGuide.plane_normal_ecef_unit));
-document.getElementById("shared-timeline").scrollIntoView({block:"start"});
-return {
-  label:document.getElementById("slice-label").textContent,
-  orbit:orbit.value,
-  orbitId:formalOrbit.orbit_id,
-  syncedOrbit:document.getElementById("isl-orbit-filter").value,
-  layers:document.getElementById("topology-globe").dataset.layers,
-  detail:document.getElementById("orbit-detail").textContent,
-  guideRadius,
-  expectedRadius:guideData.mean_radius_m/WGS84_DISPLAY_RADIUS_M,
-  meanSatelliteRadius:satelliteRadii.reduce((a,b)=>a+b,0)/satelliteRadii.length,
-  maximumResidual,
-  recordedResidual:guideData.max_unit_plane_residual,
-  normalChange,
-  guideSource:guideData.source
-};
-""",
-            )
-            if (
-                topology["label"] != "Slice 1"
-                or topology["orbit"] != topology["syncedOrbit"]
-                or "ecef-orbit-guides-previous" not in topology["layers"]
-                or any(
-                    value in topology["layers"]
-                    for value in ("isl", "route", "difference", "zone-service")
-                )
-                or topology["orbitId"] not in topology["detail"]
-                or topology["guideRadius"] <= 1
-                or abs(topology["guideRadius"] - topology["expectedRadius"]) > 1e-12
-                or abs(
-                    topology["guideRadius"] - topology["meanSatelliteRadius"]
-                ) > 1e-10
-                or topology["maximumResidual"] > 1e-12
-                or topology["recordedResidual"] > 1e-12
-                or topology["normalChange"] <= 1e-8
-                or topology["guideSource"] != "formal-ecef-positions"
-            ):
-                raise AssertionError(f"Topology/orbit geometry is invalid: {topology}")
-            screenshots = [
-                _capture_screenshot(
-                    base_url,
-                    session_id,
-                    screenshot_directory,
-                    "topology-orbit-ecef-aligned.png",
-                )
-            ]
-            topology_transition = _execute(
-                base_url,
-                session_id,
-                """
-const canvasHash=id=>{
-  const canvas=document.getElementById(id);
-  const data=canvas.getContext("2d").getImageData(0,0,canvas.width,canvas.height).data;
-  let hash=2166136261;
-  for(let offset=0;offset<data.length;offset+=97){
-    hash^=data[offset];hash=Math.imul(hash,16777619);
-  }
-  return hash>>>0;
-};
-setTimelineIndex(2);
-const before=canvasHash("topology-globe");
-setTimelineIndex(3);
-const transition={
-  hash:canvasHash("topology-globe"),
-  layers:document.getElementById("topology-globe").dataset.layers,
-  detail:document.getElementById("orbit-detail").textContent
-};
-setTimelineIndex(4);
-const after={
-  hash:canvasHash("topology-globe"),
-  layers:document.getElementById("topology-globe").dataset.layers
-};
-setSlice(1);
-return {before,transition,after};
-""",
-            )
-            if (
-                len(
-                    {
-                        topology_transition["before"],
-                        topology_transition["transition"]["hash"],
-                        topology_transition["after"]["hash"],
-                    }
-                )
-                != 3
-                or "transition-previous-base"
-                not in topology_transition["transition"]["layers"]
-                or "ecef-orbit-guides-previous"
-                not in topology_transition["transition"]["layers"]
-                or "ecef-orbit-guides-current"
-                not in topology_transition["transition"]["layers"]
-                or "position-motion-vectors"
-                not in topology_transition["transition"]["layers"]
-                or "position-comparison-endpoints"
-                not in topology_transition["transition"]["layers"]
-                or "No intermediate Position exists"
-                not in topology_transition["transition"]["detail"]
-                or "transition-previous-base"
-                in topology_transition["after"]["layers"]
-            ):
-                raise AssertionError(
-                    f"Topology previous/transition/after rendering is invalid: "
-                    f"{topology_transition}"
-                )
-            _execute(
-                base_url,
-                session_id,
-                """
-setTimelineIndex(3);
-document.querySelector('[data-view="topology"]').click();
-document.getElementById("shared-timeline").scrollIntoView({block:"start"});
-return timelineLabel();
-""",
-            )
-            screenshots.append(
-                _capture_screenshot(
-                    base_url,
-                    session_id,
-                    screenshot_directory,
-                    "topology-position-transition.png",
-                )
-            )
-            _execute(base_url, session_id, "setSlice(1);return timelineLabel();")
-
-            isl = _execute(
-                base_url,
-                session_id,
-                """
-document.querySelector('[data-view="isl"]').click();
-const orbit=document.getElementById("isl-orbit-filter");
-orbit.value="*";orbit.dispatchEvent(new Event("change",{bubbles:true}));
-const node=document.getElementById("isl-node-filter");
-const cross=displayBaseSlice().connections.filter(
-  value=>value.display_kind==="cross-orbit-isl"
-);
-const sideSets=new Map();
-cross.forEach(value=>{
-  const id=value.connection_id;
-  [[id.endpoint_a,value.cross_plane_sides?.endpoint_a],
-   [id.endpoint_b,value.cross_plane_sides?.endpoint_b]].forEach(([nodeId,side])=>{
-    if(!sideSets.has(nodeId))sideSets.set(nodeId,new Set());
-    sideSets.get(nodeId).add(side);
-  });
-});
-const candidate=[...sideSets].find(([,sides])=>
-  sides.has("predecessor-orbit")&&sides.has("successor-orbit")
-);
-if(!candidate)throw new Error("no Satellite has both adjacent-Orbit sides");
-node.value=candidate[0];
-node.dispatchEvent(new Event("change",{bubbles:true}));
-const camera={yaw:sharedCamera.yaw,pitch:sharedCamera.pitch};
-document.getElementById("shared-timeline").scrollIntoView({block:"start"});
-return {
-  layers:document.getElementById("isl-globe").dataset.layers,
-  node:node.value,
-  detail:document.getElementById("isl-detail").textContent,
-  camera,
-  orbit:document.getElementById("isl-orbit-filter").value
-};
-""",
-            )
-            if (
-                "stable-ecef-orbit-guides" not in isl["layers"]
-                or "stable-satellite-context" not in isl["layers"]
-                or "same-orbit-isl" not in isl["layers"]
-                or "cross-orbit-isl" not in isl["layers"]
-                or isl["node"] not in isl["detail"]
-                or "predecessor-orbit" not in isl["detail"]
-                or "successor-orbit" not in isl["detail"]
-                or any(
-                    value in isl["layers"]
-                    for value in ("ground-station-access", "zone-service", "route", "difference")
-                )
-            ):
-                raise AssertionError(f"ISL preset is invalid: {isl}")
-            screenshots.append(
-                _capture_screenshot(
-                    base_url,
-                    session_id,
-                    screenshot_directory,
-                    "isl-orbit-context.png",
-                )
-            )
-            screenshots.append(
-                _capture_screenshot(
-                    base_url,
-                    session_id,
-                    screenshot_directory,
-                    "isl-predecessor-successor-cross-plane.png",
-                )
-            )
-
-            service = _execute(
-                base_url,
-                session_id,
-                """
-document.querySelector('[data-view="service"]').click();
-document.getElementById("shared-timeline").scrollIntoView({block:"start"});
-return {
-  layers:document.getElementById("service-globe").dataset.layers,
-  detail:document.getElementById("service-detail").textContent,
-  camera:{yaw:sharedCamera.yaw,pitch:sharedCamera.pitch},
-  selectedNode:document.getElementById("isl-node-filter").value
-};
-""",
-            )
-            if (
-                "stable-ecef-orbit-guides" not in service["layers"]
-                or "stable-satellite-context" not in service["layers"]
-                or "ground-station-access" not in service["layers"]
-                or "zone-service" not in service["layers"]
-                or "zones" not in service["layers"]
-                or "GroundStation access" not in service["detail"]
-                or "Zone service" not in service["detail"]
-                or service["camera"] != isl["camera"]
-                or service["selectedNode"] != isl["node"]
-                or any(
-                    value in service["layers"]
-                    for value in ("same-orbit-isl", "cross-orbit-isl", "route", "difference")
-                )
-            ):
-                raise AssertionError(f"Ground/Zone preset is invalid: {service}")
-            screenshots.append(
-                _capture_screenshot(
-                    base_url,
-                    session_id,
-                    screenshot_directory,
-                    "ground-zone-constellation-context.png",
-                )
-            )
-            outside_service = _execute(
-                base_url,
-                session_id,
-                """
-const record=DATA.slices.slice(1).find(slice=>
-  slice.zone_service_assignments.some(
-    value=>value.display_explanation?.subpoint_inside_zone===false
-  )
-);
-if(!record)throw new Error("no outside-subpoint formal assignment");
-const assignment=record.zone_service_assignments.find(
-  value=>value.display_explanation?.subpoint_inside_zone===false
-);
-setSlice(record.slice_id);
-document.querySelector('[data-view="service"]').click();
-document.getElementById("shared-timeline").scrollIntoView({block:"start"});
-return {
-  sliceId:record.slice_id,
-  zoneId:assignment.zone_id,
-  satelliteId:assignment.service_satellite_id,
-  elevation:assignment.display_explanation.representative_point_elevation_deg,
-  inside:assignment.display_explanation.subpoint_inside_zone,
-  detail:document.getElementById("service-detail").textContent
-};
-""",
-            )
-            if (
-                outside_service["inside"]
-                or outside_service["elevation"] < 10.0
-                or outside_service["zoneId"] not in outside_service["detail"]
-                or outside_service["satelliteId"]
-                not in outside_service["detail"]
-                or "subpoint containment" not in outside_service["detail"]
-            ):
-                raise AssertionError(
-                    "Zone-service explanation is invalid: "
-                    f"{outside_service}"
-                )
-            screenshots.append(
-                _capture_screenshot(
-                    base_url,
-                    session_id,
-                    screenshot_directory,
-                    "zone-service-subpoint-outside.png",
-                )
-            )
-            screenshots.append(
-                _capture_screenshot(
-                    base_url,
-                    session_id,
-                    screenshot_directory,
-                    "ground-station-zone-separation.png",
-                )
-            )
-
-            routing_g = _execute(
-                base_url,
-                session_id,
-                """
-document.querySelector('[data-view="routing"]').click();
-const path=displayBaseSlice().paths.find(value=>value.target.kind==="G");
-if(!path)throw new Error("no formal G path");
-const source=document.getElementById("route-source");
-source.value=path.source;source.dispatchEvent(new Event("change",{bubbles:true}));
-const target=document.getElementById("route-target");
-target.value=path.path_id;target.dispatchEvent(new Event("change",{bubbles:true}));
-document.querySelector('[data-view="topology"]').click();
-document.querySelector('[data-view="routing"]').click();
-document.getElementById("shared-timeline").scrollIntoView({block:"start"});
-return {
-  source:source.value,target:target.value,
-  layers:document.getElementById("routing-globe").dataset.layers,
-  detail:document.getElementById("route-detail").textContent
-};
-""",
-            )
-            if (
-                "selected-path" not in routing_g["layers"]
-                or "g-target" not in routing_g["layers"]
-                or "stable-ecef-orbit-guides" not in routing_g["layers"]
-                or "stable-satellite-context" not in routing_g["layers"]
-                or routing_g["source"] not in routing_g["detail"]
-                or "Formal resolved path" not in routing_g["detail"]
-                or any(
-                    value in routing_g["layers"]
-                    for value in ("all-connection", "zone-service", "difference")
-                )
-            ):
-                raise AssertionError(f"G routing preset is invalid: {routing_g}")
-            screenshots.append(
-                _capture_screenshot(
-                    base_url,
-                    session_id,
-                    screenshot_directory,
-                    "route-g-target.png",
-                )
-            )
-
-            routing_z = _execute(
-                base_url,
-                session_id,
-                """
-const path=displayBaseSlice().paths.find(value=>value.target.kind==="Z");
-if(!path)throw new Error("no formal Z path");
-const source=document.getElementById("route-source");
-source.value=path.source;source.dispatchEvent(new Event("change",{bubbles:true}));
-const target=document.getElementById("route-target");
-target.value=path.path_id;target.dispatchEvent(new Event("change",{bubbles:true}));
-document.getElementById("shared-timeline").scrollIntoView({block:"start"});
-return {
-  source:source.value,target:target.value,
-  layers:document.getElementById("routing-globe").dataset.layers,
-  detail:document.getElementById("route-detail").textContent
-};
-""",
-            )
-            if (
-                "selected-path" not in routing_z["layers"]
-                or "target-zone" not in routing_z["layers"]
-                or "zone-service-satellite" not in routing_z["layers"]
-                or "service Satellite" not in routing_z["detail"]
-            ):
-                raise AssertionError(f"Z routing preset is invalid: {routing_z}")
-            screenshots.append(
-                _capture_screenshot(
-                    base_url,
-                    session_id,
-                    screenshot_directory,
-                    "route-z-target-zone-service.png",
-                )
-            )
-
-            connection_transition = _execute(
-                base_url,
-                session_id,
-                """
-const index=DATA.slices.findIndex((slice,index)=>index>0&&(
-  slice.difference_from_previous.added_connections.length||
-  slice.difference_from_previous.removed_connection_ids.length
-));
-setTimelineIndex(index*2-1);
-document.querySelector('[data-view="difference"]').click();
-const category=document.getElementById("difference-category");
-category.value="connection-structure";
-category.dispatchEvent(new Event("change",{bubbles:true}));
-const connectionItemIndex=differenceItems().findIndex(item=>
-  item.value.connection_id.kind==="inter-satellite"
-);
-document.querySelectorAll(".difference-item")[
-  connectionItemIndex<0?0:connectionItemIndex
-]?.click();
-const focusedLayers=document.getElementById("difference-globe").dataset.layers;
-const fullContext=document.getElementById("difference-satellite-layer");
-const fullContextDefault=fullContext.checked;
-fullContext.checked=true;
-fullContext.dispatchEvent(new Event("change",{bubbles:true}));
-const fullContextLayers=document.getElementById("difference-globe").dataset.layers;
-fullContext.checked=false;
-fullContext.dispatchEvent(new Event("change",{bubbles:true}));
-document.getElementById("shared-timeline").scrollIntoView({block:"start"});
-return {
-  index,label:document.getElementById("slice-label").textContent,
-  layers:document.getElementById("difference-globe").dataset.layers,
-  detail:document.getElementById("difference-detail").textContent,
-  items:document.querySelectorAll(".difference-item").length,
-  focusedLayers,fullContextLayers,fullContextDefault,
-  comparisonSliceId:comparisonSlice().slice_id,
-  baseSliceId:displayBaseSlice().slice_id
-};
-""",
-            )
-            if (
-                not connection_transition["label"].startswith("Δ")
-                or "difference-connection-structure"
-                not in connection_transition["layers"]
-                or connection_transition["items"] < 1
-                or "previous" not in connection_transition["detail"]
-                or "current" not in connection_transition["detail"]
-                or connection_transition["baseSliceId"] != 0
-                or connection_transition["comparisonSliceId"] != 1
-                or "comparison-geometry-current-fallback"
-                not in connection_transition["focusedLayers"]
-                or "focused-selected-item"
-                not in connection_transition["focusedLayers"]
-                or "focused-relevant-orbits"
-                not in connection_transition["focusedLayers"]
-                or connection_transition["fullContextDefault"]
-                or "full-constellation-stable-context"
-                not in connection_transition["fullContextLayers"]
-                or any(
-                    value in connection_transition["fullContextLayers"]
-                    for value in (
-                        "position-motion-vectors",
-                        "ecef-orbit-guides-current",
-                        "position-comparison-endpoints",
-                    )
-                )
-            ):
-                raise AssertionError(
-                    "Connection transition is invalid: "
-                    f"{connection_transition}"
-                )
-            screenshots.append(
-                _capture_screenshot(
-                    base_url,
-                    session_id,
-                    screenshot_directory,
-                    "difference-connection-focused-item.png",
-                )
-            )
-
-            parameter_transition = _execute(
-                base_url,
-                session_id,
-                """
-const index=DATA.slices.findIndex((slice,index)=>index>0&&
-  slice.difference_from_previous.connection_parameter_patches.length);
-setTimelineIndex(index*2-1);
-const category=document.getElementById("difference-category");
-category.value="parameters";category.dispatchEvent(new Event("change",{bubbles:true}));
-document.querySelector(".difference-item")?.click();
-return {
-  label:document.getElementById("slice-label").textContent,
-  layers:document.getElementById("difference-globe").dataset.layers,
-  detail:document.getElementById("difference-detail").textContent
-};
-""",
-            )
-            if (
-                not parameter_transition["label"].startswith("Δ")
-                or "difference-parameters" not in parameter_transition["layers"]
-                or "Directional parameter transition"
-                not in parameter_transition["detail"]
-                or "previous" not in parameter_transition["detail"]
-                or "current" not in parameter_transition["detail"]
-            ):
-                raise AssertionError(
-                    f"Parameter transition is invalid: {parameter_transition}"
-                )
-
-            zone_transition = _execute(
-                base_url,
-                session_id,
-                """
-const index=DATA.slices.findIndex((slice,index)=>index>0&&
-  slice.difference_from_previous.zone_service_assignment_patches.some(
-    patch=>patch.operation==="changed"
-  ));
-setTimelineIndex(index*2-1);
-const category=document.getElementById("difference-category");
-category.value="zone";category.dispatchEvent(new Event("change",{bubbles:true}));
-const patchIndex=displayDifference().zone_service_assignment_patches.findIndex(
-  patch=>patch.operation==="changed"
-);
-document.querySelectorAll(".difference-item")[patchIndex].click();
-document.getElementById("shared-timeline").scrollIntoView({block:"start"});
-return {
-  index,label:document.getElementById("slice-label").textContent,
-  layers:document.getElementById("difference-globe").dataset.layers,
-  detail:document.getElementById("difference-detail").textContent
-};
-""",
-            )
-            if (
-                not zone_transition["label"].startswith("Δ")
-                or "difference-zone" not in zone_transition["layers"]
-                or "Zone service transition" not in zone_transition["detail"]
-                or "previous" not in zone_transition["detail"]
-                or "current" not in zone_transition["detail"]
-            ):
-                raise AssertionError(
-                    f"Zone transition is invalid: {zone_transition}"
-                )
-            screenshots.append(
-                _capture_screenshot(
-                    base_url,
-                    session_id,
-                    screenshot_directory,
-                    "difference-zone-handover-focused-item.png",
-                )
-            )
-
-            route_transition = _execute(
-                base_url,
-                session_id,
-                """
-const index=DATA.slices.findIndex((slice,index)=>index>0&&
-  slice.difference_from_previous.route_patches.some(
-    patch=>patch.operation==="changed"
-  ));
-setTimelineIndex(index*2-1);
-const category=document.getElementById("difference-category");
-category.value="route";category.dispatchEvent(new Event("change",{bubbles:true}));
-const patchIndex=displayDifference().route_patches.findIndex(
-  patch=>patch.operation==="changed"
-);
-document.querySelectorAll(".difference-item")[patchIndex].click();
-document.getElementById("shared-timeline").scrollIntoView({block:"start"});
-return {
-  index,label:document.getElementById("slice-label").textContent,
-  layers:document.getElementById("difference-globe").dataset.layers,
-  detail:document.getElementById("difference-detail").textContent
-};
-""",
-            )
-            if (
-                not route_transition["label"].startswith("Δ")
-                or "difference-route" not in route_transition["layers"]
-                or "Route next-hop transition" not in route_transition["detail"]
-                or "formal resolved path" not in route_transition["detail"]
-            ):
-                raise AssertionError(
-                    f"Route transition is invalid: {route_transition}"
-                )
-            screenshots.append(
-                _capture_screenshot(
-                    base_url,
-                    session_id,
-                    screenshot_directory,
-                    "difference-route-change.png",
-                )
-            )
-
-            isl_transition = _execute(
-                base_url,
-                session_id,
-                """
-const index=DATA.slices.findIndex((slice,index)=>index>0&&(
-  slice.difference_from_previous.added_connections.some(
-    value=>value.connection_id.kind==="inter-satellite"
-  )||slice.difference_from_previous.removed_connection_ids.some(
-    value=>value.connection_id.kind==="inter-satellite"
-  )
-));
-if(index<1)throw new Error("no ISL transition");
-const difference=DATA.slices[index].difference_from_previous;
-const operation=difference.added_connections.some(
-  value=>value.connection_id.kind==="inter-satellite"
-)?"added":"removed";
-const canvasHash=id=>{
-  const canvas=document.getElementById(id);
-  const data=canvas.getContext("2d").getImageData(0,0,canvas.width,canvas.height).data;
-  let hash=2166136261;
-  for(let offset=0;offset<data.length;offset+=97){
-    hash^=data[offset];hash=Math.imul(hash,16777619);
-  }
-  return hash>>>0;
-};
-document.querySelector('[data-view="isl"]').click();
-const orbitFilter=document.getElementById("isl-orbit-filter");
-orbitFilter.value="*";
-orbitFilter.dispatchEvent(new Event("change",{bubbles:true}));
-const nodeFilter=document.getElementById("isl-node-filter");
-nodeFilter.value="*";
-nodeFilter.dispatchEvent(new Event("change",{bubbles:true}));
-setTimelineIndex(index*2-2);
-const before={label:timelineLabel(),hash:canvasHash("isl-globe"),
-  layers:document.getElementById("isl-globe").dataset.layers};
-setTimelineIndex(index*2-1);
-const transition={label:timelineLabel(),hash:canvasHash("isl-globe"),
-  layers:document.getElementById("isl-globe").dataset.layers};
-setTimelineIndex(index*2);
-const after={label:timelineLabel(),hash:canvasHash("isl-globe"),
-  layers:document.getElementById("isl-globe").dataset.layers};
-return {index,operation,before,transition,after};
-""",
-            )
-            if (
-                not isl_transition["before"]["label"].startswith("Slice ")
-                or not isl_transition["transition"]["label"].startswith("Δ")
-                or not isl_transition["after"]["label"].startswith("Slice ")
-                or len(
-                    {
-                        isl_transition["before"]["hash"],
-                        isl_transition["transition"]["hash"],
-                        isl_transition["after"]["hash"],
-                    }
-                )
-                != 3
-                or "transition-previous-network-base"
-                not in isl_transition["transition"]["layers"]
-                or f"isl-{isl_transition['operation']}"
-                not in isl_transition["transition"]["layers"]
-                or "stable-ecef-orbit-guides"
-                not in isl_transition["transition"]["layers"]
-                or any(
-                    value in isl_transition["transition"]["layers"]
-                    for value in (
-                        "position-motion-vectors",
-                        "ecef-orbit-guides-current",
-                        "position-comparison-endpoints",
-                    )
-                )
-                or "transition-previous-network-base"
-                in isl_transition["after"]["layers"]
-            ):
-                raise AssertionError(
-                    f"ISL previous/transition/after rendering is invalid: "
-                    f"{isl_transition}"
-                )
-            isl_index = int(isl_transition["index"])
-            for timeline_value, filename in (
-                (isl_index * 2 - 2, "slice-n-isl.png"),
-                (isl_index * 2 - 1, "delta-n-to-n1-isl-add-remove.png"),
-                (isl_index * 2, "slice-n1-isl.png"),
-            ):
-                _execute(
-                    base_url,
-                    session_id,
-                    f"""
-setTimelineIndex({timeline_value});
-document.getElementById("shared-timeline").scrollIntoView({{block:"start"}});
-return document.getElementById("slice-label").textContent;
-""",
-                )
-                screenshots.append(
-                    _capture_screenshot(
-                        base_url,
-                        session_id,
-                        screenshot_directory,
-                        filename,
-                    )
-                )
-
-            service_transition = _execute(
-                base_url,
-                session_id,
-                """
-const index=DATA.slices.findIndex((slice,index)=>index>0&&
-  slice.difference_from_previous.zone_service_assignment_patches.some(
-    patch=>patch.operation==="changed"
-  )
-);
-setTimelineIndex(index*2-1);
-document.querySelector('[data-view="service"]').click();
-const transitionLayers=document.getElementById("service-globe").dataset.layers;
-setTimelineIndex(index*2);
-const afterLayers=document.getElementById("service-globe").dataset.layers;
-setTimelineIndex(index*2-1);
-document.getElementById("shared-timeline").scrollIntoView({block:"start"});
-return {
-  index,
-  label:timelineLabel(),
-  transitionLayers,
-  afterLayers,
-  detail:document.getElementById("service-detail").textContent
-};
-""",
-            )
-            if (
-                not service_transition["label"].startswith("Δ")
-                or "zone-service-transition"
-                not in service_transition["transitionLayers"]
-                or "transition-previous-network-base"
-                not in service_transition["transitionLayers"]
-                or "stable-ecef-orbit-guides"
-                not in service_transition["transitionLayers"]
-                or any(
-                    value in service_transition["transitionLayers"]
-                    for value in (
-                        "position-motion-vectors",
-                        "ecef-orbit-guides-current",
-                        "position-comparison-endpoints",
-                    )
-                )
-                or "zone-service-transition"
-                in service_transition["afterLayers"]
-                or "Previous access and service relations"
-                not in service_transition["detail"]
-            ):
-                raise AssertionError(
-                    f"Service transition overlay is invalid: "
-                    f"{service_transition}"
-                )
-            screenshots.append(
-                _capture_screenshot(
-                    base_url,
-                    session_id,
-                    screenshot_directory,
-                    "service-zone-handover-focused-transition.png",
-                )
-            )
-
-            routing_transition = _execute(
-                base_url,
-                session_id,
-                """
-const index=DATA.slices.findIndex((slice,index)=>index>0&&
-  slice.difference_from_previous.route_patches.some(
-    patch=>patch.operation==="changed"
-  )
-);
-setTimelineIndex(index*2-1);
-document.querySelector('[data-view="routing"]').click();
-const patch=displayDifference().route_patches.find(value=>value.operation==="changed");
-const source=document.getElementById("route-source");
-source.value=patch.source;source.dispatchEvent(new Event("change",{bubbles:true}));
-const target=document.getElementById("route-target");
-target.value=patch.route_ref;target.dispatchEvent(new Event("change",{bubbles:true}));
-document.getElementById("shared-timeline").scrollIntoView({block:"start"});
-return {
-  index,
-  label:timelineLabel(),
-  layers:document.getElementById("routing-globe").dataset.layers,
-  detail:document.getElementById("route-detail").textContent,
-  previousPath:displayPreviousSlice().paths.find(
-    value=>value.path_id===patch.route_ref
-  )?.nodes??null,
-  currentPath:displayCurrentSlice().paths.find(
-    value=>value.path_id===patch.route_ref
-  )?.nodes??null
-};
-""",
-            )
-            if (
-                not routing_transition["label"].startswith("Δ")
-                or "previous-formal-path" not in routing_transition["layers"]
-                or "current-formal-path" not in routing_transition["layers"]
-                or "stable-ecef-orbit-guides"
-                not in routing_transition["layers"]
-                or any(
-                    value in routing_transition["layers"]
-                    for value in (
-                        "position-motion-vectors",
-                        "ecef-orbit-guides-current",
-                        "position-comparison-endpoints",
-                    )
-                )
-                or "Previous formal resolved path"
-                not in routing_transition["detail"]
-                or routing_transition["previousPath"] is None
-                or routing_transition["currentPath"] is None
-            ):
-                raise AssertionError(
-                    f"Routing task transition is invalid: "
-                    f"{routing_transition}"
-                )
-            screenshots.append(
-                _capture_screenshot(
-                    base_url,
-                    session_id,
-                    screenshot_directory,
-                    "routing-focused-old-new-formal-path.png",
-                )
-            )
-
-            _execute(
-                base_url,
-                session_id,
-                """
-setTimelineIndex(0);
-document.querySelector('[data-view="topology"]').click();
-window.__playbackLabels=[document.getElementById("slice-label").textContent];
-window.__playbackObserver=new MutationObserver(()=>
-  window.__playbackLabels.push(document.getElementById("slice-label").textContent)
-);
-window.__playbackObserver.observe(
-  document.getElementById("slice-label"),{childList:true,subtree:true}
-);
-document.getElementById("play-pause").click();
-return true;
-""",
-            )
-            playback_deadline = time.monotonic() + min(timeout, 6.0)
-            while True:
-                playback_labels = _execute(
-                    base_url,
-                    session_id,
-                    """
-return [...new Set(window.__playbackLabels)];
-""",
-                )
-                if playback_labels[:3] == ["Slice 0", "Δ0→1", "Slice 1"]:
-                    break
-                if time.monotonic() >= playback_deadline:
-                    break
-                time.sleep(0.1)
-            playback = _execute(
-                base_url,
-                session_id,
-                """
-document.getElementById("play-pause").click();
-window.__playbackObserver.disconnect();
-return {
-  labels:[...new Set(window.__playbackLabels)],
-  button:document.getElementById("play-pause").textContent,
-  contexts:[...document.querySelectorAll(".view-context")].map(value=>value.textContent)
-};
-""",
-            )
-            if (
-                playback["labels"][:3] != ["Slice 0", "Δ0→1", "Slice 1"]
-                or playback["button"] != "Play"
-                or set(playback["contexts"]) != {playback["labels"][-1]}
-            ):
-                raise AssertionError(
-                    f"Slice/Difference playback is invalid: {playback}"
-                )
-
             return {
                 "status": "PASS",
+                "profile": profile,
+                "inventory": exercised["initial"]["inventory"],
+                "initial_slice_id": exercised["initial"]["loadedSliceId"],
+                "final_slice_id": exercised["final"]["loadedSliceId"],
+                "loaded_route_entries": exercised["initial"][
+                    "loadedRouteEntries"
+                ],
+                "earth_reference_radius_m": exercised["initial"][
+                    "earthReferenceRadiusM"
+                ],
+                "first_satellite_display_radius": exercised["initial"][
+                    "firstSatelliteDisplayRadius"
+                ],
+                "chunk_object_count": exercised["final"]["chunkObjectCount"],
+                "stale_completion_guard": exercised[
+                    "stale_completion_guard"
+                ],
+                "interactions": exercised["interactions"],
+                "screenshot": screenshot,
                 "browser": session["capabilities"]["browserName"],
                 "browser_version": session["capabilities"]["browserVersion"],
                 "geckodriver_version": session["capabilities"][
                     "moz:geckodriverVersion"
-                ],
-                "initial_slice": initial["label"],
-                "slice_markers": initial["sliceMarkers"],
-                "difference_markers": initial["differenceMarkers"],
-                "topology_orbit": topology["orbit"],
-                "orbit_guide_radius": topology["guideRadius"],
-                "mean_satellite_radius": topology["meanSatelliteRadius"],
-                "isl_node": isl["node"],
-                "outside_service": outside_service,
-                "routing_g_target": routing_g["target"],
-                "routing_z_target": routing_z["target"],
-                "connection_transition": connection_transition["label"],
-                "parameter_transition": parameter_transition["label"],
-                "zone_transition": zone_transition["label"],
-                "route_transition": route_transition["label"],
-                "isl_transition": isl_transition["transition"]["label"],
-                "service_transition": service_transition["label"],
-                "routing_task_transition": routing_transition["label"],
-                "initial_comparison_geometry": (
-                    f"Slice {connection_transition['comparisonSliceId']}"
-                ),
-                "maximum_orbit_plane_residual": topology[
-                    "maximumResidual"
-                ],
-                "orbit_normal_change": topology["normalChange"],
-                "playback_sequence": playback["labels"][:3],
-                "screenshots": [
-                    value for value in screenshots if value is not None
                 ],
             }
         finally:
@@ -1292,7 +1021,7 @@ return {
                     _request(
                         f"{base_url}/session/{session_id}",
                         method="DELETE",
-                        timeout=timeout,
+                        timeout=5.0,
                     )
                 except Exception:
                     pass
@@ -1302,25 +1031,16 @@ return {
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("page", type=Path)
-    parser.add_argument(
-        "--geckodriver",
-        default=_default_geckodriver(),
-    )
-    parser.add_argument("--timeout", type=float, default=30.0)
-    parser.add_argument("--screenshot-directory", type=Path)
-    parser.add_argument(
-        "--profile",
-        choices=("rich", "portability"),
-        default="rich",
-    )
+    parser.add_argument("--geckodriver", default=_default_geckodriver())
+    parser.add_argument("--profile", choices=("rich", "portability"), default="rich")
+    parser.add_argument("--screenshots", type=Path)
     arguments = parser.parse_args()
     if not arguments.geckodriver:
-        parser.error("geckodriver is not available")
+        raise SystemExit("geckodriver not found")
     result = run_browser_smoke(
         arguments.page,
         geckodriver=arguments.geckodriver,
-        timeout=arguments.timeout,
-        screenshot_directory=arguments.screenshot_directory,
+        screenshot_directory=arguments.screenshots,
         profile=arguments.profile,
     )
     print(json.dumps(result, indent=2, sort_keys=True))

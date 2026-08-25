@@ -84,7 +84,7 @@ def write_traffic_replay_tool(
             "inputs": {
                 "traffic_telemetry": _file_record(telemetry, output),
                 "slice": {
-                    "path": "../slice/slice-difference.json",
+                    "path": _relative_path(dynamic, output),
                     "size_bytes": dynamic.stat().st_size,
                     "sha256": _sha256(dynamic),
                 },

@@ -37,10 +37,11 @@ flowchart LR
 The seven tools remain deliberately separate:
 
 - `topology/` reads the static owner tree and facade identity;
-- `zone/` selects observation probes, then records authoritative membership
-  and resolution returned by Topology;
-- `slice/` reads one exact Slicer's retained Slice, resolved paths,
-  and adjacent Difference results.
+- `zone/` reads the static Zone layout and renders display-only direct
+  selection without executing membership Models;
+- `slice/` reads one exact Slicer's retained Slice next-hop facts and adjacent
+  Difference results, writes one offline chunk per Slice, and restores only an
+  explicitly selected display path in the browser.
 - `planner/` reads one exact Slicer plus consecutive immutable Plans and
   retained PlanningDecisions, then compares those formal results directly.
 - `bpf_compiler/` reads consecutive immutable Plans plus already-produced
@@ -62,6 +63,12 @@ Only the Slicer calls Position, Connection, and Route Models. Tools do not
 propagate Position, form Connections, compute Routes, compare slices, update
 the static container network, or create a second authoritative computation
 path. The Slice / Difference UI's orbit guides and classifications are display-only.
+
+Topology and Zone renderers share one frozen Tool-private Natural Earth 1:110m
+coastline coordinate asset under `_assets/`. It is embedded into standalone
+HTML for offline geographic orientation only; it is not a formal input, GIS
+API, or source of Topology/Zone facts. The adjacent provenance file records the
+theme version, source and frozen hashes, and preprocessing rule.
 
 Run the compact example:
 

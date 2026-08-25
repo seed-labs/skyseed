@@ -96,6 +96,7 @@ def test_identity_and_generation_exports_stay_with_their_owner_modules() -> None
         "ForwardingTransition",
         "ForwardingTransitionPrecedence",
         "GeometricConnectionModel",
+        "GatewayHopCountRouteModel",
         "GroundStation",
         "GroundStationRouteTarget",
         "HopCountRouteModel",

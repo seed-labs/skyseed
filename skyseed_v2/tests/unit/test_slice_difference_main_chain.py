@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import gc
 import importlib
-from inspect import getsource
+from collections import Counter
 import os
 from pathlib import Path
 import subprocess
@@ -12,6 +12,7 @@ import warnings
 from dataclasses import FrozenInstanceError
 from datetime import datetime, timedelta, timezone
 from math import ceil, pi, sqrt
+from random import Random
 from types import MappingProxyType
 import weakref
 
@@ -23,6 +24,7 @@ import pytest
 
 import skyseed_v2
 import skyseed_v2.simulator.geometry.coordinates as coordinates
+import skyseed_v2.simulator.slicing.slicer as slicer_module
 from skyseed_v2.configuration.simulator import (
     LatitudeLongitudeRectangleDefinition,
     ZoneDefinition,
@@ -51,14 +53,22 @@ from skyseed_v2.simulator import (
 )
 from skyseed_v2.simulator.geometry import (
     ecef_distance_m,
+    elevation_deg,
     geodetic_to_ecef,
     has_earth_line_of_sight,
+)
+from skyseed_v2.simulator.models.geometric_connection import (
+    _GroundAccessPreference,
+    _prepare_isl_pairs,
+    _select_primary_ground_station_accesses,
+    _select_ground_station_accesses,
 )
 from skyseed_v2.simulator.input import (
     GroundStationSimulationInput,
     SatelliteSimulationInput,
     SimulatorStaticInput,
 )
+from skyseed_v2.simulator.topology import GroundStation, Satellite
 
 
 EPOCH = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -74,6 +84,7 @@ def _satellite(
     right_ascension_deg: float = 245.0,
     mean_anomaly_deg: float = 126.0,
     epoch_utc: datetime = EPOCH,
+    max_simultaneous_ground_station_accesses: int | None = None,
 ) -> SatelliteSimulationInput:
     return SatelliteSimulationInput(
         node_id=NodeId(65001, "satellite", satellite_id),
@@ -86,18 +97,30 @@ def _satellite(
         right_ascension_deg=right_ascension_deg,
         mean_anomaly_deg=mean_anomaly_deg,
         epoch_utc=epoch_utc,
+        max_simultaneous_ground_station_accesses=(
+            max_simultaneous_ground_station_accesses
+        ),
     )
 
 
-def _ground_station(station_id: str = "gs-1") -> GroundStationSimulationInput:
+def _ground_station(
+    station_id: str = "gs-1",
+    *,
+    max_simultaneous_satellite_accesses: int | None = None,
+    latitude_deg: float = 40.7128,
+    longitude_deg: float = -74.006,
+) -> GroundStationSimulationInput:
     return GroundStationSimulationInput(
         node_id=NodeId(65001, "ground-station", station_id),
         ground_station_id=station_id,
-        latitude_deg=40.7128,
-        longitude_deg=-74.006,
+        latitude_deg=latitude_deg,
+        longitude_deg=longitude_deg,
         elevation_m=10.0,
         station_type="gateway",
         operator="Skyseed",
+        max_simultaneous_satellite_accesses=(
+            max_simultaneous_satellite_accesses
+        ),
     )
 
 
@@ -151,12 +174,21 @@ def _connection_model(
     *,
     zone_minimum_elevation_deg: float = 30.0,
     maximum_isl_distance_m: float = 5_000_000.0,
+    maximum_ground_station_access_count: int = 1,
+    ground_station_minimum_elevation_deg: float = 0.0,
+    ground_station_maximum_distance_m: float | None = None,
 ) -> GeometricConnectionModel:
     return GeometricConnectionModel(
         maximum_isl_distance_m=maximum_isl_distance_m,
-        ground_station_minimum_elevation_deg=0.0,
-        maximum_ground_station_access_count=1,
-        ground_station_maximum_distance_m=None,
+        ground_station_minimum_elevation_deg=(
+            ground_station_minimum_elevation_deg
+        ),
+        maximum_ground_station_access_count=(
+            maximum_ground_station_access_count
+        ),
+        ground_station_maximum_distance_m=(
+            ground_station_maximum_distance_m
+        ),
         zone_coverage_minimum_elevation_deg=zone_minimum_elevation_deg,
         bandwidth_bps_by_kind={
             ConnectionKind.INTER_SATELLITE: 1_000_000,
@@ -494,39 +526,57 @@ def test_spherical_cap_queries_handle_date_line_and_pole() -> None:
     ) == ("north-pole",)
 
 
-def test_connection_model_uses_only_topology_zone_intersection_facade(
-    monkeypatch,
-) -> None:
-    satellite = _satellite("sat-0")
-    static_input = SimulatorStaticInput((satellite,))
-    _, topology = _simulator(static_input, zone_layout=_zone_layout())
-    positions = CircularOrbitPositionModel().compute_positions(topology, EPOCH)
-    original = type(topology).find_intersecting_zones
-    calls = []
-
-    def find_intersecting_zones_spy(self, spherical_cap):
-        assert self is topology
-        calls.append(spherical_cap)
-        return original(self, spherical_cap)
-
-    monkeypatch.setattr(
-        type(topology),
-        "find_intersecting_zones",
-        find_intersecting_zones_spy,
+def test_connection_model_ecef_index_handles_date_line_and_pole() -> None:
+    satellites = (
+        _satellite("date-line", mean_anomaly_deg=0.0),
+        _satellite("north-pole", orbit_index=1, mean_anomaly_deg=180.0),
     )
-    result = _connection_model().compute_connection_slice(
+    layout = ZoneLayoutDefinition(
+        zones=(
+            ZoneDefinition(
+                zone_id="date-line",
+                geometry=LatitudeLongitudeRectangleDefinition(
+                    south_latitude_deg=-10.0,
+                    north_latitude_deg=10.0,
+                    west_longitude_deg=170.0,
+                    east_longitude_deg=-170.0,
+                ),
+            ),
+            ZoneDefinition(
+                zone_id="north-pole",
+                geometry=LatitudeLongitudeRectangleDefinition(
+                    south_latitude_deg=80.0,
+                    north_latitude_deg=90.0,
+                    west_longitude_deg=-20.0,
+                    east_longitude_deg=20.0,
+                ),
+            ),
+        ),
+        allow_overlap=False,
+    )
+    _, topology = _simulator(
+        SimulatorStaticInput(satellites), zone_layout=layout
+    )
+    positions = {
+        satellites[0].node_id: geodetic_to_ecef(0.0, 180.0, 560_000.0),
+        satellites[1].node_id: geodetic_to_ecef(85.0, 0.0, 560_000.0),
+    }
+    model = _connection_model(zone_minimum_elevation_deg=10.0)
+    result = model.compute_connection_slice(
         topology,
         EPOCH,
         positions,
         ConnectionSlice(),
     )
 
-    source = getsource(GeometricConnectionModel._assign_zone_service)
-    assert calls
-    assert result.zone_service_assignments
-    assert "topology.find_intersecting_zones(" in source
-    assert "get_zone_layout" not in source
-    assert "zone_layout.find_intersecting_zones" not in source
+    assert result.zone_service_assignments == {
+        "date-line": satellites[0].node_id,
+        "north-pole": satellites[1].node_id,
+    }
+    counts = model._last_candidate_check_counts
+    assert counts is not None
+    assert counts.zone_pairs_before == 4
+    assert counts.zone_pairs_after == 2
 
 
 def test_connection_model_without_zone_layout_keeps_empty_assignment_semantics() -> None:
@@ -721,6 +771,684 @@ def test_geometric_model_applies_distance_and_earth_obstruction() -> None:
     assert not inactive.connections
     assert len(active.connections) == 1
     assert not obstructed.connections
+
+
+def test_geometric_model_uses_stricter_site_and_model_access_limits() -> None:
+    satellites = (
+        _satellite("sat-0", mean_anomaly_deg=0.0),
+        _satellite("sat-1", orbit_index=1, mean_anomaly_deg=120.0),
+        _satellite("sat-2", orbit_index=2, mean_anomaly_deg=240.0),
+    )
+    ground_stations = (
+        _ground_station(
+            "site-cap-1", max_simultaneous_satellite_accesses=1
+        ),
+        _ground_station(
+            "site-cap-40", max_simultaneous_satellite_accesses=40
+        ),
+        _ground_station("site-unspecified"),
+    )
+    _, topology = _simulator(
+        SimulatorStaticInput(satellites, ground_stations)
+    )
+    ground_position = geodetic_to_ecef(40.7128, -74.006, 10.0)
+    radius = sqrt(
+        ground_position.x_m**2
+        + ground_position.y_m**2
+        + ground_position.z_m**2
+    )
+    positions = {
+        station.node_id: ground_position for station in ground_stations
+    }
+    for index, satellite in enumerate(satellites):
+        scale = (radius + 550_000.0 + index * 1_000.0) / radius
+        positions[satellite.node_id] = EarthFixedPosition(
+            ground_position.x_m * scale,
+            ground_position.y_m * scale,
+            ground_position.z_m * scale,
+        )
+
+    result = _connection_model(
+        maximum_isl_distance_m=1.0,
+        maximum_ground_station_access_count=2,
+    ).compute_connection_slice(
+        topology,
+        EPOCH,
+        positions,
+        ConnectionSlice(),
+    )
+    counts = Counter(
+        endpoint.entity_id
+        for connection in result.connections
+        if connection.connection_id.kind
+        is ConnectionKind.GROUND_STATION_ACCESS
+        for endpoint in (
+            connection.connection_id.endpoint_a,
+            connection.connection_id.endpoint_b,
+        )
+        if endpoint.entity_kind == "ground-station"
+    )
+
+    assert counts == Counter(
+        {"site-cap-1": 1, "site-cap-40": 2, "site-unspecified": 2}
+    )
+
+
+def test_optimized_geometry_matches_preoptimization_reference_exactly() -> None:
+    satellites = tuple(
+        _satellite(
+            f"sat-{index}",
+            orbit_index=index,
+            mean_anomaly_deg=index * 60.0,
+        )
+        for index in range(6)
+    )
+    stations = (
+        _ground_station("site-one", max_simultaneous_satellite_accesses=1),
+        _ground_station("site-three", max_simultaneous_satellite_accesses=3),
+    )
+    _, topology = _simulator(
+        SimulatorStaticInput(satellites, stations),
+        zone_layout=_zone_layout(),
+    )
+    position_model = CircularOrbitPositionModel()
+
+    def reference(
+        model: GeometricConnectionModel,
+        positions: MappingProxyType,
+    ) -> ConnectionSlice:
+        spatial_satellites = tuple(
+            sorted(
+                (
+                    satellite
+                    for autonomous_system in topology.autonomous_systems
+                    for shell in autonomous_system.shells
+                    for orbit in shell.orbits
+                    for satellite in orbit.satellites
+                ),
+                key=lambda value: value.node_id.value,
+            )
+        )
+        spatial_stations = tuple(
+            sorted(
+                (
+                    station
+                    for autonomous_system in topology.autonomous_systems
+                    for station in autonomous_system.ground_stations
+                ),
+                key=lambda value: value.node_id.value,
+            )
+        )
+        connections = []
+        for first, second in _prepare_isl_pairs(topology, positions):
+            distance = ecef_distance_m(positions[first], positions[second])
+            if distance <= 5_000_000.0 and has_earth_line_of_sight(
+                positions[first], positions[second]
+            ):
+                connections.append(
+                    model._create_connection(
+                        ConnectionKind.INTER_SATELLITE,
+                        first,
+                        second,
+                        distance,
+                    )
+                )
+        for station in spatial_stations:
+            eligible = []
+            for satellite in spatial_satellites:
+                distance = ecef_distance_m(
+                    positions[station.node_id], positions[satellite.node_id]
+                )
+                elevation = elevation_deg(
+                    positions[station.node_id], positions[satellite.node_id]
+                )
+                if elevation >= 0.0 and has_earth_line_of_sight(
+                    positions[station.node_id], positions[satellite.node_id]
+                ):
+                    eligible.append(
+                        (
+                            elevation,
+                            satellite.node_id.value,
+                            satellite,
+                            distance,
+                        )
+                    )
+            eligible.sort(key=lambda value: (-value[0], value[1]))
+            limit = min(
+                3,
+                station.max_simultaneous_satellite_accesses or 3,
+            )
+            for _, _, satellite, distance in eligible[:limit]:
+                connections.append(
+                    model._create_connection(
+                        ConnectionKind.GROUND_STATION_ACCESS,
+                        station.node_id,
+                        satellite.node_id,
+                        distance,
+                    )
+                )
+        candidates = {}
+        for satellite in spatial_satellites:
+            satellite_position = positions[satellite.node_id]
+            cap = SphericalCap(
+                (
+                    satellite_position.latitude_deg,
+                    satellite_position.longitude_deg,
+                ),
+                60.0,
+            )
+            for zone in topology.find_intersecting_zones(cap):
+                representative = geodetic_to_ecef(
+                    *zone.representative_point, 0.0
+                )
+                elevation = elevation_deg(representative, satellite_position)
+                if elevation >= 30.0 and has_earth_line_of_sight(
+                    representative, satellite_position
+                ):
+                    rank = (-elevation, satellite.node_id.value)
+                    if zone.zone_id not in candidates or rank < candidates[
+                        zone.zone_id
+                    ][0]:
+                        candidates[zone.zone_id] = (rank, satellite.node_id)
+        assignments = {
+            zone_id: value[1]
+            for zone_id, value in sorted(candidates.items())
+        }
+        return ConnectionSlice(connections, assignments)
+
+    for offset in (0, 10):
+        timestamp = EPOCH + timedelta(seconds=offset)
+        positions = position_model.compute_positions(topology, timestamp)
+        optimized_model = _connection_model(
+            maximum_ground_station_access_count=3
+        )
+        expected = reference(optimized_model, positions)
+        actual = optimized_model.compute_connection_slice(
+            topology, timestamp, positions, ConnectionSlice()
+        )
+        assert actual == expected
+
+
+def test_capacitated_ground_access_falls_back_without_stranding_a_site() -> None:
+    satellites = (
+        _satellite(
+            "s1",
+            mean_anomaly_deg=0.0,
+            max_simultaneous_ground_station_accesses=1,
+        ),
+        _satellite(
+            "s2",
+            orbit_index=1,
+            mean_anomaly_deg=180.0,
+            max_simultaneous_ground_station_accesses=1,
+        ),
+    )
+    flexible = _ground_station(
+        "g1-flexible",
+        max_simultaneous_satellite_accesses=1,
+        latitude_deg=0.0,
+        longitude_deg=10.0,
+    )
+    constrained = _ground_station(
+        "g2-constrained",
+        max_simultaneous_satellite_accesses=1,
+        latitude_deg=0.0,
+        longitude_deg=0.0,
+    )
+    _, topology = _simulator(
+        SimulatorStaticInput(satellites, (flexible, constrained))
+    )
+    positions = {
+        flexible.node_id: geodetic_to_ecef(0.0, 10.0, 0.0),
+        constrained.node_id: geodetic_to_ecef(0.0, 0.0, 0.0),
+        satellites[0].node_id: geodetic_to_ecef(0.0, 0.0, 560_000.0),
+        satellites[1].node_id: geodetic_to_ecef(0.0, 25.0, 560_000.0),
+    }
+
+    result = _connection_model(
+        maximum_isl_distance_m=1.0,
+        maximum_ground_station_access_count=2,
+        ground_station_minimum_elevation_deg=10.0,
+    ).compute_connection_slice(
+        topology, EPOCH, positions, ConnectionSlice()
+    )
+    access_pairs = {
+        frozenset(
+            (
+                connection.connection_id.endpoint_a,
+                connection.connection_id.endpoint_b,
+            )
+        )
+        for connection in result.connections
+        if connection.connection_id.kind
+        is ConnectionKind.GROUND_STATION_ACCESS
+    }
+
+    assert access_pairs == {
+        frozenset((flexible.node_id, satellites[1].node_id)),
+        frozenset((constrained.node_id, satellites[0].node_id)),
+    }
+
+
+def test_satellite_ground_access_caps_are_independent_and_exclude_isls() -> None:
+    satellites = (
+        _satellite(
+            "cap-one",
+            mean_anomaly_deg=0.0,
+            max_simultaneous_ground_station_accesses=1,
+        ),
+        _satellite(
+            "cap-two",
+            orbit_index=1,
+            mean_anomaly_deg=180.0,
+            max_simultaneous_ground_station_accesses=2,
+        ),
+    )
+    stations = tuple(
+        _ground_station(
+            f"station-{index}",
+            max_simultaneous_satellite_accesses=1,
+            latitude_deg=0.0,
+            longitude_deg=0.0,
+        )
+        for index in range(3)
+    )
+    _, topology = _simulator(
+        SimulatorStaticInput(satellites, stations)
+    )
+    positions = {
+        station.node_id: geodetic_to_ecef(0.0, 0.0, 0.0)
+        for station in stations
+    }
+    positions.update(
+        {
+            satellites[0].node_id: geodetic_to_ecef(
+                0.0, 0.0, 560_000.0
+            ),
+            satellites[1].node_id: geodetic_to_ecef(
+                0.0, 0.0, 561_000.0
+            ),
+        }
+    )
+
+    result = _connection_model(
+        maximum_isl_distance_m=2_000.0,
+        maximum_ground_station_access_count=1,
+        ground_station_minimum_elevation_deg=80.0,
+    ).compute_connection_slice(
+        topology, EPOCH, positions, ConnectionSlice()
+    )
+    ground_degrees = Counter(
+        endpoint
+        for connection in result.connections
+        if connection.connection_id.kind
+        is ConnectionKind.GROUND_STATION_ACCESS
+        for endpoint in (
+            connection.connection_id.endpoint_a,
+            connection.connection_id.endpoint_b,
+        )
+        if endpoint.entity_kind == "satellite"
+    )
+
+    assert ground_degrees == Counter(
+        {satellites[0].node_id: 1, satellites[1].node_id: 2}
+    )
+    assert sum(
+        connection.connection_id.kind is ConnectionKind.INTER_SATELLITE
+        for connection in result.connections
+    ) == 1
+
+
+def test_capacitated_ground_access_is_deterministic_for_mapping_order() -> None:
+    satellites = (
+        _satellite(
+            "first",
+            mean_anomaly_deg=0.0,
+            max_simultaneous_ground_station_accesses=1,
+        ),
+        _satellite(
+            "second",
+            orbit_index=1,
+            mean_anomaly_deg=180.0,
+            max_simultaneous_ground_station_accesses=1,
+        ),
+    )
+    stations = tuple(
+        _ground_station(
+            f"station-{index}",
+            max_simultaneous_satellite_accesses=1,
+            latitude_deg=0.0,
+            longitude_deg=0.0,
+        )
+        for index in range(2)
+    )
+    _, topology = _simulator(SimulatorStaticInput(satellites, stations))
+    values = {
+        **{
+            station.node_id: geodetic_to_ecef(0.0, 0.0, 0.0)
+            for station in stations
+        },
+        satellites[0].node_id: geodetic_to_ecef(0.0, 0.0, 560_000.0),
+        satellites[1].node_id: geodetic_to_ecef(0.0, 0.0, 561_000.0),
+    }
+    model = _connection_model(
+        maximum_isl_distance_m=2_000.0,
+        ground_station_minimum_elevation_deg=80.0,
+    )
+
+    forward = model.compute_connection_slice(
+        topology, EPOCH, values, ConnectionSlice()
+    )
+    reverse = model.compute_connection_slice(
+        topology,
+        EPOCH + timedelta(seconds=10),
+        dict(reversed(tuple(values.items()))),
+        forward,
+    )
+
+    assert reverse == forward
+
+
+def test_ground_access_allocator_matches_independent_two_phase_oracle() -> None:
+    rng = Random(20260826)
+
+    def primary_optimum(
+        eligible: tuple[tuple[bool, ...], ...],
+        satellite_limits: tuple[int, ...],
+    ) -> tuple[int, int]:
+        edges = tuple(
+            (ground_index, satellite_index, rank)
+            for ground_index, row in enumerate(eligible)
+            for rank, satellite_index in enumerate(
+                (
+                    index
+                    for index, is_eligible in enumerate(row)
+                    if is_eligible
+                ),
+                start=1,
+            )
+        )
+        best = (0, 0)
+        for mask in range(1 << len(edges)):
+            ground_counts = [0] * len(eligible)
+            satellite_counts = [0] * len(satellite_limits)
+            rank_sum = 0
+            valid = True
+            for edge_index, (
+                ground_index,
+                satellite_index,
+                rank,
+            ) in enumerate(edges):
+                if not mask & (1 << edge_index):
+                    continue
+                ground_counts[ground_index] += 1
+                satellite_counts[satellite_index] += 1
+                rank_sum += rank
+                if (
+                    ground_counts[ground_index] > 1
+                    or satellite_counts[satellite_index]
+                    > satellite_limits[satellite_index]
+                ):
+                    valid = False
+                    break
+            if valid:
+                best = max(
+                    best,
+                    (
+                        sum(count > 0 for count in ground_counts),
+                        -rank_sum,
+                    ),
+                )
+        return best
+
+    def residual_redundancy_optimum(
+        eligible: tuple[tuple[bool, ...], ...],
+        ground_limits: tuple[int, ...],
+        satellite_limits: tuple[int, ...],
+        primary_pairs: set[tuple[int, int]],
+    ) -> int:
+        covered_ground = {pair[0] for pair in primary_pairs}
+        edges = tuple(
+            (ground_index, satellite_index)
+            for ground_index, row in enumerate(eligible)
+            for satellite_index, is_eligible in enumerate(row)
+            if (
+                is_eligible
+                and ground_index in covered_ground
+                and (ground_index, satellite_index) not in primary_pairs
+            )
+        )
+        primary_ground_counts = Counter(pair[0] for pair in primary_pairs)
+        primary_satellite_counts = Counter(pair[1] for pair in primary_pairs)
+        best = 0
+        for mask in range(1 << len(edges)):
+            ground_counts = Counter(primary_ground_counts)
+            satellite_counts = Counter(primary_satellite_counts)
+            valid = True
+            for edge_index, (ground_index, satellite_index) in enumerate(edges):
+                if not mask & (1 << edge_index):
+                    continue
+                ground_counts[ground_index] += 1
+                satellite_counts[satellite_index] += 1
+                if (
+                    ground_counts[ground_index] > ground_limits[ground_index]
+                    or satellite_counts[satellite_index]
+                    > satellite_limits[satellite_index]
+                ):
+                    valid = False
+                    break
+            if valid:
+                best = max(best, sum(ground_counts.values()) - len(primary_pairs))
+        return best
+
+    for case_index in range(96):
+        ground_count = 2 + case_index % 3
+        satellite_count = 2 + case_index % 2
+        ground_limits = tuple(
+            1 + rng.randrange(min(3, satellite_count))
+            for _ in range(ground_count)
+        )
+        satellite_limits = tuple(
+            1 + rng.randrange(2) for _ in range(satellite_count)
+        )
+        eligible = tuple(
+            tuple(bool(rng.getrandbits(1)) for _ in range(satellite_count))
+            for _ in range(ground_count)
+        )
+        satellites = tuple(
+            Satellite(
+                NodeId(65001, "satellite", f"oracle-s{index}"),
+                index,
+                index * 30.0,
+                satellite_limits[index],
+            )
+            for index in range(satellite_count)
+        )
+        preferences = tuple(
+            _GroundAccessPreference(
+                ground_station=GroundStation(
+                    NodeId(65001, "ground-station", f"oracle-g{ground_index}"),
+                    0.0,
+                    float(ground_index),
+                    0.0,
+                    "gateway",
+                    None,
+                    ground_limits[ground_index],
+                ),
+                effective_limit=ground_limits[ground_index],
+                candidates=tuple(
+                    (
+                        90.0 - satellite_index,
+                        (
+                            satellite.node_id.asn,
+                            satellite.node_id.entity_kind,
+                            satellite.node_id.entity_id,
+                        ),
+                        satellite.node_id,
+                        500_000.0 + satellite_index,
+                    )
+                    for satellite_index, satellite in enumerate(satellites)
+                    if eligible[ground_index][satellite_index]
+                ),
+            )
+            for ground_index in range(ground_count)
+        )
+
+        selected = _select_ground_station_accesses(
+            preferences, satellites
+        )
+        selected_reversed = _select_ground_station_accesses(
+            tuple(
+                _GroundAccessPreference(
+                    value.ground_station,
+                    value.effective_limit,
+                    tuple(reversed(value.candidates)),
+                )
+                for value in reversed(preferences)
+            ),
+            tuple(reversed(satellites)),
+        )
+        selected_pairs = {
+            (ground_index, satellite_index)
+            for ground_index, preference in enumerate(preferences)
+            for satellite_index, satellite in enumerate(satellites)
+            if satellite.node_id
+            in selected[preference.ground_station.node_id]
+        }
+        ordered_candidates = {
+            preference.ground_station.node_id: tuple(
+                sorted(
+                    preference.candidates,
+                    key=lambda candidate: (-candidate[0], candidate[1]),
+                )
+            )
+            for preference in preferences
+        }
+        primary = _select_primary_ground_station_accesses(
+            ordered_candidates,
+            {
+                satellite.node_id: satellite_limits[index]
+                for index, satellite in enumerate(satellites)
+            },
+        )
+        primary_pairs = {
+            (ground_index, satellite_index)
+            for ground_index, preference in enumerate(preferences)
+            for satellite_index, satellite in enumerate(satellites)
+            if primary.get(preference.ground_station.node_id)
+            == satellite.node_id
+        }
+        primary_rank_sum = sum(
+            next(
+                rank
+                for rank, candidate in enumerate(
+                    ordered_candidates[
+                        preferences[ground_index].ground_station.node_id
+                    ],
+                    start=1,
+                )
+                if candidate[2] == satellites[satellite_index].node_id
+            )
+            for ground_index, satellite_index in primary_pairs
+        )
+
+        assert selected_reversed == selected
+        assert (len(primary_pairs), -primary_rank_sum) == primary_optimum(
+            eligible, satellite_limits
+        )
+        assert primary_pairs <= selected_pairs
+        assert len(selected_pairs) - len(primary_pairs) == (
+            residual_redundancy_optimum(
+                eligible,
+                ground_limits,
+                satellite_limits,
+                primary_pairs,
+            )
+        )
+        assert all(
+            sum(pair[0] == ground_index for pair in selected_pairs)
+            <= ground_limits[ground_index]
+            for ground_index in range(ground_count)
+        )
+        assert all(
+            sum(pair[1] == satellite_index for pair in selected_pairs)
+            <= satellite_limits[satellite_index]
+            for satellite_index in range(satellite_count)
+        )
+
+
+def test_ground_access_quality_primaries_are_frozen_before_redundancy() -> None:
+    satellites = tuple(
+        Satellite(
+            NodeId(65001, "satellite", f"quality-s{index}"),
+            index,
+            index * 180.0,
+            2,
+        )
+        for index in range(2)
+    )
+    ground_stations = tuple(
+        GroundStation(
+            NodeId(65001, "ground-station", f"quality-g{index}"),
+            0.0,
+            float(index),
+            0.0,
+            "gateway",
+            None,
+            2,
+        )
+        for index in range(2)
+    )
+    preferred_satellites = (
+        satellites,
+        tuple(reversed(satellites)),
+    )
+    preferences = tuple(
+        _GroundAccessPreference(
+            ground_station=ground_station,
+            effective_limit=2,
+            candidates=tuple(
+                (
+                    80.0 - rank,
+                    (
+                        satellite.node_id.asn,
+                        satellite.node_id.entity_kind,
+                        satellite.node_id.entity_id,
+                    ),
+                    satellite.node_id,
+                    500_000.0 + rank,
+                )
+                for rank, satellite in enumerate(
+                    preferred_satellites[index]
+                )
+            ),
+        )
+        for index, ground_station in enumerate(ground_stations)
+    )
+    ordered_candidates = {
+        value.ground_station.node_id: value.candidates
+        for value in preferences
+    }
+    primaries = _select_primary_ground_station_accesses(
+        ordered_candidates,
+        {satellite.node_id: 2 for satellite in satellites},
+    )
+    selected = _select_ground_station_accesses(preferences, satellites)
+
+    assert primaries == {
+        ground_stations[0].node_id: satellites[0].node_id,
+        ground_stations[1].node_id: satellites[1].node_id,
+    }
+    assert all(
+        primary in selected[ground_station_id]
+        for ground_station_id, primary in primaries.items()
+    )
+    assert selected == {
+        ground_station.node_id: frozenset(
+            satellite.node_id for satellite in satellites
+        )
+        for ground_station in ground_stations
+    }
 
 
 def test_full_main_chain_publishes_connections_routes_and_paths() -> None:
@@ -1005,29 +1733,6 @@ class _FailOnceConnectionModel:
         return ConnectionSlice()
 
 
-class _OmitOnceRouteModel:
-    def __init__(self):
-        self.calls = 0
-        self.complete_model = HopCountRouteModel()
-
-    def compute_route_slice(
-        self,
-        topology,
-        timestamp,
-        connection_slice,
-        previous_route_slice,
-    ):
-        self.calls += 1
-        if self.calls == 1:
-            return RouteSlice()
-        return self.complete_model.compute_route_slice(
-            topology,
-            timestamp,
-            connection_slice,
-            previous_route_slice,
-        )
-
-
 class _StaticConnectionModel:
     def __init__(self, connection_slice):
         self.connection_slice = connection_slice
@@ -1100,6 +1805,106 @@ class _RejectingContextConnectionModel:
         )
 
 
+def test_slicer_rejects_custom_connection_output_over_site_access_cap() -> None:
+    satellites = (
+        _satellite("first", mean_anomaly_deg=0.0),
+        _satellite("second", orbit_index=1, mean_anomaly_deg=180.0),
+    )
+    station = _ground_station(
+        "hard-cap", max_simultaneous_satellite_accesses=1
+    )
+    simulator, _ = _simulator(
+        SimulatorStaticInput(satellites, (station,)),
+        end_time=EPOCH,
+    )
+    parameters = DirectionalConnectionParameters(1_000, 1, 0)
+    connection_slice = ConnectionSlice(
+        Connection(
+            ConnectionId(
+                ConnectionKind.GROUND_STATION_ACCESS,
+                satellite.node_id,
+                station.node_id,
+            ),
+            parameters,
+            parameters,
+        )
+        for satellite in satellites
+    )
+    positions = {
+        satellites[0].node_id: EarthFixedPosition(7_000_000.0, 0.0, 0.0),
+        satellites[1].node_id: EarthFixedPosition(
+            7_000_000.0, 1_000.0, 0.0
+        ),
+        station.node_id: geodetic_to_ecef(40.7128, -74.006, 10.0),
+    }
+    slicer = simulator.create_slicer(
+        position_model=_FixedPositionModel(positions),
+        connection_model=_StaticConnectionModel(connection_slice),
+        route_model=HopCountRouteModel(),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="ConnectionModel output exceeds GroundStation.*hard-cap",
+    ):
+        slicer.create_next_slice()
+
+    assert slicer.get_retained_slice_ids() == (0,)
+    assert slicer.get_latest_slice_id() == 0
+    assert slicer.get_next_timestamp() == EPOCH
+
+
+def test_slicer_rejects_custom_connection_output_over_satellite_access_cap() -> None:
+    satellite = _satellite(
+        "hard-cap",
+        max_simultaneous_ground_station_accesses=2,
+    )
+    stations = tuple(_ground_station(f"station-{index}") for index in range(3))
+    simulator, _ = _simulator(
+        SimulatorStaticInput((satellite,), stations),
+        end_time=EPOCH,
+    )
+    parameters = DirectionalConnectionParameters(1_000, 1, 0)
+    connection_slice = ConnectionSlice(
+        Connection(
+            ConnectionId(
+                ConnectionKind.GROUND_STATION_ACCESS,
+                satellite.node_id,
+                station.node_id,
+            ),
+            parameters,
+            parameters,
+        )
+        for station in stations
+    )
+    positions = {
+        satellite.node_id: EarthFixedPosition(7_000_000.0, 0.0, 0.0),
+        **{
+            station.node_id: geodetic_to_ecef(
+                station.latitude_deg,
+                station.longitude_deg,
+                station.elevation_m,
+            )
+            for station in stations
+        },
+    }
+    slicer = simulator.create_slicer(
+        position_model=_FixedPositionModel(positions),
+        connection_model=_StaticConnectionModel(connection_slice),
+        route_model=HopCountRouteModel(),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="ConnectionModel output exceeds Satellite.*hard-cap",
+    ):
+        slicer.create_next_slice()
+
+    assert slicer.get_retained_slice_ids() == (0,)
+    assert slicer.get_latest_slice_id() == 0
+    assert slicer.get_next_timestamp() == EPOCH
+
+
 def test_slicer_failure_is_atomic_and_retries_same_id_and_timestamp() -> None:
     satellite = _satellite("only")
     simulator, _ = _simulator(
@@ -1133,6 +1938,61 @@ def test_slicer_failure_is_atomic_and_retries_same_id_and_timestamp() -> None:
             connection_model=_EmptyConnectionModel(),
             route_model=HopCountRouteModel(),
         )
+
+
+def test_durable_slice_append_failure_is_explicitly_post_publication(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    satellite = _satellite("only")
+    simulator, _ = _simulator(
+        SimulatorStaticInput((satellite,)),
+        end_time=EPOCH + timedelta(seconds=10),
+    )
+    slicer = simulator.create_slicer(
+        position_model=_FixedPositionModel(
+            {
+                satellite.node_id: EarthFixedPosition(
+                    7_000_000.0, 0.0, 0.0
+                )
+            }
+        ),
+        connection_model=_EmptyConnectionModel(),
+        route_model=HopCountRouteModel(),
+    )
+    history_path = tmp_path / "slice-history.jsonl"
+    slicer._enable_durable_history(history_path)
+    original_append = slicer_module._append_jsonl
+
+    def fail_first_real_slice(path, record):
+        if (
+            record.get("record_type") == "slice"
+            and record.get("slice_id") == 1
+        ):
+            raise OSError("injected durable append failure")
+        return original_append(path, record)
+
+    monkeypatch.setattr(
+        slicer_module, "_append_jsonl", fail_first_real_slice
+    )
+
+    with pytest.raises(
+        slicer_module._PublishedSliceHistoryError,
+        match="Slice 1 is already published.*must not be retried",
+    ) as first_error:
+        slicer.create_next_slice()
+
+    assert first_error.value.slice_id == 1
+    assert slicer.get_latest_slice_id() == 1
+    assert slicer.get_slice(1).timestamp == EPOCH
+    assert slicer.get_next_timestamp() == EPOCH + timedelta(seconds=10)
+    with pytest.raises(
+        slicer_module._PublishedSliceHistoryError,
+        match="Slice 1 is already published.*must not be retried",
+    ):
+        slicer.create_next_slice()
+    assert slicer.get_latest_slice_id() == 1
+    assert slicer.get_next_timestamp() == EPOCH + timedelta(seconds=10)
 
 
 @pytest.mark.parametrize("failure_stage", ("position", "connection", "route"))
@@ -1179,7 +2039,7 @@ def test_every_model_failure_retries_the_same_pending_timestamp_and_id(
     assert slicer.is_exhausted()
 
 
-def test_slicer_rejects_missing_reachable_route_and_retries_same_slice() -> None:
+def test_slicer_accepts_intentionally_absent_reachable_route() -> None:
     first = _satellite("first", mean_anomaly_deg=0.0)
     second = _satellite(
         "second", orbit_index=1, mean_anomaly_deg=180.0
@@ -1212,7 +2072,6 @@ def test_slicer_rejects_missing_reachable_route_and_retries_same_slice() -> None
             ),
         )
     )
-    route_model = _OmitOnceRouteModel()
     slicer = simulator.create_slicer(
         position_model=_FixedPositionModel(
             {
@@ -1226,23 +2085,17 @@ def test_slicer_rejects_missing_reachable_route_and_retries_same_slice() -> None
             }
         ),
         connection_model=_StaticConnectionModel(connection_slice),
-        route_model=route_model,
+        route_model=_StaticRouteModel(RouteSlice()),
     )
 
-    with pytest.raises(ValueError, match="omits a reachable"):
-        slicer.create_next_slice()
-    assert slicer.get_latest_slice_id() == 0
-    assert slicer.get_next_timestamp() == EPOCH
-
-    retried = slicer.create_next_slice()
+    published = slicer.create_next_slice()
     target = GroundStationRouteTarget(station.node_id)
-    assert retried.slice_id == 1
-    assert retried.timestamp == EPOCH
-    assert slicer.resolve_path(1, first.node_id, target) == (
-        first.node_id,
-        second.node_id,
-        station.node_id,
-    )
+    assert published.slice_id == 1
+    assert published.timestamp == EPOCH
+    assert not published.route_slice.routes
+    with pytest.raises(LookupError, match="unreachable"):
+        slicer.resolve_path(1, first.node_id, target)
+    assert slicer.is_exhausted()
 
 
 def test_slicer_requires_topology_and_failed_creation_publishes_nothing() -> None:
@@ -1568,7 +2421,11 @@ def test_slicer_uses_timeline_iterator_as_its_only_timestamp_authority(
         EPOCH + timedelta(seconds=31),
     )
 
+    iterator_calls = 0
+
     def irregular_timestamps(self):
+        nonlocal iterator_calls
+        iterator_calls += 1
         yield from timestamps
 
     monkeypatch.setattr(
@@ -1597,14 +2454,17 @@ def test_slicer_uses_timeline_iterator_as_its_only_timestamp_authority(
     assert tuple(value.slice_id for value in slices) == (1, 2, 3)
     assert tuple(value.timestamp for value in slices) == timestamps
     assert slicer.get_next_timestamp() is None
+    assert iterator_calls == 1
     slicer.create_difference(1, 2)
     slicer.create_difference(2, 3)
+    assert iterator_calls == 1
 
     slicer_source = Path(
         sys.modules["skyseed_v2.simulator.slicing.slicer"].__file__
     ).read_text(encoding="utf-8")
     assert "_next_timeline_timestamp(self._timestamp_iterator)" in slicer_source
     assert "timestamp + self._timeline.slice_interval" not in slicer_source
+    assert "_timeline_timestamp_for_slice_id" not in slicer_source
 
 
 def test_generated_progress_does_not_depend_on_retained_prefix_size() -> None:
@@ -1624,12 +2484,19 @@ def test_generated_progress_does_not_depend_on_retained_prefix_size() -> None:
         connection_model=_EmptyConnectionModel(),
         route_model=HopCountRouteModel(),
     )
-    first, second, third = slicer.create_slices(3)
+    _, second, third = slicer.create_slices(3)
 
     assert isinstance(slicer._slices, dict)
-    del slicer._slices[0]
-    del slicer._slices[1]
-    slicer._slices_by_timestamp.pop(first.timestamp)
+    release = slicer._release_before(2)
+    assert release == {
+        "released_slice_count": 2,
+        "retained_slice_count": 2,
+        "timestamp_index_count": 2,
+    }
+    assert slicer._retained_publication_timestamps == {
+        2: second.timestamp,
+        3: third.timestamp,
+    }
 
     fourth = slicer.create_next_slice()
     assert fourth.slice_id == 4

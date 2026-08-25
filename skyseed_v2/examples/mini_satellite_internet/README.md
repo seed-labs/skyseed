@@ -149,11 +149,12 @@ output/
     │   └── summary.txt
     ├── zone/
     │   ├── index.html
-    │   ├── probes.json
+    │   ├── zones.json
     │   └── summary.txt
     ├── slice/                 # generation-time Tool bundle from main.py
     │   ├── index.html
-    │   ├── slice-difference.json
+    │   ├── slice-manifest.json
+    │   ├── chunks/slice-*.js
     │   ├── slice-history.jsonl    # added by run.sh rolling Slicer
     │   ├── summary.txt
     │   ├── inventory.json
@@ -298,10 +299,10 @@ or bind runtime/kernel resources.
 
 The example never edits a Slice, constructs a Connection/Route/Difference
 manually, or bypasses the three Models and Slicer. Inventory, observed
-behavior, Difference and resolved-path summaries are produced only by the
-Slice / Difference Tool projector from the supplied Slicer. It emits non-authoritative
-JSON/HTML view data and `summary.txt`; the example contains no second
-reporting path.
+behavior, and Difference summaries are produced only by the Slice / Difference
+Tool projector from the supplied Slicer. It emits non-authoritative compact
+view data, offline per-Slice chunks, HTML, and `summary.txt`; the example
+contains no second reporting path.
 
 ## Observed deterministic behavior
 
@@ -326,41 +327,39 @@ publication batching remains the example-local Planner policy. The current
 profile accepts zero connection-suppression candidates; the Tool must not
 present any of those mechanisms as Slicer behavior.
 
-## Five-mode Slice / Difference Tool
+## Selection-driven Slice / Difference Tool
 
 The generated directory contains exactly:
 
-- `index.html`: directly openable interactive page with embedded data;
-- `slice-difference.json`: private structured view data;
+- `index.html`: directly openable interactive page with the small manifest
+  embedded for offline startup;
+- `slice-manifest.json`: private static/timeline view data;
+- `chunks/slice-*.js`: one compact offline chunk per retained Slice;
 - `summary.txt`: stable counts and observed behavior;
-- `inventory.json`: byte sizes and SHA-256 for the three payload files;
+- `inventory.json`: byte sizes and SHA-256 for payload files;
 - `checksums.sha256`: hashes for all payload and inventory files.
 
-The timeline includes synthetic Slice 0 and all 64 real Slices. Five
-separate modes share it:
-
-1. Topology/Orbit: Orbit guides and static Orbit metadata, with optional
-   GroundStation and Zone layers;
-2. ISL: same/cross-orbit links plus Orbit and local-node filters;
-3. Ground/Zone: GroundStation access and served/unserved Zone relations;
-4. Routing: one selected source/G-or-Z target and its formal resolved path;
-5. Difference: one selected patch category at a time.
-
-Details use tables and lists. Raw JSON is only a collapsed audit view.
+The timeline includes synthetic Slice 0 and all 64 real Slices, but normal
+page load does not parse every Slice. The selected Slice supplies the globe,
+node/Connection/Zone details, compact Difference counts, and anomaly-only
+diagnostics. Choosing a source and G/Z target restores only that formal path
+from the selected chunk's projected next hops; this is browser display logic,
+not routing authority.
 
 ## Manual review
 
-1. Open `output/inspection/topology/index.html` and inspect the static hierarchy.
-2. Open `output/inspection/zone/index.html` and inspect membership probes.
+1. Open `output/inspection/topology/index.html` and select static Orbit rings
+   and GroundStations directly on the globe.
+2. Open `output/inspection/zone/index.html` and select Zone layout geometry on
+   the globe and reference map.
 3. Open `output/inspection/slice/index.html`.
 4. Confirm Slice 0 shows no timestamp or Position.
 5. Move the slider through several real Slices and use Previous/Next.
-6. Start and pause playback.
-7. Inspect Orbit metadata and select/highlight individual Orbits.
-8. In ISL view, filter by Orbit and select a Satellite's local adjacency.
-9. In Ground/Zone view, inspect GroundStation access and served/unserved Zones.
-10. Select several Routing G/Z targets and verify the structured path table.
-11. Inspect one Difference category at a time and focus individual patches.
+6. Select Satellite/GroundStation nodes, Connections, and Zones on the current
+   globe and confirm details stay selection-scoped.
+7. Select several Routing G/Z targets and verify only the chosen path is
+   restored.
+8. Inspect one Difference category at a time and focus individual patches.
 12. Confirm the accepted A–G behavior or record any regression found while
    reviewing the external audit bundle.
 13. Open `output/inspection/bpf-compiler/index.html`, select all 16 Plan

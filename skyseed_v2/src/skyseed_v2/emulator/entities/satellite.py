@@ -32,6 +32,7 @@ class Satellite(ExtensionNode):
         mean_anomaly_deg: float,
         asn: int,
         payload: Mapping[str, str] | None = None,
+        max_simultaneous_ground_station_accesses: int | None = None,
     ) -> None:
         self._initialize_static_state(
             satellite_id=satellite_id,
@@ -40,6 +41,9 @@ class Satellite(ExtensionNode):
             orbit_index=orbit_index,
             mean_anomaly_deg=mean_anomaly_deg,
             payload=payload or {},
+            max_simultaneous_ground_station_accesses=(
+                max_simultaneous_ground_station_accesses
+            ),
         )
         self._initialize_seed_node(asn)
         self._initialize_skyseed_identity()
@@ -53,6 +57,7 @@ class Satellite(ExtensionNode):
         orbit_index: int,
         mean_anomaly_deg: float,
         payload: Mapping[str, str],
+        max_simultaneous_ground_station_accesses: int | None,
     ) -> None:
         self._satellite_id = validate_identifier(satellite_id, "satellite_id")
         self._shell_id = validate_identifier(shell_id, "shell_id")
@@ -71,6 +76,18 @@ class Satellite(ExtensionNode):
             mean_anomaly_deg, "mean_anomaly_deg"
         )
         self._payload = MappingProxyType(copied_payload)
+        if max_simultaneous_ground_station_accesses is not None and (
+            not isinstance(max_simultaneous_ground_station_accesses, int)
+            or isinstance(max_simultaneous_ground_station_accesses, bool)
+            or max_simultaneous_ground_station_accesses <= 0
+        ):
+            raise ValueError(
+                "max_simultaneous_ground_station_accesses must be a "
+                "positive integer"
+            )
+        self._max_simultaneous_ground_station_accesses = (
+            max_simultaneous_ground_station_accesses
+        )
 
     def _initialize_seed_node(self, asn: int) -> None:
         if not isinstance(asn, int) or asn <= 0:
@@ -107,3 +124,7 @@ class Satellite(ExtensionNode):
     @property
     def payload(self) -> Mapping[str, str]:
         return self._payload
+
+    @property
+    def max_simultaneous_ground_station_accesses(self) -> int | None:
+        return self._max_simultaneous_ground_station_accesses

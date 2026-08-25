@@ -255,7 +255,7 @@ runner_tool_status=0
 traffic_tool_status=0
 {python} -m tools.traffic \\
     --telemetry "$SCRIPT_DIR/inspection/traffic/traffic-telemetry.jsonl" \\
-    --slice "$SCRIPT_DIR/inspection/slice/slice-difference.json" \\
+    --slice "$SCRIPT_DIR/inspection/slice/slice-manifest.json" \\
     --bpf-compiler "$SCRIPT_DIR/inspection/bpf-compiler/bpf-compiler-inspection.json" \\
     --output "$SCRIPT_DIR/inspection/traffic" \\
     || traffic_tool_status=$?

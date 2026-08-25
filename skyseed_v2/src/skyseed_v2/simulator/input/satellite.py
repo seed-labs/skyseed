@@ -33,6 +33,7 @@ class SatelliteSimulationInput:
     right_ascension_deg: float
     mean_anomaly_deg: float
     epoch_utc: datetime
+    max_simultaneous_ground_station_accesses: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.node_id, NodeId):
@@ -48,3 +49,13 @@ class SatelliteSimulationInput:
             "epoch_utc",
             normalize_utc_datetime(self.epoch_utc, "epoch_utc"),
         )
+        capability = self.max_simultaneous_ground_station_accesses
+        if capability is not None and (
+            not isinstance(capability, int)
+            or isinstance(capability, bool)
+            or capability <= 0
+        ):
+            raise ValueError(
+                "max_simultaneous_ground_station_accesses must be a "
+                "positive integer"
+            )

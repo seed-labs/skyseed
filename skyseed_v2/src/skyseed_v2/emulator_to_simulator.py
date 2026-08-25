@@ -127,6 +127,9 @@ def _create_satellite_simulation_input(
         right_ascension_deg=orbit_parameters.right_ascension_deg,
         mean_anomaly_deg=satellite.mean_anomaly_deg,
         epoch_utc=orbit_parameters.epoch_utc,
+        max_simultaneous_ground_station_accesses=(
+            satellite.max_simultaneous_ground_station_accesses
+        ),
     )
 
 
@@ -143,6 +146,9 @@ def _create_ground_station_simulation_input(
         elevation_m=location.elevation_m,
         station_type=ground_station.station_type,
         operator=ground_station.operator,
+        max_simultaneous_satellite_accesses=(
+            ground_station.max_simultaneous_satellite_accesses
+        ),
     )
 
 

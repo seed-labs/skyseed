@@ -7,11 +7,13 @@ from datetime import datetime
 from skyseed_v2.shared.time import normalize_utc_datetime
 from skyseed_v2.shared import NodeId
 
-from ..slicing._routing_policy import eligible_shortest_next_hops
+from ..slicing._routing_policy import (
+    _eligible_shortest_next_hops,
+    _prepare_routing_policy_context,
+)
 from ..slicing import ConnectionSlice
 from ..slicing import (
     GroundStationRouteTarget,
-    RouteKey,
     RouteSlice,
     RouteTarget,
     ZoneRouteTarget,
@@ -43,6 +45,9 @@ class HopCountRouteModel:
             raise TypeError("connection_slice must be a ConnectionSlice")
         if not isinstance(previous_route_slice, RouteSlice):
             raise TypeError("previous_route_slice must be a RouteSlice")
+        routing_context = _prepare_routing_policy_context(
+            topology, connection_slice
+        )
 
         target_terminals: list[tuple[RouteTarget, NodeId]] = []
         for autonomous_system in topology.autonomous_systems:
@@ -66,20 +71,17 @@ class HopCountRouteModel:
                 (ZoneRouteTarget(zone_id), node.node_id)
             )
 
-        entries: list[tuple[RouteKey, NodeId]] = []
+        entries: dict[NodeId, dict[RouteTarget, NodeId]] = {}
         for target, terminal in target_terminals:
-            choices_by_source = eligible_shortest_next_hops(
-                topology,
-                connection_slice,
+            choices_by_source = _eligible_shortest_next_hops(
+                routing_context,
                 target,
                 terminal,
             )
             for source, choices in choices_by_source.items():
                 if not choices:
                     raise ValueError("reverse BFS produced a corrupt route tree")
-                entries.append(
-                    (RouteKey(source, target), choices[0])
-                )
+                entries.setdefault(source, {})[target] = choices[0]
         return RouteSlice(entries)
 
 

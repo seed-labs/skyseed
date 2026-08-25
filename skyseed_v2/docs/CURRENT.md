@@ -105,12 +105,31 @@ provenance material is non-authoritative.
   Compiler, BPF Runner, and Traffic / Path Replay.
 - Tools read owner-produced facts and may project/render them; they do not
   control runtime, own fact retention, query the live kernel as an authority,
-  or generate traffic.
-- There are two maintained runnable examples:
+  or generate traffic. The lazy Slice Tool keeps one browser-resident Slice,
+  restores only a selected sparse next-hop path, and now presents compact
+  projected current-Slice/model context plus clearly labeled Tool-derived
+  service geometry.
+- There are three maintained runnable examples:
   `complete_static_emulator` is the minimal two-Satellite teaching/contract
-  smoke example, and `mini_satellite_internet` is the canonical dynamic rolling
-  BPF example. `examples/reference` is explicitly non-runnable historical
-  provenance.
+  smoke example, `mini_satellite_internet` is the canonical dynamic rolling
+  BPF example, and `s4_satellite_internet` is the static-by-default S4 input
+  with an opt-in bounded dynamic Simulator qualification over 348 Satellites,
+  355 frozen evidence-backed Starlink gateway sites, 703 total dynamic nodes,
+  and a 732-Zone global candidate. The qualification
+  ground body includes supported current, planned, and historical Ka/E sites;
+  it is not a simultaneous operational-network snapshot. Dynamic mode stops at
+  Position → Connection → Route → Slice → Difference and writes example-local
+  metrics plus a representative existing Slice / Difference Tool projection;
+  it does not enter Planner, BPF, or runtime.
+  Its final S4-specific Zone-service minimum is 25 degrees at the Zone
+  representative point; generic model configuration behavior is unchanged.
+  This isolated shell is not expected to serve all global Zones continuously,
+  and served percentage is not a coverage-quality target. The accepted short
+  baseline retains Slice 0 plus 20 real Slices/20 Differences; warm complete
+  Slice p50/p95 was 0.8263/0.8952 seconds and Difference p50/p95 was
+  0.0401/0.0674 seconds on the qualification host.
+  `examples/reference` is explicitly non-runnable historical provenance, and
+  repository-level `research/` remains persistent non-runtime evidence.
 
 ## Deferred
 
@@ -119,14 +138,23 @@ provenance material is non-authoritative.
   correctness defect.
 - A public dataplane plugin API, an automatic rollback after a partially failed
   activation, packet-drain consistency, large-network performance
-  qualification, fresh kernel/dataplane inspection, and realtime/live traffic visualization
-  remain future work.
+  qualification for Planner/runtime, fresh kernel/dataplane inspection, and
+  realtime/live traffic visualization remain future work.
 - The synchronous future-realization callable returns an ordered value or
   terminal `None`; it has no separate temporarily-unavailable result.
 
-## Next major target
+## Current milestone candidate
 
-After the Runner milestone commit, the next major milestone is **S4 / 300+ scale qualification**.
+The complete uncommitted **S4 / 300+ dynamic Simulator qualification** is
+ready for final milestone acceptance. It adds the Gateway-scoped
+satellite-Internet RouteModel, keeps the full-reachability HopCount model as
+the small-scale baseline, makes routing demand Model-owned, trusts immutable
+published retained Slices for cheap Difference creation, enforces explicit
+GroundStation and Satellite access caps, prunes Connection candidates without
+changing exact geometry, bounds Route traversal by current demand, and uses
+offline per-Slice Tool chunks with selection-only path restoration. Planner,
+Compiler, Runner, and runtime qualification remain later stages and were not
+entered by this S4 milestone.
 
 ## Current production paths
 

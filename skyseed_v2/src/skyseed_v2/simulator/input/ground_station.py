@@ -28,7 +28,8 @@ class GroundStationSimulationInput:
     longitude_deg: float
     elevation_m: float
     station_type: str
-    operator: str
+    operator: str | None
+    max_simultaneous_satellite_accesses: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.node_id, NodeId):
@@ -42,4 +43,19 @@ class GroundStationSimulationInput:
         elevation = float(self.elevation_m)
         if not isfinite(elevation):
             raise ValueError("elevation_m must be finite")
+        operator = self.operator
+        if operator is not None:
+            if not isinstance(operator, str) or not operator.strip():
+                raise ValueError("operator must be None or a non-empty string")
+            operator = operator.strip()
         object.__setattr__(self, "elevation_m", elevation)
+        object.__setattr__(self, "operator", operator)
+        capability = self.max_simultaneous_satellite_accesses
+        if capability is not None and (
+            not isinstance(capability, int)
+            or isinstance(capability, bool)
+            or capability <= 0
+        ):
+            raise ValueError(
+                "max_simultaneous_satellite_accesses must be a positive integer"
+            )

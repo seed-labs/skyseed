@@ -34,6 +34,8 @@ def satellite_input(
 def ground_station_input(
     asn: int,
     entity_id: str,
+    *,
+    max_simultaneous_satellite_accesses: int | None = None,
 ) -> GroundStationSimulationInput:
     return GroundStationSimulationInput(
         node_id=NodeId(asn, "ground-station", entity_id),
@@ -43,6 +45,9 @@ def ground_station_input(
         elevation_m=10.0,
         station_type="gateway",
         operator="Skyseed",
+        max_simultaneous_satellite_accesses=(
+            max_simultaneous_satellite_accesses
+        ),
     )
 
 
@@ -165,3 +170,29 @@ def test_static_input_contains_only_logical_static_values() -> None:
         "namespace",
     ):
         assert not hasattr(simulator_input, forbidden_attribute)
+
+
+def test_ground_station_input_preserves_nullable_operator_and_normalizes_strings(
+) -> None:
+    known = ground_station_input(65001, "known")
+    normalized = replace(known, operator="  Skyseed  ")
+    nullable = replace(known, operator=None)
+
+    assert normalized.operator == "Skyseed"
+    assert nullable.operator is None
+    with pytest.raises(ValueError, match="operator"):
+        replace(known, operator="   ")
+
+
+@pytest.mark.parametrize("capability", (0, -1, True))
+def test_ground_station_input_rejects_invalid_optional_access_capability(
+    capability: int,
+) -> None:
+    with pytest.raises(
+        ValueError, match="max_simultaneous_satellite_accesses"
+    ):
+        ground_station_input(
+            65001,
+            "invalid-capability",
+            max_simultaneous_satellite_accesses=capability,
+        )

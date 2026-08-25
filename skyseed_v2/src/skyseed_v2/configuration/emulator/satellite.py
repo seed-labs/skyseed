@@ -36,7 +36,7 @@ class RightAscensionDistribution:
 
 @dataclass(frozen=True, slots=True)
 class InOrbitPhaseDistribution:
-    """Specify uniform phase input for generated Satellites.
+    """Specify phase input for generated Orbits and Satellites.
 
     Layer: immutable configuration auxiliary value. The YAML reader or
     programmatic callers create it for GeneratedOrbitLayout. It is not
@@ -47,6 +47,7 @@ class InOrbitPhaseDistribution:
     start_deg: float = 0.0
     step_deg: float | None = None
     alternating_orbit_offset_deg: float = 0.0
+    orbit_phase_step_deg: float | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "start_deg", _angle(self.start_deg, "start_deg"))
@@ -63,6 +64,21 @@ class InOrbitPhaseDistribution:
             if not isfinite(step) or step <= 0.0:
                 raise ValueError("step_deg must be a positive finite number")
             object.__setattr__(self, "step_deg", step)
+        if self.orbit_phase_step_deg is not None:
+            orbit_phase_step = _angle(
+                self.orbit_phase_step_deg,
+                "orbit_phase_step_deg",
+            )
+            if self.alternating_orbit_offset_deg != 0.0:
+                raise ValueError(
+                    "orbit_phase_step_deg requires "
+                    "alternating_orbit_offset_deg to be zero"
+                )
+            object.__setattr__(
+                self,
+                "orbit_phase_step_deg",
+                orbit_phase_step,
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +99,7 @@ class GeneratedOrbitLayout:
     in_orbit_phase_distribution: InOrbitPhaseDistribution = (
         InOrbitPhaseDistribution()
     )
+    max_simultaneous_ground_station_accesses: int | None = None
 
     def __post_init__(self) -> None:
         _positive_integer(self.orbit_count, "orbit_count")
@@ -94,6 +111,11 @@ class GeneratedOrbitLayout:
             raise TypeError(
                 "right_ascension_distribution must be a "
                 "RightAscensionDistribution"
+            )
+        if self.max_simultaneous_ground_station_accesses is not None:
+            _positive_integer(
+                self.max_simultaneous_ground_station_accesses,
+                "max_simultaneous_ground_station_accesses",
             )
         if not isinstance(
             self.in_orbit_phase_distribution,
@@ -146,6 +168,7 @@ class SatelliteConfig:
     index_in_orbit: int
     mean_anomaly_deg: float
     payload_items: tuple[tuple[str, str], ...] = ()
+    max_simultaneous_ground_station_accesses: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -177,6 +200,11 @@ class SatelliteConfig:
         if len({key for key, _ in payload_items}) != len(payload_items):
             raise ValueError("payload_items contains a duplicate key")
         object.__setattr__(self, "payload_items", tuple(sorted(payload_items)))
+        if self.max_simultaneous_ground_station_accesses is not None:
+            _positive_integer(
+                self.max_simultaneous_ground_station_accesses,
+                "max_simultaneous_ground_station_accesses",
+            )
 
 
 @dataclass(frozen=True, slots=True)

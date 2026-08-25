@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections import deque
+from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Mapping
 
 from skyseed_v2.shared import NodeId
@@ -10,6 +12,14 @@ from skyseed_v2.shared import NodeId
 from .connection import ConnectionSlice
 from .route import GroundStationRouteTarget, RouteTarget, ZoneRouteTarget
 from ..topology import Topology
+
+
+@dataclass(frozen=True, slots=True)
+class _RoutingPolicyContext:
+    nodes: frozenset[NodeId]
+    satellites: frozenset[NodeId]
+    ground_stations: frozenset[NodeId]
+    graph: Mapping[NodeId, tuple[NodeId, ...]]
 
 
 def eligible_shortest_next_hops(
@@ -20,53 +30,99 @@ def eligible_shortest_next_hops(
 ) -> Mapping[NodeId, tuple[NodeId, ...]]:
     """Return reachable formal sources and shortest eligible next-hop choices."""
 
+    return _eligible_shortest_next_hops(
+        _prepare_routing_policy_context(topology, connection_slice),
+        target,
+        terminal,
+    )
+
+
+def _prepare_routing_policy_context(
+    topology: Topology,
+    connection_slice: ConnectionSlice,
+) -> _RoutingPolicyContext:
     nodes, satellites, ground_stations = _topology_node_ids(topology)
     graph = _connection_graph(nodes, connection_slice)
+    return _RoutingPolicyContext(
+        nodes=frozenset(nodes),
+        satellites=frozenset(satellites),
+        ground_stations=frozenset(ground_stations),
+        graph=MappingProxyType(
+            {
+                node_id: tuple(sorted(graph[node_id], key=_node_key))
+                for node_id in sorted(graph, key=_node_key)
+            }
+        ),
+    )
+
+
+def _eligible_shortest_next_hops(
+    context: _RoutingPolicyContext,
+    target: RouteTarget,
+    terminal: NodeId,
+    *,
+    required_sources: frozenset[NodeId] | None = None,
+) -> Mapping[NodeId, tuple[NodeId, ...]]:
+    graph = context.graph
     if isinstance(target, GroundStationRouteTarget):
-        permitted = satellites | {terminal}
+        permitted = context.satellites | {terminal}
         distances = _reverse_distances(
-            _restricted_graph(graph, permitted),
+            graph,
             terminal,
+            permitted,
+            required_sources,
         )
         result = {
             source: _closer_neighbors(graph, source, distances, permitted)
-            for source in satellites
+            for source in context.satellites
             if source in distances and source != terminal
         }
     elif isinstance(target, ZoneRouteTarget):
+        ground_sources = (
+            context.ground_stations
+            if required_sources is None
+            else context.ground_stations & required_sources
+        )
+        required_satellites = (
+            None
+            if required_sources is None
+            else frozenset(
+                neighbor
+                for source in ground_sources
+                for neighbor in graph[source]
+                if neighbor in context.satellites
+            )
+        )
         distances = _reverse_distances(
-            _restricted_graph(graph, satellites),
+            graph,
             terminal,
+            context.satellites,
+            required_satellites,
         )
         result = {
             source: _closer_neighbors(
                 graph,
                 source,
                 distances,
-                satellites,
+                context.satellites,
             )
-            for source in satellites
+            for source in context.satellites
             if source in distances and source != terminal
         }
-        for source in ground_stations:
+        for source in ground_sources:
             candidates = tuple(
                 neighbor
                 for neighbor in graph[source]
-                if neighbor in satellites and neighbor in distances
+                if neighbor in context.satellites and neighbor in distances
             )
             if candidates:
                 minimum_distance = min(
                     distances[neighbor] for neighbor in candidates
                 )
                 result[source] = tuple(
-                    sorted(
-                        (
-                            neighbor
-                            for neighbor in candidates
-                            if distances[neighbor] == minimum_distance
-                        ),
-                        key=_node_key,
-                    )
+                    neighbor
+                    for neighbor in candidates
+                    if distances[neighbor] == minimum_distance
                 )
     else:
         raise TypeError(
@@ -109,51 +165,45 @@ def route_step_allows_transit(
 
 
 def _closer_neighbors(
-    graph: Mapping[NodeId, set[NodeId]],
+    graph: Mapping[NodeId, tuple[NodeId, ...]],
     source: NodeId,
     distances: Mapping[NodeId, int],
-    permitted: set[NodeId],
+    permitted: frozenset[NodeId],
 ) -> tuple[NodeId, ...]:
     return tuple(
-        sorted(
-            (
-                neighbor
-                for neighbor in graph[source]
-                if neighbor in permitted
-                and distances.get(neighbor) == distances[source] - 1
-            ),
-            key=_node_key,
-        )
+        neighbor
+        for neighbor in graph[source]
+        if neighbor in permitted
+        and distances.get(neighbor) == distances[source] - 1
     )
 
 
-def _restricted_graph(
-    graph: Mapping[NodeId, set[NodeId]],
-    permitted: set[NodeId],
-) -> dict[NodeId, set[NodeId]]:
-    return {
-        node_id: {
-            neighbor
-            for neighbor in graph[node_id]
-            if neighbor in permitted
-        }
-        for node_id in permitted
-    }
-
-
 def _reverse_distances(
-    graph: Mapping[NodeId, set[NodeId]],
+    graph: Mapping[NodeId, tuple[NodeId, ...]],
     terminal: NodeId,
+    permitted: frozenset[NodeId],
+    required_sources: frozenset[NodeId] | None = None,
 ) -> dict[NodeId, int]:
-    if terminal not in graph:
+    if terminal not in permitted:
         return {}
     distances = {terminal: 0}
+    unresolved = (
+        None
+        if required_sources is None
+        else set(required_sources & permitted) - {terminal}
+    )
+    if unresolved is not None and not unresolved:
+        return distances
     pending = deque([terminal])
     while pending:
         current = pending.popleft()
-        for neighbor in sorted(graph[current], key=_node_key):
-            if neighbor not in distances:
+        for neighbor in graph[current]:
+            if neighbor in permitted and neighbor not in distances:
                 distances[neighbor] = distances[current] + 1
+                if unresolved is not None:
+                    unresolved.discard(neighbor)
+                    if not unresolved:
+                        return distances
                 pending.append(neighbor)
     return distances
 
