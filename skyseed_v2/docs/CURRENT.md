@@ -11,6 +11,8 @@ provenance material is non-authoritative.
   accepted**;
 - documentation identity/checking consolidation: **implemented and accepted**;
 - Runner milestone: **implemented, runtime-validated, and manually accepted**;
+- S4 Planner and BPF Compiler scale milestone: **implemented, qualified, and
+  accepted**;
 - compatibility forwarding and dual import paths: absent.
 
 ## Accepted current implementation
@@ -100,15 +102,19 @@ provenance material is non-authoritative.
 
 ## Inspection Tools and maintained examples
 
-- Manual Tool acceptance is complete for seven formal repository-local,
+- Manual Tool acceptance is complete for eight formal repository-local,
   read-only Inspection Tools: Topology, Zone, Slice / Difference, Planner, BPF
-  Compiler, BPF Runner, and Traffic / Path Replay.
+  Compiler, BPF Runner, Traffic / Path Replay, and System Observation.
 - Tools read owner-produced facts and may project/render them; they do not
   control runtime, own fact retention, query the live kernel as an authority,
   or generate traffic. The lazy Slice Tool keeps one browser-resident Slice,
   restores only a selected sparse next-hop path, and now presents compact
   projected current-Slice/model context plus clearly labeled Tool-derived
-  service geometry.
+  service geometry. Scale qualification materializes the Slice, Planner, and
+  Compiler Tools in bounded independent processes from immutable persisted
+  handoffs. The domain chain and detached Inspection work have separate
+  statuses; checksum-audited staging is published atomically, and Tool work is
+  excluded from domain Observation timings.
 - There are three maintained runnable examples:
   `complete_static_emulator` is the minimal two-Satellite teaching/contract
   smoke example, `mini_satellite_internet` is the canonical dynamic rolling
@@ -117,44 +123,49 @@ provenance material is non-authoritative.
   355 frozen evidence-backed Starlink gateway sites, 703 total dynamic nodes,
   and a 732-Zone global candidate. The qualification
   ground body includes supported current, planned, and historical Ka/E sites;
-  it is not a simultaneous operational-network snapshot. Dynamic mode stops at
-  Position → Connection → Route → Slice → Difference and writes example-local
-  metrics plus a representative existing Slice / Difference Tool projection;
-  it does not enter Planner, BPF, or runtime.
+  it is not a simultaneous operational-network snapshot. Default dynamic mode
+  stops at Position → Connection → Route → Slice → Difference. Its explicit
+  Planner qualification mode continues through the backend-independent Planner
+  and one-shot BPF Compiler but never enters Runner or runtime.
   Its final S4-specific Zone-service minimum is 25 degrees at the Zone
   representative point; generic model configuration behavior is unchanged.
   This isolated shell is not expected to serve all global Zones continuously,
   and served percentage is not a coverage-quality target. The accepted short
   baseline retains Slice 0 plus 20 real Slices/20 Differences; warm complete
   Slice p50/p95 was 0.8263/0.8952 seconds and Difference p50/p95 was
-  0.0401/0.0674 seconds on the qualification host.
+  0.0401/0.0674 seconds on the qualification host. The accepted long-horizon
+  run retained Slice 0 plus **181 real Slices / 181 Differences**, published
+  **90 Plans**, and compiled **90 `BpfCompiledRealization` values**. Fixed
+  Planner and Compiler validation both passed. Domain execution took 459.85
+  seconds (Planner 249.46 seconds; Compiler 25.12 seconds), while detached Tool
+  materialization overlapped the chain and joined afterward. These figures are
+  evidence from that host and are not general performance guarantees.
   `examples/reference` is explicitly non-runnable historical provenance, and
   repository-level `research/` remains persistent non-runtime evidence.
 
 ## Deferred
 
-- Planner parameter visualization and other dense presentation polish are a
-  **non-blocking** future Tool-consolidation/presentation item, not a Planner
-  correctness defect.
+- Planner numeric stability tuning remains scenario- and scale-dependent
+  experimental research; the accepted S4 composition is a scenario candidate,
+  not a new generic numeric default.
 - A public dataplane plugin API, an automatic rollback after a partially failed
   activation, packet-drain consistency, large-network performance
-  qualification for Planner/runtime, fresh kernel/dataplane inspection, and
+  qualification for Runner/runtime, fresh kernel/dataplane inspection, and
   realtime/live traffic visualization remain future work.
 - The synchronous future-realization callable returns an ordered value or
   terminal `None`; it has no separate temporarily-unavailable result.
 
-## Current milestone candidate
+## Current milestone
 
-The complete uncommitted **S4 / 300+ dynamic Simulator qualification** is
-ready for final milestone acceptance. It adds the Gateway-scoped
-satellite-Internet RouteModel, keeps the full-reachability HopCount model as
-the small-scale baseline, makes routing demand Model-owned, trusts immutable
-published retained Slices for cheap Difference creation, enforces explicit
-GroundStation and Satellite access caps, prunes Connection candidates without
-changing exact geometry, bounds Route traversal by current demand, and uses
-offline per-Slice Tool chunks with selection-only path restoration. Planner,
-Compiler, Runner, and runtime qualification remain later stages and were not
-entered by this S4 milestone.
+The **S4 Planner + BPF Compiler scale stage** is accepted. It preserves the
+Gateway-scoped satellite-Internet formal model and qualifies the normal bounded
+Planner composition through 181 Differences, 90 rolling publications, and 90
+one-shot BPF compilations. The unified Inspection surfaces retain exact scoped
+evidence behind statistical, temporal, and spatial discovery views. Real
+Firefox gates cover Slice playback, Planner playback state/scroll/camera
+stability, Observation unit navigation, and Compiler grouped-chart drill-down.
+The next scale stage is S4 Runner/runtime qualification; no Runner lifecycle was
+entered here.
 
 ## Current production paths
 

@@ -161,14 +161,24 @@ output/
     │   └── checksums.sha256
     ├── planner/               # generation-time Tool bundle from main.py
     │   ├── index.html
-    │   ├── planner-inspection.json
+    │   ├── planner-manifest.json
+    │   ├── planner-manifest.js
+    │   ├── chunks/*.js       # lazy Plan/Difference/catalog/data chunks
     │   ├── planning-history.jsonl # added by run.sh rolling Planner
     │   ├── summary.txt
     │   ├── inventory.json
     │   └── checksums.sha256
+    ├── observation/           # generation-time Slicer/Planner timing evidence
+    │   ├── index.html
+    │   ├── execution-observations.jsonl
+    │   ├── observation-records.js
+    │   ├── observation-summary.json
+    │   └── checksums.sha256
     ├── bpf-compiler/          # generation-time Tool reads precompiled results
     │   ├── index.html
-    │   ├── bpf-compiler-inspection.json
+    │   ├── manifest.json
+    │   ├── manifest.js
+    │   ├── chunks/*.js       # paged exact Plan/intent/baseline/diff evidence
     │   ├── compiled-history.jsonl # added by run.sh rolling supplier
     │   ├── summary.txt
     │   ├── inventory.json

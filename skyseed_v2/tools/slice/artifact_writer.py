@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .._html import write_json, write_text
+from .._chunk_encoding import CHUNK_ENCODING, encoded_chunk_json
 
 
 def write_slice_difference_artifacts(
@@ -41,22 +42,19 @@ def write_slice_difference_artifacts(
     assert isinstance(inventory, dict)
     assert isinstance(behavior, dict)
     manifest = {key: value for key, value in data.items() if key != "slices"}
+    manifest["chunk_encoding"] = CHUNK_ENCODING
     write_json(manifest_path, manifest)
     write_text(page_path, page)
     chunk_paths = []
     for slice_record in slices:
         slice_id = int(slice_record["slice_id"])
         chunk_path = chunks_directory / f"slice-{slice_id:06d}.js"
-        compact = json.dumps(
-            slice_record,
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ).replace("</", "<\\/")
         write_text(
             chunk_path,
             "window.__SKYSEED_SLICE_CHUNKS__="
             "window.__SKYSEED_SLICE_CHUNKS__||{};"
-            f"window.__SKYSEED_SLICE_CHUNKS__[{slice_id}]={compact};\n",
+            f"window.__SKYSEED_SLICE_CHUNKS__[{slice_id}]="
+            f"{encoded_chunk_json(slice_record)};\n",
         )
         chunk_paths.append(chunk_path)
 
@@ -67,7 +65,8 @@ def write_slice_difference_artifacts(
                 "status=PASS",
                 "tool=slice-difference-inspection",
                 "authority=non-authoritative-view",
-                "representation=offline-lazy-slice-chunks",
+                "representation=offline-lazy-compressed-slice-chunks",
+                f"chunk_encoding={CHUNK_ENCODING}",
                 *(f"{key}={value}" for key, value in inventory.items()),
                 *(f"behavior_{key}={value}" for key, value in behavior.items()),
                 "",
@@ -81,8 +80,9 @@ def write_slice_difference_artifacts(
         *chunk_paths,
     )
     bundle_inventory = {
-        "format_version": 2,
-        "representation": "offline-lazy-slice-chunks",
+        "format_version": 3,
+        "representation": "offline-lazy-compressed-slice-chunks",
+        "chunk_encoding": CHUNK_ENCODING,
         "files": [_file_record(path, output) for path in payload_files],
     }
     write_json(inventory_path, bundle_inventory)

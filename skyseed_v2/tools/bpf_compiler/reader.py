@@ -136,6 +136,32 @@ def _read_interval(
         }
         for position, value in enumerate(plan.forwarding_transitions)
     )
+    forwarding_positions = {
+        id(value): position
+        for position, value in enumerate(plan.forwarding_transitions)
+    }
+    plan_precedences = tuple(
+        {
+            "precedence_id": f"p{index}-plan-precedence-{position}",
+            "predecessor_transition_id": (
+                f"p{index}-plan-forwarding-"
+                f"{forwarding_positions[id(value.predecessor)]}"
+            ),
+            "successor_transition_id": (
+                f"p{index}-plan-forwarding-"
+                f"{forwarding_positions[id(value.successor)]}"
+            ),
+            "predecessor_index": forwarding_positions[id(value.predecessor)],
+            "successor_index": forwarding_positions[id(value.successor)],
+        }
+        for position, value in enumerate(plan.forwarding_precedences)
+    )
+    precedence_origins = {
+        (value["predecessor_index"], value["successor_index"]): value[
+            "precedence_id"
+        ]
+        for value in plan_precedences
+    }
     connection_origins = {
         (value["nominal_time"], value["operation"], value["connection_ref"]): (
             value["transition_id"]
@@ -269,6 +295,15 @@ def _read_interval(
                 if value.reason == "plan-forwarding-precedence"
                 else "backend-technical"
             ),
+            "origin_precedence_id": (
+                precedence_origins.get(
+                    (value.predecessor.index, value.successor.index)
+                )
+                if value.reason == "plan-forwarding-precedence"
+                and value.predecessor.domain == "forwarding"
+                and value.successor.domain == "forwarding"
+                else None
+            ),
             "reason": value.reason,
             "predecessor": {
                 "domain": value.predecessor.domain,
@@ -291,6 +326,19 @@ def _read_interval(
         }
         for position, value in enumerate(realization.constraints)
     )
+    compiled_by_origin: dict[str, list[str]] = {}
+    for values in (resources, parameters, forwarding):
+        for value in values:
+            origin = value["origin_transition_id"]
+            if origin is not None:
+                compiled_by_origin.setdefault(origin, []).append(
+                    value["intent_id"]
+                )
+    for values in (plan_connections, plan_parameters, plan_forwarding):
+        for value in values:
+            value["compiled_intent_refs"] = tuple(
+                compiled_by_origin.get(value["transition_id"], ())
+            )
     return {
         "plan_index": index,
         "label": f"Plan {index + 1}",
@@ -307,7 +355,8 @@ def _read_interval(
             "connection_transitions": plan_connections,
             "parameter_transitions": plan_parameters,
             "forwarding_transitions": plan_forwarding,
-            "forwarding_precedence_count": len(plan.forwarding_precedences),
+            "forwarding_precedences": plan_precedences,
+            "forwarding_precedence_count": len(plan_precedences),
         },
         "compiled": {
             "resources": resources,

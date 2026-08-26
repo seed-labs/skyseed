@@ -45,6 +45,8 @@ from tools.bpf_compiler import (
     collect_bpf_compiler_data,
     write_bpf_compiler_tool,
 )
+from tools._chunk_encoding import CHUNK_ENCODING, decode_json_chunk
+from tools.traffic.reader import _read_compiler_inspection
 
 
 START = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -104,9 +106,7 @@ def generated(tmp_path_factory, canonical_compilation):
     plans, realizations = canonical_compilation
     output = tmp_path_factory.mktemp("bpf-compiler-tool")
     result = write_bpf_compiler_tool(plans, realizations, output)
-    data = json.loads(
-        (output / "bpf-compiler-inspection.json").read_text(encoding="utf-8")
-    )
+    data = collect_bpf_compiler_data(plans, realizations)
     return output, result, data
 
 
@@ -136,32 +136,33 @@ def test_projection_reads_continuous_compiled_sequence_without_recompiling(
 
 def test_exact_supported_lowering_relationships_are_exposed(generated) -> None:
     _, _, data = generated
-    rows = [
-        row for interval in data["intervals"] for row in interval["lowering"]
-    ]
-
     assert any(
-        row["family"] == "connection"
+        transition["compiled_intent_refs"]
         and any(
-            value["intent_id"].startswith("p0-resource-")
-            for value in row["compiled_intents"]
+            "-resource-" in value
+            for value in transition["compiled_intent_refs"]
         )
         and any(
-            value["reason"] == "connection-establish"
-            for value in row["compiled_intents"]
-            if "reason" in value
+            "-parameter-" in value
+            for value in transition["compiled_intent_refs"]
         )
-        for row in rows
+        for transition in data["intervals"][0]["plan"]["connection_transitions"]
     )
     assert any(
-        row["family"] == "parameter" and row["compiled_intents"]
-        for row in rows
+        transition["compiled_intent_refs"]
+        for interval in data["intervals"]
+        for transition in interval["plan"]["parameter_transitions"]
     )
     assert all(
-        row["mapping"]
-        == "compiled-mechanical-output-no-plan-origin-claimed"
-        for row in rows
-        if row["family"] == "zone-edge"
+        value["origin"] == "compiled-mechanical-zone-edge"
+        for interval in data["intervals"]
+        for value in interval["compiled"]["zone_edges"]
+    )
+    assert all(
+        constraint["origin_precedence_id"] is not None
+        for interval in data["intervals"]
+        for constraint in interval["compiled"]["constraints"]
+        if constraint["category"] == "plan-forwarding-precedence"
     )
 
 
@@ -179,7 +180,10 @@ def test_zone_constraints_and_end_state_are_compiled_facts(generated) -> None:
     assert data["observed_behavior"]["backend_technical_constraints"] > 0
     assert data["observed_behavior"]["runtime_bindings_claimed"] is False
     assert sum(
-        len(interval["constraint_groups"]["plan-forwarding-precedence"])
+        sum(
+            value["category"] == "plan-forwarding-precedence"
+            for value in interval["compiled"]["constraints"]
+        )
         for interval in data["intervals"]
     ) == data["observed_behavior"]["plan_forwarding_precedences"]
     assert any(
@@ -203,52 +207,87 @@ def test_same_next_hop_changed_remains_visible_as_formal_change(
     assert changed["previous"]["next_hop"] == changed["current"]["next_hop"]
     write_bpf_compiler_tool(plans, realizations, tmp_path)
     page = (tmp_path / "index.html").read_text(encoding="utf-8")
-    assert '"same_next_hop_changed":true' in page
-    assert "SAME-NEXT-HOP CHANGED — NOT A NO-OP" in page
+    chunks = "".join(
+        path.read_text(encoding="utf-8")
+        for path in (tmp_path / "chunks").glob("*.js")
+    )
+    assert '"same_next_hop_changed":true' not in page
+    assert CHUNK_ENCODING in chunks
+    forwarding_chunks = [
+        decode_json_chunk(
+            json.loads(
+                path.read_text(encoding="utf-8")
+                .rsplit("]=", 1)[1]
+                .removesuffix(";\n")
+            )
+        )
+        for path in (tmp_path / "chunks").glob("*intents-forwarding*.js")
+    ]
+    assert any(
+        row.get("same_next_hop_changed") is True
+        for chunk in forwarding_chunks
+        for row in chunk["rows"]
+    )
 
 
 def test_page_prioritizes_compiled_backend_operations_and_is_offline(
     generated,
 ) -> None:
-    output, _, _ = generated
+    output, result, _ = generated
     page = (output / "index.html").read_text(encoding="utf-8")
 
     for identifier in (
-        "plan-timeline",
+        "plan-scrubber",
         "plan-select",
-        "backend-operations",
-        "lowering-list",
-        "resource-list",
-        "parameter-list",
-        "forwarding-list",
-        "zone-list",
-        "constraint-list",
-        "end-state",
-        "raw-json",
+        "selected-transform",
+        "chart-input",
+        "chart-baseline",
+        "chart-churn",
+        "chart-family",
+        "detail-section",
+        "detail-list",
+        "diff-family",
+        "diff-list",
     ):
         assert f'id="{identifier}"' in page
-    assert "Compiled backend operations / symbolic BPF realization" in page
-    assert "BpfCompiledRealization operation inventory" in page
-    assert "RESOURCE ESTABLISH" in page
-    assert "RESOURCE RETIRE" in page
-    assert "ATTACHMENT REQUIRE" in page
-    assert "QDISC TARGET INITIAL" in page
-    assert "QDISC UPDATE SPARSE" in page
-    assert "FORWARD ADD" in page
-    assert "FORWARD CHANGE" in page
-    assert "FORWARD REMOVE" in page
-    assert "ZONE EDGE ACTIVATE" in page
-    assert "Backend ordering / dependency relationships" in page
-    assert 'class="tab active" data-view="operations"' in page
-    assert 'data-view="lowering">Plan → BPF provenance' in page
-    assert "SAME-NEXT-HOP CHANGED — NOT A NO-OP" in page
-    assert "does not scan raw Slice assignments" in page
-    assert "Previous intended baseline + interval work" in page
+    assert 'id="chart-compile-time"' not in page
+    assert 'id="chart-density"' not in page
+    assert page.count('class="card diagnostic-chart"') == 4
+    assert "function planBuckets(plans)" in page
+    assert "Math.min(12" in page
+    assert "median baseline records" in page
+    assert "complete baselines are never summed" in page
+    assert 'data-bucket-plan="${plan.plan_index}"' in page
+    assert "What did these Plans turn into?" in page
+    assert "Plan → realization drill-down" in page
+    assert "Ri-1 → Ri exact baseline diff" in page
+    assert "Plan delta input" in page
+    assert "complete interval-end baseline" in page
+    assert "A Zone-edge intent is backend service attachment state" in page
+    assert "window.__SKYSEED_BPF_COMPILER_MANIFEST__=" not in page
+    assert '"format_version":2' not in page
+    assert "bpf-compiler-inspection.json" not in page
     assert "http://" not in page
     assert "https://" not in page
     assert "fetch(" not in page
-    assert "<script src=" not in page
     assert "<link " not in page
+    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["format_version"] == 2
+    assert manifest["chunk_encoding"] == CHUNK_ENCODING
+    assert manifest["chunk_count"] > 0
+    assert len(manifest["plans"]) == 16
+    assert result["artifact_metrics"]["initial_browser_load_bytes"] == (
+        (output / "index.html").stat().st_size
+        + (output / "manifest.js").stat().st_size
+    )
+    assert len(result["realization_inventory"]) == len(manifest["plans"])
+    assert all(
+        len(record["sha256"]) == 64
+        for record in result["realization_inventory"]
+    )
+    assert [record["sha256"] for record in result["realization_inventory"]] == [
+        record["realization_sha256"] for record in manifest["plans"]
+    ]
 
 
 def test_writer_is_deterministic_and_emits_checksummed_bundle(
@@ -260,16 +299,39 @@ def test_writer_is_deterministic_and_emits_checksummed_bundle(
     plans, realizations = canonical_compilation
     repeated = write_bpf_compiler_tool(plans, realizations, tmp_path)
 
-    assert result["files"] == repeated["files"] == (
+    assert result["files"] == repeated["files"]
+    assert result["files"][:4] == (
         "index.html",
-        "bpf-compiler-inspection.json",
+        "manifest.json",
+        "manifest.js",
         "summary.txt",
-        "inventory.json",
-        "checksums.sha256",
     )
+    assert any(value.startswith("chunks/") for value in result["files"])
+    assert result["files"][-2:] == ("inventory.json", "checksums.sha256")
     for filename in result["files"]:
         assert (output / filename).read_bytes() == (tmp_path / filename).read_bytes()
     assert "status=PASS" in (output / "summary.txt").read_text(encoding="utf-8")
+
+
+def test_traffic_reader_consumes_lazy_compiler_manifest(generated) -> None:
+    output, _, data = generated
+
+    reconstructed = _read_compiler_inspection(output / "manifest.json")
+
+    assert len(reconstructed["intervals"]) == len(data["intervals"])
+    for actual, expected in zip(
+        reconstructed["intervals"], data["intervals"], strict=True
+    ):
+        expected_compiled = {
+            family: expected["compiled"][family]
+            for family in ("resources", "parameters", "forwarding", "zone_edges")
+        }
+        expected_end_state = {
+            family: expected["end_state"][family]
+            for family in ("zone_edges", "zone_prefixes")
+        }
+        assert actual["compiled"] == json.loads(json.dumps(expected_compiled))
+        assert actual["end_state"] == json.loads(json.dumps(expected_end_state))
 
 
 def test_tool_sources_never_compile_or_depend_on_execution_details() -> None:

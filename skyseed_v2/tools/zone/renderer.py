@@ -39,6 +39,7 @@ def render_zone_page(data: dict[str, Any]) -> str:
   <h2>Formal static Zone layout</h2>
   <p><strong>{counts['zones']}</strong> Zones · allow_overlap={escape(str(data['allow_overlap']))}</p>
   <p>Geometry is read from Topology. Selection and highlighting are display-only and do not resolve Zone membership.</p>
+  <p>A Zone is a formal geographic/service identity. Its representative point and boundary are inspection aids; they are not a network node or a Satellite-to-Zone link.</p>
 </section>
 <section class="card selected-detail">
   <h2>Selected Zone</h2>
@@ -120,6 +121,7 @@ canvas.addEventListener("pointerup",event=>{{const wasClick=pointer&&!pointer.mo
             "Tool Overview": "工具总览",
             "Formal static Zone layout": "正式静态 Zone 布局",
             "Geometry is read from Topology. Selection and highlighting are display-only and do not resolve Zone membership.": "几何信息读取自 Topology。选择与高亮仅用于显示，不执行 Zone membership resolution。",
+            "A Zone is a formal geographic/service identity. Its representative point and boundary are inspection aids; they are not a network node or a Satellite-to-Zone link.": "Zone 是正式的地理 / 服务 identity。其代表点和边界只是检查辅助；它们不是网络节点，也不是 Satellite-to-Zone 链路。",
             "Selected Zone": "已选 Zone",
             "Click or tap a Zone on the globe or map.": "在球面或地图上点击 Zone。",
             "Rotatable Zone globe": "可旋转 Zone 球面",

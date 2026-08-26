@@ -5,10 +5,18 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from examples.mini_satellite_internet.emu import (
+    build_mini_satellite_internet_emulator,
+)
+from examples.mini_satellite_internet.simu import (
+    create_mini_satellite_internet_simulator,
+)
+
 from skyseed_v2.shared import NodeId
 from skyseed_v2.simulator import (
     AccumulatedDeadbandParameterPlanningModel,
     Connection,
+    ConnectionEpisodeConfiguration,
     ConnectionId,
     ConnectionKind,
     ConnectionSlice,
@@ -19,13 +27,19 @@ from skyseed_v2.simulator import (
     DirectionalConnectionParameters,
     EarthFixedPosition,
     GroundStationRouteTarget,
+    ForwardingStabilityConfiguration,
     ForwardingTransition,
     MidpointConnectionPlanningModel,
     ParameterTransition,
+    ParameterFieldConfiguration,
+    ParameterPlanningConfiguration,
     ConnectionDirection,
     RouteKey,
     RouteSlice,
     SampleBoundaryConnectionPlanningModel,
+    SampleBoundaryParameterPlanningModel,
+    StableForwardingPlanningModel,
+    TimeHorizonPlanningWindowPolicy,
     SimulationDefinition,
     SimulationTimeline,
     Simulator,
@@ -35,6 +49,8 @@ from skyseed_v2.simulator.input import (
     SatelliteSimulationInput,
     SimulatorStaticInput,
 )
+from skyseed_v2.simulator.planning.planner import _path_connection_ids
+from skyseed_v2.simulator.planning import planner as planner_module
 
 
 START = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -60,6 +76,104 @@ SECOND_ACCESS_ID = ConnectionId(
     SATELLITE_2,
     GROUND_STATION,
 )
+
+
+def _legacy_path_connection_ids(
+    connection_slice: ConnectionSlice,
+    path: tuple[NodeId, ...],
+) -> tuple[ConnectionId, ...]:
+    if len(path) < 2:
+        return ()
+    result = []
+    for first, second in zip(path, path[1:]):
+        matches = tuple(
+            connection
+            for connection in connection_slice.get_connections_for_node(first)
+            if second
+            in (
+                connection.connection_id.endpoint_a,
+                connection.connection_id.endpoint_b,
+            )
+        )
+        if len(matches) != 1:
+            raise ValueError(
+                "formal path edge must map to exactly one Connection"
+            )
+        result.append(matches[0].connection_id)
+    return tuple(result)
+
+
+def _assert_path_lookup_equivalent(
+    connection_slice: ConnectionSlice,
+    path: tuple[NodeId, ...],
+) -> None:
+    try:
+        expected = _legacy_path_connection_ids(connection_slice, path)
+    except Exception as expected_error:
+        with pytest.raises(type(expected_error)) as actual:
+            _path_connection_ids(connection_slice, path)
+        assert str(actual.value) == str(expected_error)
+        return
+    actual = _path_connection_ids(connection_slice, path)
+    assert actual == expected
+    assert all(
+        current is previous
+        for current, previous in zip(actual, expected, strict=True)
+    )
+
+
+def test_indexed_path_connection_lookup_matches_legacy_edge_semantics() -> None:
+    satellite_5 = NodeId(65001, "satellite", "sat-5")
+    second_id = ConnectionId(
+        ConnectionKind.INTER_SATELLITE, SATELLITE_2, satellite_5
+    )
+    connections = ConnectionSlice(
+        (_connection_with_id(second_id), _connection_with_id(ISL_ID))
+    )
+
+    for path in (
+        (),
+        (SATELLITE,),
+        (SATELLITE, SATELLITE_2),
+        (SATELLITE_2, SATELLITE),
+        (SATELLITE, SATELLITE_2, satellite_5),
+        (SATELLITE, satellite_5),
+    ):
+        _assert_path_lookup_equivalent(connections, path)
+
+    ambiguous = ConnectionSlice(
+        (
+            _connection_with_id(ISL_ID),
+            _connection_with_id(
+                ConnectionId(
+                    ConnectionKind.GROUND_STATION_ACCESS,
+                    SATELLITE,
+                    SATELLITE_2,
+                )
+            ),
+        )
+    )
+    _assert_path_lookup_equivalent(ambiguous, (SATELLITE, SATELLITE_2))
+
+
+def test_indexed_path_connection_lookup_matches_every_mini_formal_route() -> None:
+    simulator = create_mini_satellite_internet_simulator(
+        build_mini_satellite_internet_emulator()
+    )
+    slicer = simulator.get_slicer()
+    slicer.create_all_slices()
+
+    checked = 0
+    for slice_id in slicer.get_retained_slice_ids():
+        topology_slice = slicer.get_slice(slice_id)
+        for source, targets in topology_slice.route_slice.routes.items():
+            for target in targets:
+                _assert_path_lookup_equivalent(
+                    topology_slice.connection_slice,
+                    slicer.resolve_path(slice_id, source, target),
+                )
+                checked += 1
+    assert checked > 10_000
 
 
 class _PositionModel:
@@ -189,6 +303,12 @@ class _CountingForwardingPlanningModel:
         return self.delegate.plan_forwarding_precedences(**kwargs)
 
 
+class _FullWindowStableForwardingPlanningModel(
+    StableForwardingPlanningModel
+):
+    """Disable Planner's exact-built-in fast path for oracle comparison."""
+
+
 class _LateForwardingPlanningModel:
     def plan_forwarding_transitions(
         self,
@@ -198,6 +318,7 @@ class _LateForwardingPlanningModel:
         previous_transitions,
         connection_transitions,
         route_path_connection_ids,
+        **_planning_context,
     ):
         return (
             *previous_transitions,
@@ -255,6 +376,8 @@ class _SubSliceParameterPlanningModel:
         previous_transitions,
         observed_parameters,
         planned_parameters,
+        parameter_drift_started_at,
+        parameter_persistence_started_at,
     ):
         result = list(previous_transitions)
         for difference in affected_differences:
@@ -311,6 +434,23 @@ class _FailSecondCoordinationPolicy:
             return result
         connections, parameters, forwarding, decisions = result
         return connections, parameters, forwarding[:-1], decisions
+
+
+class _FailCoordinationPolicy:
+    def coordinate_transitions(self, **_kwargs):
+        raise RuntimeError("coordination probe failure")
+
+
+class _FailOnceAfterBootstrapCoordinationPolicy:
+    def __init__(self):
+        self.calls = 0
+        self.delegate = DefaultCoordinationPolicy()
+
+    def coordinate_transitions(self, **kwargs):
+        self.calls += 1
+        if self.calls == 2:
+            raise RuntimeError("one-shot coordination failure")
+        return self.delegate.coordinate_transitions(**kwargs)
 
 
 class _RecordingWindowPolicy:
@@ -792,6 +932,277 @@ def test_unpublished_planning_window_retains_cross_boundary_suppression() -> Non
     assert forwarding_model.calls == [((1, 2, 3, 4), (1, 2, 3, 4), 0)]
 
 
+def test_time_horizon_rolling_window_advances_and_extends_revisable_suffix() -> None:
+    connection_slices = tuple(
+        ConnectionSlice((_connection(10),)) for _ in range(5)
+    )
+    route = RouteSlice(((ROUTE_KEY, GROUND_STATION),))
+    simulator, slicer = _simulator(
+        connection_slices, tuple(route for _ in connection_slices)
+    )
+    slicer.create_slices(3)
+    connection_model = _CountingConnectionPlanningModel()
+    parameter_model = _CountingParameterPlanningModel(1)
+    forwarding_model = _CountingForwardingPlanningModel()
+    planner = simulator.create_planner(
+        planning_window_policy=TimeHorizonPlanningWindowPolicy(
+            planning_lookahead=timedelta(seconds=20),
+            publication_horizon=timedelta(seconds=10),
+        ),
+        connection_model=connection_model,
+        parameter_model=parameter_model,
+        forwarding_model=forwarding_model,
+        coordination_policy=DefaultCoordinationPolicy(),
+    )
+    first = planner.get_plan()
+    first_content = (
+        first.connection_transitions,
+        first.parameter_transitions,
+        first.forwarding_transitions,
+        first.forwarding_precedences,
+    )
+    assert (first.start_slice_id, first.end_slice_id) == (0, 2)
+    assert tuple(
+        value.current_slice_id for value in planner._planning_differences
+    ) == (3,)
+
+    slicer.create_next_slice()
+    second = planner.synchronize()
+
+    assert (second.start_slice_id, second.end_slice_id) == (2, 3)
+    assert first_content == (
+        first.connection_transitions,
+        first.parameter_transitions,
+        first.forwarding_transitions,
+        first.forwarding_precedences,
+    )
+    assert tuple(
+        value.current_slice_id for value in planner._planning_differences
+    ) == (4,)
+    assert connection_model.calls == [
+        ((1, 2, 3), (1, 2, 3), 0),
+        ((3, 4), (4,), 0),
+    ]
+    assert parameter_model.calls == [
+        ((1, 2, 3), (1, 2, 3), 0),
+        ((3, 4), (4,), 0),
+    ]
+    assert forwarding_model.calls == [
+        ((1, 2, 3), (1, 2, 3), 0),
+        ((3, 4), (4,), 0),
+    ]
+
+
+def test_stable_rolling_work_replays_only_the_affected_suffix(
+    monkeypatch,
+) -> None:
+    connection_slices = tuple(
+        ConnectionSlice((_connection(10),)) for _ in range(5)
+    )
+    route = RouteSlice(((ROUTE_KEY, GROUND_STATION),))
+    simulator, slicer = _simulator(
+        connection_slices, tuple(route for _ in connection_slices)
+    )
+    slicer.create_slices(3)
+
+    forwarding_regions = []
+    validation_regions = []
+    original_forwarding = (
+        StableForwardingPlanningModel.plan_forwarding_transitions
+    )
+    original_validation = planner_module._validate_plan_region
+
+    def record_forwarding(self, **kwargs):
+        forwarding_regions.append(
+            tuple(
+                difference.current_slice_id
+                for difference in kwargs["differences"]
+            )
+        )
+        return original_forwarding(self, **kwargs)
+
+    def record_validation(differences, *args, **kwargs):
+        validation_regions.append(
+            tuple(difference.current_slice_id for difference in differences)
+        )
+        return original_validation(differences, *args, **kwargs)
+
+    monkeypatch.setattr(
+        StableForwardingPlanningModel,
+        "plan_forwarding_transitions",
+        record_forwarding,
+    )
+    monkeypatch.setattr(
+        planner_module, "_validate_plan_region", record_validation
+    )
+
+    planner = simulator.create_planner(
+        planning_window_policy=TimeHorizonPlanningWindowPolicy(
+            planning_lookahead=timedelta(seconds=20),
+            publication_horizon=timedelta(seconds=10),
+        ),
+        connection_model=SampleBoundaryConnectionPlanningModel(),
+        parameter_model=SampleBoundaryParameterPlanningModel(),
+        forwarding_model=StableForwardingPlanningModel(
+            configuration=ForwardingStabilityConfiguration()
+        ),
+        coordination_policy=DefaultCoordinationPolicy(),
+    )
+    first = planner.get_plan()
+
+    slicer.create_next_slice()
+    second = planner.synchronize()
+    third = planner.synchronize()
+
+    assert (first.start_slice_id, first.end_slice_id) == (0, 2)
+    assert (second.start_slice_id, second.end_slice_id) == (2, 3)
+    assert (third.start_slice_id, third.end_slice_id) == (3, 4)
+    assert forwarding_regions == [(1, 2, 3), (4,)]
+    assert validation_regions == [(1, 2, 3), (4,)]
+
+
+def test_stable_incremental_plans_match_full_window_oracle_exactly() -> None:
+    second_route = RouteKey(SATELLITE_2, TARGET)
+    connections = ConnectionSlice(
+        (
+            _connection_with_id(CONNECTION_ID),
+            _connection_with_id(ISL_ID),
+            _connection_with_id(SECOND_ACCESS_ID),
+        )
+    )
+    via_second = RouteSlice(
+        (
+            (ROUTE_KEY, SATELLITE_2),
+            (second_route, GROUND_STATION),
+        )
+    )
+    direct = RouteSlice(
+        (
+            (ROUTE_KEY, GROUND_STATION),
+            (second_route, GROUND_STATION),
+        )
+    )
+    route_slices = (via_second, direct, via_second, direct, via_second)
+    optimized_simulator, optimized_slicer = _simulator(
+        tuple(connections for _ in route_slices), route_slices
+    )
+    oracle_simulator, oracle_slicer = _simulator(
+        tuple(connections for _ in route_slices), route_slices
+    )
+    optimized_slicer.create_slices(3)
+    oracle_slicer.create_slices(3)
+    configuration = ForwardingStabilityConfiguration(
+        minimum_hop_gain=0,
+        persistence=timedelta(0),
+    )
+    window = TimeHorizonPlanningWindowPolicy(
+        planning_lookahead=timedelta(seconds=20),
+        publication_horizon=timedelta(seconds=10),
+    )
+    optimized = optimized_simulator.create_planner(
+        planning_window_policy=window,
+        connection_model=SampleBoundaryConnectionPlanningModel(),
+        parameter_model=SampleBoundaryParameterPlanningModel(),
+        forwarding_model=StableForwardingPlanningModel(
+            configuration=configuration
+        ),
+        coordination_policy=DefaultCoordinationPolicy(),
+    )
+    oracle = oracle_simulator.create_planner(
+        planning_window_policy=window,
+        connection_model=SampleBoundaryConnectionPlanningModel(),
+        parameter_model=SampleBoundaryParameterPlanningModel(),
+        forwarding_model=_FullWindowStableForwardingPlanningModel(
+            configuration=configuration
+        ),
+        coordination_policy=DefaultCoordinationPolicy(),
+    )
+
+    assert optimized.get_plan() == oracle.get_plan()
+    retained_before = optimized._forwarding_transitions
+    for index in range(2):
+        optimized_slicer.create_next_slice()
+        oracle_slicer.create_next_slice()
+        optimized_plan = optimized.synchronize()
+        oracle_plan = oracle.synchronize()
+        assert optimized_plan == oracle_plan
+        assert optimized.get_planning_decisions() == (
+            oracle.get_planning_decisions()
+        )
+        assert optimized._planned_route_next_hops == (
+            oracle._planned_route_next_hops
+        )
+        assert optimized._planned_route_path_connection_ids == (
+            oracle._planned_route_path_connection_ids
+        )
+        assert optimized._formal_route_candidate_started_at == (
+            oracle._formal_route_candidate_started_at
+        )
+        assert optimized._planned_route_divergence_started_at == (
+            oracle._planned_route_divergence_started_at
+        )
+        if index == 0:
+            assert all(
+                any(
+                    value is published
+                    for published in optimized_plan.forwarding_transitions
+                )
+                for value in retained_before
+            )
+
+
+def test_stable_incremental_failure_is_atomic_and_retryable() -> None:
+    connection_slices = tuple(
+        ConnectionSlice((_connection(10),)) for _ in range(5)
+    )
+    route = RouteSlice(((ROUTE_KEY, GROUND_STATION),))
+    simulator, slicer = _simulator(
+        connection_slices, tuple(route for _ in connection_slices)
+    )
+    slicer.create_slices(3)
+    coordination = _FailOnceAfterBootstrapCoordinationPolicy()
+    planner = simulator.create_planner(
+        planning_window_policy=TimeHorizonPlanningWindowPolicy(
+            planning_lookahead=timedelta(seconds=20),
+            publication_horizon=timedelta(seconds=10),
+        ),
+        connection_model=SampleBoundaryConnectionPlanningModel(),
+        parameter_model=SampleBoundaryParameterPlanningModel(),
+        forwarding_model=StableForwardingPlanningModel(
+            configuration=ForwardingStabilityConfiguration()
+        ),
+        coordination_policy=coordination,
+    )
+    previous_plan = planner.get_plan()
+    previous_planning = planner._planning_differences
+    previous_forwarding = planner._forwarding_transitions
+    previous_routes = dict(planner._planned_route_next_hops)
+    previous_paths = dict(planner._planned_route_path_connection_ids)
+    previous_prefix_reusable = planner._forwarding_model_prefix_reusable
+    previous_publication_count = planner._publication_count
+    slicer.create_next_slice()
+
+    with pytest.raises(RuntimeError, match="one-shot coordination failure"):
+        planner.synchronize()
+
+    assert planner.get_plan() is previous_plan
+    assert planner._planning_differences is previous_planning
+    assert planner._forwarding_transitions is previous_forwarding
+    assert planner._planned_route_next_hops == previous_routes
+    assert planner._planned_route_path_connection_ids == previous_paths
+    assert (
+        planner._forwarding_model_prefix_reusable
+        is previous_prefix_reusable
+    )
+    assert planner._publication_count == previous_publication_count
+
+    retried = planner.synchronize()
+
+    assert (retried.start_slice_id, retried.end_slice_id) == (2, 3)
+    assert planner._publication_count == previous_publication_count + 1
+    assert coordination.calls == 3
+
+
 def test_parameter_planned_target_continues_across_publication_boundary() -> None:
     connection_slices = tuple(
         ConnectionSlice((_connection(delay),))
@@ -939,7 +1350,7 @@ def test_unsafe_short_connection_preserves_formal_cross_domain_evolution() -> No
     )
 
 
-def test_repeated_connection_suppresses_only_short_lifetime_and_resets_parameters() -> None:
+def test_reference_forwarding_retains_dependent_short_lifetime_and_resets_parameters() -> None:
     connection_slices = (
         ConnectionSlice((_connection(10),)),
         ConnectionSlice(()),
@@ -982,24 +1393,25 @@ def test_repeated_connection_suppresses_only_short_lifetime_and_resets_parameter
     assert tuple(value.operation for value in repeated_connections) == (
         ConnectionTransitionOperation.ESTABLISH,
         ConnectionTransitionOperation.WITHDRAW,
+        ConnectionTransitionOperation.ESTABLISH,
+        ConnectionTransitionOperation.WITHDRAW,
     )
     assert tuple(value.nominal_time for value in repeated_connections) == (
+        START,
+        START + timedelta(seconds=5),
         START + timedelta(seconds=15),
         START + timedelta(seconds=45),
     )
     assert repeated_connections[0].connection is not None
-    assert repeated_connections[0].connection.endpoint_a_to_b.delay_us == 100
+    assert repeated_connections[2].connection.endpoint_a_to_b.delay_us == 100
     assert {
         (transition.nominal_time, transition.delay_us)
         for transition in plan.parameter_transitions
     } == {(START + timedelta(seconds=40), 106)}
-    suppressed = tuple(
-        decision
+    assert not any(
+        decision.decision == "suppressed"
         for decision in simulator.get_planner().get_planning_decisions()
-        if decision.decision == "suppressed"
     )
-    assert len(suppressed) == 1
-    assert suppressed[0].source_difference_ids == (1, 2)
 
 
 def test_forwarding_after_reestablishment_uses_later_active_occurrence() -> None:
@@ -1202,6 +1614,76 @@ def test_coordination_policy_can_retain_same_cross_domain_candidate() -> None:
         decision.decision != "suppressed"
         for decision in planner.get_planning_decisions()
     )
+
+
+def test_observation_leaves_last_completed_stage_before_policy_failure(
+    tmp_path,
+) -> None:
+    simulator, slicer, _ = _short_connection_fixture()
+    observer = simulator._enable_execution_observation(
+        tmp_path / "planner-failure.jsonl"
+    )
+    slicer.create_all_slices()
+
+    with pytest.raises(RuntimeError, match="coordination probe failure"):
+        simulator.create_planner(
+            connection_model=MidpointConnectionPlanningModel(
+                minimum_dwell=timedelta(seconds=30)
+            ),
+            parameter_model=AccumulatedDeadbandParameterPlanningModel(
+                delay_us_threshold=1
+            ),
+            forwarding_model=DependencyAwareForwardingPlanningModel(),
+            coordination_policy=_FailCoordinationPolicy(),
+        )
+
+    planner_stages = [
+        record["stage"]
+        for record in observer.snapshot()["records"]
+        if record["component"] == "planner"
+    ]
+    assert planner_stages[-4:] == [
+        "parameter-output-validation",
+        "forwarding-planning",
+        "forwarding-output-validation",
+        "suppression-candidate-discovery",
+    ]
+    assert "coordination-policy" not in planner_stages
+    assert "coordination-output-validation" not in planner_stages
+    assert "coordination" not in planner_stages
+
+
+def test_publication_observation_is_rollup_with_exclusive_child_stages(
+    tmp_path,
+) -> None:
+    simulator, slicer, _ = _short_connection_fixture()
+    observer = simulator._enable_execution_observation(
+        tmp_path / "planner-publication.jsonl"
+    )
+    slicer.create_all_slices()
+
+    simulator.create_planner(
+        connection_model=SampleBoundaryConnectionPlanningModel(),
+        parameter_model=SampleBoundaryParameterPlanningModel(),
+        forwarding_model=DependencyAwareForwardingPlanningModel(),
+        coordination_policy=DefaultCoordinationPolicy(),
+    )
+
+    records = [
+        record
+        for record in observer.snapshot()["records"]
+        if record["component"] == "planner"
+    ]
+    roles = {record["stage"]: record["duration_role"] for record in records}
+    assert roles["publication"] == "rollup"
+    assert roles["total-synchronize"] == "rollup"
+    for stage in (
+        "publication-plan-construction",
+        "publication-state-advancement",
+        "publication-evidence-persistence",
+        "publication-state-commit",
+    ):
+        assert roles[stage] == "stage"
 
 
 def test_one_object_may_implement_multiple_planning_roles() -> None:
@@ -1482,6 +1964,10 @@ def test_failed_update_keeps_published_and_built_in_planning_state() -> None:
     previous_observed = dict(planner._observed_parameters)
     previous_planned = dict(planner._planned_parameters)
     previous_pending = dict(planner._pending_parameter_ranges)
+    previous_parameter_drift = dict(planner._parameter_drift_started_at)
+    previous_parameter_persistence = dict(
+        planner._parameter_persistence_started_at
+    )
     previous_active = dict(planner._active_establishments)
     previous_published_observed = dict(
         planner._published_observed_parameters
@@ -1489,6 +1975,12 @@ def test_failed_update_keeps_published_and_built_in_planning_state() -> None:
     previous_published_planned = dict(planner._published_planned_parameters)
     previous_published_pending = dict(
         planner._published_pending_parameter_ranges
+    )
+    previous_published_parameter_drift = dict(
+        planner._published_parameter_drift_started_at
+    )
+    previous_published_parameter_persistence = dict(
+        planner._published_parameter_persistence_started_at
     )
     previous_published_active = dict(
         planner._published_active_establishments
@@ -1501,6 +1993,18 @@ def test_failed_update_keeps_published_and_built_in_planning_state() -> None:
     previous_published_paths = dict(
         planner._published_route_path_connection_ids
     )
+    previous_formal_candidate = dict(
+        planner._formal_route_candidate_started_at
+    )
+    previous_route_divergence = dict(
+        planner._planned_route_divergence_started_at
+    )
+    previous_published_formal_candidate = dict(
+        planner._published_formal_route_candidate_started_at
+    )
+    previous_published_route_divergence = dict(
+        planner._published_planned_route_divergence_started_at
+    )
     previous_published_through = planner._published_through_slice_id
     previous_decisions = planner.get_planning_decisions()
     previous_publications = planner._publication_count
@@ -1510,7 +2014,7 @@ def test_failed_update_keeps_published_and_built_in_planning_state() -> None:
 
     with pytest.raises(
         ValueError,
-        match="forwarding state depends on withdrawn Connection",
+        match="planned forwarding hop must map",
     ):
         planner.synchronize()
 
@@ -1519,17 +2023,525 @@ def test_failed_update_keeps_published_and_built_in_planning_state() -> None:
     assert planner._observed_parameters == previous_observed
     assert planner._planned_parameters == previous_planned
     assert planner._pending_parameter_ranges == previous_pending
+    assert planner._parameter_drift_started_at == previous_parameter_drift
+    assert (
+        planner._parameter_persistence_started_at
+        == previous_parameter_persistence
+    )
     assert planner._active_establishments == previous_active
     assert planner._published_observed_parameters == previous_published_observed
     assert planner._published_planned_parameters == previous_published_planned
     assert planner._published_pending_parameter_ranges == previous_published_pending
+    assert (
+        planner._published_parameter_drift_started_at
+        == previous_published_parameter_drift
+    )
+    assert (
+        planner._published_parameter_persistence_started_at
+        == previous_published_parameter_persistence
+    )
     assert planner._published_active_establishments == previous_published_active
     assert planner._planned_route_next_hops == previous_planned_routes
     assert planner._planned_route_path_connection_ids == previous_planned_paths
     assert planner._published_route_next_hops == previous_published_routes
     assert planner._published_route_path_connection_ids == previous_published_paths
+    assert planner._formal_route_candidate_started_at == previous_formal_candidate
+    assert planner._planned_route_divergence_started_at == previous_route_divergence
+    assert (
+        planner._published_formal_route_candidate_started_at
+        == previous_published_formal_candidate
+    )
+    assert (
+        planner._published_planned_route_divergence_started_at
+        == previous_published_route_divergence
+    )
     assert planner._published_through_slice_id == previous_published_through
     assert planner.get_planning_decisions() == previous_decisions
     assert planner._publication_count == previous_publications
     assert set(planner._route_next_hops) == previous_route_slices
     assert set(planner._route_path_connection_ids) == previous_route_paths
+
+
+def test_parameter_timers_span_synchronizations_and_compiled_release() -> None:
+    connection_slices = (
+        ConnectionSlice((_connection(10),)),
+        ConnectionSlice((_connection(16),)),
+        ConnectionSlice((_connection(16),)),
+    )
+    route = RouteSlice(((ROUTE_KEY, GROUND_STATION),))
+    simulator, slicer = _simulator(connection_slices, (route, route, route))
+    slicer.create_next_slice()
+    planner = simulator.create_planner(
+        connection_model=SampleBoundaryConnectionPlanningModel(),
+        parameter_model=AccumulatedDeadbandParameterPlanningModel(
+            configuration=ParameterPlanningConfiguration(
+                delay_us=ParameterFieldConfiguration(
+                    absolute_deadband=5,
+                    persistence=timedelta(seconds=10),
+                    max_staleness=timedelta(seconds=30),
+                )
+            )
+        ),
+        forwarding_model=DependencyAwareForwardingPlanningModel(),
+        coordination_policy=DefaultCoordinationPolicy(),
+    )
+
+    slicer.create_next_slice()
+    second = planner.synchronize()
+    assert second.parameter_transitions == ()
+    assert planner._published_parameter_persistence_started_at
+    assert planner._published_parameter_drift_started_at
+    published_persistence = dict(
+        planner._published_parameter_persistence_started_at
+    )
+    published_drift = dict(planner._published_parameter_drift_started_at)
+
+    planner._release_compiled_through(second.end_slice_id)
+
+    assert (
+        planner._published_parameter_persistence_started_at
+        == published_persistence
+    )
+    assert planner._published_parameter_drift_started_at == published_drift
+
+    slicer.create_next_slice()
+    third = planner.synchronize()
+    assert tuple(value.delay_us for value in third.parameter_transitions) == (
+        16,
+        16,
+    )
+    assert planner._published_parameter_persistence_started_at == {}
+    assert planner._published_parameter_drift_started_at == {}
+
+
+def test_parameter_max_staleness_measures_continuous_drift_and_resets_at_equality() -> None:
+    connection_slices = tuple(
+        ConnectionSlice((_connection(delay),))
+        for delay in (10, 12, 10, 12, 12, 12)
+    )
+    route = RouteSlice(((ROUTE_KEY, GROUND_STATION),))
+    simulator, slicer = _simulator(
+        connection_slices, tuple(route for _ in connection_slices)
+    )
+    slicer.create_next_slice()
+    planner = simulator.create_planner(
+        connection_model=SampleBoundaryConnectionPlanningModel(),
+        parameter_model=AccumulatedDeadbandParameterPlanningModel(
+            configuration=ParameterPlanningConfiguration(
+                delay_us=ParameterFieldConfiguration(
+                    absolute_deadband=100,
+                    max_staleness=timedelta(seconds=20),
+                )
+            )
+        ),
+        forwarding_model=DependencyAwareForwardingPlanningModel(),
+        coordination_policy=DefaultCoordinationPolicy(),
+    )
+
+    for expected_slice_id in (2, 3, 4, 5):
+        slicer.create_next_slice()
+        plan = planner.synchronize()
+        assert plan.end_slice_id == expected_slice_id
+        assert plan.parameter_transitions == ()
+    assert set(planner._published_parameter_drift_started_at.values()) == {
+        START + timedelta(seconds=30)
+    }
+
+    slicer.create_next_slice()
+    forced = planner.synchronize()
+    assert tuple(value.delay_us for value in forced.parameter_transitions) == (
+        12,
+        12,
+    )
+    assert all(
+        value.nominal_time == START + timedelta(seconds=50)
+        for value in forced.parameter_transitions
+    )
+
+
+def test_parameter_persistence_resets_when_observation_crosses_planned_value() -> None:
+    connection_slices = tuple(
+        ConnectionSlice((_connection(delay),))
+        for delay in (10, 16, 4, 4, 4)
+    )
+    route = RouteSlice(((ROUTE_KEY, GROUND_STATION),))
+    simulator, slicer = _simulator(
+        connection_slices, tuple(route for _ in connection_slices)
+    )
+    slicer.create_next_slice()
+    planner = simulator.create_planner(
+        connection_model=SampleBoundaryConnectionPlanningModel(),
+        parameter_model=AccumulatedDeadbandParameterPlanningModel(
+            configuration=ParameterPlanningConfiguration(
+                delay_us=ParameterFieldConfiguration(
+                    absolute_deadband=5,
+                    persistence=timedelta(seconds=20),
+                )
+            )
+        ),
+        forwarding_model=DependencyAwareForwardingPlanningModel(),
+        coordination_policy=DefaultCoordinationPolicy(),
+    )
+
+    for expected_slice_id in (2, 3, 4):
+        slicer.create_next_slice()
+        plan = planner.synchronize()
+        assert plan.end_slice_id == expected_slice_id
+        assert plan.parameter_transitions == ()
+    assert set(
+        planner._published_parameter_persistence_started_at.values()
+    ) == {START + timedelta(seconds=20)}
+    assert set(planner._published_parameter_drift_started_at.values()) == {
+        START + timedelta(seconds=10)
+    }
+
+    slicer.create_next_slice()
+    emitted = planner.synchronize()
+    assert tuple(value.delay_us for value in emitted.parameter_transitions) == (
+        4,
+        4,
+    )
+
+
+def test_forwarding_hold_spans_synchronizations_and_compiled_release() -> None:
+    third_isl_id = ConnectionId(
+        ConnectionKind.INTER_SATELLITE, SATELLITE, SATELLITE_3
+    )
+    third_access_id = ConnectionId(
+        ConnectionKind.GROUND_STATION_ACCESS,
+        SATELLITE_3,
+        GROUND_STATION,
+    )
+    connections = ConnectionSlice(
+        (
+            _connection_with_id(ISL_ID),
+            _connection_with_id(SECOND_ACCESS_ID),
+            _connection_with_id(third_isl_id),
+            _connection_with_id(third_access_id),
+        )
+    )
+    second_route = RouteKey(SATELLITE_2, TARGET)
+    third_route = RouteKey(SATELLITE_3, TARGET)
+    first_routes = RouteSlice(
+        (
+            (ROUTE_KEY, SATELLITE_2),
+            (second_route, GROUND_STATION),
+            (third_route, GROUND_STATION),
+        )
+    )
+    later_routes = RouteSlice(
+        (
+            (ROUTE_KEY, SATELLITE_3),
+            (second_route, GROUND_STATION),
+            (third_route, GROUND_STATION),
+        )
+    )
+    simulator, slicer = _simulator(
+        (connections, connections, connections),
+        (first_routes, later_routes, later_routes),
+        extra_satellites=(SATELLITE_3,),
+    )
+    slicer.create_next_slice()
+    planner = simulator.create_planner(
+        connection_model=SampleBoundaryConnectionPlanningModel(),
+        parameter_model=SampleBoundaryParameterPlanningModel(),
+        forwarding_model=StableForwardingPlanningModel(
+            configuration=ForwardingStabilityConfiguration(
+                minimum_hop_gain=0,
+                persistence=timedelta(seconds=10),
+            )
+        ),
+        coordination_policy=DefaultCoordinationPolicy(),
+    )
+
+    slicer.create_next_slice()
+    held = planner.synchronize()
+    assert all(
+        value.route_key != ROUTE_KEY for value in held.forwarding_transitions
+    )
+    assert planner._published_route_next_hops[ROUTE_KEY] == SATELLITE_2
+    assert planner._published_formal_route_candidate_started_at[ROUTE_KEY] == (
+        START + timedelta(seconds=10)
+    )
+    published_candidate = dict(
+        planner._published_formal_route_candidate_started_at
+    )
+    published_routes = dict(planner._published_route_next_hops)
+
+    planner._release_compiled_through(held.end_slice_id)
+
+    assert (
+        planner._published_formal_route_candidate_started_at
+        == published_candidate
+    )
+    assert planner._published_route_next_hops == published_routes
+
+    slicer.create_next_slice()
+    followed = planner.synchronize()
+    changed = tuple(
+        value
+        for value in followed.forwarding_transitions
+        if value.route_key == ROUTE_KEY
+    )
+    assert len(changed) == 1
+    assert changed[0].next_hop == SATELLITE_3
+    assert changed[0].nominal_time == START + timedelta(seconds=20)
+    assert planner._published_route_next_hops[ROUTE_KEY] == SATELLITE_3
+    assert planner._published_formal_route_candidate_started_at == {}
+
+
+def test_stable_forwarding_invalid_old_path_forces_follow_before_withdrawal() -> None:
+    third_isl_id = ConnectionId(
+        ConnectionKind.INTER_SATELLITE, SATELLITE, SATELLITE_3
+    )
+    third_access_id = ConnectionId(
+        ConnectionKind.GROUND_STATION_ACCESS,
+        SATELLITE_3,
+        GROUND_STATION,
+    )
+    second_route = RouteKey(SATELLITE_2, TARGET)
+    third_route = RouteKey(SATELLITE_3, TARGET)
+    first_connections = ConnectionSlice(
+        (
+            _connection_with_id(ISL_ID),
+            _connection_with_id(SECOND_ACCESS_ID),
+            _connection_with_id(third_isl_id),
+            _connection_with_id(third_access_id),
+        )
+    )
+    second_connections = ConnectionSlice(
+        (
+            _connection_with_id(SECOND_ACCESS_ID),
+            _connection_with_id(third_isl_id),
+            _connection_with_id(third_access_id),
+        )
+    )
+    first_routes = RouteSlice(
+        (
+            (ROUTE_KEY, SATELLITE_2),
+            (second_route, GROUND_STATION),
+            (third_route, GROUND_STATION),
+        )
+    )
+    second_routes = RouteSlice(
+        (
+            (ROUTE_KEY, SATELLITE_3),
+            (second_route, GROUND_STATION),
+            (third_route, GROUND_STATION),
+        )
+    )
+    simulator, slicer = _simulator(
+        (first_connections, second_connections),
+        (first_routes, second_routes),
+        extra_satellites=(SATELLITE_3,),
+    )
+    slicer.create_next_slice()
+    planner = simulator.create_planner(
+        connection_model=MidpointConnectionPlanningModel(),
+        parameter_model=SampleBoundaryParameterPlanningModel(),
+        forwarding_model=StableForwardingPlanningModel(
+            configuration=ForwardingStabilityConfiguration(
+                minimum_hop_gain=100,
+                persistence=timedelta(hours=1),
+            )
+        ),
+        coordination_policy=DefaultCoordinationPolicy(),
+    )
+
+    slicer.create_next_slice()
+    plan = planner.synchronize()
+    changed = tuple(
+        value
+        for value in plan.forwarding_transitions
+        if value.route_key == ROUTE_KEY
+    )
+
+    assert len(changed) == 1
+    assert changed[0].next_hop == SATELLITE_3
+    assert changed[0].nominal_time == START + timedelta(seconds=5)
+
+
+def test_coordination_omits_unused_episode_and_its_parameter_atomically() -> None:
+    third_isl_id = ConnectionId(
+        ConnectionKind.INTER_SATELLITE, SATELLITE, SATELLITE_3
+    )
+    third_access_id = ConnectionId(
+        ConnectionKind.GROUND_STATION_ACCESS,
+        SATELLITE_3,
+        GROUND_STATION,
+    )
+    persistent = (
+        _connection_with_id(ISL_ID),
+        _connection_with_id(SECOND_ACCESS_ID),
+        _connection_with_id(third_access_id),
+    )
+    episode_start = _connection_with_id(third_isl_id, 10)
+    episode_changed = _connection_with_id(third_isl_id, 25)
+    connection_slices = (
+        ConnectionSlice(persistent),
+        ConnectionSlice((*persistent, episode_start)),
+        ConnectionSlice((*persistent, episode_changed)),
+        ConnectionSlice(persistent),
+    )
+    second_route = RouteKey(SATELLITE_2, TARGET)
+    third_route = RouteKey(SATELLITE_3, TARGET)
+    held_routes = RouteSlice(
+        (
+            (ROUTE_KEY, SATELLITE_2),
+            (second_route, GROUND_STATION),
+            (third_route, GROUND_STATION),
+        )
+    )
+    transient_routes = RouteSlice(
+        (
+            (ROUTE_KEY, SATELLITE_3),
+            (second_route, GROUND_STATION),
+            (third_route, GROUND_STATION),
+        )
+    )
+    simulator, slicer = _simulator(
+        connection_slices,
+        (held_routes, transient_routes, transient_routes, held_routes),
+        extra_satellites=(SATELLITE_3,),
+    )
+    slicer.create_all_slices()
+    planner = simulator.create_planner(
+        connection_model=MidpointConnectionPlanningModel(
+            episode_configuration=ConnectionEpisodeConfiguration(
+                {
+                    ConnectionKind.INTER_SATELLITE: timedelta(seconds=30)
+                }
+            )
+        ),
+        parameter_model=SampleBoundaryParameterPlanningModel(),
+        forwarding_model=StableForwardingPlanningModel(
+            configuration=ForwardingStabilityConfiguration(
+                minimum_hop_gain=1,
+                persistence=timedelta(0),
+            )
+        ),
+        coordination_policy=DefaultCoordinationPolicy(),
+    )
+    plan = planner.get_plan()
+
+    assert all(
+        value.connection_id != third_isl_id
+        for value in plan.connection_transitions
+    )
+    assert all(
+        value.connection_id != third_isl_id
+        for value in plan.parameter_transitions
+    )
+    decisions = planner.get_planning_decisions()
+    assert any(
+        value.decision == "suppressed"
+        and "atomically removed 2 episode-only Parameter transitions"
+        in value.reason
+        for value in decisions
+    )
+
+
+def test_right_censored_episode_is_retained_then_omitted_before_publication(
+    monkeypatch,
+) -> None:
+    validation_regions = []
+    original_validation = planner_module._validate_plan_region
+
+    def record_validation(differences, *args, **kwargs):
+        validation_regions.append(
+            tuple(difference.current_slice_id for difference in differences)
+        )
+        return original_validation(differences, *args, **kwargs)
+
+    monkeypatch.setattr(
+        planner_module, "_validate_plan_region", record_validation
+    )
+    third_isl_id = ConnectionId(
+        ConnectionKind.INTER_SATELLITE, SATELLITE, SATELLITE_3
+    )
+    third_access_id = ConnectionId(
+        ConnectionKind.GROUND_STATION_ACCESS,
+        SATELLITE_3,
+        GROUND_STATION,
+    )
+    persistent = (
+        _connection_with_id(ISL_ID),
+        _connection_with_id(SECOND_ACCESS_ID),
+        _connection_with_id(third_access_id),
+    )
+    connection_slices = (
+        ConnectionSlice(persistent),
+        ConnectionSlice(
+            (*persistent, _connection_with_id(third_isl_id, 10))
+        ),
+        ConnectionSlice(
+            (*persistent, _connection_with_id(third_isl_id, 25))
+        ),
+        ConnectionSlice(persistent),
+    )
+    second_route = RouteKey(SATELLITE_2, TARGET)
+    third_route = RouteKey(SATELLITE_3, TARGET)
+    held_routes = RouteSlice(
+        (
+            (ROUTE_KEY, SATELLITE_2),
+            (second_route, GROUND_STATION),
+            (third_route, GROUND_STATION),
+        )
+    )
+    transient_routes = RouteSlice(
+        (
+            (ROUTE_KEY, SATELLITE_3),
+            (second_route, GROUND_STATION),
+            (third_route, GROUND_STATION),
+        )
+    )
+    simulator, slicer = _simulator(
+        connection_slices,
+        (held_routes, transient_routes, transient_routes, held_routes),
+        extra_satellites=(SATELLITE_3,),
+    )
+    slicer.create_slices(2)
+    planner = simulator.create_planner(
+        planning_window_policy=TimeHorizonPlanningWindowPolicy(
+            planning_lookahead=timedelta(seconds=30),
+            publication_horizon=timedelta(seconds=5),
+        ),
+        connection_model=MidpointConnectionPlanningModel(
+            episode_configuration=ConnectionEpisodeConfiguration(
+                {
+                    ConnectionKind.INTER_SATELLITE: timedelta(seconds=30)
+                }
+            )
+        ),
+        parameter_model=SampleBoundaryParameterPlanningModel(),
+        forwarding_model=StableForwardingPlanningModel(
+            configuration=ForwardingStabilityConfiguration(
+                minimum_hop_gain=1
+            )
+        ),
+        coordination_policy=DefaultCoordinationPolicy(),
+    )
+
+    assert planner.get_plan().end_slice_id == 1
+    assert any(
+        value.connection_id == third_isl_id
+        for value in planner._connection_transitions
+    )
+    assert not any(
+        value.decision == "suppressed"
+        for value in planner.get_planning_decisions()
+    )
+
+    slicer.create_slices(2)
+    second = planner.synchronize()
+
+    assert (second.start_slice_id, second.end_slice_id) == (1, 2)
+    assert all(
+        value.connection_id != third_isl_id
+        for value in second.connection_transitions
+    )
+    assert any(
+        value.decision == "suppressed"
+        for value in planner.get_planning_decisions()
+    )
+    assert validation_regions == [(1, 2), (2, 3, 4)]

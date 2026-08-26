@@ -4,6 +4,7 @@ import ast
 from pathlib import Path
 
 import skyseed_v2
+from tools._html import write_aggregate_index
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -85,6 +86,7 @@ def test_formal_tool_renderers_share_one_small_bilingual_surface() -> None:
         "topology",
         "zone",
         "slice",
+        "observation",
         "planner",
         "bpf_compiler",
         "traffic",
@@ -100,6 +102,36 @@ def test_formal_tool_renderers_share_one_small_bilingual_surface() -> None:
     assert "skyseedSetLanguage" in shared
     assert "fetch(" not in shared
     assert "WebSocket" not in shared
+
+
+def test_aggregate_index_links_every_completed_qualification_tool(
+    tmp_path: Path,
+) -> None:
+    results = {
+        name: {"status": "PASS", "message": "complete"}
+        for name in (
+            "topology",
+            "zone",
+            "slice",
+            "observation",
+            "planner",
+            "compiler",
+        )
+    }
+
+    write_aggregate_index(tmp_path, results, {"satellites": 1})
+
+    page = (tmp_path / "index.html").read_text(encoding="utf-8")
+    for path in (
+        "topology/index.html",
+        "zone/index.html",
+        "slice/index.html",
+        "observation/index.html",
+        "planner/index.html",
+        "compiler/index.html",
+    ):
+        assert f'href="{path}"' in page
+    assert "Read from formal structure and sampled Slice evidence" in page
 
 
 def test_browser_smoke_remains_outside_tool_responsibilities() -> None:
@@ -319,6 +351,10 @@ def test_tools_do_not_read_domain_private_members() -> None:
                 isinstance(node, ast.Attribute)
                 and node.attr.startswith("_")
                 and not node.attr.startswith("__")
+                and not (
+                    isinstance(node.value, ast.Name)
+                    and node.value.id in {"self", "cls"}
+                )
             ):
                 findings.append(
                     f"{path.relative_to(PROJECT_ROOT)}:{node.lineno}:"

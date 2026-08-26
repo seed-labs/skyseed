@@ -7,6 +7,11 @@ import pytest
 
 from skyseed_v2.backend import bpf
 from skyseed_v2.backend.bpf import BpfCompiledRealization, compile_bpf
+from skyseed_v2.backend.bpf.compiler import (
+    _IntentReference,
+    _OrderingConstraint,
+    _constraint_key,
+)
 from skyseed_v2.configuration.simulator import (
     LatitudeLongitudeRectangleDefinition,
     ZoneDefinition,
@@ -243,7 +248,7 @@ def test_bootstrap_and_consecutive_baseline_fold_all_domains(
     compiled_chain,
 ) -> None:
     slicer, plans, results = compiled_chain
-    first, suppressed_add, suppressed_remove, parameter, withdraw = results
+    first, materialized_add, materialized_remove, parameter, withdraw = results
 
     assert (first.start_slice_id, first.end_slice_id) == (0, 1)
     assert first.resource_realizations[0].operation is (
@@ -262,16 +267,25 @@ def test_bootstrap_and_consecutive_baseline_fold_all_domains(
     )
     assert first.forwarding_realizations[0].current.direction is expected_direction
 
-    assert (suppressed_add.start_slice_id, suppressed_add.end_slice_id) == (
+    assert (materialized_add.start_slice_id, materialized_add.end_slice_id) == (
         1,
         2,
     )
-    assert suppressed_add.resource_realizations == ()
-    assert suppressed_add.forwarding_realizations == ()
-    assert len(suppressed_add.intended_resources) == 1
+    assert materialized_add.resource_realizations[0].operation is (
+        ConnectionTransitionOperation.ESTABLISH
+    )
+    assert materialized_add.forwarding_realizations[0].operation is (
+        DifferenceOperation.ADDED
+    )
+    assert len(materialized_add.intended_resources) == 2
     assert len(slicer.get_slice(2).connection_slice.connections) == 2
-    assert suppressed_remove.resource_realizations == ()
-    assert len(suppressed_remove.intended_resources) == 1
+    assert materialized_remove.resource_realizations[0].operation is (
+        ConnectionTransitionOperation.WITHDRAW
+    )
+    assert materialized_remove.forwarding_realizations[0].operation is (
+        DifferenceOperation.REMOVED
+    )
+    assert len(materialized_remove.intended_resources) == 1
 
     sparse = parameter.parameter_realizations
     assert len(sparse) == 2
@@ -336,6 +350,16 @@ def test_invalid_lineage_and_plan_contradiction_fail_closed(compiled_chain) -> N
     )
     with pytest.raises(ValueError, match="contradicts Slice facts"):
         compile_bpf(invalid_plan, slicer=slicer)
+
+    missing_resource = Plan(
+        start_slice_id=plans[0].start_slice_id,
+        start_timestamp=plans[0].start_timestamp,
+        end_slice_id=plans[0].end_slice_id,
+        end_timestamp=plans[0].end_timestamp,
+        forwarding_transitions=plans[0].forwarding_transitions,
+    )
+    with pytest.raises(ValueError, match="inactive planned Connection"):
+        compile_bpf(missing_resource, slicer=slicer)
 
 
 def test_same_next_hop_changed_is_lowered_with_formal_precedence(
@@ -412,7 +436,7 @@ def test_same_next_hop_changed_is_lowered_with_formal_precedence(
     assert plan_constraints[0].successor.index == 1
 
 
-def test_zone_edge_follows_planned_state_across_suppressed_transient() -> None:
+def test_zone_terminal_change_materializes_required_transient_state() -> None:
     access_2_id = ConnectionId(
         ConnectionKind.GROUND_STATION_ACCESS,
         SATELLITE_2,
@@ -537,21 +561,31 @@ def test_zone_edge_follows_planned_state_across_suppressed_transient() -> None:
         ]
         for slice_id in (1, 2, 3)
     ] == [SATELLITE, SATELLITE_2, SATELLITE]
-    assert all(
-        value.connection_id != access_2_id
+    assert tuple(
+        value.operation
         for value in plan.connection_transitions
+        if value.connection_id == access_2_id
+    ) == (
+        ConnectionTransitionOperation.ESTABLISH,
+        ConnectionTransitionOperation.WITHDRAW,
     )
     zone_transitions = [
         value
         for value in plan.forwarding_transitions
         if value.route_key == zone_route_key
     ]
-    assert len(zone_transitions) == 1
-    assert zone_transitions[0].operation is DifferenceOperation.ADDED
-    assert zone_transitions[0].next_hop == SATELLITE
-    assert any(
+    assert tuple(value.operation for value in zone_transitions) == (
+        DifferenceOperation.ADDED,
+        DifferenceOperation.CHANGED,
+        DifferenceOperation.CHANGED,
+    )
+    assert tuple(value.next_hop for value in zone_transitions) == (
+        SATELLITE,
+        SATELLITE_2,
+        SATELLITE,
+    )
+    assert not any(
         value.decision == "suppressed"
-        and repr(access_2_id) in value.reason
         for value in planner.get_planning_decisions()
     )
 
@@ -559,7 +593,7 @@ def test_zone_edge_follows_planned_state_across_suppressed_transient() -> None:
 
     assert [
         value.service_satellite_id for value in result.zone_edge_realizations
-    ] == [SATELLITE]
+    ] == [SATELLITE, SATELLITE_2, SATELLITE]
     assert result.intended_zone_edges[0].service_satellite_id == SATELLITE
     assert result.intended_forwarding[0].route_key == zone_route_key
     assert result.intended_forwarding[0].next_hop == SATELLITE
@@ -580,3 +614,181 @@ def test_backend_technical_constraints_cover_ready_and_retire_edges(
         "qdisc-ready-before-forwarding",
         "stop-use-before-resource-retirement",
     } <= reasons
+
+
+def test_indexed_constraint_compilation_matches_ordered_nested_oracle(
+    compiled_chain,
+) -> None:
+    slicer, plans, results = compiled_chain
+    previous = None
+    for plan, result in zip(plans, results, strict=True):
+        assert result.constraints == _constraint_oracle(
+            slicer,
+            plan,
+            result,
+            previous,
+        )
+        previous = result
+
+
+def _constraint_oracle(slicer, plan, result, previous):
+    resources = result.resource_realizations
+    qdiscs = result.parameter_realizations
+    forwarding = result.forwarding_realizations
+    zone_edges = result.zone_edge_realizations
+    baseline_forwarding = (
+        {}
+        if previous is None
+        else {value.route_key: value for value in previous.intended_forwarding}
+    )
+    constraints = set()
+    forwarding_positions = {
+        id(value): index
+        for index, value in enumerate(plan.forwarding_transitions)
+    }
+    for precedence in plan.forwarding_precedences:
+        constraints.add(
+            _OrderingConstraint(
+                _IntentReference(
+                    "forwarding",
+                    forwarding_positions[id(precedence.predecessor)],
+                ),
+                _IntentReference(
+                    "forwarding",
+                    forwarding_positions[id(precedence.successor)],
+                ),
+                "plan-forwarding-precedence",
+            )
+        )
+    for resource_index, resource in enumerate(resources):
+        if resource.operation is not ConnectionTransitionOperation.ESTABLISH:
+            continue
+        for qdisc_index, qdisc in enumerate(qdiscs):
+            if (
+                qdisc.connection_id == resource.connection_id
+                and qdisc.nominal_time == resource.nominal_time
+                and qdisc.reason == "connection-establish"
+            ):
+                constraints.add(
+                    _OrderingConstraint(
+                        _IntentReference("resource", resource_index),
+                        _IntentReference("parameter", qdisc_index),
+                        "resource-ready-before-qdisc",
+                    )
+                )
+    for forwarding_index, intent in enumerate(forwarding):
+        if intent.current is None:
+            continue
+        establishments = [
+            (index, value)
+            for index, value in enumerate(resources)
+            if value.connection_id == intent.current.connection_id
+            and value.operation is ConnectionTransitionOperation.ESTABLISH
+            and value.nominal_time <= intent.nominal_time
+        ]
+        if establishments:
+            index, _ = max(
+                establishments,
+                key=lambda value: (value[1].nominal_time, value[0]),
+            )
+            constraints.add(
+                _OrderingConstraint(
+                    _IntentReference("resource", index),
+                    _IntentReference("forwarding", forwarding_index),
+                    "resource-ready-before-forwarding",
+                )
+            )
+        parameters = [
+            (index, value)
+            for index, value in enumerate(qdiscs)
+            if value.connection_id == intent.current.connection_id
+            and value.direction is intent.current.direction
+            and value.nominal_time <= intent.nominal_time
+        ]
+        if parameters:
+            index, _ = max(
+                parameters,
+                key=lambda value: (value[1].nominal_time, value[0]),
+            )
+            constraints.add(
+                _OrderingConstraint(
+                    _IntentReference("parameter", index),
+                    _IntentReference("forwarding", forwarding_index),
+                    "qdisc-ready-before-forwarding",
+                )
+            )
+    for resource_index, resource in enumerate(resources):
+        if resource.operation is not ConnectionTransitionOperation.WITHDRAW:
+            continue
+        projected = dict(baseline_forwarding)
+        for intent in forwarding:
+            if intent.nominal_time > resource.nominal_time:
+                break
+            if intent.current is None:
+                projected.pop(intent.route_key, None)
+            else:
+                projected[intent.route_key] = intent.current
+        assert all(
+            value.connection_id != resource.connection_id
+            for value in projected.values()
+        )
+        for forwarding_index, intent in enumerate(forwarding):
+            if (
+                intent.previous is not None
+                and intent.previous.connection_id == resource.connection_id
+                and (
+                    intent.current is None
+                    or intent.current.connection_id != resource.connection_id
+                )
+                and intent.nominal_time <= resource.nominal_time
+            ):
+                constraints.add(
+                    _OrderingConstraint(
+                        _IntentReference("forwarding", forwarding_index),
+                        _IntentReference("resource", resource_index),
+                        "stop-use-before-resource-retirement",
+                    )
+                )
+    for zone_index, zone_edge in enumerate(zone_edges):
+        for forwarding_index, intent in enumerate(forwarding):
+            target = intent.route_key.target
+            if not isinstance(target, ZoneRouteTarget):
+                continue
+            source_slice = next(
+                slicer.get_slice(slice_id)
+                for slice_id in range(
+                    plan.start_slice_id + 1,
+                    plan.end_slice_id + 1,
+                )
+                if (
+                    (
+                        slicer.get_slice(slice_id - 1).timestamp is None
+                        and intent.nominal_time
+                        == slicer.get_slice(slice_id).timestamp
+                    )
+                    or (
+                        slicer.get_slice(slice_id - 1).timestamp is not None
+                        and slicer.get_slice(slice_id - 1).timestamp
+                        < intent.nominal_time
+                        <= slicer.get_slice(slice_id).timestamp
+                    )
+                )
+            )
+            if (
+                target.zone_id != zone_edge.zone_id
+                or source_slice.timestamp != zone_edge.nominal_time
+            ):
+                continue
+            reason = (
+                "forwarding-stopped-before-zone-retirement"
+                if zone_edge.operation is DifferenceOperation.REMOVED
+                else "forwarding-ready-before-zone-activation"
+            )
+            constraints.add(
+                _OrderingConstraint(
+                    _IntentReference("forwarding", forwarding_index),
+                    _IntentReference("zone-edge", zone_index),
+                    reason,
+                )
+            )
+    return tuple(sorted(constraints, key=_constraint_key))

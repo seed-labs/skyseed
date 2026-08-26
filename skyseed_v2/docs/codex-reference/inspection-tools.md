@@ -7,8 +7,9 @@ recorded only in [`CURRENT.md`](../CURRENT.md).
 
 ## Scope
 
-Repository-local Topology, Zone, Slice / Difference, Planner, BPF Compiler,
-post-run BPF Runner, and post-run Traffic / Path Replay inspection pipelines.
+Repository-local Topology, Zone, Slice / Difference, Planner, System
+Observation, BPF Compiler, post-run BPF Runner, and post-run Traffic / Path
+Replay inspection pipelines.
 Tools are read-only consumers and are not installed `skyseed_v2` product API.
 
 ## Owners and consumers
@@ -20,8 +21,9 @@ reader → projection → display_analysis → renderer → artifact_writer
 ```
 
 The formal reader consumes the exact `Topology` or `Slicer`; the Planner
-reader additionally consumes consecutive immutable `Plan` publications and
-retained `PlanningDecision` values supplied by scenario assembly. Projection and
+reader additionally consumes consecutive immutable `Plan` publications,
+exact consumed `TopologyDifference` values, and retained `PlanningDecision`
+values supplied by scenario assembly. Projection and
 later responsibilities consume only Tool-owned detached values. A small Tool
 may colocate adjacent responsibilities when the boundary remains explicit;
 file count and filenames are not part of the contract. Examples call the Tool
@@ -42,8 +44,9 @@ Runner, invokes lifecycle methods, or performs fresh Docker/kernel reads.
 
 Traffic Replay instead reads three required already-written artifacts:
 Runner-owned traffic JSONL, the Slice / Difference manifest plus offline Slice
-chunks, and BPF Compiler inspection JSON. An example-owned planned workload is
-optional context.
+chunks, and the BPF Compiler manifest plus exact evidence chunks. An
+example-owned planned workload is optional context. Legacy monolithic Compiler
+JSON remains a reader compatibility case, not the generated canonical layout.
 Its reader validates timeline, NodeId, Zone prefix, nominal boundary, and
 generation identity; it reconstructs exact ACTIVE-generation physical network
 context only from reciprocal telemetry interface identities. Projection pairs
@@ -74,7 +77,10 @@ gaps, not claimed timeouts or packet loss.
 The Slice Tool reads retained Slice next-hop facts and adjacent Differences;
 it does not eagerly resolve every route. It writes one small manifest plus one
 offline script chunk per retained Slice so normal page load materializes only
-the selected Slice. Its renderer may preserve selected object identities,
+the selected Slice. Slice, Planner, and Compiler exact chunks use deterministic
+`gzip-base64-json` envelopes with uncompressed byte-count/SHA-256 metadata;
+their browsers decode only selected chunks and retain direct `file://`
+operation. Its renderer may preserve selected object identities,
 visualize contextual Zone service and Difference facts, and restore one
 explicitly selected path for display, but does not acquire routing authority.
 The generation facade may receive a detached scenario/model-context mapping
@@ -82,12 +88,25 @@ for compact human explanation. Display analysis combines that mapping with
 read Topology/Slice facts to produce current counts and physical summaries;
 derived envelope/separation values remain Tool-private and are labeled as
 such. No Tool-context field enters a formal Simulator value or public schema.
-Planner inspection may adapt
-the same compact read snapshot for its existing focused view and reads actual Plan transitions,
-temporal indexes, precedence edges, and retained decisions; it never
-reconstructs rejected candidates or an expected Plan. Zone inspection reads
+Planner inspection may adapt the same compact read facts for its existing
+focused view and reads actual Plan transitions, temporal indexes, precedence
+edges, and retained decisions. It uses an external bootstrap manifest plus
+hierarchical lazy catalog/data chunks, never calls `create_difference()`,
+never eagerly restores all paths, and never reconstructs rejected candidates
+or an expected Plan. Zone inspection reads
 only the formal static layout/geometry. Its browser hit testing is
 display-only navigation and is not a membership result.
+
+System Observation is a detached-evidence pipeline. A private optional
+recorder buffers component/stage/scope/duration/work/resource records while
+real execution occurs and persists them afterward. The Tool imports no domain
+execution package and performs only parse, validate, aggregate, and render.
+Bootstrap records are excluded from steady percentiles. Current component
+vocabulary covers Slicer and Planner; future Compiler/Runner emitters extend
+records rather than domain values or public Simulator APIs. Leaf stages,
+overlapping rollups, and zero-duration resource samples remain separate
+aggregation roles; no component or pipeline duration is inferred by summing
+them, and time-per-work uses positive work on leaf-stage records only.
 
 Topology and Zone rendering may embed the frozen Tool-private Natural Earth
 1:110m coastline coordinate asset for offline orientation. The asset never
@@ -102,9 +121,21 @@ Tool-owned projections. Its spatial panel uses exact retained ECEF positions
 from the formal Before/After Slice around a nominal transition; it does not
 interpolate sub-slice geometry.
 
+S4 qualification may execute the reader/projection/render/write pipeline in a
+bounded independent worker after the relevant immutable domain boundary. The
+worker persists a deterministic detached snapshot before projection and builds
+to a same-parent staging directory; checksum audit precedes atomic publication.
+Planner Tool work is side work and cannot delay Compiler domain start. The
+final join gates artifact completeness only. Domain status, Tool status, PID,
+RSS, task timing, and overlap evidence remain distinct in qualification output.
+The private gzip/pickle handoff is trusted local rebuild evidence and is not a
+public or untrusted serialization contract.
+
 ## Invariants
 
 - Tools never mutate formal values, synchronize Planner, or invoke Models;
+- the Observation Tool never executes a component and observation fields never
+  enter formal semantic values;
 - the BPF Compiler Tool never invokes the Compiler or accepts responsibility
   for producing compiled realizations;
 - the Runner Tool receives only detached summary/frozen-binding scalars/events
@@ -127,6 +158,9 @@ interpolate sub-slice geometry.
 - renderer receives final view data only;
 - writer performs filesystem output only;
 - browser smoke remains outside the pipeline.
+- detached Tool workers never record inside domain Observation rollups, and
+  scheduling or worker failure cannot rewrite an already completed domain
+  status;
 
 ## Failure semantics
 

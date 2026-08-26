@@ -52,6 +52,7 @@ def render_topology_page(data: dict[str, Any]) -> str:
   <span class="status {status}">{status}</span>
   <h2>Topology materialized</h2>
   <div class="warning">The orbit view shows static orbit planes, not satellite positions at a particular time.</div>
+  <p>Use this Tool for formal static inventory and identity. Orbit rings describe structure; time-varying Satellite positions, Connections, and Routes belong to the Slice Tool.</p>
 </section>
 <section><h2>Materialized inventory</h2><div class="grid stats">{stats}</div></section>
 <section class="card selected-detail">
@@ -158,6 +159,7 @@ canvas.addEventListener("pointerleave",()=>{{if(!pointer){{hovered=null;draw();}
             "Tool Overview": "工具总览",
             "Topology materialized": "拓扑已物化",
             "The orbit view shows static orbit planes, not satellite positions at a particular time.": "轨道视图显示静态轨道平面，不表示任一时刻的卫星位置。",
+            "Use this Tool for formal static inventory and identity. Orbit rings describe structure; time-varying Satellite positions, Connections, and Routes belong to the Slice Tool.": "本 Tool 用于检查正式静态 inventory 和 identity。轨道环描述结构；随时间变化的 Satellite 位置、Connection 和 Route 应在 Slice Tool 中查看。",
             "Materialized inventory": "物化对象数量",
             "Selected static object": "已选静态对象",
             "Click or tap an orbit ring or GroundStation point.": "点击轨道环或 GroundStation 点。",

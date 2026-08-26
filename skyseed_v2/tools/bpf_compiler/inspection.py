@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 from skyseed_v2.backend.bpf import BpfCompiledRealization
@@ -17,11 +18,14 @@ from .renderer import render_bpf_compiler_page
 def collect_bpf_compiler_data(
     plans: tuple[Plan, ...],
     realizations: tuple[BpfCompiledRealization, ...],
+    *,
+    compile_evidence: Iterable[Mapping[str, object]] = (),
 ) -> dict[str, Any]:
     """Detach and project already-produced Compiler results for inspection."""
 
     return project_bpf_compiler_data(
-        read_bpf_compiler_inspection(plans, realizations)
+        read_bpf_compiler_inspection(plans, realizations),
+        compile_evidence=compile_evidence,
     )
 
 
@@ -29,10 +33,16 @@ def write_bpf_compiler_tool(
     plans: tuple[Plan, ...],
     realizations: tuple[BpfCompiledRealization, ...],
     directory: Path,
+    *,
+    compile_evidence: Iterable[Mapping[str, object]] = (),
 ) -> dict[str, object]:
     """Write one offline view without invoking the BPF Compiler."""
 
-    data = collect_bpf_compiler_data(plans, realizations)
+    data = collect_bpf_compiler_data(
+        plans,
+        realizations,
+        compile_evidence=compile_evidence,
+    )
     return write_bpf_compiler_artifacts(
         data,
         render_bpf_compiler_page(data),

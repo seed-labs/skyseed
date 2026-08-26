@@ -785,6 +785,8 @@ def test_frontend_is_selection_driven_and_lazy_chunked() -> None:
         "slice-context",
         "slice-physical-context",
         "model-context",
+        "play-slices",
+        "playback-speed",
     ):
         assert f'id="{identifier}"' in source
     assert "window.__SKYSEED_SLICE_CHUNKS__" in source
@@ -822,6 +824,11 @@ def test_frontend_is_selection_driven_and_lazy_chunked() -> None:
     assert "function switchVisualSelection(kind)" in source
     assert "function clearActiveSelection()" in source
     assert "function clearInspection()" in source
+    assert "function playSlices()" in source
+    assert "function pausePlayback()" in source
+    assert "function schedulePlayback(" in source
+    assert "document.body.dataset.slicePlaybackState" in source
+    assert "当前模型 / 策略 · 为什么这个 Slice 呈现为当前状态" in source
     assert 'applyGatewayRouteSelection(true)' not in source
     assert "if(same){clearActiveSelection();return;}" in source
     assert 'event.key==="Escape"' in source
@@ -904,6 +911,8 @@ def test_bundle_is_complete_self_contained_and_checksum_valid(
         'id="slice-range"',
         'id="previous-slice"',
         'id="next-slice"',
+        'id="play-slices"',
+        'id="playback-speed"',
         'id="clear-inspection"',
         'id="node-select"',
         'id="connection-select"',
@@ -924,3 +933,5 @@ def test_bundle_is_complete_self_contained_and_checksum_valid(
             'id="slice-globe"',
     ):
         assert required_id in html
+    assert "当前模型 / 策略 · 为什么这个 Slice 呈现为当前状态" in html
+    assert "场景与模型参数在产物生成时投影" in html

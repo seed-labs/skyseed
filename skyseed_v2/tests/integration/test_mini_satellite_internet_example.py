@@ -481,6 +481,7 @@ def test_richer_main_builds_once_and_emits_static_and_slice_outputs(
     zone_output = output / "inspection/zone"
     slice_output = output / "inspection/slice"
     planner_output = output / "inspection/planner"
+    observation_output = output / "inspection/observation"
     bpf_compiler_output = output / "inspection/bpf-compiler"
     compose_file = runtime_output / "docker-compose.yml"
     compose = safe_load(compose_file.read_text(encoding="utf-8"))
@@ -587,6 +588,7 @@ def test_richer_main_builds_once_and_emits_static_and_slice_outputs(
         "zone",
         "slice",
         "planner",
+        "observation",
         "bpf-compiler",
     }
     assert (output / "inputs/traffic-workload.json").is_file()
@@ -610,7 +612,7 @@ def test_richer_main_builds_once_and_emits_static_and_slice_outputs(
         assert (slice_output / name).is_file()
     for name in (
         "index.html",
-        "planner-inspection.json",
+        "planner-manifest.json",
         "summary.txt",
         "inventory.json",
         "checksums.sha256",
@@ -618,12 +620,24 @@ def test_richer_main_builds_once_and_emits_static_and_slice_outputs(
         assert (planner_output / name).is_file()
     for name in (
         "index.html",
-        "bpf-compiler-inspection.json",
+        "execution-observations.jsonl",
+        "observation-records.js",
+        "observation-summary.json",
+        "summary.txt",
+        "inventory.json",
+        "checksums.sha256",
+    ):
+        assert (observation_output / name).is_file()
+    for name in (
+        "index.html",
+        "manifest.json",
+        "manifest.js",
         "summary.txt",
         "inventory.json",
         "checksums.sha256",
     ):
         assert (bpf_compiler_output / name).is_file()
+    assert any((bpf_compiler_output / "chunks").glob("*.js"))
 
     topology_payload = json.loads(
         (topology_output / "topology.json").read_text(encoding="utf-8")
@@ -713,6 +727,10 @@ def test_richer_main_builds_once_and_emits_static_and_slice_outputs(
         in output_text
     )
     assert f"Planner Tool entry: {planner_output / 'index.html'}" in output_text
+    assert (
+        f"Observation Tool entry: {observation_output / 'index.html'}"
+        in output_text
+    )
     assert (
         f"BPF Compiler Tool entry: {bpf_compiler_output / 'index.html'}"
         in output_text

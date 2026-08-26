@@ -11,6 +11,8 @@ from math import ceil
 from pathlib import Path
 from typing import Any
 
+from tools._chunk_encoding import decode_json_chunk
+
 
 _COMPILED_DOMAINS = ("resources", "parameters", "forwarding", "zone_edges")
 
@@ -162,7 +164,7 @@ def read_traffic_replay(
     dynamic_zones = _read_dynamic_zones(dynamic)
     position_samples = _read_position_samples(dynamic, node_ids)
 
-    compiler = _read_json(compiler_path, "BPF Compiler")
+    compiler = _read_compiler_inspection(compiler_path)
     compiler_evidence = _read_compiler_evidence(
         compiler,
         dynamic_origin=dynamic_origin,
@@ -757,14 +759,116 @@ def _read_slice_inspection(path: Path) -> dict[str, Any]:
             raise ValueError("Slice / Difference chunk wrapper is invalid")
         payload = source[marker_index + len(marker) : -2]
         try:
-            value = json.loads(payload)
-        except json.JSONDecodeError as error:
+            value = decode_json_chunk(json.loads(payload))
+        except (json.JSONDecodeError, ValueError) as error:
             raise ValueError("Slice / Difference chunk JSON is invalid") from error
         if not isinstance(value, dict) or value.get("slice_id") != slice_id:
             raise ValueError("Slice / Difference chunk identity is invalid")
         slices.append(value)
     dynamic["slices"] = slices
     return dynamic
+
+
+def _read_compiler_inspection(path: Path) -> dict[str, Any]:
+    """Read either the legacy monolith or lazy Compiler manifest/chunks."""
+
+    compiler = _read_json(path, "BPF Compiler")
+    if compiler.get("format_version") != 2 or "plans" not in compiler:
+        return compiler
+    plans = compiler.get("plans")
+    if not isinstance(plans, list) or not plans:
+        raise ValueError("BPF Compiler lazy manifest contains no Plans")
+    intervals = []
+    for plan_index, plan in enumerate(plans):
+        if not isinstance(plan, dict) or plan.get("plan_index") != plan_index:
+            raise ValueError("BPF Compiler lazy Plan catalog is invalid")
+        sections = plan.get("sections")
+        if not isinstance(sections, dict):
+            raise ValueError("BPF Compiler lazy Plan sections are invalid")
+        compiled = {
+            domain: _read_compiler_section(
+                path,
+                plan_index,
+                f"intents-{domain.replace('_', '-')}",
+                sections,
+            )
+            for domain in _COMPILED_DOMAINS
+        }
+        intervals.append(
+            {
+                "plan_index": plan_index,
+                "start_timestamp": plan.get("start_timestamp"),
+                "end_timestamp": plan.get("end_timestamp"),
+                "compiled": compiled,
+                "end_state": {
+                    "zone_edges": _read_compiler_section(
+                        path,
+                        plan_index,
+                        "baseline-zone-edges",
+                        sections,
+                    ),
+                    "zone_prefixes": _read_compiler_section(
+                        path,
+                        plan_index,
+                        "baseline-zone-prefixes",
+                        sections,
+                    ),
+                },
+            }
+        )
+    return {
+        "format_version": 2,
+        "tool": compiler.get("tool"),
+        "intervals": intervals,
+    }
+
+
+def _read_compiler_section(
+    manifest_path: Path,
+    plan_index: int,
+    section: str,
+    sections: dict[str, Any],
+) -> list[dict[str, Any]]:
+    catalog = sections.get(section)
+    if not isinstance(catalog, list):
+        raise ValueError(f"BPF Compiler {section} catalog is invalid")
+    values = []
+    for descriptor in catalog:
+        if not isinstance(descriptor, dict):
+            raise ValueError("BPF Compiler chunk descriptor is invalid")
+        chunk_id = descriptor.get("chunk_id")
+        relative = descriptor.get("path")
+        if not isinstance(chunk_id, str) or not isinstance(relative, str):
+            raise ValueError("BPF Compiler chunk identity is invalid")
+        chunk_path = manifest_path.parent / relative
+        try:
+            source = chunk_path.read_text(encoding="utf-8")
+        except OSError as error:
+            raise RuntimeError(
+                f"cannot read BPF Compiler chunk: {chunk_path}"
+            ) from error
+        marker = (
+            "window.__SKYSEED_BPF_COMPILER_CHUNKS__="
+            "window.__SKYSEED_BPF_COMPILER_CHUNKS__||{};"
+            "window.__SKYSEED_BPF_COMPILER_CHUNKS__"
+            f"[{json.dumps(chunk_id)}]="
+        )
+        if not source.startswith(marker) or not source.endswith(";\n"):
+            raise ValueError("BPF Compiler chunk wrapper is invalid")
+        try:
+            payload = decode_json_chunk(json.loads(source[len(marker) : -2]))
+        except (json.JSONDecodeError, ValueError) as error:
+            raise ValueError("BPF Compiler chunk JSON is invalid") from error
+        if (
+            not isinstance(payload, dict)
+            or payload.get("chunk_id") != chunk_id
+            or payload.get("plan_index") != plan_index
+            or payload.get("section") != section
+            or not isinstance(payload.get("rows"), list)
+        ):
+            raise ValueError("BPF Compiler chunk content is invalid")
+        values.extend(payload["rows"])
+    return values
 
 
 def _read_json_lines(path: Path) -> tuple[dict[str, Any], ...]:

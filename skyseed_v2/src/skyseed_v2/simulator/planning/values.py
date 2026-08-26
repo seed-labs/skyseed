@@ -294,16 +294,12 @@ class Plan:
             ForwardingTransition,
             "forwarding_transitions",
         )
-        connections = tuple(
-            sorted(connections, key=_connection_transition_key)
+        connections = _sort_if_needed(
+            connections, _connection_transition_key
         )
-        parameters = tuple(sorted(parameters, key=_parameter_transition_key))
-        forwarding = tuple(
-            value
-            for _, value in sorted(
-                enumerate(forwarding),
-                key=lambda item: (item[1].nominal_time, item[0]),
-            )
+        parameters = _sort_if_needed(parameters, _parameter_transition_key)
+        forwarding = _sort_if_needed(
+            forwarding, lambda value: value.nominal_time
         )
         precedences = _typed_tuple(
             forwarding_precedences,
@@ -313,7 +309,9 @@ class Plan:
         _validate_transition_times(
             normalized_start,
             normalized_end,
-            (*connections, *parameters, *forwarding),
+            connections,
+            parameters,
+            forwarding,
         )
         precedences = _validate_forwarding_precedences(
             forwarding, precedences
@@ -336,6 +334,98 @@ class Plan:
             MappingProxyType(temporal_index),
         )
 
+    @classmethod
+    def _from_validated(
+        cls,
+        *,
+        start_slice_id: int,
+        start_timestamp: datetime | None,
+        end_slice_id: int,
+        end_timestamp: datetime,
+        connection_transitions: tuple[ConnectionTransition, ...],
+        parameter_transitions: tuple[ParameterTransition, ...],
+        forwarding_transitions: tuple[ForwardingTransition, ...],
+        forwarding_precedences: tuple[
+            ForwardingTransitionPrecedence, ...
+        ],
+    ) -> "Plan":
+        """Build Planner-owned output after its complete trust-boundary proof.
+
+        This private path does not weaken arbitrary public ``Plan(...)``
+        construction. Planner has already validated exact transition types and
+        precedence endpoints/duplicates/cycles, and has already put precedence
+        values in canonical transition order. This path retains a lightweight
+        final coverage/time integrity check, then performs only representation
+        sorting, temporal indexing, and immutable snapshots.
+        """
+
+        _validate_coverage_id(start_slice_id, "start_slice_id")
+        _validate_coverage_id(end_slice_id, "end_slice_id")
+        if end_slice_id <= start_slice_id:
+            raise ValueError("Plan coverage must contain a Difference")
+        if start_slice_id == 0:
+            if start_timestamp is not None:
+                raise ValueError("synthetic Slice 0 timestamp must be None")
+            normalized_start = None
+        else:
+            if start_timestamp is None:
+                raise ValueError(
+                    "start real Slice timestamp must be a datetime"
+                )
+            normalized_start = normalize_utc_datetime(
+                start_timestamp, "start_timestamp"
+            )
+        normalized_end = normalize_utc_datetime(
+            end_timestamp, "end_timestamp"
+        )
+        if (
+            normalized_start is not None
+            and normalized_end <= normalized_start
+        ):
+            raise ValueError(
+                "end_timestamp must be later than start_timestamp"
+            )
+
+        connections = _sort_if_needed(
+            connection_transitions, _connection_transition_key
+        )
+        parameters = _sort_if_needed(
+            parameter_transitions, _parameter_transition_key
+        )
+        forwarding = _sort_if_needed(
+            forwarding_transitions, lambda value: value.nominal_time
+        )
+        _validate_transition_times(
+            normalized_start,
+            normalized_end,
+            connections,
+            parameters,
+            forwarding,
+        )
+        temporal_index = _build_temporal_index(
+            connections, parameters, forwarding
+        )
+
+        instance = object.__new__(cls)
+        object.__setattr__(instance, "start_slice_id", start_slice_id)
+        object.__setattr__(instance, "start_timestamp", normalized_start)
+        object.__setattr__(instance, "end_slice_id", end_slice_id)
+        object.__setattr__(instance, "end_timestamp", normalized_end)
+        object.__setattr__(instance, "connection_transitions", connections)
+        object.__setattr__(instance, "parameter_transitions", parameters)
+        object.__setattr__(instance, "forwarding_transitions", forwarding)
+        object.__setattr__(
+            instance,
+            "forwarding_precedences",
+            forwarding_precedences,
+        )
+        object.__setattr__(
+            instance,
+            "temporal_index",
+            MappingProxyType(temporal_index),
+        )
+        return instance
+
 
 def _build_temporal_index(
     connections: tuple[ConnectionTransition, ...],
@@ -345,26 +435,26 @@ def _build_temporal_index(
     datetime,
     tuple[ConnectionTransition | ParameterTransition | ForwardingTransition, ...],
 ]:
-    grouped: dict[datetime, list[tuple[str, int, object]]] = {}
-    for family_name, transitions in (
-        ("connection", connections),
-        ("forwarding", forwarding),
-        ("parameter", parameters),
+    grouped: dict[datetime, list[object]] = {}
+    for transitions in (
+        connections,
+        forwarding,
+        parameters,
     ):
-        for position, transition in enumerate(transitions):
-            grouped.setdefault(transition.nominal_time, []).append(
-                (family_name, position, transition)
-            )
+        for transition in transitions:
+            grouped.setdefault(transition.nominal_time, []).append(transition)
+    return {
+        timestamp: tuple(grouped[timestamp]) for timestamp in sorted(grouped)
+    }
 
-    result = {}
-    for timestamp in sorted(grouped):
-        result[timestamp] = tuple(
-            value
-            for _, _, value in sorted(
-                grouped[timestamp], key=lambda item: (item[0], item[1])
-            )
-        )
-    return result
+
+def _sort_if_needed(values: tuple, key) -> tuple:
+    if all(
+        key(previous) <= key(current)
+        for previous, current in zip(values, values[1:])
+    ):
+        return values
+    return tuple(sorted(values, key=key))
 
 
 def _connection_transition_key(
@@ -436,21 +526,19 @@ def _typed_tuple(
 def _validate_transition_times(
     start_timestamp: datetime | None,
     end_timestamp: datetime,
-    transitions: tuple[
-        ConnectionTransition | ParameterTransition | ForwardingTransition,
-        ...,
-    ],
+    *transition_groups: tuple,
 ) -> None:
-    for transition in transitions:
-        if transition.nominal_time > end_timestamp:
-            raise ValueError("transition falls after Plan coverage")
-        if (
-            start_timestamp is not None
-            and transition.nominal_time <= start_timestamp
-        ):
-            raise ValueError(
-                "transition falls before or on the Plan-owned start boundary"
-            )
+    for transitions in transition_groups:
+        for transition in transitions:
+            if transition.nominal_time > end_timestamp:
+                raise ValueError("transition falls after Plan coverage")
+            if (
+                start_timestamp is not None
+                and transition.nominal_time <= start_timestamp
+            ):
+                raise ValueError(
+                    "transition falls before or on the Plan-owned start boundary"
+                )
 
 
 def _validate_forwarding_precedences(
@@ -459,7 +547,6 @@ def _validate_forwarding_precedences(
 ) -> tuple[ForwardingTransitionPrecedence, ...]:
     positions = {id(value): index for index, value in enumerate(forwarding)}
     seen: set[tuple[int, int]] = set()
-    keyed = []
     for precedence in precedences:
         key = (id(precedence.predecessor), id(precedence.successor))
         if key[0] not in positions or key[1] not in positions:
@@ -469,15 +556,42 @@ def _validate_forwarding_precedences(
         if key in seen:
             raise ValueError("duplicate Forwarding transition precedence")
         seen.add(key)
-        keyed.append(
-            ((positions[key[0]], positions[key[1]]), precedence)
-        )
-    if _precedence_has_cycle(tuple(seen)):
+    if _precedence_has_cycle(seen):
         raise ValueError("Forwarding transition precedence must be acyclic")
-    return tuple(value for _, value in sorted(keyed, key=lambda item: item[0]))
+    return _order_forwarding_precedences(
+        forwarding, precedences, positions=positions
+    )
 
 
-def _precedence_has_cycle(edges: tuple[tuple[int, int], ...]) -> bool:
+def _order_forwarding_precedences(
+    forwarding: tuple[ForwardingTransition, ...],
+    precedences: tuple[ForwardingTransitionPrecedence, ...],
+    *,
+    positions: dict[int, int] | None = None,
+) -> tuple[ForwardingTransitionPrecedence, ...]:
+    if positions is None:
+        positions = {id(value): index for index, value in enumerate(forwarding)}
+    keyed = [
+        (
+            (
+                positions[id(precedence.predecessor)],
+                positions[id(precedence.successor)],
+            ),
+            precedence,
+        )
+        for precedence in precedences
+    ]
+    if all(
+        previous[0] <= current[0]
+        for previous, current in zip(keyed, keyed[1:])
+    ):
+        ordered = keyed
+    else:
+        ordered = sorted(keyed, key=lambda item: item[0])
+    return tuple(value for _, value in ordered)
+
+
+def _precedence_has_cycle(edges) -> bool:
     successors: dict[int, set[int]] = {}
     indegrees: dict[int, int] = {}
     for predecessor, successor in edges:

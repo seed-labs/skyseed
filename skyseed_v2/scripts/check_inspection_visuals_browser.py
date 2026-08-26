@@ -150,6 +150,27 @@ def _move_at(
     )
 
 
+def _aggregate(base_url: str, session_id: str, page: Path) -> dict[str, object]:
+    _navigate(base_url, session_id, page)
+    result = _execute(
+        base_url,
+        session_id,
+        """
+const chinese=document.title,prose=document.querySelector("section.card")?.textContent||"";
+document.querySelector('[data-language="en"]')?.click();
+return {chinese,english:document.title,prose};
+""",
+    )
+    if (
+        result["chinese"] != "Skyseed v2 工具总览"
+        or result["english"] != "Skyseed v2 Tool Overview"
+        or "阅读顺序从正式结构与采样 Slice evidence 开始" not in result["prose"]
+        or "所有 Tool 均分离且只读" not in result["prose"]
+    ):
+        raise AssertionError(f"Aggregate Chinese explanation regression: {result}")
+    return {"chinese_explanation": "PASS"}
+
+
 def _topology(base_url: str, session_id: str, page: Path) -> dict[str, object]:
     _navigate(base_url, session_id, page)
     initial = _execute(
@@ -164,10 +185,10 @@ let outside=0;
 for(let y=0;y<canvas.height;y+=2)for(let x=0;x<canvas.width;x+=2){
   if(Math.hypot(x-canvas.width/2,y-canvas.height/2)>radius+3&&pixels[(y*canvas.width+x)*4+3])outside++;
 }
-const chinese=document.title;document.querySelector('[data-language="en"]').click();
+const chinese=document.title,chineseProse=document.querySelector("section.card")?.textContent||"";document.querySelector('[data-language="en"]').click();
 const box=canvas.getBoundingClientRect();
 const viewport=(x,y)=>({x:Math.round(box.left+x),y:Math.round(box.top+y)});
-return {chinese,english:document.title,yaw:Number(canvas.dataset.cameraYaw),pitch:Number(canvas.dataset.cameraPitch),orbitSegments:Number(canvas.dataset.orbitSegments),gridSegments:Number(canvas.dataset.gridSegments),coastlineSegments:Number(canvas.dataset.coastlineSegments),outside,dpr:Number(canvas.dataset.devicePixelRatio),logicalWidth:Number(canvas.dataset.logicalWidth),logicalHeight:Number(canvas.dataset.logicalHeight),backingWidth:canvas.width,backingHeight:canvas.height,earthReferenceRadiusM:Number(canvas.dataset.earthReferenceRadiusM),orbitAltitudeKm:Number(canvas.dataset.firstOrbitAltitudeKm),orbitDisplayRadius:Number(canvas.dataset.firstOrbitDisplayRadius),expectedOrbitDisplayRadius:1+Number(canvas.dataset.firstOrbitAltitudeKm)*1000/Number(canvas.dataset.earthReferenceRadiusM),station:viewport(Number(canvas.dataset.firstGroundStationX),Number(canvas.dataset.firstGroundStationY))};
+return {chinese,chineseProse,english:document.title,yaw:Number(canvas.dataset.cameraYaw),pitch:Number(canvas.dataset.cameraPitch),orbitSegments:Number(canvas.dataset.orbitSegments),gridSegments:Number(canvas.dataset.gridSegments),coastlineSegments:Number(canvas.dataset.coastlineSegments),outside,dpr:Number(canvas.dataset.devicePixelRatio),logicalWidth:Number(canvas.dataset.logicalWidth),logicalHeight:Number(canvas.dataset.logicalHeight),backingWidth:canvas.width,backingHeight:canvas.height,earthReferenceRadiusM:Number(canvas.dataset.earthReferenceRadiusM),orbitAltitudeKm:Number(canvas.dataset.firstOrbitAltitudeKm),orbitDisplayRadius:Number(canvas.dataset.firstOrbitDisplayRadius),expectedOrbitDisplayRadius:1+Number(canvas.dataset.firstOrbitAltitudeKm)*1000/Number(canvas.dataset.earthReferenceRadiusM),station:viewport(Number(canvas.dataset.firstGroundStationX),Number(canvas.dataset.firstGroundStationY))};
 """,
     )
     _move_at(
@@ -260,6 +281,7 @@ const detail=document.getElementById("selected-object"),canvas=document.getEleme
     if (
         initial["chinese"] != "拓扑检查"
         or initial["english"] != "Topology Inspection"
+        or "本 Tool 用于检查正式静态 inventory 和 identity" not in initial["chineseProse"]
         or initial["orbitSegments"] < 1
         or initial["gridSegments"] < 1
         or initial["coastlineSegments"] < 1
@@ -330,10 +352,10 @@ def _zone(base_url: str, session_id: str, page: Path) -> dict[str, object]:
         session_id,
         """
 const canvas=document.getElementById("zone-globe"),map=document.getElementById("zone-map");
-const chinese=document.title;document.querySelector('[data-language="en"]').click();
+const chinese=document.title,chineseProse=document.querySelector("section.card")?.textContent||"";document.querySelector('[data-language="en"]').click();
 const area=map.querySelector(".zone-area");area.scrollIntoView({block:"center"});
 const areaBox=area.getBoundingClientRect();
-return {chinese,english:document.title,mapBoundaries:map.querySelectorAll(".zone-boundary").length,mapAreas:map.querySelectorAll(".zone-area").length,boundarySegments:Number(canvas.dataset.boundarySegments),coastlineSegments:Number(canvas.dataset.coastlineSegments),yaw:Number(canvas.dataset.cameraYaw),pitch:Number(canvas.dataset.cameraPitch),dpr:Number(canvas.dataset.devicePixelRatio),logicalWidth:Number(canvas.dataset.logicalWidth),logicalHeight:Number(canvas.dataset.logicalHeight),backingWidth:canvas.width,backingHeight:canvas.height,mapTarget:{x:Math.round(areaBox.left+areaBox.width/2),y:Math.round(areaBox.top+areaBox.height/2)}};
+return {chinese,chineseProse,english:document.title,mapBoundaries:map.querySelectorAll(".zone-boundary").length,mapAreas:map.querySelectorAll(".zone-area").length,boundarySegments:Number(canvas.dataset.boundarySegments),coastlineSegments:Number(canvas.dataset.coastlineSegments),yaw:Number(canvas.dataset.cameraYaw),pitch:Number(canvas.dataset.cameraPitch),dpr:Number(canvas.dataset.devicePixelRatio),logicalWidth:Number(canvas.dataset.logicalWidth),logicalHeight:Number(canvas.dataset.logicalHeight),backingWidth:canvas.width,backingHeight:canvas.height,mapTarget:{x:Math.round(areaBox.left+areaBox.width/2),y:Math.round(areaBox.top+areaBox.height/2)}};
 """,
     )
     _click_at(
@@ -418,6 +440,7 @@ const canvas=document.getElementById("zone-globe"),map=document.getElementById("
     if (
         initial["chinese"] != "Zone 检查"
         or initial["english"] != "Zone Inspection"
+        or "Zone 是正式的地理 / 服务 identity" not in initial["chineseProse"]
         or initial["boundarySegments"] < 1
         or initial["mapBoundaries"] < 1
         or initial["mapAreas"] < 1
@@ -471,7 +494,7 @@ def _traffic(base_url: str, session_id: str, page: Path) -> dict[str, object]:
         session_id,
         """
 const canvas=document.getElementById("globe");
-const chinese=document.title;document.querySelector('[data-language="en"]').click();
+const chinese=document.title,chineseProse=document.querySelector("section.card")?.textContent||"";document.querySelector('[data-language="en"]').click();
 return {chinese,english:document.title};
 """,
     )
@@ -517,43 +540,155 @@ def _planner(base_url: str, session_id: str, page: Path) -> dict[str, object]:
         base_url,
         session_id,
         """
-const chinese=document.title;document.querySelector('[data-language="en"]').click();
+return (async()=>{
+const waitFor=async(predicate,label)=>{for(let attempt=0;attempt<100;attempt++){const value=predicate();if(value)return value;await new Promise(resolve=>setTimeout(resolve,100));}throw new Error(`Timed out waiting for ${label}`);};
+const chinese=document.title,chineseProse=document.querySelector("section.card")?.textContent||"";document.querySelector('[data-language="en"]').click();
 const parameter=document.getElementById("parameter-overview").textContent;
+document.querySelector('[data-view="overview"]').click();
+const playback=document.getElementById("playback-scrubber"),speed=document.getElementById("playback-speed"),globe=document.getElementById("planner-globe");
+const startPlayback=Number(playback.value),navigationEntries=performance.getEntriesByType("navigation").length,locationBefore=location.href,cameraBefore=[globe.dataset.cameraYaw,globe.dataset.cameraPitch];
+speed.value="4";window.scrollTo(0,document.getElementById("spatial-context").offsetTop+120);await new Promise(resolve=>setTimeout(resolve,50));const scrollBefore=window.scrollY;
+document.getElementById("playback-toggle").click();
+await waitFor(()=>Number(playback.value)>=Math.min(Number(playback.max),startPlayback+2),"Planner playback progression");
+document.getElementById("playback-toggle").click();await new Promise(resolve=>setTimeout(resolve,100));
+const playbackEvidence={start:startPlayback,end:Number(playback.value),maximum:Number(playback.max),scrollBefore,scrollAfter:window.scrollY,activeView:document.querySelector(".tab.active")?.dataset.view,state:document.body.dataset.plannerPlayback,navigationEntriesBefore:navigationEntries,navigationEntriesAfter:performance.getEntriesByType("navigation").length,locationStable:location.href===locationBefore,cameraBefore,cameraAfter:[globe.dataset.cameraYaw,globe.dataset.cameraPitch]};
 document.querySelector('[data-view="forwarding"]').click();
 const route=document.getElementById("route-select");
-const canonical=[...route.options].find(value=>value.textContent.includes("O1-S1")&&value.textContent.includes("GS-Marsala"));
+await waitFor(()=>route.options.length,"Forwarding catalog");
+const scenario=window.SKYSEED_PLANNER_MANIFEST.configuration.scenario_identity;
+const canonical=[...route.options].find(value=>value.textContent.includes("O1-S1")&&value.textContent.includes("GS-Marsala"))||route.options[0];
 route.value=canonical.value;route.dispatchEvent(new Event("change",{bubbles:true}));
-const event=document.getElementById("route-event"),first=event.options[0].value;
+const event=await waitFor(()=>document.getElementById("route-event"),"route events"),first=event.options[0].value;
 event.value=first;event.dispatchEvent(new Event("change",{bubbles:true}));
+await waitFor(()=>document.querySelector("[data-selected-precedence]"),"first precedence detail");
 const firstContext=document.getElementById("route-precedence").textContent;
 const firstSelected=document.querySelector("[data-selected-precedence]").dataset.selectedPrecedence;
 const remove=[...event.options].find(value=>value.textContent.includes("REMOVED"));
-event.value=remove.value;event.dispatchEvent(new Event("change",{bubbles:true}));
+if(remove){event.value=remove.value;event.dispatchEvent(new Event("change",{bubbles:true}));await waitFor(()=>document.querySelector("[data-selected-precedence]")?.dataset.selectedPrecedence===remove.value,"removed precedence detail");}
 const removeContext=document.getElementById("route-precedence").textContent;
 const removeSelected=document.querySelector("[data-selected-precedence]").dataset.selectedPrecedence;
 const zoneRoute=[...route.options].find(value=>value.textContent.includes("Z:"));
-route.value=zoneRoute.value;route.dispatchEvent(new Event("change",{bubbles:true}));document.querySelector('[data-side="after"]').click();
+route.value=zoneRoute.value;route.dispatchEvent(new Event("change",{bubbles:true}));
+await waitFor(()=>document.getElementById("route-event"),"Zone route events");document.querySelector('[data-side="after"]').click();
+await waitFor(()=>document.getElementById("spatial-detail").textContent.includes("Current service/path-terminal satellite"),"Zone spatial detail");
 const zoneDetail=document.getElementById("spatial-detail").textContent;
 const groundRoute=[...route.options].find(value=>!value.textContent.includes("Z:"));
 route.value=groundRoute.value;route.dispatchEvent(new Event("change",{bubbles:true}));
+await waitFor(()=>document.getElementById("spatial-detail").textContent.includes("Semantic target: GroundStation"),"GroundStation spatial detail");
 const groundDetail=document.getElementById("spatial-detail").textContent;
-return {chinese,english:document.title,parameter,firstContext,removeContext,firstSelected,removeSelected,zoneDetail,groundDetail};
+return {scenario,chinese,chineseProse,english:document.title,parameter,playbackEvidence,firstContext,removeContext,firstSelected,removeSelected,hadRemove:Boolean(remove),zoneDetail,groundDetail};
+})()
 """,
     )
-    if (
+    common_failure = (
         result["chinese"] != "Planner 检查工具"
         or result["english"] != "Planner Inspection Tool"
-        or not all(value in result["parameter"] for value in ("2530", "1590", "940", "Publication batching", "Parameter deadband"))
-        or result["firstSelected"] == result["removeSelected"]
-        or result["firstContext"] == result["removeContext"]
-        or "BEFORE next hop" not in result["removeContext"]
+        or "当前 Planner 组合" not in result["chineseProse"]
+        or "Planning window 决定每次发布消费" not in result["chineseProse"]
+        or "Publication batching" not in result["parameter"]
+        or not result["firstSelected"]
         or "Semantic target" not in result["zoneDetail"]
         or "Current service/path-terminal satellite" not in result["zoneDetail"]
         or "Semantic target: GroundStation" not in result["groundDetail"]
         or "no Zone footprint is expected" not in result["groundDetail"]
-    ):
+        or result["playbackEvidence"]["end"]
+        < min(
+            result["playbackEvidence"]["start"] + 2,
+            result["playbackEvidence"]["maximum"],
+        )
+        or abs(
+            result["playbackEvidence"]["scrollAfter"]
+            - result["playbackEvidence"]["scrollBefore"]
+        )
+        > 3
+        or result["playbackEvidence"]["activeView"] != "overview"
+        or result["playbackEvidence"]["state"] != "paused"
+        or not result["playbackEvidence"]["locationStable"]
+        or result["playbackEvidence"]["navigationEntriesAfter"]
+        != result["playbackEvidence"]["navigationEntriesBefore"]
+        or result["playbackEvidence"]["cameraAfter"]
+        != result["playbackEvidence"]["cameraBefore"]
+    )
+    mini_failure = result["scenario"] == "mini_satellite_internet" and (
+        not all(
+            value in result["parameter"]
+            for value in ("2530", "1590", "940", "Parameter planning")
+        )
+        or not result["hadRemove"]
+        or result["firstSelected"] == result["removeSelected"]
+        or result["firstContext"] == result["removeContext"]
+        or "BEFORE next hop" not in result["removeContext"]
+    )
+    if common_failure or mini_failure:
         raise AssertionError(f"Planner presentation regression: {result}")
-    return {"selected_add": result["firstSelected"], "selected_remove": result["removeSelected"]}
+    return {
+        "scenario": result["scenario"],
+        "selected_first": result["firstSelected"],
+        "selected_remove": result["removeSelected"] if result["hadRemove"] else None,
+        "zone_spatial": "PASS",
+        "ground_station_spatial": "PASS",
+        "playback_scroll_navigation_camera": result["playbackEvidence"],
+    }
+
+
+def _observation(base_url: str, session_id: str, page: Path) -> dict[str, object]:
+    _navigate(base_url, session_id, page)
+    initial = _execute(
+        base_url,
+        session_id,
+        """
+return (async()=>{
+const waitFor=async(predicate,label)=>{for(let attempt=0;attempt<100;attempt++){const value=predicate();if(value)return value;await new Promise(resolve=>setTimeout(resolve,100));}throw new Error(`Timed out waiting for ${label}`);};
+const chinese=document.title,chineseProse=document.querySelector("section.card")?.textContent||"";document.querySelector('[data-language="en"]').click();
+const point=await waitFor(()=>document.querySelector(".timeline-point"),"Observation timeline point");
+point.scrollIntoView({block:"center"});const box=point.getBoundingClientRect();point.dispatchEvent(new MouseEvent("click",{bubbles:true}));
+return {chinese,chineseProse,english:document.title,x:Math.round(box.left+box.width/2),y:Math.round(box.top+box.height/2)};
+})()
+""",
+    )
+    _click_at(base_url, session_id, initial["x"], initial["y"])
+    result = _execute(
+        base_url,
+        session_id,
+        """
+return (async()=>{
+const waitFor=async(predicate,label)=>{for(let attempt=0;attempt<100;attempt++){const value=predicate();if(value)return value;await new Promise(resolve=>setTimeout(resolve,100));}throw new Error(`Timed out waiting for ${label}`);};
+await waitFor(()=>!document.getElementById("selected-label").textContent.startsWith("Select a chart"),"selected observation detail");
+const annotation=document.getElementById("persistent-annotation");if(!annotation)throw new Error(`Missing persistent annotation after selection: ${document.getElementById("selected-label").textContent}`);
+const annotationText=annotation.textContent,selectedLabel=document.getElementById("selected-label").textContent;
+document.getElementById("clear-annotation").click();
+const cleared=!document.getElementById("persistent-annotation");
+document.getElementById("mode-unit").click();
+const component=await waitFor(()=>document.getElementById("unit-component"),"unit component selector");
+component.value="planner";component.dispatchEvent(new Event("change",{bubbles:true}));
+const heatCell=await waitFor(()=>document.querySelector("#unit-heatmap [data-heatmap-sequence]"),"Planner heatmap cell");
+heatCell.click();
+const unitSummary=document.getElementById("unit-summary").textContent,heatmapNote=document.getElementById("heatmap-note").textContent,unitCount=document.getElementById("unit-selector").options.length;
+return {annotationText,selectedLabel,cleared,unitSummary,heatmapNote,unitCount,heatmapRows:document.querySelectorAll("#unit-heatmap .heatmap-row").length};
+})()
+""",
+    )
+    result.update({"chinese": initial["chinese"], "chineseProse": initial["chineseProse"], "english": initial["english"]})
+    if (
+        result["chinese"] != "Skyseed v2 系统 Observation"
+        or result["english"] != "Skyseed v2 System Observation"
+        or "当前 Observation 策略" not in result["chineseProse"]
+        or "只读取已持久化记录" not in result["chineseProse"]
+        or not result["annotationText"]
+        or not result["selectedLabel"]
+        or not result["cleared"]
+        or result["unitCount"] < 2
+        or result["heatmapRows"] < 2
+        or "shared planner leaf scale" not in result["heatmapNote"]
+        or "publication" not in result["unitSummary"].lower()
+    ):
+        raise AssertionError(f"Observation presentation regression: {result}")
+    return {
+        "persistent_point_annotation": "PASS",
+        "planner_publication_units": result["unitCount"],
+        "heatmap_rows": result["heatmapRows"],
+        "clear_annotation": "PASS",
+    }
 
 
 def run_visual_browser_gate(
@@ -566,11 +701,10 @@ def run_visual_browser_gate(
     """Run the accepted manual-review interaction assertions in real Firefox."""
 
     root = Path(inspection_root).resolve()
-    tool_names = ("topology", "zone") if static_only else (
-        "topology",
-        "zone",
-        "planner",
-        "traffic",
+    tool_names = ("topology", "zone") if static_only else tuple(
+        name
+        for name in ("topology", "zone", "planner", "observation", "traffic")
+        if (root / name / "index.html").is_file()
     )
     pages = {name: root / name / "index.html" for name in tool_names}
     port = _available_port()
@@ -615,13 +749,23 @@ def run_visual_browser_gate(
                 "topology": _topology(base_url, session_id, pages["topology"]),
                 "zone": _zone(base_url, session_id, pages["zone"]),
             }
+            if (root / "index.html").is_file():
+                result["aggregate"] = _aggregate(
+                    base_url, session_id, root / "index.html"
+                )
             if not static_only:
-                result["planner"] = _planner(
-                    base_url, session_id, pages["planner"]
-                )
-                result["traffic"] = _traffic(
-                    base_url, session_id, pages["traffic"]
-                )
+                if "planner" in pages:
+                    result["planner"] = _planner(
+                        base_url, session_id, pages["planner"]
+                    )
+                if "observation" in pages:
+                    result["observation"] = _observation(
+                        base_url, session_id, pages["observation"]
+                    )
+                if "traffic" in pages:
+                    result["traffic"] = _traffic(
+                        base_url, session_id, pages["traffic"]
+                    )
             elif (
                 result["topology"]["device_pixel_ratio"] < 1.5
                 or result["zone"]["device_pixel_ratio"] < 1.5

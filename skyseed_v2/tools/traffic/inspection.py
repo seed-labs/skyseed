@@ -89,7 +89,7 @@ def write_traffic_replay_tool(
                     "sha256": _sha256(dynamic),
                 },
                 "bpf_compiler": {
-                    "path": "../bpf-compiler/bpf-compiler-inspection.json",
+                    "path": _relative_path(compiler, output),
                     "size_bytes": compiler.stat().st_size,
                     "sha256": _sha256(compiler),
                 },

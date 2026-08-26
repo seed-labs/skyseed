@@ -6,11 +6,13 @@ from collections.abc import Iterator, Mapping
 from datetime import datetime
 from pathlib import Path
 from threading import RLock
+from time import perf_counter
 from types import MappingProxyType
 from weakref import WeakValueDictionary
 
 from skyseed_v2.shared.time import normalize_utc_datetime
 from skyseed_v2.shared import NodeId
+from skyseed_v2.shared._execution_observation import _ExecutionObserver
 
 from .connection import (
     ConnectionKind,
@@ -83,6 +85,7 @@ class Slicer:
         "_durable_history_path",
         "_durable_history_failed_after_slice_id",
         "_archived_difference_through",
+        "_execution_observer",
     )
 
     def __init__(self) -> None:
@@ -97,6 +100,7 @@ class Slicer:
         position_model: PositionModel,
         connection_model: ConnectionModel,
         route_model: RouteModel,
+        execution_observer: _ExecutionObserver | None = None,
     ) -> "Slicer":
         if not isinstance(topology, Topology):
             raise TypeError("topology must be a Topology")
@@ -140,6 +144,7 @@ class Slicer:
         instance._durable_history_path = None
         instance._durable_history_failed_after_slice_id = None
         instance._archived_difference_through = 0
+        instance._execution_observer = execution_observer
         _claim_model_owners(models, instance)
         connection_context_claimed = False
         try:
@@ -165,6 +170,13 @@ class Slicer:
             raise
         return instance
 
+    def _set_execution_observer(self, observer: _ExecutionObserver) -> None:
+        if not isinstance(observer, _ExecutionObserver):
+            raise TypeError("observer must be an _ExecutionObserver")
+        if self._execution_observer is not None:
+            raise RuntimeError("Slicer execution observation is already enabled")
+        self._execution_observer = observer
+
     def create_next_slice(self) -> TopologySlice:
         self._require_durable_history_healthy()
         timestamp = self.get_next_timestamp()
@@ -172,38 +184,151 @@ class Slicer:
             raise StopIteration("SimulationTimeline is exhausted")
         slice_id = self._next_slice_id
         previous = self._latest_slice
+        observer = self._execution_observer
+        phase = "bootstrap" if slice_id == 1 else "steady"
+        scope = (
+            {"slice_id": slice_id, "timestamp": timestamp.isoformat()}
+            if observer is not None
+            else {}
+        )
+        total_started = perf_counter() if observer is not None else 0.0
 
+        stage_started = perf_counter() if observer is not None else 0.0
         raw_positions = self._position_model.compute_positions(
             self._topology, timestamp
         )
+        stage_elapsed = (
+            perf_counter() - stage_started if observer is not None else 0.0
+        )
+        _record_slicer_observation(
+            observer,
+            "position-compute",
+            phase,
+            stage_elapsed,
+            scope,
+            {"emitted_positions": len(raw_positions)},
+        )
+        stage_started = perf_counter() if observer is not None else 0.0
         positions = _validated_positions(self._topology, raw_positions)
+        stage_elapsed = (
+            perf_counter() - stage_started if observer is not None else 0.0
+        )
+        _record_slicer_observation(
+            observer,
+            "position-validation",
+            phase,
+            stage_elapsed,
+            scope,
+            {"validated_positions": len(positions)},
+        )
         if previous.slice_id == 0:
             prepare_connection_model = getattr(
                 self._connection_model, "_prepare_for_slicer", None
             )
             if callable(prepare_connection_model):
+                stage_started = perf_counter() if observer is not None else 0.0
                 prepare_connection_model(
                     self,
                     self._topology,
                     timestamp,
                     positions,
                 )
+                stage_elapsed = (
+                    perf_counter() - stage_started
+                    if observer is not None
+                    else 0.0
+                )
+                _record_slicer_observation(
+                    observer,
+                    "connection-preparation",
+                    phase,
+                    stage_elapsed,
+                    scope,
+                    {"input_positions": len(positions)},
+                )
+        stage_started = perf_counter() if observer is not None else 0.0
         connection_slice = self._connection_model.compute_connection_slice(
             self._topology,
             timestamp,
             positions,
             previous.connection_slice,
         )
+        stage_elapsed = (
+            perf_counter() - stage_started if observer is not None else 0.0
+        )
+        connection_work = {
+            "previous_connections": len(previous.connection_slice.connections),
+            "emitted_connections": len(connection_slice.connections),
+            "emitted_zone_assignments": len(
+                connection_slice.zone_service_assignments
+            ),
+        }
+        _record_slicer_observation(
+            observer,
+            "connection-compute",
+            phase,
+            stage_elapsed,
+            scope,
+            connection_work,
+        )
+        stage_started = perf_counter() if observer is not None else 0.0
         _validate_connection_slice(self._topology, connection_slice)
+        stage_elapsed = (
+            perf_counter() - stage_started if observer is not None else 0.0
+        )
+        _record_slicer_observation(
+            observer,
+            "connection-validation",
+            phase,
+            stage_elapsed,
+            scope,
+            {
+                "validated_connections": len(connection_slice.connections),
+                "validated_zone_assignments": len(
+                    connection_slice.zone_service_assignments
+                ),
+            },
+        )
+        stage_started = perf_counter() if observer is not None else 0.0
         route_slice = self._route_model.compute_route_slice(
             self._topology,
             timestamp,
             connection_slice,
             previous.route_slice,
         )
+        stage_elapsed = (
+            perf_counter() - stage_started if observer is not None else 0.0
+        )
+        route_entries = 0
+        if observer is not None:
+            route_entries = sum(
+                len(targets) for targets in route_slice.routes.values()
+            )
+            _record_slicer_observation(
+                observer,
+                "route-compute",
+                phase,
+                stage_elapsed,
+                scope,
+                {"emitted_route_entries": route_entries},
+            )
+        stage_started = perf_counter() if observer is not None else 0.0
         _validate_route_slice(
             self._topology, connection_slice, route_slice
         )
+        stage_elapsed = (
+            perf_counter() - stage_started if observer is not None else 0.0
+        )
+        if observer is not None:
+            _record_slicer_observation(
+                observer,
+                "route-validation",
+                phase,
+                stage_elapsed,
+                scope,
+                {"validated_route_entries": route_entries},
+            )
+        stage_started = perf_counter() if observer is not None else 0.0
         candidate = TopologySlice(
             slice_id=slice_id,
             timestamp=timestamp,
@@ -235,6 +360,38 @@ class Slicer:
             except Exception as error:
                 self._durable_history_failed_after_slice_id = slice_id
                 raise _PublishedSliceHistoryError(slice_id) from error
+        publication_elapsed = (
+            perf_counter() - stage_started if observer is not None else 0.0
+        )
+        total_elapsed = (
+            perf_counter() - total_started if observer is not None else 0.0
+        )
+        if observer is not None:
+            complete_work = {
+                "positions": len(positions),
+                "connections": len(connection_slice.connections),
+                "zone_assignments": len(
+                    connection_slice.zone_service_assignments
+                ),
+                "route_entries": route_entries,
+            }
+            _record_slicer_observation(
+                observer,
+                "slice-publication",
+                phase,
+                publication_elapsed,
+                scope,
+                complete_work,
+            )
+            _record_slicer_observation(
+                observer,
+                "complete-slice",
+                phase,
+                total_elapsed,
+                scope,
+                complete_work,
+                duration_role="rollup",
+            )
         return candidate
 
     def create_slices(self, count: int) -> tuple[TopologySlice, ...]:
@@ -305,6 +462,8 @@ class Slicer:
         """Compare two retained adjacent Slices without retaining the result."""
 
         self._require_durable_history_healthy()
+        observer = self._execution_observer
+        started = perf_counter() if observer is not None else 0.0
         previous = self.get_slice(previous_slice_id)
         current = self.get_slice(current_slice_id)
         if current_slice_id != previous_slice_id + 1:
@@ -355,6 +514,32 @@ class Slicer:
                 },
             )
             self._archived_difference_through = current_slice_id
+        elapsed = perf_counter() - started if observer is not None else 0.0
+        if observer is not None:
+            _record_slicer_observation(
+                observer,
+                "difference",
+                "bootstrap" if current_slice_id == 1 else "steady",
+                elapsed,
+                {
+                    "previous_slice_id": previous_slice_id,
+                    "current_slice_id": current_slice_id,
+                    "timestamp": difference.current_timestamp.isoformat(),
+                },
+                {
+                    "connection_additions": len(difference.added_connections),
+                    "connection_removals": len(
+                        difference.removed_connection_ids
+                    ),
+                    "parameter_patches": len(
+                        difference.connection_parameter_patches
+                    ),
+                    "zone_assignment_patches": len(
+                        difference.zone_service_assignment_patches
+                    ),
+                    "route_patches": len(difference.route_patches),
+                },
+            )
         return difference
 
     def _enable_durable_history(self, path: Path) -> None:
@@ -855,6 +1040,29 @@ def _topology_node_ids(topology: Topology) -> set[NodeId]:
 
 def _node_key(node_id: NodeId) -> tuple[int, str, str]:
     return node_id.asn, node_id.entity_kind, node_id.entity_id
+
+
+def _record_slicer_observation(
+    observer: _ExecutionObserver | None,
+    stage: str,
+    phase: str,
+    duration_seconds: float,
+    scope: Mapping[str, object],
+    work: Mapping[str, int | float],
+    *,
+    duration_role: str = "stage",
+) -> None:
+    if observer is None:
+        return
+    observer.record(
+        component="slicer",
+        stage=stage,
+        phase=phase,
+        duration_seconds=duration_seconds,
+        duration_role=duration_role,
+        scope=scope,
+        work=work,
+    )
 
 
 def _next_timeline_timestamp(

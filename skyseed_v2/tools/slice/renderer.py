@@ -31,8 +31,9 @@ def render_slice_difference_page(data: dict[str, Any]) -> str:
     body = f"""
 <style>
 .tool-navigation {{ margin-bottom:12px; }}
-.timeline {{ display:grid; grid-template-columns:auto auto 1fr auto; gap:8px; align-items:center; }}
+.timeline {{ display:grid; grid-template-columns:auto auto auto minmax(180px,1fr) auto auto; gap:8px; align-items:center; }}
 .timeline input {{ width:100%; }}
+.timeline label {{ color:var(--muted); white-space:nowrap; }}
 .slice-context-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(145px,1fr)); gap:8px; }}
 .slice-context-metric {{ padding:9px 10px; border:1px solid #20425a; border-radius:8px; background:#071c2d; }}
 .slice-context-metric span {{ display:block; color:var(--muted); font-size:.78rem; }}
@@ -73,21 +74,24 @@ def render_slice_difference_page(data: dict[str, Any]) -> str:
 .swatch {{ display:inline-block; width:15px; height:4px; margin:0 5px 3px 0; }}
 .diagnostic {{ border-left:3px solid var(--amber); padding-left:9px; }}
 .loading {{ color:var(--cyan); }}
-@media(max-width:700px) {{ .timeline {{ grid-template-columns:auto auto 1fr; }} .timeline strong {{ grid-column:1/-1; }} .route-controls {{ grid-template-columns:1fr; }} #slice-globe {{ min-height:310px; }} }}
+@media(max-width:700px) {{ .timeline {{ grid-template-columns:auto auto auto; }} .timeline input,.timeline strong {{ grid-column:1/-1; }} .route-controls {{ grid-template-columns:1fr; }} #slice-globe {{ min-height:310px; }} }}
 </style>
 <nav class="tool-navigation"><a href="../index.html">← Tool Overview</a></nav>
 <section class="card">
   <span class="status PASS">PASS</span>
   <h2>Slice / Difference timeline</h2>
   <p class="muted">One offline chunk is loaded at a time. Selection and display-only path restoration persist while the timeline moves.</p>
+  <p>Each Slice is an exact formal sample at its timestamp. Difference records the change from the previous sample; the globe restores only retained sampled positions, Connections, assignments, and Routes.</p>
   <div class="grid stats">{stats}</div>
 </section>
 <section class="card">
   <div class="timeline">
+    <button id="play-slices" type="button" aria-pressed="false">Play</button>
     <button id="previous-slice" type="button">Previous</button>
     <button id="next-slice" type="button">Next</button>
     <input id="slice-range" type="range" min="0" max="0" value="0" aria-label="Slice timeline">
     <strong id="slice-label" class="loading">Loading…</strong>
+    <label>Speed <select id="playback-speed"><option value="2000">0.5×</option><option value="1000" selected>1×</option><option value="500">2×</option><option value="250">4×</option></select></label>
   </div>
 </section>
 <section class="card" aria-labelledby="slice-context-heading">
@@ -166,6 +170,7 @@ def render_slice_difference_page(data: dict[str, Any]) -> str:
         + r"""
 const MANIFEST=window.SKYSEED_SLICE_MANIFEST;
 window.__SKYSEED_SLICE_CHUNKS__=window.__SKYSEED_SLICE_CHUNKS__||{};
+async function decodeExactChunk(value){if(!value||value.encoding!=="gzip-base64-json")return value;if(typeof DecompressionStream!=="function")throw new Error("This browser lacks gzip chunk support");const binary=atob(value.data),bytes=Uint8Array.from(binary,ch=>ch.charCodeAt(0)),stream=new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip")),text=await new Response(stream).text();if(new TextEncoder().encode(text).length!==value.uncompressed_bytes)throw new Error("Slice chunk size audit failed");return JSON.parse(text);}
 const canvas=document.getElementById("slice-globe"),ctx=canvas.getContext("2d"),hoverLabel=document.getElementById("hover-label");
 const manifestById=new Map(MANIFEST.slice_manifest.map(item=>[Number(item.slice_id),item]));
 const orderedIds=MANIFEST.slice_manifest.map(item=>Number(item.slice_id));
@@ -174,6 +179,7 @@ const orbitByRef=new Map(MANIFEST.topology.orbits.map(orbit=>[orbit.orbit_ref,or
 const zonesById=new Map(MANIFEST.topology.zones.map(zone=>[zone.zone_id,zone]));
 const INITIAL_CAMERA={yaw:-.55,pitch:.28},MAX_PITCH=89*Math.PI/180;
 let camera={...INITIAL_CAMERA},pointer=null,currentSlice=null,currentIndex=Math.max(0,orderedIds.findIndex(id=>id===1)),requestedSliceId=null,loadGeneration=0;
+let playbackTimer=null,playbackGeneration=0,playbackActive=false;
 let logicalWidth=1100,logicalHeight=560,nodeHits=[],connectionHits=[],zoneHits=[],hoverHit=null,pickMode="node";
 let selectedNodeId="",selectedConnectionRef="",selectedZoneId="",activeSelectionKind="",showSatelliteZones=false;
 let routeSourceId="",routeTargetRef="",selectedPath=[],routeStatus="none",differenceMode=false;
@@ -225,7 +231,12 @@ canvas.addEventListener("pointerup",event=>{const click=pointer&&!pointer.moved;
 document.addEventListener("keydown",event=>{if(event.key==="Escape")clearActiveSelection();});
 function setPickMode(mode){pickMode=mode;for(const button of document.querySelectorAll("[data-pick-mode]"))button.classList.toggle("active",button.dataset.pickMode===mode);hoverHit=null;hoverLabel.classList.remove("visible");draw();}
 function replaceOptions(select,values,placeholder,preserved=""){const options=[new Option(placeholder,"")];for(const [label,value] of values)options.push(new Option(label,value));if(preserved&&!values.some(([,value])=>value===preserved))options.push(new Option(`${preserved} (not current)`,preserved));select.replaceChildren(...options);select.value=preserved;}
-function loadSlice(index){currentIndex=Math.max(0,Math.min(orderedIds.length-1,index));range.value=String(currentIndex);const id=orderedIds[currentIndex],generation=++loadGeneration;requestedSliceId=id;const known=window.__SKYSEED_SLICE_CHUNKS__[id];document.getElementById("slice-label").textContent=`Loading S${id}…`;const activateIfCurrent=value=>{if(generation===loadGeneration&&id===requestedSliceId)activateSlice(value);else if(id!==requestedSliceId)delete window.__SKYSEED_SLICE_CHUNKS__[id];return value;};if(known)return Promise.resolve(activateIfCurrent(known));let promise=pendingLoads.get(id);if(!promise){const entry=manifestById.get(id);promise=new Promise((resolve,reject)=>{const element=document.createElement("script");element.src=entry.chunk;element.onload=()=>{const value=window.__SKYSEED_SLICE_CHUNKS__[id];element.remove();if(!value){reject(new Error(`Slice chunk ${id} did not register`));return;}resolve(value);};element.onerror=()=>reject(new Error(`Unable to load offline Slice chunk ${entry.chunk}`));document.head.append(element);}).finally(()=>pendingLoads.delete(id));pendingLoads.set(id,promise);}return promise.then(activateIfCurrent);}
+function loadSlice(index){currentIndex=Math.max(0,Math.min(orderedIds.length-1,index));range.value=String(currentIndex);const id=orderedIds[currentIndex],generation=++loadGeneration;requestedSliceId=id;const known=window.__SKYSEED_SLICE_CHUNKS__[id];document.getElementById("slice-label").textContent=`Loading S${id}…`;const activateIfCurrent=value=>{if(generation===loadGeneration&&id===requestedSliceId)activateSlice(value);else if(id!==requestedSliceId)delete window.__SKYSEED_SLICE_CHUNKS__[id];return value;};if(known)return decodeExactChunk(known).then(activateIfCurrent);let promise=pendingLoads.get(id);if(!promise){const entry=manifestById.get(id);promise=new Promise((resolve,reject)=>{const element=document.createElement("script");element.src=entry.chunk;element.onload=async()=>{const value=window.__SKYSEED_SLICE_CHUNKS__[id];element.remove();if(!value){reject(new Error(`Slice chunk ${id} did not register`));return;}try{resolve(await decodeExactChunk(value));}catch(error){reject(error);}};element.onerror=()=>reject(new Error(`Unable to load offline Slice chunk ${entry.chunk}`));document.head.append(element);}).finally(()=>pendingLoads.delete(id));pendingLoads.set(id,promise);}return promise.then(activateIfCurrent);}
+function updatePlaybackControl(){const button=document.getElementById("play-slices");button.textContent=playbackActive?"Pause":"Play";button.setAttribute("aria-pressed",String(playbackActive));document.body.dataset.slicePlaybackState=playbackActive?"playing":"paused";}
+function pausePlayback(){playbackActive=false;playbackGeneration++;if(playbackTimer!==null)clearTimeout(playbackTimer);playbackTimer=null;updatePlaybackControl();}
+function schedulePlayback(generation){if(!playbackActive||generation!==playbackGeneration)return;if(currentIndex>=orderedIds.length-1){pausePlayback();return;}const delay=Number(document.getElementById("playback-speed").value)||1000;playbackTimer=setTimeout(async()=>{if(!playbackActive||generation!==playbackGeneration)return;try{await loadSlice(currentIndex+1);schedulePlayback(generation);}catch(error){pausePlayback();document.getElementById("slice-label").textContent=`FAILED: ${error.message}`;}},delay);}
+function playSlices(){if(playbackActive){pausePlayback();return;}if(currentIndex>=orderedIds.length-1){const firstReal=orderedIds.findIndex(id=>id===1);currentIndex=firstReal>=0?firstReal:0;}playbackActive=true;const generation=++playbackGeneration;updatePlaybackControl();loadSlice(currentIndex).then(()=>schedulePlayback(generation)).catch(error=>{pausePlayback();document.getElementById("slice-label").textContent=`FAILED: ${error.message}`;});}
+function selectSlice(index,{keepPlayback=false}={}){const resume=keepPlayback&&playbackActive;pausePlayback();return loadSlice(index).then(()=>{if(resume){playbackActive=true;const generation=++playbackGeneration;updatePlaybackControl();schedulePlayback(generation);}});}
 function gatewayCandidatesForZone(zoneId){const target=`Z|${zoneId}`,assignment=assignmentByZone(zoneId),candidates=[...new Set(currentSlice.routes.filter(([source,routeTarget])=>routeTarget===target&&staticNodes.get(source)?.kind==="ground-station").map(([source])=>source))].sort();return routeDirection==="gateway-to-zone"?candidates:candidates.filter(gateway=>assignment&&currentSlice.routes.some(([source,routeTarget])=>source===assignment.service_satellite_id&&routeTarget===`G|${gateway}`));}
 function applyGatewayRouteSelection(chooseDefault=false){if(!routeZoneId)return;const candidates=gatewayCandidatesForZone(routeZoneId);if(chooseDefault&&!candidates.includes(routeGatewayId))routeGatewayId=candidates[0]||"";const assignment=assignmentByZone(routeZoneId);if(!routeGatewayId||!candidates.includes(routeGatewayId)||!assignment){routeSourceId="";routeTargetRef="";return;}if(routeDirection==="zone-to-gateway"){routeSourceId=assignment.service_satellite_id;routeTargetRef=`G|${routeGatewayId}`;}else{routeSourceId=routeGatewayId;routeTargetRef=`Z|${routeZoneId}`;}}
 function addSliceContextMetric(root,label,value){const item=document.createElement("div"),name=document.createElement("span"),strong=document.createElement("strong");item.className="slice-context-metric";name.textContent=label;strong.textContent=value;item.append(name,strong);root.append(item);}
@@ -259,7 +270,8 @@ function renderDiagnostics(){const root=document.getElementById("diagnostics");r
 for(const button of document.querySelectorAll("[data-pick-mode]"))button.addEventListener("click",()=>setPickMode(button.dataset.pickMode));
 document.getElementById("clear-inspection").addEventListener("click",clearInspection);
 document.getElementById("gateway-route-zone").addEventListener("change",event=>showZone(event.target.value));document.getElementById("gateway-route-gateway").addEventListener("change",event=>setGatewayRouteGateway(event.target.value));document.getElementById("gateway-route-direction").addEventListener("change",event=>setGatewayRouteDirection(event.target.value));document.getElementById("node-select").addEventListener("change",event=>showNode(event.target.value));document.getElementById("connection-select").addEventListener("change",event=>showConnection(event.target.value));document.getElementById("zone-select").addEventListener("change",event=>showZone(event.target.value));document.getElementById("route-source").addEventListener("change",event=>setRouteSource(event.target.value));document.getElementById("route-target").addEventListener("change",event=>setRouteTarget(event.target.value));
-range.addEventListener("input",event=>loadSlice(Number(event.target.value)));document.getElementById("previous-slice").addEventListener("click",()=>loadSlice(currentIndex-1));document.getElementById("next-slice").addEventListener("click",()=>loadSlice(currentIndex+1));document.getElementById("show-difference").addEventListener("change",event=>{differenceMode=event.target.checked;document.getElementById("difference-panel").open=differenceMode;draw();});
+document.getElementById("play-slices").addEventListener("click",playSlices);document.getElementById("playback-speed").addEventListener("change",()=>{if(playbackActive){const generation=++playbackGeneration;if(playbackTimer!==null)clearTimeout(playbackTimer);schedulePlayback(generation);}});range.addEventListener("input",event=>selectSlice(Number(event.target.value),{keepPlayback:true}));document.getElementById("previous-slice").addEventListener("click",()=>selectSlice(currentIndex-1));document.getElementById("next-slice").addEventListener("click",()=>selectSlice(currentIndex+1));document.getElementById("show-difference").addEventListener("change",event=>{differenceMode=event.target.checked;document.getElementById("difference-panel").open=differenceMode;draw();});
+updatePlaybackControl();
 loadSlice(currentIndex).catch(error=>{document.getElementById("slice-label").textContent=`FAILED: ${error.message}`;});
 """
     )
@@ -271,14 +283,19 @@ loadSlice(currentIndex).catch(error=>{document.getElementById("slice-label").tex
         language_strings={
             "Tool Overview": "工具总览",
             "Slice / Difference timeline": "Slice / Difference 时间线",
+            "Each Slice is an exact formal sample at its timestamp. Difference records the change from the previous sample; the globe restores only retained sampled positions, Connections, assignments, and Routes.": "每个 Slice 都是其 timestamp 上的精确正式样本。Difference 记录相对上一样本的变化；globe 只恢复已保留的采样位置、Connection、assignment 和 Route。",
             "Previous": "上一个",
             "Next": "下一个",
+            "Play": "播放",
+            "Pause": "暂停",
+            "Speed": "速度",
             "Dynamic Earth": "动态 Earth",
             "Selected object": "所选对象",
             "Zone / Gateway Route": "Zone / Gateway Route",
             "Difference from previous Slice": "与上一 Slice 的 Difference",
             "Diagnostics": "诊断",
             "No current anomalies.": "当前无异常。",
+            **_model_context_language_strings(data),
         },
     )
 
@@ -288,6 +305,26 @@ def _render_model_context(data: dict[str, Any]) -> str:
     if not isinstance(context, dict):
         return ""
     groups: list[str] = []
+    models = context.get("models")
+    if isinstance(models, dict):
+        for key, title in (
+            ("position", "Position model"),
+            ("connection", "Connection model"),
+            ("route", "Route model"),
+        ):
+            model = models.get(key)
+            if not isinstance(model, dict):
+                continue
+            groups.append(
+                _model_context_group(
+                    title,
+                    (
+                        ("selected", model.get("selected")),
+                        ("determines", model.get("role")),
+                        ("configuration", model.get("configuration")),
+                    ),
+                )
+            )
     shells = context.get("satellite_shells")
     if isinstance(shells, list) and shells:
         for shell_index, shell in enumerate(shells, start=1):
@@ -424,7 +461,7 @@ def _render_model_context(data: dict[str, Any]) -> str:
         return ""
     return (
         '<details id="model-context" class="card">'
-        "<summary>Model context · Why this Slice looks like this</summary>"
+        "<summary>Current model / strategy · Why this Slice looks like this</summary>"
         '<p class="muted">Scenario/model values are projected at artifact '
         "generation. Approximate geometry is display-only and does not alter "
         "formal eligibility.</p>"
@@ -455,6 +492,64 @@ def _unit(value: object, suffix: str) -> str:
     if isinstance(value, float) and value.is_integer():
         value = int(value)
     return f"{value} {suffix}"
+
+
+def _model_context_language_strings(data: dict[str, Any]) -> dict[str, str]:
+    """Return UTF-8-safe prose translations for the projected model panel."""
+
+    strings = {
+        "Current model / strategy · Why this Slice looks like this": (
+            "当前模型 / 策略 · 为什么这个 Slice 呈现为当前状态"
+        ),
+        "Scenario/model values are projected at artifact generation. Approximate geometry is display-only and does not alter formal eligibility.": (
+            "场景与模型参数在产物生成时投影；近似几何只用于显示，不改变正式可用性判断。"
+        ),
+        "Position model": "Position 模型",
+        "Connection model": "Connection 模型",
+        "Route model": "Route 模型",
+        "selected": "当前选择",
+        "determines": "决定什么",
+        "configuration": "当前配置",
+        "Satellite shell": "卫星壳层",
+        "Zone service": "Zone 服务",
+        "GroundStation access": "GroundStation 接入",
+        "Routing": "路由",
+        "Satellites": "卫星数",
+        "layout": "布局",
+        "altitude": "高度",
+        "inclination": "倾角",
+        "Zones": "Zone 数",
+        "minimum elevation": "最低仰角",
+        "Approx. service-envelope surface radius": "近似服务包络地表半径",
+        "authority": "证据属性",
+        "maximum slant distance": "最大斜距",
+        "GroundStation capacity": "GroundStation 容量",
+        "Satellite capacity": "Satellite 容量",
+        "same orbit": "同轨道",
+        "cross plane": "跨轨道面",
+        "maximum distance": "最大距离",
+        "Earth clearance": "地球遮挡约束",
+        "model": "模型",
+        "Gateway candidates / Zone": "每个 Zone 的 Gateway 候选数",
+        "metric": "度量",
+    }
+    context = data.get("model_context")
+    models = context.get("models") if isinstance(context, dict) else None
+    if isinstance(models, dict):
+        role_translations = {
+            "position": "在每个 Slice timestamp 计算精确的正式节点位置。",
+            "connection": (
+                "根据当前正式几何关系选择有效 ISL、GroundStation 接入和 Zone 服务事实。"
+            ),
+            "route": (
+                "在有效 Connection 图上，为当前 Gateway/Zone 需求发布稀疏 next hop。"
+            ),
+        }
+        for key, chinese in role_translations.items():
+            value = models.get(key)
+            if isinstance(value, dict) and isinstance(value.get("role"), str):
+                strings[value["role"]] = chinese
+    return strings
 
 
 __all__ = ["render_slice_difference_page"]

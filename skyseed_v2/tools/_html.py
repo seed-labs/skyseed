@@ -280,17 +280,42 @@ def write_aggregate_index(
     )
     cards = []
     for key, title, description in (
-        ("topology", "Topology Tool", "查看可选择的静态轨道平面、地面站与一致性。"),
-        ("zone", "Zone Tool", "查看并直接选择静态 Zone 边界与几何信息。"),
+        (
+            "topology",
+            "Topology Tool",
+            "Inspect selectable static orbit planes, GroundStations, and consistency.",
+        ),
+        (
+            "zone",
+            "Zone Tool",
+            "Inspect and select static Zone boundaries and geometry.",
+        ),
         (
             "slice",
             "Slice / Difference Tool",
-            "逐 Slice 查看动态网络、Zone 服务、Route 与 Difference。",
+            "Inspect sampled formal state and Difference evolution by Slice.",
+        ),
+        (
+            "observation",
+            "System Observation Tool",
+            "Inspect measured execution stages, rollups, work, and resources.",
+        ),
+        (
+            "planner",
+            "Planner Tool",
+            "Compare sampled formal evidence with published planned state.",
+        ),
+        (
+            "compiler",
+            "BPF Compiler Tool",
+            "Trace Plan deltas into interval operations and complete baselines.",
         ),
     ):
-        if key == "slice" and key not in tool_results:
+        if key not in ("topology", "zone") and key not in tool_results:
             continue
-        result = tool_results.get(key, {"status": "FAILED", "message": "未执行"})
+        result = tool_results.get(
+            key, {"status": "FAILED", "message": "Not executed"}
+        )
         status = str(result.get("status", "FAILED"))
         message = escape(str(result.get("message", "")))
         cards.append(
@@ -317,20 +342,21 @@ def write_aggregate_index(
         if result.get("status") != "PASS"
     ]
     issue = (
-        '<div class="warning"><strong>需要注意：</strong> '
+        '<div class="warning"><strong>Needs attention:</strong> '
         + escape("；".join(failures))
         + "</div>"
         if failures
-        else '<p class="muted">可用工具均完成，详情与完整结果位于各自页面。</p>'
+        else '<p class="muted">All available Tools completed; each entry contains its exact evidence and audit links.</p>'
     )
     body = f"""
 <section class="card">
   <span class="status {overall}">{overall}</span>
-  <h2>本次工具快照</h2>
+  <h2>Tool snapshot</h2>
   {issue}
+  <p>Read from formal structure and sampled Slice evidence, through Planner publications and Compiler realizations, then use System Observation for measured execution cost. Every Tool is detached and read-only; a visual selection never creates a domain fact.</p>
 </section>
-<section><h2>核心对象数量</h2><div class="grid stats">{stats}</div></section>
-<section><h2>检查入口</h2><div class="grid two">{''.join(cards)}</div></section>
+<section><h2>Core object inventory</h2><div class="grid stats">{stats}</div></section>
+<section><h2>Inspection entries</h2><div class="grid two">{''.join(cards)}</div></section>
 """
     write_text(
         directory / "index.html",
@@ -346,8 +372,17 @@ def write_aggregate_index(
                 "Topology Tool": "Topology 工具",
                 "Zone Tool": "Zone 工具",
                 "Slice / Difference Tool": "Slice / Difference 工具",
+                "System Observation Tool": "系统 Observation 工具",
+                "Planner Tool": "Planner 工具",
+                "BPF Compiler Tool": "BPF Compiler 工具",
                 "Inspect selectable static orbit planes, GroundStations, and consistency.": "查看可选择的静态轨道平面、地面站与一致性。",
                 "Inspect and select static Zone boundaries and geometry.": "查看并直接选择静态 Zone 边界与几何信息。",
+                "Inspect sampled formal state and Difference evolution by Slice.": "逐 Slice 检查采样的正式状态和 Difference 演化。",
+                "Inspect measured execution stages, rollups, work, and resources.": "检查已测量的执行 stage、rollup、工作量与资源。",
+                "Compare sampled formal evidence with published planned state.": "比较采样的正式 evidence 与已发布的 planned state。",
+                "Trace Plan deltas into interval operations and complete baselines.": "追踪 Plan delta 如何转换为区间操作和完整 baseline。",
+                "All available Tools completed; each entry contains its exact evidence and audit links.": "所有可用 Tool 均已完成；每个入口都包含精确 evidence 和审计链接。",
+                "Read from formal structure and sampled Slice evidence, through Planner publications and Compiler realizations, then use System Observation for measured execution cost. Every Tool is detached and read-only; a visual selection never creates a domain fact.": "阅读顺序从正式结构与采样 Slice evidence 开始，再查看 Planner 发布和 Compiler realization，最后用 System Observation 检查已测量的执行成本。所有 Tool 均分离且只读；可视化选择不会创建领域事实。",
             },
         ),
     )

@@ -23,8 +23,12 @@ from examples._compose_project_scripts import prepare_example_output
 from examples.s4_satellite_internet.emu import (
     build_s4_satellite_internet_emulator,
 )
-from examples.s4_satellite_internet.simu import create_s4_static_simulator
-from examples.s4_satellite_internet.simu import create_s4_dynamic_simulator
+from examples.s4_satellite_internet.simu import (
+    DYNAMIC_REAL_SLICE_COUNT,
+    S4_PLANNER_PROFILES,
+    create_s4_dynamic_simulator,
+    create_s4_static_simulator,
+)
 from tools._html import write_aggregate_index
 from tools.topology import write_topology_tool
 from tools.zone import write_zone_tool
@@ -39,19 +43,56 @@ def main() -> int:
         default=True,
         help="replace an existing generated output directory (default: enabled)",
     )
-    parser.add_argument(
+    qualification_mode = parser.add_mutually_exclusive_group()
+    qualification_mode.add_argument(
         "--dynamic",
         action="store_true",
         help="materialize the bounded 30-minute dynamic qualification run",
+    )
+    parser.add_argument(
+        "--slice-limit",
+        type=int,
+        default=DYNAMIC_REAL_SLICE_COUNT,
+        help=(
+            "stop dynamic qualification at this real Slice "
+            f"(1..{DYNAMIC_REAL_SLICE_COUNT}; default: full Timeline)"
+        ),
+    )
+    parser.add_argument(
+        "--tool-workers",
+        type=int,
+        default=2,
+        help=(
+            "bounded independent process workers for heavy Inspection Tool "
+            "materialization (default: 2)"
+        ),
+    )
+    parser.add_argument(
+        "--planner-profile",
+        choices=S4_PLANNER_PROFILES,
+        default=None,
+        help=(
+            "optional diagnostic Planner profile; omitted selects the normal "
+            "explicit S4 model/policy composition"
+        ),
+    )
+    qualification_mode.add_argument(
+        "--planner",
+        action="store_true",
+        help=(
+            "materialize the bounded dynamic run and qualify the normal "
+            "explicit Planner composition"
+        ),
     )
     arguments = parser.parse_args()
 
     prepare_example_output(arguments.output, override=arguments.override)
     static_started = perf_counter()
     emulator = build_s4_satellite_internet_emulator()
+    dynamic_requested = arguments.dynamic or arguments.planner
     simulator = (
         create_s4_dynamic_simulator(emulator)
-        if arguments.dynamic
+        if dynamic_requested
         else create_s4_static_simulator(emulator)
     )
     static_construction_seconds = perf_counter() - static_started
@@ -69,7 +110,7 @@ def main() -> int:
         for key, value in dict(topology_result.get("counts", {})).items()
     }
     dynamic_result = None
-    if arguments.dynamic:
+    if dynamic_requested:
         from examples.s4_satellite_internet.qualification import (
             run_s4_dynamic_qualification,
         )
@@ -78,10 +119,20 @@ def main() -> int:
             simulator,
             arguments.output,
             static_construction_seconds=static_construction_seconds,
+            include_planner=arguments.planner,
+            planner_profile=arguments.planner_profile,
+            final_slice_id=arguments.slice_limit,
+            tool_workers=arguments.tool_workers,
         )
-        slice_result = dynamic_result.get("slice_difference_tool")
-        if isinstance(slice_result, dict):
-            results["slice"] = dict(slice_result)
+        for result_name, result_key in (
+            ("slice", "slice_difference_tool"),
+            ("observation", "observation_tool"),
+            ("planner", "planner_tool"),
+            ("compiler", "compiler_tool"),
+        ):
+            result = dynamic_result.get(result_key)
+            if isinstance(result, dict):
+                results[result_name] = dict(result)
 
     write_aggregate_index(inspection, results, counts)
 
@@ -89,7 +140,20 @@ def main() -> int:
     print(f"Topology Tool entry: {inspection / 'topology/index.html'}")
     print(f"Zone Tool entry: {inspection / 'zone/index.html'}")
     if dynamic_result is not None:
-        print(f"Slice Tool entry: {inspection / 'slice/index.html'}")
+        if "slice" in results:
+            print(f"Slice Tool entry: {inspection / 'slice/index.html'}")
+        if "observation" in results:
+            print(
+                f"Observation Tool entry: "
+                f"{inspection / 'observation/index.html'}"
+            )
+        if "planner" in results:
+            print(f"Planner Tool entry: {inspection / 'planner/index.html'}")
+        if "compiler" in results:
+            print(
+                f"BPF Compiler Tool entry: "
+                f"{inspection / 'compiler/index.html'}"
+            )
         print(f"Qualification evidence: {arguments.output / 'qualification/run.json'}")
     overall_pass = all(result.get("status") == "PASS" for result in results.values())
     print(f"Tooling overall: {'PASS' if overall_pass else 'FAIL'}")

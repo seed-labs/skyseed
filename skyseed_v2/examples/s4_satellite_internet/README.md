@@ -1,11 +1,13 @@
 # S4 satellite Internet Simulator qualification
 
 This v2-native example keeps its cheap static S4 review as the default and adds
-one explicit, bounded dynamic Simulator qualification mode. Both modes build
+explicit bounded dynamic and Planner qualification modes. All modes build
 one upstream Emulator and project its static owner tree into one
 Simulator-owned Topology. The dynamic mode then uses the existing Position →
-Connection → Route → Slice → Difference chain; it does not enter Planner,
-Compiler, Runner, or containers.
+Connection → Route → Slice → Difference chain. The separate `--planner` mode
+continues that exact retained progression through the normal explicit Planner
+composition and one BPF Compiler realization per Plan under one Observation
+run. No qualification mode enters Runner or containers.
 
 The checked inputs contain:
 
@@ -43,6 +45,8 @@ Open:
   348 Satellite identities, 355 Ground Station locations, and 703 total
   dynamic nodes;
 - `output/inspection/index.html` for the available-tool landing page.
+- after `--planner`, `output/inspection/planner/index.html` and
+  `output/inspection/compiler/index.html` for planned and compiled evidence.
 
 The default command intentionally does not create a Slice or invoke a dynamic
 Model. Request the first compute-only qualification run explicitly with:
@@ -88,19 +92,57 @@ current-Slice and model-context cards project the scenario policy and current
 formal counts at generation time; physical separation statistics and the
 approximate service-envelope radius are explicitly Tool-derived explanation.
 
-The accepted short qualification baseline retains Slice 0 plus 20 real
-10-second Slices and 20 adjacent Differences in that canonical Tool. Across
+Qualify the normal Planner composition on a short S4-20 progression with:
+
+```bash
+python -m examples.s4_satellite_internet.main --planner --slice-limit 20
+```
+
+The normal composition directly selects sample-boundary Connection,
+accumulated-deadband Parameter with the existing S4 absolute/relative,
+persistence, max-staleness and bundling configuration, dependency-aware
+always-FOLLOW Forwarding, example-local identity coordination, and the
+50-second planning-lookahead / 20-second publication window. Connection and
+Forwarding therefore translate formal evolution faithfully; only Parameter
+may coalesce updates. It has no bundled production profile identity.
+
+Named profiles remain diagnostic helpers. `reference-global` uses
+all-available planning and publication plus the fully sample-boundary reference
+family. `reference-bounded` is its fair rolling/publication control.
+`stable-bounded` and `experimental-stable-global` preserve the optional Stable
+Connection, Stable Forwarding, and dependency-aware coordination evidence
+compositions; neither is selected by the normal command.
+The S4-specific durations and stability thresholds are qualification evidence
+points; they do not become generic Planner defaults.
+
+Every Planner composition prints one evidence checkpoint after each Plan
+publication, retains caller-owned Plans for inspection, and compiles one
+continuous immutable BPF realization per Plan. It validates symbolic Compiler
+output only; no kernel/runtime work occurs. Omitting `--slice-limit` requests
+the canonical full 181-Slice / 90-Plan progression.
+
+Heavy Slice, Planner, Compiler, and Observation Tool generation is detached
+from the domain critical path. Two independent family-level worker processes
+are allowed by default (`--tool-workers` changes this bounded execution setting
+without changing domain semantics). Slice Tool work starts after Slicer;
+Planner Tool work starts after Planner while Compiler proceeds. The CLI joins
+only for final artifact completeness. `qualification/run.json` records separate
+Domain/Inspection statuses, PIDs, wall time, peak RSS, and actual overlap.
+Deterministic frozen handoffs under `qualification/tool-handoffs/` permit a
+Tool-only rebuild without rerunning Slicer → Planner → Compiler; they are
+trusted repository-local gzip/pickle evidence, not an interchange format.
+
+The short qualification baseline retains Slice 0 plus 20 real 10-second Slices
+and 20 adjacent Differences. Across
 the real Slices, served Zones are 419 / 421 / 424 min/median/max. On the
 qualification host, warm Position, Connection, Route, complete-Slice, and
 Difference p50/p95 timings were respectively 0.0084/0.0087,
 0.3245/0.3917, 0.4581/0.5044, 0.8263/0.8952, and 0.0401/0.0674 seconds.
-These are bounded-run evidence, not general performance guarantees. The full
-181-real-Slice opt-in remains available but is not required for this milestone
-closure.
+These are bounded-run evidence, not general performance guarantees.
 
-Neither mode renders/compiles a Docker deployment or creates a Planner. This
-dynamic candidate is Simulator-stage evidence, not Planner, runtime, or final
-S4 scale qualification.
+No S4 qualification mode renders or compiles a Docker deployment. The default
+and `--dynamic` modes do not create a Planner or BPF realization; only explicit
+`--planner` enters Planner and the symbolic BPF Compiler.
 
 ## Deterministic inputs
 

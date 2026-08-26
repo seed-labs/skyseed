@@ -20,6 +20,8 @@ from examples.s4_satellite_internet.simu import (
     DYNAMIC_REAL_SLICE_COUNT,
     DYNAMIC_SLICE_INTERVAL,
     DYNAMIC_TIMELINE_END,
+    STABLE_BOUNDED_PROFILE,
+    EXPERIMENTAL_STABLE_GLOBAL_PROFILE,
     BANDWIDTH_BPS_BY_KIND,
     GROUND_STATION_MAXIMUM_DISTANCE_M,
     GROUND_STATION_MINIMUM_ELEVATION_DEG,
@@ -29,10 +31,15 @@ from examples.s4_satellite_internet.simu import (
     MAXIMUM_GROUND_STATION_ACCESS_COUNT,
     MAXIMUM_ISL_DISTANCE_M,
     PACKET_LOSS_PPM_BY_KIND,
+    REFERENCE_BOUNDED_PROFILE,
+    REFERENCE_GLOBAL_PROFILE,
     PROPAGATION_SPEED_M_PER_S,
     ZONE_COVERAGE_MINIMUM_ELEVATION_DEG,
     create_s4_dynamic_simulator,
+    create_s4_planner,
     create_s4_static_simulator,
+    s4_planning_configuration,
+    _IdentityCoordinationPolicy,
 )
 from skyseed_v2.configuration.emulator import load_static_emulator_config
 from skyseed_v2.configuration.simulator import load_zone_layout_definition
@@ -40,10 +47,17 @@ from skyseed_v2.emulator.seedemu import get_skyseed_autonomous_systems
 from skyseed_v2.emulator_to_simulator import create_simulator_static_input
 from skyseed_v2.simulator import (
     CircularOrbitPositionModel,
+    AllAvailablePlanningWindowPolicy,
+    AccumulatedDeadbandParameterPlanningModel,
     ConnectionKind,
     ConnectionSlice,
+    DefaultCoordinationPolicy,
+    DependencyAwareForwardingPlanningModel,
     GatewayHopCountRouteModel,
     GeometricConnectionModel,
+    SampleBoundaryConnectionPlanningModel,
+    SampleBoundaryParameterPlanningModel,
+    TimeHorizonPlanningWindowPolicy,
     RouteSlice,
     Simulator,
     Topology,
@@ -241,6 +255,117 @@ def test_s4_satellite_gateway_capability_crosses_the_formal_fact_chain() -> None
         for satellite in simulator_input.list_satellites()
     )
     assert MAXIMUM_GROUND_STATION_ACCESS_COUNT == 8
+
+
+def test_s4_planner_factory_uses_the_explicit_normal_configuration(
+    s4_dynamic_progression,
+) -> None:
+    simulator = s4_dynamic_progression[0]
+    differences = s4_dynamic_progression[3:]
+    configuration = s4_planning_configuration(simulator)
+    reference = s4_planning_configuration(
+        simulator, profile=REFERENCE_GLOBAL_PROFILE
+    )
+    global_experiment = s4_planning_configuration(
+        simulator, profile=EXPERIMENTAL_STABLE_GLOBAL_PROFILE
+    )
+    bounded_experiment = s4_planning_configuration(
+        simulator, profile=STABLE_BOUNDED_PROFILE
+    )
+    bounded_reference = s4_planning_configuration(
+        simulator, profile=REFERENCE_BOUNDED_PROFILE
+    )
+    planner = create_s4_planner(simulator)
+    plan = planner.get_plan()
+
+    assert simulator.get_planner() is planner
+    assert isinstance(
+        planner._planning_window_policy, TimeHorizonPlanningWindowPolicy
+    )
+    assert isinstance(
+        planner._connection_model,
+        SampleBoundaryConnectionPlanningModel,
+    )
+    assert isinstance(
+        planner._parameter_model, AccumulatedDeadbandParameterPlanningModel
+    )
+    assert isinstance(
+        planner._forwarding_model,
+        DependencyAwareForwardingPlanningModel,
+    )
+    assert isinstance(planner._coordination_policy, _IdentityCoordinationPolicy)
+    assert "profile" not in configuration
+    assert configuration["numeric_defaults_status"] == (
+        "S4 scenario candidate; no generic Planner defaults selected"
+    )
+    assert configuration["planning_window"] == "bounded exact time prefix"
+    assert configuration["planning_window_policy"] == (
+        "TimeHorizonPlanningWindowPolicy"
+    )
+    assert configuration["planning_lookahead_seconds"] == 50
+    assert configuration["publication_horizon_seconds"] == 20
+    assert configuration["connection_model"] == (
+        "SampleBoundaryConnectionPlanningModel"
+    )
+    assert configuration["parameter_model"] == (
+        "AccumulatedDeadbandParameterPlanningModel"
+    )
+    assert configuration["forwarding_model"] == (
+        "DependencyAwareForwardingPlanningModel"
+    )
+    assert configuration["coordination_policy"] == "_IdentityCoordinationPolicy"
+    assert configuration["connection_suppression"] == "disabled"
+    assert reference["profile"] == REFERENCE_GLOBAL_PROFILE
+    assert reference["publication_horizon_seconds"] is None
+    assert global_experiment["planning_lookahead_seconds"] is None
+    assert global_experiment["publication_horizon_seconds"] == 20
+    assert bounded_experiment["planning_lookahead_seconds"] == 50
+    assert bounded_experiment["publication_horizon_seconds"] == 20
+    assert bounded_reference["profile_role"] == "reference-bounded-control"
+    assert bounded_reference["planning_lookahead_seconds"] == 50
+    assert bounded_reference["publication_horizon_seconds"] == 20
+    assert bounded_reference["connection_model"] == (
+        "SampleBoundaryConnectionPlanningModel"
+    )
+    assert bounded_reference["parameter_model"] == (
+        "SampleBoundaryParameterPlanningModel"
+    )
+    assert bounded_reference["forwarding_stability"] == "always FOLLOW"
+    assert bounded_experiment["numeric_defaults_status"] == (
+        "S4 scenario candidate; no generic Planner defaults selected"
+    )
+    assert plan.start_slice_id == 0
+    assert plan.end_slice_id == 2
+    assert len(planner.get_consumed_differences()) == 2
+    assert len(plan.connection_transitions) == sum(
+        len(difference.added_connections)
+        + len(difference.removed_connection_ids)
+        for difference in differences
+    )
+    assert len(plan.forwarding_transitions) == sum(
+        len(difference.route_patches) for difference in differences
+    )
+    assert len(plan.parameter_transitions) < sum(
+        len(difference.connection_parameter_patches)
+        for difference in differences
+    )
+    formal_times = {
+        difference.current_timestamp for difference in differences
+    }
+    assert all(
+        transition.nominal_time in formal_times
+        for transitions in (
+            plan.connection_transitions,
+            plan.parameter_transitions,
+            plan.forwarding_transitions,
+        )
+        for transition in transitions
+    )
+    assert all(
+        decision.decision != "suppressed"
+        and "HOLD" not in decision.reason
+        for decision in planner.get_planning_decisions()
+    )
 
 
 def test_s4_generated_orbits_match_all_fcc_published_anomalies(
@@ -650,7 +775,7 @@ def test_s4_static_mode_does_not_create_a_slicer() -> None:
         simulator.get_slicer()
 
 
-def test_s4_dynamic_entry_does_not_import_later_pipeline_stages() -> None:
+def test_s4_qualification_entry_includes_compiler_and_stops_before_runner() -> None:
     imported_modules = set()
     for name in ("main.py", "simu.py", "qualification.py"):
         tree = ast.parse((EXAMPLE_ROOT / name).read_text(encoding="utf-8"))
@@ -665,8 +790,10 @@ def test_s4_dynamic_entry_does_not_import_later_pipeline_stages() -> None:
             if isinstance(node, ast.Import)
             for alias in node.names
         )
-    assert not any(
-        component in module
-        for module in imported_modules
-        for component in ("planner", "compiler", "runner")
-    )
+    assert any("compiler" in module for module in imported_modules)
+    assert not any("runner" in module for module in imported_modules)
+    assert "tools._detached_inspection" in imported_modules
+    detached_source = (
+        PROJECT_ROOT / "tools/_detached_inspection.py"
+    ).read_text(encoding="utf-8")
+    assert "tools.planner" in detached_source

@@ -165,3 +165,64 @@ def test_transition_contracts_reject_incomplete_or_out_of_coverage_values() -> N
             end_timestamp=START + timedelta(seconds=10),
             connection_transitions=(boundary_transition,),
         )
+
+
+def test_planner_private_plan_construction_preserves_public_value_shape() -> None:
+    forwarding = ForwardingTransition(
+        START + timedelta(seconds=5),
+        ROUTE_KEY,
+        DifferenceOperation.ADDED,
+        GROUND_STATION,
+    )
+    successor = ForwardingTransition(
+        START + timedelta(seconds=5),
+        RouteKey(
+            GROUND_STATION,
+            GroundStationRouteTarget(GROUND_STATION),
+        ),
+        DifferenceOperation.ADDED,
+        GROUND_STATION,
+    )
+    precedence = ForwardingTransitionPrecedence(forwarding, successor)
+    values = {
+        "start_slice_id": 1,
+        "start_timestamp": START,
+        "end_slice_id": 2,
+        "end_timestamp": START + timedelta(seconds=10),
+        "connection_transitions": (),
+        "parameter_transitions": (),
+        "forwarding_transitions": (successor, forwarding),
+        "forwarding_precedences": (precedence,),
+    }
+
+    public = Plan(**values)
+    internal = Plan._from_validated(**values)
+
+    assert internal == public
+    assert internal.forwarding_transitions == public.forwarding_transitions
+    assert internal.forwarding_precedences == public.forwarding_precedences
+    assert tuple(internal.temporal_index) == tuple(public.temporal_index)
+    assert isinstance(internal.temporal_index, MappingProxyType)
+    with pytest.raises(ValueError, match="transition falls after Plan coverage"):
+        Plan._from_validated(
+            **{
+                **values,
+                "end_timestamp": START + timedelta(seconds=4),
+            }
+        )
+
+    outside = ForwardingTransition(
+        START + timedelta(seconds=5),
+        ROUTE_KEY,
+        DifferenceOperation.ADDED,
+        GROUND_STATION,
+    )
+    with pytest.raises(ValueError, match="reference transitions in this Plan"):
+        Plan(
+            **{
+                **values,
+                "forwarding_precedences": (
+                    ForwardingTransitionPrecedence(forwarding, outside),
+                ),
+            }
+        )

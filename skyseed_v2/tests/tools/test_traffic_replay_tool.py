@@ -1323,7 +1323,7 @@ def test_latest_canonical_artifact_is_v3_or_explicitly_stale_before_rerun() -> N
     telemetry = root / "traffic/traffic-telemetry.jsonl"
     workload = root.parent / "inputs/traffic-workload.json"
     dynamic = root / "slice/slice-manifest.json"
-    compiler = root / "bpf-compiler/bpf-compiler-inspection.json"
+    compiler = root / "bpf-compiler/manifest.json"
     replay = root / "traffic/traffic-replay.json"
     if not workload.is_file():
         if not replay.is_file():

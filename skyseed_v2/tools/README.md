@@ -19,12 +19,26 @@ flowchart LR
 
     TRAFFIC["traffic JSONL + Slice/Compiler evidence"] -->|post-run read by| TTOOL["Traffic / Path Replay Tool"]
     TTOOL -->|writes static non-authoritative replay| TART["Traffic replay artifact"]
+
+    OBS["detached component execution observations"] -->|post-execution read by| OTOOL["System Observation Tool"]
+    OTOOL -->|writes timing/work/resource view| OART["Observation inspection artifact"]
 ```
 
 Within each Tool, the applicable implementation responsibilities remain:
 `reader → projection → optional display_analysis → renderer → artifact_writer`.
 Runner and Traffic readers consume detached files/mappings rather than live
 formal objects, and a small Tool may colocate adjacent responsibilities.
+
+The S4 qualification root schedules heavy Slice, Planner, Compiler, and
+Observation materialization through the private `_detached_inspection` helper.
+At most a small configured number of family-level processes run concurrently.
+Each receives an immutable fork view, persists a deterministic compressed
+snapshot before projection, builds under a same-parent staging directory,
+audits checksums, and atomically publishes. A preserved handoff can rebuild the
+Tool with `scripts/rebuild_inspection_from_handoff.py` without rerunning domain
+progression. These gzip/pickle snapshots are trusted repository-local evidence;
+never load an untrusted handoff. This helper is execution composition for
+Tools, not a public job framework or a domain owner.
 
 Legend: `A -.-> B` means validation A consumes the already-written artifact B;
 it is not a Tool pipeline stage.
@@ -34,16 +48,20 @@ flowchart LR
     SMOKE["browser smoke in scripts/"] -.-> ARTIFACT["written HTML artifact"]
 ```
 
-The seven tools remain deliberately separate:
+The eight tools remain deliberately separate:
 
 - `topology/` reads the static owner tree and facade identity;
 - `zone/` reads the static Zone layout and renders display-only direct
   selection without executing membership Models;
 - `slice/` reads one exact Slicer's retained Slice next-hop facts and adjacent
   Difference results, writes one offline chunk per Slice, and restores only an
-  explicitly selected display path in the browser.
-- `planner/` reads one exact Slicer plus consecutive immutable Plans and
-  retained PlanningDecisions, then compares those formal results directly.
+  explicitly selected display path in the browser. Exact Slice/Planner/Compiler
+  chunks use deterministic compressed envelopes and are decoded only on
+  selection without losing `file://` or checksum auditability.
+- `planner/` reads one exact Slicer, exact caller-supplied consumed
+  Differences, consecutive immutable Plans, and retained PlanningDecisions;
+  its external bootstrap manifest and hierarchical catalogs lazily load
+  selected domain/Slice chunks and restore only the selected route path.
 - `bpf_compiler/` reads consecutive immutable Plans plus already-produced
   `BpfCompiledRealization` values and displays their exact supported lowering
   relationships without invoking the Compiler.
@@ -58,6 +76,12 @@ The seven tools remain deliberately separate:
   records, derives observed flows from telemetry, and renders dependency-free
   simulation/packet replay without controlling runtime or recomputing satellite
   positions. The example-owned planned workload is optional schedule context.
+- `observation/` parses detached optional component observations and shows
+  bootstrap-separated independent leaf/rollup timing, work/cardinality,
+  leaf-stage time-versus-work, and optional resource evidence. It does not sum
+  overlapping records into component or pipeline execution time. Current
+  emitters are Slicer, Planner, and BPF Compiler; the record model admits a
+  future Runner component without becoming execution authority.
 
 Only the Slicer calls Position, Connection, and Route Models. Tools do not
 propagate Position, form Connections, compute Routes, compare slices, update

@@ -8,6 +8,7 @@ Tools are repository-local read-only views, not installed product APIs.
 | Zone | the same `Topology` | `inspection/zone/` |
 | Slice / Difference | one exact `Slicer` with retained slices | `inspection/slice/` |
 | Planner | that exact `Slicer`, consecutive `Plan` publications, retained `PlanningDecision` values | `inspection/planner/` |
+| System Observation | detached records emitted during the actual Slicer/Planner execution | `inspection/observation/` |
 | BPF Compiler | consecutive `Plan` publications and their already-produced `BpfCompiledRealization` values | `inspection/bpf-compiler/` |
 | BPF Runner | post-cleanup detached Runner summary/frozen-binding scalars/events plus runtime invocation outcome | `inspection/runner/` |
 | Traffic / Path Replay | durable tc-BPF traffic records, retained Slice Position/on-request Difference evidence, existing BPF Compiler inspection evidence, and optional planned-workload context | `inspection/traffic/` |
@@ -19,6 +20,7 @@ from tools.topology import write_topology_tool
 from tools.zone import write_zone_tool
 from tools.slice import write_slice_difference_tool
 from tools.planner import write_planner_tool
+from tools.observation import write_observation_tool
 from tools.bpf_compiler import write_bpf_compiler_tool
 from tools.runner import write_runner_tool
 from tools.traffic import write_traffic_replay_tool
@@ -38,6 +40,57 @@ It is non-authoritative. The Zone Tool reads static layout geometry and uses
 browser-only hit testing for direct selection; it does not execute the Zone
 membership Model. Where other Tools report formal path, Difference, or model
 results, those results are read from production objects rather than recreated.
+
+The Planner Tool receives the exact consumed Differences explicitly. Its
+`planner-manifest.json` and its compact `planner-manifest.js` bootstrap point
+to offline Slice, Plan, Difference, and hierarchical entity-catalog/data
+chunks. The HTML embeds no manifest or complete run, creates no eager raw
+pretty JSON, and restores only the selected Route path from one loaded Slice.
+Slice, Planner, and Compiler exact chunks are deterministic compressed script
+envelopes. They remain directly usable from `file://`; the browser decompresses
+only the selected chunk, while byte-count/SHA-256 metadata and bundle
+inventories preserve exact auditability.
+
+In S4 qualification, the heavy Slice, Planner, BPF Compiler, and Observation
+bundles are materialized by at most two independent family-level worker
+processes by default. Planner Tool work may overlap Compiler domain execution;
+the CLI joins workers only after the Slicer → Planner → Compiler domain chain
+has finished. `qualification/run.json` records separate Domain and Inspection
+statuses, PIDs, task times, peak RSS, final-join time, and the measured Planner
+Tool/Compiler overlap. Tool CPU/wall time is not included in Slicer, Planner,
+or Compiler Observation rollups.
+
+Each worker writes a deterministic frozen source handoff under
+`qualification/tool-handoffs/` before projection. After a Tool-only fix, rebuild
+one artifact without rerunning the domain chain:
+
+```bash
+python scripts/rebuild_inspection_from_handoff.py \
+  examples/s4_satellite_internet/output/qualification/tool-handoffs/planner.json
+```
+
+The handoff is trusted repository-produced gzip/pickle evidence, not an
+untrusted interchange format. The worker builds in a staging directory,
+verifies the Tool checksum inventory, and atomically replaces the canonical
+bundle only on success.
+
+The Observation Tool reads `execution-observations.jsonl`, not live domain
+objects. Its page separates bootstrap from steady p50/p95/max and offers both
+stage progression and Per-Slice / Plan breakdown. Progression uses actual
+Slice timestamps and Planner publication coverage rather than record order,
+with a shared Slicer/Planner duration scale, automatically selected numeric
+ticks, a Timeline-derived Slice-interval reference, and an optional fit view.
+The visual unit scrubber and bounded stage×unit heatmap navigate the same exact
+records; missing records, measured zero, exclusive leaves, and separate rollup
+bands remain distinct. A selected unit exposes coverage, phase, work counts,
+the primary rollup, exclusive leaf subtotal, and any exact attributable gap.
+Resource samples and Slicer Difference work remain visibly separate and are
+never added to the leaf subtotal. Clicked chart points retain a detailed
+annotation until replaced or cleared. Named work counts, leaf-stage
+time-per-unit, component/stage/phase filters, and resource evidence remain
+available. These facts are diagnostic and non-authoritative. Slicer, Planner,
+and Compiler emit them today; Runner can later reuse the same unit convention
+without adding fields to formal values.
 
 Run the rich bundle:
 
@@ -90,10 +143,14 @@ python -m examples.mini_satellite_internet.main
 ```
 
 Open `examples/mini_satellite_internet/output/inspection/planner/index.html`.
-The page shows sampled Slicer facts beside actual published transitions,
-Planner coverage and temporal groups, semantic forwarding precedence, and
-retained decisions. It does not infer rejected suppression candidates or an
-expected Plan.
+The page starts with compact whole-run and selected-Plan transformation ratios
+and distributions, then exact planning/publication coverage, temporal groups,
+and a shared sampled-vs-planned globe. Connection episodes end at the current
+artifact boundary when right-censored. Forwarding inspection overlays exact
+formal path Q and published planned path P, with clickable shared/formal-only/
+planned-only Connection edges. Long identity lists remain secondary exact
+drill-down. The Tool does not infer rejected suppression candidates, midpoint
+positions, a third Route, or an expected Plan.
 
 Open
 `examples/mini_satellite_internet/output/inspection/bpf-compiler/index.html`

@@ -35,7 +35,7 @@ def run_bpf_compiler_browser_smoke(
     timeout: float = 30.0,
     screenshot_directory: Path | None = None,
 ) -> dict[str, object]:
-    """Exercise interval selection and every semantic view in real Firefox."""
+    """Exercise lazy Plan selection and primary views in real Firefox."""
 
     resolved_page = page.resolve()
     if not resolved_page.is_file():
@@ -90,9 +90,9 @@ def run_bpf_compiler_browser_smoke(
 const failures=[];
 window.addEventListener("error",event=>failures.push(event.message));
 const chineseTitle=document.title;
-document.querySelector('[data-language="en"]').click();
+const chineseProse=document.querySelector("section.card")?.textContent||"";
+document.querySelector('[data-language="en"]')?.click();
 const englishTitle=document.title;
-const initialActive=document.querySelector(".view.active").id;
 const tabs=[...document.querySelectorAll(".tab")];
 const viewCounts={};
 for(const tab of tabs){
@@ -103,45 +103,65 @@ for(const tab of tabs){
 const selector=document.getElementById("plan-select");
 selector.value=String(selector.options.length-1);
 selector.dispatchEvent(new Event("change",{bubbles:true}));
-document.querySelector('[data-view="operations"]').click();
-document.getElementById("plan-timeline").scrollIntoView({block:"start"});
+const selectedLast=Number(selector.value);
+document.querySelector('[data-view="overview"]').click();
+document.getElementById("plan-scrubber").scrollIntoView({block:"start"});
+const bucketRows=[...document.querySelectorAll("#chart-input [data-bucket]")];
+const bucketCount=bucketRows.length;
+const lastBucket=bucketRows.at(-1);
+lastBucket?.click();
+const bucketPlans=[...document.querySelectorAll("[data-bucket-plan]")];
+const drillPlan=Number(bucketPlans[0]?.dataset.bucketPlan);
+bucketPlans[0]?.click();
 return {
   chineseTitle,
+  chineseProse,
   englishTitle,
   plans:selector.options.length,
   timelineButtons:document.querySelectorAll(".plan-button").length,
   selected:Number(selector.value),
+  selectedLast,
   activePlanButtons:document.querySelectorAll(".plan-button.active").length,
-  summaryCards:document.querySelectorAll("#interval-summary .summary-card").length,
-  initialActive,
-  operationLines:document.querySelectorAll("#backend-operations .operation-line").length,
-  operationText:document.getElementById("backend-operations").textContent,
-  loweringRows:document.querySelectorAll("#lowering-list .lowering-row").length,
+  transformMetrics:document.querySelectorAll("#selected-transform .metric").length,
+  diagnosticCharts:document.querySelectorAll(".diagnostic-chart").length,
+  chartRows:document.querySelectorAll(".diagnostic-chart .chart-row").length,
+  bucketCount,
+  maximumBucketCount:Math.max(...["chart-input","chart-baseline","chart-churn"].map(id=>document.querySelectorAll(`#${id} [data-bucket]`).length)),
+  bucketPlanCount:bucketPlans.length,
+  drillPlan,
+  selectedAfterDrill:Number(selector.value),
+  manifestPlans:window.__SKYSEED_BPF_COMPILER_MANIFEST__?.plans?.length??0,
+  initialPayloadEmbedded:document.documentElement.innerHTML.includes('"same_next_hop_changed":true'),
   viewCounts,
-  rawBytes:document.getElementById("raw-json").textContent.length,
   failures
 };
 """,
             )
             if (
-                observed["chineseTitle"] != "BPF Compiler 检查工具"
-                or observed["englishTitle"] != "BPF Compiler Inspection Tool"
+                observed["chineseTitle"] != "Skyseed v2 BPF Compiler 检查"
+                or "Compiler 是一次性确定性转换器" not in observed["chineseProse"]
+                or "完整不可变 realization baseline" not in observed["chineseProse"]
+                or observed["englishTitle"]
+                != "Skyseed v2 BPF Compiler Inspection"
                 or observed["plans"] < 1
                 or observed["timelineButtons"] != observed["plans"]
-                or observed["selected"] != observed["plans"] - 1
+                or observed["selectedLast"] != observed["plans"] - 1
                 or observed["activePlanButtons"] != 1
-                or observed["summaryCards"] != 5
-                or observed["initialActive"] != "view-operations"
-                or observed["operationLines"] < 1
-                or "BpfCompiledRealization operation inventory"
-                not in observed["operationText"]
-                or "Backend ordering / dependency relationships"
-                not in observed["operationText"]
-                or observed["loweringRows"] < 1
+                or observed["transformMetrics"] < 10
+                or observed["diagnosticCharts"] != 4
+                or observed["bucketCount"] < 1
+                or observed["maximumBucketCount"] > 12
+                or (
+                    observed["plans"] > 12
+                    and observed["bucketCount"] >= observed["plans"]
+                )
+                or observed["bucketPlanCount"] < 1
+                or observed["selectedAfterDrill"] != observed["drillPlan"]
+                or observed["manifestPlans"] != observed["plans"]
+                or observed["initialPayloadEmbedded"]
                 or any(
                     count < 1 for count in observed["viewCounts"].values()
                 )
-                or observed["rawBytes"] < 100
                 or observed["failures"]
             ):
                 raise AssertionError(
@@ -151,7 +171,7 @@ return {
                 base_url,
                 session_id,
                 screenshot_directory,
-                "bpf-compiler-backend-operations.png",
+                "bpf-compiler-visual-overview.png",
             )
             return {
                 "status": "PASS",

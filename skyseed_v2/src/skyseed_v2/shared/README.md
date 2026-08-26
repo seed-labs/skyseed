@@ -1,7 +1,8 @@
 # Shared values
 
 This package owns narrow cross-production primitives. `NodeId` is the only
-public class; `identifier.py`, `time.py`, and `_durable_evidence.py` remain
+public class; `identifier.py`, `time.py`, `_durable_evidence.py`, and
+`_execution_observation.py` remain
 internal mechanical boundaries and own no lookup, domain history, retention,
 or lifecycle.
 
@@ -30,6 +31,7 @@ flowchart LR
     IDENTIFIER["identifier.py"] --> NODE["NodeId"]
     TIME["time.py"] --> TIME_USERS["configuration / geometry / Simulator"]
     DURABLE["_durable_evidence.py"] -->|mechanical JSONL / detached serialization| EVIDENCE_USERS["Slicer / Planner / generated execution / BpfRunner"]
+    OBSERVE["_execution_observation.py"] -->|optional detached numeric records| OBSERVERS["Slicer / Planner / future components"]
 ```
 
 ## Detailed public class/member diagrams
@@ -60,6 +62,10 @@ only authority-free `_reset_jsonl`, `_append_jsonl`, `_read_jsonl`, and
 deterministic `_semantic_value` mechanics. Each fact-producing owner still
 defines its own record schema, write timing, retention frontier, and history
 meaning; this helper does not create a shared history subsystem.
+`_execution_observation.py` similarly buffers optional non-authoritative
+component/stage/scope/duration/work/resource records. It is private, adds no
+semantic-value fields or public Simulator contract, and persists only after
+the observed execution.
 
 ## Dependencies
 

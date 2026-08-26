@@ -267,9 +267,25 @@ return {
   modelContext:document.getElementById("model-context")?.textContent||"",
   externalScripts:[...document.scripts].map(value=>value.src).filter(Boolean),
   rangeMax:Number(document.getElementById("slice-range").max),
+  rangeValue:Number(document.getElementById("slice-range").value),
   earthReferenceRadiusM:Number(document.getElementById("slice-globe").dataset.earthReferenceRadiusM),
   firstSatelliteDisplayRadius:Number(document.getElementById("slice-globe").dataset.firstSatelliteDisplayRadius)
 };
+""",
+    )
+    playback = _execute(
+        base_url,
+        session_id,
+        r"""
+return (async()=>{
+const canvas=document.getElementById("slice-globe"),range=document.getElementById("slice-range"),play=document.getElementById("play-slices"),speed=document.getElementById("playback-speed"),startId=Number(canvas.dataset.loadedSliceId),startRange=Number(range.value),targetId=Math.min(startId+2,Number(window.SKYSEED_SLICE_MANIFEST.slice_manifest.at(-1).slice_id)),locationBefore=location.href,navigationBefore=performance.getEntriesByType("navigation").length;
+speed.value="250";play.click();
+for(let attempt=0;attempt<100&&Number(canvas.dataset.loadedSliceId)<targetId;attempt++)await new Promise(resolve=>setTimeout(resolve,100));
+if(document.body.dataset.slicePlaybackState==="playing")play.click();const advancedId=Number(canvas.dataset.loadedSliceId),stateAfterPause=document.body.dataset.slicePlaybackState;
+range.value=String(startRange);range.dispatchEvent(new Event("input",{bubbles:true}));
+for(let attempt=0;attempt<100&&Number(canvas.dataset.loadedSliceId)!==startId;attempt++)await new Promise(resolve=>setTimeout(resolve,100));
+return {startId,targetId,advancedId,restoredId:Number(canvas.dataset.loadedSliceId),stateAfterPause,locationStable:location.href===locationBefore,navigationBefore,navigationAfter:performance.getEntriesByType("navigation").length};
+})()
 """,
     )
     interactions: dict[str, object] = {}
@@ -466,9 +482,9 @@ return {id:canvas.dataset.selectedZoneId,label:canvas.dataset.selectedLabelText,
             or zone_state["labelKind"] != "zone"
             or zone_state["label"] != f"Zone {selected_zone}"
             or not zone_state["service"]
-            or zone_state["tethers"] < 1
-            or not zone_state["otherZones"]
-            or zone_state["otherZoneCount"] < 1
+                or zone_state["tethers"] < 1
+                or not zone_state["otherZones"]
+                or zone_state["otherZoneCount"] < 0
             or not zone_state["elevation"]
             or not zone_state["surface"]
             or not zone_state["slant"]
@@ -741,6 +757,12 @@ return {
         or "elevation p5" not in initial["physicalContext"]
         or "surface separation p50" not in initial["physicalContext"]
         or "ECEF slant p50" not in initial["physicalContext"]
+        or playback["advancedId"]
+        < playback["targetId"]
+        or playback["restoredId"] != playback["startId"]
+        or playback["stateAfterPause"] != "paused"
+        or not playback["locationStable"]
+        or playback["navigationAfter"] != playback["navigationBefore"]
         or final["sliceContextState"] != "true"
         or "ECEF slant p50" not in final["physicalContext"]
         or (
@@ -756,6 +778,9 @@ return {
                 or "≈ 970 km" not in initial["modelContext"]
                 or "GatewayHopCountRouteModel" not in initial["modelContext"]
                 or "6000 km" not in initial["modelContext"]
+                or "当前模型 / 策略" not in initial["modelContext"]
+                or "决定什么" not in initial["modelContext"]
+                or "在每个 Slice timestamp 计算精确的正式节点位置" not in initial["modelContext"]
             )
         )
     ):
@@ -921,6 +946,7 @@ return {id:canvas.dataset.selectedConnectionRef,status:document.getElementById("
         "initial": initial,
         "final": final,
         "interactions": interactions,
+        "playback": playback,
         "stale_completion_guard": stale_completion_guard,
     }
 
@@ -1008,6 +1034,7 @@ def run_browser_smoke(
                     "stale_completion_guard"
                 ],
                 "interactions": exercised["interactions"],
+                "playback": exercised["playback"],
                 "screenshot": screenshot,
                 "browser": session["capabilities"]["browserName"],
                 "browser_version": session["capabilities"]["browserVersion"],

@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from pathlib import Path
+
 from skyseed_v2.configuration.simulator import ZoneLayoutDefinition
+from skyseed_v2.shared._execution_observation import _ExecutionObserver
 
 from .definition import SimulationDefinition
 from .planning import (
@@ -28,7 +32,14 @@ class Simulator:
     entry point.
     """
 
-    __slots__ = ("_definition", "_topology", "_slicer", "_planner")
+    __slots__ = (
+        "_definition",
+        "_topology",
+        "_slicer",
+        "_planner",
+        "_execution_observer",
+        "_execution_observation_path",
+    )
 
     def __init__(self, definition: SimulationDefinition) -> None:
         if not isinstance(definition, SimulationDefinition):
@@ -37,6 +48,39 @@ class Simulator:
         self._topology: Topology | None = None
         self._slicer: Slicer | None = None
         self._planner: Planner | None = None
+        self._execution_observer: _ExecutionObserver | None = None
+        self._execution_observation_path: Path | None = None
+
+    def _enable_execution_observation(
+        self,
+        path: Path,
+        *,
+        metadata: Mapping[str, object] | None = None,
+    ) -> _ExecutionObserver:
+        """Enable private detached observations for this exact execution."""
+
+        if self._execution_observer is not None:
+            raise RuntimeError("execution observation is already enabled")
+        observer = _ExecutionObserver(metadata)
+        self._execution_observer = observer
+        self._execution_observation_path = Path(path)
+        if self._slicer is not None:
+            self._slicer._set_execution_observer(observer)
+        if self._planner is not None:
+            self._planner._set_execution_observer(observer)
+        return observer
+
+    def _write_execution_observations(self) -> Path:
+        """Persist observations already produced by successful work."""
+
+        if (
+            self._execution_observer is None
+            or self._execution_observation_path is None
+        ):
+            raise RuntimeError("execution observation is not enabled")
+        return self._execution_observer.write_jsonl(
+            self._execution_observation_path
+        )
 
     def get_definition(self) -> SimulationDefinition:
         return self._definition
@@ -85,6 +129,7 @@ class Simulator:
             position_model=position_model,
             connection_model=connection_model,
             route_model=route_model,
+            execution_observer=self._execution_observer,
         )
         self._slicer = slicer
         return slicer
@@ -113,6 +158,7 @@ class Simulator:
             parameter_model=parameter_model,
             forwarding_model=forwarding_model,
             coordination_policy=coordination_policy,
+            execution_observer=self._execution_observer,
         )
         self._planner = planner
         return planner

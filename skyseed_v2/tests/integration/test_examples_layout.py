@@ -270,6 +270,7 @@ def test_example_output_preparation_replaces_only_the_owned_root(
                 "zone",
                 "slice",
                 "planner",
+                "observation",
                 "bpf-compiler",
             ),
         ),

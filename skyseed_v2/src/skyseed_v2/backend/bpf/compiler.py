@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from bisect import bisect_right
+from collections import Counter, defaultdict
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from ipaddress import IPv4Address, IPv4Network
+from time import perf_counter
 
 from skyseed_v2.shared import NodeId
+from skyseed_v2.shared._execution_observation import _ExecutionObserver
 from skyseed_v2.simulator import (
     Connection,
     ConnectionDirection,
@@ -59,6 +63,14 @@ class _MutableState:
     zone_edges: dict[str, _ZoneEdgeState]
 
 
+@dataclass(frozen=True, slots=True)
+class _PreparedSourceFacts:
+    source_slices_by_time: Mapping[
+        datetime,
+        tuple[TopologySlice, TopologySlice],
+    ]
+
+
 def compile_bpf(
     plan: Plan,
     *,
@@ -72,16 +84,109 @@ def compile_bpf(
     resources or mutate the supplied objects.
     """
 
+    return _compile_bpf(
+        plan,
+        slicer=slicer,
+        previous=previous,
+        execution_observer=None,
+        compile_index=0,
+    )
+
+
+def _compile_bpf_observed(
+    plan: Plan,
+    *,
+    slicer: Slicer,
+    previous: BpfCompiledRealization | None,
+    execution_observer: _ExecutionObserver,
+    compile_index: int,
+) -> BpfCompiledRealization:
+    """Compile once while emitting detached private execution evidence."""
+
+    if not isinstance(execution_observer, _ExecutionObserver):
+        raise TypeError("execution_observer must be an _ExecutionObserver")
+    if (
+        isinstance(compile_index, bool)
+        or not isinstance(compile_index, int)
+        or compile_index < 0
+    ):
+        raise ValueError("compile_index must be a non-negative integer")
+    return _compile_bpf(
+        plan,
+        slicer=slicer,
+        previous=previous,
+        execution_observer=execution_observer,
+        compile_index=compile_index,
+    )
+
+
+def _compile_bpf(
+    plan: Plan,
+    *,
+    slicer: Slicer,
+    previous: BpfCompiledRealization | None,
+    execution_observer: _ExecutionObserver | None,
+    compile_index: int,
+) -> BpfCompiledRealization:
+    total_started = _observation_start(execution_observer)
+    stage_started = _observation_start(execution_observer)
     if not isinstance(plan, Plan):
         raise TypeError("plan must be a Plan")
     if not isinstance(slicer, Slicer):
         raise TypeError("slicer must be a Slicer")
     if previous is not None and not isinstance(previous, BpfCompiledRealization):
         raise TypeError("previous must be a BpfCompiledRealization or None")
+    scope = _compile_scope(plan, compile_index)
+    _observe_compile_stage(
+        execution_observer,
+        stage="input-validation",
+        started=stage_started,
+        scope=scope,
+        work={
+            "connection_transitions": len(plan.connection_transitions),
+            "parameter_transitions": len(plan.parameter_transitions),
+            "forwarding_transitions": len(plan.forwarding_transitions),
+            "forwarding_precedences": len(plan.forwarding_precedences),
+        },
+    )
 
+    stage_started = _observation_start(execution_observer)
     slices = _coverage_slices(plan, slicer)
+    _observe_compile_stage(
+        execution_observer,
+        stage="slice-coverage",
+        started=stage_started,
+        scope=scope,
+        work={"coverage_slices": len(slices)},
+    )
+    stage_started = _observation_start(execution_observer)
+    source_facts = _prepare_source_facts(plan, slices)
+    _observe_compile_stage(
+        execution_observer,
+        stage="temporal-source-indexing",
+        started=stage_started,
+        scope=scope,
+        work={
+            "temporal_groups": len(plan.temporal_index),
+            "source_boundaries_indexed": len(
+                source_facts.source_slices_by_time
+            ),
+        },
+    )
+    stage_started = _observation_start(execution_observer)
     topology_signature = _topology_signature(slicer)
     zone_prefixes = _allocate_zone_prefixes(topology_signature.zone_ids)
+    _observe_compile_stage(
+        execution_observer,
+        stage="topology-preparation",
+        started=stage_started,
+        scope=scope,
+        work={
+            "topology_nodes": len(topology_signature.node_ids),
+            "zone_prefixes": len(zone_prefixes),
+        },
+    )
+    stage_started = _observation_start(execution_observer)
     state = _initial_state(
         plan,
         slices[plan.start_slice_id],
@@ -89,20 +194,73 @@ def compile_bpf(
         zone_prefixes,
         previous,
     )
+    _observe_compile_stage(
+        execution_observer,
+        stage="baseline-initialization",
+        started=stage_started,
+        scope=scope,
+        work=_state_cardinality(state, prefix="baseline"),
+    )
     baseline_resource_ids = frozenset(state.resources)
     baseline_forwarding = dict(state.forwarding)
 
-    _validate_plan_transitions(plan, slices)
+    stage_started = _observation_start(execution_observer)
+    _validate_plan_transitions(plan, source_facts)
+    _observe_compile_stage(
+        execution_observer,
+        stage="plan-transition-validation",
+        started=stage_started,
+        scope=scope,
+        work={
+            "connection_transitions_validated": len(
+                plan.connection_transitions
+            ),
+            "parameter_transitions_validated": len(plan.parameter_transitions),
+            "forwarding_transitions_validated": len(plan.forwarding_transitions),
+        },
+    )
+    stage_started = _observation_start(execution_observer)
     resource_intents, qdisc_intents = _lower_resources_and_parameters(
         plan, state
     )
+    _observe_compile_stage(
+        execution_observer,
+        stage="resource-parameter-lowering",
+        started=stage_started,
+        scope=scope,
+        work={
+            "connection_transitions_lowered": len(plan.connection_transitions),
+            "parameter_transitions_lowered": len(plan.parameter_transitions),
+            "resource_intents_emitted": len(resource_intents),
+            "parameter_intents_emitted": len(qdisc_intents),
+        },
+    )
+    stage_started = _observation_start(execution_observer)
     forwarding_intents = _lower_forwarding(
         plan,
-        slices,
+        source_facts,
         zone_prefixes,
-        baseline_resource_ids,
+        _active_resource_ids_by_time(
+            plan,
+            baseline_resource_ids,
+            {
+                transition.nominal_time
+                for transition in plan.forwarding_transitions
+            },
+        ),
         state,
     )
+    _observe_compile_stage(
+        execution_observer,
+        stage="forwarding-lowering",
+        started=stage_started,
+        scope=scope,
+        work={
+            "forwarding_transitions_lowered": len(plan.forwarding_transitions),
+            "forwarding_intents_emitted": len(forwarding_intents),
+        },
+    )
+    stage_started = _observation_start(execution_observer)
     zone_intents = _lower_zone_edges(
         plan,
         slices,
@@ -111,19 +269,54 @@ def compile_bpf(
         forwarding_intents,
         state,
     )
+    _observe_compile_stage(
+        execution_observer,
+        stage="zone-edge-lowering",
+        started=stage_started,
+        scope=scope,
+        work={
+            "slice_intervals_processed": max(0, len(slices) - 1),
+            "zones_considered_per_interval": len(zone_prefixes),
+            "zone_edge_intents_emitted": len(zone_intents),
+        },
+    )
+    stage_started = _observation_start(execution_observer)
     constraints = _compile_constraints(
         plan,
-        slices,
         resource_intents,
         qdisc_intents,
         forwarding_intents,
         zone_intents,
         baseline_forwarding,
+        source_facts,
+    )
+    _observe_compile_stage(
+        execution_observer,
+        stage="constraint-compilation",
+        started=stage_started,
+        scope=scope,
+        work={
+            "forwarding_precedences_lowered": len(plan.forwarding_precedences),
+            "resource_intents_considered": len(resource_intents),
+            "parameter_intents_considered": len(qdisc_intents),
+            "forwarding_intents_considered": len(forwarding_intents),
+            "zone_edge_intents_considered": len(zone_intents),
+            "constraints_emitted": len(constraints),
+        },
     )
 
+    stage_started = _observation_start(execution_observer)
     _validate_end_state(slices[plan.end_slice_id], state)
+    _observe_compile_stage(
+        execution_observer,
+        stage="end-state-validation",
+        started=stage_started,
+        scope=scope,
+        work=_state_cardinality(state, prefix="end_state"),
+    )
+    stage_started = _observation_start(execution_observer)
     intended_state = _freeze_state(state, zone_prefixes)
-    return BpfCompiledRealization._create(
+    result = BpfCompiledRealization._create(
         start_slice_id=plan.start_slice_id,
         start_timestamp=plan.start_timestamp,
         end_slice_id=plan.end_slice_id,
@@ -136,6 +329,110 @@ def compile_bpf(
         intended_state=intended_state,
         topology_signature=topology_signature,
     )
+    output_work = {
+        "resource_intents": len(resource_intents),
+        "parameter_intents": len(qdisc_intents),
+        "forwarding_intents": len(forwarding_intents),
+        "zone_edge_intents": len(zone_intents),
+        "constraints": len(constraints),
+        "baseline_resources": len(intended_state.resources),
+        "baseline_parameters": len(intended_state.qdiscs),
+        "baseline_forwarding": len(intended_state.forwarding),
+        "baseline_zone_edges": len(intended_state.zone_edges),
+        "baseline_zone_prefixes": len(intended_state.zone_prefixes),
+    }
+    _observe_compile_stage(
+        execution_observer,
+        stage="realization-freeze",
+        started=stage_started,
+        scope=scope,
+        work=output_work,
+    )
+    _observe_compile_stage(
+        execution_observer,
+        stage="total-compile",
+        started=total_started,
+        scope=scope,
+        work={
+            "plan_delta_transitions": (
+                len(plan.connection_transitions)
+                + len(plan.parameter_transitions)
+                + len(plan.forwarding_transitions)
+            ),
+            "plan_forwarding_precedences": len(plan.forwarding_precedences),
+            "interval_intents": (
+                len(resource_intents)
+                + len(qdisc_intents)
+                + len(forwarding_intents)
+                + len(zone_intents)
+            ),
+            "realization_constraints": len(constraints),
+            "baseline_records": (
+                len(intended_state.resources)
+                + len(intended_state.qdiscs)
+                + len(intended_state.forwarding)
+                + len(intended_state.zone_edges)
+            ),
+        },
+        duration_role="rollup",
+    )
+    return result
+
+
+def _observation_start(observer: _ExecutionObserver | None) -> float:
+    return perf_counter() if observer is not None else 0.0
+
+
+def _observe_compile_stage(
+    observer: _ExecutionObserver | None,
+    *,
+    stage: str,
+    started: float,
+    scope: Mapping[str, object],
+    work: Mapping[str, int | float],
+    duration_role: str = "stage",
+) -> None:
+    if observer is None:
+        return
+    observer.record(
+        component="compiler",
+        stage=stage,
+        phase="one-shot",
+        duration_seconds=perf_counter() - started,
+        duration_role=duration_role,
+        scope=scope,
+        work=work,
+    )
+
+
+def _compile_scope(plan: Plan, compile_index: int) -> dict[str, object]:
+    return {
+        "compile_index": compile_index,
+        "realization_index": compile_index,
+        "plan_index": compile_index,
+        "publication_index": compile_index,
+        "publication_start_slice_id": plan.start_slice_id,
+        "publication_end_slice_id": plan.end_slice_id,
+        "start_slice_id": plan.start_slice_id,
+        "end_slice_id": plan.end_slice_id,
+        "start_timestamp": (
+            None if plan.start_timestamp is None else plan.start_timestamp.isoformat()
+        ),
+        "end_timestamp": plan.end_timestamp.isoformat(),
+    }
+
+
+def _state_cardinality(
+    state: _MutableState,
+    *,
+    prefix: str,
+) -> dict[str, int]:
+    return {
+        f"{prefix}_resources": len(state.resources),
+        f"{prefix}_parameters": len(state.qdiscs),
+        f"{prefix}_forwarding": len(state.forwarding),
+        f"{prefix}_zone_edges": len(state.zone_edges),
+    }
 
 
 def _coverage_slices(plan: Plan, slicer: Slicer) -> dict[int, TopologySlice]:
@@ -150,6 +447,18 @@ def _coverage_slices(plan: Plan, slicer: Slicer) -> dict[int, TopologySlice]:
     if end.timestamp != plan.end_timestamp:
         raise ValueError("Plan end does not match retained Slice facts")
     return slices
+
+
+def _prepare_source_facts(
+    plan: Plan,
+    slices: Mapping[int, TopologySlice],
+) -> _PreparedSourceFacts:
+    return _PreparedSourceFacts(
+        source_slices_by_time={
+            nominal_time: _source_slices(nominal_time, slices)
+            for nominal_time in plan.temporal_index
+        }
+    )
 
 
 def _topology_signature(slicer: Slicer) -> _TopologySignature:
@@ -256,29 +565,34 @@ def _validate_baseline(
 
 def _validate_plan_transitions(
     plan: Plan,
-    slices: Mapping[int, TopologySlice],
+    source_facts: _PreparedSourceFacts,
 ) -> None:
     for transition in plan.connection_transitions:
-        previous_slice, current_slice = _source_slices(
-            transition.nominal_time, slices
+        previous_slice, current_slice = (
+            source_facts.source_slices_by_time[transition.nominal_time]
         )
-        previous_connections = _connections_by_id(previous_slice)
-        current_connections = _connections_by_id(current_slice)
+        previous_connection = _connection_or_none(
+            previous_slice, transition.connection_id
+        )
+        current_connection = _connection_or_none(
+            current_slice, transition.connection_id
+        )
         if transition.operation is ConnectionTransitionOperation.ESTABLISH:
             if (
-                transition.connection_id in previous_connections
-                or current_connections.get(transition.connection_id)
-                != transition.connection
+                previous_connection is not None
+                or current_connection != transition.connection
             ):
                 raise ValueError("Connection transition contradicts Slice facts")
         elif (
-            transition.connection_id not in previous_connections
-            or transition.connection_id in current_connections
+            previous_connection is None
+            or current_connection is not None
         ):
             raise ValueError("Connection transition contradicts Slice facts")
 
     for transition in plan.parameter_transitions:
-        _, current_slice = _source_slices(transition.nominal_time, slices)
+        _, current_slice = source_facts.source_slices_by_time[
+            transition.nominal_time
+        ]
         connection = current_slice.connection_slice.get_connection(
             transition.connection_id
         )
@@ -293,11 +607,11 @@ def _validate_plan_transitions(
                 raise ValueError("Parameter transition contradicts Slice facts")
 
     for transition in plan.forwarding_transitions:
-        previous_slice, current_slice = _source_slices(
-            transition.nominal_time, slices
+        previous_slice, current_slice = (
+            source_facts.source_slices_by_time[transition.nominal_time]
         )
-        old = _flatten_routes(previous_slice).get(transition.route_key)
-        new = _flatten_routes(current_slice).get(transition.route_key)
+        old = _route_next_hop(previous_slice, transition.route_key)
+        new = _route_next_hop(current_slice, transition.route_key)
         if transition.operation is DifferenceOperation.ADDED:
             valid = old is None and new == transition.next_hop
         elif transition.operation is DifferenceOperation.CHANGED:
@@ -436,9 +750,12 @@ def _lower_resources_and_parameters(
 
 def _lower_forwarding(
     plan: Plan,
-    slices: Mapping[int, TopologySlice],
+    source_facts: _PreparedSourceFacts,
     zone_prefixes: Mapping[str, str],
-    baseline_resource_ids: frozenset[ConnectionId],
+    active_resource_ids_by_time: Mapping[
+        datetime,
+        frozenset[ConnectionId],
+    ],
     state: _MutableState,
 ) -> tuple[_ForwardingIntent, ...]:
     result = []
@@ -449,14 +766,15 @@ def _lower_forwarding(
                 raise ValueError("Forwarding addition already exists in baseline")
             current = _forwarding_binding(
                 transition,
-                _source_slices(transition.nominal_time, slices)[1],
+                source_facts.source_slices_by_time[
+                    transition.nominal_time
+                ][1],
                 zone_prefixes,
             )
             _require_planned_connection(
-                plan,
-                baseline_resource_ids,
                 current,
                 transition.nominal_time,
+                active_resource_ids_by_time,
             )
             state.forwarding[transition.route_key] = current
         elif transition.operation is DifferenceOperation.CHANGED:
@@ -464,14 +782,15 @@ def _lower_forwarding(
                 raise ValueError("Forwarding change has no previous realization")
             current = _forwarding_binding(
                 transition,
-                _source_slices(transition.nominal_time, slices)[1],
+                source_facts.source_slices_by_time[
+                    transition.nominal_time
+                ][1],
                 zone_prefixes,
             )
             _require_planned_connection(
-                plan,
-                baseline_resource_ids,
                 current,
                 transition.nominal_time,
+                active_resource_ids_by_time,
             )
             state.forwarding[transition.route_key] = current
         else:
@@ -500,7 +819,14 @@ def _lower_zone_edges(
     state: _MutableState,
 ) -> tuple[_ZoneEdgeIntent, ...]:
     result = []
-    projected_forwarding = dict(baseline_forwarding)
+    projected_forwarding_by_zone: dict[
+        str,
+        dict[RouteKey, _ForwardingBinding],
+    ] = defaultdict(dict)
+    for route_key, binding in baseline_forwarding.items():
+        target = route_key.target
+        if isinstance(target, ZoneRouteTarget):
+            projected_forwarding_by_zone[target.zone_id][route_key] = binding
     forwarding_index = 0
     for slice_id in range(plan.start_slice_id + 1, plan.end_slice_id + 1):
         nominal_time = slices[slice_id].timestamp
@@ -515,10 +841,11 @@ def _lower_zone_edges(
             target = intent.route_key.target
             if isinstance(target, ZoneRouteTarget):
                 touched_zones.add(target.zone_id)
-            if intent.current is None:
-                projected_forwarding.pop(intent.route_key, None)
-            else:
-                projected_forwarding[intent.route_key] = intent.current
+                zone_forwarding = projected_forwarding_by_zone[target.zone_id]
+                if intent.current is None:
+                    zone_forwarding.pop(intent.route_key, None)
+                else:
+                    zone_forwarding[intent.route_key] = intent.current
             forwarding_index += 1
 
         raw_assignments = (
@@ -533,7 +860,7 @@ def _lower_zone_edges(
             )
             new = _planned_zone_service_satellite(
                 zone_id,
-                projected_forwarding,
+                projected_forwarding_by_zone.get(zone_id, {}),
                 raw_assignments.get(zone_id),
                 old,
                 zone_id in touched_zones,
@@ -611,12 +938,12 @@ def _planned_zone_service_satellite(
 
 def _compile_constraints(
     plan: Plan,
-    slices: Mapping[int, TopologySlice],
     resources: tuple[_ResourceIntent, ...],
     qdiscs: tuple[_QdiscIntent, ...],
     forwarding: tuple[_ForwardingIntent, ...],
     zone_edges: tuple[_ZoneEdgeIntent, ...],
     baseline_forwarding: Mapping[RouteKey, _ForwardingBinding],
+    source_facts: _PreparedSourceFacts,
 ) -> tuple[_OrderingConstraint, ...]:
     constraints: set[_OrderingConstraint] = set()
     forwarding_by_transition_id = {
@@ -638,14 +965,34 @@ def _compile_constraints(
             )
         )
 
+    establishment_qdiscs: dict[
+        tuple[ConnectionId, datetime],
+        list[int],
+    ] = defaultdict(list)
+    resource_establishments: dict[
+        ConnectionId,
+        list[tuple[datetime, int]],
+    ] = defaultdict(list)
+    parameter_updates: dict[
+        tuple[ConnectionId, ConnectionDirection],
+        list[tuple[datetime, int]],
+    ] = defaultdict(list)
+    for qdisc_index, qdisc in enumerate(qdiscs):
+        parameter_updates[(qdisc.connection_id, qdisc.direction)].append(
+            (qdisc.nominal_time, qdisc_index)
+        )
+        if qdisc.reason == "connection-establish":
+            establishment_qdiscs[
+                (qdisc.connection_id, qdisc.nominal_time)
+            ].append(qdisc_index)
     for resource_index, resource in enumerate(resources):
-        if resource.operation is not ConnectionTransitionOperation.ESTABLISH:
-            continue
-        for qdisc_index, qdisc in enumerate(qdiscs):
-            if (
-                qdisc.connection_id == resource.connection_id
-                and qdisc.nominal_time == resource.nominal_time
-                and qdisc.reason == "connection-establish"
+        if resource.operation is ConnectionTransitionOperation.ESTABLISH:
+            resource_establishments[resource.connection_id].append(
+                (resource.nominal_time, resource_index)
+            )
+            for qdisc_index in establishment_qdiscs.get(
+                (resource.connection_id, resource.nominal_time),
+                (),
             ):
                 constraints.add(
                     _OrderingConstraint(
@@ -660,17 +1007,11 @@ def _compile_constraints(
             continue
         connection_id = intent.current.connection_id
         direction = intent.current.direction
-        establishes = [
-            (index, value)
-            for index, value in enumerate(resources)
-            if value.connection_id == connection_id
-            and value.operation is ConnectionTransitionOperation.ESTABLISH
-            and value.nominal_time <= intent.nominal_time
-        ]
-        if establishes:
-            resource_index, _ = max(
-                establishes, key=lambda value: (value[1].nominal_time, value[0])
-            )
+        resource_index = _latest_index_at_or_before(
+            resource_establishments.get(connection_id, ()),
+            intent.nominal_time,
+        )
+        if resource_index is not None:
             constraints.add(
                 _OrderingConstraint(
                     _IntentReference("resource", resource_index),
@@ -678,18 +1019,11 @@ def _compile_constraints(
                     "resource-ready-before-forwarding",
                 )
             )
-        parameter_candidates = [
-            (index, value)
-            for index, value in enumerate(qdiscs)
-            if value.connection_id == connection_id
-            and value.direction is direction
-            and value.nominal_time <= intent.nominal_time
-        ]
-        if parameter_candidates:
-            parameter_index, _ = max(
-                parameter_candidates,
-                key=lambda value: (value[1].nominal_time, value[0]),
-            )
+        parameter_index = _latest_index_at_or_before(
+            parameter_updates.get((connection_id, direction), ()),
+            intent.nominal_time,
+        )
+        if parameter_index is not None:
             constraints.add(
                 _OrderingConstraint(
                     _IntentReference("parameter", parameter_index),
@@ -698,36 +1032,54 @@ def _compile_constraints(
                 )
             )
 
+    stops_by_connection: dict[
+        ConnectionId,
+        list[tuple[datetime, int]],
+    ] = defaultdict(list)
+    for forwarding_index, intent in enumerate(forwarding):
+        if intent.previous is not None and (
+            intent.current is None
+            or intent.current.connection_id != intent.previous.connection_id
+        ):
+            stops_by_connection[intent.previous.connection_id].append(
+                (intent.nominal_time, forwarding_index)
+            )
+
+    projected = dict(baseline_forwarding)
+    forwarding_use_counts = Counter(
+        binding.connection_id for binding in projected.values()
+    )
+    projected_forwarding_index = 0
     for resource_index, resource in enumerate(resources):
         if resource.operation is not ConnectionTransitionOperation.WITHDRAW:
             continue
-        projected = dict(baseline_forwarding)
-        for intent in forwarding:
-            if intent.nominal_time > resource.nominal_time:
-                break
+        while (
+            projected_forwarding_index < len(forwarding)
+            and forwarding[projected_forwarding_index].nominal_time
+            <= resource.nominal_time
+        ):
+            intent = forwarding[projected_forwarding_index]
+            previous = projected.get(intent.route_key)
+            if previous is not None:
+                forwarding_use_counts[previous.connection_id] -= 1
+                if forwarding_use_counts[previous.connection_id] == 0:
+                    del forwarding_use_counts[previous.connection_id]
             if intent.current is None:
                 projected.pop(intent.route_key, None)
             else:
                 projected[intent.route_key] = intent.current
-        if any(
-            binding.connection_id == resource.connection_id
-            for binding in projected.values()
-        ):
+                forwarding_use_counts[intent.current.connection_id] += 1
+            projected_forwarding_index += 1
+        if resource.connection_id in forwarding_use_counts:
             raise ValueError(
                 "Connection retirement precedes forwarding stop-use"
             )
-        stops = [
-            (index, value)
-            for index, value in enumerate(forwarding)
-            if value.previous is not None
-            and value.previous.connection_id == resource.connection_id
-            and (
-                value.current is None
-                or value.current.connection_id != resource.connection_id
-            )
-            and value.nominal_time <= resource.nominal_time
-        ]
-        for forwarding_index, _ in stops:
+        stops = stops_by_connection.get(resource.connection_id, ())
+        stop_count = bisect_right(
+            stops,
+            (resource.nominal_time, len(forwarding)),
+        )
+        for _, forwarding_index in stops[:stop_count]:
             constraints.add(
                 _OrderingConstraint(
                     _IntentReference("forwarding", forwarding_index),
@@ -736,16 +1088,25 @@ def _compile_constraints(
                 )
             )
 
+    forwarding_by_zone_boundary: dict[
+        tuple[str, datetime],
+        list[int],
+    ] = defaultdict(list)
+    for forwarding_index, intent in enumerate(forwarding):
+        target = intent.route_key.target
+        if isinstance(target, ZoneRouteTarget):
+            current_slice = source_facts.source_slices_by_time[
+                intent.nominal_time
+            ][1]
+            assert current_slice.timestamp is not None
+            forwarding_by_zone_boundary[
+                (target.zone_id, current_slice.timestamp)
+            ].append(forwarding_index)
     for zone_index, zone_edge in enumerate(zone_edges):
-        for forwarding_index, intent in enumerate(forwarding):
-            target = intent.route_key.target
-            if (
-                not isinstance(target, ZoneRouteTarget)
-                or target.zone_id != zone_edge.zone_id
-                or _source_slices(intent.nominal_time, slices)[1].timestamp
-                != zone_edge.nominal_time
-            ):
-                continue
+        for forwarding_index in forwarding_by_zone_boundary.get(
+            (zone_edge.zone_id, zone_edge.nominal_time),
+            (),
+        ):
             reason = (
                 "forwarding-stopped-before-zone-retirement"
                 if zone_edge.operation is DifferenceOperation.REMOVED
@@ -762,6 +1123,14 @@ def _compile_constraints(
     return tuple(sorted(constraints, key=_constraint_key))
 
 
+def _latest_index_at_or_before(
+    values: Sequence[tuple[datetime, int]],
+    nominal_time: datetime,
+) -> int | None:
+    position = bisect_right(values, (nominal_time, 2**63 - 1)) - 1
+    return None if position < 0 else values[position][1]
+
+
 def _validate_end_state(
     topology_slice: TopologySlice,
     state: _MutableState,
@@ -774,23 +1143,41 @@ def _validate_end_state(
 
 
 def _require_planned_connection(
-    plan: Plan,
-    baseline_resource_ids: frozenset[ConnectionId],
     binding: _ForwardingBinding,
     nominal_time: datetime,
+    active_resource_ids_by_time: Mapping[
+        datetime,
+        frozenset[ConnectionId],
+    ],
 ) -> None:
-    active = set(baseline_resource_ids)
-    for transition in plan.connection_transitions:
-        if transition.nominal_time > nominal_time:
-            break
-        if transition.operation is ConnectionTransitionOperation.ESTABLISH:
-            active.add(transition.connection_id)
-        else:
-            active.discard(transition.connection_id)
-    if binding.connection_id not in active:
+    if binding.connection_id not in active_resource_ids_by_time[nominal_time]:
         raise ValueError(
             "forwarding realization requires an inactive planned Connection"
         )
+
+
+def _active_resource_ids_by_time(
+    plan: Plan,
+    baseline_resource_ids: frozenset[ConnectionId],
+    nominal_times: set[datetime],
+) -> dict[datetime, frozenset[ConnectionId]]:
+    active = set(baseline_resource_ids)
+    result = {}
+    transition_index = 0
+    transitions = plan.connection_transitions
+    for nominal_time in sorted(nominal_times):
+        while (
+            transition_index < len(transitions)
+            and transitions[transition_index].nominal_time <= nominal_time
+        ):
+            transition = transitions[transition_index]
+            if transition.operation is ConnectionTransitionOperation.ESTABLISH:
+                active.add(transition.connection_id)
+            else:
+                active.discard(transition.connection_id)
+            transition_index += 1
+        result[nominal_time] = frozenset(active)
+    return result
 
 
 def _freeze_state(
@@ -873,21 +1260,23 @@ def _source_slices(
     raise ValueError("transition has no source Difference in Plan coverage")
 
 
-def _connections_by_id(
+def _connection_or_none(
     topology_slice: TopologySlice,
-) -> dict[ConnectionId, Connection]:
-    return {
-        connection.connection_id: connection
-        for connection in topology_slice.connection_slice.connections
-    }
+    connection_id: ConnectionId,
+) -> Connection | None:
+    try:
+        return topology_slice.connection_slice.get_connection(connection_id)
+    except KeyError:
+        return None
 
 
-def _flatten_routes(topology_slice: TopologySlice) -> dict[RouteKey, NodeId]:
-    return {
-        RouteKey(source, target): next_hop
-        for source, targets in topology_slice.route_slice.routes.items()
-        for target, next_hop in targets.items()
-    }
+def _route_next_hop(
+    topology_slice: TopologySlice,
+    route_key: RouteKey,
+) -> NodeId | None:
+    return topology_slice.route_slice.routes.get(route_key.source, {}).get(
+        route_key.target
+    )
 
 
 def _attachment_demands(

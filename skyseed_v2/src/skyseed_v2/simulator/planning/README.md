@@ -95,9 +95,13 @@ Standalone public values and implementations expanded below:
 `ParameterTransition`, `ForwardingTransition`,
 `ForwardingTransitionPrecedence`, `PlanningDecision`,
 `AllAvailablePlanningWindowPolicy`,
+`TimeHorizonPlanningWindowPolicy`, `ConnectionEpisodeConfiguration`,
 `SampleBoundaryConnectionPlanningModel`,
 `MidpointConnectionPlanningModel`,
+`ParameterFieldConfiguration`, `ParameterPlanningConfiguration`,
+`SampleBoundaryParameterPlanningModel`,
 `AccumulatedDeadbandParameterPlanningModel`,
+`ForwardingStabilityConfiguration`, `StableForwardingPlanningModel`,
 `DependencyAwareForwardingPlanningModel`, and `DefaultCoordinationPolicy`.
 
 ## Detailed public class/member diagrams
@@ -235,6 +239,15 @@ classDiagram
         +select_planning_differences()
         +select_publication_differences()
     }
+    class TimeHorizonPlanningWindowPolicy {
+        <<time-horizon planning-window algorithm>>
+        +select_planning_differences()
+        +select_publication_differences()
+    }
+    class ConnectionEpisodeConfiguration {
+        <<immutable algorithm configuration>>
+        +omission_candidate_max_duration_by_kind
+    }
     class SampleBoundaryConnectionPlanningModel {
         <<reference connection algorithm>>
         +plan_connection_transitions()
@@ -246,11 +259,43 @@ classDiagram
         +is_suppression_candidate()
     }
     class AccumulatedDeadbandParameterPlanningModel {
+        <<optimized parameter algorithm>>
+        +plan_parameter_transitions()
+    }
+    class ParameterFieldConfiguration {
+        <<immutable algorithm configuration>>
+        +absolute_deadband
+        +relative_deadband
+        +persistence
+        +max_staleness
+    }
+    class ParameterPlanningConfiguration {
+        <<immutable algorithm configuration>>
+        +bandwidth_bps
+        +delay_us
+        +packet_loss_ppm
+        +bundle_drifted_fields
+    }
+    class SampleBoundaryParameterPlanningModel {
         <<reference parameter algorithm>>
         +plan_parameter_transitions()
     }
     class DependencyAwareForwardingPlanningModel {
         <<reference forwarding algorithm>>
+        +plan_forwarding_transitions()
+        +plan_forwarding_precedences()
+    }
+    class ForwardingStabilityConfiguration {
+        <<immutable algorithm configuration>>
+        +minimum_hop_gain
+        +minimum_delay_gain_us
+        +persistence
+        +immediate_hop_gain
+        +immediate_delay_gain_us
+        +maximum_hold
+    }
+    class StableForwardingPlanningModel {
+        <<optimized forwarding algorithm>>
         +plan_forwarding_transitions()
         +plan_forwarding_precedences()
     }
@@ -260,10 +305,13 @@ classDiagram
     }
 
     PlanningWindowPolicy <|.. AllAvailablePlanningWindowPolicy
+    PlanningWindowPolicy <|.. TimeHorizonPlanningWindowPolicy
     ConnectionPlanningModel <|.. SampleBoundaryConnectionPlanningModel
     ConnectionPlanningModel <|.. MidpointConnectionPlanningModel
+    ParameterPlanningModel <|.. SampleBoundaryParameterPlanningModel
     ParameterPlanningModel <|.. AccumulatedDeadbandParameterPlanningModel
     ForwardingPlanningModel <|.. DependencyAwareForwardingPlanningModel
+    ForwardingPlanningModel <|.. StableForwardingPlanningModel
     CoordinationPolicy <|.. DefaultCoordinationPolicy
 ```
 
@@ -279,13 +327,20 @@ classDiagram
 | `ForwardingTransitionPrecedence` | `skyseed_v2.simulator.planning.ForwardingTransitionPrecedence` | `predecessor`, `successor` |
 | `PlanningWindowPolicy` | `skyseed_v2.simulator.planning.PlanningWindowPolicy` | `select_planning_differences()`, `select_publication_differences()` |
 | `AllAvailablePlanningWindowPolicy` | `skyseed_v2.simulator.planning.AllAvailablePlanningWindowPolicy` | `select_planning_differences()`, `select_publication_differences()` |
+| `TimeHorizonPlanningWindowPolicy` | `skyseed_v2.simulator.planning.TimeHorizonPlanningWindowPolicy` | `select_planning_differences()`, `select_publication_differences()` |
+| `ConnectionEpisodeConfiguration` | `skyseed_v2.simulator.planning.ConnectionEpisodeConfiguration` | `omission_candidate_max_duration_by_kind` |
 | `ConnectionPlanningModel` | `skyseed_v2.simulator.planning.ConnectionPlanningModel` | `plan_connection_transitions()`, `is_suppression_candidate()` |
 | `SampleBoundaryConnectionPlanningModel` | `skyseed_v2.simulator.planning.SampleBoundaryConnectionPlanningModel` | `plan_connection_transitions()`, `is_suppression_candidate()` |
 | `MidpointConnectionPlanningModel` | `skyseed_v2.simulator.planning.MidpointConnectionPlanningModel` | `plan_connection_transitions()`, `is_suppression_candidate()` |
 | `ParameterPlanningModel` | `skyseed_v2.simulator.planning.ParameterPlanningModel` | `plan_parameter_transitions()` |
+| `ParameterFieldConfiguration` | `skyseed_v2.simulator.planning.ParameterFieldConfiguration` | `absolute_deadband`, `relative_deadband`, `persistence`, `max_staleness` |
+| `ParameterPlanningConfiguration` | `skyseed_v2.simulator.planning.ParameterPlanningConfiguration` | `bandwidth_bps`, `delay_us`, `packet_loss_ppm`, `bundle_drifted_fields` |
+| `SampleBoundaryParameterPlanningModel` | `skyseed_v2.simulator.planning.SampleBoundaryParameterPlanningModel` | `plan_parameter_transitions()` |
 | `AccumulatedDeadbandParameterPlanningModel` | `skyseed_v2.simulator.planning.AccumulatedDeadbandParameterPlanningModel` | `plan_parameter_transitions()` |
 | `ForwardingPlanningModel` | `skyseed_v2.simulator.planning.ForwardingPlanningModel` | `plan_forwarding_transitions()`, `plan_forwarding_precedences()` |
 | `DependencyAwareForwardingPlanningModel` | `skyseed_v2.simulator.planning.DependencyAwareForwardingPlanningModel` | `plan_forwarding_transitions()`, `plan_forwarding_precedences()` |
+| `ForwardingStabilityConfiguration` | `skyseed_v2.simulator.planning.ForwardingStabilityConfiguration` | `minimum_hop_gain`, `minimum_delay_gain_us`, `persistence`, `immediate_hop_gain`, `immediate_delay_gain_us`, `maximum_hold` |
+| `StableForwardingPlanningModel` | `skyseed_v2.simulator.planning.StableForwardingPlanningModel` | `plan_forwarding_transitions()`, `plan_forwarding_precedences()` |
 | `CoordinationPolicy` | `skyseed_v2.simulator.planning.CoordinationPolicy` | `coordinate_transitions()` |
 | `DefaultCoordinationPolicy` | `skyseed_v2.simulator.planning.DefaultCoordinationPolicy` | `coordinate_transitions()` |
 

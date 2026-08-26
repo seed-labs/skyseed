@@ -158,6 +158,7 @@ def prepare_mini_satellite_internet_planning(
         plans.append(planner.synchronize())
     configuration = {
         "scenario_identity": "mini_satellite_internet",
+        "scenario_display_name": "Mini Satellite Internet",
         "slice_interval_seconds": DEFAULT_SLICE_INTERVAL.total_seconds(),
         "real_slice_count": REAL_SLICE_COUNT,
         "planning_window": "all generated unpublished Differences",

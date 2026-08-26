@@ -103,6 +103,17 @@
   the complete Runner event history to durable JSONL, which the post-run Runner
   Inspection Tool reads directly; the Tool gains no lifecycle, kernel,
   dataplane, or traffic-observation authority.
+- heavy generation-time Inspection materialization in S4 qualification runs in
+  a small bounded set of independent processes after each required domain
+  evidence boundary is immutable. Slicer → Planner → Compiler remains the
+  domain dependency chain: Planner completion does not wait for Planner Tool
+  rendering before Compiler starts. Each worker first persists a deterministic
+  detached handoff, then projects and renders in a staging directory, audits
+  its inventory/checksums, and atomically publishes. The final CLI join is an
+  artifact-completion gate, not a domain dependency. Domain and Inspection
+  statuses remain separate, and Tool time is excluded from domain Observation
+  rollups. Repository-produced gzip/pickle handoffs are trusted local rebuild
+  evidence, not portable/untrusted interchange or a public serialization API.
 - candidate and provenance material is non-authoritative and never a default
   implementation source.
 

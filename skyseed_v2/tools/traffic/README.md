@@ -5,7 +5,7 @@ This repository-local Tool consumes only durable post-run evidence:
 ```text
 inspection/traffic/traffic-telemetry.jsonl
 inspection/slice/slice-manifest.json + chunks/slice-*.js
-inspection/bpf-compiler/bpf-compiler-inspection.json
+inspection/bpf-compiler/manifest.json + chunks/*.js
 inputs/traffic-workload.json              # optional planned context
         ↓
 read + fail-closed timeline/generation/network validation
@@ -17,8 +17,9 @@ standalone traffic replay HTML/JSON bundle
 
 It does not retain or call a Runner, collector, kernel command, Simulator
 Model, Compiler, InternetMap component, or network-semantic authority. The v3
-reader cross-validates the telemetry generation/boundary identities against
-the existing Compiler inspection artifact and derives each background network
+reader reconstructs only its required Compiler domains from the manifest and
+chunks (while retaining legacy monolith read compatibility), cross-validates
+the telemetry generation/boundary identities, and derives each background network
 only from exact-generation reciprocal `interface_identity` evidence. The
 grouping scope remains reliable ICMP packet evidence with source/destination
 IPv4, type, identifier, and sequence. Echo request/reply records are paired

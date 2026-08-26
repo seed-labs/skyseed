@@ -58,6 +58,7 @@ from skyseed_v2.simulator import (
 )
 from tools.slice import write_slice_difference_tool
 from tools.bpf_compiler import write_bpf_compiler_tool
+from tools.observation import write_observation_tool
 from tools.planner import write_planner_tool
 from tools.topology import write_topology_tool
 from tools.zone import write_zone_tool
@@ -90,10 +91,43 @@ def write_planner_inspection(
     return write_planner_tool(
         slicer,
         plans,
+        planner.get_consumed_differences(),
         planner.get_planning_decisions(),
         configuration,
         output,
     )
+
+
+def _with_planning_windows(
+    configuration: dict[str, object], observer
+) -> dict[str, object]:
+    """Attach compact exact Planner synchronization coverage for the Tool."""
+
+    return {
+        **configuration,
+        "planning_windows": tuple(
+            {
+                "publication_index": record["scope"]["publication_index"],
+                "planning_start_slice_id": record["scope"][
+                    "planning_start_slice_id"
+                ],
+                "planning_end_slice_id": record["scope"][
+                    "planning_end_slice_id"
+                ],
+                "publication_start_slice_id": record["scope"][
+                    "publication_start_slice_id"
+                ],
+                "publication_end_slice_id": record["scope"][
+                    "publication_end_slice_id"
+                ],
+                "start_timestamp": record["scope"].get("start_timestamp"),
+                "end_timestamp": record["scope"].get("end_timestamp"),
+            }
+            for record in observer.snapshot()["records"]
+            if record["component"] == "planner"
+            and record["stage"] == "total-synchronize"
+        ),
+    }
 
 
 def _capture_input_files(
@@ -256,7 +290,7 @@ traffic_tool_status=0
 {python} -m tools.traffic \\
     --telemetry "$SCRIPT_DIR/inspection/traffic/traffic-telemetry.jsonl" \\
     --slice "$SCRIPT_DIR/inspection/slice/slice-manifest.json" \\
-    --bpf-compiler "$SCRIPT_DIR/inspection/bpf-compiler/bpf-compiler-inspection.json" \\
+    --bpf-compiler "$SCRIPT_DIR/inspection/bpf-compiler/manifest.json" \\
     --output "$SCRIPT_DIR/inspection/traffic" \\
     || traffic_tool_status=$?
 
@@ -330,6 +364,7 @@ def main() -> int:
     zone_output = arguments.output / "inspection/zone"
     slice_output = arguments.output / "inspection/slice"
     planner_output = arguments.output / "inspection/planner"
+    observation_output = arguments.output / "inspection/observation"
     bpf_compiler_output = arguments.output / "inspection/bpf-compiler"
     traffic_workload_input = arguments.output / "inputs"
 
@@ -346,11 +381,31 @@ def main() -> int:
         emulator=emulator,
     )
     slicer = simulator.get_slicer()
+    observation_records = observation_output / "execution-observations.jsonl"
+    observer = simulator._enable_execution_observation(
+        observation_records,
+        metadata={
+            "scenario_identity": "mini_satellite_internet",
+            "timeline_start": slicer.get_timeline().start_time.isoformat(),
+            "slice_interval_seconds": (
+                slicer.get_timeline().slice_interval.total_seconds()
+            ),
+            "real_slice_count": REAL_SLICE_COUNT,
+        },
+    )
     created_slices = slicer.create_all_slices()
     if len(created_slices) != REAL_SLICE_COUNT:
         raise AssertionError("bounded reference Timeline produced wrong count")
     planner, plans, planning_configuration = (
         prepare_mini_satellite_internet_planning(simulator, planner)
+    )
+    planning_configuration = _with_planning_windows(
+        planning_configuration, observer
+    )
+    simulator._write_execution_observations()
+    observation_result = write_observation_tool(
+        observation_records,
+        observation_output,
     )
     compiled_realizations = _compile_bpf_realizations(slicer, plans)
     topology = slicer.get_topology()
@@ -386,6 +441,7 @@ def main() -> int:
         zone_result,
         slice_result,
         planner_result,
+        observation_result,
         bpf_compiler_result,
     )
     if not all(result["status"] == "PASS" for result in results):
@@ -419,6 +475,7 @@ def main() -> int:
     print(f"Zone Tool entry: {zone_output / 'index.html'}")
     print(f"Slice / Difference Tool entry: {slice_output / 'index.html'}")
     print(f"Planner Tool entry: {planner_output / 'index.html'}")
+    print(f"Observation Tool entry: {observation_output / 'index.html'}")
     print(
         f"BPF Compiler Tool entry: {bpf_compiler_output / 'index.html'}"
     )

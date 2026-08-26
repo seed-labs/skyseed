@@ -2,7 +2,8 @@
 
 The repository-local facade consumes consecutive immutable `Plan` values and
 their already-produced `BpfCompiledRealization` values. It writes one primary
-offline HTML page plus deterministic private JSON/audit files.
+offline HTML page, a compact file-compatible manifest, paged exact-evidence
+chunks, and deterministic audit files.
 
 Legend: `A --> B` means the output of stage A is the only input of stage B.
 
@@ -18,27 +19,37 @@ flowchart LR
 `compile_bpf`, queries Simulator/Slicer/Planner, invokes a Model, or derives a
 runtime/kernel binding. Compilation belongs to the caller before the Tool.
 
-The default page view is a compiled-result-first symbolic operation inventory:
-resource establish/retire, bidirectional attachment requirements, directional
-qdisc targets and updates, forwarding operations with resolved symbolic
-egress, Zone-edge operations, and explicit dependency relationships. It does
-not present these values as concrete runtime commands or bindings.
+The primary page answers what each Plan became: logical delta input, interval
+operations, complete intended end-state baseline, adjacent-baseline churn, and
+serialized family size. Four run-wide views remain: logical Plan input
+cardinality, complete realization baseline size, adjacent realization churn,
+and whole-run backend-family bytes. With many Plans, the first three use at
+most twelve contiguous readable buckets. Input work is summed; baseline size
+uses median plus min/max rather than summing complete baselines; churn uses
+group medians and ratio ranges. Clicking a bucket exposes its exact Pn/Cn/Rn
+members. Compile-time and synthetic density charts are intentionally absent.
 
-The continuous multi-Plan timeline and interval switcher also provide a
-secondary Plan-to-symbolic provenance comparison, focused resource/qdisc/
-forwarding/Zone views, ordering constraints, and intended end state. Exact
-origin links are shown for Connection, Parameter, and Forwarding values where
-current fields support the relationship. Zone edges are clearly marked as
-mechanical Compiler output; no nonexistent Plan transition provenance is
-invented.
+The Plan scrubber drives secondary lazy drill-down for exact Plan transitions,
+resource/qdisc/forwarding/Zone operations, ordering constraints, complete
+baseline records, and exact adjacent before/after keys. Exact origin links are
+shown where retained fields prove the relationship. Zone edges are marked as
+mechanical Compiler output; no nonexistent transition provenance is invented.
+Each realization also has a canonical JSON SHA-256 change detector in the
+manifest and qualification inventory.
 
 Canonical identifiers remain in JSON and expandable page details. Private
 display aliases shorten node and Zone labels without changing identity. A
 same-next-hop `CHANGED` is highlighted as a formal change with equal old/new
 next hops, never collapsed into a no-op.
 
-Browser smoke consumes the written HTML from `scripts/` and remains outside
-the Tool pipeline. The complex human-review entry is:
+The HTML embeds neither the manifest nor exact payload. `manifest.js` supports
+direct `file://` opening, details are split into bounded chunks, and stale-load
+tokens plus registry cleanup bound active browser state. Browser smoke consumes
+the written HTML from `scripts/` and remains outside the Tool pipeline. The
+exact chunks use deterministic `gzip-base64-json` envelopes carrying the
+uncompressed byte count and SHA-256; only the requested page is decompressed.
+The
+complex human-review entry is:
 
 ```bash
 python -m examples.mini_satellite_internet.main

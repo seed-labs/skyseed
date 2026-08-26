@@ -19,10 +19,17 @@ from skyseed_v2.simulator import (
     PlanningDecision,
     RouteKey,
     Slicer,
+    TopologyDifference,
     ZoneRouteTarget,
 )
 
-from tools.slice.reader import read_slice_differences
+from tools.slice.reader import (
+    _read_connection,
+    _read_difference,
+    _read_route,
+    _read_static_nodes,
+    _read_zones,
+)
 from tools._history import read_jsonl_records
 
 
@@ -61,6 +68,7 @@ def read_planner_history(path: Path) -> dict[str, Any]:
 def read_planner_inspection(
     slicer: Slicer,
     plans: tuple[Plan, ...],
+    differences: tuple[TopologyDifference, ...],
     decisions: tuple[PlanningDecision, ...],
     configuration: Mapping[str, object],
 ) -> PlannerInspectionRead:
@@ -74,24 +82,38 @@ def read_planner_inspection(
     decision_values = tuple(decisions)
     if any(not isinstance(value, PlanningDecision) for value in decision_values):
         raise TypeError("decisions must contain PlanningDecision values")
+    difference_values = tuple(differences)
+    if any(
+        not isinstance(value, TopologyDifference)
+        for value in difference_values
+    ):
+        raise TypeError("differences must contain TopologyDifference values")
     if not isinstance(configuration, Mapping):
         raise TypeError("configuration must be a Mapping")
     _require_continuous_plans(plan_values)
-
-    slice_evidence = read_slice_differences(slicer).snapshot
+    retained_ids = slicer.get_retained_slice_ids()
+    if retained_ids != tuple(range(retained_ids[-1] + 1)):
+        raise ValueError("retained Slice IDs must form one continuous prefix")
+    if tuple(value.current_slice_id for value in difference_values) != tuple(
+        retained_ids[1:]
+    ):
+        raise ValueError(
+            "exact consumed Differences must align with retained real Slices"
+        )
+    difference_by_slice_id = {
+        value.current_slice_id: value for value in difference_values
+    }
+    topology = slicer.get_topology()
+    timeline = slicer.get_timeline()
+    nodes, orbits = _read_static_nodes(topology)
+    zones, _ = _read_zones(topology)
     slices = tuple(
-        {
-            "slice_id": value["slice_id"],
-            "timestamp": value["timestamp"],
-            "positions": deepcopy(value["positions"]),
-            "connections": deepcopy(value["connections"]),
-            "routes": _expand_routes(value["routes"]),
-            "paths": _restore_paths_for_planner(value),
-            "difference_from_previous": _expand_difference(
-                value["difference_from_previous"]
-            ),
-        }
-        for value in slice_evidence["slices"]
+        _read_planner_slice(
+            slicer,
+            slice_id,
+            difference_by_slice_id.get(slice_id),
+        )
+        for slice_id in retained_ids
     )
     return PlannerInspectionRead(
         {
@@ -99,17 +121,39 @@ def read_planner_inspection(
             "tool": "planner-inspection",
             "authority": {
                 "status": "non-authoritative-view",
-                "slicer": "retained public Slicer results and Differences",
+                "slicer": "retained public Slicer results",
+                "differences": "exact caller-provided Planner-consumed Differences",
                 "plans": "immutable public Plan publications",
                 "decisions": "Planner.get_planning_decisions result",
                 "models": "not invoked by this Tool",
             },
             "configuration": deepcopy(dict(configuration)),
-            "timeline": deepcopy(slice_evidence["timeline"]),
+            "timeline": {
+                "retained_slice_ids": retained_ids,
+                "slice_count_including_zero": len(retained_ids),
+                "real_slice_count": len(retained_ids) - 1,
+                "artifact_end_time": next(
+                    (
+                        str(value["timestamp"])
+                        for value in reversed(slices)
+                        if value["timestamp"] is not None
+                    ),
+                    timeline.start_time.isoformat(),
+                ),
+                "start_time": timeline.start_time.isoformat(),
+                "end_time": (
+                    None
+                    if timeline.end_time is None
+                    else timeline.end_time.isoformat()
+                ),
+                "slice_interval_seconds": (
+                    timeline.slice_interval.total_seconds()
+                ),
+            },
             "topology": {
-                "nodes": deepcopy(slice_evidence["topology"]["nodes"]),
-                "orbits": deepcopy(slice_evidence["topology"]["orbits"]),
-                "zones": deepcopy(slice_evidence["topology"]["zones"]),
+                "nodes": nodes,
+                "orbits": orbits,
+                "zones": zones,
             },
             "slices": slices,
             "plans": tuple(_read_plan(index, plan) for index, plan in enumerate(plan_values)),
@@ -127,6 +171,54 @@ def read_planner_inspection(
     )
 
 
+def _read_planner_slice(
+    slicer: Slicer,
+    slice_id: int,
+    difference: TopologyDifference | None,
+) -> dict[str, object]:
+    value = slicer.get_slice(slice_id)
+    return {
+        "slice_id": value.slice_id,
+        "timestamp": (
+            None if value.timestamp is None else value.timestamp.isoformat()
+        ),
+        "positions": tuple(
+            {
+                "node_id": node_id.value,
+                "ecef_m": {
+                    "x": position.x_m,
+                    "y": position.y_m,
+                    "z": position.z_m,
+                },
+            }
+            for node_id, position in value.positions.items()
+        ),
+        "connections": tuple(
+            _read_connection(connection)
+            for connection in value.connection_slice.connections
+        ),
+        "zone_service_assignments": tuple(
+            {
+                "zone_id": zone_id,
+                "service_satellite_id": satellite_id.value,
+            }
+            for zone_id, satellite_id in (
+                value.connection_slice.zone_service_assignments.items()
+            )
+        ),
+        "routes": tuple(
+            _read_route(RouteKey(source, target), next_hop)
+            for source, targets in value.route_slice.routes.items()
+            for target, next_hop in targets.items()
+        ),
+        "difference_from_previous": (
+            None
+            if difference is None
+            else _expand_difference(_read_difference(difference))
+        ),
+    }
+
+
 def _expand_routes(
     routes: tuple[tuple[str, str, str], ...],
 ) -> tuple[dict[str, object], ...]:
@@ -139,54 +231,6 @@ def _expand_routes(
         }
         for source, target_reference, next_hop in routes
     )
-
-
-def _restore_paths_for_planner(
-    slice_record: Mapping[str, object],
-) -> tuple[dict[str, object], ...]:
-    """Preserve the existing Planner Tool view from compact Slice reads."""
-
-    routes = tuple(slice_record["routes"])
-    assignments = {
-        str(value["zone_id"]): str(value["service_satellite_id"])
-        for value in slice_record["zone_service_assignments"]
-    }
-    next_hops = {
-        (str(source), str(target_reference)): str(next_hop)
-        for source, target_reference, next_hop in routes
-    }
-    paths = []
-    for source, target_reference, _next_hop in routes:
-        target = _expand_target(target_reference)
-        terminal = (
-            str(target["ground_station_id"])
-            if target["kind"] == "G"
-            else assignments.get(str(target["zone_id"]))
-        )
-        if terminal is None:
-            continue
-        nodes = [str(source)]
-        seen = {str(source)}
-        current = str(source)
-        while current != terminal:
-            next_value = next_hops.get((current, str(target_reference)))
-            if next_value is None or next_value in seen:
-                nodes = []
-                break
-            nodes.append(next_value)
-            seen.add(next_value)
-            current = next_value
-        if nodes:
-            paths.append(
-                {
-                    "path_id": f"{source}|{target_reference}",
-                    "source": source,
-                    "target": target,
-                    "nodes": nodes,
-                    "hop_count": len(nodes) - 1,
-                }
-            )
-    return tuple(paths)
 
 
 def _expand_difference(
@@ -259,7 +303,7 @@ def _read_plan(index: int, plan: Plan) -> dict[str, object]:
     )
     return {
         "plan_index": index,
-        "label": f"Plan {index + 1}",
+        "label": f"P{index}",
         "start_slice_id": plan.start_slice_id,
         "start_timestamp": (
             None if plan.start_timestamp is None else plan.start_timestamp.isoformat()
