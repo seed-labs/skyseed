@@ -24,7 +24,7 @@ def test_slice_tool_runs_in_an_independent_process_and_rebuilds_from_handoff(
         build_mini_satellite_internet_emulator()
     )
     slicer.create_all_slices()
-    evidence = tmp_path / "qualification"
+    evidence = tmp_path / "inspection" / "_execution"
     output = tmp_path / "inspection" / "slice"
     executor = _DetachedInspectionExecutor(evidence, max_workers=2)
 
@@ -57,17 +57,32 @@ def test_slice_tool_runs_in_an_independent_process_and_rebuilds_from_handoff(
     assert not tuple(output.parent.glob(".slice.staging-*"))
 
 
-def test_s4_qualification_schedules_planner_tool_before_compiler_domain() -> None:
-    source = (
-        Path(__file__).resolve().parents[2]
-        / "examples/s4_satellite_internet/qualification.py"
-    ).read_text(encoding="utf-8")
+def test_s4_main_uses_neutral_detached_handoffs_around_public_compilation() -> None:
+    example = (
+        Path(__file__).resolve().parents[2] / "examples/s4_satellite_internet"
+    )
+    source = (example / "main.py").read_text(encoding="utf-8")
 
-    planner_submit = source.index('inspection_executor.submit(\n                    "planner"')
-    compiler_start = source.index('_execution_event("compiler", "start"')
-    compiler_submit = source.index('inspection_executor.submit(\n                    "compiler"')
-    final_join = source.index("inspection_executor.join()")
+    planner_boundary = source.index(
+        "if plan.end_slice_id == final_slice_id:"
+    )
+    observation_binding = source.index("with _bind_compile_observation(")
+    public_compile = source.index("realization = compile_bpf(")
+    compiler_submit = source.index(
+        'schedule(\n                "compiler"',
+        public_compile,
+    )
+    final_join = source.index("tasks = executor.join()")
 
-    assert planner_submit < compiler_start < compiler_submit < final_join
-    assert '"status": domain_status' in source
-    assert '"planner_tool_building_when_compiler_started"' in source
+    assert (
+        planner_boundary
+        < observation_binding
+        < public_compile
+        < compiler_submit
+        < final_join
+    )
+    assert 'inspection / "_execution"' in source
+    assert "_compile_bpf_observed" not in source
+    assert "_record_public_compile" not in source
+    assert "qualification" not in source
+    assert not (example / "qualification.py").exists()

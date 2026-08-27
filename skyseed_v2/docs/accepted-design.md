@@ -103,17 +103,26 @@
   the complete Runner event history to durable JSONL, which the post-run Runner
   Inspection Tool reads directly; the Tool gains no lifecycle, kernel,
   dataplane, or traffic-observation authority.
-- heavy generation-time Inspection materialization in S4 qualification runs in
-  a small bounded set of independent processes after each required domain
-  evidence boundary is immutable. Slicer → Planner → Compiler remains the
-  domain dependency chain: Planner completion does not wait for Planner Tool
-  rendering before Compiler starts. Each worker first persists a deterministic
-  detached handoff, then projects and renders in a staging directory, audits
-  its inventory/checksums, and atomically publishes. The final CLI join is an
-  artifact-completion gate, not a domain dependency. Domain and Inspection
-  statuses remain separate, and Tool time is excluded from domain Observation
-  rollups. Repository-produced gzip/pickle handoffs are trusted local rebuild
-  evidence, not portable/untrusted interchange or a public serialization API.
+- the S4 example has one formal Simulator/Slicer composition and one offline
+  rolling application path. `main.py` advances Slicer far enough for the
+  accepted planning lookahead, asks the Simulator-owned Planner to publish a
+  continuous prefix, and optionally calls public `compile_bpf(...)` immediately
+  with the explicit previous realization. Stage and Slice-limit controls are
+  early-stop/execution bounds on this path, not alternate Simulator or domain
+  algorithms. This S4 path stops before Runner;
+- heavy generation-time S4 Inspection materialization runs in a small bounded
+  set of independent processes after each required domain evidence boundary is
+  immutable. Slicer → Planner → Compiler remains the domain dependency chain:
+  Tool work never becomes a prerequisite for a later domain stage, and a task
+  is deferred until domain completion when no worker is available. Each worker
+  first persists a deterministic detached handoff under neutral
+  `inspection/_execution/` metadata, then projects and renders in a staging
+  directory, audits its inventory/checksums, and atomically publishes. The
+  final CLI join is an artifact-completion gate, not a domain dependency.
+  Domain and Inspection statuses remain separate, and Tool time is excluded
+  from domain Observation rollups. Repository-produced gzip/pickle handoffs are
+  trusted local rebuild evidence, not portable/untrusted interchange or a
+  public serialization API;
 - candidate and provenance material is non-authoritative and never a default
   implementation source.
 

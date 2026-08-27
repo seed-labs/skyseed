@@ -6,7 +6,7 @@ The maintained repository examples have three deliberately different roles.
 | --- | --- | --- | --- | --- |
 | `complete_static_emulator` | Minimal static/canonical example kept deliberately small: two Satellites plus one GroundStation, explicit public construction, Emulator-to-Simulator projection, a short Slice/Difference/Planner teaching chain, and static Compose smoke | `python3 -m examples.complete_static_emulator.main` | `output/runtime/`, `start.sh`, `cleanup.sh` | Topology, Zone, and the small `simu.py` teaching flow |
 | `mini_satellite_internet` | Small but reasonably rich reusable satellite Internet reference: the complete rolling Simulator → Planner → BPF Compiler → BPF Runner path and post-run evidence | `python3 -m examples.mini_satellite_internet.main` | `output/runtime/`, `start.sh`, `run.sh`, `launch.sh`, `cleanup.sh` | Topology, Zone, Slice / Difference, Planner, BPF Compiler, BPF Runner, Traffic / Path Replay, InternetMap |
-| `s4_satellite_internet` | S4 static-by-default review plus opt-in bounded Simulator qualification: 348 Satellites, 355 frozen evidence-backed Starlink gateway sites, and 732 global Zones | `python3 -m examples.s4_satellite_internet.main` (`--dynamic` opts in) | none; compute-only evidence | Canonical Topology and Zone views, plus the maintained lazy Slice / Difference view after dynamic qualification |
+| `s4_satellite_internet` | Large compute-only S4 reference with one 181-Slice formal Timeline and stage-selected rolling Slicer → Planner → Compiler execution | `python3 -m examples.s4_satellite_internet.main` (`--through` selects the boundary) | none; compute-only evidence | Topology and Zone by default; Slice, Observation, Planner, and Compiler views at their executed boundaries |
 
 All three entries support direct execution from their own directories with
 `python3 main.py`. They use the caller-selected Python interpreter; the
@@ -30,21 +30,23 @@ a rolling BPF runtime scenario.
 example-local canonical traffic workload. The traffic workload remains
 acceptance/reference orchestration used separately from normal execution.
 
-## S4 static input and dynamic Simulator qualification
+## S4 stage-bounded rolling reference
 
 `s4_satellite_internet/` freezes the accepted first-step S4 constellation, a
 355-site evidence-backed Ground Station body, and global Zone candidate into
 v2-local input files. The ground body includes supported current, planned, and
 historical Ka/E sites and is not a simultaneous operational-network snapshot.
-Its default `main.py` invocation intentionally stops after materializing one
-static Topology and writing the existing Topology and Zone inspection
-artifacts. `--dynamic` instead opts into the bounded 30-minute, 10-second
-Position → Connection → Route → Slice → Difference qualification and writes
-example-local evidence plus a lazy per-Slice Slice / Difference artifact under
-the canonical example `output/inspection/` directory. It
-uses the final S4-specific 25-degree Zone-service minimum; the isolated shell
-is not expected to serve every global Zone continuously. It does not create
-Plans, BPF output, or a Compose deployment.
+Its default `main.py` invocation builds the one full Simulator composition but
+leaves Slicer at S0 while writing Topology and Zone inspection artifacts.
+`--through slicer|planner|compiler` advances that same 30-minute, 10-second
+Timeline to the requested early-stop boundary. Planner and Compiler execution
+is rolling: enough future Slice facts are generated for the 50-second planning
+lookahead, a 20-second Plan prefix is published, and public `compile_bpf(...)`
+is called immediately when requested. `--slice-limit` is only an execution
+bound, so a short debug run and full S4 share one composition and algorithm.
+The final S4-specific Zone-service minimum is 25 degrees; the isolated shell is
+not expected to serve every global Zone continuously. This path does not enter
+Runner or create a Compose deployment.
 
 See each example README for exact generation and inspection commands; the two
 deployment-capable examples also document launch and cleanup.

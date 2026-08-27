@@ -110,36 +110,41 @@ provenance material is non-authoritative.
   or generate traffic. The lazy Slice Tool keeps one browser-resident Slice,
   restores only a selected sparse next-hop path, and now presents compact
   projected current-Slice/model context plus clearly labeled Tool-derived
-  service geometry. Scale qualification materializes the Slice, Planner, and
-  Compiler Tools in bounded independent processes from immutable persisted
-  handoffs. The domain chain and detached Inspection work have separate
-  statuses; checksum-audited staging is published atomically, and Tool work is
-  excluded from domain Observation timings.
+  service geometry. The large S4 example materializes heavy Slice, Planner,
+  Compiler, and Observation Tools in bounded independent processes from
+  immutable persisted handoffs under `inspection/_execution/`. The domain chain
+  and detached Inspection work have separate statuses; checksum-audited staging
+  is published atomically, and Tool work is excluded from domain Observation
+  timings.
 - There are three maintained runnable examples:
   `complete_static_emulator` is the minimal two-Satellite teaching/contract
   smoke example, `mini_satellite_internet` is the canonical dynamic rolling
-  BPF example, and `s4_satellite_internet` is the static-by-default S4 input
-  with an opt-in bounded dynamic Simulator qualification over 348 Satellites,
-  355 frozen evidence-backed Starlink gateway sites, 703 total dynamic nodes,
-  and a 732-Zone global candidate. The qualification
-  ground body includes supported current, planned, and historical Ka/E sites;
-  it is not a simultaneous operational-network snapshot. Default dynamic mode
-  stops at Position → Connection → Route → Slice → Difference. Its explicit
-  Planner qualification mode continues through the backend-independent Planner
-  and one-shot BPF Compiler but never enters Runner or runtime.
+  BPF example, and `s4_satellite_internet` is the large static-by-default S4
+  input over 348 Satellites, 355 frozen evidence-backed Starlink gateway sites,
+  703 total dynamic nodes, and a 732-Zone global candidate. Its ground body
+  includes supported current, planned, and historical Ka/E sites; it is not a
+  simultaneous operational-network snapshot. The example has one 30-minute,
+  10-second Simulator/Slicer composition. `main.py --through
+  topology|slicer|planner|compiler` selects an early-stop boundary on one
+  rolling progression, while `--slice-limit` only bounds execution. Compiler
+  mode calls public `compile_bpf(...)` for each Plan as it is published and
+  never enters Runner or runtime.
   Its final S4-specific Zone-service minimum is 25 degrees at the Zone
   representative point; generic model configuration behavior is unchanged.
   This isolated shell is not expected to serve all global Zones continuously,
   and served percentage is not a coverage-quality target. The accepted short
   baseline retains Slice 0 plus 20 real Slices/20 Differences; warm complete
   Slice p50/p95 was 0.8263/0.8952 seconds and Difference p50/p95 was
-  0.0401/0.0674 seconds on the qualification host. The accepted long-horizon
+  0.0401/0.0674 seconds on the scale-evidence host. The accepted long-horizon
   run retained Slice 0 plus **181 real Slices / 181 Differences**, published
   **90 Plans**, and compiled **90 `BpfCompiledRealization` values**. Fixed
   Planner and Compiler validation both passed. Domain execution took 459.85
   seconds (Planner 249.46 seconds; Compiler 25.12 seconds), while detached Tool
-  materialization overlapped the chain and joined afterward. These figures are
-  evidence from that host and are not general performance guarantees.
+  materialization overlapped the chain and joined afterward. The historical
+  stage-batched harness that produced those accepted measurements has been
+  removed from normal execution; its semantic output remains the oracle for the
+  one rolling application path. These figures are evidence from that host and
+  are not general performance guarantees.
   `examples/reference` is explicitly non-runnable historical provenance, and
   repository-level `research/` remains persistent non-runtime evidence.
 
@@ -157,15 +162,16 @@ provenance material is non-authoritative.
 
 ## Current milestone
 
-The **S4 Planner + BPF Compiler scale stage** is accepted. It preserves the
-Gateway-scoped satellite-Internet formal model and qualifies the normal bounded
-Planner composition through 181 Differences, 90 rolling publications, and 90
-one-shot BPF compilations. The unified Inspection surfaces retain exact scoped
-evidence behind statistical, temporal, and spatial discovery views. Real
-Firefox gates cover Slice playback, Planner playback state/scroll/camera
-stability, Observation unit navigation, and Compiler grouped-chart drill-down.
-The next scale stage is S4 Runner/runtime qualification; no Runner lifecycle was
-entered here.
+The **S4 Planner + BPF Compiler scale stage** is accepted. Its maintained normal
+entry is now one obvious `emu.py` → `simu.py` → `main.py` call chain with one
+Simulator composition and rolling Slicer → Planner → Compiler progression.
+The accepted scale target remains 181 Differences, 90 continuous Plan
+publications, and 90 immutable compiled realizations. Normal output uses
+`inspection/` plus small neutral detached-handoff/status metadata; there is no
+example-local qualification application owner. Frozen GroundStations and
+explicit Zone YAML remain independent inputs, with separate offline refresh and
+Zone-authoring scripts. The next scale stage is S4 Runner/runtime; this S4
+example path does not enter Runner.
 
 ## Current production paths
 

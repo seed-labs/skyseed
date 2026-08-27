@@ -69,7 +69,7 @@ def test_examples_readme_indexes_current_long_term_roles_and_outputs() -> None:
         assert f"`{name}`" in readme
     assert "Minimal static/canonical example kept deliberately small" in readme
     assert "Small but reasonably rich reusable satellite Internet" in readme
-    assert "S4 static-by-default review plus opt-in bounded Simulator" in readme
+    assert "one 181-Slice formal Timeline and stage-selected rolling" in readme
     assert "Topology, Zone, Slice / Difference, Planner, BPF Compiler" in readme
     assert mini.DEFAULT_OUTPUT == (
         EXAMPLES_ROOT / "mini_satellite_internet/output"

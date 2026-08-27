@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from bisect import bisect_right
 from collections import Counter, defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime
 from ipaddress import IPv4Address, IPv4Network
@@ -71,6 +73,56 @@ class _PreparedSourceFacts:
     ]
 
 
+@dataclass(slots=True)
+class _CompileObservationBinding:
+    observer: _ExecutionObserver
+    compile_index: int
+    _total_duration_seconds: float | None = None
+
+    @property
+    def total_duration_seconds(self) -> float:
+        duration = self._total_duration_seconds
+        if duration is None:
+            raise RuntimeError("bound public compilation did not complete")
+        return duration
+
+    def _set_total_duration(self, duration_seconds: float) -> None:
+        if self._total_duration_seconds is not None:
+            raise RuntimeError("bound public compilation recorded twice")
+        self._total_duration_seconds = duration_seconds
+
+
+_CURRENT_COMPILE_OBSERVATION: ContextVar[_CompileObservationBinding | None] = (
+    ContextVar("skyseed_bpf_compile_observation", default=None)
+)
+
+
+@contextmanager
+def _bind_compile_observation(
+    execution_observer: _ExecutionObserver,
+    *,
+    compile_index: int,
+) -> Iterator[_CompileObservationBinding]:
+    """Bind private evidence metadata around one public ``compile_bpf`` call."""
+
+    if not isinstance(execution_observer, _ExecutionObserver):
+        raise TypeError("execution_observer must be an _ExecutionObserver")
+    if (
+        isinstance(compile_index, bool)
+        or not isinstance(compile_index, int)
+        or compile_index < 0
+    ):
+        raise ValueError("compile_index must be a non-negative integer")
+    if _CURRENT_COMPILE_OBSERVATION.get() is not None:
+        raise RuntimeError("Compiler execution observation is already bound")
+    binding = _CompileObservationBinding(execution_observer, compile_index)
+    token = _CURRENT_COMPILE_OBSERVATION.set(binding)
+    try:
+        yield binding
+    finally:
+        _CURRENT_COMPILE_OBSERVATION.reset(token)
+
+
 def compile_bpf(
     plan: Plan,
     *,
@@ -84,12 +136,14 @@ def compile_bpf(
     resources or mutate the supplied objects.
     """
 
+    observation = _CURRENT_COMPILE_OBSERVATION.get()
     return _compile_bpf(
         plan,
         slicer=slicer,
         previous=previous,
-        execution_observer=None,
-        compile_index=0,
+        execution_observer=(None if observation is None else observation.observer),
+        compile_index=(0 if observation is None else observation.compile_index),
+        observation_binding=observation,
     )
 
 
@@ -103,21 +157,11 @@ def _compile_bpf_observed(
 ) -> BpfCompiledRealization:
     """Compile once while emitting detached private execution evidence."""
 
-    if not isinstance(execution_observer, _ExecutionObserver):
-        raise TypeError("execution_observer must be an _ExecutionObserver")
-    if (
-        isinstance(compile_index, bool)
-        or not isinstance(compile_index, int)
-        or compile_index < 0
-    ):
-        raise ValueError("compile_index must be a non-negative integer")
-    return _compile_bpf(
-        plan,
-        slicer=slicer,
-        previous=previous,
-        execution_observer=execution_observer,
+    with _bind_compile_observation(
+        execution_observer,
         compile_index=compile_index,
-    )
+    ):
+        return compile_bpf(plan, slicer=slicer, previous=previous)
 
 
 def _compile_bpf(
@@ -127,6 +171,7 @@ def _compile_bpf(
     previous: BpfCompiledRealization | None,
     execution_observer: _ExecutionObserver | None,
     compile_index: int,
+    observation_binding: _CompileObservationBinding | None,
 ) -> BpfCompiledRealization:
     total_started = _observation_start(execution_observer)
     stage_started = _observation_start(execution_observer)
@@ -348,7 +393,7 @@ def _compile_bpf(
         scope=scope,
         work=output_work,
     )
-    _observe_compile_stage(
+    total_duration = _observe_compile_stage(
         execution_observer,
         stage="total-compile",
         started=total_started,
@@ -376,6 +421,9 @@ def _compile_bpf(
         },
         duration_role="rollup",
     )
+    if observation_binding is not None:
+        assert total_duration is not None
+        observation_binding._set_total_duration(total_duration)
     return result
 
 
@@ -391,18 +439,20 @@ def _observe_compile_stage(
     scope: Mapping[str, object],
     work: Mapping[str, int | float],
     duration_role: str = "stage",
-) -> None:
+) -> float | None:
     if observer is None:
-        return
+        return None
+    duration_seconds = perf_counter() - started
     observer.record(
         component="compiler",
         stage=stage,
         phase="one-shot",
-        duration_seconds=perf_counter() - started,
+        duration_seconds=duration_seconds,
         duration_role=duration_role,
         scope=scope,
         work=work,
     )
+    return duration_seconds
 
 
 def _compile_scope(plan: Plan, compile_index: int) -> dict[str, object]:

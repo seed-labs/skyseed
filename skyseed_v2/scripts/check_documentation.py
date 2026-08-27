@@ -362,7 +362,7 @@ def _check_anchor_consistency() -> None:
         "The **S4 Planner + BPF Compiler scale stage** is accepted",
         "181 real Slices / 181 Differences",
         "90 `BpfCompiledRealization` values",
-        "next scale stage is S4 Runner/runtime qualification",
+        "next scale stage is S4 Runner/runtime",
         "final S4-specific Zone-service minimum is 25 degrees",
         "Slice 0 plus 20 real Slices/20 Differences",
         "Traffic / Path Replay",

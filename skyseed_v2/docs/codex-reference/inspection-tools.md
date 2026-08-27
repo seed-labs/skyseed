@@ -121,15 +121,16 @@ Tool-owned projections. Its spatial panel uses exact retained ECEF positions
 from the formal Before/After Slice around a nominal transition; it does not
 interpolate sub-slice geometry.
 
-S4 qualification may execute the reader/projection/render/write pipeline in a
-bounded independent worker after the relevant immutable domain boundary. The
-worker persists a deterministic detached snapshot before projection and builds
-to a same-parent staging directory; checksum audit precedes atomic publication.
-Planner Tool work is side work and cannot delay Compiler domain start. The
-final join gates artifact completeness only. Domain status, Tool status, PID,
-RSS, task timing, and overlap evidence remain distinct in qualification output.
-The private gzip/pickle handoff is trusted local rebuild evidence and is not a
-public or untrusted serialization contract.
+Normal stage-bounded S4 execution may run the reader/projection/render/write
+pipeline in a bounded independent worker after the relevant immutable domain
+boundary. The worker persists a deterministic detached snapshot under
+`inspection/_execution/` before projection and builds to a same-parent staging
+directory; checksum audit precedes atomic publication. Tool work is side work
+and cannot delay a later domain stage; when no worker slot is available, its
+submission is deferred until domain completion. The final join gates artifact
+completeness only. Domain and Tool statuses remain distinct in small neutral
+execution metadata. The private gzip/pickle handoff is trusted local rebuild
+evidence and is not a public or untrusted serialization contract.
 
 ## Invariants
 

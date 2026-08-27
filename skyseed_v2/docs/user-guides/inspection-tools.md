@@ -51,22 +51,23 @@ envelopes. They remain directly usable from `file://`; the browser decompresses
 only the selected chunk, while byte-count/SHA-256 metadata and bundle
 inventories preserve exact auditability.
 
-In S4 qualification, the heavy Slice, Planner, BPF Compiler, and Observation
-bundles are materialized by at most two independent family-level worker
-processes by default. Planner Tool work may overlap Compiler domain execution;
-the CLI joins workers only after the Slicer → Planner → Compiler domain chain
-has finished. `qualification/run.json` records separate Domain and Inspection
-statuses, PIDs, task times, peak RSS, final-join time, and the measured Planner
-Tool/Compiler overlap. Tool CPU/wall time is not included in Slicer, Planner,
-or Compiler Observation rollups.
+In the S4 example, heavy Slice, Planner, BPF Compiler, and Observation bundles
+are materialized by at most two independent family-level worker processes by
+default. Tool work may overlap later domain execution when worker capacity is
+available; otherwise submission is deferred until the domain chain is complete
+so a Tool cannot become a Slicer → Planner → Compiler dependency. The CLI joins
+only for final artifact completeness. Small
+`inspection/_execution/status.json` metadata keeps Domain and Inspection
+status separate. Tool CPU/wall time is not included in Slicer, Planner, or
+Compiler Observation records.
 
 Each worker writes a deterministic frozen source handoff under
-`qualification/tool-handoffs/` before projection. After a Tool-only fix, rebuild
-one artifact without rerunning the domain chain:
+`inspection/_execution/tool-handoffs/` before projection. After a Tool-only
+fix, rebuild one artifact without rerunning the domain chain:
 
 ```bash
 python scripts/rebuild_inspection_from_handoff.py \
-  examples/s4_satellite_internet/output/qualification/tool-handoffs/planner.json
+  examples/s4_satellite_internet/output/inspection/_execution/tool-handoffs/planner.json
 ```
 
 The handoff is trusted repository-produced gzip/pickle evidence, not an
@@ -113,16 +114,17 @@ on either Zone view, to inspect the existing static fields. The subtle
 Natural Earth coastline is embedded for offline orientation only; it is not
 simulation or Zone authority.
 
-Opt into the bounded dynamic Simulator branch with:
+Run the same S4 composition through Slicer with:
 
 ```bash
-python examples/s4_satellite_internet/main.py --dynamic
+python examples/s4_satellite_internet/main.py --through slicer
 ```
 
-That adds the maintained `output/inspection/slice/index.html` alongside the
-Topology and Zone Tools. Compact run metrics remain separate under
-`output/qualification/`; lazy per-Slice scripts prevent the browser page from
-becoming a monolithic second simulation authority.
+That adds the maintained `output/inspection/slice/index.html` and Observation
+view alongside the Topology and Zone Tools. `--through planner` adds Planner,
+and `--through compiler` adds Compiler. `--slice-limit` bounds execution only;
+lazy per-Slice scripts prevent the browser page from becoming a monolithic
+second simulation authority.
 
 Validate the generated Slice / Difference page in Firefox without keeping a
 screenshot:

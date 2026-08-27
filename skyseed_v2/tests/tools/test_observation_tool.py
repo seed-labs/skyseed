@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 
-from examples.s4_satellite_internet import qualification as s4_qualification
 from examples.mini_satellite_internet.emu import (
     build_mini_satellite_internet_emulator,
 )
@@ -526,63 +525,3 @@ def test_execution_observation_does_not_change_mini_formal_results(
     else:
         observed._write_execution_observations()
         assert read_execution_observations(path).records
-
-
-def test_s4_secondary_observation_failure_does_not_mask_domain_failure(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    class DomainFailure(RuntimeError):
-        pass
-
-    class DiagnosticFailure(RuntimeError):
-        pass
-
-    simulator = create_mini_satellite_internet_simulator(
-        build_mini_satellite_internet_emulator()
-    )
-    primary = DomainFailure("primary domain failure")
-
-    def fail_domain(self):
-        raise primary
-
-    def fail_tool(*args, **kwargs):
-        raise DiagnosticFailure("secondary tool failure")
-
-    monkeypatch.setattr(
-        type(simulator.get_slicer()),
-        "create_next_slice",
-        fail_domain,
-    )
-    monkeypatch.setattr(s4_qualification, "write_observation_tool", fail_tool)
-
-    with pytest.raises(DomainFailure) as caught:
-        s4_qualification.run_s4_dynamic_qualification(
-            simulator,
-            tmp_path / "s4",
-            static_construction_seconds=0.0,
-        )
-
-    assert caught.value is primary
-    assert any(
-        "observation-tool:" in note and "secondary tool failure" in note
-        for note in caught.value.__notes__
-    )
-    blocked = json.loads(
-        (tmp_path / "s4/qualification/run.json").read_text()
-    )
-    assert blocked["blocker"] == {
-        "type": "DomainFailure",
-        "message": "primary domain failure",
-    }
-    assert blocked["observation_diagnostic_failures"] == [
-        {
-            "operation": "observation-tool",
-            "exception_module": __name__,
-            "exception_type": (
-                "test_s4_secondary_observation_failure_does_not_mask_"
-                "domain_failure.<locals>.DiagnosticFailure"
-            ),
-            "message": "secondary tool failure",
-        }
-    ]

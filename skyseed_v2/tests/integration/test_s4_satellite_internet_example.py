@@ -11,17 +11,11 @@ import shutil
 
 import pytest
 
-from examples.s4_satellite_internet import generate_inputs
+from examples.s4_satellite_internet import main as s4_main
 from examples.s4_satellite_internet.emu import (
     build_s4_satellite_internet_emulator,
 )
-from examples.s4_satellite_internet.qualification import _slice_tool_context
 from examples.s4_satellite_internet.simu import (
-    DYNAMIC_REAL_SLICE_COUNT,
-    DYNAMIC_SLICE_INTERVAL,
-    DYNAMIC_TIMELINE_END,
-    STABLE_BOUNDED_PROFILE,
-    EXPERIMENTAL_STABLE_GLOBAL_PROFILE,
     BANDWIDTH_BPS_BY_KIND,
     GROUND_STATION_MAXIMUM_DISTANCE_M,
     GROUND_STATION_MINIMUM_ELEVATION_DEG,
@@ -31,34 +25,34 @@ from examples.s4_satellite_internet.simu import (
     MAXIMUM_GROUND_STATION_ACCESS_COUNT,
     MAXIMUM_ISL_DISTANCE_M,
     PACKET_LOSS_PPM_BY_KIND,
-    REFERENCE_BOUNDED_PROFILE,
-    REFERENCE_GLOBAL_PROFILE,
     PROPAGATION_SPEED_M_PER_S,
+    S4_REAL_SLICE_COUNT,
+    S4_SLICE_INTERVAL,
+    S4_TIMELINE_END,
     ZONE_COVERAGE_MINIMUM_ELEVATION_DEG,
-    create_s4_dynamic_simulator,
     create_s4_planner,
-    create_s4_static_simulator,
+    create_s4_simulator,
     s4_planning_configuration,
+    s4_slicing_configuration,
     _IdentityCoordinationPolicy,
 )
+from scripts import generate_zone_layout, refresh_s4_ground_stations
 from skyseed_v2.configuration.emulator import load_static_emulator_config
 from skyseed_v2.configuration.simulator import load_zone_layout_definition
 from skyseed_v2.emulator.seedemu import get_skyseed_autonomous_systems
 from skyseed_v2.emulator_to_simulator import create_simulator_static_input
 from skyseed_v2.simulator import (
-    CircularOrbitPositionModel,
-    AllAvailablePlanningWindowPolicy,
     AccumulatedDeadbandParameterPlanningModel,
+    CircularOrbitPositionModel,
     ConnectionKind,
     ConnectionSlice,
-    DefaultCoordinationPolicy,
     DependencyAwareForwardingPlanningModel,
     GatewayHopCountRouteModel,
     GeometricConnectionModel,
-    SampleBoundaryConnectionPlanningModel,
-    SampleBoundaryParameterPlanningModel,
-    TimeHorizonPlanningWindowPolicy,
+    Planner,
     RouteSlice,
+    SampleBoundaryConnectionPlanningModel,
+    TimeHorizonPlanningWindowPolicy,
     Simulator,
     Topology,
     TopologyDifference,
@@ -107,10 +101,30 @@ GROUND_STATION_EVIDENCE_FILE = (
 )
 
 
+class _RecordingInspectionExecutor:
+    max_workers = 8
+
+    def __init__(self) -> None:
+        self.submissions: list[tuple[str, Path]] = []
+
+    def submit(self, task, _source, output):
+        self.submissions.append((task, Path(output)))
+        return {"task": task, "status": "BUILDING"}
+
+    def poll(self):
+        return self.records()
+
+    def records(self):
+        return tuple(
+            {"task": task, "status": "BUILDING"}
+            for task, _output in self.submissions
+        )
+
+
 @pytest.fixture(scope="module")
 def s4_topology() -> Topology:
     emulator = build_s4_satellite_internet_emulator()
-    return create_s4_static_simulator(emulator).get_topology()
+    return create_s4_simulator(emulator).get_topology()
 
 
 @pytest.fixture(scope="module")
@@ -122,7 +136,7 @@ def s4_dynamic_progression() -> tuple[
     TopologyDifference,
 ]:
     emulator = build_s4_satellite_internet_emulator()
-    simulator = create_s4_dynamic_simulator(emulator)
+    simulator = create_s4_simulator(emulator)
     slicer = simulator.get_slicer()
     first = slicer.create_next_slice()
     first_difference = slicer.create_difference(0, 1)
@@ -132,24 +146,32 @@ def s4_dynamic_progression() -> tuple[
 
 
 def test_s4_frozen_inputs_are_deterministic_and_v2_local() -> None:
-    generate_inputs._check()
-    assert generate_inputs._generated_longitude_counts() == (
-        EXPECTED_LONGITUDE_COUNTS
+    layout, rendered_zones = generate_zone_layout._canonical_content(
+        latitude_bands=24,
+        equatorial_cells=48,
+        alignment="antimeridian-centered",
     )
+    assert rendered_zones == (EXAMPLE_ROOT / "zones.yaml").read_text(
+        encoding="utf-8"
+    )
+    assert tuple(
+        sum(zone.zone_id.startswith(f"zone-b{index:02d}-") for zone in layout.zones)
+        for index in range(24)
+    ) == EXPECTED_LONGITUDE_COUNTS
     assert sum(EXPECTED_LONGITUDE_COUNTS) == 732
     frozen = EXAMPLE_ROOT / "ground_stations.yaml"
     assert sha256(frozen.read_bytes()).hexdigest() == (
-        generate_inputs.FROZEN_GROUND_STATIONS_SHA256
+        "d570e715d40b167da51dc265668457aaf1fd1d7ea1baf1fd2caa87189efffafd"
     )
     assert sha256(GROUND_STATION_EVIDENCE_FILE.read_bytes()).hexdigest() == (
-        generate_inputs.REVIEWED_GROUND_STATION_EVIDENCE_SHA256
+        refresh_s4_ground_stations.REVIEWED_EVIDENCE_SHA256
     )
     assert len(
-        generate_inputs._load_reviewed_ground_station_sites(
+        refresh_s4_ground_stations.load_reviewed_sites(
             GROUND_STATION_EVIDENCE_FILE
         )
     ) == 355
-    assert generate_inputs._render_ground_stations(
+    assert refresh_s4_ground_stations.render_ground_stations(
         GROUND_STATION_EVIDENCE_FILE
     ) == frozen.read_text(encoding="utf-8")
 
@@ -157,6 +179,142 @@ def test_s4_frozen_inputs_are_deterministic_and_v2_local() -> None:
         source = (EXAMPLE_ROOT / runtime_source).read_text(encoding="utf-8")
         assert "skyseed_v1" not in source
         assert "research/" not in source
+
+
+def test_s4_cli_uses_natural_stage_boundaries_and_one_formal_timeline() -> None:
+    parser = s4_main._parser()
+    default = s4_main._validated_arguments(parser, parser.parse_args([]))
+    bounded = s4_main._validated_arguments(
+        parser,
+        parser.parse_args(
+            ["--through", "compiler", "--slice-limit", "20"]
+        ),
+    )
+
+    assert default.through == "topology"
+    assert default.slice_limit == S4_REAL_SLICE_COUNT
+    assert bounded.through == "compiler"
+    assert bounded.slice_limit == 20
+    for obsolete in ("--dynamic", "--planner", "--planner-profile"):
+        with pytest.raises(SystemExit):
+            parser.parse_args([obsolete])
+    with pytest.raises(SystemExit):
+        s4_main._validated_arguments(
+            parser,
+            parser.parse_args(["--slice-limit", "20"]),
+        )
+    with pytest.raises(SystemExit):
+        s4_main._validated_arguments(
+            parser,
+            parser.parse_args(["--tool-workers", "1"]),
+        )
+
+
+def test_s4_default_main_generates_only_static_tools(tmp_path: Path) -> None:
+    output = tmp_path / "s4"
+
+    assert s4_main.main(["--output", str(output)]) == 0
+    assert (output / "inspection/index.html").is_file()
+    assert (output / "inspection/topology/index.html").is_file()
+    assert (output / "inspection/zone/index.html").is_file()
+    assert not (output / "inspection/slice").exists()
+    assert not (output / "inspection/observation").exists()
+    assert not (output / "inspection/planner").exists()
+    assert not (output / "inspection/compiler").exists()
+    assert not (output / "inspection/_execution").exists()
+
+
+def test_s4_slicer_boundary_stops_before_planner(tmp_path: Path) -> None:
+    simulator = create_s4_simulator(build_s4_satellite_internet_emulator())
+    observer = simulator._enable_execution_observation(
+        tmp_path / "slicer-observations.jsonl"
+    )
+    executor = _RecordingInspectionExecutor()
+
+    result = s4_main._run_dynamic_progression(
+        simulator,
+        through="slicer",
+        final_slice_id=1,
+        observer=observer,
+        executor=executor,
+        inspection=tmp_path / "inspection",
+    )
+
+    assert len(tuple(simulator.get_timeline().iter_timestamps())) == (
+        S4_REAL_SLICE_COUNT
+    )
+    assert simulator.get_slicer().get_retained_slice_ids() == (0, 1)
+    assert result["plans"] == ()
+    assert result["realizations"] == ()
+    with pytest.raises(RuntimeError, match="Planner has not been created"):
+        simulator.get_planner()
+    assert [task for task, _output in executor.submissions] == ["slice"]
+
+
+def test_s4_planner_boundary_stops_before_compiler(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    simulator = create_s4_simulator(build_s4_satellite_internet_emulator())
+    observer = simulator._enable_execution_observation(
+        tmp_path / "planner-observations.jsonl"
+    )
+    executor = _RecordingInspectionExecutor()
+
+    def reject_compiler(*_args, **_kwargs):
+        raise AssertionError("Planner boundary must not call Compiler")
+
+    monkeypatch.setattr(s4_main, "compile_bpf", reject_compiler)
+    result = s4_main._run_dynamic_progression(
+        simulator,
+        through="planner",
+        final_slice_id=1,
+        observer=observer,
+        executor=executor,
+        inspection=tmp_path / "inspection",
+    )
+
+    plans = result["plans"]
+    assert isinstance(plans, tuple)
+    assert tuple((plan.start_slice_id, plan.end_slice_id) for plan in plans) == (
+        (0, 1),
+    )
+    assert result["realizations"] == ()
+    assert len(simulator.get_planner().get_consumed_differences()) == 1
+    assert [task for task, _output in executor.submissions] == [
+        "slice",
+        "planner",
+    ]
+
+
+def test_zone_authoring_check_is_exact_and_read_only(tmp_path: Path) -> None:
+    existing = tmp_path / "zones.yaml"
+    shutil.copyfile(EXAMPLE_ROOT / "zones.yaml", existing)
+    before = existing.read_bytes()
+
+    assert (
+        generate_zone_layout.main(
+            [
+                "--latitude-bands",
+                "24",
+                "--equatorial-cells",
+                "48",
+                "--alignment",
+                "antimeridian-centered",
+                "--check",
+                str(existing),
+            ]
+        )
+        == 0
+    )
+    assert existing.read_bytes() == before
+    prime = generate_zone_layout.build_global_zone_layout(
+        latitude_bands=6,
+        equatorial_cells=12,
+        alignment="prime-meridian-centered",
+    )
+    assert prime.allow_overlap is False
+    assert prime.zones
 
 
 def test_s4_scenario_expands_exact_accepted_constellation_and_ground_body(
@@ -195,7 +353,10 @@ def test_s4_scenario_expands_exact_accepted_constellation_and_ground_body(
         station.max_simultaneous_satellite_accesses is None
         for station in autonomous_system.ground_stations
     )
-    assert all(not station.ix_attachments for station in autonomous_system.ground_stations)
+    assert all(
+        not station.ix_attachments
+        for station in autonomous_system.ground_stations
+    )
 
     shell = s4_topology.autonomous_systems[0].shells[0]
     assert [orbit.right_ascension_deg for orbit in shell.orbits] == (
@@ -263,18 +424,6 @@ def test_s4_planner_factory_uses_the_explicit_normal_configuration(
     simulator = s4_dynamic_progression[0]
     differences = s4_dynamic_progression[3:]
     configuration = s4_planning_configuration(simulator)
-    reference = s4_planning_configuration(
-        simulator, profile=REFERENCE_GLOBAL_PROFILE
-    )
-    global_experiment = s4_planning_configuration(
-        simulator, profile=EXPERIMENTAL_STABLE_GLOBAL_PROFILE
-    )
-    bounded_experiment = s4_planning_configuration(
-        simulator, profile=STABLE_BOUNDED_PROFILE
-    )
-    bounded_reference = s4_planning_configuration(
-        simulator, profile=REFERENCE_BOUNDED_PROFILE
-    )
     planner = create_s4_planner(simulator)
     plan = planner.get_plan()
 
@@ -315,25 +464,6 @@ def test_s4_planner_factory_uses_the_explicit_normal_configuration(
     )
     assert configuration["coordination_policy"] == "_IdentityCoordinationPolicy"
     assert configuration["connection_suppression"] == "disabled"
-    assert reference["profile"] == REFERENCE_GLOBAL_PROFILE
-    assert reference["publication_horizon_seconds"] is None
-    assert global_experiment["planning_lookahead_seconds"] is None
-    assert global_experiment["publication_horizon_seconds"] == 20
-    assert bounded_experiment["planning_lookahead_seconds"] == 50
-    assert bounded_experiment["publication_horizon_seconds"] == 20
-    assert bounded_reference["profile_role"] == "reference-bounded-control"
-    assert bounded_reference["planning_lookahead_seconds"] == 50
-    assert bounded_reference["publication_horizon_seconds"] == 20
-    assert bounded_reference["connection_model"] == (
-        "SampleBoundaryConnectionPlanningModel"
-    )
-    assert bounded_reference["parameter_model"] == (
-        "SampleBoundaryParameterPlanningModel"
-    )
-    assert bounded_reference["forwarding_stability"] == "always FOLLOW"
-    assert bounded_experiment["numeric_defaults_status"] == (
-        "S4 scenario candidate; no generic Planner defaults selected"
-    )
     assert plan.start_slice_id == 0
     assert plan.end_slice_id == 2
     assert len(planner.get_consumed_differences()) == 2
@@ -366,6 +496,157 @@ def test_s4_planner_factory_uses_the_explicit_normal_configuration(
         and "HOLD" not in decision.reason
         for decision in planner.get_planning_decisions()
     )
+
+
+def test_s4_compiler_progression_is_rolling_at_real_window_boundaries(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    simulator = create_s4_simulator(build_s4_satellite_internet_emulator())
+    observer = simulator._enable_execution_observation(
+        tmp_path / "observations.jsonl"
+    )
+    executor = _RecordingInspectionExecutor()
+    events: list[str] = []
+    compiled = []
+    slicer_type = type(simulator.get_slicer())
+    planner_type = Planner
+    original_slice = slicer_type.create_next_slice
+    original_create_planner = s4_main.create_s4_planner
+    original_synchronize = planner_type.synchronize
+    original_compile = s4_main.compile_bpf
+
+    def create_slice(self):
+        result = original_slice(self)
+        events.append(f"S{result.slice_id}")
+        return result
+
+    def create_planner(value):
+        result = original_create_planner(value)
+        plan = result.get_plan()
+        events.append(f"P{plan.start_slice_id}-{plan.end_slice_id}")
+        return result
+
+    def synchronize(self):
+        result = original_synchronize(self)
+        events.append(f"P{result.start_slice_id}-{result.end_slice_id}")
+        return result
+
+    def compile_plan(plan, *, slicer, previous=None):
+        assert previous is (compiled[-1] if compiled else None)
+        result = original_compile(plan, slicer=slicer, previous=previous)
+        compiled.append(result)
+        events.append(f"C{plan.start_slice_id}-{plan.end_slice_id}")
+        return result
+
+    monkeypatch.setattr(slicer_type, "create_next_slice", create_slice)
+    monkeypatch.setattr(s4_main, "create_s4_planner", create_planner)
+    monkeypatch.setattr(planner_type, "synchronize", synchronize)
+    monkeypatch.setattr(s4_main, "compile_bpf", compile_plan)
+
+    result = s4_main._run_dynamic_progression(
+        simulator,
+        through="compiler",
+        final_slice_id=8,
+        observer=observer,
+        executor=executor,
+        inspection=tmp_path / "inspection",
+    )
+
+    plans = result["plans"]
+    assert isinstance(plans, tuple)
+    assert tuple((plan.start_slice_id, plan.end_slice_id) for plan in plans) == (
+        (0, 3),
+        (3, 5),
+        (5, 7),
+        (7, 8),
+    )
+    assert events[:6] == ["S1", "S2", "S3", "S4", "S5", "S6"]
+    assert events.index("P0-3") < events.index("C0-3") < events.index("S7")
+    assert events.index("S8") < events.index("P3-5") < events.index("C3-5")
+    assert len(compiled) == len(plans) == 4
+    assert simulator.get_slicer().get_latest_slice_id() == 8
+    assert len(simulator.get_planner().get_consumed_differences()) == 8
+    assert [task for task, _output in executor.submissions] == [
+        "slice",
+        "planner",
+    ]
+
+
+def test_s4_normal_public_compiler_emits_detailed_plan_aligned_observation(
+    tmp_path: Path,
+) -> None:
+    simulator = create_s4_simulator(build_s4_satellite_internet_emulator())
+    observer = simulator._enable_execution_observation(
+        tmp_path / "compiler-observations.jsonl"
+    )
+
+    result = s4_main._run_dynamic_progression(
+        simulator,
+        through="compiler",
+        final_slice_id=5,
+        observer=observer,
+        executor=_RecordingInspectionExecutor(),
+        inspection=tmp_path / "inspection",
+    )
+
+    plans = result["plans"]
+    realizations = result["realizations"]
+    compile_evidence = result["compile_evidence"]
+    assert isinstance(plans, tuple)
+    assert isinstance(realizations, tuple)
+    assert isinstance(compile_evidence, tuple)
+    assert len(plans) == len(realizations) == len(compile_evidence) == 2
+
+    compiler_records = tuple(
+        record
+        for record in observer.snapshot()["records"]
+        if record["component"] == "compiler"
+    )
+    expected_stages = {
+        "input-validation",
+        "slice-coverage",
+        "temporal-source-indexing",
+        "topology-preparation",
+        "baseline-initialization",
+        "plan-transition-validation",
+        "resource-parameter-lowering",
+        "forwarding-lowering",
+        "zone-edge-lowering",
+        "constraint-compilation",
+        "end-state-validation",
+        "realization-freeze",
+        "total-compile",
+    }
+    assert {record["stage"] for record in compiler_records} == expected_stages
+    assert "compile" not in {record["stage"] for record in compiler_records}
+    assert {record["phase"] for record in compiler_records} == {"one-shot"}
+
+    for compile_index, plan in enumerate(plans):
+        unit = tuple(
+            record
+            for record in compiler_records
+            if record["scope"]["compile_index"] == compile_index
+        )
+        assert {record["stage"] for record in unit} == expected_stages
+        assert all(
+            record["scope"]["publication_index"] == compile_index
+            and record["scope"]["plan_index"] == compile_index
+            and record["scope"]["start_slice_id"] == plan.start_slice_id
+            and record["scope"]["end_slice_id"] == plan.end_slice_id
+            for record in unit
+        )
+        rollup = next(record for record in unit if record["stage"] == "total-compile")
+        assert rollup["duration_role"] == "rollup"
+        assert all(
+            record["duration_role"] == "stage"
+            for record in unit
+            if record is not rollup
+        )
+        assert compile_evidence[compile_index] == {
+            "compile_index": compile_index,
+            "compile_seconds": rollup["duration_seconds"],
+        }
 
 
 def test_s4_generated_orbits_match_all_fcc_published_anomalies(
@@ -414,7 +695,7 @@ def test_s4_runtime_construction_survives_as_a_self_contained_input_copy(
         shutil.copyfile(EXAMPLE_ROOT / name, copied / name)
 
     emulator = build_s4_satellite_internet_emulator(copied / "scenario.yaml")
-    topology = create_s4_static_simulator(
+    topology = create_s4_simulator(
         emulator,
         zone_layout_path=copied / "zones.yaml",
     ).get_topology()
@@ -526,11 +807,11 @@ def test_s4_dynamic_timeline_and_existing_model_chain_are_explicit(
     slicer = simulator.get_slicer()
 
     assert timeline.start_time == REFERENCE_EPOCH
-    assert timeline.end_time == DYNAMIC_TIMELINE_END
-    assert timeline.slice_interval == DYNAMIC_SLICE_INTERVAL == timedelta(
+    assert timeline.end_time == S4_TIMELINE_END
+    assert timeline.slice_interval == S4_SLICE_INTERVAL == timedelta(
         seconds=10
     )
-    assert len(tuple(timeline.iter_timestamps())) == DYNAMIC_REAL_SLICE_COUNT == 181
+    assert len(tuple(timeline.iter_timestamps())) == S4_REAL_SLICE_COUNT == 181
     assert isinstance(slicer.get_position_model(), CircularOrbitPositionModel)
     assert isinstance(slicer.get_connection_model(), GeometricConnectionModel)
     assert isinstance(slicer.get_route_model(), GatewayHopCountRouteModel)
@@ -723,7 +1004,7 @@ def test_s4_first_dynamic_slices_publish_complete_formal_state(
 
 
 def test_s4_slice_tool_context_projects_final_scenario_policy() -> None:
-    context = _slice_tool_context()
+    context = s4_slicing_configuration()
 
     assert context["zone_service"] == {"minimum_elevation_deg": 25.0}
     assert context["ground_station_access"] == {
@@ -766,18 +1047,16 @@ def test_s4_dynamic_difference_progression_is_formal_and_adjacent(
     assert slicer.get_retained_slice_ids() == (0, 1, 2)
 
 
-def test_s4_static_mode_does_not_create_a_slicer() -> None:
-    simulator = create_s4_static_simulator(
-        build_s4_satellite_internet_emulator()
-    )
+def test_s4_one_composition_has_an_unadvanced_slicer_by_default() -> None:
+    simulator = create_s4_simulator(build_s4_satellite_internet_emulator())
     assert simulator.get_topology() is not None
-    with pytest.raises(RuntimeError, match="Slicer has not been created"):
-        simulator.get_slicer()
+    assert simulator.get_slicer().get_retained_slice_ids() == (0,)
+    assert simulator.get_slicer().get_latest_slice_id() == 0
 
 
-def test_s4_qualification_entry_includes_compiler_and_stops_before_runner() -> None:
+def test_s4_normal_entry_includes_compiler_and_stops_before_runner() -> None:
     imported_modules = set()
-    for name in ("main.py", "simu.py", "qualification.py"):
+    for name in ("main.py", "simu.py"):
         tree = ast.parse((EXAMPLE_ROOT / name).read_text(encoding="utf-8"))
         imported_modules.update(
             node.module or ""
@@ -790,9 +1069,15 @@ def test_s4_qualification_entry_includes_compiler_and_stops_before_runner() -> N
             if isinstance(node, ast.Import)
             for alias in node.names
         )
-    assert any("compiler" in module for module in imported_modules)
+    assert "skyseed_v2.backend.bpf" in imported_modules
     assert not any("runner" in module for module in imported_modules)
     assert "tools._detached_inspection" in imported_modules
+    assert not (EXAMPLE_ROOT / "qualification.py").exists()
+    assert not (EXAMPLE_ROOT / "generate_inputs.py").exists()
+    main_source = (EXAMPLE_ROOT / "main.py").read_text(encoding="utf-8")
+    assert "_compile_bpf_observed" not in main_source
+    assert "compile_bpf(" in main_source
+    assert "qualification" not in main_source
     detached_source = (
         PROJECT_ROOT / "tools/_detached_inspection.py"
     ).read_text(encoding="utf-8")
