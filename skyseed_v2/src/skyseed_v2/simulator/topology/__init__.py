@@ -1,4 +1,7 @@
-"""Expose the Simulator-owned static Topology aggregate and Zone layout."""
+"""Expose the Simulator-owned physical Topology domain and Zone layout."""
+
+from .physical_frame import PhysicalFrame
+from .position import PositionModel
 
 from .topology import (
     GroundStation,
@@ -22,6 +25,8 @@ __all__ = [
     "GroundStation",
     "LatitudeLongitudeRectangle",
     "Orbit",
+    "PhysicalFrame",
+    "PositionModel",
     "Satellite",
     "Shell",
     "SkyseedAutonomousSystem",

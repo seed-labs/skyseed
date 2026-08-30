@@ -16,7 +16,6 @@ from .difference import (
     TopologyDifference,
     ZoneServiceAssignmentPatch,
 )
-from .position import PositionModel
 from .route import (
     GroundStationRouteTarget,
     RouteKey,
@@ -39,7 +38,6 @@ __all__ = [
     "DirectionalConnectionParameters",
     "DirectionalConnectionParametersPatch",
     "GroundStationRouteTarget",
-    "PositionModel",
     "RouteKey",
     "RouteModel",
     "RoutePatch",

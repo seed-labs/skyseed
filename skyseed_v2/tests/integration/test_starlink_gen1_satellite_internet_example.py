@@ -125,6 +125,200 @@ class _RecordingInspectionExecutor:
         )
 
 
+class _FocusedMainTimeline:
+    start_time = REFERENCE_EPOCH
+    end_time = REFERENCE_EPOCH + STARLINK_GEN1_SLICE_INTERVAL
+    slice_interval = STARLINK_GEN1_SLICE_INTERVAL
+
+
+class _FocusedMainTopology:
+    def __init__(self, events: list[str], *, fail_tool_frame: bool) -> None:
+        self.events = events
+        self.fail_tool_frame = fail_tool_frame
+        self.domain_projection_active = False
+        self.projection_attempts: list[str] = []
+        self.successful_projections: list[str] = []
+
+    def frame_at(self, timestamp):
+        assert timestamp == REFERENCE_EPOCH
+        projection = (
+            "domain-physical-projection"
+            if self.domain_projection_active
+            else "tool-physical-projection"
+        )
+        self.events.append(projection)
+        self.projection_attempts.append(projection)
+        if projection == "tool-physical-projection" and self.fail_tool_frame:
+            raise RuntimeError("focused Tool input failure")
+        self.successful_projections.append(projection)
+        return {"projection": projection, "timestamp": timestamp}
+
+
+class _FocusedMainSimulator:
+    def __init__(self, topology: _FocusedMainTopology, events: list[str]) -> None:
+        self.topology = topology
+        self.timeline = _FocusedMainTimeline()
+        self.events = events
+        self.observation_path: Path | None = None
+
+    def get_topology(self):
+        return self.topology
+
+    def get_timeline(self):
+        return self.timeline
+
+    def _enable_execution_observation(self, path, *, metadata):
+        assert self.topology.projection_attempts == []
+        self.events.append("observation-enabled")
+        self.observation_path = Path(path)
+        return object()
+
+    def _write_execution_observations(self):
+        self.events.append("observations-persisted")
+        assert self.observation_path is not None
+        self.observation_path.parent.mkdir(parents=True, exist_ok=True)
+        self.observation_path.write_text(
+            "".join(
+                json.dumps(
+                    {
+                        "component": "topology",
+                        "stage": projection,
+                    }
+                )
+                + "\n"
+                for projection in self.topology.successful_projections
+            ),
+            encoding="utf-8",
+        )
+        return self.observation_path
+
+
+class _FocusedInspectionExecutor:
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+        self.tasks: list[str] = []
+
+    def submit(self, task, _source, _output):
+        self.events.append(f"scheduled-{task}")
+        self.tasks.append(task)
+        return {"task": task, "status": "BUILDING"}
+
+    def join(self):
+        self.events.append("inspection-workers-joined")
+        return self.records()
+
+    def terminate(self):
+        self.events.append("inspection-workers-terminated")
+
+    def records(self):
+        return tuple(
+            {
+                "task": task,
+                "status": "COMPLETE",
+                "wall_seconds": 0.0,
+                "peak_rss_bytes": 1,
+            }
+            for task in self.tasks
+        )
+
+    def result(self, task):
+        return {"status": "PASS", "task": task}
+
+
+def _install_focused_main_stubs(
+    monkeypatch,
+    tmp_path: Path,
+    *,
+    fail_tool_frame: bool,
+) -> tuple[
+    Path,
+    _FocusedMainSimulator,
+    _FocusedInspectionExecutor,
+    list[str],
+]:
+    output = tmp_path / "focused-main"
+    events: list[str] = []
+    topology = _FocusedMainTopology(
+        events,
+        fail_tool_frame=fail_tool_frame,
+    )
+    simulator = _FocusedMainSimulator(topology, events)
+    executor = _FocusedInspectionExecutor(events)
+    monkeypatch.setattr(starlink_gen1_main, "DEFAULT_OUTPUT", output)
+    monkeypatch.setattr(
+        starlink_gen1_main,
+        "build_starlink_gen1_satellite_internet_emulator",
+        object,
+    )
+    monkeypatch.setattr(
+        starlink_gen1_main,
+        "create_starlink_gen1_simulator",
+        lambda _emulator: simulator,
+    )
+    monkeypatch.setattr(
+        starlink_gen1_main,
+        "_DetachedInspectionExecutor",
+        lambda _directory, max_workers: executor,
+    )
+    monkeypatch.setattr(
+        starlink_gen1_main,
+        "_planning_configuration",
+        lambda _simulator, _observer: {},
+    )
+    monkeypatch.setattr(
+        starlink_gen1_main,
+        "starlink_gen1_slicing_configuration",
+        lambda: {},
+    )
+    monkeypatch.setattr(
+        starlink_gen1_main,
+        "write_aggregate_index",
+        lambda _inspection, _results, _counts: None,
+    )
+
+    def static_writer(name):
+        def write(_topology, directory):
+            events.append(f"{name}-tool")
+            Path(directory).mkdir(parents=True, exist_ok=True)
+            (Path(directory) / "index.html").write_text(
+                name,
+                encoding="utf-8",
+            )
+            return {
+                "status": "PASS",
+                "counts": {"nodes": 1} if name == "topology" else {},
+            }
+
+        return write
+
+    def write_physical_frame(_topology, frame, directory):
+        assert frame["projection"] == "tool-physical-projection"
+        events.append("physical-frame-tool")
+        Path(directory).mkdir(parents=True, exist_ok=True)
+        (Path(directory) / "index.html").write_text(
+            "physical-frame",
+            encoding="utf-8",
+        )
+        return {"status": "PASS"}
+
+    monkeypatch.setattr(
+        starlink_gen1_main,
+        "write_topology_tool",
+        static_writer("topology"),
+    )
+    monkeypatch.setattr(
+        starlink_gen1_main,
+        "write_zone_tool",
+        static_writer("zone"),
+    )
+    monkeypatch.setattr(
+        starlink_gen1_main,
+        "write_physical_frame_tool",
+        write_physical_frame,
+    )
+    return output, simulator, executor, events
+
+
 @pytest.fixture(scope="module")
 def starlink_gen1_topology() -> Topology:
     emulator = build_starlink_gen1_satellite_internet_emulator()
@@ -387,16 +581,279 @@ def test_starlink_gen1_explicit_topology_boundary_generates_only_static_tools(
 ) -> None:
     output = tmp_path / "s4"
     monkeypatch.setattr(starlink_gen1_main, "DEFAULT_OUTPUT", output)
+    original_frame_at = Topology.frame_at
+    frame_timestamps = []
+
+    def recording_frame_at(topology, timestamp):
+        frame_timestamps.append(timestamp)
+        return original_frame_at(topology, timestamp)
+
+    monkeypatch.setattr(Topology, "frame_at", recording_frame_at)
 
     assert starlink_gen1_main.main(["--through", "topology"]) == 0
+    assert frame_timestamps == [REFERENCE_EPOCH]
     assert (output / "inspection/index.html").is_file()
     assert (output / "inspection/topology/index.html").is_file()
     assert (output / "inspection/zone/index.html").is_file()
+    assert (output / "inspection/physical-frame/index.html").is_file()
+    assert (output / "inspection/physical-frame/physical-frame.json").is_file()
+    tool_executions = json.loads(
+        (output / "inspection/tool-executions.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    static_records = {
+        value["task"]: value for value in tool_executions["tools"]
+    }
+    physical_record = next(
+        value
+        for value in tool_executions["tools"]
+        if value["task"] == "physical-frame"
+    )
+    assert physical_record["status"] == "COMPLETE"
+    assert physical_record["input_preparation_wall_seconds"] > 0
+    assert physical_record["tool_wall_seconds"] > 0
+    assert physical_record["wall_seconds"] == (
+        physical_record["input_preparation_wall_seconds"]
+        + physical_record["tool_wall_seconds"]
+    )
+    for task in ("topology", "zone"):
+        assert static_records[task]["input_preparation_wall_seconds"] == 0
+        assert static_records[task]["wall_seconds"] == (
+            static_records[task]["tool_wall_seconds"]
+        )
+    assert physical_record["peak_rss_bytes"] > 0
+    assert physical_record["input_bytes"] == 0
+    assert physical_record["input_byte_semantics"] == (
+        "no serialized Tool input; preparation wall cost is accounted separately"
+    )
+    assert physical_record["output_file_count"] == 3
+    assert physical_record["output_bytes"] > 0
     assert not (output / "inspection/slice").exists()
     assert not (output / "inspection/observation").exists()
     assert not (output / "inspection/planner").exists()
     assert not (output / "inspection/compiler").exists()
     assert not (output / "inspection/_execution").exists()
+
+
+def test_starlink_gen1_dynamic_tool_projection_follows_domain_persistence(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    output, simulator, _executor, events = _install_focused_main_stubs(
+        monkeypatch,
+        tmp_path,
+        fail_tool_frame=False,
+    )
+
+    def run_dynamic(
+        candidate,
+        *,
+        through,
+        final_slice_id,
+        observer,
+        executor,
+        inspection,
+    ):
+        assert candidate is simulator
+        assert through == "slicer"
+        assert final_slice_id == 1
+        assert observer is not None
+        assert executor is not None
+        assert inspection == output / "inspection"
+        assert candidate.get_topology().projection_attempts == []
+        events.append("domain-progression-started")
+        candidate.get_topology().domain_projection_active = True
+        try:
+            candidate.get_topology().frame_at(REFERENCE_EPOCH)
+        finally:
+            candidate.get_topology().domain_projection_active = False
+        events.append("domain-progression-completed")
+        return {"deferred_sources": {"slice": {}}}
+
+    monkeypatch.setattr(
+        starlink_gen1_main,
+        "_run_dynamic_progression",
+        run_dynamic,
+    )
+
+    assert (
+        starlink_gen1_main.main(
+            ["--through", "slicer", "--slice-limit", "1"]
+        )
+        == 0
+    )
+    assert simulator.topology.projection_attempts == [
+        "domain-physical-projection",
+        "tool-physical-projection",
+    ]
+    assert events.index("domain-progression-started") < events.index(
+        "domain-physical-projection"
+    )
+    assert events.index("domain-progression-completed") < events.index(
+        "observations-persisted"
+    )
+    assert events.index("observations-persisted") < events.index(
+        "tool-physical-projection"
+    ) < events.index("physical-frame-tool")
+
+    observation_path = (
+        output / "inspection/observation/execution-observations.jsonl"
+    )
+    persisted = tuple(
+        json.loads(line)
+        for line in observation_path.read_text(encoding="utf-8").splitlines()
+    )
+    assert persisted == (
+        {
+            "component": "topology",
+            "stage": "domain-physical-projection",
+        },
+    )
+    tool_evidence = json.loads(
+        (output / "inspection/tool-executions.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    physical_record = next(
+        record
+        for record in tool_evidence["tools"]
+        if record["task"] == "physical-frame"
+    )
+    assert physical_record["input_preparation_wall_seconds"] > 0
+    assert physical_record["tool_wall_seconds"] > 0
+    assert physical_record["wall_seconds"] == (
+        physical_record["input_preparation_wall_seconds"]
+        + physical_record["tool_wall_seconds"]
+    )
+    detached_record = next(
+        record
+        for record in tool_evidence["tools"]
+        if record["task"] == "slice"
+    )
+    assert "input_preparation_wall_seconds" not in detached_record
+    assert detached_record["input_bytes"] == 0
+    assert detached_record["input_byte_semantics"] == (
+        "no serialized Tool input"
+    )
+
+
+def test_starlink_gen1_compiler_handoff_survives_tool_frame_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    output, simulator, _executor, events = _install_focused_main_stubs(
+        monkeypatch,
+        tmp_path,
+        fail_tool_frame=True,
+    )
+
+    def run_canonical(
+        candidate,
+        *,
+        final_slice_id,
+        observer,
+        output: Path,
+    ):
+        assert candidate is simulator
+        assert final_slice_id == 1
+        assert observer is not None
+        assert candidate.get_topology().projection_attempts == []
+        events.append("domain-progression-started")
+        candidate.get_topology().domain_projection_active = True
+        try:
+            candidate.get_topology().frame_at(REFERENCE_EPOCH)
+        finally:
+            candidate.get_topology().domain_projection_active = False
+        events.append("domain-progression-completed")
+        staging = output / "realization-staging"
+        staging.mkdir(parents=True)
+        return {
+            "compile_evidence": (),
+            "realization_staging_directory": staging,
+            "slice_history_path": output / "slice-history.jsonl",
+            "planner_history_path": output / "planner-history.jsonl",
+            "producer_snapshot": {"status": "complete"},
+            "deferred_sources": {},
+        }
+
+    def write_runtime_package(
+        destination: Path,
+        _emulator,
+        _simulator,
+        _staging: Path,
+    ) -> None:
+        events.append("runtime-handoff-ready")
+        runtime = destination / "runtime"
+        runtime.mkdir(parents=True)
+        (runtime / "handoff-ready.txt").write_text(
+            "ready\n",
+            encoding="utf-8",
+        )
+        (destination / "run.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        starlink_gen1_main,
+        "_run_canonical_realization_progression",
+        run_canonical,
+    )
+    monkeypatch.setattr(
+        starlink_gen1_main,
+        "_write_runtime_package",
+        write_runtime_package,
+    )
+
+    assert (
+        starlink_gen1_main.main(
+            ["--through", "compiler", "--slice-limit", "1"]
+        )
+        == 1
+    )
+    assert events.index("domain-progression-completed") < events.index(
+        "runtime-handoff-ready"
+    )
+    assert events.index("runtime-handoff-ready") < events.index(
+        "observations-persisted"
+    ) < events.index("tool-physical-projection")
+    assert "physical-frame-tool" not in events
+    assert events.index("tool-physical-projection") < events.index(
+        "inspection-workers-joined"
+    )
+    assert (output / "runtime/handoff-ready.txt").read_text(
+        encoding="utf-8"
+    ) == "ready\n"
+    assert (output / "inspection/generation-milestones.json").is_file()
+
+    observation_path = (
+        output / "inspection/observation/execution-observations.jsonl"
+    )
+    persisted = tuple(
+        json.loads(line)
+        for line in observation_path.read_text(encoding="utf-8").splitlines()
+    )
+    assert persisted == (
+        {
+            "component": "topology",
+            "stage": "domain-physical-projection",
+        },
+    )
+    tool_evidence = json.loads(
+        (output / "inspection/tool-executions.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    physical_record = next(
+        record
+        for record in tool_evidence["tools"]
+        if record["task"] == "physical-frame"
+    )
+    assert physical_record["status"] == "FAILED"
+    assert "focused Tool input failure" in physical_record["message"]
+    assert physical_record["input_preparation_wall_seconds"] > 0
+    assert physical_record["tool_wall_seconds"] == 0
+    assert physical_record["wall_seconds"] == (
+        physical_record["input_preparation_wall_seconds"]
+    )
 
 
 def test_starlink_gen1_slicer_boundary_stops_before_planner(tmp_path: Path) -> None:
@@ -1056,7 +1513,11 @@ def test_starlink_gen1_dynamic_timeline_and_existing_model_chain_are_explicit(
         seconds=5
     )
     assert len(tuple(timeline.iter_timestamps())) == STARLINK_GEN1_REAL_SLICE_COUNT == 121
-    assert isinstance(slicer.get_position_model(), CircularOrbitPositionModel)
+    assert isinstance(
+        simulator.get_topology().get_position_model(),
+        CircularOrbitPositionModel,
+    )
+    assert not hasattr(slicer, "get_position_model")
     assert isinstance(slicer.get_connection_model(), GeometricConnectionModel)
     assert isinstance(slicer.get_route_model(), GatewayHopCountRouteModel)
 
@@ -1261,6 +1722,14 @@ def test_starlink_gen1_first_dynamic_slices_publish_complete_formal_state(
 def test_starlink_gen1_slice_tool_context_projects_final_scenario_policy() -> None:
     context = starlink_gen1_slicing_configuration()
 
+    assert context["physical_input"] == {
+        "owner": "Topology",
+        "value": "PhysicalFrame",
+        "position_model": "CircularOrbitPositionModel",
+        "identity": "timestamp",
+    }
+    assert set(context["legacy_models"]) == {"connection", "route"}
+    assert "models" not in context
     assert context["zone_service"] == {"minimum_elevation_deg": 25.0}
     assert context["ground_station_access"] == {
         "minimum_elevation_deg": 5.0,

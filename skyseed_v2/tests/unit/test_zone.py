@@ -13,6 +13,7 @@ from skyseed_v2.configuration.simulator import (
     load_zone_layout_definition,
 )
 from skyseed_v2.simulator import (
+    CircularOrbitPositionModel,
     DefaultZoneMembershipModel,
     LatitudeLongitudeRectangle,
     SimulationDefinition,
@@ -67,6 +68,7 @@ def create_zone_topology(
         )
     )
     topology = simulator.create_topology(
+        position_model=CircularOrbitPositionModel(),
         zone_layout_definition=definition,
         zone_membership_model=model,
     )
@@ -452,7 +454,9 @@ def test_topology_zone_lifecycle_facade_identity_and_atomic_failure() -> None:
             timedelta(seconds=10),
         ),
     )
-    unconfigured = Simulator(simulation_definition).create_topology()
+    unconfigured = Simulator(simulation_definition).create_topology(
+        position_model=CircularOrbitPositionModel()
+    )
     for operation in (
         unconfigured.get_zone_layout,
         lambda: unconfigured.get_zone("zone"),
@@ -480,6 +484,7 @@ def test_topology_zone_lifecycle_facade_identity_and_atomic_failure() -> None:
     simulator = Simulator(simulation_definition)
     with pytest.raises(ValueError, match="requires"):
         simulator.create_topology(
+            position_model=CircularOrbitPositionModel(),
             zone_membership_model=DefaultZoneMembershipModel()
         )
     with pytest.raises(RuntimeError, match="not been created"):
@@ -491,6 +496,7 @@ def test_topology_zone_lifecycle_facade_identity_and_atomic_failure() -> None:
 
     with pytest.raises(TypeError, match="ZoneMembershipModel"):
         simulator.create_topology(
+            position_model=CircularOrbitPositionModel(),
             zone_layout_definition=layout_definition(zone_definition("zone")),
             zone_membership_model=InvalidModel(),
         )

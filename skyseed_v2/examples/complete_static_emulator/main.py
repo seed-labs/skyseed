@@ -28,6 +28,7 @@ from skyseed_v2.compose.launcher import (
 from skyseed_v2.configuration.simulator import load_zone_layout_definition
 from skyseed_v2.emulator.seedemu import get_skyseed_autonomous_systems
 from skyseed_v2.simulator import (
+    CircularOrbitPositionModel,
     SimulationDefinition,
     SimulationTimeline,
     Simulator,
@@ -38,6 +39,7 @@ from tools._html import (
     write_aggregate_index,
     write_failed_tool,
 )
+from tools.physical_frame import write_physical_frame_tool
 from tools.topology import write_topology_tool
 from tools.zone import write_zone_tool
 
@@ -46,7 +48,7 @@ DEFAULT_START_TIME = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
 DEFAULT_END_TIME = datetime(2026, 1, 1, 0, 0, 30, tzinfo=timezone.utc)
 DEFAULT_SLICE_INTERVAL = timedelta(seconds=10)
 ZONE_LAYOUT_FILE = EXAMPLE_ROOT / "zones.yaml"
-ENABLED_TOOLS = ("topology", "zone")
+ENABLED_TOOLS = ("topology", "zone", "physical-frame")
 
 
 def _create_simulator_topology(emulator: object) -> Topology:
@@ -71,6 +73,7 @@ def _create_simulator_topology(emulator: object) -> Topology:
     simulator = Simulator(definition)
     zone_layout_definition = load_zone_layout_definition(ZONE_LAYOUT_FILE)
     return simulator.create_topology(
+        position_model=CircularOrbitPositionModel(),
         zone_layout_definition=zone_layout_definition,
     )
 
@@ -90,6 +93,13 @@ def _write_tool_snapshot(
                     result = write_topology_tool(topology, tool_directory)
                 elif tool_name == "zone":
                     result = write_zone_tool(topology, tool_directory)
+                elif tool_name == "physical-frame":
+                    physical_frame = topology.frame_at(DEFAULT_START_TIME)
+                    result = write_physical_frame_tool(
+                        topology,
+                        physical_frame,
+                        tool_directory,
+                    )
                 else:  # pragma: no cover - frozen tuple is explicit
                     raise ValueError(f"unknown enabled tool: {tool_name}")
                 results[tool_name] = dict(result)

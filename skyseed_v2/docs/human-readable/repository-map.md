@@ -20,8 +20,8 @@ flowchart LR
     INPUT["simulator/input"]
     SIM["simulator facade/definition/timeline/root"]
     GEOMETRY["simulator/geometry"]
-    TOPOLOGY["simulator/topology"]
-    SLICING["simulator/slicing"]
+    TOPOLOGY["simulator/topology<br/>Topology + PositionModel + PhysicalFrame + Zone"]
+    SLICING["simulator/slicing<br/>temporary legacy Connection / Route / Slice / Difference"]
     MODELS["simulator/models"]
     PLANNING["simulator/planning"]
     COMPOSE["compose"]
@@ -71,6 +71,7 @@ flowchart LR
     PLANNING --> SIM
     PLANNING --> SLICING
     TOPOLOGY --> CONFIG_SIM
+    TOPOLOGY --> GEOMETRY
     TOPOLOGY --> INPUT
     TOPOLOGY --> SHARED
     BPF --> SHARED
@@ -93,6 +94,15 @@ Forbidden reverse dependencies remain Simulator core → Emulator/SEED,
 production → Tools, and SEED integration → Simulator/Tools/Compose/examples.
 Repository-level examples, Tools, tests, and scripts may import production;
 production does not import them.
+
+For ownership navigation (which the import edges above deliberately do not
+encode), `simulator/topology/` is the accepted physical owner: it owns the
+`PositionModel`, `Topology.frame_at()`, and immutable `PhysicalFrame` values.
+`simulator/slicing/` retains only the current temporary legacy
+Connection/Route/Slice/Difference seam. That seam remains visible for existing
+Planner/Compiler consumers and is scheduled for deletion; it must not be read
+as an alternative to the accepted `Topology / PhysicalFrame → Network
+Planner` destination.
 
 Current implementation state is maintained only in
 [`CURRENT.md`](../CURRENT.md).

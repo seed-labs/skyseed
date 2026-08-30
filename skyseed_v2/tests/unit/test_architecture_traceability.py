@@ -75,6 +75,7 @@ DYNAMIC_TYPES = (
     "MidpointConnectionPlanningModel",
     "ParameterPlanningModel",
     "ParameterTransition",
+    "PhysicalFrame",
     "Plan",
     "Planner",
     "PlanningDecision",
@@ -267,14 +268,14 @@ def test_accepted_anchor_and_current_have_distinct_roles() -> None:
     for required in (
         "SimulatorStaticInput",
         "create_simulator_static_input",
-        "Position → Connection → Route",
+        "Topology / PhysicalFrame → Network Planner",
         "second authoritative computation path",
     ):
         assert required in accepted
     assert "Slice / Difference semantics: **implemented and accepted**" in current
     for implemented in (
         "Runner milestone: **implemented, runtime-validated, and manually accepted**",
-        "rolling Slicer →",
+        "→ legacy Slicer → current Planner → BPF Compiler →",
         "Preparation binds",
         "Main alone",
         "Maintenance prepares",
@@ -287,9 +288,8 @@ def test_accepted_anchor_and_current_have_distinct_roles() -> None:
         "16 Plans / 16",
         "75 nominal boundaries / 75 Main",
         "Final canonical Mini runtime: **PASS**",
-        "eight formal repository-local",
+        "repository-local read-only Inspection set now contains nine Tools",
         "three maintained runnable examples",
-        "Manual Tool acceptance is complete",
         "S4 Planner and BPF Compiler scale milestone: **implemented, qualified, and",
         "Round 2 is implemented and qualified",
         "720 Satellites",

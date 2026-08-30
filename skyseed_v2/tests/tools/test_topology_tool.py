@@ -25,6 +25,11 @@ from tools._html import write_failed_tool
 from tools.topology import collect_topology_data, write_topology_tool
 
 
+class _UnusedPositionModel:
+    def compute_positions(self, topology, timestamp):
+        raise AssertionError("Topology Tool tests do not project positions")
+
+
 @pytest.fixture
 def topology():
     return _create_simulator_topology(build_emulator())
@@ -39,7 +44,9 @@ def topology_from_input(static_input: SimulatorStaticInput):
             timedelta(seconds=10),
         ),
     )
-    return Simulator(definition).create_topology()
+    return Simulator(definition).create_topology(
+        position_model=_UnusedPositionModel()
+    )
 
 
 def satellite_input(
@@ -169,11 +176,23 @@ def test_orbit_ring_uses_only_public_static_plane_parameters(topology) -> None:
         "right_ascension_deg",
         "satellite_count",
         "satellite_ids",
+        "satellites",
     }
     orbit = topology.autonomous_systems[0].shells[0].orbits[0]
     assert ring["altitude_km"] == orbit.altitude_km
     assert ring["inclination_deg"] == orbit.inclination_deg
     assert ring["right_ascension_deg"] == orbit.right_ascension_deg
+    assert ring["satellites"] == [
+        {
+            "node_id": satellite.node_id.value,
+            "satellite_id": satellite.satellite_id,
+            "orbit_index": satellite.orbit_index,
+            "max_simultaneous_ground_station_accesses": (
+                satellite.max_simultaneous_ground_station_accesses
+            ),
+        }
+        for satellite in orbit.satellites
+    ]
     assert "mean_anomaly_deg" not in json.dumps(data)
     assert "timestamp" not in json.dumps(data).lower()
 
@@ -192,6 +211,9 @@ def test_ground_station_records_are_the_public_topology_values(topology) -> None
             "elevation_m": station.elevation_m,
             "station_type": station.station_type,
             "operator": station.operator,
+            "max_simultaneous_satellite_accesses": (
+                station.max_simultaneous_satellite_accesses
+            ),
         }
     ]
 
@@ -272,8 +294,11 @@ def test_topology_renderer_writes_embedded_offline_artifacts(
     assert "function selectAtCanvas(clientX,clientY)" in html
     assert "showSelection(hit.kind,hit.value)" in html
     assert "value.satellite_count" in html
+    assert "value.satellites.map" in html
+    assert "satellite.max_simultaneous_ground_station_accesses" in html
     assert "value.ground_station_id" in html
     assert "value.station_type" in html
+    assert "value.max_simultaneous_satellite_accesses" in html
     assert "canvas.dataset.selectedLabel=selectedLabelText" in html
     assert "canvas.dataset.hoverLabel=hoverLabelText" in html
     assert 'selectedLabelText=ring.orbit_id' in html

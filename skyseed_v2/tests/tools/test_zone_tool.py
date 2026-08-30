@@ -11,6 +11,7 @@ from skyseed_v2.configuration.simulator import (
 )
 from skyseed_v2.shared import NodeId
 from skyseed_v2.simulator import (
+    CircularOrbitPositionModel,
     SimulationDefinition,
     SimulationTimeline,
     Simulator,
@@ -74,6 +75,7 @@ def topology_with_zones(
     static_input: SimulatorStaticInput | None = None,
 ) -> Topology:
     return Simulator(simulation_definition(static_input)).create_topology(
+        position_model=CircularOrbitPositionModel(),
         zone_layout_definition=ZoneLayoutDefinition(
             zones=zones,
             allow_overlap=True,
@@ -82,7 +84,9 @@ def topology_with_zones(
 
 
 def topology_without_zone_layout() -> Topology:
-    return Simulator(simulation_definition()).create_topology()
+    return Simulator(simulation_definition()).create_topology(
+        position_model=CircularOrbitPositionModel()
+    )
 
 
 def test_collector_reads_only_owned_static_zone_layout() -> None:

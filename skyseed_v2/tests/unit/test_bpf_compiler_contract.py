@@ -206,9 +206,8 @@ def compiled_chain():
             ),
         )
     )
-    simulator.create_topology()
+    simulator.create_topology(position_model=_PositionModel())
     slicer = simulator.create_slicer(
-        position_model=_PositionModel(),
         connection_model=_SequenceConnectionModel(connection_slices),
         route_model=_SequenceRouteModel(route_slices),
     )
@@ -526,6 +525,7 @@ def test_zone_terminal_change_materializes_required_transient_state() -> None:
         )
     )
     simulator.create_topology(
+        position_model=_PositionModel(),
         zone_layout_definition=ZoneLayoutDefinition(
             zones=(
                 ZoneDefinition(
@@ -539,7 +539,6 @@ def test_zone_terminal_change_materializes_required_transient_state() -> None:
         )
     )
     slicer = simulator.create_slicer(
-        position_model=_PositionModel(),
         connection_model=_SequenceConnectionModel(connection_slices),
         route_model=_SequenceRouteModel(route_slices),
     )

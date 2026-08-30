@@ -3,13 +3,17 @@
 This handwritten example shows the complete public composition: two planned
 Satellites, one GroundStation, one ordinary SEED AS/Network/Router, one IX, one
 explicit eBGP peering, immutable Emulator-to-Simulator input, the accepted
-Slice / Difference A–E chain, accepted F TopologyDifference evidence, the
+Topology/PhysicalFrame ownership foundation, the temporary legacy Slice /
+Difference A–E chain and F TopologyDifference evidence, the existing
 Simulator-owned semantic Planner, and the upstream SEED `Docker` compiler.
 
 `emu.py` contains only `build_emulator() -> Emulator`. `main.py` builds that
 Emulator once, assembles one Simulator/Topology from the same object, preserves
-the Emulator render/compile path, then writes the offline Topology and Zone
-tool snapshot. `simu.py` independently reuses it for readable external
+the Emulator render/compile path, then writes the offline Topology, Zone, and
+Physical Frame Tool snapshot. The caller obtains the authoritative frame from
+`Topology.frame_at(...)` and passes that exact `Topology + PhysicalFrame` to
+the read-only Tool; the Tool does not invoke PositionModel or create a frame.
+`simu.py` independently reuses the Emulator for readable external
 Emulator-to-Simulator assembly and obtains all Skyseed AS values from the real
 upstream `Base` owner with `get_skyseed_autonomous_systems(base)` and passes
 that collection to
@@ -22,10 +26,13 @@ Simulator results and do not mutate Emulator entities.
 
 From `skyseed_v2/examples/complete_static_emulator/`, run the canonical
 external assembly flow, which uses fixed timestamps, explicitly creates the
-three built-in Slicer Models, Slicer and Planner, queries synthetic Slice 0,
-generates two real TopologySlices, publishes an initial Plan, then creates a
-third Slice and incrementally publishes the next continuous non-overlapping
-Plan interval:
+Topology with one `CircularOrbitPositionModel`, requests a timestamp-identified
+physical-only `PhysicalFrame`, then demonstrates the explicit temporary legacy
+seam: a Slicer with `GeometricConnectionModel` and `HopCountRouteModel`
+produces Connection/Route/TopologySlice/Difference values for the existing
+Planner. It queries synthetic Slice 0, generates two real TopologySlices,
+publishes an initial Plan, then creates a third Slice and incrementally
+publishes the next continuous non-overlapping Plan interval:
 
 ```bash
 python3 simu.py
@@ -37,10 +44,12 @@ The equivalent module command from `skyseed_v2/` is
 `simu.py` keeps the user-adjustable start/end/10-second interval values at the
 top, then shows `SimulatorStaticInput → SimulationTimeline →
 SimulationDefinition.static_input → Simulator → create_topology(...)` directly,
-then demonstrates Position, ISL, GroundStation access, Zone service, G/Z next
-hops, a resolved full path and a legal unserved Zone. A bounded Timeline is
-displayed completely; an unbounded Timeline is displayed through a fixed
-four-timestamp prefix without eager materialization.
+followed by `Topology.frame_at(timestamp) → PhysicalFrame`. The frame supplies
+the Position examples; the temporary legacy Slicer then supplies ISL,
+GroundStation access, Zone service, G/Z next hops, a resolved full path, and a
+legal unserved Zone. A bounded Timeline is displayed completely; an unbounded
+Timeline is displayed through a fixed four-timestamp prefix without eager
+materialization.
 
 The Planner path uses midpoint Connection timing, accumulated parameter
 deadbands, dependency-aware forwarding and the default CoordinationPolicy. It
@@ -70,7 +79,7 @@ python3 main.py
 
 The default command compiles the runnable static project under
 `output/runtime/` and writes `output/inspection/index.html` plus standalone
-Topology and Zone pages:
+Topology, Zone, and Physical Frame pages:
 
 ```text
 output/
@@ -81,7 +90,11 @@ output/
 └── inspection/
     ├── index.html
     ├── topology/
-    └── zone/
+    ├── zone/
+    └── physical-frame/
+        ├── index.html
+        ├── physical-frame.json
+        └── summary.txt
 ```
 
 The pages embed their data, work offline when opened directly, and retain

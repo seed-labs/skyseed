@@ -2,17 +2,43 @@
 
 ## Mental model
 
-The main path can be read as seven questions:
+The accepted path can be read as eight questions:
 
 | Component | Mental model |
 |---|---|
 | Emulator | 实验里有什么、节点里装什么？ |
-| Simulator / Slicer | 网络世界在各个采样时刻是什么样？ |
-| Planner | 哪些变化应该真的发生，以及什么时候发生？ |
+| Topology / PhysicalFrame | 这个时间戳的物理世界在哪里？ |
+| Network Planner | 哪些连接、参数、路径和协调决策应该真的生效，以及什么时候生效？ |
+| PlannedOperationalState | Planner 在该时刻选择的完整运行语义是什么？ |
 | Plan | Backend-independent formal network intent。 |
 | BPF Compiler | 把 formal intent 翻译成 symbolic BPF backend work。 |
 | BpfRunner | 按时间忠实、高效地把 work 落到 live Linux network。 |
 | Default tc-BPF dataplane / Linux kernel | Packet 最终实际怎么走？ |
+
+Round 1 establishes the physical foundation but deliberately does not perform
+the Network Planner migration. The accepted destination is:
+
+```text
+Topology / PhysicalFrame
+→ Network Planner
+→ PlannedOperationalState
+→ Plan
+→ Compiler / Runner
+→ RealizedRuntimeState
+```
+
+The current implementation temporarily preserves this visible legacy seam:
+
+```text
+Topology / PhysicalFrame
+→ legacy Slicer operational remainder
+→ current Planner
+→ Plan
+```
+
+That seam is migration debt, not an alternate architecture. Slicer is
+scheduled for complete removal after Connection, effective Parameter/resource,
+Route, and Coordination ownership moves into the Network Planner.
 
 ## End-to-end relationships
 
@@ -26,14 +52,19 @@ flowchart LR
     CON -->|creates| EMU["upstream SEED Emulator<br/>Skyseed entity owner tree"]
     EMU -->|projected by| BOUND["create_simulator_static_input"]
     BOUND -->|produces| DTO["immutable SimulatorStaticInput"]
-    DTO -->|supplied to| DEF["SimulationDefinition + Timeline"]
+    DTO -->|supplied to| DEF["SimulationDefinition"]
+    DEF -->|owns timestamp domain| TIME["SimulationTimeline"]
     DEF -->|constructs| SIM["Simulator"]
-    SIM -->|creates and owns| TOP["one Topology"]
-    SIM -->|creates and owns| SLI["one Slicer"]
-    SIM -->|creates and owns after Slicer| PLA["at most one Planner"]
-    SLI -->|calls Models; produces and retains| SLICE["TopologySlice values"]
+    SIM -->|creates and owns, bound to physical Model| TOP["one Topology + PositionModel"]
+    TOP -->|frame_at deterministically produces| FRAME["immutable PhysicalFrame<br/>timestamp + Positions"]
+    SIM -->|temporarily creates and owns| SLI["one legacy Slicer"]
+    SIM -->|temporarily creates and owns after Slicer| PLA["at most one current Planner"]
+    SLI -->|temporarily requests next timestamp from| TIME
+    SLI -->|supplies requested timestamp to| TOP
+    FRAME -->|Positions consumed by| SLI
+    SLI -->|calls legacy Connection/Route Models; produces and retains| SLICE["legacy TopologySlice values"]
     PLA -->|calls create_difference on exact sibling| SLI
-    SLI -->|produces on request; does not retain| DIFF["TopologyDifference value"]
+    SLI -->|produces on request; does not retain| DIFF["legacy TopologyDifference value"]
     DIFF -->|consumed by synchronize| PLA
     PLA -->|synchronize produces; Planner retains current| PLAN["immutable semantic Plan"]
     PLAN -->|semantic input consumed by| BPF["one-shot compile_bpf"]
@@ -44,6 +75,7 @@ flowchart LR
 
     MAIN["canonical main.py"] -->|passes already-produced formal values to| GTOOLS["generation-time formal-object Tools"]
     TOP -->|read by| GTOOLS
+    FRAME -->|read by Physical Frame Tool| GTOOLS
     SLI -->|read by| GTOOLS
     PLAN -->|read by| GTOOLS
     REAL -->|read by| GTOOLS
@@ -57,10 +89,14 @@ flowchart LR
     EVID -->|post-run read by| PTOOLS["Runner / Traffic evidence Tools"]
 ```
 
-The dynamic path and static deployment path share the Emulator source but not
-lifecycle ownership. Generation-time Tools receive already-produced formal
-objects/results from `main.py`; post-run Runner/Traffic Tools read detached,
-persisted evidence. No Tool owns production progression or lifecycle.
+The physical/operational path and static deployment path share the Emulator
+source but not lifecycle ownership. Topology owns physical projection and its
+PositionModel; `PhysicalFrame` is an immutable physical-domain value whose
+timestamp is its identity. It contains exactly the Topology node Positions and
+no Connection, Route, serving, Difference, planning, Plan, or runtime state.
+Generation-time Tools receive already-produced formal objects/results from
+`main.py`; post-run Runner/Traffic Tools read detached, persisted evidence. No
+Tool owns production progression or lifecycle.
 The BPF Compiler is a downstream reader, not a Simulator-owned component; it
 does not bind containers or kernel resources. The BPF Runner receives the
 Compiler output plus the identity of an already-running Compose project,
@@ -152,17 +188,19 @@ Skyseed
 │  ├─ upstream SEED Docker compiler
 │  └─ generated Compose project / caller-started live deployment
 ├─ Simulator domain (`Simulator` is the composition root)
-│  ├─ Topology                         # Simulator-created/owned peer component
-│  ├─ Slicer                           # Simulator-created/owned peer component
-│  │  ├─ retained TopologySlice values
-│  │  └─ on-request TopologyDifference values (not retained)
-│  ├─ Planner                          # Simulator-created/owned peer component
+│  ├─ Topology                         # physical aggregate and projection owner
+│  │  ├─ PositionModel                 # physical Model bound at construction
+│  │  └─ PhysicalFrame values          # immutable timestamp + Positions
+│  ├─ legacy Slicer                    # temporary operational migration seam
+│  │  ├─ ConnectionModel / RouteModel
+│  │  ├─ retained legacy TopologySlice values
+│  │  └─ on-request legacy TopologyDifference values (not retained)
+│  ├─ current Planner                  # temporary old Difference consumer
 │  │  ├─ PlanningWindowPolicy
 │  │  ├─ Connection / Parameter / Forwarding planning Models
 │  │  ├─ CoordinationPolicy
 │  │  └─ current immutable Plan value
-│  ├─ SimulationTimeline
-│  └─ PositionModel / ConnectionModel / RouteModel
+│  └─ SimulationTimeline               # timestamp authority, not a projector
 ├─ Backend domain
 │  └─ BPF backend
 │     ├─ BPF Compiler (`compile_bpf`)   # one-shot capability
@@ -191,10 +229,13 @@ dataplane is the current private mechanism, not a public plugin contract.
 | Emulator | Own current static experiment composition and entities | The experiment contains different nodes or static composition |
 | Future functional Layer (unimplemented; API unfrozen) | Would supply shared software, files, commands, and daemons if separately approved | A future functional Layer is introduced or changed |
 | Upstream SEED Docker compiler | Lower the static Emulator composition into a generated Compose deployment | Static container/deployment compilation changes |
-| Simulator / Topology / SimulationTimeline | Own the sampled network world and its time domain | The formal simulation composition or time range changes |
-| PositionModel / ConnectionModel / RouteModel | Compute position, connectivity, and routes for one sample | Physical or routing algorithms change |
-| Slicer / TopologyDifference | Retain formal samples and compare adjacent samples | Sampling/retention or Difference production changes |
-| Planner | Persist planning state and decide which semantic changes are published when | A sampled change should be delayed, suppressed, coordinated, or timed differently |
+| Simulator / SimulationTimeline | Own the simulation composition and timestamp domain, without owning physical projection results | The formal composition or time range changes |
+| Topology / PositionModel | Own static physical identity and deterministically project one requested timestamp | Static physical membership or position algorithms change |
+| PhysicalFrame | Carry immutable physical timestamp identity and exactly one Position per Topology node | The physical-domain handoff contract changes |
+| Legacy Slicer / ConnectionModel / RouteModel / TopologyDifference | Temporary Round-1 operational remainder: consume a PhysicalFrame, retain old mixed Slices, and compare adjacent Slices | Only a mechanically required legacy behavior changes before deletion |
+| Current Planner | Preserve existing Difference-based planning semantics until Network Planner migration | Current legacy publication behavior must remain stable during migration |
+| Network Planner (accepted target; not implemented in Round 1) | Own Connection, effective Parameter/resource, Route, and Coordination planning and produce planned operational state | The next operational architecture rounds are implemented |
+| PlannedOperationalState (accepted target; not implemented in Round 1) | Carry complete selected operational semantics separately from physical and realized runtime state | The Network Planner output contract is introduced |
 | PlanningWindowPolicy | Select the planning and publication windows from available Differences | Planner visibility/publication window policy changes |
 | Planning models / CoordinationPolicy | Produce and coordinate connection, parameter, forwarding, and ordering decisions | Cross-Difference planning or cross-domain coordination changes |
 | Plan | Carry immutable backend-independent formal network intent | A backend-independent transition contract changes |
@@ -208,6 +249,7 @@ dataplane is the current private mechanism, not a public plugin contract.
 
 | Desired change or observation | Primary owner |
 |---|---|
+| 改变卫星位置传播算法 | Topology-bound `PositionModel` |
 | 改变卫星连接判定 | `ConnectionModel` |
 | 短暂连接不值得切 | `ConnectionPlanningModel` / Planner |
 | Handover 需要 200 ms interruption | Planner planning/timing |
@@ -225,7 +267,8 @@ optimize away connection lifetime, nominal timing, delay, loss, bandwidth, or
 active/inactive semantics already decided upstream.
 
 Runner performance is therefore part of simulation correctness relative to
-the target profile's nominal semantic transition schedule. Simulation/Slice
-resolution, Planner publication cadence, Plan nominal transition timing, and
-Runner execution cadence are distinct; no universal ten-second Runner
-threshold follows from any one of them.
+the target profile's nominal semantic transition schedule. PhysicalFrame
+resolution, the temporary legacy Slice resolution, current Planner publication
+cadence, Plan nominal transition timing, and Runner execution cadence are
+distinct; no universal ten-second Runner threshold follows from any one of
+them.

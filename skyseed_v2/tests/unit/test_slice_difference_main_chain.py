@@ -157,6 +157,7 @@ def _simulator(
     *,
     end_time: datetime | None = EPOCH + timedelta(seconds=20),
     zone_layout: ZoneLayoutDefinition | None = None,
+    position_model=None,
 ) -> tuple[Simulator, object]:
     simulator = Simulator(
         SimulationDefinition(
@@ -165,7 +166,12 @@ def _simulator(
         )
     )
     topology = simulator.create_topology(
-        zone_layout_definition=zone_layout
+        position_model=(
+            CircularOrbitPositionModel()
+            if position_model is None
+            else position_model
+        ),
+        zone_layout_definition=zone_layout,
     )
     return simulator, topology
 
@@ -1457,15 +1463,15 @@ def test_full_main_chain_publishes_connections_routes_and_paths() -> None:
         "sat-1", orbit_index=1, mean_anomaly_deg=146.0
     )
     ground_station = _ground_station()
+    position_model = _CountingCircularPositionModel()
     simulator, _ = _simulator(
         SimulatorStaticInput(
             (first_satellite, second_satellite), (ground_station,)
         ),
         zone_layout=_zone_layout(),
-    )
-    position_model = _CountingCircularPositionModel()
-    slicer = simulator.create_slicer(
         position_model=position_model,
+    )
+    slicer = simulator.create_slicer(
         connection_model=_connection_model(),
         route_model=HopCountRouteModel(),
     )
@@ -1481,6 +1487,8 @@ def test_full_main_chain_publishes_connections_routes_and_paths() -> None:
     assert first_slice.timestamp == EPOCH
     assert second_slice.timestamp == EPOCH + timedelta(seconds=10)
     assert position_model.calls == 2
+    assert simulator.get_topology().get_position_model() is position_model
+    assert not hasattr(slicer, "get_position_model")
     isl = first_slice.connection_slice.get_connection_for_endpoints(
         ConnectionKind.INTER_SATELLITE,
         first_satellite.node_id,
@@ -1813,10 +1821,6 @@ def test_slicer_rejects_custom_connection_output_over_site_access_cap() -> None:
     station = _ground_station(
         "hard-cap", max_simultaneous_satellite_accesses=1
     )
-    simulator, _ = _simulator(
-        SimulatorStaticInput(satellites, (station,)),
-        end_time=EPOCH,
-    )
     parameters = DirectionalConnectionParameters(1_000, 1, 0)
     connection_slice = ConnectionSlice(
         Connection(
@@ -1837,8 +1841,12 @@ def test_slicer_rejects_custom_connection_output_over_site_access_cap() -> None:
         ),
         station.node_id: geodetic_to_ecef(40.7128, -74.006, 10.0),
     }
-    slicer = simulator.create_slicer(
+    simulator, _ = _simulator(
+        SimulatorStaticInput(satellites, (station,)),
+        end_time=EPOCH,
         position_model=_FixedPositionModel(positions),
+    )
+    slicer = simulator.create_slicer(
         connection_model=_StaticConnectionModel(connection_slice),
         route_model=HopCountRouteModel(),
     )
@@ -1860,10 +1868,6 @@ def test_slicer_rejects_custom_connection_output_over_satellite_access_cap() -> 
         max_simultaneous_ground_station_accesses=2,
     )
     stations = tuple(_ground_station(f"station-{index}") for index in range(3))
-    simulator, _ = _simulator(
-        SimulatorStaticInput((satellite,), stations),
-        end_time=EPOCH,
-    )
     parameters = DirectionalConnectionParameters(1_000, 1, 0)
     connection_slice = ConnectionSlice(
         Connection(
@@ -1888,8 +1892,12 @@ def test_slicer_rejects_custom_connection_output_over_satellite_access_cap() -> 
             for station in stations
         },
     }
-    slicer = simulator.create_slicer(
+    simulator, _ = _simulator(
+        SimulatorStaticInput((satellite,), stations),
+        end_time=EPOCH,
         position_model=_FixedPositionModel(positions),
+    )
+    slicer = simulator.create_slicer(
         connection_model=_StaticConnectionModel(connection_slice),
         route_model=HopCountRouteModel(),
     )
@@ -1907,15 +1915,16 @@ def test_slicer_rejects_custom_connection_output_over_satellite_access_cap() -> 
 
 def test_slicer_failure_is_atomic_and_retries_same_id_and_timestamp() -> None:
     satellite = _satellite("only")
-    simulator, _ = _simulator(
-        SimulatorStaticInput((satellite,)), end_time=EPOCH
-    )
     position_model = _FixedPositionModel(
         {satellite.node_id: EarthFixedPosition(7_000_000.0, 0.0, 0.0)}
     )
+    simulator, _ = _simulator(
+        SimulatorStaticInput((satellite,)),
+        end_time=EPOCH,
+        position_model=position_model,
+    )
     route_model = _FailOnceRouteModel()
     slicer = simulator.create_slicer(
-        position_model=position_model,
         connection_model=_EmptyConnectionModel(),
         route_model=route_model,
     )
@@ -1934,7 +1943,6 @@ def test_slicer_failure_is_atomic_and_retries_same_id_and_timestamp() -> None:
         slicer.create_next_slice()
     with pytest.raises(RuntimeError, match="already"):
         simulator.create_slicer(
-            position_model=_FixedPositionModel(position_model.positions),
             connection_model=_EmptyConnectionModel(),
             route_model=HopCountRouteModel(),
         )
@@ -1945,18 +1953,19 @@ def test_durable_slice_append_failure_is_explicitly_post_publication(
     tmp_path: Path,
 ) -> None:
     satellite = _satellite("only")
+    position_model = _FixedPositionModel(
+        {
+            satellite.node_id: EarthFixedPosition(
+                7_000_000.0, 0.0, 0.0
+            )
+        }
+    )
     simulator, _ = _simulator(
         SimulatorStaticInput((satellite,)),
         end_time=EPOCH + timedelta(seconds=10),
+        position_model=position_model,
     )
     slicer = simulator.create_slicer(
-        position_model=_FixedPositionModel(
-            {
-                satellite.node_id: EarthFixedPosition(
-                    7_000_000.0, 0.0, 0.0
-                )
-            }
-        ),
         connection_model=_EmptyConnectionModel(),
         route_model=HopCountRouteModel(),
     )
@@ -2000,9 +2009,6 @@ def test_every_model_failure_retries_the_same_pending_timestamp_and_id(
     failure_stage: str,
 ) -> None:
     satellite = _satellite("only")
-    simulator, _ = _simulator(
-        SimulatorStaticInput((satellite,)), end_time=EPOCH
-    )
     positions = {
         satellite.node_id: EarthFixedPosition(7_000_000.0, 0.0, 0.0)
     }
@@ -2010,6 +2016,11 @@ def test_every_model_failure_retries_the_same_pending_timestamp_and_id(
         _FailOncePositionModel(positions)
         if failure_stage == "position"
         else _FixedPositionModel(positions)
+    )
+    simulator, _ = _simulator(
+        SimulatorStaticInput((satellite,)),
+        end_time=EPOCH,
+        position_model=position_model,
     )
     connection_model = (
         _FailOnceConnectionModel()
@@ -2022,7 +2033,6 @@ def test_every_model_failure_retries_the_same_pending_timestamp_and_id(
         else HopCountRouteModel()
     )
     slicer = simulator.create_slicer(
-        position_model=position_model,
         connection_model=connection_model,
         route_model=route_model,
     )
@@ -2045,10 +2055,6 @@ def test_slicer_accepts_intentionally_absent_reachable_route() -> None:
         "second", orbit_index=1, mean_anomaly_deg=180.0
     )
     station = _ground_station()
-    simulator, _ = _simulator(
-        SimulatorStaticInput((first, second), (station,)),
-        end_time=EPOCH,
-    )
     parameters = DirectionalConnectionParameters(1, 0, 0)
     connection_slice = ConnectionSlice(
         (
@@ -2072,18 +2078,19 @@ def test_slicer_accepts_intentionally_absent_reachable_route() -> None:
             ),
         )
     )
-    slicer = simulator.create_slicer(
-        position_model=_FixedPositionModel(
-            {
-                first.node_id: EarthFixedPosition(
-                    7_000_000.0, 0.0, 0.0
-                ),
-                second.node_id: EarthFixedPosition(
-                    7_000_000.0, 1_000.0, 0.0
-                ),
-                station.node_id: geodetic_to_ecef(40.7128, -74.006, 10.0),
-            }
+    positions = {
+        first.node_id: EarthFixedPosition(7_000_000.0, 0.0, 0.0),
+        second.node_id: EarthFixedPosition(
+            7_000_000.0, 1_000.0, 0.0
         ),
+        station.node_id: geodetic_to_ecef(40.7128, -74.006, 10.0),
+    }
+    simulator, _ = _simulator(
+        SimulatorStaticInput((first, second), (station,)),
+        end_time=EPOCH,
+        position_model=_FixedPositionModel(positions),
+    )
+    slicer = simulator.create_slicer(
         connection_model=_StaticConnectionModel(connection_slice),
         route_model=_StaticRouteModel(RouteSlice()),
     )
@@ -2106,15 +2113,16 @@ def test_slicer_requires_topology_and_failed_creation_publishes_nothing() -> Non
     simulator = Simulator(definition)
     with pytest.raises(RuntimeError, match="Topology"):
         simulator.create_slicer(
-            position_model=_FixedPositionModel({}),
             connection_model=_EmptyConnectionModel(),
             route_model=HopCountRouteModel(),
         )
     with pytest.raises(RuntimeError, match="not been created"):
         simulator.get_slicer()
 
-    simulator.create_topology()
     with pytest.raises(TypeError, match="position_model"):
+        simulator.create_topology(position_model=object())
+    simulator.create_topology(position_model=_FixedPositionModel({}))
+    with pytest.raises(TypeError, match="unexpected keyword"):
         simulator.create_slicer(
             position_model=object(),
             connection_model=_EmptyConnectionModel(),
@@ -2126,9 +2134,12 @@ def test_slicer_requires_topology_and_failed_creation_publishes_nothing() -> Non
 
 def test_slicer_creation_failure_releases_model_owner_and_private_binding() -> None:
     satellite = _satellite("only")
-    simulator, topology = _simulator(SimulatorStaticInput((satellite,)))
     position_model = _FixedPositionModel(
         {satellite.node_id: EarthFixedPosition(7_000_000.0, 0.0, 0.0)}
+    )
+    simulator, topology = _simulator(
+        SimulatorStaticInput((satellite,)),
+        position_model=position_model,
     )
     concrete_connection_model = _connection_model()
     connection_model = _RejectingContextConnectionModel(
@@ -2137,7 +2148,6 @@ def test_slicer_creation_failure_releases_model_owner_and_private_binding() -> N
 
     with pytest.raises(RuntimeError, match="context claim"):
         simulator.create_slicer(
-            position_model=position_model,
             connection_model=connection_model,
             route_model=HopCountRouteModel(),
         )
@@ -2150,7 +2160,6 @@ def test_slicer_creation_failure_releases_model_owner_and_private_binding() -> N
         simulator.get_slicer()
 
     slicer = simulator.create_slicer(
-        position_model=position_model,
         connection_model=connection_model,
         route_model=HopCountRouteModel(),
     )
@@ -2164,20 +2173,15 @@ def test_model_instances_cannot_be_reused_by_concurrent_slicers() -> None:
     static_input = SimulatorStaticInput((satellite,))
     first_simulator, _ = _simulator(static_input)
     second_simulator, _ = _simulator(static_input)
-    position_model = _FixedPositionModel(
-        {satellite.node_id: EarthFixedPosition(7_000_000.0, 0.0, 0.0)}
-    )
     connection_model = _EmptyConnectionModel()
     route_model = HopCountRouteModel()
 
     first_simulator.create_slicer(
-        position_model=position_model,
         connection_model=connection_model,
         route_model=route_model,
     )
     with pytest.raises(ValueError, match="another Slicer"):
         second_simulator.create_slicer(
-            position_model=position_model,
             connection_model=connection_model,
             route_model=route_model,
         )
@@ -2192,9 +2196,6 @@ def test_model_claim_is_atomic_under_concurrent_slicer_creation() -> None:
         _simulator(static_input),
         _simulator(static_input),
     )
-    position_model = _FixedPositionModel(
-        {satellite.node_id: EarthFixedPosition(7_000_000.0, 0.0, 0.0)}
-    )
     connection_model = _connection_model()
     route_model = HopCountRouteModel()
     barrier = threading.Barrier(3)
@@ -2204,7 +2205,6 @@ def test_model_claim_is_atomic_under_concurrent_slicer_creation() -> None:
         barrier.wait()
         try:
             slicer = simulators_and_topologies[index][0].create_slicer(
-                position_model=position_model,
                 connection_model=connection_model,
                 route_model=route_model,
             )
@@ -2238,14 +2238,10 @@ def test_model_claim_is_atomic_under_concurrent_slicer_creation() -> None:
 def test_dead_slicer_releases_model_claim_and_private_binding() -> None:
     satellite = _satellite("only")
     static_input = SimulatorStaticInput((satellite,))
-    position_model = _FixedPositionModel(
-        {satellite.node_id: EarthFixedPosition(7_000_000.0, 0.0, 0.0)}
-    )
     connection_model = _connection_model()
     route_model = HopCountRouteModel()
     first_simulator, _ = _simulator(static_input)
     first_slicer = first_simulator.create_slicer(
-        position_model=position_model,
         connection_model=connection_model,
         route_model=route_model,
     )
@@ -2258,7 +2254,6 @@ def test_dead_slicer_releases_model_claim_and_private_binding() -> None:
 
     second_simulator, second_topology = _simulator(static_input)
     second_slicer = second_simulator.create_slicer(
-        position_model=position_model,
         connection_model=connection_model,
         route_model=route_model,
     )
@@ -2274,8 +2269,11 @@ def test_pre_slicer_connection_call_cannot_pollute_stable_pairing_reference() ->
             "second", orbit_index=1, mean_anomaly_deg=180.0
         ),
     )
-    simulator, topology = _simulator(SimulatorStaticInput(satellites))
     position_model = CircularOrbitPositionModel()
+    simulator, topology = _simulator(
+        SimulatorStaticInput(satellites),
+        position_model=position_model,
+    )
     connection_model = _connection_model(
         maximum_isl_distance_m=20_000_000.0
     )
@@ -2295,7 +2293,6 @@ def test_pre_slicer_connection_call_cannot_pollute_stable_pairing_reference() ->
     )
 
     slicer = simulator.create_slicer(
-        position_model=position_model,
         connection_model=connection_model,
         route_model=HopCountRouteModel(),
     )
@@ -2325,18 +2322,19 @@ def test_pairing_preparation_failure_leaves_no_half_state_and_retries() -> None:
         _satellite("first", orbit_index=0, mean_anomaly_deg=0.0),
         _satellite("second", orbit_index=1, mean_anomaly_deg=0.0),
     )
-    simulator, _ = _simulator(
-        SimulatorStaticInput(satellites), end_time=EPOCH
-    )
     positions = {
         satellite.node_id: EarthFixedPosition(
             7_000_000.0, index * 1_000.0, 0.0
         )
         for index, satellite in enumerate(satellites)
     }
+    simulator, _ = _simulator(
+        SimulatorStaticInput(satellites),
+        end_time=EPOCH,
+        position_model=_FixedPositionModel(positions),
+    )
     connection_model = _connection_model()
     slicer = simulator.create_slicer(
-        position_model=_FixedPositionModel(positions),
         connection_model=connection_model,
         route_model=HopCountRouteModel(),
     )
@@ -2358,18 +2356,19 @@ def test_downstream_failure_retry_keeps_start_time_pairing() -> None:
             "second", orbit_index=1, mean_anomaly_deg=180.0
         ),
     )
-    simulator, _ = _simulator(
-        SimulatorStaticInput(satellites), end_time=EPOCH
-    )
     positions = {
         satellite.node_id: EarthFixedPosition(
             7_000_000.0, index * 1_000.0, 0.0
         )
         for index, satellite in enumerate(satellites)
     }
+    simulator, _ = _simulator(
+        SimulatorStaticInput(satellites),
+        end_time=EPOCH,
+        position_model=_FixedPositionModel(positions),
+    )
     connection_model = _connection_model()
     slicer = simulator.create_slicer(
-        position_model=_FixedPositionModel(positions),
         connection_model=connection_model,
         route_model=_FailOnceRouteModel(),
     )
@@ -2391,13 +2390,15 @@ def test_downstream_failure_retry_keeps_start_time_pairing() -> None:
 
 def test_unbounded_batch_is_finite_and_create_all_requires_bound() -> None:
     satellite = _satellite("only")
+    position_model = _FixedPositionModel(
+        {satellite.node_id: EarthFixedPosition(7_000_000.0, 0.0, 0.0)}
+    )
     simulator, _ = _simulator(
-        SimulatorStaticInput((satellite,)), end_time=None
+        SimulatorStaticInput((satellite,)),
+        end_time=None,
+        position_model=position_model,
     )
     slicer = simulator.create_slicer(
-        position_model=_FixedPositionModel(
-            {satellite.node_id: EarthFixedPosition(7_000_000.0, 0.0, 0.0)}
-        ),
         connection_model=_EmptyConnectionModel(),
         route_model=HopCountRouteModel(),
     )
@@ -2434,18 +2435,19 @@ def test_slicer_uses_timeline_iterator_as_its_only_timestamp_authority(
         irregular_timestamps,
     )
     satellite = _satellite("only")
+    position_model = _FixedPositionModel(
+        {
+            satellite.node_id: EarthFixedPosition(
+                7_000_000.0, 0.0, 0.0
+            )
+        }
+    )
     simulator, _ = _simulator(
         SimulatorStaticInput((satellite,)),
         end_time=EPOCH + timedelta(minutes=1),
+        position_model=position_model,
     )
     slicer = simulator.create_slicer(
-        position_model=_FixedPositionModel(
-            {
-                satellite.node_id: EarthFixedPosition(
-                    7_000_000.0, 0.0, 0.0
-                )
-            }
-        ),
         connection_model=_EmptyConnectionModel(),
         route_model=HopCountRouteModel(),
     )
@@ -2465,22 +2467,26 @@ def test_slicer_uses_timeline_iterator_as_its_only_timestamp_authority(
     assert "_next_timeline_timestamp(self._timestamp_iterator)" in slicer_source
     assert "timestamp + self._timeline.slice_interval" not in slicer_source
     assert "_timeline_timestamp_for_slice_id" not in slicer_source
+    assert "self._topology.frame_at(timestamp)" in slicer_source
+    assert "compute_positions(" not in slicer_source
+    assert "_position_model" not in slicer_source
 
 
 def test_generated_progress_does_not_depend_on_retained_prefix_size() -> None:
     satellite = _satellite("only")
+    position_model = _FixedPositionModel(
+        {
+            satellite.node_id: EarthFixedPosition(
+                7_000_000.0, 0.0, 0.0
+            )
+        }
+    )
     simulator, _ = _simulator(
         SimulatorStaticInput((satellite,)),
         end_time=None,
+        position_model=position_model,
     )
     slicer = simulator.create_slicer(
-        position_model=_FixedPositionModel(
-            {
-                satellite.node_id: EarthFixedPosition(
-                    7_000_000.0, 0.0, 0.0
-                )
-            }
-        ),
         connection_model=_EmptyConnectionModel(),
         route_model=HopCountRouteModel(),
     )
@@ -2517,11 +2523,6 @@ def test_slicer_rejects_ground_station_transit_without_consuming_progress() -> N
         "second", orbit_index=1, mean_anomaly_deg=180.0
     )
     relay = _ground_station("relay")
-    simulator, _ = _simulator(
-        SimulatorStaticInput((first, second), (relay,)),
-        end_time=EPOCH,
-        zone_layout=_zone_layout(),
-    )
     parameters = DirectionalConnectionParameters(1, 0, 0)
 
     def connection(first_node: NodeId, second_node: NodeId) -> Connection:
@@ -2580,8 +2581,13 @@ def test_slicer_rejects_ground_station_transit_without_consuming_progress() -> N
         second.node_id: EarthFixedPosition(7_000_000.0, 1_000.0, 0.0),
         relay.node_id: geodetic_to_ecef(40.7128, -74.006, 10.0),
     }
-    slicer = simulator.create_slicer(
+    simulator, _ = _simulator(
+        SimulatorStaticInput((first, second), (relay,)),
+        end_time=EPOCH,
+        zone_layout=_zone_layout(),
         position_model=_FixedPositionModel(positions),
+    )
+    slicer = simulator.create_slicer(
         connection_model=_StaticConnectionModel(connection_slice),
         route_model=IllegalOnceRouteModel(),
     )
@@ -2620,11 +2626,6 @@ def test_slicer_rejects_route_loops_and_wrong_terminals(
     )
     first_station = _ground_station("target")
     second_station = _ground_station("other")
-    simulator, _ = _simulator(
-        SimulatorStaticInput(
-            (first, second), (first_station, second_station)
-        )
-    )
     parameters = DirectionalConnectionParameters(1, 0, 0)
     target = GroundStationRouteTarget(first_station.node_id)
     if wrong_terminal:
@@ -2674,8 +2675,13 @@ def test_slicer_rejects_route_loops_and_wrong_terminals(
             (first, second, first_station, second_station)
         )
     }
-    slicer = simulator.create_slicer(
+    simulator, _ = _simulator(
+        SimulatorStaticInput(
+            (first, second), (first_station, second_station)
+        ),
         position_model=_FixedPositionModel(positions),
+    )
+    slicer = simulator.create_slicer(
         connection_model=_StaticConnectionModel(connections),
         route_model=_StaticRouteModel(routes),
     )
@@ -2699,11 +2705,11 @@ def test_slicer_distinguishes_stale_next_hop_and_wrong_zone_terminal() -> None:
     }
 
     stale_simulator, _ = _simulator(
-        SimulatorStaticInput((first, second), (station,))
+        SimulatorStaticInput((first, second), (station,)),
+        position_model=_FixedPositionModel(positions),
     )
     stale_target = GroundStationRouteTarget(station.node_id)
     stale_slicer = stale_simulator.create_slicer(
-        position_model=_FixedPositionModel(positions),
         connection_model=_StaticConnectionModel(ConnectionSlice()),
         route_model=_StaticRouteModel(
             RouteSlice(
@@ -2722,6 +2728,7 @@ def test_slicer_distinguishes_stale_next_hop_and_wrong_zone_terminal() -> None:
     zone_simulator, _ = _simulator(
         SimulatorStaticInput((first, second), (station,)),
         zone_layout=_zone_layout(),
+        position_model=_FixedPositionModel(positions),
     )
     zone_connections = ConnectionSlice(
         (
@@ -2739,7 +2746,6 @@ def test_slicer_distinguishes_stale_next_hop_and_wrong_zone_terminal() -> None:
     )
     near_target = ZoneRouteTarget("near")
     zone_slicer = zone_simulator.create_slicer(
-        position_model=_FixedPositionModel(positions),
         connection_model=_StaticConnectionModel(zone_connections),
         route_model=_StaticRouteModel(
             RouteSlice(
@@ -2761,6 +2767,7 @@ def test_slice_difference_contracts_are_simulator_public_but_not_package_root() 
 
     for name in (
         "EarthFixedPosition",
+        "PhysicalFrame",
         "PositionModel",
         "ConnectionModel",
         "RouteModel",

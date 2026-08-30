@@ -2,7 +2,8 @@
 
 This package owns the Earth-fixed Position value and deterministic
 geodetic/ECEF, distance, elevation, and line-of-sight capability. It owns no
-Topology, time propagation, Connection selection, or second coordinate state.
+Topology, `PhysicalFrame`, time progression, Connection selection, or second
+coordinate state.
 
 ## Local assembly / ownership map
 
@@ -23,6 +24,7 @@ none of these consumers and does not own a Slice.
 ```mermaid
 flowchart LR
     GEOMETRY["EarthFixedPosition + geometry functions"] --> POSITION["PositionModel implementations"]
+    GEOMETRY --> FRAME["Topology PhysicalFrame publication"]
     GEOMETRY --> CONNECTION["ConnectionModel implementations"]
     GEOMETRY --> DISPLAY["Inspection display analysis"]
 ```
@@ -60,14 +62,16 @@ Public functions: `geodetic_to_ecef`, `ecef_to_geodetic`,
 
 ## Dependencies
 
-Geometry uses neutral numeric/time primitives. Position and Connection Model
-implementations plus non-authoritative Inspection display analysis consume it;
-geometry owns no Topology, Slice, or Tool artifact.
+Geometry uses neutral numeric/time primitives. Position Model implementations,
+Topology's immutable `PhysicalFrame`, temporary legacy Connection Model
+implementations, and non-authoritative Inspection display analysis consume it;
+geometry owns no Topology, PhysicalFrame, Slice, or Tool artifact.
 
 ## Examples and tests
 
-Dynamic slicing and Inspection examples exercise these values. Coordinate,
-main-chain Model, Zone, Tool-boundary, and SCC tests cover the package.
+Physical projection, temporary dynamic slicing, and Inspection examples
+exercise these values. Coordinate, main-chain Model, Zone, Tool-boundary, and
+SCC tests cover the package.
 
 ## Maintenance checklist
 

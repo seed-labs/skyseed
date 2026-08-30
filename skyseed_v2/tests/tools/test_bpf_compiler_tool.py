@@ -430,9 +430,8 @@ def _same_next_hop_compilation():
             ),
         )
     )
-    simulator.create_topology()
+    simulator.create_topology(position_model=_PositionModel())
     slicer = simulator.create_slicer(
-        position_model=_PositionModel(),
         connection_model=_SequenceConnectionModel(
             (ConnectionSlice((connection,)), ConnectionSlice((connection,)))
         ),

@@ -180,9 +180,9 @@ def _portable_slicer() -> Slicer:
         timedelta(seconds=30),
     )
     simulator = Simulator(SimulationDefinition(static_input, timeline))
-    simulator.create_topology()
+    position_model = CircularOrbitPositionModel()
+    simulator.create_topology(position_model=position_model)
     slicer = simulator.create_slicer(
-        position_model=CircularOrbitPositionModel(),
         connection_model=GeometricConnectionModel(
             maximum_isl_distance_m=1_000_000.0,
             ground_station_minimum_elevation_deg=0.0,

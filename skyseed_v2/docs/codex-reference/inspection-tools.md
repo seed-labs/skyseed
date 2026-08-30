@@ -7,10 +7,15 @@ recorded only in [`CURRENT.md`](../CURRENT.md).
 
 ## Scope
 
-Repository-local Topology, Zone, Slice / Difference, Planner, System
-Observation, BPF Compiler, post-run BPF Runner, and post-run Traffic / Path
-Replay inspection pipelines.
+Repository-local Topology, Zone, Physical Frame, temporary legacy Slice /
+Difference, Planner, System Observation, BPF Compiler, post-run BPF Runner,
+and post-run Traffic / Path Replay inspection pipelines.
 Tools are read-only consumers and are not installed `skyseed_v2` product API.
+
+The accepted destination keeps physical inspection separate from future
+planned-operational inspection. The current Slice Tool is only a consumer of
+the Round-1 legacy mixed-state seam and is scheduled for removal with Slicer;
+it is not the accepted successor to the Physical Frame Tool.
 
 ## Owners and consumers
 
@@ -20,14 +25,20 @@ Each Tool preserves this responsibility boundary:
 reader → projection → display_analysis → renderer → artifact_writer
 ```
 
-The formal reader consumes the exact `Topology` or `Slicer`; the Planner
-reader additionally consumes consecutive immutable `Plan` publications,
-exact consumed `TopologyDifference` values, and retained `PlanningDecision`
-values supplied by scenario assembly. Projection and
-later responsibilities consume only Tool-owned detached values. A small Tool
-may colocate adjacent responsibilities when the boundary remains explicit;
-file count and filenames are not part of the contract. Examples call the Tool
-facades; browser smoke consumes emitted HTML from the validation side.
+The Topology and Zone formal readers consume one exact `Topology`. The
+Physical Frame reader consumes that exact `Topology` together with one exact,
+already-created `PhysicalFrame` supplied by its caller. It reads the frame's
+timestamp and Position mapping plus static Topology interpretation; it never
+calls `Topology.frame_at()`, invokes the Topology-owned `PositionModel`, or
+requests another timestamp. The temporary Slice reader consumes one exact
+legacy `Slicer`; the Planner reader additionally consumes consecutive
+immutable `Plan` publications, exact consumed `TopologyDifference` values,
+and retained `PlanningDecision` values supplied by scenario assembly.
+Projection and later responsibilities consume only Tool-owned detached
+values. A small Tool may colocate adjacent responsibilities when the boundary
+remains explicit; file count and filenames are not part of the contract.
+Examples call the Tool facades; browser smoke consumes emitted HTML from the
+validation side.
 
 The BPF Compiler reader instead consumes consecutive immutable Plans and the
 aligned `BpfCompiledRealization` values already produced by an explicit
@@ -61,8 +72,9 @@ gaps, not claimed timeouts or packet loss.
 
 ## Contract
 
-- the formal-reader responsibility performs every Topology/Slicer lookup and
-  returns a Tool-owned read snapshot with no retained formal object;
+- the formal-reader responsibility performs every Topology/PhysicalFrame/
+  temporary-Slicer read and returns a Tool-owned read snapshot with no retained
+  formal object;
 - the projection responsibility converts only that snapshot into private
   serializable view data and never imports or invokes a formal domain object;
 - display analysis adds explicitly non-authoritative display values,
@@ -74,15 +86,30 @@ gaps, not claimed timeouts or packet loss.
 - the Tool facade composes the responsibilities and preserves its Tool-facing
   function.
 
-The Slice Tool reads retained Slice next-hop facts and adjacent Differences;
-it does not eagerly resolve every route. It writes one small manifest plus one
-offline script chunk per retained Slice so normal page load materializes only
-the selected Slice. Slice, Planner, and Compiler exact chunks use deterministic
+The Physical Frame Tool reads one caller-supplied `Topology + PhysicalFrame`
+pair. Its detached snapshot contains the one timestamp, exact formal
+`EarthFixedPosition` ECEF coordinates, formal WGS84 geodetic views, and only
+static node/orbit identity and configured access-capability facts needed to
+interpret those positions. Tool-private counts, map placement, and display
+notes are non-authoritative. The Tool has no history and no Slice/frame ID,
+Connection, Route, Zone-serving assignment, effective resource allocation,
+Difference, Planner decision, Plan, or realized-runtime field. In particular,
+the facade performs no physical projection call: the caller, not the Tool,
+decides whether and when to call `Topology.frame_at()`.
+
+The old Slice Tool is a temporary legacy mixed-state consumer. It reads
+retained legacy `TopologySlice` next-hop, Position, Connection, Route,
+Zone-serving, and adjacent Difference facts only because existing
+Planner/Compiler consumers have not yet migrated. It is scheduled for removal
+with Slicer and the old Slice/Difference path. Until then, it does not eagerly
+resolve every route. It writes one small manifest plus one offline script
+chunk per retained Slice so normal page load materializes only the selected
+Slice. Slice, Planner, and Compiler exact chunks use deterministic
 `gzip-base64-json` envelopes with uncompressed byte-count/SHA-256 metadata;
 their browsers decode only selected chunks and retain direct `file://`
-operation. Its renderer may preserve selected object identities,
-visualize contextual Zone service and Difference facts, and restore one
-explicitly selected path for display, but does not acquire routing authority.
+operation. Its renderer may preserve selected object identities, visualize
+contextual Zone service and Difference facts, and restore one explicitly
+selected path for display, but does not acquire routing authority.
 The generation facade may receive a detached scenario/model-context mapping
 for compact human explanation. Display analysis combines that mapping with
 read Topology/Slice facts to produce current counts and physical summaries;
@@ -108,13 +135,15 @@ overlapping rollups, and zero-duration resource samples remain separate
 aggregation roles; no component or pipeline duration is inferred by summing
 them, and time-per-work uses positive work on leaf-stage records only.
 
-Topology and Zone rendering may embed the frozen Tool-private Natural Earth
-1:110m coastline coordinate asset for offline orientation. The asset never
-enters a reader snapshot, formal geometry, membership, or public data contract.
-Topology orbit rings and Slice Satellite positions share a Tool-private
-spherical display projection using unit Earth and the IUGG mean Earth radius.
-It consumes formal altitude/Position facts without changing them; display
-marker offsets, marker sizes, and hit-test radii remain non-authoritative.
+Topology, Zone, and Physical Frame rendering may embed the frozen Tool-private
+Natural Earth 1:110m coastline coordinate asset for offline orientation. The
+asset never enters a reader snapshot, formal geometry, membership, or public
+data contract. Topology orbit rings and legacy Slice Satellite positions share
+a Tool-private spherical display projection using unit Earth and the IUGG mean
+Earth radius. The Physical Frame map instead displays each formal WGS84
+geodetic view while keeping the exact ECEF and geodetic values visible. These
+rendering choices do not change formal altitude/Position facts; marker
+offsets, marker sizes, and hit-test radii remain non-authoritative.
 
 Planner display aliases, lifetime/state lanes, and spatial selection are
 Tool-owned projections. Its spatial panel uses exact retained ECEF positions
@@ -151,9 +180,10 @@ bookkeeping, not durable evidence or a public serialization contract.
 - Traffic Replay keeps shared Position/network/Zone facts global, uses one
   simulation timeline, and confines visualization-expanded packet playback to
   a selected-Ping drill-down;
-- only readers import or call formal Topology/Slicer APIs;
+- only readers import or access formal Topology/PhysicalFrame/temporary-Slicer
+  APIs;
 - read snapshots contain detached Tool-owned primitives/values, not Topology,
-  Slicer, Slice, Difference, or entity instances;
+  PhysicalFrame, Slicer, Slice, Difference, or entity instances;
 - projection, display analysis, renderer, and writer cannot become a second
   authoritative computation path;
 - renderer receives final view data only;
@@ -173,12 +203,13 @@ not reuse stale success artifacts.
 
 ## Prohibited behavior
 
-No Model execution, position propagation, authoritative connection/routing/
-membership/Difference computation, formal object retained past the reader,
-formal API call outside a reader, browser driver inside a Tool, generic
-registry/plugin framework, renderer-side read, writer-side render, stale
-artifact fallback, production-to-Tools dependency, live Runner control,
-packet injection, or fresh kernel reconstruction in the Runner Tool.
+No Model execution, `Topology.frame_at()` or other position propagation,
+authoritative connection/routing/membership/Difference computation, formal
+object retained past the reader, formal API call outside a reader, browser
+driver inside a Tool, generic registry/plugin framework, renderer-side read,
+writer-side render, stale artifact fallback, production-to-Tools dependency,
+live Runner control, packet injection, or fresh kernel reconstruction in the
+Runner Tool.
 Traffic Replay additionally prohibits live collection, packet injection,
 Compiler or PositionModel execution, hidden packet identity guesses, and
 treating visual animation duration as recorded network time.

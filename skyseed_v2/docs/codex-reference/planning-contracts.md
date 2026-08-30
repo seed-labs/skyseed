@@ -11,10 +11,18 @@ Simulator-owned semantic planning in which `Planner.synchronize()` requests
 new adjacent `TopologyDifference` values from its exact sibling `Slicer`, then
 consumes them to publish one immutable backend-independent `Plan`.
 
+This is the source-true Round-1 implementation, not the accepted destination.
+Its `Slicer` / `TopologySlice` / `TopologyDifference` inputs are an explicit
+temporary legacy operational seam. They are scheduled for deletion or
+replacement when the Network Planner owns Connection, effective Parameter,
+Route, and Coordination planning. The contracts below preserve the current
+Planner behavior until that migration occurs.
+
 ## Ownership and lifecycle
 
 ```text
-Simulator → create_topology() → create_slicer(models)
+Simulator → create_topology(position_model)
+→ create_slicer(connection_model, route_model)
 → optionally create_planner(algorithms)
 → create Slice state and synchronize Planner as facts become available
 ```

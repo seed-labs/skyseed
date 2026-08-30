@@ -7,6 +7,14 @@ already-running Compose project identified by the caller. It owns no Simulator
 semantics, Planner/Compiler progression, Compose compilation/startup, or
 Compose teardown.
 
+Round 1 leaves one explicit temporary legacy source seam: Compiler still reads
+retained `TopologySlice` facts through the exact `Slicer`, and generated
+execution still supplies the current Slicer → Planner → Compiler progression.
+Those dependencies remain visible and behaviorally unchanged until the
+Network Planner owns Connection, effective Parameter, Route, and Coordination
+planning. The subsequent source-fact redesign deletes or replaces the old
+Slicer/TopologySlice/TopologyDifference and mixed-history path.
+
 ## Local assembly / ownership map
 
 Legend: every edge below is labeled with its exact relationship. Input consumption,

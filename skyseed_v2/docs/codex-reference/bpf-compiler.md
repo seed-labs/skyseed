@@ -24,6 +24,13 @@ ordering constraints, and interval-end intended dynamic state.
 | container software/files/commands/daemon | future functional Layer through SEED deployment | not installed or modified by BPF backend |
 | PID/netns/ifindex/MAC/veth/BPF object/map state | `BpfRunner` | never compile-time bound here |
 
+The retained `TopologySlice` lookup through exact `Slicer` is a visible
+temporary legacy source-fact dependency in Round 1. It remains unchanged here
+only while the current Planner/Compiler chain still consumes the old mixed
+operational records. The Network Planner migration will replace this source
+path after Connection, effective Parameter, Route, and Coordination planning
+move, and the Slicer/Slice/Difference seam is then deleted.
+
 ## Contract
 
 Slice-0 compilation starts from the canonical empty dynamic-realization state.

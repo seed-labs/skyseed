@@ -11,7 +11,7 @@ retention.
 
 ```mermaid
 flowchart LR
-    FORMAL["Topology / Slicer / Plan / compiled values"] -->|generation-time read by| GTOOLS["Topology / Zone / Slice / Planner / BPF Compiler Tools"]
+    FORMAL["Topology / PhysicalFrame / legacy Slicer / Plan / compiled values"] -->|generation-time read by| GTOOLS["Topology / Zone / Physical Frame / legacy Slice / Planner / BPF Compiler Tools"]
     GTOOLS -->|write static non-authoritative views| GART["generation-time inspection artifacts"]
 
     RUNNER["detached Runner handoff + runner-events.jsonl"] -->|post-run read by| RTOOL["Runner Inspection Tool"]
@@ -48,17 +48,22 @@ flowchart LR
     SMOKE["browser smoke in scripts/"] -.-> ARTIFACT["written HTML artifact"]
 ```
 
-The eight tools remain deliberately separate:
+The nine tools remain deliberately separate:
 
 - `topology/` reads the static owner tree and facade identity;
 - `zone/` reads the static Zone layout and renders display-only direct
   selection without executing membership Models;
-- `slice/` reads one exact Slicer's retained Slice next-hop facts and adjacent
+- `physical_frame/` reads one caller-created exact `Topology + PhysicalFrame`
+  pair and renders timestamped ECEF/geodetic Positions plus static identity and
+  access capabilities. It never calls `frame_at()`, invokes PositionModel, or
+  exposes Connection/Route/serving/Plan state;
+- `slice/` is the temporary legacy mixed-state Tool. It reads one exact
+  Slicer's retained Slice next-hop facts and adjacent
   Difference results, writes one offline chunk per Slice, and restores only an
   explicitly selected display path in the browser. Exact Slice/Planner/Compiler
   chunks use deterministic compressed envelopes and are decoded only on
   selection without losing `file://` or checksum auditability.
-- `planner/` reads one exact Slicer, exact caller-supplied consumed
+- `planner/` remains a temporary legacy consumer of one exact Slicer, exact caller-supplied consumed
   Differences, consecutive immutable Plans, and retained PlanningDecisions;
   its external bootstrap manifest and hierarchical catalogs lazily load
   selected domain/Slice chunks and restore only the selected route path.
@@ -80,13 +85,16 @@ The eight tools remain deliberately separate:
   bootstrap-separated independent leaf/rollup timing, work/cardinality,
   leaf-stage time-versus-work, and optional resource evidence. It does not sum
   overlapping records into component or pipeline execution time. Current
-  emitters are Slicer, Planner, and BPF Compiler; the record model admits a
-  future Runner component without becoming execution authority.
+  emitters are Topology physical projection, temporary legacy Slicer, Planner,
+  and BPF Compiler; the record model admits a future Runner component without
+  becoming execution authority.
 
-Only the Slicer calls Position, Connection, and Route Models. Tools do not
-propagate Position, form Connections, compute Routes, compare slices, update
-the static container network, or create a second authoritative computation
-path. The Slice / Difference UI's orbit guides and classifications are display-only.
+Only Topology calls PositionModel and publishes PhysicalFrame. The temporary
+legacy Slicer requests that frame and still calls Connection and Route Models.
+Tools do not propagate Position, form Connections, compute Routes, compare
+slices, update the static container network, or create a second authoritative
+computation path. The legacy Slice / Difference UI's orbit guides and
+classifications are display-only.
 
 Topology and Zone renderers share one frozen Tool-private Natural Earth 1:110m
 coastline coordinate asset under `_assets/`. It is embedded into standalone

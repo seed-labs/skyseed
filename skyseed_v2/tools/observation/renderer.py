@@ -139,7 +139,7 @@ tr.selectable {{ cursor:pointer; }} tr.selectable:hover {{ background:#18334d; }
 </style>
 <section class="card"><span class="status OBSERVED">OBSERVED</span>
   <h2>Detached execution evidence</h2>
-  <p>This non-authoritative Tool parses, aggregates, and visualizes records emitted by completed execution. It never runs Slicer, Planner, Compiler, or Runner work.</p>
+  <p>This non-authoritative Tool parses, aggregates, and visualizes records emitted by completed execution. It never runs Topology projection, legacy Slicer, Planner, Compiler, or Runner work.</p>
   <h3>Current observation strategy</h3><p>Execution components emit stage duration, logical scope, work/cardinality, and optional resource samples to an in-memory observer. This detached Tool reads the persisted records only; it does not execute, replay, or validate domain computation.</p>
   <details><summary>How to read duration roles</summary><p>A rollup is an enclosing wall-time envelope and overlaps its children. A leaf is an exclusive measured stage inside that envelope. Independent work sits outside the primary rollup. Unattributed / gap is rollup duration minus measured exclusive leaves; it is overhead or currently uninstrumented time, not a new additive stage. A sample carries evidence such as RSS with zero duration.</p></details>
   <pre>{escape(str(data['metadata']))}</pre>
@@ -151,7 +151,7 @@ tr.selectable {{ cursor:pointer; }} tr.selectable:hover {{ background:#18334d; }
   <div class="card stat"><span class="muted">One-shot</span><strong>{inventory['one_shot_observations']}</strong></div>{component_cards}
 </div></section>
 <section class="card"><h2>Top-level timing series</h2>
-  <p class="muted">Each row is an independent series. Slicer complete-slice and difference are separate top-level work; Planner total-synchronize is its own rollup. Rows are never added into a component or pipeline total.</p>
+  <p class="muted">Each row is an independent series. Topology physical-projection, legacy Slicer complete-slice and difference, and Planner total-synchronize remain separate top-level work. Rows are never added into a component or pipeline total.</p>
   <div class="scroll-table"><table><thead><tr><th>Component</th><th>Stage</th><th>Role</th><th>N</th><th>Bootstrap run</th><th>Steady p50</th><th>Steady p95</th><th>Steady max</th><th>One-shot p50</th><th>One-shot p95</th><th>One-shot max</th><th>Series run</th></tr></thead><tbody>{top_level_rows}</tbody></table></div>
 </section>
 <section class="card"><h2>Exclusive leaf stages</h2>
@@ -163,7 +163,7 @@ tr.selectable {{ cursor:pointer; }} tr.selectable:hover {{ background:#18334d; }
   <div class="scroll-table"><table><thead><tr><th>Component</th><th>Rollup</th><th>Role</th><th>N</th><th>Bootstrap run</th><th>Steady p50</th><th>Steady p95</th><th>Steady max</th><th>One-shot p50</th><th>One-shot p95</th><th>One-shot max</th><th>Series run</th></tr></thead><tbody>{rollup_stage_rows}</tbody></table></div>
 </section>
 <section class="card"><h2>Independent work</h2>
-  <p class="muted">Slicer Difference work occurs outside complete-slice. It is not a child of that rollup and is not included in its leaf subtotal.</p>
+  <p class="muted">Legacy Slicer Difference work occurs outside complete-slice. It is not a child of that rollup and is not included in its leaf subtotal.</p>
   <div class="scroll-table"><table><thead><tr><th>Component</th><th>Stage</th><th>Role</th><th>N</th><th>Bootstrap run</th><th>Steady p50</th><th>Steady p95</th><th>Steady max</th><th>One-shot p50</th><th>One-shot p95</th><th>One-shot max</th><th>Series run</th></tr></thead><tbody>{independent_stage_rows}</tbody></table></div>
 </section>
 <section class="card"><h2>Resource samples</h2>
@@ -176,7 +176,7 @@ tr.selectable {{ cursor:pointer; }} tr.selectable:hover {{ background:#18334d; }
   <button id="mode-unit" type="button" aria-pressed="false">Per-Slice / Plan breakdown</button>
 </div>
 <div class="observation-view" id="progression-view">
-  <p class="muted">One stage across the complete run, positioned by simulation scope. Slicer points use Slice ID/timestamp; Planner points use publication identity and publication coverage.</p>
+  <p class="muted">One stage across the complete run, positioned by simulation scope. Topology points use PhysicalFrame timestamp; legacy Slicer points use Slice ID/timestamp; Planner points use publication identity and publication coverage.</p>
   <div class="controls observation-toolbar">
     <label>Component <select id="component-filter"><option value="">All</option>{component_options}</select></label>
     <label>Duration lane <select id="role-filter"><option value="stage" selected>Exclusive leaf stages</option><option value="rollup">Rollup envelopes</option><option value="independent">Independent work</option><option value="sample">Resource samples</option><option value="">All roles</option></select></label>
@@ -225,7 +225,7 @@ tr.selectable {{ cursor:pointer; }} tr.selectable:hover {{ background:#18334d; }
             "Skyseed v2 System Observation": "Skyseed v2 系统 Observation",
             "What work ran · how much · what it cost": "执行了什么 · 工作量 · 成本",
             "Detached execution evidence": "分离的执行 evidence",
-            "This non-authoritative Tool parses, aggregates, and visualizes records emitted by completed execution. It never runs Slicer, Planner, Compiler, or Runner work.": "这个非权威 Tool 只解析、聚合和可视化已完成执行发出的记录；不会运行 Slicer、Planner、Compiler 或 Runner 工作。",
+            "This non-authoritative Tool parses, aggregates, and visualizes records emitted by completed execution. It never runs Topology projection, legacy Slicer, Planner, Compiler, or Runner work.": "这个非权威 Tool 只解析、聚合和可视化已完成执行发出的记录；不会运行 Topology 投影、临时遗留 Slicer、Planner、Compiler 或 Runner 工作。",
             "Current observation strategy": "当前 Observation 策略",
             "Execution components emit stage duration, logical scope, work/cardinality, and optional resource samples to an in-memory observer. This detached Tool reads the persisted records only; it does not execute, replay, or validate domain computation.": "执行组件把 stage duration、逻辑范围、工作量 / 基数以及可选资源样本发送到内存 observer。这个分离 Tool 只读取已持久化记录；不会执行、重放或验证领域计算。",
             "How to read duration roles": "如何阅读 duration role",
@@ -239,12 +239,12 @@ tr.selectable {{ cursor:pointer; }} tr.selectable:hover {{ background:#18334d; }
             "Unified run inspection": "统一运行检查",
             "Stage progression": "Stage 进展",
             "Per-Slice / Plan breakdown": "按 Slice / Plan 分解",
-            "Each row is an independent series. Slicer complete-slice and difference are separate top-level work; Planner total-synchronize is its own rollup. Rows are never added into a component or pipeline total.": "每一行都是独立序列。Slicer complete-slice 与 difference 是分开的顶层工作；Planner total-synchronize 是自身的 rollup。绝不把这些行相加成组件或 pipeline 总成本。",
+            "Each row is an independent series. Topology physical-projection, legacy Slicer complete-slice and difference, and Planner total-synchronize remain separate top-level work. Rows are never added into a component or pipeline total.": "每一行都是独立序列。Topology physical-projection、临时遗留 Slicer complete-slice / difference 与 Planner total-synchronize 保持为分开的顶层工作。绝不把这些行相加成组件或 pipeline 总成本。",
             "These measured stages form the attributable decomposition inside their component rollup. Bootstrap is separate from steady-state percentiles.": "这些已测 stage 构成组件 rollup 内可归因的分解；bootstrap 与 steady-state percentile 分开统计。",
             "Rollups overlap their child stages. They are presented as enclosing wall-time measurements and are never added to the exclusive leaf table.": "Rollup 与其子 stage 重叠，只表示包围它们的 wall-time；绝不与独占 leaf 表相加。",
-            "Slicer Difference work occurs outside complete-slice. It is not a child of that rollup and is not included in its leaf subtotal.": "Slicer Difference 工作发生在 complete-slice 之外；它不是该 rollup 的子项，也不计入 leaf 小计。",
+            "Legacy Slicer Difference work occurs outside complete-slice. It is not a child of that rollup and is not included in its leaf subtotal.": "临时遗留 Slicer Difference 工作发生在 complete-slice 之外；它不是该 rollup 的子项，也不计入 leaf 小计。",
             "Samples carry resource evidence and have zero duration. They do not contribute execution cost.": "Sample 携带资源 evidence，duration 为零，不计入执行成本。",
-            "One stage across the complete run, positioned by simulation scope. Slicer points use Slice ID/timestamp; Planner points use publication identity and publication coverage.": "沿完整运行查看一个 stage，并按仿真逻辑范围定位。Slicer 点使用 Slice ID / timestamp；Planner 点使用 publication identity 和 coverage。",
+            "One stage across the complete run, positioned by simulation scope. Topology points use PhysicalFrame timestamp; legacy Slicer points use Slice ID/timestamp; Planner points use publication identity and publication coverage.": "沿完整运行查看一个 stage，并按仿真逻辑范围定位。Topology 点使用 PhysicalFrame timestamp；临时遗留 Slicer 点使用 Slice ID / timestamp；Planner 点使用 publication identity 和 coverage。",
             "Select one Slice to inspect all Slicer work for it, or one Plan/publication to inspect one complete Planner synchronization.": "选择一个 Slice 查看其全部 Slicer 工作，或选择一个 Plan / publication 查看一次完整 Planner synchronization。",
             "Missing means no observation record; an outlined cell is an exact measured zero. The lower rollup band has its own scale and is never added to leaf cells.": "Missing 表示没有 observation record；描边单元格表示精确测得的零。下方 rollup 区带使用独立刻度，绝不与 leaf 单元格相加。",
             "Shown separately from the leaf decomposition. They are never summed with child stages.": "与 leaf 分解分开显示，绝不和子 stage 求和。",
@@ -271,7 +271,7 @@ def _script(data: dict[str, Any]) -> str:
 const OBSERVATION_SUMMARY=__OBSERVATION_SUMMARY__;
 const state={records:[],filtered:[],selected:null,units:{},sliceTimes:new Map(),simulationMin:null,simulationMax:null,sharedDurationMax:0};
 const HEATMAP_MAX_COLUMNS=64;
-const COLORS={slicer:"#5ee5e5",planner:"#69a9ff",compiler:"#ffd166",runner:"#62d894"};
+const COLORS={topology:"#d68cff",slicer:"#5ee5e5",planner:"#69a9ff",compiler:"#ffd166",runner:"#62d894"};
 const esc=value=>String(value??"").replace(/[&<>"']/g,ch=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch]));
 const seconds=value=>Number(value).toLocaleString(undefined,{maximumSignificantDigits:5})+" s";
 const timestamp=value=>value?String(value).replace("T"," ").replace("+00:00","Z"):"—";
@@ -301,7 +301,7 @@ function buildLogicalContext(){
   state.units=Object.fromEntries(Object.entries(maps).map(([component,map])=>[component,[...map.values()].sort((a,b)=>a.index-b.index)]));
   for(const units of Object.values(state.units))for(const unit of units){const primaryStage=unit.component==="planner"?"total-synchronize":unit.component==="compiler"?"total-compile":"complete-slice",anchor=unit.records.find(record=>record.stage===primaryStage)||unit.records[0];unit.anchor=anchor;unit.phase=anchor.phase;if(unit.component==="slicer")unit.position=state.sliceTimes.get(unit.index)??parseTime(anchor.scope.timestamp);else unit.position=state.sliceTimes.get(anchor.scope.publication_end_slice_id)??parseTime(anchor.scope.end_timestamp);unit.coverage=scopeCoverage(anchor);}
   const positions=Object.values(state.units).flat().map(unit=>unit.position).filter(Number.isFinite);state.simulationMin=positions.length?Math.min(...positions):null;state.simulationMax=positions.length?Math.max(...positions):null;
-  state.sharedDurationMax=Math.max(0,...state.records.filter(record=>["slicer","planner","compiler"].includes(record.component)&&record.duration_role!=="sample").map(record=>Number(record.duration_seconds)));
+  state.sharedDurationMax=Math.max(0,...state.records.filter(record=>["topology","slicer","planner","compiler"].includes(record.component)&&record.duration_role!=="sample").map(record=>Number(record.duration_seconds)));
 }
 function recordPosition(record){const key=unitKey(record);if(key){const [component,index]=key.split(":");return state.units[component]?.find(unit=>unit.index===Number(index))?.position??null;}for(const name of ["timestamp","end_timestamp","start_timestamp"]){const value=parseTime(record.scope?.[name]);if(value!==null)return value;}return null;}
 function roleMatches(record,role){return !role||hierarchy(record)===role;}
@@ -328,7 +328,7 @@ function renderTimeline(){
   svg.innerHTML=`${yGrid}<line x1="${left}" y1="${bottom}" x2="${right}" y2="${bottom}" stroke="#6b879e"/><line x1="${left}" y1="${top}" x2="${left}" y2="${bottom}" stroke="#6b879e"/>${reference}${lines}${points}${xTicks}${annotation}<text x="${(left+right)/2}" y="398" fill="#a9bfd3" text-anchor="middle">logical simulation scope →</text>`;
   svg.querySelectorAll("[data-sequence]").forEach(element=>element.addEventListener("click",event=>{event.stopPropagation();selectRecord(Number(element.dataset.sequence));}));svg.onclick=event=>{if(event.target===svg)clearSelection();};
   const relativeMax=Math.max(visibleMax,1e-15);document.getElementById("timeline-rows").innerHTML=records.map(record=>`<tr class="selectable" data-record-sequence="${record.sequence}"><td>${esc(unitLabel(record))}</td><td>${esc(scopeCoverage(record))}</td><td>${esc(record.component)} / ${esc(record.stage)}</td><td>${roleBadge(record)}</td><td>${esc(record.phase)}</td><td class="numeric">${seconds(record.duration_seconds)} <i class="duration-bar" style="width:${Math.max(2,Math.round(Number(record.duration_seconds)/relativeMax*90))}px"></i></td><td>${record.sequence}</td></tr>`).join("");
-  document.querySelectorAll("[data-record-sequence]").forEach(element=>element.addEventListener("click",()=>selectRecord(Number(element.dataset.recordSequence))));document.getElementById("axis-note").textContent=`X-axis: ${OBSERVATION_SUMMARY.timeline.x_axis_semantics}. Y-axis: ${fit?"fit to current selection":"shared Slicer/Planner duration scale"}.`;renderTimeWork();
+  document.querySelectorAll("[data-record-sequence]").forEach(element=>element.addEventListener("click",()=>selectRecord(Number(element.dataset.recordSequence))));document.getElementById("axis-note").textContent=`X-axis: ${OBSERVATION_SUMMARY.timeline.x_axis_semantics}. Y-axis: ${fit?"fit to current selection":"shared Topology/Slicer/Planner duration scale"}.`;renderTimeWork();
 }
 function selectRecord(sequence){const record=state.records.find(value=>value.sequence===sequence);if(!record)return;if(state.selected?.sequence===sequence){clearSelection();return;}state.selected=record;document.getElementById("selected-label").textContent=`#${record.sequence} · ${record.component} / ${record.stage} · ${unitLabel(record)} · ${record.phase} · ${seconds(record.duration_seconds)} · ${scopeCoverage(record)}`;const values=Object.entries(record.work||{});document.getElementById("selected-work").innerHTML=values.length?values.map(([name,value])=>`<tr><th>${esc(name)}</th><td class="numeric">${Number(value).toLocaleString()}</td></tr>`).join(""):'<tr><td class="muted">No work measurements</td></tr>';if(!document.getElementById("progression-view").hidden)renderTimeline();else {const key=unitKey(record);if(key){const [component,index]=key.split(":");document.getElementById("unit-component").value=component;renderUnitOptions(Number(index));renderUnit();}else renderHeatmap();}}
 function clearSelection(render=true){state.selected=null;document.getElementById("selected-label").textContent="Select a chart point or evidence row.";document.getElementById("selected-work").innerHTML="";if(render&&!document.getElementById("progression-view").hidden)renderTimeline();}

@@ -69,8 +69,8 @@ def test_examples_readme_indexes_current_long_term_roles_and_outputs() -> None:
         assert f"`{name}`" in readme
     assert "Minimal static/canonical example kept deliberately small" in readme
     assert "Small but reasonably rich reusable satellite Internet" in readme
-    assert "a 121-Slice formal Timeline and rolling" in readme
-    assert "Topology, Zone, Slice / Difference, Planner, BPF Compiler" in readme
+    assert "121 timestamped physical states" in readme
+    assert "Topology, Zone, Physical Frame, Slice / Difference" in readme
     assert mini.DEFAULT_OUTPUT == (
         EXAMPLES_ROOT / "mini_satellite_internet/output"
     )
@@ -397,8 +397,12 @@ def test_example_output_preparation_replaces_only_the_owned_root(
 
 @pytest.mark.parametrize(
     ("name", "module", "inspection_tools"),
-    (
-        ("complete_static_emulator", complete, ("topology", "zone")),
+        (
+            (
+                "complete_static_emulator",
+                complete,
+                ("topology", "zone", "physical-frame"),
+            ),
         (
             "mini_satellite_internet",
             mini,
@@ -570,9 +574,13 @@ def test_small_examples_show_public_construction_without_file_facades() -> None:
     assert "catalog_builder" not in complete_source
     assert "Docker(" in complete_source
     assert "SkyseedDockerCompiler" not in complete_source
-    assert 'ENABLED_TOOLS = ("topology", "zone")' in complete_source
+    assert (
+        'ENABLED_TOOLS = ("topology", "zone", "physical-frame")'
+        in complete_source
+    )
     assert "write_topology_tool(" in complete_source
     assert "write_zone_tool(" in complete_source
+    assert "write_physical_frame_tool(" in complete_source
     assert (
         "from examples.complete_static_emulator.emu import build_emulator"
         in complete_source

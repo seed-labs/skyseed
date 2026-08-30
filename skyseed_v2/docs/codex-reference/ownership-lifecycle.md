@@ -7,9 +7,9 @@ recorded only in [`CURRENT.md`](../CURRENT.md).
 
 ## Scope
 
-Static Emulator objects, Simulator composition, static Topology, dynamic
-Slicer/results, Compose launcher, and live BPF Runner lifecycle/inspection
-handoff.
+Static Emulator objects, Simulator composition, physical Topology projection,
+the temporary legacy Slicer/results seam, Compose launcher, and live BPF
+Runner lifecycle/inspection handoff.
 
 ## Owners and consumers
 
@@ -22,11 +22,13 @@ handoff.
 | Emulator `Satellite` | Orbit | Orbit, plus same-reference AS extension-node lifecycle index | SEED, compiler, projector |
 | Emulator `GroundStation` | Skyseed AS | Skyseed AS | SEED, compiler, projector |
 | `SimulatorStaticInput` | boundary functions | calling assembly / `SimulationDefinition` | Topology materialization |
-| `Simulator` | caller | caller-facing composition root | Topology/Slicer/Planner lifecycle |
-| `Topology` | `Simulator.create_topology` | Simulator | Models, Slicer, Tools |
-| Topology AS/Shell/Orbit/nodes | Topology materialization | nested static owner tree | Models, lookups, Tools |
+| `Simulator` | caller | caller-facing composition root | Topology/legacy Slicer/Planner lifecycle |
+| `Topology` | `Simulator.create_topology(position_model=...)` | Simulator | physical readers, temporary legacy Slicer, Tools |
+| `PositionModel` | caller | exact Topology | `Topology.frame_at()` only |
+| `PhysicalFrame` | `Topology.frame_at(timestamp)` | immutable caller handoff; not retained by Topology | physical readers and temporary legacy Slicer |
+| Topology AS/Shell/Orbit/nodes | Topology materialization | nested physical owner tree | physical Model, lookups, legacy operational Models, Tools |
 | `ZoneLayout` / `Zone` | Topology materialization | Topology / ZoneLayout | membership, connection Model, Tools |
-| `Slicer` | `Simulator.create_slicer` | Simulator | caller and Tools |
+| legacy `Slicer` | `Simulator.create_slicer` | Simulator | still-unmigrated Planner/Compiler/caller/Tool paths |
 | `TopologySlice` | Slicer | retained by the creating Slicer | queries, paths, Difference, Tools |
 | `TopologyDifference` | Slicer on request | caller | Tools / future approved consumers |
 | `Planner` | `Simulator.create_planner` | Simulator | caller and future approved semantic consumers |
@@ -47,19 +49,33 @@ handoff.
 Creation order is strict:
 
 ```text
-SimulationDefinition → Simulator → create_topology()
-→ create_slicer(Position, Connection, Route)
+SimulationDefinition → Simulator
+→ create_topology(position_model=PositionModel)
+→ temporary create_slicer(ConnectionModel, RouteModel)
 → optionally create_planner(planning algorithms)
-→ create Slice(s)
+→ SimulationTimeline timestamp
+  → legacy Slicer requests Topology.frame_at(timestamp) → PhysicalFrame
+  → legacy Slicer creates Slice(s)
 → Planner.synchronize() requests adjacent Difference values from Slicer
 → read the published Plan
 ```
 
-Only `Topology → Slicer → optional Planner` is a construction prerequisite.
-Planner may exist before the first real Slice/Difference; later Slice generation
-and Planner synchronization may interleave. Slicer creates each Difference on
-request without retaining it, while Planner consumes and retains only the
-working/history facts its planning lifecycle requires.
+Topology is the sole owner/caller of PositionModel. `frame_at()` performs a
+deterministic projection for the requested timestamp; it does not advance a
+clock, retain a current frame, or assign an integer frame identity.
+`PhysicalFrame.timestamp` is the physical-domain identity and its immutable
+Position mapping covers exactly the Topology node set. It contains no
+Connection, Route, Zone-serving, planning, forwarding, or runtime state.
+`Simulator.create_slicer(*, connection_model, route_model)` binds only the two
+temporary operational Models; slicing accepts no PositionModel argument or
+compatibility alias.
+
+The current `Topology → legacy Slicer → optional Planner` construction
+prerequisite is an explicit migration seam, not an alternative accepted
+architecture. Planner may exist before the first real Slice/Difference; later
+Slice generation and Planner synchronization may interleave. Slicer creates
+each Difference on request without retaining it, while Planner consumes and
+retains only the working/history facts its planning lifecycle requires.
 
 The live backend handoff is separately ordered:
 
@@ -69,7 +85,7 @@ generated output/runtime/execution.json
   source/generated-input consistency
   and restores either the named progression builder or its checksum-validated
   persisted exact Compiler-output handoff
-→ lazy Slicer → Planner → compile_bpf supplier, or bounded persisted supplier
+→ lazy legacy Slicer → Planner → compile_bpf supplier, or bounded persisted supplier
 →
 live Compose project identity + future BpfCompiledRealization callable
 → BpfRunner.prepare() independently discovers/validates/freezes its foundation
@@ -110,14 +126,19 @@ a claim that active network semantics still exist.
 
 ## Invariants
 
-- exactly one Topology and one Slicer, and at most one Planner per Simulator;
+- exactly one Topology and one temporary legacy Slicer, and at most one Planner
+  per Simulator;
 - Slicer cannot precede Topology;
 - Planner cannot precede Slicer and references that exact sibling;
 - Topology objects are new receiver-owned objects, never Emulator aliases;
-- each Slicer Model instance belongs to its exact Slicer; approved Planner
+- each PositionModel belongs to one exact Topology, which is its sole caller;
+- `Topology.frame_at()` is timestamp-addressed projection, not progression;
+- each legacy ConnectionModel and RouteModel instance belongs to its exact
+  Slicer; approved Planner
   algorithm roles may be implemented by the same object when all Protocols are
   satisfied;
-- Slice publication is atomic after all three results validate.
+- legacy Slice publication is atomic after the PhysicalFrame and both legacy
+  operational results validate.
 
 ## Failure semantics
 
@@ -132,8 +153,11 @@ Model fallback, or hidden lifecycle creation.
 
 ## Extension points
 
-Approved Protocol implementations may supply Zone membership and the three
-Models. They do not change owners.
+Approved Protocol implementations may supply Zone membership, a Topology-owned
+PositionModel, and the still-legacy Slicer-owned ConnectionModel/RouteModel.
+They do not change owners. The accepted target moves operational planning out
+of Slicer and deletes Slicer; this round does not change Planner, Compiler, or
+Runner semantics.
 
 ## Maintenance
 

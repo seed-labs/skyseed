@@ -21,7 +21,7 @@
 
 - 系统总图：`human-readable/system-overview.md`；
 - Emulator owner/创建链：`human-readable/emulator-chain.md`；
-- Simulator / Topology / Slicer / Models 链：
+- Simulator / Topology / PhysicalFrame / 临时 legacy Slicer / Models 链：
   `human-readable/simulator-chain.md`；
 - 正式对象、owner、cardinality 与创建关系：
   `human-readable/object-model.md`；
@@ -32,6 +32,20 @@
 - examples/Tools/tests 对应关系：`human-readable/traceability-map.md`；
 - `src` owner README 维护该 package 的唯一详细类图；Tools README 只说明
   局部入口、责任和同步目标。它们都不复制全局对象图。
+
+Inspection Tool 的详细合同见
+`codex-reference/inspection-tools.md`，使用入口见
+`user-guides/inspection-tools.md`。Physical Frame Tool 只读取调用者提供的
+同一个 `Topology` 与一个已创建的 `PhysicalFrame`；它不会调用
+`Topology.frame_at()` 或 `PositionModel`，也不读取 operational history。
+旧 Slice Tool 只是本轮仍需的临时 mixed-state consumer，将随 legacy
+Slicer/Slice/Difference seam 一起移除。
+
+导航文档必须区分接受的目标
+`Topology / PhysicalFrame → Network Planner → PlannedOperationalState`
+与当前显式临时 seam
+`Topology / PhysicalFrame → legacy Slicer → current Planner`；后者不是第二套
+接受架构。
 
 文档检查不扫描后猜身份。`scripts/check_documentation.py` 按这些路径执行：
 

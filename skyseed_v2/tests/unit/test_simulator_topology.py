@@ -1,3 +1,4 @@
+import importlib.util
 from dataclasses import FrozenInstanceError, fields, replace
 from datetime import datetime, timedelta, timezone
 from types import MappingProxyType
@@ -7,6 +8,8 @@ import pytest
 import skyseed_v2
 from skyseed_v2.shared import NodeId
 from skyseed_v2.simulator import (
+    CircularOrbitPositionModel,
+    EarthFixedPosition,
     GroundStation,
     Orbit,
     Satellite,
@@ -22,6 +25,7 @@ from skyseed_v2.simulator.input import (
     GroundStationSimulationInput,
     SatelliteSimulationInput,
 )
+from skyseed_v2.simulator.topology import PhysicalFrame, PositionModel
 
 
 def satellite_input(
@@ -122,6 +126,19 @@ def multi_hierarchy_input() -> SimulatorStaticInput:
     )
 
 
+class _RecordingPositionModel:
+    def __init__(self, positions=None) -> None:
+        self.positions = positions
+        self.timestamps: list[datetime] = []
+        self._delegate = CircularOrbitPositionModel()
+
+    def compute_positions(self, topology, timestamp):
+        self.timestamps.append(timestamp)
+        if self.positions is not None:
+            return self.positions
+        return self._delegate.compute_positions(topology, timestamp)
+
+
 def test_definition_is_immutable_typed_and_retains_exact_inputs() -> None:
     simulator_input = SimulatorStaticInput()
     timeline = SimulationTimeline(
@@ -152,17 +169,25 @@ def test_simulator_requires_explicit_single_atomic_topology_creation() -> None:
     assert simulator.get_timeline() is definition.timeline
     with pytest.raises(RuntimeError, match="not been created"):
         simulator.get_topology()
+    with pytest.raises(TypeError, match="position_model"):
+        simulator.create_topology()
 
-    topology = simulator.create_topology()
+    position_model = CircularOrbitPositionModel()
+    topology = simulator.create_topology(position_model=position_model)
 
     assert simulator.get_topology() is topology
+    assert topology.get_position_model() is position_model
     with pytest.raises(RuntimeError, match="already been created"):
-        simulator.create_topology()
+        simulator.create_topology(
+            position_model=CircularOrbitPositionModel()
+        )
 
 
 def test_topology_materializes_multi_as_shell_and_orbit_hierarchy() -> None:
     simulator_input = multi_hierarchy_input()
-    topology = Simulator(definition_for(simulator_input)).create_topology()
+    topology = Simulator(definition_for(simulator_input)).create_topology(
+        position_model=CircularOrbitPositionModel()
+    )
 
     assert isinstance(topology, Topology)
     assert not hasattr(topology, "static_input")
@@ -226,7 +251,9 @@ def test_topology_materializes_multi_as_shell_and_orbit_hierarchy() -> None:
 
 
 def test_topology_collections_and_static_entities_are_immutable() -> None:
-    topology = Simulator(definition_for(multi_hierarchy_input())).create_topology()
+    topology = Simulator(
+        definition_for(multi_hierarchy_input())
+    ).create_topology(position_model=CircularOrbitPositionModel())
     autonomous_system = topology.get_autonomous_system(65001)
     shell = autonomous_system.get_shell("shell-a")
     orbit = shell.get_orbit("orbit-shared")
@@ -265,6 +292,8 @@ def test_topology_collections_and_static_entities_are_immutable() -> None:
         "_autonomous_systems_by_asn",
         "_nodes_by_id",
         "_zone_layout",
+        "_position_model",
+        "_execution_observer",
     }
     for removed_index in (
         "_satellites_by_id",
@@ -283,6 +312,145 @@ def test_topology_collections_and_static_entities_are_immutable() -> None:
         orbit._satellites = ()
     with pytest.raises(FrozenInstanceError):
         topology._autonomous_systems = ()
+    with pytest.raises(FrozenInstanceError):
+        topology._position_model = CircularOrbitPositionModel()
+
+
+def test_topology_frame_at_returns_an_immutable_deterministic_physical_frame() -> None:
+    simulator_input = multi_hierarchy_input()
+    model = _RecordingPositionModel()
+    topology = Simulator(definition_for(simulator_input)).create_topology(
+        position_model=model
+    )
+    requested = datetime(
+        2026,
+        1,
+        1,
+        8,
+        0,
+        5,
+        tzinfo=timezone(timedelta(hours=8)),
+    )
+
+    first = topology.frame_at(requested)
+    repeated = topology.frame_at(requested)
+
+    assert isinstance(first, PhysicalFrame)
+    assert first is not repeated
+    assert first == repeated
+    assert first.timestamp == datetime(
+        2026, 1, 1, 0, 0, 5, tzinfo=timezone.utc
+    )
+    assert model.timestamps == [first.timestamp, first.timestamp]
+    assert set(first.positions) == {
+        value.node_id for value in simulator_input.list_nodes()
+    }
+    assert isinstance(first.positions, MappingProxyType)
+    assert {field.name for field in fields(first)} == {
+        "timestamp",
+        "positions",
+    }
+    with pytest.raises(TypeError):
+        first.positions[NodeId(65001, "satellite", "new")] = (
+            EarthFixedPosition(1.0, 2.0, 3.0)
+        )
+    with pytest.raises(FrozenInstanceError):
+        first.timestamp = requested
+    with pytest.raises(TypeError, match="created by Topology.frame_at"):
+        PhysicalFrame()
+    for operational_attribute in (
+        "slice_id",
+        "connection_slice",
+        "route_slice",
+        "zone_service_assignments",
+        "difference",
+        "plan",
+    ):
+        assert not hasattr(first, operational_attribute)
+
+
+def test_topology_frame_at_validates_exact_position_coverage_and_types() -> None:
+    satellite = satellite_input(65001, "only", "shell", "orbit", 0)
+    static_input = SimulatorStaticInput((satellite,))
+
+    invalid_outputs = (
+        (object(), TypeError, "PositionModel must return a Mapping"),
+        ({}, ValueError, "exactly every Topology physical node"),
+        (
+            {satellite.node_id: object()},
+            TypeError,
+            "PositionModel values must be EarthFixedPosition",
+        ),
+    )
+    for positions, error_type, message in invalid_outputs:
+        topology = Simulator(definition_for(static_input)).create_topology(
+            position_model=_RecordingPositionModel(positions)
+        )
+        with pytest.raises(error_type, match=message):
+            topology.frame_at(
+                datetime(2026, 1, 1, tzinfo=timezone.utc)
+            )
+
+
+def test_topology_frame_at_is_requested_projection_not_time_progression() -> None:
+    satellite = satellite_input(65001, "only", "shell", "orbit", 0)
+    positions = {
+        satellite.node_id: EarthFixedPosition(7_000_000.0, 0.0, 0.0)
+    }
+    model = _RecordingPositionModel(positions)
+    topology = Simulator(
+        definition_for(SimulatorStaticInput((satellite,)))
+    ).create_topology(position_model=model)
+    first = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    later = first + timedelta(minutes=5)
+
+    projected_later = topology.frame_at(later)
+    assert projected_later.timestamp == later
+    assert topology.frame_at(first).timestamp == first
+    assert topology.frame_at(later).timestamp == later
+    assert model.timestamps == [later, first, later]
+    original_position = projected_later.positions[satellite.node_id]
+    positions[satellite.node_id] = EarthFixedPosition(
+        8_000_000.0, 0.0, 0.0
+    )
+    assert projected_later.positions[satellite.node_id] is original_position
+    for progression_attribute in (
+        "next_frame",
+        "advance",
+        "current_frame",
+        "get_next_timestamp",
+    ):
+        assert not hasattr(topology, progression_attribute)
+
+    before_invalid = tuple(model.timestamps)
+    with pytest.raises(TypeError, match="timestamp must be a datetime"):
+        topology.frame_at(object())
+    with pytest.raises(ValueError, match="timestamp must be timezone-aware"):
+        topology.frame_at(datetime(2026, 1, 1))
+    assert tuple(model.timestamps) == before_invalid
+
+
+def test_position_model_is_owned_and_imported_only_from_physical_topology() -> None:
+    import skyseed_v2.simulator.slicing as slicing
+
+    model = _RecordingPositionModel({})
+    first = Simulator(definition_for(SimulatorStaticInput()))
+    topology = first.create_topology(position_model=model)
+
+    assert isinstance(model, PositionModel)
+    assert topology.get_position_model() is model
+    assert PositionModel.__module__ == "skyseed_v2.simulator.topology.position"
+    assert "PositionModel" not in slicing.__all__
+    assert not hasattr(slicing, "PositionModel")
+    assert importlib.util.find_spec(
+        "skyseed_v2.simulator.slicing.position"
+    ) is None
+
+    second = Simulator(definition_for(SimulatorStaticInput()))
+    with pytest.raises(ValueError, match="another Topology"):
+        second.create_topology(position_model=model)
+    with pytest.raises(RuntimeError, match="not been created"):
+        second.get_topology()
 
 
 def test_topology_preserves_nullable_ground_station_operator() -> None:
@@ -292,8 +460,12 @@ def test_topology_preserves_nullable_ground_station_operator() -> None:
         )
     )
 
-    station = Simulator(definition_for(simulation_input)).create_topology().get_ground_station(
-        NodeId(65001, "ground-station", "gs-no-known-operator")
+    station = (
+        Simulator(definition_for(simulation_input))
+        .create_topology(position_model=CircularOrbitPositionModel())
+        .get_ground_station(
+            NodeId(65001, "ground-station", "gs-no-known-operator")
+        )
     )
     assert station.operator is None
     assert station.max_simultaneous_satellite_accesses is None
@@ -318,7 +490,9 @@ def test_topology_ground_station_rejects_invalid_access_capability(
 
 
 def test_topology_facade_fails_closed_on_wrong_kinds_types_and_missing_values() -> None:
-    topology = Simulator(definition_for(multi_hierarchy_input())).create_topology()
+    topology = Simulator(
+        definition_for(multi_hierarchy_input())
+    ).create_topology(position_model=CircularOrbitPositionModel())
     satellite_id = NodeId(65001, "satellite", "sat-a0")
     station_id = NodeId(65001, "ground-station", "gs-shared")
 
@@ -341,7 +515,9 @@ def test_topology_facade_fails_closed_on_wrong_kinds_types_and_missing_values() 
 def test_topology_shell_and_orbit_queries_delegate_to_their_owners(
     monkeypatch,
 ) -> None:
-    topology = Simulator(definition_for(multi_hierarchy_input())).create_topology()
+    topology = Simulator(
+        definition_for(multi_hierarchy_input())
+    ).create_topology(position_model=CircularOrbitPositionModel())
     calls: list[tuple[str, str]] = []
     original_get_shell = SkyseedAutonomousSystem.get_shell
     original_get_orbit = Shell.get_orbit
@@ -373,7 +549,9 @@ def test_topology_shell_and_orbit_queries_delegate_to_their_owners(
 
 
 def test_future_satellite_parent_queries_are_not_public() -> None:
-    topology = Simulator(definition_for(multi_hierarchy_input())).create_topology()
+    topology = Simulator(
+        definition_for(multi_hierarchy_input())
+    ).create_topology(position_model=CircularOrbitPositionModel())
 
     assert not hasattr(topology, "get_shell_for_satellite")
     assert not hasattr(topology, "get_orbit_for_satellite")
@@ -396,7 +574,9 @@ def test_conflicting_orbit_parameters_fail_without_publishing_a_topology() -> No
     simulator = Simulator(definition_for(simulator_input))
 
     with pytest.raises(ValueError, match="conflicting Orbit parameters"):
-        simulator.create_topology()
+        simulator.create_topology(
+            position_model=CircularOrbitPositionModel()
+        )
     with pytest.raises(RuntimeError, match="not been created"):
         simulator.get_topology()
 
@@ -411,7 +591,9 @@ def test_duplicate_orbit_local_index_fails_atomically() -> None:
     simulator = Simulator(definition_for(simulator_input))
 
     with pytest.raises(ValueError, match="duplicate orbit_index"):
-        simulator.create_topology()
+        simulator.create_topology(
+            position_model=CircularOrbitPositionModel()
+        )
     with pytest.raises(RuntimeError, match="not been created"):
         simulator.get_topology()
 
@@ -429,7 +611,9 @@ def test_invalid_parent_identity_fails_without_publishing_a_topology() -> None:
     simulator = Simulator(definition_for(SimulatorStaticInput((invalid,))))
 
     with pytest.raises(ValueError, match="shell_id"):
-        simulator.create_topology()
+        simulator.create_topology(
+            position_model=CircularOrbitPositionModel()
+        )
     with pytest.raises(RuntimeError, match="not been created"):
         simulator.get_topology()
 
@@ -441,6 +625,7 @@ def test_simulator_types_are_not_added_to_the_package_root() -> None:
         "Simulator",
         "SkyseedAutonomousSystem",
         "Topology",
+        "PhysicalFrame",
     ):
         assert not hasattr(skyseed_v2, name)
 

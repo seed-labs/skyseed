@@ -250,9 +250,11 @@ def _build_slicer(
             ),
         )
     )
-    simulator.create_topology(zone_layout_definition=_zone_layout())
-    slicer = simulator.create_slicer(
+    simulator.create_topology(
         position_model=_TimestampPositionModel(),
+        zone_layout_definition=_zone_layout(),
+    )
+    slicer = simulator.create_slicer(
         connection_model=_SequenceConnectionModel(connection_slices),
         route_model=HopCountRouteModel(),
     )

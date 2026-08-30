@@ -115,6 +115,8 @@ def _imports(
     module_name: str,
     path: Path,
     known: set[str],
+    *,
+    include_type_checking: bool = True,
 ) -> tuple[set[str], set[str]]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     package = (
@@ -124,7 +126,27 @@ def _imports(
     )
     internal: set[str] = set()
     external: set[str] = set()
+    type_checking_imports = (
+        set()
+        if include_type_checking
+        else {
+            nested
+            for guard in ast.walk(tree)
+            if isinstance(guard, ast.If)
+            and (
+                isinstance(guard.test, ast.Name)
+                and guard.test.id == "TYPE_CHECKING"
+                or isinstance(guard.test, ast.Attribute)
+                and guard.test.attr == "TYPE_CHECKING"
+            )
+            for statement in guard.body
+            for nested in ast.walk(statement)
+            if isinstance(nested, (ast.Import, ast.ImportFrom))
+        }
+    )
     for node in ast.walk(tree):
+        if node in type_checking_imports:
+            continue
         names: list[str] = []
         if isinstance(node, ast.Import):
             names.extend(alias.name for alias in node.names)
@@ -193,10 +215,17 @@ def main() -> int:
     modules = _known_modules()
     known = set(modules)
     graph: dict[str, set[str]] = {}
+    runtime_graph: dict[str, set[str]] = {}
     external: dict[str, set[str]] = {}
     for module_name, path in modules.items():
         graph[module_name], external[module_name] = _imports(
             module_name, path, known
+        )
+        runtime_graph[module_name], _ = _imports(
+            module_name,
+            path,
+            known,
+            include_type_checking=False,
         )
 
     edges = tuple(
@@ -204,7 +233,7 @@ def main() -> int:
         for source in sorted(graph)
         for target in sorted(graph[source])
     )
-    components = _strongly_connected_components(graph)
+    components = _strongly_connected_components(runtime_graph)
     if components:
         raise AssertionError(f"production import SCCs: {components}")
 

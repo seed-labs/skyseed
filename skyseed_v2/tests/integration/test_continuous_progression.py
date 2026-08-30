@@ -311,9 +311,9 @@ def _unbounded_progression():
             SimulationTimeline(START, None, timedelta(seconds=10)),
         )
     )
-    simulator.create_topology()
+    position_model = _FixedPositionModel(node_id)
+    simulator.create_topology(position_model=position_model)
     slicer = simulator.create_slicer(
-        position_model=_FixedPositionModel(node_id),
         connection_model=_EmptyConnectionModel(),
         route_model=_EmptyRouteModel(),
     )

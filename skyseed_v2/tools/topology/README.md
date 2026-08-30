@@ -18,6 +18,12 @@ never propagates Position. Rendering accepts final view data and artifact
 writing only writes files. This responsibility chain does not require a fixed
 number or naming pattern of Python files.
 
+The detached static records include each Satellite's configured simultaneous
+GroundStation-access capability and each GroundStation's configured
+simultaneous Satellite-access capability. These are immutable Topology facts,
+not an established access relationship or effective allocation. Timestamped
+node positions are inspected separately by the Physical Frame Tool.
+
 The renderer draws thin CSS-pixel orbit/marker styling on a DPR-scaled backing
 canvas, labels only the selected or hovered orbit or GroundStation, and embeds
 the shared Tool-private Natural Earth coastline reference. Orbit altitude uses

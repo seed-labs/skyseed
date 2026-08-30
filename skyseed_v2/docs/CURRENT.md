@@ -25,30 +25,45 @@ provenance material is non-authoritative.
   Its deployed Runner has not yet been qualified, and the attempted live
   rolling S3 run failed because the exact 30-second boundary was not READY by
   its deadline;
+- Topology / PhysicalFrame ownership migration Round 1: **implemented for
+  review**. Topology now owns PositionModel and deterministic timestamped
+  physical projection; the existing Slicer/Planner/Compiler path remains a
+  visible temporary operational seam;
 - compatibility forwarding and dual import paths: absent.
 
 ## Accepted current implementation
 
-### Emulator, Simulator, Slicer, and Planner
+### Emulator, physical Topology / PhysicalFrame, legacy Slicer, and Planner
 
 - Static Emulator configuration, YAML loading, owner construction, SEED Base /
   AS extensions, Docker compiler hook, metadata, and assets are implemented.
 - `SimulatorStaticInput` and `create_simulator_static_input(...)` form the
   explicit Emulator → Simulator boundary. `SimulationDefinition`,
-  `SimulationTimeline`, `Simulator`, `Topology`, `ZoneLayout`, geometry, and
-  the Position → Connection → Route model chain remain Simulator-owned.
-- Slice / Difference semantics: **implemented and accepted**. `Slicer`
-  publishes and retains immutable `TopologySlice` values, creates immutable
+  `SimulationTimeline`, `Simulator`, `Topology`, `PhysicalFrame`, `ZoneLayout`,
+  and geometry remain Simulator-owned. `SimulationTimeline` supplies
+  timestamps; the Topology-bound `PositionModel` and requested timestamp feed
+  `Topology.frame_at(...)` without making Topology a time cursor.
+- `PhysicalFrame` is an immutable physical-domain value whose timestamp is its
+  identity and whose Positions cover exactly the Topology node set. It has no
+  Slice/frame sequence ID and no Connection, Route, Zone-serving, Difference,
+  Planner, Plan, or realized-runtime state. `PositionModel` is exported from
+  `skyseed_v2.simulator.topology`, not `simulator.slicing`.
+- Slice / Difference semantics: **implemented and accepted** as the current
+  temporary operational bridge. The legacy `Slicer` requests each
+  `PhysicalFrame` from Topology, uses its Positions for the unchanged
+  Connection and Route computation, then publishes and retains immutable
+  `TopologySlice` values, creates immutable
   `TopologyDifference` values on request from retained adjacent Slices without
   retaining those Difference objects, and advances its private Slice release
-  frontier after successful downstream handoff.
-- `Simulator` creates and owns peer-level Topology, Slicer, and optional Planner
-  components. The backend-independent semantic `Planner` may exist before the
-  first real Slice; `synchronize()` requests available Differences from its
-  exact sibling Slicer and selects planning/publication windows. Its connection,
-  parameter, forwarding, and coordination models publish immutable `Plan`
-  transitions; private continuous state and release frontiers remain
-  Planner-owned.
+  frontier after successful downstream handoff. It no longer owns, binds, or
+  invokes PositionModel.
+- `Simulator` creates and owns Topology, the temporary legacy Slicer, and an
+  optional current Planner. The backend-independent semantic `Planner` may
+  exist before the first real Slice; `synchronize()` requests available
+  Differences from its exact sibling Slicer and selects planning/publication
+  windows. Its connection, parameter, forwarding, and coordination models
+  publish immutable `Plan` transitions; private continuous state and release
+  frontiers remain Planner-owned.
 - Forwarding precedences remain exact backend-independent semantic facts. Their
   implementation indexes compatible transitions by dependency key and time,
   avoiding unrelated global candidate pairs without changing the result.
@@ -56,18 +71,19 @@ provenance material is non-authoritative.
 ### Generated BPF execution
 
 - `compile_bpf(...)` is a one-shot, stateless lowering from one `Plan`, approved
-  read-only Simulator facts exposed by the exact Slicer's `get_slice()` /
-  `get_topology()` access, and an explicit previous intended baseline to one
-  immutable `BpfCompiledRealization`. There is no separate Slicer-facts DTO.
+  read-only Simulator facts exposed by the temporary exact Slicer's
+  `get_slice()` / `get_topology()` access, and an explicit previous intended
+  baseline to one immutable `BpfCompiledRealization`. There is no separate
+  Slicer-facts DTO.
 - Runtime generation identity is derived from complete backend-local BPF
   generation state. Equivalent BPF state may reuse a resident generation while
   Main still applies exact non-BPF runtime changes; this classification remains
   outside Planner and the one-shot Compiler.
 - Normal generated Mini execution is
-  `output/run.sh` → `skyseed_v2.experiment.execution` → rolling Slicer →
-  Planner → BPF Compiler → `BpfRunner`. This experiment-side runtime
-  composition is outside `backend/bpf`; the BPF backend does not own Simulator
-  or Planner progression.
+  `output/run.sh` → `skyseed_v2.experiment.execution` → physical projection
+  → legacy Slicer → current Planner → BPF Compiler → `BpfRunner`.
+  This experiment-side runtime composition is outside `backend/bpf`; the BPF
+  backend does not own Simulator or Planner progression.
 - Generated `runtime/execution.json` identifies the progression builder,
   Timeline, project, Runner bounds, and the source/input fingerprints relevant
   to normal network execution. SHA256 is only a deterministic stale-output and
@@ -79,10 +95,10 @@ provenance material is non-authoritative.
   second Slicer/Planner/Compiler implementation. The manifest and every
   realization carry deterministic interval/checksum evidence and corruption
   fails before Runner preparation.
-- Successful rolling handoff releases bounded Slicer, Planner, Compiler, and
-  Runner working state. Upstream owner history remains append-only JSONL;
-  Runner history uses bounded nonblocking persistence and explicitly marks
-  incomplete evidence if its writer cannot keep up.
+- Successful rolling handoff releases bounded legacy Slicer, current Planner,
+  Compiler, and Runner working state. Upstream owner history remains append-only JSONL;
+  Runner history uses bounded nonblocking persistence and explicitly
+  marks incomplete evidence if its writer cannot keep up.
 
 ### BPF Runner and runtime evidence
 
@@ -150,12 +166,17 @@ provenance material is non-authoritative.
 
 ## Inspection Tools and maintained examples
 
-- Manual Tool acceptance is complete for eight formal repository-local,
-  read-only Inspection Tools: Topology, Zone, Slice / Difference, Planner, BPF
-  Compiler, BPF Runner, Traffic / Path Replay, and System Observation.
+- The repository-local read-only Inspection set now contains nine Tools:
+  Topology, Zone, Physical Frame, legacy Slice / Difference, Planner, BPF
+  Compiler, BPF Runner, Traffic / Path Replay, and System Observation. The new
+  Physical Frame Tool reads one caller-supplied `Topology + PhysicalFrame` and
+  presents only Position, identity/type, static capability, and derived
+  physical geometry.
 - Tools read owner-produced facts and may project/render them; they do not
   control runtime, own fact retention, query the live kernel as an authority,
-  or generate traffic. The lazy Slice Tool keeps one browser-resident Slice,
+  or generate traffic. The old mixed-state Slice Tool is retained only for the
+  legacy operational records still consumed in this round; the lazy Tool keeps
+  one browser-resident Slice,
   restores only a selected sparse next-hop path, and now presents compact
   projected current-Slice/model context plus clearly labeled Tool-derived
   service geometry. The Starlink Gen1 example materializes heavy Slice,
@@ -176,7 +197,9 @@ provenance material is non-authoritative.
   interval. Normal `main.py` runs through Compiler;
   `main.py --through topology|slicer|planner|compiler` selects an early-stop
   boundary on the same rolling progression, while `--slice-limit` only bounds
-  execution. Compiler mode persists the exact realizations and produces
+  execution. `--through slicer` names the visible temporary legacy operational
+  stage; it is not an alternate architecture. Compiler mode persists the exact
+  realizations and produces
   `start.sh` / `run.sh` / `launch.sh` / `cleanup.sh` plus static Compose output.
   `main.py` itself does not start the deployment or enter Runner. Generated
   `start.sh` starts Compose only, `run.sh` consumes that already-started
@@ -218,7 +241,11 @@ provenance material is non-authoritative.
   experimental research; the accepted Starlink Gen1 composition is a scenario
   candidate, not a new generic numeric default.
 - The current Simulator/Planner implementation is a stable pre-refactor
-  checkpoint; further architecture work remains pending.
+  checkpoint beneath the new physical ownership. Connection operational
+  planning, effective parameter/resource planning, Route planning,
+  Coordination, `PlannedOperationalState`, acquisition/reacquisition,
+  Planner/Compiler source-fact redesign, common-producer redesign, and complete
+  Slicer deletion remain pending for the Network Planner rounds.
 - A public dataplane plugin API, an automatic rollback after a partially failed
   activation, packet-drain consistency, fresh kernel/dataplane inspection, and
   realtime/live traffic visualization remain future work.
@@ -227,14 +254,18 @@ provenance material is non-authoritative.
 
 ## Current milestone
 
-The current repository is the stable pre-refactor S3 checkpoint. Its
+The current repository layers the Round-1 physical foundation onto the stable
+S3 checkpoint. Its
 persisted/precomputed 10-second Runner and Traffic path is qualified with the
 retained host-scale configuration, and its 5-second Planner+Compiler producer
 is qualified above real-time aggregate throughput. The 5-second deployed
 Runner remains unqualified, and the preserved live rolling failure is not a
-success claim. Slicer remains the exact fact producer, Planner preserves
-dependency semantics with bounded indexes, Compiler remains one-shot, and
-further Simulator/Planner architecture work is pending.
+success claim. Topology is now the exact physical projection owner and produces
+PhysicalFrame values. The temporary legacy Slicer remains the visible producer
+of old operational Connection/Route/Slice/Difference facts, Planner preserves
+its current dependency semantics with bounded indexes, Compiler remains
+one-shot, and the next architecture round removes the remaining Slicer seam by
+moving operational planning into the Network Planner.
 
 ## Current production paths
 

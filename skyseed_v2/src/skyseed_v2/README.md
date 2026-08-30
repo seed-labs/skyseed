@@ -19,7 +19,10 @@ flowchart LR
     INPUT -->|constructs definition for| SIMULATOR["Simulator composition root"]
     ZONES["configuration/simulator"] -->|configures Topology materialization| SIMULATOR
     SIMULATOR -->|creates and owns| TOPOLOGY["Topology peer component"]
-    SIMULATOR -->|creates and owns| SLICER["Slicer peer component"]
+    POSITION_MODEL["PositionModel"] -->|bound to and called only by| TOPOLOGY
+    TOPOLOGY -->|frame_at timestamp publishes| PHYSICAL_FRAME["PhysicalFrame"]
+    SIMULATOR -->|temporarily creates and owns| SLICER["legacy Slicer peer component"]
+    PHYSICAL_FRAME -->|physical input consumed by| SLICER
     SIMULATOR -->|creates and owns after Slicer| PLANNER["Planner peer component"]
     PLANNER -->|calls exact sibling for Differences| SLICER
     PLANNER -->|synchronize produces Plan consumed by| BPF["backend/bpf Compiler"]
@@ -45,9 +48,11 @@ is detailed in its implementation owner package README.
 
 `emulator_to_simulator.py` is the explicit Emulator → Simulator cross-domain
 projection boundary. `experiment/execution.py` is the private generated-
-application composition root: it connects rolling Slicer → Planner → BPF
-Compiler work to `BpfRunner` without making `backend/bpf` own upstream
-progression. Other primary entries are `emulator/construction.py`,
+application composition root: it connects the current temporary rolling
+Slicer → Planner → BPF Compiler work to `BpfRunner` without making
+`backend/bpf` own upstream progression. The accepted target replaces that
+legacy seam with Network Planner consumption of `PhysicalFrame`. Other primary
+entries are `emulator/construction.py`,
 `simulator/simulator.py`, and optional deployment utility
 `compose/launcher.py`.
 

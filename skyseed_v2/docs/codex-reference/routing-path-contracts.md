@@ -17,6 +17,14 @@ RouteModel creates `RouteSlice`; TopologySlice retains it; Slicer validates it
 and resolves full paths using its exact Topology and current ConnectionSlice.
 Tools only read those formal results.
 
+Those Route/Slice relationships describe the explicit temporary legacy
+operational seam that still exists in Round 1. They do not place Route state in
+`PhysicalFrame` or make Slicer part of the accepted destination. Route
+planning, together with Connection, effective Parameter, and Coordination,
+moves to the Network Planner; the Slicer/TopologySlice/TopologyDifference path
+is then deleted or replaced. The current routing semantics below remain exact
+until that migration.
+
 ## Contract
 
 `GroundStationRouteTarget(ground_station_id)` is tagged G and carries an exact

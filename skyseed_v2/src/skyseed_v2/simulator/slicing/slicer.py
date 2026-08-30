@@ -1,4 +1,4 @@
-"""Orchestrate Slice publication and retained queries."""
+"""Orchestrate the temporary legacy operational Slice bridge."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ from datetime import datetime
 from pathlib import Path
 from threading import RLock
 from time import perf_counter
-from types import MappingProxyType
 from weakref import WeakValueDictionary
 
 from skyseed_v2.shared.time import normalize_utc_datetime
@@ -20,8 +19,6 @@ from .connection import (
     ConnectionSlice,
 )
 from .difference import TopologyDifference, _compare_topology_slices
-from ..geometry import EarthFixedPosition
-from .position import PositionModel
 from ._routing_policy import (
     _prepare_routing_policy_context,
     route_step_allows_transit,
@@ -59,19 +56,21 @@ class _PublishedSliceHistoryError(RuntimeError):
 
 
 class Slicer:
-    """Coordinate the sole dynamic Model chain and publish complete Slices.
+    """Temporarily bridge physical frames into legacy operational Slices.
 
-    Layer: Simulator-owned dynamic orchestration facade. Simulator explicitly
-    creates at most one and callers request/query Slices through it. It is not
-    a Topology owner, Model algorithm, fallback, Planner or backend and is
-    public from ``skyseed_v2.simulator``.
+    Layer: temporary Simulator-owned legacy operational implementation.
+    Simulator explicitly creates at most one; it consumes Topology-owned
+    ``PhysicalFrame`` positions, runs the still-unmigrated Connection/Route
+    models, and publishes old ``TopologySlice`` values. It is not a physical
+    projection owner, accepted alternative architecture, compatibility mode,
+    fallback, Planner or backend and remains public only while those existing
+    operational consumers are migrated.
     """
 
     __slots__ = (
         "__weakref__",
         "_topology",
         "_timeline",
-        "_position_model",
         "_connection_model",
         "_route_model",
         "_slices",
@@ -96,7 +95,6 @@ class Slicer:
         *,
         topology: Topology,
         timeline: SimulationTimeline,
-        position_model: PositionModel,
         connection_model: ConnectionModel,
         route_model: RouteModel,
         execution_observer: _ExecutionObserver | None = None,
@@ -105,13 +103,11 @@ class Slicer:
             raise TypeError("topology must be a Topology")
         if not isinstance(timeline, SimulationTimeline):
             raise TypeError("timeline must be a SimulationTimeline")
-        if not isinstance(position_model, PositionModel):
-            raise TypeError("position_model must implement PositionModel")
         if not isinstance(connection_model, ConnectionModel):
             raise TypeError("connection_model must implement ConnectionModel")
         if not isinstance(route_model, RouteModel):
             raise TypeError("route_model must implement RouteModel")
-        models = (position_model, connection_model, route_model)
+        models = (connection_model, route_model)
         if len({id(model) for model in models}) != len(models):
             raise ValueError("each Model role requires a distinct instance")
 
@@ -127,7 +123,6 @@ class Slicer:
         instance = object.__new__(cls)
         instance._topology = topology
         instance._timeline = timeline
-        instance._position_model = position_model
         instance._connection_model = connection_model
         instance._route_model = route_model
         timestamp_iterator = timeline.iter_timestamps()
@@ -190,36 +185,9 @@ class Slicer:
             if observer is not None
             else {}
         )
+        physical_frame = self._topology.frame_at(timestamp)
+        positions = physical_frame.positions
         total_started = perf_counter() if observer is not None else 0.0
-
-        stage_started = perf_counter() if observer is not None else 0.0
-        raw_positions = self._position_model.compute_positions(
-            self._topology, timestamp
-        )
-        stage_elapsed = (
-            perf_counter() - stage_started if observer is not None else 0.0
-        )
-        _record_slicer_observation(
-            observer,
-            "position-compute",
-            phase,
-            stage_elapsed,
-            scope,
-            {"emitted_positions": len(raw_positions)},
-        )
-        stage_started = perf_counter() if observer is not None else 0.0
-        positions = _validated_positions(self._topology, raw_positions)
-        stage_elapsed = (
-            perf_counter() - stage_started if observer is not None else 0.0
-        )
-        _record_slicer_observation(
-            observer,
-            "position-validation",
-            phase,
-            stage_elapsed,
-            scope,
-            {"validated_positions": len(positions)},
-        )
         if previous.slice_id == 0:
             prepare_connection_model = getattr(
                 self._connection_model, "_prepare_for_slicer", None
@@ -626,9 +594,6 @@ class Slicer:
     def get_timeline(self) -> SimulationTimeline:
         return self._timeline
 
-    def get_position_model(self) -> PositionModel:
-        return self._position_model
-
     def get_connection_model(self) -> ConnectionModel:
         return self._connection_model
 
@@ -705,31 +670,6 @@ class Slicer:
             seen.add(next_hop)
             current = next_hop
         return tuple(path)
-
-
-def _validated_positions(
-    topology: Topology,
-    positions: Mapping[NodeId, EarthFixedPosition],
-) -> Mapping[NodeId, EarthFixedPosition]:
-    if not isinstance(positions, Mapping):
-        raise TypeError("PositionModel must return a Mapping")
-    expected = _topology_node_ids(topology)
-    if set(positions) != expected:
-        raise ValueError(
-            "PositionModel must return exactly every Topology spatial node"
-        )
-    copied = {}
-    for node_id, position in positions.items():
-        if not isinstance(node_id, NodeId):
-            raise TypeError("PositionModel keys must be NodeId values")
-        if not isinstance(position, EarthFixedPosition):
-            raise TypeError(
-                "PositionModel values must be EarthFixedPosition values"
-            )
-        copied[node_id] = position
-    return MappingProxyType(
-        dict(sorted(copied.items(), key=lambda item: _node_key(item[0])))
-    )
 
 
 def _validate_retained_slice_metadata(
@@ -991,7 +931,7 @@ def _has_connection(
 
 
 def _claim_model_owners(
-    models: tuple[object, object, object],
+    models: tuple[object, ...],
     owner: Slicer,
 ) -> None:
     with _MODEL_OWNER_LOCK:
@@ -1011,7 +951,7 @@ def _claim_model_owners(
 
 
 def _release_model_owners(
-    models: tuple[object, object, object],
+    models: tuple[object, ...],
     owner: Slicer,
 ) -> None:
     with _MODEL_OWNER_LOCK:

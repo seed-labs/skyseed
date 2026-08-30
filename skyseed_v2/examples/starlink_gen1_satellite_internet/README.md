@@ -2,23 +2,24 @@
 
 This example is the reviewable Skyseed v2 Starlink Gen1 satellite-Internet
 scenario. Its checked shell catalog contains five formal shell choices, while
-the compact scenario currently selects S4: six circular orbital planes with 58
-Satellites each (348 total), 355
-frozen evidence-backed GroundStations, and a checked 732-Zone whole-globe
-layout. Its one formal Timeline covers 10 minutes at a 5-second interval (121
-real Slices).
+the compact scenario selects canonical S3: 36 circular Orbits with 20
+Satellites each (720 total) at 570 km altitude and 70° inclination, 355 frozen
+evidence-backed GroundStations, and a checked 732-Zone whole-globe layout. Its
+one formal Timeline covers 10 minutes at a 5-second interval: 121 timestamped
+physical states feed 121 temporary legacy real Slices.
 
 The source layout is intentionally direct:
 
 - `emu.py` defines the upstream Emulator construction;
-- `simu.py` defines one Simulator, Topology, Slicer, and accepted Planner
-  composition;
+- `simu.py` defines one Simulator, a Topology-bound physical PositionModel, the
+  explicit temporary legacy Slicer, and the existing Planner composition;
 - `main.py` selects the final execution stage, advances the rolling domain
   progression, and schedules detached read-only Inspection artifacts.
 
 There is no separate static, short-run, qualification, or runtime Simulator.
-A topology-only review simply leaves the same Slicer unadvanced. A short run
-uses the same Timeline and composition but stops at an earlier Slice boundary.
+A topology-only review obtains the authoritative start-time PhysicalFrame and
+leaves the same temporary Slicer unadvanced. A short run uses the same Timeline
+and composition but stops at an earlier legacy Slice boundary.
 
 ## Inputs
 
@@ -56,21 +57,23 @@ python -m examples.starlink_gen1_satellite_internet.main --through topology
 
 The stages are cumulative:
 
-- `topology` creates the one Simulator/Topology/Slicer composition without
-  producing a real Slice;
-- `slicer` advances that Slicer and produces adjacent formal Differences for
+- `topology` creates the one Simulator/Topology/temporary-Slicer composition,
+  obtains the start-time PhysicalFrame for inspection, and produces no real
+  legacy Slice;
+- `slicer` is the explicit temporary legacy stage: it requests PhysicalFrames,
+  computes Connection/Route/TopologySlice values and adjacent Differences for
   inspection, then stops before Planner;
-- `planner` runs the rolling Slicer → Planner publication chain and stops
-  before compilation;
+- `planner` runs the rolling Topology/PhysicalFrame → legacy Slicer → current
+  Planner publication chain and stops before compilation;
 - `compiler` calls public `compile_bpf(...)` immediately for each newly
   published Plan, passing the previous immutable realization explicitly, then
   persists that exact ordered realization sequence and writes a generated
   Compose/Runner package. `main.py` does not start the deployment or Runner.
 
-Planner uses the accepted 50-second planning lookahead and publishes continuous
-prefixes of at most 20 seconds. Offline execution runs this rolling progression
-as quickly as possible; it does not sleep against wall time and does not first
-generate all Slices, then all Plans, then all realizations.
+The current Planner uses the checked 50-second planning lookahead and publishes
+continuous prefixes of at most 20 seconds. Offline execution runs this rolling
+progression as quickly as possible; it does not sleep against wall time and
+does not first generate all Slices, then all Plans, then all realizations.
 
 For a shorter debug execution, use an execution-only bound:
 
@@ -92,10 +95,23 @@ The selected boundary determines the available artifacts under
 
 | Through | Additional views |
 |---|---|
-| `topology` | aggregate, Topology, Zone |
+| `topology` | aggregate, Topology, Zone, Physical Frame |
 | `slicer` | Slice / Difference, System Observation |
 | `planner` | Planner |
 | `compiler` | BPF Compiler |
+
+The static Physical Frame Tool receives the exact caller-produced
+`Topology + PhysicalFrame` and writes `physical-frame.json`, `index.html`, and
+`summary.txt` under `output/inspection/physical-frame/`. The Tool does not call
+`Topology.frame_at(...)`, invoke PositionModel, or perform operational
+Connection/Route work.
+
+`tool-executions.json` records caller-owned frame preparation as
+`input_preparation_wall_seconds`, Tool execution as `tool_wall_seconds`, and
+their sum as `wall_seconds`. `input_bytes=0` means the Topology/PhysicalFrame
+handoff stayed in process rather than being serialized; it does not mean frame
+preparation had zero wall cost. Dynamic modes persist domain observations
+before this later inspection-only projection.
 
 Successful `compiler` output also contains the trusted local, checksum-checked
 `runtime/realizations/` handoff, `runtime/docker-compose.yml`, and the
@@ -141,19 +157,20 @@ time is not part of domain Observation.
 
 ## Selected-shell policy facts
 
-The accepted scenario uses `CircularOrbitPositionModel`,
-`GeometricConnectionModel`, and `GatewayHopCountRouteModel`. Zone service has a
+The canonical S3 scenario binds `CircularOrbitPositionModel` to Topology for
+physical projection. The temporary legacy Slicer uses
+`GeometricConnectionModel` and `GatewayHopCountRouteModel`. Zone service has a
 25-degree minimum elevation. GroundStation access has a 5-degree minimum,
 3,000 km maximum slant distance, and a global capacity of eight; every selected
 Satellite has an explicit two-access cap. Same-orbit and neighbouring-plane ISL
 selection remains distance- and Earth-clear-LOS constrained.
 
-The accepted normal Planner composition uses sample-boundary Connection,
+The existing normal Planner composition uses sample-boundary Connection,
 accumulated-deadband Parameter with the checked scenario numeric configuration,
 dependency-aware always-FOLLOW Forwarding, and identity coordination. These
 values are scenario choices, not generic Planner numeric defaults.
 
-The isolated 348-Satellite shell is not expected to serve all 732 Zones
+The isolated 720-Satellite S3 shell is not expected to serve all 732 Zones
 continuously. Served percentage is not a coverage-quality target, and the
 routing/access settings do not claim to reproduce an operator's live network.
 
@@ -197,4 +214,4 @@ reviewed frozen input.
 
 The generated runtime consumes the persisted exact Compiler outputs from this
 one progression; it does not reconstruct or rerun a second
-Slicer/Planner/Compiler algorithm.
+temporary-Slicer/current-Planner/Compiler algorithm.

@@ -63,6 +63,7 @@ from skyseed_v2.experiment.traffic.probe_plan import (
 from skyseed_v2.simulator import Plan, Planner, Simulator
 from tools._detached_inspection import _DetachedInspectionExecutor
 from tools._html import write_aggregate_index
+from tools.physical_frame import write_physical_frame_tool
 from tools.topology import write_topology_tool
 from tools.zone import write_zone_tool
 
@@ -603,6 +604,8 @@ def _write_tool_execution_evidence(
                     "scheduled_at",
                     "started_at",
                     "ended_at",
+                    "input_preparation_wall_seconds",
+                    "tool_wall_seconds",
                     "wall_seconds",
                     "peak_rss_bytes",
                     "exit_code",
@@ -616,7 +619,12 @@ def _write_tool_execution_evidence(
                 "input_byte_semantics": (
                     "detached compressed/file handoff"
                     if input_bytes
-                    else "no serialized Tool input"
+                    else (
+                        "no serialized Tool input; preparation wall cost is "
+                        "accounted separately"
+                        if "input_preparation_wall_seconds" in task
+                        else "no serialized Tool input"
+                    )
                 ),
                 "output_file_count": len(files),
                 "output_bytes": sum(path.stat().st_size for path in files),
@@ -673,6 +681,7 @@ def _write_generation_milestones(
 
 def _run_static_inspection_tools(
     topology,
+    physical_frame_timestamp,
     inspection: Path,
 ) -> tuple[
     dict[str, dict[str, object]],
@@ -681,14 +690,43 @@ def _run_static_inspection_tools(
 ]:
     results: dict[str, dict[str, object]] = {}
     records = []
-    for task, writer in (
-        ("topology", write_topology_tool),
-        ("zone", write_zone_tool),
-    ):
-        started = perf_counter()
+    for task in ("topology", "zone", "physical-frame"):
         started_at = datetime.now().astimezone().isoformat()
+        input_preparation_wall_seconds = 0.0
+        tool_wall_seconds = 0.0
         try:
-            result = dict(writer(topology, inspection / task))
+            physical_frame = None
+            if task == "physical-frame":
+                input_preparation_started = perf_counter()
+                try:
+                    physical_frame = topology.frame_at(
+                        physical_frame_timestamp
+                    )
+                finally:
+                    input_preparation_wall_seconds = (
+                        perf_counter() - input_preparation_started
+                    )
+
+            tool_started = perf_counter()
+            try:
+                if task == "topology":
+                    result = dict(
+                        write_topology_tool(topology, inspection / task)
+                    )
+                elif task == "zone":
+                    result = dict(
+                        write_zone_tool(topology, inspection / task)
+                    )
+                else:
+                    result = dict(
+                        write_physical_frame_tool(
+                            topology,
+                            physical_frame,
+                            inspection / task,
+                        )
+                    )
+            finally:
+                tool_wall_seconds = perf_counter() - tool_started
             status = "COMPLETE"
             results[task] = result
             message = None
@@ -701,7 +739,13 @@ def _run_static_inspection_tools(
             "status": status,
             "started_at": started_at,
             "ended_at": datetime.now().astimezone().isoformat(),
-            "wall_seconds": perf_counter() - started,
+            "input_preparation_wall_seconds": (
+                input_preparation_wall_seconds
+            ),
+            "tool_wall_seconds": tool_wall_seconds,
+            "wall_seconds": (
+                input_preparation_wall_seconds + tool_wall_seconds
+            ),
             "peak_rss_bytes": int(
                 resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
             )
@@ -738,7 +782,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if arguments.through == "topology":
         results, counts, static_tasks = _run_static_inspection_tools(
-            topology, inspection
+            topology,
+            simulator.get_timeline().start_time,
+            inspection,
         )
         _write_tool_execution_evidence(inspection, static_tasks)
 
@@ -803,12 +849,24 @@ def main(argv: list[str] | None = None) -> int:
             executor.terminate()
             raise
 
+        inspection_failures: dict[str, str] = {}
+        observation_persisted = False
+        try:
+            simulator._write_execution_observations()
+        except Exception as error:
+            inspection_failures["observation"] = (
+                f"{type(error).__name__}: {error}"
+            )
+        else:
+            observation_persisted = True
+
         static_results, counts, static_tasks = _run_static_inspection_tools(
-            topology, inspection
+            topology,
+            simulator.get_timeline().start_time,
+            inspection,
         )
         results.update(static_results)
 
-        inspection_failures: dict[str, str] = {}
         deferred = progression.get("deferred_sources", {})
         assert isinstance(deferred, dict)
 
@@ -853,13 +911,7 @@ def main(argv: list[str] | None = None) -> int:
                     "compile_evidence": compile_evidence,
                 },
             )
-        try:
-            simulator._write_execution_observations()
-        except Exception as error:
-            inspection_failures["observation"] = (
-                f"{type(error).__name__}: {error}"
-            )
-        else:
+        if observation_persisted:
             schedule(
                 "observation",
                 {"observation_path": observation_path},
@@ -932,7 +984,8 @@ def main(argv: list[str] | None = None) -> int:
     for task, title in (
         ("topology", "Topology Tool"),
         ("zone", "Zone Tool"),
-        ("slice", "Slice / Difference Tool"),
+        ("physical-frame", "Physical Frame Tool"),
+        ("slice", "Legacy Slice / Difference Tool"),
         ("observation", "Observation Tool"),
         ("planner", "Planner Tool"),
         ("compiler", "BPF Compiler Tool"),

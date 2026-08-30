@@ -1,8 +1,9 @@
 # Simulator composition root
 
 This README owns only `SimulationDefinition`, `SimulationTimeline`, and
-`Simulator`. Topology, input, geometry, slicing, planning, and built-in Model
-members are maintained in their respective package README files.
+`Simulator`. Topology, physical projection, input, geometry, temporary legacy
+slicing, planning, and built-in Model members are maintained in their
+respective package README files.
 
 ## Local assembly / ownership map
 
@@ -16,6 +17,7 @@ classDiagram
     class SimulationDefinition
     class Simulator
     class Topology
+    class PositionModel
     class Slicer
     class Planner
 
@@ -23,9 +25,14 @@ classDiagram
     SimulationDefinition "1" *-- "1" SimulationTimeline : timeline
     Simulator "1" *-- "1" SimulationDefinition : exact definition
     Simulator "1" *-- "1" Topology : creates and owns
-    Simulator "1" *-- "1" Slicer : creates and owns after Topology
+    Topology "1" *-- "1" PositionModel : sole owner and caller
+    Simulator "1" *-- "1" Slicer : temporary legacy owner after Topology
     Simulator "1" *-- "0..1" Planner : creates and owns after Slicer
 ```
+
+Topology creates `PhysicalFrame` values on request without retaining them; the
+temporary Slicer consumes each exact value before its remaining operational
+Connection/Route work. Those handoffs are dependencies, not composition.
 
 ## Detailed public class/member diagrams
 
@@ -73,9 +80,11 @@ Code entries are `definition.py`, `timeline.py`, and `simulator.py`.
 ## Dependencies
 
 The definition consumes `input/`; `Simulator` consumes Simulator Zone
-configuration, creates `topology/`, binds `slicing/` to the exact
-Topology/Timeline and supplied Model Protocol roles, then binds `planning/` to
-that exact sibling Slicer and supplied planning algorithm roles.
+configuration, creates `topology/`, and binds the required PositionModel there.
+Topology projects an exact timestamp into a physical-only `PhysicalFrame`.
+The current Round-1 implementation then binds temporary `slicing/` to the exact
+Topology/Timeline and supplied Connection/Route Model Protocol roles, and binds
+`planning/` to that exact sibling Slicer and supplied planning algorithm roles.
 
 ## Examples and tests
 

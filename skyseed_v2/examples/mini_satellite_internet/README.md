@@ -6,7 +6,9 @@ Internet scenario rather than a Starlink replica or Planner-specific fixture:
 one YAML-built Emulator owns the Skyseed constellation, static
 GroundStation/IX attachment, ordinary SEED network and routing/eBGP layers;
 that exact Emulator is both compiled into a static Docker/Compose project and
-projected into the accepted A–F Slice / Difference chain.
+projected into the physical foundation and current operational seam:
+Topology + PositionModel → timestamp-identified PhysicalFrame → temporary
+legacy Slicer Connection/Route/TopologySlice/Difference → existing Planner.
 
 The explicit scale is one AS, one Shell, four Orbits, eight Satellites per
 Orbit, three GroundStations, five Zones and 64 real Slices plus synthetic
@@ -61,7 +63,7 @@ python3 main.py
 
 The command only generates one experiment. It snapshots the authoritative
 scenario inputs, compiles the deployment, reconstructs Simulator/Planner facts
-for the five generation-time inspection views, and publishes the runtime
+for the six generation-time inspection views, and publishes the runtime
 controls after those views pass. It does not start containers or run
 `BpfRunner`. The standard
 upstream InternetMap image is enabled; pass `--no-internet-map` only to isolate
@@ -80,8 +82,9 @@ deployment to be running and directly invokes the private root
 `skyseed_v2.experiment.execution` application composition, which verifies
 `runtime/execution.json`, compact source-scope fingerprints, and generated-input
 fingerprints before reconstructing Emulator →
-Simulator/Slicer → Planner → BPF Compiler lazily from `output/inputs/` behind
-the Runner's future-work supplier. These hashes are deterministic
+Simulator/Topology/PhysicalFrame → temporary legacy Slicer → current Planner →
+BPF Compiler lazily from `output/inputs/` behind the Runner's future-work
+supplier. These hashes are deterministic
 source/generated-output consistency checks for accidental definition drift,
 not security credentials. It runs the automatic public Runner path:
 `prepare()` → `run()` → `cleanup()`. Runner cleanup removes Runner-owned BPF,
@@ -106,19 +109,20 @@ minutes thirty seconds, plus Preparation and cleanup. Public `activate_next()` m
 stepping remains available for focused tests and debugging, but it is not the
 canonical user workflow.
 
-The `10 s` Slice interval is Simulator observation resolution. The Mini's
-example-local `300 s` simulation-generation lookahead controls how far the
-runtime supplier advances Slicer/Planner facts on each pull. It is distinct
-from Runner preparation: the example-local `60 s` nominal-time lookahead and
+The `10 s` interval is both the requested physical projection cadence and the
+temporary legacy Slice observation resolution. The Mini's example-local
+`300 s` simulation-generation lookahead controls how far the runtime supplier
+advances legacy Slicer/current Planner facts on each pull. It is distinct from
+Runner preparation: the example-local `60 s` nominal-time lookahead and
 explicit future depth of `8` boundaries are separate rolling preparation
 bounds; the
 current default tc-BPF implementation consequently proves a private maximum of
 `9` resident generations. None of these values defines a permanent Runner
 cadence, default depth, or Tool threshold. Planner midpoint transitions can
 produce `5 s` nominal boundaries, and Runner must keep pace with the actual
-semantic transition schedule. Simulation/Slice resolution, Planner publication
-cadence, Plan nominal transition timing, Runner preparation depth, and Runner
-execution cadence are independent.
+semantic transition schedule. PhysicalFrame request cadence, temporary legacy
+Slice resolution, current Planner publication cadence, Plan nominal transition
+timing, Runner preparation depth, and Runner execution cadence are independent.
 
 Advanced users may run an equivalent `docker compose` command manually with
 the generation's project name and `output/runtime/docker-compose.yml`, then
@@ -170,7 +174,7 @@ output/
     │   ├── summary.txt
     │   ├── inventory.json
     │   └── checksums.sha256
-    ├── observation/           # generation-time Slicer/Planner timing evidence
+    ├── observation/           # physical + legacy Slicer/current Planner timing evidence
     │   ├── index.html
     │   ├── execution-observations.jsonl
     │   ├── observation-records.js
@@ -206,26 +210,29 @@ relative `ground_stations_file` when present. This generation itself builds
 from those snapshots. It constructs the Emulator exactly once, renders and
 compiles it, then calls the same `simu.py` progression builder named in
 `execution.json` to project `SimulatorStaticInput`, create the formal
-Simulator/Topology/Slicer, and prepare consecutive immutable Plans.
-Those already-created facts and decisions feed the five generation-time
-read-only Tools. `main.py` uses its small private continuous compile loop to
-build the BPF realization chain for the Compiler inspection view. It does not
-retain full historical domain objects for those Tools. Instead, the canonical
-producer appends compact gzip JSONL evidence under `output/domain-history/`
-before its owners release working facts. The precomputed Tools and later live
-execution reconstruct their exact public inputs from those durable histories;
-Tool directory replacement therefore cannot delete the canonical source.
+Simulator/Topology with its PositionModel, produce PhysicalFrame values, pass
+them through the temporary legacy Slicer, and prepare consecutive immutable
+Plans with the current Planner. Those already-created facts and decisions feed
+the six generation-time read-only Tools. Mini does not emit a standalone
+Physical Frame Tool bundle. `main.py` uses its small private continuous compile
+loop to build the BPF realization chain for the Compiler inspection view. It
+does not retain full historical domain objects for those Tools. Instead, the
+canonical producer appends compact gzip JSONL evidence under
+`output/domain-history/` before its owners release working facts. The
+precomputed Tools and later live execution reconstruct their exact public
+inputs from those durable histories; Tool directory replacement therefore
+cannot delete the canonical source.
 Generic output loading, consistency verification, supplier creation, and
 Runner lifecycle are owned by that private root application composition; it
-starts with no real Slices or Plans, advances the Slicer with the configured
-simulation-generation lookahead, synchronizes one next Plan, and compiles one
-realization per pull.
+starts with no real legacy Slices or Plans, advances the temporary Slicer with
+the configured simulation-generation lookahead, synchronizes one next Plan,
+and compiles one realization per pull.
 
 `output/runtime/` is the compiled static container network and
-`output/inspection/` contains only read-only views. Simulator Position,
-Connection, Zone service, Route, and Difference results do not update live
-containers by themselves. Dynamic preparation and activation begin only when
-`run.sh` attaches `BpfRunner` to the matching live Compose project.
+`output/inspection/` contains only read-only views. PhysicalFrame Positions and
+temporary legacy Connection, Zone service, Route, and Difference results do not
+update live containers by themselves. Dynamic preparation and activation begin
+only when `run.sh` attaches `BpfRunner` to the matching live Compose project.
 `main.py` does not create a placeholder Runner view. After each cleanup attempt,
 the generated-execution caller explicitly invokes
 `runner.inspection_snapshot()`, writes the detached handoff, and then `run.sh`
@@ -280,7 +287,8 @@ python -m examples.mini_satellite_internet.main
 The primary artifact is
 `output/inspection/planner/index.html`; its sibling JSON, summary, inventory,
 and checksum files are private audit evidence. `simu.py` creates the real
-Simulator/Slicer, obtains Planner through the public Simulator facade, and
+Simulator/Topology with a physical PositionModel, then the temporary legacy
+Slicer, obtains the current Planner through the public Simulator facade, and
 publishes 16 continuous four-Difference Plans covering `(0,4]` through
 `(60,64]`; `main.py` passes
 those exact immutable results plus
@@ -296,10 +304,11 @@ remain explicitly unavailable because the formal read surface does not retain
 them.
 
 `main.py` is the generation-only deployment-compile, planning,
-backend-compile, five-Tool, and control-script entry.
+backend-compile, six-Tool, and control-script entry.
 `simu.py` has no CLI and never writes Tool output; its example-local assembly
 helpers project the explicitly supplied Emulator into the matching formal
-Simulator/Slicer and prepare the Planner branch.
+Simulator/Topology, bind the physical PositionModel, create the temporary
+legacy Slicer, and prepare the current Planner branch.
 
 Generation-time `main.py` and generated execution each invoke `compile_bpf`
 once per continuous Plan with the explicit previous intended baseline.
@@ -311,16 +320,18 @@ the returned immutable values; it cannot compile, rerun Simulator semantics,
 or bind runtime/kernel resources.
 
 The example never edits a Slice, constructs a Connection/Route/Difference
-manually, or bypasses the three Models and Slicer. Inventory, observed
-behavior, and Difference summaries are produced only by the Slice / Difference
-Tool projector from the supplied Slicer. It emits non-authoritative compact
+manually, bypasses the Topology-owned PositionModel, or bypasses either legacy
+Connection/Route Model. Inventory, observed behavior, and Difference summaries
+are produced only by the Slice / Difference Tool projector from the supplied
+temporary Slicer. It emits non-authoritative compact
 view data, offline per-Slice chunks, HTML, and `summary.txt`; the example
 contains no second reporting path.
 
 ## Observed deterministic behavior
 
-The accepted Models naturally produce the following current evidence without
-editing any result:
+The configured physical PositionModel and temporary legacy Connection/Route
+Models naturally produce the following current evidence without editing any
+result:
 
 - Slice 1 has 32 same-orbit and 16 cross-orbit ISLs;
 - all three GroundStations receive access during the bounded run;
@@ -334,11 +345,12 @@ editing any result:
 - the longest resolved path contains seven hops.
 
 These are reference-scenario observations, not new algorithm guarantees.
-The Slicer retains all 64 real Slices and performs no selective omission.
+The temporary legacy Slicer retains all 64 real Slices and performs no
+selective omission.
 Parameter deadband merging happens in the Planner, while four-Difference
 publication batching remains the example-local Planner policy. The current
 profile accepts zero connection-suppression candidates; the Tool must not
-present any of those mechanisms as Slicer behavior.
+present any of those mechanisms as legacy Slicer behavior.
 
 ## Selection-driven Slice / Difference Tool
 

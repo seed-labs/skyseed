@@ -291,9 +291,14 @@ def write_aggregate_index(
             "Inspect and select static Zone boundaries and geometry.",
         ),
         (
+            "physical-frame",
+            "Physical Frame Tool",
+            "Inspect one exact timestamped physical projection without operational state.",
+        ),
+        (
             "slice",
-            "Slice / Difference Tool",
-            "Inspect sampled formal state and Difference evolution by Slice.",
+            "Legacy Slice / Difference Tool",
+            "Inspect the temporary mixed operational state and Difference evolution by Slice.",
         ),
         (
             "observation",
@@ -363,7 +368,7 @@ def write_aggregate_index(
   <span class="status {overall}">{overall}</span>
   <h2>Tool snapshot</h2>
   {issue}
-  <p>Read from formal structure and sampled Slice evidence, through Planner publications and Compiler realizations, then use System Observation for measured execution cost. Every Tool is detached and read-only; a visual selection never creates a domain fact.</p>
+  <p>Read static structure and an exact PhysicalFrame first, then the temporary legacy Slice evidence, Planner publications, and Compiler realizations. Use System Observation for measured execution cost. Every Tool is detached and read-only; a visual selection never creates a domain fact.</p>
 </section>
 <section><h2>Core object inventory</h2><div class="grid stats">{stats}</div></section>
 <section><h2>Inspection entries</h2><div class="grid two">{''.join(cards)}</div></section>
@@ -381,7 +386,8 @@ def write_aggregate_index(
                 "Inspection entries": "检查入口",
                 "Topology Tool": "Topology 工具",
                 "Zone Tool": "Zone 工具",
-                "Slice / Difference Tool": "Slice / Difference 工具",
+                "Physical Frame Tool": "Physical Frame 工具",
+                "Legacy Slice / Difference Tool": "旧版 Slice / Difference 工具",
                 "System Observation Tool": "系统 Observation 工具",
                 "Planner Tool": "Planner 工具",
                 "BPF Compiler Tool": "BPF Compiler 工具",
@@ -389,14 +395,15 @@ def write_aggregate_index(
                 "Traffic / Path Replay Tool": "Traffic / Path Replay 工具",
                 "Inspect selectable static orbit planes, GroundStations, and consistency.": "查看可选择的静态轨道平面、地面站与一致性。",
                 "Inspect and select static Zone boundaries and geometry.": "查看并直接选择静态 Zone 边界与几何信息。",
-                "Inspect sampled formal state and Difference evolution by Slice.": "逐 Slice 检查采样的正式状态和 Difference 演化。",
+                "Inspect one exact timestamped physical projection without operational state.": "检查一个精确时间戳的物理投影，不包含运行决策状态。",
+                "Inspect the temporary mixed operational state and Difference evolution by Slice.": "逐 Slice 检查临时旧版混合运行状态和 Difference 演化。",
                 "Inspect measured execution stages, rollups, work, and resources.": "检查已测量的执行 stage、rollup、工作量与资源。",
                 "Compare sampled formal evidence with published planned state.": "比较采样的正式 evidence 与已发布的 planned state。",
                 "Trace Plan deltas into interval operations and complete baselines.": "追踪 Plan delta 如何转换为区间操作和完整 baseline。",
                 "Inspect detached lifecycle, timing, readiness, and cleanup evidence.": "检查分离保存的生命周期、时序、就绪与清理 evidence。",
                 "Inspect real Ping and tc-BPF observations against active runtime evolution.": "对照 ACTIVE runtime 演化检查真实 Ping 与 tc-BPF observation。",
                 "All available Tools completed; each entry contains its exact evidence and audit links.": "所有可用 Tool 均已完成；每个入口都包含精确 evidence 和审计链接。",
-                "Read from formal structure and sampled Slice evidence, through Planner publications and Compiler realizations, then use System Observation for measured execution cost. Every Tool is detached and read-only; a visual selection never creates a domain fact.": "阅读顺序从正式结构与采样 Slice evidence 开始，再查看 Planner 发布和 Compiler realization，最后用 System Observation 检查已测量的执行成本。所有 Tool 均分离且只读；可视化选择不会创建领域事实。",
+                "Read static structure and an exact PhysicalFrame first, then the temporary legacy Slice evidence, Planner publications, and Compiler realizations. Use System Observation for measured execution cost. Every Tool is detached and read-only; a visual selection never creates a domain fact.": "先阅读静态结构和一个精确 PhysicalFrame，再查看临时旧版 Slice evidence、Planner 发布和 Compiler realization。使用 System Observation 检查已测量的执行成本。所有 Tool 均分离且只读；可视化选择不会创建领域事实。",
             },
         ),
     )
@@ -424,7 +431,8 @@ def finalize_runtime_aggregate_index(directory: Path) -> None:
     for key, title in (
         ("topology", "Topology Tool"),
         ("zone", "Zone Tool"),
-        ("slice", "Slice / Difference Tool"),
+        ("physical-frame", "Physical Frame Tool"),
+        ("slice", "Legacy Slice / Difference Tool"),
         ("observation", "System Observation Tool"),
         ("planner", "Planner Tool"),
         ("compiler", "BPF Compiler Tool"),

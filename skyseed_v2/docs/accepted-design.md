@@ -12,13 +12,30 @@
 - `Satellite(ExtensionNode)` remains Orbit-owned while the same instance is
   indexed by its AS for the standard SEED lifecycle; `GroundStation(Router)`
   remains on the standard rnode/brdnode path;
-- `Simulator` is the Simulator composition root and creates exactly one
-  `Topology`, then exactly one `Slicer`, then at most one formal `Planner`;
+- `Simulator` is the Simulator composition root. It creates exactly one
+  `Topology` bound to exactly one physical `PositionModel`; the current
+  Round-1 implementation then creates exactly one temporary legacy `Slicer`
+  and at most one current `Planner`;
 - `SimulatorStaticInput` is immutable receiver-owned boundary data;
-- Models execute Position → Connection → Route;
-- `Slicer` owns retained `TopologySlice` values and creates
-  `TopologyDifference` only from retained formal slices;
-- `Planner` is the persistent Simulator-owned peer of Topology and Slicer. Its
+- `SimulationTimeline` defines simulation timestamps but owns no projection;
+  `Topology.frame_at(timestamp)` deterministically invokes its physical
+  `PositionModel` and returns one immutable `PhysicalFrame`;
+- `PhysicalFrame` is physical-domain state only: its timestamp is its domain
+  identity and its immutable Position mapping covers exactly the Topology node
+  set. It has no Slice/frame sequence ID, Connection, Route, Zone serving,
+  Difference, Planner decision, Plan, or realized-runtime state;
+- the accepted destination is `Topology / PhysicalFrame → Network Planner →
+  PlannedOperationalState → Plan → Compiler / Runner →
+  RealizedRuntimeState`; physical, planned-operational, and realized-runtime
+  state remain distinct;
+- Round 1 intentionally retains one visible temporary seam:
+  `Topology / PhysicalFrame → legacy Slicer operational remainder → current
+  Planner`. The legacy Slicer no longer owns, binds, or invokes PositionModel;
+  it requests a PhysicalFrame, consumes its Positions for unchanged Connection
+  and Route computation, retains old `TopologySlice` values, and creates
+  `TopologyDifference` only from retained old slices;
+- the current `Planner` is the persistent Simulator-owned peer of Topology and
+  the temporary legacy Slicer. Its
   `synchronize()` method requests newly available adjacent Differences from the
   exact sibling Slicer over already-generated retained Slices, consumes those
   immutable values, and publishes backend-independent semantic `Plan` intervals
@@ -43,14 +60,16 @@
   `experiment.execution` is the experiment-side runtime composition. It uses
   SHA256 only as a deterministic source/output consistency guard: definition
   drift or stale generated output fails clearly with an instruction to rerun
-  `main.py`. It consumes either the explicitly configured live rolling Slicer
-  → Planner → Compiler progression used by Mini or the persisted canonical
+  `main.py`. It consumes either the explicitly configured live rolling physical
+  projection → temporary legacy Slicer → current Planner → Compiler
+  progression used by Mini or the persisted canonical
   `BpfCompiledRealization` sequence produced by the Starlink Gen1 example,
   then composes that input
   with the unchanged BpfRunner lifecycle. It is not part of the BPF backend, a
   security mechanism, or a new public runtime authority;
 - rolling owners retain only facts still needed beyond their successful
-  handoff. Slicer and Planner release obsolete owner-local working entries,
+  handoff. The temporary legacy Slicer and current Planner release obsolete
+  owner-local working entries,
   Runner and its private realization reclaim retired input/boundary/generation
   state, and complete semantic/runtime history is written sequentially under
   `output/inspection/` before release. Tools read that evidence but neither
@@ -73,8 +92,9 @@
   already made upstream remain observable at their exact nominal boundaries;
 - Runner performance is part of simulation correctness: it must keep pace with
   the nominal semantic transition schedule required by the target simulation
-  profile. Simulation sampling resolution, Planner publication cadence, Plan
-  nominal transition timing, and Runner execution cadence are separate;
+  profile. PhysicalFrame request resolution, temporary legacy Slice
+  resolution, current Planner publication cadence, Plan nominal transition
+  timing, and Runner execution cadence are separate;
 - BPF generation identity follows the complete backend-local BPF generation
   state, not every runtime target field. A boundary whose BPF generation state
   is equivalent may reuse the resident generation while Main still applies its
@@ -111,8 +131,9 @@
   the complete Runner event history to durable JSONL, which the post-run Runner
   Inspection Tool reads directly; the Tool gains no lifecycle, kernel,
   dataplane, or traffic-observation authority.
-- the Starlink Gen1 example has one formal Simulator/Slicer composition and one offline
-  rolling application path. `main.py` advances Slicer far enough for the
+- the Starlink Gen1 example has one formal physical Topology plus temporary
+  legacy Slicer/current Planner composition and one offline rolling application
+  path. `main.py` advances the legacy operational seam far enough for the
   accepted planning lookahead, asks the Simulator-owned Planner to publish a
   continuous prefix, and optionally calls public `compile_bpf(...)` immediately
   with the explicit previous realization. Stage and Slice-limit controls are
@@ -122,7 +143,8 @@
   generated controls later execute the Runner and Traffic lifecycle;
 - heavy generation-time Starlink Gen1 Inspection materialization runs in a small bounded
   set of independent processes after each required domain evidence boundary is
-  immutable. Slicer → Planner → Compiler remains the domain dependency chain:
+  immutable. Physical projection → temporary legacy Slicer → current Planner
+  → Compiler is the Round-1 implementation dependency chain:
   Tool work never becomes a prerequisite for a later domain stage, and a task
   is deferred until domain completion when no worker is available. Each worker
   first persists a deterministic detached snapshot under short-lived generated
@@ -145,10 +167,19 @@ Emulator configuration
 → SimulatorStaticInput
 → SimulationDefinition
 → Simulator
-→ creates/owns peer components Topology + Slicer + optional Planner
-Slicer → calls PositionModel → ConnectionModel → RouteModel
-       → produces/retains TopologySlice
-Planner.synchronize() → calls Slicer.create_difference()
+→ creates/owns Topology(PositionModel)
+SimulationTimeline timestamp → Topology.frame_at(timestamp)
+                             → PhysicalFrame(timestamp + Positions)
+
+accepted destination:
+Topology / PhysicalFrame → Network Planner → PlannedOperationalState → Plan
+
+temporary Round-1 implementation seam:
+legacy Slicer → requests Topology.frame_at(timestamp)
+              → consumes PhysicalFrame.positions
+              → calls legacy ConnectionModel → legacy RouteModel
+              → produces/retains legacy TopologySlice
+current Planner.synchronize() → calls Slicer.create_difference()
                      → consumes on-request TopologyDifference values
                      → produces Plan
 compile_bpf(Plan + approved read-only Simulator facts exposed through exact
@@ -160,10 +191,17 @@ compile_bpf(Plan + approved read-only Simulator facts exposed through exact
 → live kernel forwarding state
 ```
 
-`Slicer` retains the adjacent `TopologySlice` values needed for these calls;
-it does not retain the immutable `TopologyDifference` results. The Planner is
-the Difference consumer and `Planner.synchronize()` is the Plan producer. The
-BPF Compiler consumes the Plan, not the Difference.
+The temporary legacy `Slicer` retains the adjacent `TopologySlice` values
+needed for these calls; it does not retain the immutable
+`TopologyDifference` results. The current Planner is the Difference consumer
+and `Planner.synchronize()` is the Plan producer. The BPF Compiler consumes the
+Plan, not the Difference. Connection operational planning, effective
+parameter/resource planning, Route planning, Coordination,
+`PlannedOperationalState`, acquisition/reacquisition, the common producer, and
+Planner/Compiler source-fact redesign remain for the Network Planner rounds.
+Once those responsibilities move, Slicer and its mixed Slice/Difference seam
+are removed completely; they are not an alternative architecture or a
+compatibility mode.
 
 Static deployment is separate:
 
@@ -192,6 +230,10 @@ dispatch compiler subtypes.
 - no SEED integration dependency on Simulator, Tools, Compose launcher, or
   examples;
 - no compatibility forwarding or two import paths for retired modules;
+- no `PositionModel` alias under `simulator.slicing`, operational state in
+  `PhysicalFrame`, or Slice/frame sequence identity in the physical contract;
+- no new Slicer consumer, facade, fallback, compatibility mode, or hidden
+  producer path;
 - no second authoritative computation path in Tools;
 - no Tool-side Model execution, Position propagation, Connection/Route
   recomputation, or Slice comparison;
@@ -205,9 +247,9 @@ dispatch compiler subtypes.
 - [public imports](codex-reference/public-imports.md)
 - [ownership and lifecycle](codex-reference/ownership-lifecycle.md)
 - [Emulator–Simulator boundary](codex-reference/emulator-simulator-boundary.md)
-- [Topology and Zone](codex-reference/topology-zone-contracts.md)
-- [Dynamic slicing](codex-reference/dynamic-slicing-contracts.md)
-- [Position and Connection values](codex-reference/position-connection-values.md)
+- [Topology, PhysicalFrame, and Zone](codex-reference/topology-zone-contracts.md)
+- [temporary legacy dynamic slicing](codex-reference/dynamic-slicing-contracts.md)
+- [PhysicalFrame, Position, and Connection values](codex-reference/position-connection-values.md)
 - [Model contracts and built-in algorithms](codex-reference/model-contracts.md)
 - [routing and path contracts](codex-reference/routing-path-contracts.md)
 - [Timeline, Slice, retention, and Difference](codex-reference/timeline-slice-difference-contracts.md)

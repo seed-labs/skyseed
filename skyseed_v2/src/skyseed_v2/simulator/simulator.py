@@ -17,9 +17,9 @@ from .planning import (
     Planner,
     PlanningWindowPolicy,
 )
-from .slicing import ConnectionModel, PositionModel, RouteModel, Slicer
+from .slicing import ConnectionModel, RouteModel, Slicer
 from .timeline import SimulationTimeline
-from .topology import Topology, ZoneMembershipModel
+from .topology import PositionModel, Topology, ZoneMembershipModel
 
 
 class Simulator:
@@ -64,6 +64,8 @@ class Simulator:
         observer = _ExecutionObserver(metadata)
         self._execution_observer = observer
         self._execution_observation_path = Path(path)
+        if self._topology is not None:
+            self._topology._set_execution_observer(observer)
         if self._slicer is not None:
             self._slicer._set_execution_observer(observer)
         if self._planner is not None:
@@ -91,6 +93,7 @@ class Simulator:
     def create_topology(
         self,
         *,
+        position_model: PositionModel,
         zone_layout_definition: ZoneLayoutDefinition | None = None,
         zone_membership_model: ZoneMembershipModel | None = None,
     ) -> Topology:
@@ -102,8 +105,10 @@ class Simulator:
             )
         topology = Topology._materialize(
             self._definition.static_input,
+            position_model=position_model,
             zone_layout_definition=zone_layout_definition,
             zone_membership_model=zone_membership_model,
+            execution_observer=self._execution_observer,
         )
         self._topology = topology
         return topology
@@ -116,17 +121,23 @@ class Simulator:
     def create_slicer(
         self,
         *,
-        position_model: PositionModel,
         connection_model: ConnectionModel,
         route_model: RouteModel,
     ) -> Slicer:
         if self._slicer is not None:
             raise RuntimeError("Slicer has already been created")
         topology = self.get_topology()
+        if len(
+            {
+                id(topology.get_position_model()),
+                id(connection_model),
+                id(route_model),
+            }
+        ) != 3:
+            raise ValueError("each Model role requires a distinct instance")
         slicer = Slicer._create(
             topology=topology,
             timeline=self.get_timeline(),
-            position_model=position_model,
             connection_model=connection_model,
             route_model=route_model,
             execution_observer=self._execution_observer,

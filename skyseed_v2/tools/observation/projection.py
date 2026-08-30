@@ -12,6 +12,7 @@ from .reader import ObservationRead
 
 
 _TOP_LEVEL_TIMING_STAGES = {
+    "topology": ("physical-projection",),
     "slicer": ("complete-slice", "difference"),
     "planner": ("total-synchronize",),
     "compiler": ("total-compile",),
@@ -119,6 +120,7 @@ def _timeline_summary(
     metadata: dict[str, Any],
 ) -> dict[str, Any]:
     timestamps = []
+    physical_frame_timestamps = set()
     slices: dict[int, datetime] = {}
     planner_publications = set()
     compiler_invocations = set()
@@ -134,6 +136,10 @@ def _timeline_summary(
             timestamp = _parse_timestamp(scope.get("timestamp"))
             if isinstance(slice_id, int) and timestamp is not None:
                 slices.setdefault(slice_id, timestamp)
+        if record["component"] == "topology":
+            timestamp = _parse_timestamp(scope.get("timestamp"))
+            if timestamp is not None:
+                physical_frame_timestamps.add(timestamp)
         if record["component"] == "planner":
             publication_index = scope.get("publication_index")
             if isinstance(publication_index, int):
@@ -167,12 +173,14 @@ def _timeline_summary(
             max(timestamps).isoformat() if timestamps else None
         ),
         "slice_interval_seconds": slice_interval_seconds,
+        "physical_frame_unit_count": len(physical_frame_timestamps),
         "slicer_unit_count": len(slices),
         "planner_unit_count": len(planner_publications),
         "compiler_unit_count": len(compiler_invocations),
         "x_axis_semantics": (
-            "simulation timestamp aligned by Slice identity, Planner "
-            "publication coverage, and its 1:1 Compiler realization"
+            "simulation timestamp aligned by PhysicalFrame timestamp, legacy "
+            "Slice identity, Planner publication coverage, and its 1:1 "
+            "Compiler realization"
         ),
     }
 

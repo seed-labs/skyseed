@@ -7,6 +7,13 @@ first reference implementations. It does not
 own Slice generation, route selection, backend preparation, compilation, or
 runtime execution.
 
+This package documents the current Round-1 Planner, whose exact sibling
+`Slicer` and `TopologySlice` / `TopologyDifference` facts remain an explicit
+temporary legacy operational seam. The behavior below is preserved during
+this round; it is not the accepted final ownership. When the Network Planner
+owns Connection, effective Parameter, Route, and Coordination planning, those
+inputs and the Slicer seam are deleted or replaced.
+
 ## Local assembly / ownership map
 
 Legend: `*--` is lifecycle ownership.
@@ -426,6 +433,10 @@ its exact sibling Slicer exists. Reference algorithms are stateless; Planner
 commits its own state only after validation. The Protocols do not promise
 rollback of private mutations made inside an arbitrary third-party stateful
 strategy.
+
+That `simulator/slicing` dependency is intentionally visible migration debt,
+not a boundary to generalize. No new Slicer facade, producer, or mixed-history
+consumer belongs here before the Network Planner migration removes it.
 
 Plan owns each `ForwardingTransitionPrecedence`; the ForwardingPlanningModel
 produces it through Planner after Coordination has finalized the

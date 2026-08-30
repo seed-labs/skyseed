@@ -27,6 +27,7 @@ def test_tools_are_repository_local_and_dependency_direction_is_one_way() -> Non
     assert "tools" not in skyseed_v2.__all__
     assert not hasattr(skyseed_v2, "Tool")
     assert not hasattr(skyseed_v2, "TopologyTool")
+    assert not hasattr(skyseed_v2, "PhysicalFrameTool")
     assert not hasattr(skyseed_v2, "ZoneTool")
     assert not hasattr(skyseed_v2, "PlannerTool")
     assert not hasattr(skyseed_v2, "BpfCompilerTool")
@@ -85,6 +86,7 @@ def test_formal_tool_renderers_share_one_small_bilingual_surface() -> None:
     for tool_name in (
         "topology",
         "zone",
+        "physical_frame",
         "slice",
         "observation",
         "planner",
@@ -112,6 +114,7 @@ def test_aggregate_index_links_every_completed_qualification_tool(
         for name in (
             "topology",
             "zone",
+            "physical-frame",
             "slice",
             "observation",
             "planner",
@@ -127,6 +130,7 @@ def test_aggregate_index_links_every_completed_qualification_tool(
     for path in (
         "topology/index.html",
         "zone/index.html",
+        "physical-frame/index.html",
         "slice/index.html",
         "observation/index.html",
         "planner/index.html",
@@ -135,7 +139,7 @@ def test_aggregate_index_links_every_completed_qualification_tool(
         "traffic/index.html",
     ):
         assert f'href="{path}"' in page
-    assert "Read from formal structure and sampled Slice evidence" in page
+    assert "Read static structure and an exact PhysicalFrame first" in page
 
 
 def test_generated_runtime_finalizes_one_aggregate_index(tmp_path: Path) -> None:
@@ -346,7 +350,8 @@ def test_dynamic_tool_boundary_allows_readonly_results_without_generation() -> N
         "`ConnectionSlice`, and `RouteSlice` values"
         in " ".join(contract.split())
     )
-    assert "No Model calls outside Slicer" in contract
+    assert "No PositionModel call outside Topology" in contract
+    assert "ConnectionModel/RouteModel call outside" in contract
     assert "Tool-side comparator" in contract
 
     source = "\n".join(

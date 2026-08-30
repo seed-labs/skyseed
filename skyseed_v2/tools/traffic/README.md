@@ -17,6 +17,15 @@ ICMP pairing + telemetry-derived observed flows + shared simulation-state projec
 standalone traffic replay HTML/JSON bundle
 ```
 
+The retained Slice/Position and on-request Difference histories are old mixed
+operational evidence from the explicit temporary legacy seam. Round 1 keeps
+them only because current replay and Compiler evidence still use them; they are
+not physical history and do not justify adding operational fields to
+`PhysicalFrame`. These inputs are replaced when the Network Planner owns
+Connection, effective Parameter, Route, and Coordination planning and the
+Slicer/TopologySlice/TopologyDifference history path is removed. The replay
+semantics below remain unchanged until then.
+
 It does not retain or call a Runner, collector, kernel command, Simulator
 Model, Compiler, InternetMap component, or network-semantic authority. The v3
 reader reconstructs only its required Compiler domains from the manifest and

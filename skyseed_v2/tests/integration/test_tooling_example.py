@@ -5,6 +5,9 @@ from pathlib import Path
 from examples.complete_static_emulator import main as complete
 from examples.complete_static_emulator.emu import build_emulator
 from skyseed_v2.simulator import Simulator
+from tools.physical_frame import (
+    write_physical_frame_tool as real_write_physical_frame_tool,
+)
 from tools.topology import write_topology_tool as real_write_topology_tool
 from tools.zone import write_zone_tool as real_write_zone_tool
 
@@ -17,6 +20,9 @@ EXPECTED_ARTIFACTS = {
     "zone/index.html",
     "zone/zones.json",
     "zone/summary.txt",
+    "physical-frame/index.html",
+    "physical-frame/physical-frame.json",
+    "physical-frame/summary.txt",
 }
 
 
@@ -51,10 +57,21 @@ def test_main_builds_once_creates_one_topology_and_shares_it_after_compile(
         received.append(topology)
         return real_write_zone_tool(topology, directory)
 
+    def physical_frame_writer(topology, frame, directory):
+        assert (output / "runtime/docker-compose.yml").is_file()
+        received.append(topology)
+        assert frame.timestamp == complete.DEFAULT_START_TIME
+        return real_write_physical_frame_tool(topology, frame, directory)
+
     monkeypatch.setattr(complete, "build_emulator", build_spy)
     monkeypatch.setattr(Simulator, "create_topology", create_topology_spy)
     monkeypatch.setattr(complete, "write_topology_tool", topology_writer)
     monkeypatch.setattr(complete, "write_zone_tool", zone_writer)
+    monkeypatch.setattr(
+        complete,
+        "write_physical_frame_tool",
+        physical_frame_writer,
+    )
     monkeypatch.setattr(
         "sys.argv",
         ["main.py", "--output", str(output), "--no-internet-map"],
@@ -64,8 +81,8 @@ def test_main_builds_once_creates_one_topology_and_shares_it_after_compile(
 
     assert build_calls == 1
     assert topology_calls == 1
-    assert len(received) == 2
-    assert received[0] is received[1]
+    assert len(received) == 3
+    assert received[0] is received[1] is received[2]
     artifacts = {
         path.relative_to(output / "inspection").as_posix()
         for path in (output / "inspection").rglob("*")
@@ -81,6 +98,7 @@ def test_main_builds_once_creates_one_topology_and_shares_it_after_compile(
     )
     assert 'href="topology/index.html"' in aggregate
     assert 'href="zone/index.html"' in aggregate
+    assert 'href="physical-frame/index.html"' in aggregate
     assert "直接选择静态 Zone 边界与几何信息" in aggregate
     assert "探针" not in aggregate
     assert 'href="../index.html"' in topology_page
@@ -89,8 +107,10 @@ def test_main_builds_once_creates_one_topology_and_shares_it_after_compile(
     assert str(output / "inspection/index.html") in terminal
     assert str(output / "inspection/topology/index.html") in terminal
     assert str(output / "inspection/zone/index.html") in terminal
+    assert str(output / "inspection/physical-frame/index.html") in terminal
     assert "Topology Tool: PASS" in terminal
     assert "Zone Tool: PASS" in terminal
+    assert "Physical-frame Tool: PASS" in terminal
     assert "Tooling overall: PASS" in terminal
 
 

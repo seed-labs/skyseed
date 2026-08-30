@@ -1,5 +1,15 @@
 # Slice / Difference Inspection Tool
 
+This is the temporary legacy mixed-state reader for the explicit Round-1
+`Slicer` / `TopologySlice` / `TopologyDifference` seam. It exists only while
+the current operational pipeline and old histories require those records. It
+must gain no new physical consumers and no new `PhysicalFrame`,
+`PositionModel`, or independent `Topology` physical input; physical inspection
+belongs to the Physical Frame Tool. When
+the Network Planner owns Connection, effective Parameter, Route, and
+Coordination planning, this old seam and its Tool input are deleted or
+replaced.
+
 Legend: `A --> B` means stage A supplies the only input accepted by stage B.
 
 ```mermaid

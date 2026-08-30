@@ -6,7 +6,8 @@ Tools are repository-local read-only views, not installed product APIs.
 |---|---|---|
 | Topology | one created `Topology` | `inspection/topology/` |
 | Zone | the same `Topology` | `inspection/zone/` |
-| Slice / Difference | one exact `Slicer` with retained slices | `inspection/slice/` |
+| Physical Frame | that exact `Topology` plus one caller-supplied, already-created `PhysicalFrame` | `inspection/physical-frame/` |
+| Slice / Difference (temporary legacy) | one exact legacy `Slicer` with retained mixed-state slices | `inspection/slice/` |
 | Planner | that exact `Slicer`, consecutive `Plan` publications, retained `PlanningDecision` values | `inspection/planner/` |
 | System Observation | detached records emitted during the actual Slicer/Planner execution | `inspection/observation/` |
 | BPF Compiler | consecutive `Plan` publications and their already-produced `BpfCompiledRealization` values | `inspection/bpf-compiler/` |
@@ -18,6 +19,7 @@ The normal imports are:
 ```python
 from tools.topology import write_topology_tool
 from tools.zone import write_zone_tool
+from tools.physical_frame import write_physical_frame_tool
 from tools.slice import write_slice_difference_tool
 from tools.planner import write_planner_tool
 from tools.observation import write_observation_tool
@@ -27,19 +29,38 @@ from tools.traffic import write_traffic_replay_tool
 ```
 
 The output contains standalone HTML, private audit data, and summaries. The
-Slice Tool uses `slice-manifest.json` plus offline `chunks/slice-*.js`;
+Physical Frame Tool receives one `Topology + PhysicalFrame` pair chosen by the
+caller and writes the one timestamp, every exact ECEF Position, its formal
+WGS84 geodetic view, and static identity/type/orbit/access-capability context.
+It has no physical history and no Connection, Route, Zone-serving, effective
+resource allocation, Difference, Plan, or runtime fields. It also never calls
+`Topology.frame_at()` or a `PositionModel`; creating and selecting the frame is
+the caller's responsibility. For example:
+
+```python
+frame = topology.frame_at(timestamp)
+write_physical_frame_tool(topology, frame, inspection_root / "physical-frame")
+```
+
+The old Slice Tool is a temporary legacy mixed-state consumer scheduled for
+removal with Slicer and the old Slice/Difference path; it is not the accepted
+future planned-operational inspection boundary. While that seam remains, it
+uses `slice-manifest.json` plus offline `chunks/slice-*.js`;
 opening its page loads only the selected Slice. Its 3D Earth supports direct
 node, Connection, and Zone selection, contextual Zone service and Difference
 overlays, and a Zone/Gateway/direction Route workflow restored from that
 chunk's sparse next-hop tuples. Generic source/target selection is an advanced
-fallback. Topology orbit rings and Slice Satellite positions use one
+fallback. Topology orbit rings and legacy Slice Satellite positions use one
 Tool-private spherical display approximation: unit Earth plus formal altitude
 divided by the IUGG mean Earth radius. It does not reinterpret Simulator
 geometry; marker and hit-test sizes remain independent display values.
-It is non-authoritative. The Zone Tool reads static layout geometry and uses
+The Physical Frame map uses the formal geodetic view and keeps the exact ECEF
+and geodetic values in node detail; its map placement and marker sizes are
+non-authoritative. The Zone Tool reads static layout geometry and uses
 browser-only hit testing for direct selection; it does not execute the Zone
-membership Model. Where other Tools report formal path, Difference, or model
-results, those results are read from production objects rather than recreated.
+membership Model. Where temporary legacy Tools report formal path,
+Difference, or model results, those results are read from production objects
+rather than recreated.
 
 The Planner Tool receives the exact consumed Differences explicitly. Its
 `planner-manifest.json` and its compact `planner-manifest.js` bootstrap point
@@ -95,13 +116,16 @@ BPF pipeline:
 python examples/starlink_gen1_satellite_internet/main.py --through topology
 ```
 
-Its existing-tool outputs are
+Its physical-boundary outputs are
 `examples/starlink_gen1_satellite_internet/output/inspection/topology/index.html` and
-`examples/starlink_gen1_satellite_internet/output/inspection/zone/index.html`. Select an
-orbit ring or GroundStation on the Topology globe, or select a Zone directly
-on either Zone view, to inspect the existing static fields. The subtle
-Natural Earth coastline is embedded for offline orientation only; it is not
-simulation or Zone authority.
+`examples/starlink_gen1_satellite_internet/output/inspection/zone/index.html`,
+plus
+`examples/starlink_gen1_satellite_internet/output/inspection/physical-frame/index.html`.
+Select an orbit ring or GroundStation on the Topology globe, select a Zone
+directly on either Zone view, or select a node on the Physical Frame map to
+inspect its exact one-timestamp coordinates. The subtle Natural Earth
+coastline is embedded for offline orientation only; it is not simulation,
+physical-projection, or Zone authority.
 
 Run the same Starlink Gen1 composition through Slicer with:
 
@@ -109,11 +133,11 @@ Run the same Starlink Gen1 composition through Slicer with:
 python examples/starlink_gen1_satellite_internet/main.py --through slicer
 ```
 
-That adds the maintained `output/inspection/slice/index.html` and Observation
-view alongside the Topology and Zone Tools. `--through planner` adds Planner,
-and `--through compiler` adds Compiler. `--slice-limit` bounds execution only;
-lazy per-Slice scripts prevent the browser page from becoming a monolithic
-second simulation authority.
+That adds the temporary legacy `output/inspection/slice/index.html` and
+Observation view alongside the Topology, Zone, and Physical Frame Tools.
+`--through planner` adds Planner, and `--through compiler` adds Compiler.
+`--slice-limit` bounds execution only; lazy per-Slice scripts prevent the
+browser page from becoming a monolithic second simulation authority.
 
 Validate the generated Slice / Difference page in Firefox without keeping a
 screenshot:

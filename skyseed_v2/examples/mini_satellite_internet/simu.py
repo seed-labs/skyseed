@@ -99,10 +99,10 @@ def create_mini_satellite_internet_simulator(
         SimulationDefinition(static_input=simulator_input, timeline=timeline)
     )
     simulator.create_topology(
+        position_model=CircularOrbitPositionModel(),
         zone_layout_definition=load_zone_layout_definition(zone_layout_path)
     )
     slicer = simulator.create_slicer(
-        position_model=CircularOrbitPositionModel(),
         connection_model=GeometricConnectionModel(
             maximum_isl_distance_m=MAXIMUM_ISL_DISTANCE_M,
             ground_station_minimum_elevation_deg=(

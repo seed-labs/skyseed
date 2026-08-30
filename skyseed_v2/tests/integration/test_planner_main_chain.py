@@ -665,9 +665,9 @@ def _simulator(connection_slices, route_slices, *, extra_satellites=()):
             ),
         )
     )
-    simulator.create_topology()
+    position_model = _PositionModel(extra_satellites)
+    simulator.create_topology(position_model=position_model)
     slicer = simulator.create_slicer(
-        position_model=_PositionModel(extra_satellites),
         connection_model=_ConnectionSequenceModel(connection_slices),
         route_model=_RouteSequenceModel(route_slices),
     )

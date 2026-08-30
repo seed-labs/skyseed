@@ -59,10 +59,10 @@ object model.
 | `skyseed_v2.simulator` | Simulator composition/lifecycle facade | `src/skyseed_v2/simulator/README.md` |
 | `skyseed_v2.simulator.geometry` | Earth-fixed values and calculations | `src/skyseed_v2/simulator/geometry/README.md` |
 | `skyseed_v2.simulator.input` | receiver-owned immutable DTOs | `src/skyseed_v2/simulator/input/README.md` |
-| `skyseed_v2.simulator.models` | built-in Model implementations | `src/skyseed_v2/simulator/models/README.md` |
+| `skyseed_v2.simulator.models` | built-in physical and temporary legacy operational Model implementations | `src/skyseed_v2/simulator/models/README.md` |
 | `skyseed_v2.simulator.planning` | incremental semantic planning owner | `src/skyseed_v2/simulator/planning/README.md` |
-| `skyseed_v2.simulator.slicing` | dynamic contracts, retained slices, Difference | `src/skyseed_v2/simulator/slicing/README.md` |
-| `skyseed_v2.simulator.topology` | static aggregate and Zone owner | `src/skyseed_v2/simulator/topology/README.md` |
+| `skyseed_v2.simulator.slicing` | temporary legacy Connection/Route/Slice/Difference seam scheduled for removal | `src/skyseed_v2/simulator/slicing/README.md` |
+| `skyseed_v2.simulator.topology` | physical aggregate, PositionModel, PhysicalFrame, and Zone owner | `src/skyseed_v2/simulator/topology/README.md` |
 
 ## Owners and consumers
 
@@ -78,22 +78,23 @@ object model.
 | `emulator/construction.py` | config-driven Emulator entry | `src/skyseed_v2/emulator/README.md` | all three maintained runnable examples | creation/equivalence tests |
 | `emulator_to_simulator.py` | sole cross-layer projection | `human-readable/system-overview.md` | all Simulator examples | static-input construction and boundary tests |
 | `simulator/input/` | receiver-owned immutable DTO | `src/skyseed_v2/simulator/input/README.md` | bridge/definition | static-input and dependency tests |
-| `simulator/topology/` | static aggregate/Zone owner | `src/skyseed_v2/simulator/topology/README.md` | Models and all Tools | topology and Zone tests |
-| `simulator/geometry/` | ECEF/geodetic/distance/LOS | `src/skyseed_v2/simulator/geometry/README.md` | built-in Models, dynamic Starlink Gen1, Slice / Difference Tool views | geometry/model tests and SCC |
-| `simulator/slicing/` | dynamic contracts, Slicer, Slice, Difference | `src/skyseed_v2/simulator/slicing/README.md` | Models/Slice / Difference Tool | main-chain, Difference, Tool boundaries |
-| `simulator/models/` | built-in Position/Connection/Route algorithms | `src/skyseed_v2/simulator/models/README.md` | canonical Mini and stage-bounded Starlink Gen1 | focused main-chain/model/Starlink Gen1 tests |
+| `simulator/topology/` | physical aggregate/Zone owner; owns PositionModel, `frame_at()`, and immutable PhysicalFrame publication | `src/skyseed_v2/simulator/topology/README.md` | all Simulator examples, built-in physical Models, Topology/Zone/Physical Frame Tools | topology, physical-frame, PositionModel ownership, Zone, and Tool-boundary tests |
+| `simulator/geometry/` | ECEF/geodetic/distance/LOS | `src/skyseed_v2/simulator/geometry/README.md` | built-in Models, PhysicalFrame/Physical Frame Tool, dynamic Starlink Gen1, temporary legacy Slice views | geometry/model tests and SCC |
+| `simulator/slicing/` | temporary legacy ConnectionModel/RouteModel, Slicer, mixed-state Slice, and Difference seam scheduled for removal | `src/skyseed_v2/simulator/slicing/README.md` | current Planner and legacy Slice / Difference Tool | main-chain, Difference, legacy Tool boundaries, and removal synchronization |
+| `simulator/models/` | built-in Position algorithm plus temporary legacy Connection/Route algorithms | `src/skyseed_v2/simulator/models/README.md` | canonical Mini and stage-bounded Starlink Gen1 | focused physical-frame/main-chain/model/Starlink Gen1 tests |
 | `simulator/planning/` | semantic Planner, Plan and planning algorithms | `src/skyseed_v2/simulator/planning/README.md` | complete canonical `simu.py` | planning value/algorithm/main-chain tests |
-| `simulator/{definition,timeline,simulator}.py` | Simulator composition/lifecycle | `src/skyseed_v2/simulator/README.md` | Simulator examples | lifecycle/timeline/Planner tests |
+| `simulator/{definition,timeline,simulator}.py` | Simulator composition/lifecycle; creates the Topology with its PositionModel before the temporary legacy operational seam | `src/skyseed_v2/simulator/README.md` | Simulator examples | lifecycle/timeline/Topology/Planner tests |
 | `compose/launcher.py` | compiled Compose project lifecycle | `src/skyseed_v2/compose/README.md` | `complete_static_emulator` and canonical Mini | launcher and integration tests |
 | `shared/` | neutral identity/time plus authority-free durable-evidence and optional observation mechanics | `src/skyseed_v2/shared/README.md` | configuration, Emulator, Simulator, generated execution, BpfRunner, Observation Tool | identity/time, continuous-progression/Runner history, and observation-record tests |
 | `tools/topology/` | read-only static projection/UI/artifacts | `human-readable/traceability-map.md` | all three maintained runnable examples | Topology Tool and tooling-boundary tests |
 | `tools/zone/` | static Zone layout read/projection/direct-selection UI/artifacts | `human-readable/traceability-map.md` | all three maintained runnable examples | Zone Tool and tooling-boundary tests |
-| `tools/slice/` | formal Slicer reads + display/UI/artifacts | `human-readable/traceability-map.md` | canonical Mini | Slice / Difference Tool tests and browser smoke |
-| `tools/planner/` | formal Slicer/Plan/decision reads + private comparison UI/artifacts | `human-readable/traceability-map.md` | dynamic Planner inspection entry | Planner Tool and tooling-boundary tests |
+| `tools/physical_frame/` | one exact caller-supplied Topology + PhysicalFrame read, physical-only projection/UI/artifacts; no `frame_at()`/PositionModel call or history | `human-readable/traceability-map.md` | complete static and Starlink Gen1 physical boundaries | Physical Frame Tool and tooling-boundary tests |
+| `tools/slice/` | temporary legacy mixed-state Slicer/Slice/Difference reads + display/UI/artifacts, scheduled for removal with that seam | `human-readable/traceability-map.md` | canonical Mini and Starlink Gen1 legacy stage | Slice / Difference Tool tests and browser smoke until removal |
+| `tools/planner/` | current formal Slicer/Plan/decision reads + private comparison UI/artifacts during the temporary seam | `human-readable/traceability-map.md` | dynamic Planner inspection entry | Planner Tool and tooling-boundary tests |
 | `tools/observation/` | detached execution-record parsing/aggregation/UI/artifacts | `human-readable/traceability-map.md` | canonical Mini and stage-bounded Starlink Gen1 | Observation record/Tool tests and page review |
 | `tools/bpf_compiler/` | immutable Plan/compiled-result reads + private lowering UI/artifacts | `human-readable/traceability-map.md` | Mini backend branch and inspection entry | BPF Compiler Tool tests and browser smoke |
 | `tools/runner/` | detached post-run Runner event projection/UI/artifacts | `human-readable/traceability-map.md` | generated Mini automatic runtime | Runner Tool, runtime-finalization and tooling-boundary tests plus controlled-interruption page review |
-| `tools/traffic/` | durable traffic/Slice / Difference/Compiler-evidence read plus optional planned-workload comparison context, exact-generation network validation, ICMP sustained-series/path projection, offline simulation/packet replay UI/artifacts | `human-readable/traceability-map.md` | generated Mini automatic runtime | Traffic replay focused tests plus canonical page review |
+| `tools/traffic/` | durable traffic/temporary legacy Slice / Difference/Compiler-evidence read plus optional planned-workload comparison context, exact-generation network validation, ICMP sustained-series/path projection, offline simulation/packet replay UI/artifacts | `human-readable/traceability-map.md` | generated Mini automatic runtime | Traffic replay focused tests plus canonical page review |
 | `tools/_detached_inspection.py` | private bounded process scheduling, temporary detached snapshots, checksum-audited staging, atomic publication, and control-state cleanup | `accepted-design.md` | normal stage-bounded Starlink Gen1 execution | detached process/PID/cleanup tests and rolling-order integration test |
 | `scripts/generate_zone_layout.py` | offline deterministic whole-globe Zone YAML authoring through formal configuration definitions | Starlink Gen1 example README | explicit configuration maintenance only | Zone generator exact-reproduction/check-mode tests |
 | `scripts/refresh_starlink_gen1_ground_stations.py` | SHA-pinned reviewed-evidence refresh for the frozen Starlink Gen1 GroundStation YAML | Starlink Gen1 example README | explicit input maintenance only | frozen-input/source-SHA tests |

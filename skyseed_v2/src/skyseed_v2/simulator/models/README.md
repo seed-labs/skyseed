@@ -1,13 +1,15 @@
 # Built-in Simulator Models
 
-This package owns the four built-in algorithm implementations.
-Protocol contracts, Slicer ownership, and formal call order remain owned by
+This package owns the four built-in algorithm implementations. The
+`PositionModel` Protocol, its Topology ownership, and its formal call boundary
+are owned by `../topology/README.md`. The temporary legacy Slicer's
+Connection/Route Protocol ownership and call order remain owned by
 `../slicing/README.md`.
 
 ## Local assembly / ownership map
 
 Legend: `Implementation ..|> Protocol` is UML Protocol realization. No edge
-expresses Slicer ownership or call order.
+expresses runtime ownership or call order.
 
 ```mermaid
 classDiagram
@@ -72,9 +74,12 @@ Code entries are `circular_orbit.py`, `geometric_connection.py`,
 
 ## Dependencies
 
-Implementations depend on the matching Protocol and values owned by
-`../slicing/`, static objects from `../topology/`, geometry capabilities, and
-neutral shared values. They do not call one another.
+`CircularOrbitPositionModel` depends on the PositionModel Protocol owned by
+`../topology/`, static Topology objects, geometry capabilities, and neutral
+values. Connection and Route implementations depend on their temporary legacy
+Protocols in `../slicing/`, physical positions supplied through a
+`PhysicalFrame`, static Topology objects, geometry capabilities, and neutral
+shared values. The implementations do not call one another.
 
 `GeometricConnectionModel` keeps its global GroundStation access-count policy.
 For each site, it uses that value when the site's
@@ -88,8 +93,8 @@ maximum-cardinality primary matchings, minimizes aggregate candidate rank
 frozen before residual capacity is used to maximize redundant access links;
 redundancy cannot move or degrade a frozen primary. This is a simple Skyseed
 baseline policy, not a claim about an operational constellation scheduler.
-Slicer independently enforces every explicit site and Satellite access cap on
-all ConnectionModel output before Slice publication.
+The temporary legacy Slicer independently enforces every explicit site and
+Satellite access cap on all ConnectionModel output before Slice publication.
 
 The implementation uses private conservative spatial indexes to prune
 GroundStation and Zone candidate checks before applying the unchanged exact
@@ -112,5 +117,6 @@ implementations.
 
 When a built-in algorithm boundary changes, update this realization map,
 Model/routing contracts, public imports, the dynamic example, canonical
-output, and focused tests. Formal Slicer call order changes only in the
-slicing owner README and its contracts.
+output, and focused tests. Position call order changes only in the Topology
+owner README and its contracts; Connection/Route call order changes only in
+the temporary slicing owner README and its contracts.

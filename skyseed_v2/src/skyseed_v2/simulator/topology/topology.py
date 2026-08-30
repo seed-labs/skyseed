@@ -6,10 +6,14 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 from math import isfinite
+from threading import RLock
+from time import perf_counter
 from types import MappingProxyType
 from typing import Mapping
+from weakref import WeakValueDictionary
 
 from skyseed_v2.configuration.simulator import ZoneLayoutDefinition
+from skyseed_v2.shared._execution_observation import _ExecutionObserver
 from skyseed_v2.shared.time import normalize_utc_datetime
 from skyseed_v2.shared.identifier import validate_identifier
 from skyseed_v2.shared import NodeId
@@ -19,6 +23,9 @@ from ..input import (
     GroundStationSimulationInput,
     SatelliteSimulationInput,
 )
+from ..geometry import EarthFixedPosition
+from .physical_frame import PhysicalFrame
+from .position import PositionModel
 from .zone import SphericalCap, Zone, ZoneLayout, ZoneMembershipModel
 
 
@@ -26,6 +33,10 @@ _SATELLITE_KIND = "satellite"
 _GROUND_STATION_KIND = "ground-station"
 _OrbitKey = tuple[int, str, str]
 _ShellKey = tuple[int, str]
+_POSITION_MODEL_OWNERS: WeakValueDictionary[int, Topology] = (
+    WeakValueDictionary()
+)
+_POSITION_MODEL_OWNER_LOCK = RLock()
 
 
 @dataclass(frozen=True, slots=True)
@@ -413,15 +424,16 @@ class SkyseedAutonomousSystem:
             raise KeyError(f"GroundStation not found: {node_id.value}") from error
 
 
-@dataclass(frozen=True, slots=True, init=False)
+@dataclass(frozen=True, slots=True, init=False, weakref_slot=True)
 class Topology:
-    """Provide the unified facade over Simulator-owned static network facts.
+    """Own static physical facts and project timestamped physical frames.
 
-    Layer: immutable Simulator aggregate root and query facade. ``Simulator``
-    creates it explicitly from ``SimulatorStaticInput`` and then owns it. It is
-    not boundary input, a global resource registry, Slice or planning
-    service. It is public from ``skyseed_v2.simulator`` because callers consume
-    its stable read-only queries.
+    Layer: Simulator physical aggregate root and query/projection facade.
+    ``Simulator`` creates it explicitly from ``SimulatorStaticInput`` plus one
+    ``PositionModel`` and then owns it. It is not boundary input, a time cursor,
+    global resource registry, operational Slice or planning service. It is
+    public from ``skyseed_v2.simulator`` because callers consume its stable
+    read-only facts and ``PhysicalFrame`` results.
     """
 
     _autonomous_systems: tuple[SkyseedAutonomousSystem, ...]
@@ -434,6 +446,12 @@ class Topology:
     _zone_layout: ZoneLayout | None = field(
         repr=False, compare=False, hash=False
     )
+    _position_model: PositionModel = field(
+        repr=False, compare=False, hash=False
+    )
+    _execution_observer: _ExecutionObserver | None = field(
+        repr=False, compare=False, hash=False
+    )
 
     def __init__(self) -> None:
         raise TypeError("Topology is created explicitly by Simulator")
@@ -442,11 +460,21 @@ class Topology:
     def _materialize(
         cls,
         static_input: SimulatorStaticInput,
+        position_model: PositionModel,
         zone_layout_definition: ZoneLayoutDefinition | None = None,
         zone_membership_model: ZoneMembershipModel | None = None,
+        execution_observer: _ExecutionObserver | None = None,
     ) -> Topology:
         if not isinstance(static_input, SimulatorStaticInput):
             raise TypeError("static_input must be a SimulatorStaticInput")
+        if not isinstance(position_model, PositionModel):
+            raise TypeError("position_model must implement PositionModel")
+        if execution_observer is not None and not isinstance(
+            execution_observer, _ExecutionObserver
+        ):
+            raise TypeError(
+                "execution_observer must be an _ExecutionObserver or None"
+            )
         if zone_layout_definition is None and zone_membership_model is not None:
             raise ValueError(
                 "zone_membership_model requires zone_layout_definition"
@@ -598,15 +626,24 @@ class Topology:
                     ground_stations=ground_stations,
                 )
             )
-        return cls._create(autonomous_systems, zone_layout=zone_layout)
+        return cls._create(
+            autonomous_systems,
+            position_model=position_model,
+            zone_layout=zone_layout,
+            execution_observer=execution_observer,
+        )
 
     @classmethod
     def _create(
         cls,
         autonomous_systems: Iterable[SkyseedAutonomousSystem],
         *,
+        position_model: PositionModel,
         zone_layout: ZoneLayout | None = None,
+        execution_observer: _ExecutionObserver | None = None,
     ) -> Topology:
+        if not isinstance(position_model, PositionModel):
+            raise TypeError("position_model must implement PositionModel")
         if zone_layout is not None and not isinstance(zone_layout, ZoneLayout):
             raise TypeError("zone_layout must be a ZoneLayout or None")
         autonomous_system_values = tuple(autonomous_systems)
@@ -645,7 +682,84 @@ class Topology:
         )
         object.__setattr__(instance, "_nodes_by_id", MappingProxyType(nodes))
         object.__setattr__(instance, "_zone_layout", zone_layout)
+        object.__setattr__(instance, "_position_model", position_model)
+        object.__setattr__(instance, "_execution_observer", execution_observer)
+        _claim_position_model_owner(position_model, instance)
         return instance
+
+    def _set_execution_observer(self, observer: _ExecutionObserver) -> None:
+        if not isinstance(observer, _ExecutionObserver):
+            raise TypeError("observer must be an _ExecutionObserver")
+        if self._execution_observer is not None:
+            raise RuntimeError("Topology execution observation is already enabled")
+        object.__setattr__(self, "_execution_observer", observer)
+
+    def frame_at(self, timestamp: datetime) -> PhysicalFrame:
+        """Project one immutable physical frame without advancing time."""
+
+        utc = normalize_utc_datetime(timestamp, "timestamp")
+        observer = self._execution_observer
+        scope = {"timestamp": utc.isoformat()} if observer is not None else {}
+        total_started = perf_counter() if observer is not None else 0.0
+
+        stage_started = perf_counter() if observer is not None else 0.0
+        raw_positions = self._position_model.compute_positions(self, utc)
+        stage_elapsed = (
+            perf_counter() - stage_started if observer is not None else 0.0
+        )
+        _record_topology_observation(
+            observer,
+            "position-compute",
+            stage_elapsed,
+            scope,
+            {
+                "emitted_positions": (
+                    len(raw_positions)
+                    if isinstance(raw_positions, Mapping)
+                    else 0
+                )
+            },
+        )
+
+        stage_started = perf_counter() if observer is not None else 0.0
+        positions = _validated_positions(self, raw_positions)
+        stage_elapsed = (
+            perf_counter() - stage_started if observer is not None else 0.0
+        )
+        _record_topology_observation(
+            observer,
+            "position-validation",
+            stage_elapsed,
+            scope,
+            {"validated_positions": len(positions)},
+        )
+
+        stage_started = perf_counter() if observer is not None else 0.0
+        frame = PhysicalFrame._create(timestamp=utc, positions=positions)
+        stage_elapsed = (
+            perf_counter() - stage_started if observer is not None else 0.0
+        )
+        work = {"published_positions": len(frame.positions)}
+        _record_topology_observation(
+            observer,
+            "physical-frame-publication",
+            stage_elapsed,
+            scope,
+            work,
+        )
+        if observer is not None:
+            _record_topology_observation(
+                observer,
+                "physical-projection",
+                perf_counter() - total_started,
+                scope,
+                work,
+                duration_role="rollup",
+            )
+        return frame
+
+    def get_position_model(self) -> PositionModel:
+        return self._position_model
 
     @property
     def autonomous_systems(self) -> tuple[SkyseedAutonomousSystem, ...]:
@@ -764,6 +878,62 @@ def _validate_ground_station_input(
         max_simultaneous_satellite_accesses=(
             value.max_simultaneous_satellite_accesses
         ),
+    )
+
+
+def _validated_positions(
+    topology: Topology,
+    positions: Mapping[NodeId, EarthFixedPosition],
+) -> Mapping[NodeId, EarthFixedPosition]:
+    if not isinstance(positions, Mapping):
+        raise TypeError("PositionModel must return a Mapping")
+    if set(positions) != set(topology._nodes_by_id):
+        raise ValueError(
+            "PositionModel must return exactly every Topology physical node"
+        )
+    copied: dict[NodeId, EarthFixedPosition] = {}
+    for node_id, position in positions.items():
+        if not isinstance(node_id, NodeId):
+            raise TypeError("PositionModel keys must be NodeId values")
+        if not isinstance(position, EarthFixedPosition):
+            raise TypeError(
+                "PositionModel values must be EarthFixedPosition values"
+            )
+        copied[node_id] = position
+    return MappingProxyType(copied)
+
+
+def _claim_position_model_owner(
+    position_model: PositionModel,
+    topology: Topology,
+) -> None:
+    with _POSITION_MODEL_OWNER_LOCK:
+        if id(position_model) in _POSITION_MODEL_OWNERS:
+            raise ValueError(
+                "PositionModel instance already belongs to another Topology"
+            )
+        _POSITION_MODEL_OWNERS[id(position_model)] = topology
+
+
+def _record_topology_observation(
+    observer: _ExecutionObserver | None,
+    stage: str,
+    duration_seconds: float,
+    scope: Mapping[str, object],
+    work: Mapping[str, int | float],
+    *,
+    duration_role: str = "stage",
+) -> None:
+    if observer is None:
+        return
+    observer.record(
+        component="topology",
+        stage=stage,
+        phase="one-shot",
+        duration_seconds=duration_seconds,
+        duration_role=duration_role,
+        scope=scope,
+        work=work,
     )
 
 

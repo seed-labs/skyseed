@@ -19,14 +19,15 @@ classDiagram
 ```
 
 Legend: `-->` is the ordered assembly/lifecycle handoff. Only
-`Simulator.create_topology()` creates `Topology`.
+`Simulator.create_topology(position_model=...)` creates `Topology`; the
+PositionModel is a required physical-side input, not part of these static DTOs.
 
 ```mermaid
 flowchart LR
     BRIDGE["emulator_to_simulator"] --> INPUT["SimulatorStaticInput"]
     INPUT --> DEFINITION["SimulationDefinition"]
     DEFINITION --> SIMULATOR["Simulator"]
-    SIMULATOR --> CREATE["create_topology()"]
+    SIMULATOR --> CREATE["create_topology(position_model=...)"]
     CREATE --> TOPOLOGY["Topology"]
 ```
 

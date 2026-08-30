@@ -7,13 +7,13 @@ the Simulator-specific `ZoneLayoutDefinitionLoadError`. It owns no runtime
 ## Local assembly / ownership map
 
 Legend: `-->` is the ordered configuration and creation handoff. Only
-`Simulator.create_topology()` materializes the runtime `Topology` and its
-optional `ZoneLayout`.
+`Simulator.create_topology(position_model=...)` materializes the runtime
+physical `Topology` and its optional `ZoneLayout`.
 
 ```mermaid
 flowchart LR
     SOURCE["YAML / handwritten Zone definitions"] --> DEF["ZoneLayoutDefinition"]
-    DEF --> CREATE["Simulator.create_topology()"]
+    DEF --> CREATE["Simulator.create_topology(position_model=...)"]
     CREATE --> TOPOLOGY["Topology"]
     TOPOLOGY --> LAYOUT["ZoneLayout"]
 ```

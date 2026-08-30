@@ -7,27 +7,54 @@ recorded only in [`CURRENT.md`](../CURRENT.md).
 
 ## Scope
 
-Topology materialization, owner facade, Zone geometry/layout, membership, and
-resolution.
+Topology materialization, timestamp-addressed physical projection,
+PhysicalFrame, owner facade, Zone geometry/layout, membership, and resolution.
 
 ## Owners and consumers
 
-Simulator creates and owns Topology. Topology owns its new AS tree and optional
-ZoneLayout. ZoneLayout owns exact Zone instances and one fixed
-ZoneMembershipModel. Slicer Models and read-only Tools consume these objects.
+Simulator creates and owns Topology. Topology owns its exact PositionModel,
+new AS tree, and optional ZoneLayout. ZoneLayout owns exact Zone instances and
+one fixed ZoneMembershipModel. Physical readers and read-only Tools consume
+Topology/frames; the temporary legacy Slicer consumes each frame and passes
+its Positions to the operational Models.
 
 ## Contract
 
 Topology materializes:
 
 ```text
-SimulatorStaticInput
+SimulatorStaticInput + PositionModel
 → Topology
   → SkyseedAutonomousSystem
     → Shell → Orbit → Satellite
     → GroundStation
   → optional ZoneLayout → Zone
+
+requested aware timestamp
+→ Topology.frame_at(timestamp)
+→ PhysicalFrame(timestamp, exact immutable node Positions)
 ```
+
+`Simulator.create_topology(position_model=...)` binds one explicit
+PositionModel to the Topology physical lifecycle. Topology is its sole owner
+and caller. `Topology.frame_at(timestamp) -> PhysicalFrame` normalizes one
+aware timestamp to UTC, calls that Model once, validates exact Satellite and
+GroundStation coverage and value types, and returns a new immutable frame.
+Repeated projection of the same Topology/timestamp is deterministic.
+
+When execution observation is enabled, the Topology component reports
+`position-compute`, `position-validation`, and
+`physical-frame-publication` one-shot stages plus the
+`physical-projection` rollup. Observation records do not add progression or
+retained frame state.
+
+PhysicalFrame identity is its timestamp. It has no `slice_id` or `frame_id`,
+and Topology does not expose `next_frame`, `advance`, `current_frame`, or any
+equivalent progression state. A frame contains only timestamp plus
+`NodeId → EarthFixedPosition`; it contains no Connection, Route, Zone-serving,
+effective parameter, forwarding, Planner, Difference, Plan, or realized
+runtime state. Deterministic geometry may be derived from Topology plus the
+frame without eagerly materializing pairwise physical facts.
 
 Facade lookups delegate through real owners and return the same object
 identity. `find_zones` returns physical matches; `resolve_zone` returns one
@@ -45,6 +72,10 @@ elevation.
 ## Invariants
 
 - immutable tuples/mappings and unique stable IDs;
+- each PositionModel instance belongs to one exact Topology;
+- each PhysicalFrame has an aware UTC timestamp and exactly the Topology node
+  set;
+- physical projection has no mutable current-frame or Timeline cursor;
 - Simulator nodes are not Emulator/SEED objects;
 - Zone geometry supports wrapped longitude rectangles and poles;
 - custom membership output must contain distinct exact ZoneLayout-owned
@@ -55,20 +86,23 @@ elevation.
 
 ## Failure semantics
 
-Invalid coordinate/value/type raises `TypeError` or `ValueError`; missing
-owner lookup raises `KeyError`; no Zone match raises `LookupError`; missing
-ZoneLayout access raises `RuntimeError`; foreign/duplicate custom Model output
-raises `ValueError`.
+Invalid coordinate/value/type or PositionModel output raises `TypeError` or
+`ValueError`; PositionModel reuse by another live Topology raises `ValueError`;
+missing owner lookup raises `KeyError`; no Zone match raises `LookupError`;
+missing ZoneLayout access raises `RuntimeError`; foreign/duplicate custom
+membership output raises `ValueError`.
 
 ## Prohibited behavior
 
 No hidden global index, foreign Zone return, mutable membership replacement,
-dynamic Position in Topology, or Zone service assignment in ZoneLayout.
+Topology-owned time progression, operational state in PhysicalFrame, eager
+pairwise physical-state aggregate, or Zone service assignment in ZoneLayout.
 
 ## Extension points
 
-`ZoneMembershipModel` is the approved stateless policy extension. It does not
-own Zones and cannot change Topology ownership.
+`PositionModel` is the approved Topology-side physical projection extension.
+`ZoneMembershipModel` is the approved stateless membership-policy extension.
+Neither can change Topology ownership or introduce operational decisions.
 
 ## Maintenance
 

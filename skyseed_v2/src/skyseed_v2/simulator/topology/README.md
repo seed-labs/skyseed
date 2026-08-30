@@ -1,14 +1,16 @@
 # Topology and Zone
 
-This package owns the immutable static Simulator aggregate, its owner/facade
-tree, Zone layout, Zone geometry values, and membership Protocol/default
+This package owns the Simulator physical world: the static owner/facade tree,
+its exact `PositionModel`, immutable timestamp-identified `PhysicalFrame`
+values, Zone layout, Zone geometry values, and membership Protocol/default
 implementation. It materializes new objects from `SimulatorStaticInput` and
-retains no Emulator/SEED object.
+retains no Emulator/SEED object. `Topology.frame_at(timestamp)` projects one
+frame and never advances simulation time.
 
 ## Local assembly / ownership map
 
-Legend: `*--` is static ownership/composition. `Topology` is the static-world
-owner; `ZoneLayout` is an optional child, not an independent top-level owner.
+Legend: `*--` is ownership/composition. `Topology` is the physical-world owner;
+`ZoneLayout` is an optional child, not an independent top-level owner.
 
 ```mermaid
 classDiagram
@@ -22,6 +24,7 @@ classDiagram
     class Zone
     class LatitudeLongitudeRectangle
     class SphericalCap
+    class PositionModel
 
     Topology "1" *-- "0..*" SkyseedAutonomousSystem : autonomous systems
     SkyseedAutonomousSystem "1" *-- "0..*" Shell : shells
@@ -29,8 +32,30 @@ classDiagram
     Shell "1" *-- "0..*" Orbit : orbits
     Orbit "1" *-- "0..*" Satellite : satellites
     Topology "1" *-- "0..1" ZoneLayout : optional Zone layout
+    Topology "1" *-- "1" PositionModel : physical projection policy
     ZoneLayout "1" *-- "1..*" Zone : zones
     Zone "1" *-- "1" LatitudeLongitudeRectangle : geometry
+```
+
+Legend: `..>` is creation of an immutable physical value for one requested
+timestamp. `PhysicalFrame` identity is its timestamp; it has no Slice/frame ID.
+
+```mermaid
+classDiagram
+    class Topology
+    class PhysicalFrame
+
+    Topology ..> PhysicalFrame : frame_at(timestamp) creates
+```
+
+Legend: `*--` is immutable value composition.
+
+```mermaid
+classDiagram
+    class PhysicalFrame
+    class EarthFixedPosition
+
+    PhysicalFrame "1" *-- "0..*" EarthFixedPosition : positions
 ```
 
 Legend: `..>` is a temporary query-input dependency, not ownership or stored
@@ -83,8 +108,10 @@ Legend: `A *-- B` means static owner A owns the exact B objects.
 classDiagram
     direction LR
     class Topology {
-        <<immutable static aggregate and facade>>
+        <<physical aggregate and facade>>
         +autonomous_systems
+        +frame_at()
+        +get_position_model()
         +get_autonomous_system()
         +get_node()
         +get_satellite()
@@ -148,6 +175,37 @@ classDiagram
     SkyseedAutonomousSystem "1" *-- "*" GroundStation : ground stations
     Shell "1" *-- "*" Orbit : orbits
     Orbit "1" *-- "*" Satellite : satellites
+```
+
+Legend: `*--` is ownership or immutable value composition.
+
+```mermaid
+classDiagram
+    class Topology
+    class PositionModel {
+        <<replaceable physical Protocol>>
+        +compute_positions()
+    }
+    class PhysicalFrame {
+        <<immutable physical-domain value>>
+        +timestamp
+        +positions
+        +get_position()
+    }
+    class EarthFixedPosition
+
+    Topology "1" *-- "1" PositionModel : exact model
+    PhysicalFrame "1" *-- "0..*" EarthFixedPosition : positions
+```
+
+Legend: `..>` is result creation without retained frame ownership.
+
+```mermaid
+classDiagram
+    class Topology
+    class PhysicalFrame
+
+    Topology ..> PhysicalFrame : frame_at creates
 ```
 
 Legend: `A *-- B` means static value/owner A contains B.
@@ -236,7 +294,9 @@ classDiagram
 
 | Diagram class | Public contract | Required public members |
 |---|---|---|
-| `Topology` | `skyseed_v2.simulator.topology.Topology` | `autonomous_systems`, `get_autonomous_system()`, `get_node()`, `get_satellite()`, `get_ground_station()`, `get_shell()`, `get_orbit()`, `get_zone_layout()`, `get_zone()`, `find_zones()`, `find_intersecting_zones()`, `resolve_zone()` |
+| `Topology` | `skyseed_v2.simulator.topology.Topology` | `autonomous_systems`, `frame_at()`, `get_position_model()`, `get_autonomous_system()`, `get_node()`, `get_satellite()`, `get_ground_station()`, `get_shell()`, `get_orbit()`, `get_zone_layout()`, `get_zone()`, `find_zones()`, `find_intersecting_zones()`, `resolve_zone()` |
+| `PhysicalFrame` | `skyseed_v2.simulator.topology.PhysicalFrame` | `timestamp`, `positions`, `get_position()` |
+| `PositionModel` | `skyseed_v2.simulator.topology.PositionModel` | `compute_positions()` |
 | `SkyseedAutonomousSystem` | `skyseed_v2.simulator.topology.SkyseedAutonomousSystem` | `asn`, `shells`, `ground_stations`, `get_shell()`, `get_ground_station()` |
 | `Shell` | `skyseed_v2.simulator.topology.Shell` | `asn`, `shell_id`, `orbits`, `get_orbit()` |
 | `Orbit` | `skyseed_v2.simulator.topology.Orbit` | `asn`, `shell_id`, `orbit_id`, `altitude_km`, `inclination_deg`, `right_ascension_deg`, `epoch_utc`, `satellites`, `get_satellite()` |
@@ -262,13 +322,15 @@ Satellite degree.
 
 ## Entry points
 
-Code entries are `topology.py` and `zone.py`.
+Code entries are `topology.py`, `physical_frame.py`, `position.py`, and
+`zone.py`.
 
 ## Dependencies
 
-Topology construction consumes `SimulatorStaticInput` and Simulator Zone
-definitions. Built-in Models and read-only Tools consume the resulting static
-owner tree and Zone query facade.
+Topology construction consumes `SimulatorStaticInput`, one explicit
+`PositionModel`, and Simulator Zone definitions. The model consumes the exact
+Topology; the legacy Slicer and read-only Tools consume resulting
+`PhysicalFrame`/static facts without owning projection.
 
 ## Examples and tests
 

@@ -5,6 +5,15 @@ navigation members. Complete class/member diagrams live only in the
 corresponding production package README files listed below. Current
 implementation state is maintained only in [`CURRENT.md`](../CURRENT.md).
 
+The accepted architecture is `Topology / PhysicalFrame → Network Planner →
+PlannedOperationalState → Plan → Compiler / Runner → RealizedRuntimeState`.
+Round 1 implements the first boundary only. The diagrams below therefore show
+the current explicit temporary seam from `PhysicalFrame` through legacy
+Slicer/TopologySlice/TopologyDifference and the old Planner. Those legacy
+objects are scheduled for deletion or replacement when Connection, effective
+Parameter/resource, Route, and Coordination ownership moves into the Network
+Planner; they are not a second accepted architecture.
+
 ## Ownership and composition
 
 Legend: `A *-- B` is owner/composition. Labels describe the owned value;
@@ -159,9 +168,20 @@ classDiagram
         +create_planner()
     }
     class Topology {
-        <<static aggregate>>
-        +autonomous_systems
+        <<physical aggregate and projection owner>>
         +get_node()
+        +frame_at()
+        +get_position_model()
+    }
+    class PositionModel {
+        <<physical Protocol role>>
+        +compute_positions()
+    }
+    class PhysicalFrame {
+        <<immutable physical-domain value>>
+        +timestamp
+        +positions
+        +get_position()
     }
     class SimulatorAS["SkyseedAutonomousSystem"]
     class SimulatorAS {
@@ -204,17 +224,17 @@ classDiagram
         +contains()
     }
     class Slicer {
-        <<dynamic owner facade>>
+        <<temporary legacy operational facade>>
         +create_next_slice()
         +create_difference()
     }
     class TopologySlice {
-        <<published aggregate>>
+        <<legacy mixed-state published aggregate>>
         +slice_id
         +timestamp
     }
     class TopologyDifference {
-        <<immutable on-request value; not retained by Slicer>>
+        <<legacy immutable on-request value; not retained>>
         +previous_slice_id
         +current_slice_id
         +is_empty
@@ -234,7 +254,7 @@ classDiagram
         +routes
     }
     class Planner {
-        <<incremental semantic planner>>
+        <<current legacy Difference-based planner>>
         +synchronize()
         +get_plan()
     }
@@ -259,9 +279,10 @@ classDiagram
     SimulationDefinition "1" *-- "1" SimulatorStaticInput : static input
     SimulationDefinition "1" *-- "1" SimulationTimeline : timeline
     Simulator "1" *-- "1" SimulationDefinition : exact definition
-    Simulator "1" *-- "1" Topology : created static aggregate
-    Simulator "1" *-- "1" Slicer : created dynamic owner
-    Simulator "1" *-- "0..1" Planner : created after Slicer
+    Simulator "1" *-- "1" Topology : created physical aggregate
+    Topology "1" *-- "1" PositionModel : bound physical projection role
+    Simulator "1" *-- "1" Slicer : temporary legacy seam
+    Simulator "1" *-- "0..1" Planner : current Planner after Slicer
     Planner "1" *-- "0..1" Plan : current snapshot
     Plan "1" *-- "0..*" ForwardingTransitionPrecedence : semantic ordering
     Topology "1" *-- "0..*" SimulatorAS : autonomous systems
@@ -271,16 +292,20 @@ classDiagram
     SimulatorOrbit "1" *-- "0..*" SimulatorSatellite : satellites
     Topology "1" *-- "0..1" ZoneLayout : configured layout
     ZoneLayout "1" *-- "1..*" Zone : zones
-    Slicer "1" *-- "1..*" TopologySlice : retained Slice 0..N
-    TopologySlice "1" *-- "0..*" EarthFixedPosition : positions
+    PhysicalFrame "1" *-- "0..*" EarthFixedPosition : exact Topology-node Positions
+    Slicer "1" *-- "1..*" TopologySlice : retained legacy Slice 0..N
+    TopologySlice "1" *-- "0..*" EarthFixedPosition : legacy duplicated positions
     TopologySlice "1" *-- "1" ConnectionSlice : connections
     TopologySlice "1" *-- "1" RouteSlice : routes
 ```
 
-Topology, Slicer, and Planner are peer-level components inside the Simulator
-domain. Their peer status does not remove the explicit composition relation:
-the one `Simulator` creates and retains all three, while Planner references the
-exact sibling Slicer rather than owning it.
+Topology owns the physical PositionModel and produces `PhysicalFrame` values
+without retaining a history or advancing time. A frame's timestamp is its
+physical identity; it has no sequence ID or operational state. The temporary
+legacy Slicer and current Planner remain peer-level components inside the
+Simulator domain only for Round 1. The one `Simulator` creates and retains all
+three current components, while the Planner references the exact sibling
+Slicer rather than owning it.
 
 Legend: `A ..> B` is a boundary projection that creates a receiver-owned B
 value; it retains no A object or cross-domain ownership.
@@ -339,15 +364,19 @@ flowchart LR
     EMU["upstream Emulator"] -->|projected into| INPUT["SimulatorStaticInput"]
     INPUT -->|supplied through SimulationDefinition to construct| SIM["Simulator"]
     SIM -->|creates and owns| TOP["Topology"]
-    SIM -->|creates and owns| SLI["Slicer"]
-    SIM -->|creates and owns after Slicer| PLA["Planner"]
+    SIM -->|temporarily creates and owns| SLI["legacy Slicer"]
+    SIM -->|temporarily creates and owns after Slicer| PLA["current Planner"]
 
-    SLI -->|1 calls| POS["PositionModel"]
-    SLI -->|2 calls| CON["ConnectionModel"]
-    SLI -->|3 calls| ROUTE["RouteModel"]
-    SLI -->|produces and retains| SLICE["TopologySlice"]
+    REQUEST["requested timestamp"] -->|supplied to frame_at| TOP
+    TOP -->|calls owned physical role| POS["PositionModel"]
+    TOP -->|produces; does not retain history| FRAME["PhysicalFrame<br/>timestamp + Positions"]
+    SLI -->|temporarily calls frame_at(timestamp)| TOP
+    FRAME -->|Positions consumed by| SLI
+    SLI -->|1 calls legacy role| CON["ConnectionModel"]
+    SLI -->|2 calls legacy role| ROUTE["RouteModel"]
+    SLI -->|produces and retains| SLICE["legacy TopologySlice"]
     PLA -->|calls create_difference on exact sibling| SLI
-    SLI -->|produces on request; does not retain| DIFF["TopologyDifference"]
+    SLI -->|produces on request; does not retain| DIFF["legacy TopologyDifference"]
     DIFF -->|consumed by synchronize| PLA
     PLA -->|synchronize produces; Planner retains current| PLAN["Plan"]
 
@@ -369,14 +398,17 @@ current public API exposes those Simulator facts through the exact `Slicer`'s
 `BpfCompiledRealization` value, invokes or controls `BpfRunner`.
 
 The projection carries no Emulator/SEED reference. No Model calls another
-Model.
+Model. In the current progression, legacy Slicer still obtains the requested
+timestamp from its Timeline iterator; that cursor is visible migration debt,
+not accepted physical ownership.
 
-Legend: `Slicer ..> Model` is a numbered direct call to an injected Protocol
-role; it does not express ownership and no Model calls another Model.
+Legend: `A ..> Model` is a direct call to an injected Protocol role; it does
+not express ownership and no Model calls another Model.
 
 ```mermaid
 classDiagram
     class Slicer
+    class Topology
     class PositionModel {
         <<Protocol role>>
         +compute_positions()
@@ -389,9 +421,9 @@ classDiagram
         <<Protocol role>>
         +compute_route_slice()
     }
-    Slicer ..> PositionModel : 1 calls
-    Slicer ..> ConnectionModel : 2 calls
-    Slicer ..> RouteModel : 3 calls
+    Topology ..> PositionModel : physical projection call
+    Slicer ..> ConnectionModel : 1 legacy call
+    Slicer ..> RouteModel : 2 legacy call
 ```
 
 ## Protocol realization
@@ -441,6 +473,7 @@ classDiagram
 | `SimulationTimeline` | `skyseed_v2.simulator.SimulationTimeline` |
 | `Simulator` | `skyseed_v2.simulator.Simulator` |
 | `Topology` | `skyseed_v2.simulator.topology.Topology` |
+| `PhysicalFrame` | `skyseed_v2.simulator.topology.PhysicalFrame` |
 | `SimulatorAS` | `skyseed_v2.simulator.topology.SkyseedAutonomousSystem` |
 | `SimulatorShell` | `skyseed_v2.simulator.topology.Shell` |
 | `SimulatorOrbit` | `skyseed_v2.simulator.topology.Orbit` |
@@ -449,7 +482,7 @@ classDiagram
 | `ZoneLayout` | `skyseed_v2.simulator.topology.ZoneLayout` |
 | `Zone` | `skyseed_v2.simulator.topology.Zone` |
 | `Slicer` | `skyseed_v2.simulator.slicing.Slicer` |
-| `PositionModel` | `skyseed_v2.simulator.slicing.PositionModel` |
+| `PositionModel` | `skyseed_v2.simulator.topology.PositionModel` |
 | `ConnectionModel` | `skyseed_v2.simulator.slicing.ConnectionModel` |
 | `RouteModel` | `skyseed_v2.simulator.slicing.RouteModel` |
 | `TopologySlice` | `skyseed_v2.simulator.slicing.TopologySlice` |

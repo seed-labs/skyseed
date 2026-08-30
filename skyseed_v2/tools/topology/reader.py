@@ -93,6 +93,17 @@ def read_topology(topology: Topology) -> TopologyRead:
                         satellite.satellite_id
                         for satellite in orbit.satellites
                     ],
+                    "satellites": [
+                        {
+                            "node_id": satellite.node_id.value,
+                            "satellite_id": satellite.satellite_id,
+                            "orbit_index": satellite.orbit_index,
+                            "max_simultaneous_ground_station_accesses": (
+                                satellite.max_simultaneous_ground_station_accesses
+                            ),
+                        }
+                        for satellite in orbit.satellites
+                    ],
                 }
                 orbit_rings.append(ring)
 
@@ -116,6 +127,9 @@ def read_topology(topology: Topology) -> TopologyRead:
                 "elevation_m": ground_station.elevation_m,
                 "station_type": ground_station.station_type,
                 "operator": ground_station.operator,
+                "max_simultaneous_satellite_accesses": (
+                    ground_station.max_simultaneous_satellite_accesses
+                ),
             }
             ground_stations.append(record)
 

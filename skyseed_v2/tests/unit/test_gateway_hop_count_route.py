@@ -12,12 +12,12 @@ from skyseed_v2.configuration.simulator import (
 )
 from skyseed_v2.shared import NodeId
 from skyseed_v2.simulator import (
+    CircularOrbitPositionModel,
     Connection,
     ConnectionId,
     ConnectionKind,
     ConnectionSlice,
     DirectionalConnectionParameters,
-    EarthFixedPosition,
     GatewayHopCountRouteModel,
     GroundStationRouteTarget,
     RouteSlice,
@@ -26,7 +26,6 @@ from skyseed_v2.simulator import (
     Simulator,
     ZoneRouteTarget,
 )
-from skyseed_v2.simulator.geometry import geodetic_to_ecef
 from skyseed_v2.simulator.input import (
     GroundStationSimulationInput,
     SatelliteSimulationInput,
@@ -85,6 +84,7 @@ def _topology(zone_ids: tuple[str, ...] = ("zone",)):
         )
     )
     topology = simulator.create_topology(
+        position_model=CircularOrbitPositionModel(),
         zone_layout_definition=ZoneLayoutDefinition(
             zones=tuple(
                 ZoneDefinition(
@@ -336,14 +336,6 @@ def test_gateway_routes_reuse_one_zone_tree_per_service_satellite(
     )
 
 
-class _FixedPositionModel:
-    def __init__(self, positions):
-        self.positions = positions
-
-    def compute_positions(self, topology, timestamp):
-        return self.positions
-
-
 class _FixedConnectionModel:
     def __init__(self, connections):
         self.connections = connections
@@ -357,18 +349,7 @@ class _FixedConnectionModel:
 def test_slicer_validates_sparse_gateway_routes_without_owning_demand() -> None:
     simulator, _, satellites, stations = _topology()
     connections = _connected_slice(satellites, stations)
-    positions = {
-        satellites[0].node_id: EarthFixedPosition(7_000_000.0, 0.0, 0.0),
-        satellites[1].node_id: EarthFixedPosition(7_000_000.0, 1_000.0, 0.0),
-        **{
-            station.node_id: geodetic_to_ecef(
-                station.latitude_deg, station.longitude_deg, station.elevation_m
-            )
-            for station in stations
-        },
-    }
     slicer = simulator.create_slicer(
-        position_model=_FixedPositionModel(positions),
         connection_model=_FixedConnectionModel(connections),
         route_model=GatewayHopCountRouteModel(
             gateway_candidate_count=1,

@@ -40,9 +40,10 @@ class CircularOrbitPositionModel:
     GCRS Cartesian point to the formal ITRS/ECEF Position. No velocity or
     inertial-frame value crosses the public Position boundary.
 
-    Layer: built-in stateless Simulator Model. Users explicitly create it and
-    one Slicer invokes it. It is not a default, ephemeris owner, velocity
-    source or fallback and is public from ``skyseed_v2.simulator``.
+    Layer: built-in stateless Simulator physical Model. Users explicitly create
+    it, one ``Topology`` owns it, and ``Topology.frame_at()`` invokes it. It is
+    not a default, ephemeris owner, velocity source, time cursor or fallback
+    and is public from ``skyseed_v2.simulator``.
     """
 
     __slots__ = ()

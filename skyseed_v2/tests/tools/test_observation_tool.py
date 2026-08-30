@@ -157,12 +157,14 @@ def test_projection_separates_bootstrap_from_steady_percentiles(tmp_path) -> Non
         "simulation_start_timestamp": "2026-01-01T00:00:00+00:00",
         "simulation_end_timestamp": "2026-01-01T00:00:20+00:00",
         "slice_interval_seconds": 10.0,
+        "physical_frame_unit_count": 0,
         "slicer_unit_count": 3,
         "planner_unit_count": 1,
         "compiler_unit_count": 0,
         "x_axis_semantics": (
-            "simulation timestamp aligned by Slice identity, Planner "
-            "publication coverage, and its 1:1 Compiler realization"
+            "simulation timestamp aligned by PhysicalFrame timestamp, legacy "
+            "Slice identity, Planner publication coverage, and its 1:1 "
+            "Compiler realization"
         ),
     }
     assert data["inventory"] == {
@@ -189,7 +191,7 @@ def test_writer_uses_external_records_and_deterministic_checksums(tmp_path) -> N
     assert "observation-records.js" in page
     assert "__SKYSEED_EXECUTION_OBSERVATIONS__=" not in page
     assert '"duration_seconds":100.0' not in page
-    assert "Slicer, Planner, Compiler, or Runner" in page
+    assert "Topology projection, legacy Slicer, Planner, Compiler, or Runner" in page
     browser_records = (output / "observation-records.js").read_text()
     assert "__SKYSEED_EXECUTION_OBSERVATIONS__=" in browser_records
     assert '"duration_seconds":100.0' in browser_records
@@ -197,7 +199,7 @@ def test_writer_uses_external_records_and_deterministic_checksums(tmp_path) -> N
     assert 'record.duration_role==="stage"' in page
     assert '<option value="stage" selected>Exclusive leaf stages</option>' in page
     assert "Rollups overlap their child stages" in page
-    assert "Slicer Difference work occurs outside complete-slice" in page
+    assert "Legacy Slicer Difference work occurs outside complete-slice" in page
     assert "Samples carry resource evidence and have zero duration" in page
     assert '<option value="route_entries">route_entries</option>' in page
     assert '<option value="slices_published">' not in page
@@ -240,7 +242,7 @@ def test_page_uses_unified_logical_scope_and_non_additive_duration_ux(
     assert "publication (" in page
     assert "Difference S" in page
     assert "formal Slice interval" in page
-    assert "shared Slicer/Planner duration scale" in page
+    assert "shared Topology/Slicer/Planner duration scale" in page
     assert "niceStep" in page
     assert "recordPosition(record)" in page
     assert "record.sequence" not in page.split(
@@ -306,13 +308,20 @@ def test_mini_execution_emits_slicer_and_planner_stage_and_work_evidence(
             for record in observations.records
             if record["component"] == component
         ]
-        for component in ("slicer", "planner")
+        for component in ("topology", "slicer", "planner")
+    }
+    topology_stages = {
+        record["stage"] for record in by_component["topology"]
     }
     slicer_stages = {record["stage"] for record in by_component["slicer"]}
     planner_stages = {record["stage"] for record in by_component["planner"]}
     assert {
         "position-compute",
         "position-validation",
+        "physical-frame-publication",
+        "physical-projection",
+    } <= topology_stages
+    assert {
         "connection-preparation",
         "connection-compute",
         "connection-validation",
@@ -322,6 +331,8 @@ def test_mini_execution_emits_slicer_and_planner_stage_and_work_evidence(
         "complete-slice",
         "difference",
     } <= slicer_stages
+    assert "position-compute" not in slicer_stages
+    assert "position-validation" not in slicer_stages
     assert {
         "difference-acquisition",
         "window-selection",
@@ -351,12 +362,19 @@ def test_mini_execution_emits_slicer_and_planner_stage_and_work_evidence(
         for record in by_component["slicer"]
         if record["stage"] == "complete-slice"
     ]
+    physical_projections = [
+        record
+        for record in by_component["topology"]
+        if record["stage"] == "physical-projection"
+    ]
     total_synchronizations = [
         record
         for record in by_component["planner"]
         if record["stage"] == "total-synchronize"
     ]
     assert len(complete_slices) == 64
+    assert len(physical_projections) == 64
+    assert all(record["phase"] == "one-shot" for record in physical_projections)
     assert [record["phase"] for record in complete_slices].count(
         "bootstrap"
     ) == 1
@@ -366,7 +384,7 @@ def test_mini_execution_emits_slicer_and_planner_stage_and_work_evidence(
         record["phase"] == "steady"
         for record in total_synchronizations[1:]
     )
-    rollups = complete_slices + total_synchronizations + [
+    rollups = physical_projections + complete_slices + total_synchronizations + [
         record
         for record in by_component["planner"]
         if record["stage"] in {"coordination", "validation", "publication"}
@@ -381,6 +399,7 @@ def test_mini_execution_emits_slicer_and_planner_stage_and_work_evidence(
         for record in records
         if record["stage"]
         not in {
+            "physical-projection",
             "complete-slice",
             "coordination",
             "validation",

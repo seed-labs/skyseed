@@ -321,12 +321,16 @@ def test_simulator_core_has_no_emulator_seed_or_generation_dependency() -> None:
     from skyseed_v2.simulator.slicing import (
         connection,
         difference,
-        position,
         route,
         slice,
         slicer,
     )
-    from skyseed_v2.simulator.topology import topology, zone
+    from skyseed_v2.simulator.topology import (
+        physical_frame,
+        position,
+        topology,
+        zone,
+    )
     from skyseed_v2.simulator.models import (
         circular_orbit,
         geometric_connection,
@@ -338,6 +342,7 @@ def test_simulator_core_has_no_emulator_seed_or_generation_dependency() -> None:
         coordinates,
         definition,
         difference,
+        physical_frame,
         position,
         route,
         simulator,
@@ -734,6 +739,31 @@ def test_geometry_module_cycle_is_eliminated() -> None:
     position_imports = imported_modules(position)
     assert ".position" in coordinate_imports
     assert ".coordinates" not in position_imports
+
+
+def test_position_model_has_only_a_type_checking_topology_dependency() -> None:
+    from collections.abc import Mapping
+    from datetime import datetime
+    from typing import get_args, get_origin, get_type_hints
+
+    from skyseed_v2.shared import NodeId
+    from skyseed_v2.simulator import EarthFixedPosition, PositionModel, Topology
+    from skyseed_v2.simulator.topology import position as position_contract
+
+    assert ".topology" in imported_modules(position_contract)
+    assert not hasattr(position_contract, "Topology")
+
+    namespace = dict(vars(position_contract))
+    namespace["Topology"] = Topology
+    hints = get_type_hints(
+        PositionModel.compute_positions,
+        globalns=namespace,
+    )
+
+    assert hints["topology"] is Topology
+    assert hints["timestamp"] is datetime
+    assert get_origin(hints["return"]) is Mapping
+    assert get_args(hints["return"]) == (NodeId, EarthFixedPosition)
 
 
 def test_complete_production_import_graph_has_no_scc_or_reverse_dependency() -> None:

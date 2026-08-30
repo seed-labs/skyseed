@@ -1,10 +1,13 @@
-# Dynamic slicing contracts and values
+# Temporary legacy operational slicing contracts and values
 
-This package owns the three replaceable Model Protocols, the `Slicer`
-lifecycle, published `TopologySlice` values, route/connection values, and
-the exact `TopologyDifference` value contract. Slicer creates each Difference
-on request from retained adjacent Slices but does not retain it; its caller
-owns the returned immutable value. Built-in algorithms are owned by `../models/`.
+This package is the visible temporary operational seam retained for the first
+architecture-migration round. It owns the still-unmigrated Connection/Route
+Protocols, `Slicer` lifecycle, old `TopologySlice` values, route/connection
+values, and exact `TopologyDifference` contract. It does not own
+`PositionModel` or physical projection: each step requests a
+Topology-owned `PhysicalFrame`. Slicer is scheduled for complete removal when
+these operational responsibilities move to Network Planner; this package is
+not an alternative or compatibility architecture.
 
 ## Local assembly / ownership map
 
@@ -25,6 +28,16 @@ classDiagram
     TopologySlice "1" *-- "1" RouteSlice
 ```
 
+Legend: `..>` is a temporary physical-value input dependency, not ownership.
+
+```mermaid
+classDiagram
+    class Slicer
+    class PhysicalFrame
+
+    Slicer ..> PhysicalFrame : consumes positions temporarily
+```
+
 Legend: `-->` is an exact retained reference, not ownership.
 
 ```mermaid
@@ -43,13 +56,11 @@ Protocols, not built-in implementations.
 ```mermaid
 classDiagram
     class Slicer
-    class PositionModel
     class ConnectionModel
     class RouteModel
 
-    Slicer ..> PositionModel : 1 calls
-    Slicer ..> ConnectionModel : 2 calls
-    Slicer ..> RouteModel : 3 calls
+    Slicer ..> ConnectionModel : legacy operational call
+    Slicer ..> RouteModel : legacy operational call
 ```
 
 Legend: `..>` is an on-request creation/read dependency; it does not retain a
@@ -97,13 +108,13 @@ Standalone local values expanded below: `Connection`, `ConnectionId`,
 
 ## Detailed public class/member diagrams
 
-Legend: this class inventory has no connector; it expands the owner facade and
-the three Protocol roles from the local assembly map.
+Legend: this class inventory has no connector; it expands the temporary owner
+facade and its two remaining legacy Protocol roles.
 
 ```mermaid
 classDiagram
     class Slicer {
-        <<owner facade>>
+        <<temporary legacy operational facade>>
         +create_next_slice()
         +create_slices()
         +create_all_slices()
@@ -119,14 +130,9 @@ classDiagram
         +create_difference()
         +get_topology()
         +get_timeline()
-        +get_position_model()
         +get_connection_model()
         +get_route_model()
         +resolve_path()
-    }
-    class PositionModel {
-        <<Protocol role>>
-        +compute_positions()
     }
     class ConnectionModel {
         <<Protocol role>>
@@ -292,8 +298,7 @@ classDiagram
 
 | Diagram name | Public contract | Members maintained here |
 |---|---|---|
-| `Slicer` | `skyseed_v2.simulator.slicing.Slicer` | `create_next_slice()`, `create_slices()`, `create_all_slices()`, `get_slice()`, `get_slice_at()`, `get_latest_slice()`, `get_latest_slice_id()`, `get_latest_timestamp()`, `get_next_timestamp()`, `is_exhausted()`, `get_retained_slice_ids()`, `get_retained_slice_id_range()`, `create_difference()`, `get_topology()`, `get_timeline()`, `get_position_model()`, `get_connection_model()`, `get_route_model()`, `resolve_path()` |
-| `PositionModel` | `skyseed_v2.simulator.slicing.PositionModel` | `compute_positions()` |
+| `Slicer` | `skyseed_v2.simulator.slicing.Slicer` | `create_next_slice()`, `create_slices()`, `create_all_slices()`, `get_slice()`, `get_slice_at()`, `get_latest_slice()`, `get_latest_slice_id()`, `get_latest_timestamp()`, `get_next_timestamp()`, `is_exhausted()`, `get_retained_slice_ids()`, `get_retained_slice_id_range()`, `create_difference()`, `get_topology()`, `get_timeline()`, `get_connection_model()`, `get_route_model()`, `resolve_path()` |
 | `ConnectionModel` | `skyseed_v2.simulator.slicing.ConnectionModel` | `compute_connection_slice()` |
 | `RouteModel` | `skyseed_v2.simulator.slicing.RouteModel` | `compute_route_slice()` |
 | `TopologySlice` | `skyseed_v2.simulator.slicing.TopologySlice` | `slice_id`, `timestamp`, `positions`, `connection_slice`, `route_slice`, `get_position()` |
@@ -315,14 +320,15 @@ classDiagram
 
 ## Entry points
 
-Code entries are `slicer.py`, `position.py`, `connection.py`, `route.py`,
+Code entries are `slicer.py`, `connection.py`, `route.py`,
 `slice.py`, `difference.py`, and `_routing_policy.py`.
 
 ## Dependencies
 
-`Slicer` references `../topology/` and `../timeline.py`, uses values from
-`../geometry/`, and calls only the three Protocol roles declared here.
-Built-in realizations live in `../models/`; no Model calls another Model.
+`Slicer` references `../topology/` and `../timeline.py`, consumes
+`PhysicalFrame.positions`, uses values from `../geometry/`, and calls only the
+two remaining Protocol roles declared here. Built-in realizations live in
+`../models/`; no Model calls another Model.
 
 ## Examples and tests
 

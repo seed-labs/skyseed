@@ -118,10 +118,10 @@ def create_starlink_gen1_simulator(
         )
     )
     simulator.create_topology(
+        position_model=CircularOrbitPositionModel(),
         zone_layout_definition=load_zone_layout_definition(zone_layout_path)
     )
     simulator.create_slicer(
-        position_model=CircularOrbitPositionModel(),
         connection_model=GeometricConnectionModel(
             maximum_isl_distance_m=MAXIMUM_ISL_DISTANCE_M,
             ground_station_minimum_elevation_deg=(
@@ -190,18 +190,16 @@ def create_starlink_gen1_runtime_progression(
 
 
 def starlink_gen1_slicing_configuration() -> dict[str, object]:
-    """Project exact Starlink Gen1 Slicer policy facts for read-only inspection."""
+    """Project the temporary legacy Slicer policy context for inspection."""
 
     return {
-        "models": {
-            "position": {
-                "selected": "CircularOrbitPositionModel",
-                "role": (
-                    "computes the exact formal node positions at each Slice "
-                    "timestamp"
-                ),
-                "configuration": "one accepted Starlink Gen1 circular-orbit shell",
-            },
+        "physical_input": {
+            "owner": "Topology",
+            "value": "PhysicalFrame",
+            "position_model": "CircularOrbitPositionModel",
+            "identity": "timestamp",
+        },
+        "legacy_models": {
             "connection": {
                 "selected": "GeometricConnectionModel",
                 "role": (

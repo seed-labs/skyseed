@@ -7,6 +7,13 @@ values, and the explicit scenario inspection configuration. It writes one
 primary offline HTML page, a small bootstrap manifest, and deterministic
 offline index/data chunks plus audit files.
 
+The exact Slicer, retained Slice, and consumed Difference inputs are the
+visible temporary legacy operational seam in Round 1. This Tool preserves the
+current Planner inspection contract without creating another producer or
+hiding that debt. Its source inputs are replaced when the Network Planner owns
+Connection, effective Parameter, Route, and Coordination planning and the old
+Slicer/TopologySlice/TopologyDifference path is removed.
+
 Legend: `A --> B` means the output of Tool stage A is the only input of stage
 B.
 

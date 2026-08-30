@@ -72,11 +72,12 @@ def main() -> None:
     # YAML is the standard path for layouts of this size. The same immutable
     # ZoneLayoutDefinition may also be assembled programmatically for small uses.
     zone_layout_definition = load_zone_layout_definition(ZONE_LAYOUT_FILE)
+    position_model = CircularOrbitPositionModel()
     topology = simulator.create_topology(
+        position_model=position_model,
         zone_layout_definition=zone_layout_definition,
     )
 
-    position_model = CircularOrbitPositionModel()
     connection_model = GeometricConnectionModel(
         maximum_isl_distance_m=5_000_000.0,
         ground_station_minimum_elevation_deg=0.0,
@@ -95,10 +96,11 @@ def main() -> None:
     )
     route_model = HopCountRouteModel()
     slicer = simulator.create_slicer(
-        position_model=position_model,
         connection_model=connection_model,
         route_model=route_model,
     )
+
+    physical_frame = topology.frame_at(DEFAULT_START_TIME)
 
     satellite_id = NodeId(65001, "satellite", "satellite-0")
     ground_station_id = NodeId(65001, "ground-station", "gs-new-york")
@@ -150,8 +152,8 @@ def main() -> None:
     initial_plan = planner.get_plan()
     first_satellite_id = satellite_id
     second_satellite_id = NodeId(65001, "satellite", "satellite-1")
-    first_satellite_position = first_slice.get_position(first_satellite_id)
-    ground_station_position = first_slice.get_position(ground_station_id)
+    first_satellite_position = physical_frame.get_position(first_satellite_id)
+    ground_station_position = physical_frame.get_position(ground_station_id)
     isl = first_slice.connection_slice.get_connection_for_endpoints(
         ConnectionKind.INTER_SATELLITE,
         first_satellite_id,
