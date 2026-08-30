@@ -542,7 +542,7 @@ def test_compose_file_drift_stops_before_a_later_batch(tmp_path: Path) -> None:
     assert runtime.up_batches == [("node-a",)]
 
 
-def test_materializer_does_not_import_or_call_compiler() -> None:
+def test_launcher_does_not_import_or_call_skyseed_compiler() -> None:
     from inspect import getsourcefile
 
     from skyseed_v2.compose import launcher
@@ -551,6 +551,5 @@ def test_materializer_does_not_import_or_call_compiler() -> None:
     assert "SkyseedDockerCompiler" not in source
     assert ".compile(" not in source
     assert "yaml" not in source
-    assert "write_" not in source
     assert '"compose"' in source
     assert "compose_executable" not in source

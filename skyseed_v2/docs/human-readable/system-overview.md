@@ -66,11 +66,81 @@ does not bind containers or kernel resources. The BPF Runner receives the
 Compiler output plus the identity of an already-running Compose project,
 independently discovers and freezes its required live bindings, and solely
 owns dynamic kernel-resource preparation, active publication, and scoped
-cleanup. It does not own Compose startup or teardown. `ComposeProjectLauncher`
+Runner teardown through public `cleanup()`. It does not own Compose startup or
+Compose teardown. `ComposeProjectLauncher`
 remains an optional programmatic deployment utility, not a prerequisite for
 Runner attachment. Any future shared container
 software remains functional-Layer/SEED deployment work on the lower path.
 Implementation state is recorded only in [`CURRENT.md`](../CURRENT.md).
+
+## Host runtime configuration changes
+
+The host operating system retains the following changes for large-scale
+Skyseed execution.
+
+### D-Bus
+
+```yaml
+max_connections_per_user: 256 → 512
+```
+
+During large-scale Docker container startup, UID 0 D-Bus connections reached
+the original per-user limit. The higher limit reduces connection exhaustion in
+the container-lifecycle control plane, while allowing related processes to
+consume more D-Bus control-plane resources before the limit is reached.
+
+### inotify
+
+```yaml
+fs.inotify.max_user_instances: 128 → 1024
+```
+
+Large-scale container lifecycle activity produced inotify instance exhaustion
+and containerd inotify resource warnings. The higher limit provides more
+container/runtime monitoring headroom per user, while allowing more kernel
+resources to be used before the protection limit is reached.
+
+### Docker cgroup driver
+
+```yaml
+cgroup version: v2 (unchanged)
+cgroup driver: systemd → cgroupfs
+```
+
+During large-scale container startup, Docker's path through systemd to create a
+transient `docker-*.scope` for each container produced many timeouts.
+Docker/runc now manage Docker container cgroups directly without asking
+systemd to create an independent transient scope for every container. Cgroup
+v2 remains in use, and CPU, memory, and PID cgroup isolation remain present.
+Systemd no longer owns an individual `docker-*.scope` for each Docker
+container, so per-container systemd visibility and systemd-level unified
+management are reduced.
+
+These changes were introduced after host container-lifecycle control-plane
+limits were encountered around the thousand-container scale.
+
+### Rollback
+
+```bash
+sudo rm /etc/docker/daemon.json
+sudo systemctl restart docker
+docker info --format 'Cgroup Driver={{.CgroupDriver}} Cgroup Version={{.CgroupVersion}}'
+```
+
+The expected restored Docker state is:
+
+```text
+Cgroup Driver=systemd Cgroup Version=2
+```
+
+The original limits are:
+
+```text
+D-Bus max_connections_per_user = 256
+fs.inotify.max_user_instances = 128
+```
+
+The rollback has not been executed.
 
 ## Responsibility hierarchy
 
@@ -103,6 +173,8 @@ Skyseed
 │        └─ Maintenance                # internal capability
 │             ↓
 │        private default tc-BPF realization → Linux kernel
+├─ Experiment-side support
+│  └─ Traffic probe planning/execution       # observes; owns no Runner lifecycle
 └─ Repository-local Inspection Tools
    ├─ generation-time formal-object Tools
    └─ post-run Runner / Traffic evidence Tools
@@ -128,7 +200,7 @@ dataplane is the current private mechanism, not a public plugin contract.
 | Plan | Carry immutable backend-independent formal network intent | A backend-independent transition contract changes |
 | BPF Compiler | Deterministically lower Plan plus approved read-only Simulator facts | Symbolic BPF backend work or lowering constraints change |
 | BpfCompiledRealization | Carry immutable symbolic BPF work and the next-compile intended baseline | The Compiler-to-Runner symbolic handoff changes |
-| BpfRunner | Own live attachment, Preparation, timed Main activation, Maintenance, reclaim, failure evidence, and scoped cleanup | Live lifecycle, readiness, timing, or runtime ownership changes |
+| BpfRunner | Own live attachment, Preparation, timed Main activation, Maintenance, reclaim, failure evidence, and bounded scoped teardown through `cleanup()` | Live lifecycle, readiness, timing, or runtime ownership changes |
 | Runner Inspection Tool | Project detached post-run Runner summary/frozen-binding scalars/events into a static non-authoritative lifecycle view | Human presentation of Runner lifecycle/control-plane evidence changes |
 | Default tc-BPF dataplane / Linux kernel | Realize links, qdisc, BPF state, forwarding, and active packet behavior | The concrete Linux packet mechanism changes |
 
@@ -143,7 +215,7 @@ dataplane is the current private mechanism, not a public plugin contract.
 | 研究另一种 eBPF packet-forwarding algorithm | BPF backend dataplane extension area |
 | Future link 提前对用户可用 | Runner/default-dataplane correctness bug |
 | Future BPF state 超过 capacity | Runner Preparation / dataplane capacity audit |
-| 查看一次 Runner 运行的 Main/Maintenance/timing/cleanup 历史 | repository-local Runner Inspection Tool |
+| 查看一次 Runner 运行的 Main/Maintenance/timing/teardown 历史 | repository-local Runner Inspection Tool |
 
 ## Semantics before optimization
 

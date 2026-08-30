@@ -570,6 +570,50 @@ def test_faithful_final_region_validates_delta_without_path_reconstruction(
     assert work["reused_forwarding_path_boundaries"] == 1
 
 
+def test_full_final_region_counts_validated_forwarding_dependency_ids() -> None:
+    difference = _difference(
+        0,
+        None,
+        START,
+        added_connections=(CONNECTION,),
+        route_patches=(
+            RoutePatch(
+                ROUTE_KEY,
+                DifferenceOperation.ADDED,
+                GROUND_STATION,
+            ),
+        ),
+    )
+    connection = ConnectionTransition(
+        START,
+        ConnectionTransitionOperation.ESTABLISH,
+        CONNECTION_ID,
+        CONNECTION,
+    )
+    forwarding = ForwardingTransition(
+        START,
+        ROUTE_KEY,
+        DifferenceOperation.ADDED,
+        GROUND_STATION,
+    )
+
+    work = _validate_plan_region(
+        (difference,),
+        (connection,),
+        (),
+        (forwarding,),
+        {0: {}, 1: {ROUTE_KEY: GROUND_STATION}},
+        {0: {}, 1: {ROUTE_KEY: (CONNECTION_ID,)}},
+        {0: {}, 1: {CONNECTION_ID: CONNECTION}},
+        {},
+        {},
+        {},
+        faithful_formal_translation=False,
+    )
+
+    assert work["validated_forwarding_dependency_ids"] == 2
+
+
 def _legacy_suppression_candidates(
     differences,
     transitions,

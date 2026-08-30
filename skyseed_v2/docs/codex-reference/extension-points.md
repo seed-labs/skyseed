@@ -31,7 +31,7 @@ Tools.
 | Compose strategy | ComposeProjectLauncher | explicit single/batched project startup | compile/edit/fallback |
 | Inspection projection/UI | repository `tools/` | non-authoritative display | formal computation |
 
-The root-private generated BPF execution composition reads a definition that
+The private `experiment.execution` BPF composition reads a definition that
 records one explicit Python
 module/callable identity for the experiment's existing progression builder.
 That direct reference is not a plugin registry, model registry, or new public

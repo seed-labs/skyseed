@@ -18,17 +18,13 @@ COMPOSE_PROJECT_NAME = "skyseed_v2_complete_static_emulator"
 if __package__ in (None, ""):
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from examples._direct_execution import prepare_direct_file_execution
-
-prepare_direct_file_execution(__file__)
-
-from examples._compose_project_scripts import (
-    prepare_example_output,
-    write_compose_project_scripts,
-)
 from examples.complete_static_emulator.emu import build_emulator
 from seedemu.compiler import Docker
 from seedemu.layers import Base
+from skyseed_v2.compose.launcher import (
+    _prepare_generated_output,
+    _write_compose_project_scripts,
+)
 from skyseed_v2.configuration.simulator import load_zone_layout_definition
 from skyseed_v2.emulator.seedemu import get_skyseed_autonomous_systems
 from skyseed_v2.simulator import (
@@ -154,9 +150,9 @@ def main() -> int:
 
     emulator = build_emulator()
     topology = _create_simulator_topology(emulator)
-    runtime_output = prepare_example_output(
+    runtime_output = _prepare_generated_output(
         arguments.output,
-        override=arguments.override,
+        replace=arguments.override,
     )
     emulator.render()
     emulator.compile(
@@ -166,7 +162,7 @@ def main() -> int:
         ),
         str(runtime_output),
     )
-    write_compose_project_scripts(arguments.output, COMPOSE_PROJECT_NAME)
+    _write_compose_project_scripts(arguments.output, COMPOSE_PROJECT_NAME)
     tool_results, aggregate_ok = _write_tool_snapshot(
         topology,
         arguments.output,

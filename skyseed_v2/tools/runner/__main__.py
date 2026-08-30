@@ -21,6 +21,7 @@ def main() -> int:
     parser.add_argument("--handoff", type=Path, required=True)
     parser.add_argument("--events", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--deployment-startup", type=Path)
     arguments = parser.parse_args()
 
     value = json.loads(arguments.handoff.read_text(encoding="utf-8"))
@@ -33,6 +34,7 @@ def main() -> int:
         _mapping(value.get("runtime_outcome"), "runtime_outcome"),
         arguments.output,
         event_history_path=arguments.events,
+        deployment_startup_path=arguments.deployment_startup,
     )
     return 0
 

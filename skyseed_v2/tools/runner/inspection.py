@@ -5,6 +5,7 @@ from __future__ import annotations
 from hashlib import sha256
 from copy import deepcopy
 from pathlib import Path
+import json
 from typing import Any, Mapping
 
 from tools._html import write_json, write_text
@@ -19,6 +20,7 @@ def collect_runner_data(
     runtime_outcome: Mapping[str, object],
     *,
     event_history_path: Path | None = None,
+    deployment_startup_path: Path | None = None,
 ) -> dict[str, Any]:
     """Project detached Runner and invocation facts without live authority."""
 
@@ -27,6 +29,11 @@ def collect_runner_data(
         events = read_runner_event_history(event_history_path)
         history = snapshot.get("event_history")
         if isinstance(history, Mapping):
+            durable = history.get("durable")
+            if isinstance(durable, Mapping) and durable.get("complete") is not True:
+                raise ValueError(
+                    "Runner bounded event history is incomplete or overflowed"
+                )
             total = history.get("total_count")
             if isinstance(total, int) and total != len(events):
                 raise ValueError("Runner durable event history is incomplete")
@@ -36,8 +43,23 @@ def collect_runner_data(
             "returned_count": len(events),
             "total_count": len(events),
             "durable_history_enabled": True,
+            "durable": (
+                deepcopy(history.get("durable"))
+                if isinstance(history, Mapping)
+                else None
+            ),
+            "exact_source_path": str(Path(event_history_path).resolve()),
         }
-    return project_runner_inspection(snapshot, runtime_outcome)
+    deployment_startup = (
+        None
+        if deployment_startup_path is None
+        else _read_deployment_startup(deployment_startup_path)
+    )
+    return project_runner_inspection(
+        snapshot,
+        runtime_outcome,
+        deployment_startup=deployment_startup,
+    )
 
 
 def write_runner_tool(
@@ -46,6 +68,7 @@ def write_runner_tool(
     directory: Path,
     *,
     event_history_path: Path | None = None,
+    deployment_startup_path: Path | None = None,
 ) -> dict[str, object]:
     """Write one deterministic standalone post-run inspection bundle."""
 
@@ -53,6 +76,7 @@ def write_runner_tool(
         runner_snapshot,
         runtime_outcome,
         event_history_path=event_history_path,
+        deployment_startup_path=deployment_startup_path,
     )
     page = render_runner_page(data)
     output = Path(directory)
@@ -123,6 +147,22 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _read_deployment_startup(path: Path) -> dict[str, object]:
+    value = json.loads(Path(path).read_text(encoding="utf-8"))
+    if (
+        not isinstance(value, dict)
+        or value.get("artifact_type") != "compose-startup-evidence"
+        or value.get("format_version") != 1
+        or value.get("status") not in {"completed", "failed"}
+        or not isinstance(value.get("duration_seconds"), (int, float))
+        or float(value["duration_seconds"]) < 0
+        or isinstance(value.get("exit_code"), bool)
+        or not isinstance(value.get("exit_code"), int)
+    ):
+        raise ValueError("Compose startup evidence is invalid")
+    return deepcopy(value)
 
 
 __all__ = ["collect_runner_data", "write_runner_tool"]

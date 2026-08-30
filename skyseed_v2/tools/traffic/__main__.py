@@ -14,6 +14,9 @@ def main() -> int:
     parser.add_argument("--slice", type=Path, required=True)
     parser.add_argument("--bpf-compiler", type=Path, required=True)
     parser.add_argument("--workload", type=Path)
+    parser.add_argument("--probe-plan", type=Path)
+    parser.add_argument("--probe-execution", type=Path)
+    parser.add_argument("--runner-events", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     arguments = parser.parse_args()
     write_traffic_replay_tool(
@@ -22,6 +25,9 @@ def main() -> int:
         arguments.bpf_compiler,
         arguments.workload,
         arguments.output,
+        arguments.probe_plan,
+        arguments.probe_execution,
+        arguments.runner_events,
     )
     return 0
 

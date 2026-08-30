@@ -1,4 +1,4 @@
-"""Restore and execute one generated BPF experiment definition."""
+"""Validate and execute one generated Skyseed experiment runtime package."""
 
 from __future__ import annotations
 
@@ -9,9 +9,11 @@ from hashlib import sha256
 import importlib
 from importlib import metadata, util
 import json
+import os
 from pathlib import Path
 import platform
 import re
+from shlex import quote
 import sys
 from threading import RLock
 from typing import Any
@@ -23,14 +25,24 @@ from skyseed_v2.shared._durable_evidence import (
     _semantic_value,
 )
 
-from .backend.bpf.compiler import compile_bpf
-from .backend.bpf.runner import BpfRunner
-from .backend.bpf.compiled_realization import BpfCompiledRealization
+from ..backend.bpf.compiler import compile_bpf
+from ..backend.bpf.runner import BpfRunner
+from ..backend.bpf.compiled_realization import BpfCompiledRealization
+from ._realization_handoff import (
+    _PersistedRealizationSupplier,
+    _read_persisted_realization_sequence,
+)
+from .traffic.probe_execution import TrafficProbeExecutor
+from .traffic.probe_plan import (
+    TrafficProbePlanBuilder,
+    read_traffic_probe_plan,
+    write_traffic_probe_plan,
+)
 
 
 _FORMAT_VERSION = 1
 _KIND = "skyseed-v2-generated-bpf-execution"
-_PROJECT_NAME_FILE = ".compose-project-name"
+_PROJECT_NAME_FILE = "runtime/compose-project-name"
 _PROJECT_NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9_-]*")
 
 
@@ -44,6 +56,8 @@ class _RollingRealizationSupplier:
         *,
         generation_lookahead: timedelta,
         compiled_history_path: Path,
+        final_slice_id: int | None = None,
+        include_compiled_semantics: bool = True,
     ) -> None:
         if not isinstance(slicer, Slicer):
             raise TypeError("slicer must be a Slicer")
@@ -69,6 +83,24 @@ class _RollingRealizationSupplier:
         self._previous_realization: BpfCompiledRealization | None = None
         self._last_plan_identity: tuple[int, datetime | None, int, datetime] | None = None
         self._last_plan_end: datetime | None = None
+        if final_slice_id is not None and (
+            isinstance(final_slice_id, bool)
+            or not isinstance(final_slice_id, int)
+            or final_slice_id <= 0
+        ):
+            raise ValueError("final_slice_id must be a positive integer or None")
+        self._final_slice_id = final_slice_id
+        if not isinstance(include_compiled_semantics, bool):
+            raise TypeError("include_compiled_semantics must be a bool")
+        self._include_compiled_semantics = include_compiled_semantics
+        self._latest_plan: Plan | None = None
+        self._working_set_high_water = {
+            "retained_slices": 0,
+            "slice_timestamp_index": 0,
+            "planner_differences": 0,
+            "planner_route_contexts": 0,
+            "planner_decisions": 0,
+        }
         self._realization_count = 0
         self._input_exhausted = False
 
@@ -80,12 +112,12 @@ class _RollingRealizationSupplier:
             plan = self._planner.synchronize()
             identity = _plan_identity(plan)
             if identity == self._last_plan_identity:
-                if not self._slicer.is_exhausted():
+                if not self._at_input_limit():
                     self._slicer.create_next_slice()
                     plan = self._planner.synchronize()
                     identity = _plan_identity(plan)
                 if identity == self._last_plan_identity:
-                    if not self._slicer.is_exhausted():
+                    if not self._at_input_limit():
                         raise RuntimeError(
                             "Planner did not publish after new Slice facts"
                         )
@@ -122,16 +154,76 @@ class _RollingRealizationSupplier:
                             for intent in getattr(realization, attribute)
                         }
                     ),
-                    "semantic": _semantic_value(realization),
+                    **(
+                        {"semantic": _semantic_value(realization)}
+                        if self._include_compiled_semantics
+                        else {
+                            "semantic_source": (
+                                "persisted canonical realization handoff"
+                            )
+                        }
+                    ),
                 },
             )
             self._previous_realization = realization
             self._last_plan_identity = identity
             self._last_plan_end = plan.end_timestamp
+            self._latest_plan = plan
             self._realization_count += 1
+            self._capture_working_set_high_water()
             self._planner._release_compiled_through(plan.end_slice_id)
             self._slicer._release_before(plan.end_slice_id)
             return realization
+
+    @property
+    def latest_plan(self) -> Plan:
+        """Return the latest immutable publication for immediate persistence."""
+
+        if self._latest_plan is None:
+            raise RuntimeError("no realization has been produced")
+        return self._latest_plan
+
+    def _at_input_limit(self) -> bool:
+        return self._slicer.is_exhausted() or (
+            self._final_slice_id is not None
+            and self._slicer.get_latest_slice_id() >= self._final_slice_id
+        )
+
+    def _capture_working_set_high_water(self) -> None:
+        current = {
+            "retained_slices": len(self._slicer.get_retained_slice_ids()),
+            "slice_timestamp_index": len(self._slicer._slices_by_timestamp),
+            "planner_differences": len(self._planner._differences),
+            "planner_route_contexts": len(
+                set(self._planner._route_next_hops)
+                | set(self._planner._route_path_connection_ids)
+                | set(self._planner._connection_values_by_slice_id)
+            ),
+            "planner_decisions": len(self._planner._decisions),
+        }
+        self._working_set_high_water = {
+            key: max(self._working_set_high_water[key], value)
+            for key, value in current.items()
+        }
+
+    def producer_snapshot(self) -> dict[str, object]:
+        """Return bounded progression bookkeeping without semantic history."""
+
+        return {
+            "realization_count": self._realization_count,
+            "input_exhausted": self._input_exhausted,
+            "working_set_high_water": dict(self._working_set_high_water),
+            "retained_at_capture": {
+                "slices": len(self._slicer.get_retained_slice_ids()),
+                "planner_differences": len(self._planner._differences),
+                "planner_route_contexts": len(
+                    set(self._planner._route_next_hops)
+                    | set(self._planner._route_path_connection_ids)
+                    | set(self._planner._connection_values_by_slice_id)
+                ),
+                "planner_decisions": len(self._planner._decisions),
+            },
+        }
 
     def _generate_planning_facts(self) -> None:
         anchor = (
@@ -143,16 +235,17 @@ class _RollingRealizationSupplier:
         while (
             (next_timestamp := self._slicer.get_next_timestamp()) is not None
             and next_timestamp <= target
+            and (
+                self._final_slice_id is None
+                or self._slicer.get_latest_slice_id() < self._final_slice_id
+            )
         ):
             self._slicer.create_next_slice()
-
-
-
 def _write_execution_definition(
     output_directory: Path,
     *,
-    builder_module: str,
-    builder_callable: str,
+    builder_module: str | None,
+    builder_callable: str | None,
     generated_output_identity: str,
     generation_lookahead: timedelta,
     preparation_lookahead: timedelta | None,
@@ -162,6 +255,8 @@ def _write_execution_definition(
     slice_interval: timedelta,
     project_root: Path,
     example_root: Path,
+    realization_handoff: str | None = None,
+    realization_producer: str | None = None,
 ) -> Path:
     """Write the sole generated BPF execution definition used by run.sh."""
 
@@ -172,16 +267,43 @@ def _write_execution_definition(
     )
     fingerprint = _build_source_fingerprint(project_root, example_root)
     generated_inputs = _build_generated_input_fingerprint(output_directory)
+    if realization_handoff is None:
+        if builder_module is None or builder_callable is None:
+            raise ValueError("live generated execution requires a progression builder")
+        progression = {
+            "progression_builder": {
+                "module": builder_module,
+                "callable": builder_callable,
+                "input_directory": "inputs",
+            }
+        }
+    else:
+        if not isinstance(realization_producer, str) or not realization_producer:
+            raise ValueError("persisted execution requires realization producer identity")
+        progression = {
+            "progression": {
+                "strategy": "persisted-canonical-realization-handoff",
+                "producer": realization_producer,
+            }
+        }
     value = {
         "format_version": _FORMAT_VERSION,
         "kind": _KIND,
         "backend": "bpf",
         "generated_output_identity": generated_output_identity,
-        "progression_builder": {
-            "module": builder_module,
-            "callable": builder_callable,
-            "input_directory": "inputs",
-        },
+        **progression,
+        **(
+            {}
+            if realization_handoff is None
+            else {
+                "realization_handoff": {
+                    "manifest": _safe_relative_path(
+                        realization_handoff,
+                        "realization handoff manifest",
+                    )
+                }
+            }
+        ),
         "simulation": {
             "start_time": timeline_start.isoformat(),
             "end_time": None if timeline_end is None else timeline_end.isoformat(),
@@ -205,7 +327,7 @@ def _write_execution_definition(
             "seedemu_distribution_version": metadata.version("seedemu"),
         },
     }
-    destination = Path(output_directory) / "inputs/execution.json"
+    destination = Path(output_directory) / "runtime/execution.json"
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(
         json.dumps(value, indent=2, sort_keys=True) + "\n",
@@ -214,33 +336,204 @@ def _write_execution_definition(
     return destination
 
 
-def _run_generated_bpf_experiment(output_directory: Path) -> None:
+def _write_generated_run_script(
+    output_directory: Path,
+    *,
+    python_executable: str,
+    compiler_tool_directory: str,
+    tool_package_parent: Path,
+) -> Path:
+    """Write S4 runtime execution plus its thin start-then-run convenience."""
+
+    output = Path(output_directory)
+    compiler_directory = _safe_relative_path(
+        compiler_tool_directory,
+        "Compiler Tool directory",
+    )
+    tool_parent = quote(str(Path(tool_package_parent).resolve()))
+    script = output / "run.sh"
+    script.write_text(
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+
+if (( $# != 0 )); then
+    echo "run.sh does not accept arguments" >&2
+    exit 2
+fi
+SCRIPT_DIR="$(cd -- "$(dirname -- "${{BASH_SOURCE[0]}}")" && pwd)"
+PYTHON={quote(python_executable)}
+TOOL_PACKAGE_PARENT={tool_parent}
+PROJECT_FILE="$SCRIPT_DIR/runtime/compose-project-name"
+STARTUP_EVIDENCE="$SCRIPT_DIR/runtime/deployment-startup.json"
+for required in \\
+    "$PROJECT_FILE" \\
+    "$SCRIPT_DIR/runtime/execution.json" \\
+    "$SCRIPT_DIR/runtime/realizations/manifest.json" \\
+    "$SCRIPT_DIR/runtime/docker-compose.yml" \\
+    "$SCRIPT_DIR/inputs/scenario.yaml" \\
+    "$SCRIPT_DIR/inputs/shells.yaml" \\
+    "$SCRIPT_DIR/inputs/ground_stations.yaml" \\
+    "$SCRIPT_DIR/inputs/zones.yaml"; do
+    if [[ ! -f "$required" ]]; then
+        echo "generated S4 execution input is missing: $required" >&2
+        exit 1
+    fi
+done
+PROJECT_NAME="$(<"$PROJECT_FILE")"
+if [[ ! "$PROJECT_NAME" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
+    echo "generated S4 Compose project identity is invalid" >&2
+    exit 1
+fi
+if [[ ! -f "$TOOL_PACKAGE_PARENT/tools/__init__.py" ]]; then
+    echo "configured Skyseed Tool package is missing: $TOOL_PACKAGE_PARENT/tools" >&2
+    exit 1
+fi
+INVOCATION_ID="$(date -u +%Y%m%dT%H%M%S.%NZ)-${{BASHPID}}"
+INVOCATION_DIR="$SCRIPT_DIR/inspection/runtime-runs/$INVOCATION_ID"
+mkdir -p "$INVOCATION_DIR/runner" "$INVOCATION_DIR/traffic"
+TOOL_PYTHONPATH="$TOOL_PACKAGE_PARENT${{PYTHONPATH:+:$PYTHONPATH}}"
+
+execution_status=0
+$PYTHON -m skyseed_v2.experiment.execution "$SCRIPT_DIR" \\
+    --invocation-directory "$INVOCATION_DIR" \\
+    || execution_status=$?
+
+runner_tool_status=0
+runner_startup_arguments=()
+if [[ -f "$STARTUP_EVIDENCE" ]]; then
+    runner_startup_arguments=(--deployment-startup "$STARTUP_EVIDENCE")
+fi
+PYTHONPATH="$TOOL_PYTHONPATH" $PYTHON -m tools.runner \\
+    --handoff "$INVOCATION_DIR/runner/runner-invocation.json" \\
+    --events "$INVOCATION_DIR/runner/runner-events.jsonl" \\
+    "${{runner_startup_arguments[@]}}" \\
+    --output "$SCRIPT_DIR/inspection/runner" \\
+    || runner_tool_status=$?
+
+traffic_tool_status=0
+PYTHONPATH="$TOOL_PYTHONPATH" $PYTHON -m tools.traffic \\
+    --telemetry "$INVOCATION_DIR/traffic/traffic-telemetry.jsonl" \\
+    --slice "$SCRIPT_DIR/inspection/slice/slice-manifest.json" \\
+    --bpf-compiler "$SCRIPT_DIR/inspection/{compiler_directory}/manifest.json" \\
+    --probe-plan "$SCRIPT_DIR/inspection/traffic/probe-plan.json" \\
+    --probe-execution "$INVOCATION_DIR/traffic/probe-execution.jsonl" \\
+    --runner-events "$INVOCATION_DIR/runner/runner-events.jsonl" \\
+    --output "$SCRIPT_DIR/inspection/traffic" \\
+    || traffic_tool_status=$?
+
+aggregate_status=0
+PYTHONPATH="$TOOL_PYTHONPATH" $PYTHON -c 'import importlib,sys; from pathlib import Path; importlib.import_module("tools._html").finalize_runtime_aggregate_index(Path(sys.argv[1]))' \\
+    "$SCRIPT_DIR/inspection" \\
+    || aggregate_status=$?
+
+if (( execution_status != 0 )); then
+    exit "$execution_status"
+fi
+if (( runner_tool_status != 0 )); then
+    exit "$runner_tool_status"
+fi
+if (( traffic_tool_status != 0 )); then
+    exit "$traffic_tool_status"
+fi
+exit "$aggregate_status"
+""",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    launch = output / "launch.sh"
+    launch.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+
+if (( $# != 0 )); then
+    echo "launch.sh does not accept arguments" >&2
+    exit 2
+fi
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+"$SCRIPT_DIR/start.sh"
+exec "$SCRIPT_DIR/run.sh"
+""",
+        encoding="utf-8",
+    )
+    launch.chmod(0o755)
+    return script
+
+
+def _run_generated_bpf_experiment(
+    output_directory: Path,
+    *,
+    invocation_directory: Path | None = None,
+) -> None:
     """Verify, restore, and own prepare/run/cleanup for generated BPF output."""
 
     output = Path(output_directory).resolve()
+    if invocation_directory is None:
+        runner_evidence = output / "inspection/runner"
+        traffic_evidence = output / "inspection/traffic"
+        invocation_id = None
+    else:
+        invocation = Path(invocation_directory).resolve()
+        invocation_root = (output / "inspection/runtime-runs").resolve()
+        if invocation.parent != invocation_root or not invocation.name:
+            raise ValueError("runtime invocation directory must be one owned run root")
+        runner_evidence = invocation / "runner"
+        traffic_evidence = invocation / "traffic"
+        runner_evidence.mkdir(parents=True, exist_ok=True)
+        traffic_evidence.mkdir(parents=True, exist_ok=True)
+        invocation_id = invocation.name
+        _write_runtime_invocation_index(
+            invocation_root,
+            invocation_id=invocation_id,
+            status="running",
+        )
     definition = _read_and_verify_execution_definition(output)
-    slicer, planner = _construct_progression(output, definition)
-    slicer._enable_durable_history(
-        output / "inspection/slice/slice-history.jsonl"
-    )
-    planner._enable_durable_history(
-        output / "inspection/planner/planning-history.jsonl"
-    )
     simulation = _mapping(definition["simulation"], "simulation")
     runner_settings = _mapping(definition["runner"], "runner")
-    supplier = _RollingRealizationSupplier(
-        slicer,
-        planner,
-        generation_lookahead=timedelta(
-            seconds=_number(
-                simulation["generation_lookahead_seconds"],
-                "generation_lookahead_seconds",
+    handoff_value = definition.get("realization_handoff")
+    probe_plan_path = output / "inspection/traffic/probe-plan.json"
+    if handoff_value is None:
+        if not probe_plan_path.is_file():
+            raise RuntimeError(
+                "generated rolling execution lacks its derived Traffic probe plan; "
+                "rerun the example main.py"
             )
-        ),
-        compiled_history_path=(
-            output / "inspection/bpf-compiler/compiled-history.jsonl"
-        ),
-    )
+        slicer, planner = _construct_progression(output, definition)
+        slicer._enable_durable_history(
+            output / "domain-history/slice-history.jsonl.gz"
+        )
+        planner._enable_durable_history(
+            output / "domain-history/planning-history.jsonl.gz"
+        )
+        supplier = _RollingRealizationSupplier(
+            slicer,
+            planner,
+            generation_lookahead=timedelta(
+                seconds=_number(
+                    simulation["generation_lookahead_seconds"],
+                    "generation_lookahead_seconds",
+                )
+            ),
+            compiled_history_path=(
+                output / "domain-history/compiled-history.jsonl.gz"
+            ),
+        )
+    else:
+        handoff = _mapping(handoff_value, "realization_handoff")
+        relative_manifest = _safe_relative_path(
+            handoff.get("manifest"), "realization handoff manifest"
+        )
+        manifest_path = output / relative_manifest
+        if not probe_plan_path.is_file():
+            planning_realizations = _read_persisted_realization_sequence(
+                manifest_path
+            )
+            write_traffic_probe_plan(
+                TrafficProbePlanBuilder().build(planning_realizations),
+                probe_plan_path,
+            )
+            del planning_realizations
+        supplier = _PersistedRealizationSupplier(manifest_path)
+    probe_plan = read_traffic_probe_plan(probe_plan_path)
     project_name = str(definition["generated_output_identity"])
     raw_lookahead = runner_settings["preparation_lookahead_seconds"]
     preparation_lookahead = (
@@ -256,17 +549,52 @@ def _run_generated_bpf_experiment(output_directory: Path) -> None:
         preparation_boundary_depth=(None if depth is None else int(depth)),
     )
     runner._enable_event_history(
-        output / "inspection/runner/runner-events.jsonl"
+        runner_evidence / "runner-events.jsonl"
     )
-    runner._enable_traffic_telemetry(output / "inspection/traffic")
+    runner._enable_traffic_telemetry(traffic_evidence)
 
     primary_error: BaseException | None = None
+    traffic_error: BaseException | None = None
     cleanup_error: BaseException | None = None
+    traffic_executor: TrafficProbeExecutor | None = None
     try:
         runner.prepare()
-        runner.run()
+        traffic_executor = TrafficProbeExecutor(
+            docker_executable="docker",
+            plan=probe_plan,
+            runner_snapshot=runner.inspection_snapshot(),
+            evidence_path=(
+                traffic_evidence / "probe-execution.jsonl"
+            ),
+        )
+        traffic_executor.start(runner)
+        raw_activation_limit = os.environ.get(
+            "SKYSEED_RUNNER_ACTIVATION_LIMIT"
+        )
+        if raw_activation_limit is None:
+            runner.run()
+        else:
+            try:
+                activation_limit = int(raw_activation_limit)
+            except ValueError as error:
+                raise ValueError(
+                    "SKYSEED_RUNNER_ACTIVATION_LIMIT must be a positive int"
+                ) from error
+            runner._run_bounded(activation_limit)
     except BaseException as error:
         primary_error = error
+    if traffic_executor is not None:
+        try:
+            traffic_executor.stop()
+        except BaseException as error:
+            traffic_error = error
+            if primary_error is None:
+                primary_error = error
+            else:
+                primary_error.add_note(
+                    "secondary Traffic probe execution failure: "
+                    f"{type(error).__name__}: {error}"
+                )
     try:
         runner.cleanup()
     except BaseException as error:
@@ -275,9 +603,14 @@ def _run_generated_bpf_experiment(output_directory: Path) -> None:
     handoff_error: BaseException | None = None
     try:
         _write_runner_inspection_handoff(
-            output / "inspection/runner/runner-invocation.json",
+            runner_evidence / "runner-invocation.json",
             runner.inspection_snapshot(),
-            _outcome(primary_error, cleanup_error),
+            _outcome(primary_error, cleanup_error, traffic_error),
+            **(
+                {}
+                if invocation_id is None
+                else {"invocation_id": invocation_id}
+            ),
         )
     except BaseException as error:
         handoff_error = error
@@ -287,18 +620,30 @@ def _run_generated_bpf_experiment(output_directory: Path) -> None:
                 f"the runtime error: {error}",
                 file=sys.stderr,
             )
+    if invocation_id is not None:
+        _write_runtime_invocation_index(
+            (output / "inspection/runtime-runs").resolve(),
+            invocation_id=invocation_id,
+            status=(
+                "completed"
+                if primary_error is None
+                and cleanup_error is None
+                and handoff_error is None
+                else "failed"
+            ),
+        )
     if primary_error is not None:
         raise primary_error
     if cleanup_error is not None:
         raise cleanup_error
     if handoff_error is not None:
         raise handoff_error
-
-
 def _write_runner_inspection_handoff(
     path: Path,
     snapshot: Mapping[str, object],
     outcome: Mapping[str, object],
+    *,
+    invocation_id: str | None = None,
 ) -> None:
     """Persist detached inputs for the repository-local Runner Tool."""
 
@@ -309,6 +654,7 @@ def _write_runner_inspection_handoff(
             {
                 "format_version": 1,
                 "artifact_type": "runner-inspection-handoff",
+                "invocation_id": invocation_id,
                 "runner_snapshot": _semantic_value(snapshot),
                 "runtime_outcome": _semantic_value(outcome),
             },
@@ -320,8 +666,71 @@ def _write_runner_inspection_handoff(
     )
 
 
+def _write_runtime_invocation_index(
+    root: Path,
+    *,
+    invocation_id: str,
+    status: str,
+) -> None:
+    """Own immutable raw evidence by run and update only a derived latest view."""
+
+    if status not in {"running", "completed", "failed"}:
+        raise ValueError("runtime invocation status is invalid")
+    invocation_root = Path(root).resolve()
+    directory = invocation_root / invocation_id
+    directory.mkdir(parents=True, exist_ok=True)
+    record_path = directory / "invocation.json"
+    existing: dict[str, object] = {}
+    if record_path.is_file():
+        value = json.loads(record_path.read_text(encoding="utf-8"))
+        if not isinstance(value, dict) or value.get("invocation_id") != invocation_id:
+            raise ValueError("runtime invocation identity differs")
+        existing = value
+    now = datetime.now().astimezone().isoformat()
+    record = {
+        "format_version": 1,
+        "artifact_type": "skyseed-runtime-invocation",
+        "invocation_id": invocation_id,
+        "status": status,
+        "started_at": existing.get("started_at", now),
+        "ended_at": None if status == "running" else now,
+        "raw_evidence": {
+            "runner_events": "runner/runner-events.jsonl",
+            "runner_outcome": "runner/runner-invocation.json",
+            "traffic_execution": "traffic/probe-execution.jsonl",
+            "traffic_telemetry": "traffic/traffic-telemetry.jsonl",
+            "resource_samples": "runner/runner-events.jsonl",
+        },
+    }
+    _write_json_file_atomic(record_path, record)
+    _write_json_file_atomic(
+        invocation_root / "latest.json",
+        {
+            "format_version": 1,
+            "artifact_type": "skyseed-runtime-latest-view",
+            "invocation_id": invocation_id,
+            "status": status,
+            "invocation": f"{invocation_id}/invocation.json",
+        },
+    )
+
+
+def _write_json_file_atomic(path: Path, value: Mapping[str, object]) -> None:
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(f".{destination.name}.tmp-{os.getpid()}")
+    try:
+        temporary.write_text(
+            json.dumps(value, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def _read_and_verify_execution_definition(output: Path) -> dict[str, Any]:
-    path = output / "inputs/execution.json"
+    path = output / "runtime/execution.json"
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
@@ -380,7 +789,22 @@ def _read_and_verify_execution_definition(output: Path) -> dict[str, Any]:
         )
     if _number(simulation.get("slice_interval_seconds"), "slice_interval_seconds") <= 0:
         raise RuntimeError("generated execution Slice interval is invalid")
-    _mapping(value.get("progression_builder"), "progression_builder")
+    handoff_value = value.get("realization_handoff")
+    if handoff_value is None:
+        _mapping(value.get("progression_builder"), "progression_builder")
+    else:
+        progression = _mapping(value.get("progression"), "progression")
+        if (
+            progression.get("strategy")
+            != "persisted-canonical-realization-handoff"
+            or not isinstance(progression.get("producer"), str)
+        ):
+            raise RuntimeError("generated persisted progression identity is invalid")
+        handoff = _mapping(handoff_value, "realization_handoff")
+        relative_manifest = _safe_relative_path(
+            handoff.get("manifest"), "realization handoff manifest"
+        )
+        _PersistedRealizationSupplier(output / relative_manifest)
     project_name = _read_compose_project_name(output)
     if value.get("generated_output_identity") != project_name:
         raise RuntimeError("generated output identity does not match Compose controls")
@@ -536,7 +960,7 @@ def _build_generated_input_fingerprint(output_directory: Path) -> dict[str, obje
             output,
             label="input-snapshots",
             relative_root="inputs",
-            excludes=("execution.json", "traffic-workload.json"),
+            excludes=("traffic-workload.json",),
         ),
         _generated_input_scope(
             output,
@@ -683,6 +1107,7 @@ def _read_compose_project_name(output: Path) -> str:
 def _outcome(
     primary_error: BaseException | None,
     cleanup_error: BaseException | None,
+    traffic_error: BaseException | None = None,
 ) -> dict[str, object]:
     if isinstance(primary_error, KeyboardInterrupt):
         status, exit_code = "interrupted", 130
@@ -697,6 +1122,10 @@ def _outcome(
         "status": status,
         "exit_code": exit_code,
         "primary_error": _error_fact(primary_error),
+        "traffic": {
+            "status": "failed" if traffic_error is not None else "completed",
+            "error": _error_fact(traffic_error),
+        },
         "cleanup": {
             "status": "failed" if cleanup_error is not None else "completed",
             "error": _error_fact(cleanup_error),
@@ -773,9 +1202,13 @@ def _aware_datetime(value: object, label: str) -> datetime:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--invocation-directory", type=Path)
     arguments = parser.parse_args()
     try:
-        _run_generated_bpf_experiment(arguments.output)
+        _run_generated_bpf_experiment(
+            arguments.output,
+            invocation_directory=arguments.invocation_directory,
+        )
     except KeyboardInterrupt:
         print("BPF Runner interrupted", file=sys.stderr)
         return 130

@@ -8,7 +8,7 @@ from shutil import copytree
 import pytest
 
 from examples.mini_satellite_internet import simu
-from skyseed_v2._generated_bpf_execution import (
+from skyseed_v2.experiment.execution import (
     _construct_progression,
     _read_and_verify_execution_definition,
     _write_execution_definition,
@@ -43,7 +43,7 @@ def _write_definition(
     compose = runtime / "docker-compose.yml"
     if not compose.exists():
         compose.write_text("services: {}\n", encoding="utf-8")
-    (output / ".compose-project-name").write_text(
+    (runtime / "compose-project-name").write_text(
         "continuous-bootstrap-test\n",
         encoding="utf-8",
     )
@@ -105,10 +105,7 @@ def test_generated_definition_restores_shared_builder_without_precomputation(
         for scope in value["generated_inputs"]["scopes"]
         if scope["label"] == "input-snapshots"
     )
-    assert input_scope["excludes"] == [
-        "execution.json",
-        "traffic-workload.json",
-    ]
+    assert input_scope["excludes"] == ["traffic-workload.json"]
     assert slicer.get_latest_slice_id() == 0
     assert planner._processed_through_slice_id == 0
 
@@ -123,8 +120,6 @@ def test_source_fingerprint_detects_modify_add_and_delete(tmp_path) -> None:
         ("examples/demo/simu.py", "VALUE = 3\n"),
         ("examples/demo/main.py", "VALUE = 4\n"),
         ("examples/demo/traffic_workload.py", "VALUE = 5\n"),
-        ("examples/_direct_execution.py", "VALUE = 4\n"),
-        ("examples/_compose_project_scripts.py", "VALUE = 5\n"),
     ):
         path = project / relative
         path.parent.mkdir(parents=True, exist_ok=True)

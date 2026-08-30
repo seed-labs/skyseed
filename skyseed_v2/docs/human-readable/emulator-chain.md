@@ -30,5 +30,5 @@ sequenceDiagram
 
 Code entry: `src/skyseed_v2/emulator/construction.py`. Human examples:
 `examples/complete_static_emulator/`, `examples/mini_satellite_internet/`, and
-the static scale-review input in `examples/s4_satellite_internet/`.
+the static scale-review input in `examples/starlink_gen1_satellite_internet/`.
 Implementation state is recorded only in [`CURRENT.md`](../CURRENT.md).

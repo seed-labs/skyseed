@@ -39,7 +39,6 @@ from ..topology import GroundStation, Satellite, Topology
 from skyseed_v2.shared._durable_evidence import (
     _append_jsonl,
     _reset_jsonl,
-    _semantic_value,
 )
 
 
@@ -354,7 +353,9 @@ class Slicer:
                         "record_type": "slice",
                         "slice_id": candidate.slice_id,
                         "timestamp": candidate.timestamp.isoformat(),
-                        "semantic": _semantic_value(candidate),
+                        "positions": _position_history_data(
+                            candidate.positions
+                        ),
                     },
                 )
             except Exception as error:
@@ -374,6 +375,11 @@ class Slicer:
                     connection_slice.zone_service_assignments
                 ),
                 "route_entries": route_entries,
+                "route_compute_workers": getattr(
+                    self._route_model,
+                    "_active_compute_worker_count",
+                    lambda: 1,
+                )(),
             }
             _record_slicer_observation(
                 observer,
@@ -392,6 +398,12 @@ class Slicer:
                 complete_work,
                 duration_role="rollup",
             )
+        if next_timestamp is None:
+            shutdown_workers = getattr(
+                self._route_model, "_shutdown_compute_workers", None
+            )
+            if callable(shutdown_workers):
+                shutdown_workers()
         return candidate
 
     def create_slices(self, count: int) -> tuple[TopologySlice, ...]:
@@ -504,15 +516,9 @@ class Slicer:
                 raise RuntimeError(
                     "durable Difference history must advance continuously"
                 )
-            _append_jsonl(
-                self._durable_history_path,
-                {
-                    "record_type": "difference",
-                    "previous_slice_id": previous_slice_id,
-                    "current_slice_id": current_slice_id,
-                    "semantic": _semantic_value(difference),
-                },
-            )
+            # Planner owns the one canonical durable Difference stream.  The
+            # Slicer history keeps only Position facts, which Difference does
+            # not contain, so Tool persistence never duplicates dynamic state.
             self._archived_difference_through = current_slice_id
         elapsed = perf_counter() - started if observer is not None else 0.0
         if observer is not None:
@@ -553,8 +559,9 @@ class Slicer:
             path,
             {
                 "record_type": "history_header",
-                "format_version": 1,
+                "format_version": 2,
                 "owner": "Slicer",
+                "storage": "positions plus canonical Planner Differences",
                 "timeline": {
                     "start_time": self._timeline.start_time.isoformat(),
                     "end_time": (
@@ -574,7 +581,7 @@ class Slicer:
                 "record_type": "slice",
                 "slice_id": 0,
                 "timestamp": None,
-                "semantic": _semantic_value(self._latest_slice),
+                "positions": {},
             },
         )
         self._durable_history_path = durable_history_path
@@ -1040,6 +1047,23 @@ def _topology_node_ids(topology: Topology) -> set[NodeId]:
 
 def _node_key(node_id: NodeId) -> tuple[int, str, str]:
     return node_id.asn, node_id.entity_kind, node_id.entity_id
+
+
+def _position_history_data(
+    positions: Mapping[NodeId, object],
+) -> dict[str, list[float]]:
+    """Encode only irreducible per-Slice position facts compactly."""
+
+    return {
+        node_id.value: [
+            float(position.x_m),
+            float(position.y_m),
+            float(position.z_m),
+        ]
+        for node_id, position in sorted(
+            positions.items(), key=lambda item: _node_key(item[0])
+        )
+    }
 
 
 def _record_slicer_observation(

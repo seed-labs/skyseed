@@ -14,10 +14,6 @@ PROJECT_ROOT = EXAMPLE_ROOT.parents[1]
 if __package__ in (None, ""):
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from examples._direct_execution import prepare_direct_file_execution
-
-prepare_direct_file_execution(__file__)
-
 from examples.complete_static_emulator.emu import build_emulator
 from seedemu.layers import Base
 from skyseed_v2.configuration.simulator import load_zone_layout_definition

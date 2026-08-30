@@ -5,6 +5,9 @@ This repository-local Tool writes one post-run static view from detached
 `runner-events.jsonl`, and a plain invocation-outcome mapping. It does not
 retain a live Runner, control its lifecycle, inspect the kernel, inject traffic,
 or become installed `skyseed_v2` API.
+For generated S4 output it also accepts the separate small Compose-startup
+evidence file, so deployment startup and Runner Preparation never collapse
+into one timing.
 
 The implementation responsibilities are deliberately small and distinct:
 
@@ -20,11 +23,15 @@ flowchart LR
     RENDER --> WRITE["atomic artifact writes"]
 ```
 
-- `reader.py` reads and validates the append-only complete Runner event stream;
+- `reader.py` reads and validates either legacy complete history or the bounded
+  nonblocking Runner event stream;
 - `projection.py` stable-sorts the supplied complete event history by monotonic time
   with original list order as the tie-break, curates the human timeline,
   separates lifecycle phases, duration work, and instant milestones, and
-  derives timing/default-dataplane views from recorded evidence;
+  derives timing/default-dataplane views plus Preparation subphases, Main
+  subphases, logical-to-external amplification, batching/worker use,
+  Maintenance backlog, sparse resource health, evidence completeness, and
+  teardown evidence;
 - `renderer.py` renders only projected values into dependency-free offline
   HTML, including the elapsed-monotonic execution graph, frozen runtime
   foundation bindings, configured time/depth preparation bounds, captured
@@ -51,5 +58,8 @@ inspection/runner/
 Runner lifecycle/control-plane evidence is the Tool's scope. Fresh
 kernel/dataplane inspection, traffic telemetry, and active traffic validation
 remain distinct concerns. Runner memory stays bounded independently of trace
-length; standard generated execution preserves the complete trace on disk.
-Large-history indexing/streaming UI remains future Tool work.
+length. The Tool fails closed when bounded durable history overflowed or did
+not close completely. Its projection keeps only summaries/timeline drill-down
+and a pointer to the exact JSONL source, rather than embedding a second full
+raw history in both JSON and HTML. A fully streaming percentile/index builder
+remains future Tool work.

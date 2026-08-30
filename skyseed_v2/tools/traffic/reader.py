@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from ipaddress import IPv4Interface, ip_interface
@@ -12,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from tools._chunk_encoding import decode_json_chunk
+from tools.runner.reader import read_runner_event_history
 
 
 _COMPILED_DOMAINS = ("resources", "parameters", "forwarding", "zone_edges")
@@ -29,6 +31,9 @@ def read_traffic_replay(
     slice_path: Path,
     bpf_compiler_path: Path,
     workload_path: Path | None = None,
+    probe_plan_path: Path | None = None,
+    probe_execution_path: Path | None = None,
+    runner_events_path: Path | None = None,
 ) -> TrafficReplayRead:
     """Read and structurally validate one replay evidence set."""
 
@@ -36,6 +41,17 @@ def read_traffic_replay(
     dynamic_path = Path(slice_path)
     compiler_path = Path(bpf_compiler_path)
     workload_path = None if workload_path is None else Path(workload_path)
+    qualification_paths = (
+        probe_plan_path,
+        probe_execution_path,
+        runner_events_path,
+    )
+    if any(value is not None for value in qualification_paths) and not all(
+        value is not None for value in qualification_paths
+    ):
+        raise ValueError(
+            "Traffic qualification requires plan, execution, and Runner events"
+        )
     records = _read_json_lines(telemetry)
     if not records or records[0].get("record_type") != "telemetry_header":
         raise ValueError("traffic telemetry must begin with one header")
@@ -69,6 +85,7 @@ def read_traffic_replay(
 
     interface_records = _records_of_type(records, "interface_identity")
     interfaces: dict[tuple[int, int, int], dict[str, Any]] = {}
+    physical_interfaces: dict[tuple[int, int], list[dict[str, Any]]] = defaultdict(list)
     for value in interface_records:
         generation = _non_negative_int(value.get("generation"), "generation")
         slot = _non_negative_int(value.get("node_slot"), "node_slot")
@@ -89,6 +106,7 @@ def read_traffic_replay(
         if key in interfaces:
             raise ValueError("traffic telemetry interface identity is not unique")
         interfaces[key] = dict(value)
+        physical_interfaces[(slot, ifindex)].append(dict(value))
     generation_networks = _read_generation_networks(interfaces, nodes_by_slot)
 
     packets = []
@@ -110,9 +128,21 @@ def read_traffic_replay(
         ingress = _positive_int(packet.get("ingress_ifindex"), "ingress_ifindex")
         ingress_identity = interfaces.get((generation, slot, ingress))
         if ingress_identity is None:
-            raise ValueError("packet lacks exact-generation ingress identity")
+            ingress_identity = _inactive_ingress_identity(
+                packet,
+                physical_interfaces.get((slot, ingress), ()),
+            )
+            if ingress_identity is None:
+                raise ValueError("packet lacks exact-generation ingress identity")
+        else:
+            ingress_identity = {
+                **ingress_identity,
+                "packet_identity_validity": "exact-generation",
+                "identity_generations": (generation,),
+            }
         if ingress_identity["node_id"] != nodes_by_slot[slot]["node_id"]:
             raise ValueError("packet ingress identity contradicts its node slot")
+        packet["ingress_identity"] = ingress_identity
         egress = packet.get("selected_egress_ifindex")
         if egress is not None:
             egress = _positive_int(egress, "selected_egress_ifindex")
@@ -172,11 +202,46 @@ def read_traffic_replay(
         dynamic_nodes=dynamic_nodes,
         dynamic_zone_ids=set(dynamic_zones),
     )
+    qualification = None
+    runner_events: tuple[dict[str, Any], ...] | None = None
+    if probe_plan_path is not None:
+        plan = _read_probe_plan(Path(probe_plan_path))
+        execution = _read_probe_execution(
+            Path(probe_execution_path), plan  # type: ignore[arg-type]
+        )
+        runner_events = read_runner_event_history(
+            Path(runner_events_path)  # type: ignore[arg-type]
+        )
+        _validate_qualification_alignment(
+            plan,
+            execution,
+            runner_events,
+            telemetry_origin=telemetry_origin,
+        )
+        generation_networks = _published_generation_networks(
+            generation_networks,
+            runner_events,
+            packets,
+        )
+        qualification = {
+            "plan": plan,
+            "execution": execution,
+            "runner_events": runner_events,
+        }
     generation_networks = _align_generation_networks(
         generation_networks,
         compiler_evidence["nominal_boundaries"],
         compiler_evidence["zone_events"],
+        allow_prefix=qualification is not None,
     )
+    active_boundary_by_generation = {
+        int(value["generation"]): value["boundary_timestamp"]
+        for value in generation_networks
+    }
+    for packet in packets:
+        packet["active_boundary_timestamp"] = active_boundary_by_generation[
+            int(packet["generation"])
+        ]
     workload = (
         None
         if workload_path is None
@@ -192,7 +257,6 @@ def read_traffic_replay(
             },
         )
     )
-
     return TrafficReplayRead(
         {
             "format_version": 3,
@@ -210,9 +274,311 @@ def read_traffic_replay(
             "timeline": timeline,
             "compiler": compiler_evidence,
             "workload": workload,
+            "qualification": qualification,
             "raw_records": tuple(dict(value) for value in records),
         }
     )
+
+
+def _read_probe_plan(path: Path) -> dict[str, Any]:
+    value = _read_json(path, "Traffic probe plan")
+    horizon = _mapping(value.get("planning_horizon"), "probe planning horizon")
+    planning = _mapping(value.get("planning"), "probe planning")
+    if (
+        value.get("artifact_type") != "traffic-probe-plan"
+        or value.get("format_version") != 1
+        or value.get("runtime_authority") is not False
+        or value.get("classification_scope")
+        != "authoritative-active-published-runtime-only"
+        or horizon.get("terminality") != "unknown"
+        or horizon.get("revision_semantics") != "revisable-lookahead"
+        or planning.get("selection_strategy") != "bounded-stratified-reservoir"
+        or planning.get("global_flow_ranking") is not False
+    ):
+        raise ValueError("Traffic probe plan is incompatible")
+    identities = _object_list(value.get("probe_identities"), "probe identities")
+    episodes = _object_list(value.get("episodes"), "probe episodes")
+    if planning.get("selected_probe_identity_count") != len(identities):
+        raise ValueError("Traffic probe identity count differs")
+    if planning.get("selected_episode_count") != len(episodes):
+        raise ValueError("Traffic probe episode count differs")
+    _parse_timestamp(horizon.get("coverage_start_time"), "probe coverage start")
+    _parse_timestamp(horizon.get("coverage_end_time"), "probe coverage end")
+    _non_empty_string(horizon.get("revision_id"), "probe revision_id")
+    return value
+
+
+def _read_probe_execution(
+    path: Path, plan: Mapping[str, Any]
+) -> tuple[dict[str, Any], ...]:
+    records = _read_json_lines(path)
+    if not records or records[0].get("record_type") != "execution_header":
+        raise ValueError("Traffic probe execution must begin with one header")
+    header = records[0]
+    horizon = _mapping(plan.get("planning_horizon"), "probe planning horizon")
+    if (
+        header.get("artifact_type") != "traffic-probe-execution"
+        or header.get("format_version") != 1
+        or header.get("plan_revision_id") != horizon.get("revision_id")
+        or header.get("classification_scope")
+        != "authoritative-active-published-runtime-only"
+    ):
+        raise ValueError("Traffic probe execution header is incompatible")
+    identities = {
+        _non_empty_string(value.get("probe_id"), "probe_id")
+        for value in _object_list(plan.get("probe_identities"), "probe identities")
+    }
+    episodes = {
+        _non_empty_string(value.get("episode_id"), "episode_id")
+        for value in _object_list(plan.get("episodes"), "probe episodes")
+    }
+    episode_probe = {
+        _non_empty_string(value.get("episode_id"), "episode_id"):
+        _non_empty_string(value.get("probe_id"), "episode probe_id")
+        for value in _object_list(plan.get("episodes"), "probe episodes")
+    }
+    executor_ends = []
+    launched = set()
+    stopped = set()
+    observed_segments = set()
+    terminal_episodes = set()
+    allowed_record_types = {
+        "executor_start",
+        "clock_alignment",
+        "published_frontier_observed",
+        "episode_armed",
+        "episode_paused",
+        "episode_completed",
+        "episode_cancelled",
+        "episode_not_run",
+        "generator_launched",
+        "generator_stopped",
+        "ping_observation",
+        "zone_source_migration",
+        "executor_failure",
+        "executor_end",
+    }
+    for value in records[1:]:
+        record_type = _non_empty_string(
+            value.get("record_type"), "probe execution record_type"
+        )
+        if record_type not in allowed_record_types:
+            raise ValueError("Traffic probe execution record type is unsupported")
+        _positive_int(value.get("host_monotonic_ns"), "host_monotonic_ns")
+        _parse_timestamp(value.get("wall_time"), "probe execution wall_time")
+        probe_id = value.get("probe_id")
+        episode_id = value.get("episode_id")
+        if probe_id is not None and probe_id not in identities:
+            raise ValueError("Traffic probe execution references an unknown probe")
+        if episode_id is not None and episode_id not in episodes:
+            raise ValueError("Traffic probe execution references an unknown episode")
+        if episode_id is not None and probe_id != episode_probe[episode_id]:
+            raise ValueError("Traffic probe execution episode/probe identity differs")
+        if record_type == "generator_launched":
+            key = (
+                episode_id,
+                _positive_int(value.get("segment_index"), "segment_index"),
+            )
+            if key in launched:
+                raise ValueError("Traffic generator launch identity is duplicated")
+            launched.add(key)
+            _positive_int(value.get("icmp_identifier"), "icmp_identifier")
+            _non_empty_string(value.get("physical_source_container_id"), "container")
+            _parse_timestamp(
+                value.get("published_active_frontier"),
+                "generator published active frontier",
+            )
+        elif record_type == "generator_stopped":
+            key = (
+                episode_id,
+                _positive_int(value.get("segment_index"), "segment_index"),
+            )
+            if key in stopped:
+                raise ValueError("Traffic generator stop identity is duplicated")
+            if key not in launched:
+                raise ValueError("Traffic generator stopped without a launch")
+            stopped.add(key)
+            _non_negative_int(value.get("sent"), "sent")
+            _non_negative_int(value.get("received"), "received")
+        elif record_type == "ping_observation":
+            key = (
+                episode_id,
+                _positive_int(value.get("segment_index"), "segment_index"),
+            )
+            observed_segments.add(key)
+            if not isinstance(value.get("raw_line"), str):
+                raise ValueError("Traffic Ping observation lacks retained stdout")
+            _parse_timestamp(
+                value.get("published_active_frontier"),
+                "Ping published active frontier",
+            )
+            sequence = value.get("icmp_sequence")
+            if sequence is not None:
+                _positive_int(sequence, "icmp_sequence")
+            rtt = value.get("rtt_ms")
+            if rtt is not None:
+                _non_negative_number(rtt, "rtt_ms")
+        elif record_type == "zone_source_migration":
+            start = _positive_int(
+                value.get("migration_start_monotonic_ns"), "migration start"
+            )
+            end = _positive_int(
+                value.get("migration_end_monotonic_ns"), "migration end"
+            )
+            if end < start:
+                raise ValueError("Traffic Zone migration bracket is reversed")
+        elif record_type in {
+            "episode_completed",
+            "episode_cancelled",
+            "episode_not_run",
+        }:
+            if episode_id in terminal_episodes:
+                raise ValueError("Traffic probe episode has multiple dispositions")
+            terminal_episodes.add(episode_id)
+            if value.get("plan_revision_id") != horizon.get("revision_id"):
+                raise ValueError("Traffic episode disposition has wrong revision")
+            rearmable = value.get("rearmable")
+            if rearmable is not (record_type != "episode_completed"):
+                raise ValueError("Traffic episode re-arm semantics are invalid")
+        elif record_type == "executor_end":
+            executor_ends.append(value)
+    if len(executor_ends) != 1:
+        raise ValueError("Traffic probe execution requires one executor ending")
+    if records[-1].get("record_type") != "executor_end":
+        raise ValueError("Traffic probe executor ending must be final")
+    if launched != stopped:
+        raise ValueError("Traffic probe execution leaves generator evidence incomplete")
+    if not observed_segments <= launched:
+        raise ValueError("Traffic Ping observation lacks a generator launch")
+    if terminal_episodes != episodes:
+        raise ValueError("Traffic probe execution leaves episode disposition incomplete")
+    executor_end = executor_ends[0]
+    if (
+        not isinstance(executor_end.get("complete"), bool)
+        or not isinstance(executor_end.get("cleanup_complete"), bool)
+        or _non_negative_int(
+            executor_end.get("active_generators"), "active_generators"
+        )
+        != 0
+    ):
+        raise ValueError("Traffic probe executor ending is incomplete")
+    return tuple(dict(value) for value in records)
+
+
+def _validate_qualification_alignment(
+    plan: Mapping[str, Any],
+    execution: tuple[dict[str, Any], ...],
+    runner_events: tuple[dict[str, Any], ...],
+    *,
+    telemetry_origin: datetime,
+) -> None:
+    horizon = _mapping(plan.get("planning_horizon"), "probe planning horizon")
+    if _parse_timestamp(
+        horizon.get("coverage_start_time"), "probe coverage start"
+    ) != telemetry_origin:
+        raise ValueError("Traffic probe plan and telemetry origins differ")
+    starts = [
+        value for value in runner_events if value.get("event") == "automatic_run_start"
+    ]
+    if len(starts) != 1 or starts[0].get("nominal_origin") != telemetry_origin.isoformat():
+        raise ValueError("Traffic qualification Runner origin differs")
+    for value in runner_events:
+        if value.get("event") != "activation_end":
+            continue
+        start = _positive_int(
+            value.get("generation_switch_start_monotonic_ns"),
+            "generation switch start",
+        )
+        end = _positive_int(
+            value.get("generation_switch_end_monotonic_ns"),
+            "generation switch end",
+        )
+        if end < start:
+            raise ValueError("Runner generation switch bracket is reversed")
+        duration = _non_negative_number(
+            value.get("activation_switch_seconds"), "activation switch duration"
+        )
+        if abs(duration - (end - start) / 1_000_000_000) > 1e-9:
+            raise ValueError("Runner generation switch duration differs from bracket")
+    published_runner_frontiers = {
+        value.get("active_frontier")
+        for value in runner_events
+        if value.get("event") == "activation_end"
+    }
+    for value in execution:
+        published = value.get("published_active_frontier")
+        if published is not None and published not in published_runner_frontiers:
+            raise ValueError(
+                "Traffic execution uses a frontier not published by Runner"
+            )
+        if value.get("record_type") == "published_frontier_observed":
+            active = value.get("active_frontier")
+            _parse_timestamp(active, "observed published frontier")
+            if active not in published_runner_frontiers:
+                raise ValueError(
+                    "Traffic execution observed an unpublished Runner frontier"
+                )
+    executor_end = next(
+        value for value in execution if value.get("record_type") == "executor_end"
+    )
+    if executor_end.get("plan_revision_id") != horizon.get("revision_id"):
+        raise ValueError("Traffic executor ending has the wrong plan revision")
+
+
+def _object_list(value: object, label: str) -> tuple[dict[str, Any], ...]:
+    if not isinstance(value, list):
+        raise ValueError(f"{label} must be a list")
+    return tuple(_mapping(item, label) for item in value)
+
+
+def _mapping(value: object, label: str) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{label} must be an object")
+    return dict(value)
+
+
+def _non_negative_number(value: object, label: str) -> float:
+    result = _finite_number(value, label)
+    if result < 0:
+        raise ValueError(f"{label} must be non-negative")
+    return result
+
+
+def _inactive_ingress_identity(
+    packet: Mapping[str, Any],
+    candidates: Sequence[Mapping[str, Any]],
+) -> dict[str, Any] | None:
+    """Resolve only an unambiguous physically present but inactive ingress."""
+
+    if (
+        packet.get("decision") != "drop"
+        or packet.get("reason") != "inactive-ingress"
+        or packet.get("selected_egress_ifindex") is not None
+        or not candidates
+    ):
+        return None
+    signatures: dict[tuple[object, ...], list[Mapping[str, Any]]] = defaultdict(list)
+    for value in candidates:
+        signatures[
+            (
+                value.get("node_id"),
+                value.get("ifindex"),
+                value.get("interface"),
+                value.get("connection_id"),
+                value.get("peer_node_id"),
+            )
+        ].append(value)
+    if len(signatures) != 1:
+        return None
+    matching = next(iter(signatures.values()))
+    identity = dict(matching[0])
+    identity["packet_identity_validity"] = (
+        "unique-observed-physical-inactive-ingress"
+    )
+    identity["identity_generations"] = tuple(
+        sorted(int(value["generation"]) for value in matching)
+    )
+    return identity
 
 
 def _read_generation_networks(
@@ -443,12 +809,57 @@ def _read_zone_prefixes(value: object) -> dict[str, str]:
     return result
 
 
+def _published_generation_networks(
+    generation_networks: tuple[dict[str, Any], ...],
+    runner_events: tuple[dict[str, Any], ...],
+    packets: Sequence[Mapping[str, Any]],
+) -> tuple[dict[str, Any], ...]:
+    """Restrict qualification topology to authoritative published ACTIVE state."""
+
+    available = {
+        int(value["generation"]): value for value in generation_networks
+    }
+    published: dict[int, str] = {}
+    for value in runner_events:
+        if value.get("event") != "activation_end":
+            continue
+        generation = _non_negative_int(
+            value.get("active_generation"), "active_generation"
+        )
+        frontier = _parse_timestamp(
+            value.get("active_frontier"), "active_frontier"
+        ).isoformat()
+        if generation in published:
+            raise ValueError("Runner publishes an ACTIVE generation twice")
+        published[generation] = frontier
+    if not published or sorted(published) != list(range(len(published))):
+        raise ValueError("Runner ACTIVE generations are not one continuous prefix")
+    result = []
+    for generation in sorted(published):
+        network = available.get(generation)
+        if (
+            network is None
+            or network.get("boundary_timestamp") != published[generation]
+        ):
+            raise ValueError(
+                "Runner ACTIVE generation contradicts telemetry identity evidence"
+            )
+        result.append(network)
+    if any(int(value["generation"]) not in published for value in packets):
+        raise ValueError("packet references a generation not published ACTIVE")
+    return tuple(result)
+
+
 def _align_generation_networks(
     generation_networks: tuple[dict[str, Any], ...],
     nominal_boundaries: tuple[str, ...],
     zone_events: tuple[dict[str, Any], ...],
+    *,
+    allow_prefix: bool = False,
 ) -> tuple[dict[str, Any], ...]:
-    if len(generation_networks) != len(nominal_boundaries):
+    if len(generation_networks) > len(nominal_boundaries) or (
+        not allow_prefix and len(generation_networks) != len(nominal_boundaries)
+    ):
         raise ValueError("generation and nominal boundary counts differ")
     events_by_time: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for event in zone_events:
@@ -456,7 +867,11 @@ def _align_generation_networks(
     services: dict[str, str] = {}
     result = []
     for index, (network, boundary) in enumerate(
-        zip(generation_networks, nominal_boundaries, strict=True)
+        zip(
+            generation_networks,
+            nominal_boundaries[: len(generation_networks)],
+            strict=True,
+        )
     ):
         if network["generation"] != index or network["boundary_timestamp"] != boundary:
             raise ValueError("generation-to-boundary mapping contradicts Compiler evidence")

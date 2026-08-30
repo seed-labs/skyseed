@@ -62,6 +62,20 @@ def render_traffic_replay_page(data: dict[str, Any]) -> str:
   </div>
 </section>
 
+<section id="qualification-section" hidden>
+  <div class="section-heading">
+    <div><span class="eyebrow-small">Traffic Qualification</span><h2>Probe result</h2><p class="muted">Only authoritative active/published runtime evolution is classified; unexecuted lookahead remains revisable.</p></div>
+    <span class="status" id="qualification-status"></span>
+  </div>
+  <div id="qualification-summary" class="compact-facts"></div>
+  <div class="card qualification-browser"><table>
+    <thead><tr><th>Probe / episode</th><th>Direction</th><th>Execution</th><th>Packets</th><th>RTT p95</th><th>Classification</th></tr></thead>
+    <tbody id="qualification-table"></tbody>
+  </table></div>
+  <details class="card" id="qualification-detail"><summary>Selected episode → raw execution evidence</summary><pre id="qualification-json"></pre></details>
+  <details class="card"><summary>Revisable planning horizon / identities</summary><pre id="qualification-plan-json"></pre></details>
+</section>
+
 <section class="selected-layout">
   <div class="card selected-traffic">
     <span class="eyebrow-small">Selected Traffic</span>
@@ -230,6 +244,7 @@ header { padding-bottom:4px; }
 .current-packet-step { margin-top:14px; min-height:90px; }.current-packet-step strong { color:var(--warn); font-size:18px; }.current-packet-step code { display:block; margin-top:5px; color:var(--muted); }
 .evidence-detail { margin-top:14px; }.evidence-detail pre { max-height:400px; overflow:auto; }.scroll { overflow:auto; } td code { font-size:11px; }
 details.card { margin-top:14px; } details pre { max-height:480px; overflow:auto; }
+.qualification-browser { margin-top:12px; overflow:auto; }.qualification-row { cursor:pointer; }.qualification-row:hover,.qualification-row.selected { background:#12314a; }.qualification-browser td:first-child code { display:block; margin-top:3px; color:var(--muted); }.classification { font-weight:750; color:var(--warn); }
 @media (max-width:960px) { .replay-toolbar { align-items:flex-start; flex-direction:column; }.primary-controls { justify-content:flex-start; }.network-layout { grid-template-columns:1fr; height:auto; }.globe-panel { height:62vh; min-height:450px; }.traffic-browser { height:280px; }.selected-layout { grid-template-columns:1fr; } }
 @media (max-width:620px) { .globe-panel { height:55vh; min-height:380px; }.primary-controls code { min-width:0; width:100%; }.ping-browser { font-size:12px; }.ping-browser th:nth-child(5),.ping-browser td:nth-child(5),.ping-browser th:nth-child(6),.ping-browser td:nth-child(6) { display:none; } }
 """
@@ -259,6 +274,7 @@ let lastFrameMs=0;
 let recentWindowSeconds=Number(DATA.visualization?.recent_traffic_default_seconds||5);
 let selectedFlowId=flows[0]?.flow_id??null;
 let selectedTransactionId=null;
+let selectedQualificationEpisodeId=DATA.qualification?.episodes?.[0]?.episode_id??null;
 let packetEvidenceActive=false;
 let pingReplay=null;
 let lastFlowRefreshMs=0;
@@ -480,7 +496,6 @@ function drawGlobe(){
   for(const [id,point] of projected){
     const metadata=nodeById.get(id);if(!point.visible)continue;
     if(selectedNodes.has(id))drawLabel(point.x,point.y-9,shortName(metadata?.display_name||id),"#ffd166",true);
-    else if(metadata?.kind==="ground-station")drawLabel(point.x,point.y-7,metadata.display_name,"#a9e9c7",false);
   }
   canvas.dataset.cameraLongitude=String(viewLon);
   canvas.dataset.cameraLatitude=String(viewLat);
@@ -589,9 +604,23 @@ function renderWorkload(){
   const section=$("planned-workload"),lanes=DATA.traffic_lanes||[];section.hidden=!DATA.workload;
   $("workload-table").innerHTML=lanes.map(value=>`<tr><td>${esc(value.series_id)}</td><td>${esc(value.ground_station.display_name)} ↔ ${esc(value.zone.zone_id)}</td><td>${esc(value.schedule.start_time)} → ${esc(value.schedule.end_time)}<br>${esc(value.schedule.interval_seconds)}s cadence</td><td>${value.scheduled_slots}</td><td>${value.observed_transactions}</td><td>${value.observed_gap_slots}</td></tr>`).join("");
 }
+function renderQualification(){
+  const section=$("qualification-section"),qualification=DATA.qualification;section.hidden=!qualification;if(!qualification)return;
+  const summary=qualification.summary,status=String(summary.status||"FAIL"),badge=$("qualification-status");badge.className=`status ${status==="PASS"?"PASS":status==="FAIL"?"FAIL":"OBSERVED"}`;badge.textContent=status;
+  $("qualification-summary").innerHTML=[
+    `${summary.probe_identities} stable identities`,`${summary.episodes} episodes`,`${summary.sent} sent / ${summary.received} received`,`${Number(summary.loss_percent).toFixed(2)}% loss`,`RTT p95 ${summary.rtt_ms?.p95??"—"} ms`,`${summary.active_activation_count} published activations`,`Traffic probe-plan construction ${Number(summary.probe_plan_construction_duration_seconds??0).toFixed(3)} s`,`revision ${summary.plan_revision_id}`
+  ].map(value=>`<span class="fact-pill">${esc(value)}</span>`).join("");
+  const episodes=qualification.episodes||[];
+  $("qualification-table").innerHTML=episodes.map(value=>`<tr class="qualification-row ${value.episode_id===selectedQualificationEpisodeId?"selected":""}" data-qualification-episode="${esc(value.episode_id)}"><td>${esc(value.probe_id)}<code>${esc(value.episode_id)}</code></td><td>${esc(value.direction)}<br>${esc(value.path_stability)} / ${esc(value.path_length_class)}</td><td>${esc(value.execution_disposition)}${value.rearmable?"<br>rearmable":""}</td><td>${value.sent} / ${value.received}<br>${Number(value.loss_percent).toFixed(2)}%</td><td>${esc(value.rtt_ms?.p95)}</td><td class="classification">${esc((value.classifications||[]).join(", "))}</td></tr>`).join("");
+  document.querySelectorAll("[data-qualification-episode]").forEach(row=>row.onclick=()=>{selectedQualificationEpisodeId=row.dataset.qualificationEpisode;renderQualification();});
+  const selected=episodes.find(value=>value.episode_id===selectedQualificationEpisodeId)||episodes[0]||null;
+  const raw=(DATA.raw_evidence?.probe_execution_records||[]).filter(value=>value.episode_id===selected?.episode_id||value.record_type==="execution_header"||value.record_type==="executor_start"||value.record_type==="executor_end");
+  $("qualification-json").textContent=JSON.stringify({projected_episode:selected,raw_execution_records:raw},null,2);
+  $("qualification-plan-json").textContent=JSON.stringify({planning_horizon:DATA.raw_evidence?.probe_plan?.planning_horizon,planning:DATA.raw_evidence?.probe_plan?.planning,probe_identities:DATA.raw_evidence?.probe_plan?.probe_identities},null,2);
+}
 function renderRaw(){
   $("unclassified-table").innerHTML=(DATA.unclassified_observations||[]).map(value=>`<tr><td>${esc(protocolName(value.protocol))}</td><td>${esc(value.source_ipv4)} → ${esc(value.destination_ipv4)}</td><td>${value.observations?.length||0}</td><td>${esc(value.classification_reason)}</td></tr>`).join("")||'<tr><td colspan="4" class="muted">No raw / unclassified observations.</td></tr>';
-  $("evidence-json").textContent=JSON.stringify({authority:DATA.authority,overview:DATA.overview,clock:DATA.clock,position:DATA.position,visualization:DATA.visualization,inventory:DATA.inventory},null,2);
+  $("evidence-json").textContent=JSON.stringify({authority:DATA.authority,overview:DATA.overview,clock:DATA.clock,position:DATA.position,visualization:DATA.visualization,inventory:DATA.inventory,runner_events:DATA.raw_evidence?.runner_events},null,2);
 }
 function renderEvidenceHealth(){
   const healthy=DATA.overview.telemetry_complete&&Number(DATA.overview.reported_losses)===0;
@@ -614,5 +643,5 @@ function frame(now){
   if(simulationPlaying){if(!lastFrameMs)lastFrameMs=now;simulationMs+=Math.max(0,now-lastFrameMs)*simulationSpeed;if(simulationMs>=endMs){simulationMs=endMs;simulationPlaying=false;}lastFrameMs=now;renderTimeline();renderOverview();drawGlobe();if(now-lastFlowRefreshMs>250){renderFlowBrowser();lastFlowRefreshMs=now;}}else lastFrameMs=now;
   advancePingReplay(now);if(pingReplay)drawGlobe();requestAnimationFrame(frame);
 }
-renderWorkload();renderRaw();renderEvidenceHealth();renderActivity();renderAll();requestAnimationFrame(frame);
+renderWorkload();renderQualification();renderRaw();renderEvidenceHealth();renderActivity();renderAll();requestAnimationFrame(frame);
 """

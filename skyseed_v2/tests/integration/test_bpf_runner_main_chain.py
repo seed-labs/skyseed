@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import timedelta
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -15,7 +17,7 @@ from examples.mini_satellite_internet.simu import (
     prepare_mini_satellite_internet_planning,
 )
 from skyseed_v2.backend.bpf import BpfCompiledRealization
-from skyseed_v2 import _generated_bpf_execution as bpf_bootstrap
+from skyseed_v2.experiment import execution as bpf_bootstrap
 from skyseed_v2.simulator import Plan
 from skyseed_v2.backend.bpf.runner import _resolve_nominal_boundaries
 from skyseed_v2.backend.bpf._runner.runtime_realization import (
@@ -162,8 +164,8 @@ def test_canonical_compiler_output_is_sufficient_for_runner_preparation() -> Non
     assert sum(len(value.forwarding_realizations) for value in compiled) == 708
     assert sum(len(value.zone_edge_realizations) for value in compiled) == 12
     assert capacity["mode"] == "bounded-full-range"
-    assert capacity["known_generation_count"] == len(boundaries)
-    assert capacity["resident_generation_capacity"] == len(boundaries)
+    assert capacity["known_generation_count"] == 26
+    assert capacity["resident_generation_capacity"] == 26
     assert all(
         value["configured_active_link_entries"]
         == value["required_active_link_entries"]
@@ -209,7 +211,21 @@ def test_canonical_compiler_output_is_sufficient_for_runner_preparation() -> Non
         163,
         163,
     ]
-    assert [value.generation for value in prepared[:4]] == [0, 1, 2, 3]
+    assert [value.generation for value in prepared[:6]] == [0, 1, 2, 3, 4, 4]
+    assert [value.generation_changed for value in prepared[:6]] == [
+        True,
+        True,
+        True,
+        True,
+        True,
+        False,
+    ]
+    assert sum(
+        len(node["qdisc"])
+        for node in prepared[5].activation_request["nodes"]
+    ) > 0
+    assert prepared[5].preparation_result["preloaded_active_links"] == 0
+    assert prepared[5].preparation_result["preloaded_routes"] == 0
     assert [value.expected_active_generation for value in prepared[:4]] == [
         0xFFFFFFFF,
         0,
@@ -247,6 +263,59 @@ def test_canonical_compiler_output_is_sufficient_for_runner_preparation() -> Non
     ]
     assert route_deletes
     assert all(route["destination"] and route["interface"] for route in route_deletes)
+
+
+def _install_traffic_execution_fakes(monkeypatch, output, calls) -> None:
+    probe_plan = output / "inspection/traffic/probe-plan.json"
+    probe_plan.parent.mkdir(parents=True, exist_ok=True)
+    probe_plan.write_text("{}\n", encoding="utf-8")
+    plan = object()
+
+    class _TrafficExecutor:
+        def __init__(self, **facts):
+            calls.append(("traffic-executor", facts))
+
+        def start(self, runner):
+            calls.append(("traffic-start", runner))
+
+        def stop(self):
+            calls.append("traffic-stop")
+            return {"complete": True, "cleanup_complete": True}
+
+    monkeypatch.setattr(bpf_bootstrap, "read_traffic_probe_plan", lambda path: plan)
+    monkeypatch.setattr(bpf_bootstrap, "TrafficProbeExecutor", _TrafficExecutor)
+
+
+def test_runtime_invocation_index_preserves_each_raw_run(tmp_path: Path) -> None:
+    root = tmp_path / "inspection/runtime-runs"
+    bpf_bootstrap._write_runtime_invocation_index(
+        root,
+        invocation_id="run-a",
+        status="running",
+    )
+    bpf_bootstrap._write_runtime_invocation_index(
+        root,
+        invocation_id="run-a",
+        status="completed",
+    )
+    first = (root / "run-a/invocation.json").read_bytes()
+    bpf_bootstrap._write_runtime_invocation_index(
+        root,
+        invocation_id="run-b",
+        status="failed",
+    )
+
+    assert (root / "run-a/invocation.json").read_bytes() == first
+    assert json.loads(first)["raw_evidence"] == {
+        "resource_samples": "runner/runner-events.jsonl",
+        "runner_events": "runner/runner-events.jsonl",
+        "runner_outcome": "runner/runner-invocation.json",
+        "traffic_execution": "traffic/probe-execution.jsonl",
+        "traffic_telemetry": "traffic/traffic-telemetry.jsonl",
+    }
+    assert json.loads((root / "latest.json").read_text(encoding="utf-8"))[
+        "invocation_id"
+    ] == "run-b"
 
 
 def test_standard_generated_execution_owns_lifecycle_and_detached_tool_handoff(
@@ -318,17 +387,97 @@ def test_standard_generated_execution_owns_lifecycle_and_detached_tool_handoff(
             ("inspection-handoff", path, snapshot, outcome)
         ),
     )
+    _install_traffic_execution_fakes(monkeypatch, output, calls)
 
     bpf_bootstrap._run_generated_bpf_experiment(output)
 
     assert "prepare" in calls
-    assert calls.index("prepare") < calls.index("run") < calls.index("cleanup")
+    assert (
+        calls.index("prepare")
+        < next(index for index, value in enumerate(calls) if isinstance(value, tuple) and value[0] == "traffic-start")
+        < calls.index("run")
+        < calls.index("traffic-stop")
+        < calls.index("cleanup")
+    )
     supplier = next(value for value in calls if value[0] == "supplier")
     assert set(supplier[1]) == {"generation_lookahead", "compiled_history_path"}
     handoff = next(value for value in calls if value[0] == "inspection-handoff")
     assert handoff[1] == output / "inspection/runner/runner-invocation.json"
     assert handoff[3]["status"] == "completed"
     assert not any("traffic_workload" in repr(value) for value in calls)
+
+
+def test_generated_execution_consumes_persisted_realization_handoff(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    calls = []
+    output = tmp_path / "output"
+
+    class _Runner:
+        def __init__(self, **facts):
+            calls.append(("runner", facts))
+
+        def _enable_event_history(self, path):
+            calls.append(("event-history", path))
+
+        def _enable_traffic_telemetry(self, path):
+            calls.append(("traffic-telemetry", path))
+
+        def prepare(self):
+            calls.append("prepare")
+
+        def run(self):
+            calls.append("run")
+
+        def cleanup(self):
+            calls.append("cleanup")
+
+        def inspection_snapshot(self):
+            return {"format_version": 1, "runner": {}, "events": ()}
+
+    supplier = lambda: None
+    monkeypatch.delenv("SKYSEED_RUNNER_ACTIVATION_LIMIT", raising=False)
+    monkeypatch.setattr(
+        bpf_bootstrap,
+        "_read_and_verify_execution_definition",
+        lambda _output: {
+            "simulation": {"generation_lookahead_seconds": 50},
+            "runner": {
+                "preparation_lookahead_seconds": 0,
+                "preparation_boundary_depth": 1,
+            },
+            "generated_output_identity": "s4-persisted-execution",
+            "realization_handoff": {
+                "manifest": "runtime/realizations/manifest.json"
+            },
+        },
+    )
+    monkeypatch.setattr(
+        bpf_bootstrap,
+        "_PersistedRealizationSupplier",
+        lambda manifest: calls.append(("persisted-supplier", manifest))
+        or supplier,
+    )
+    monkeypatch.setattr(
+        bpf_bootstrap,
+        "_construct_progression",
+        lambda *_args: pytest.fail("persisted execution must not rebuild progression"),
+    )
+    monkeypatch.setattr(bpf_bootstrap, "BpfRunner", _Runner)
+    monkeypatch.setattr(
+        bpf_bootstrap,
+        "_write_runner_inspection_handoff",
+        lambda *_args: None,
+    )
+    _install_traffic_execution_fakes(monkeypatch, output, calls)
+
+    bpf_bootstrap._run_generated_bpf_experiment(output)
+
+    assert ("persisted-supplier", output / "runtime/realizations/manifest.json") in calls
+    runner_facts = next(value[1] for value in calls if value[0] == "runner")
+    assert runner_facts["future_realization_supplier"] is supplier
+    assert calls.index("prepare") < calls.index("run") < calls.index("cleanup")
 
 
 @pytest.mark.parametrize(
@@ -435,6 +584,8 @@ def test_generated_execution_handoff_preserves_error_precedence(
         "_write_runner_inspection_handoff",
         write_handoff,
     )
+    traffic_calls = []
+    _install_traffic_execution_fakes(monkeypatch, output, traffic_calls)
 
     with pytest.raises(expected_type, match=expected_message):
         bpf_bootstrap._run_generated_bpf_experiment(output)

@@ -77,8 +77,8 @@ The normal controls are:
 
 `start.sh` starts the generated Compose deployment only. `run.sh` expects that
 deployment to be running and directly invokes the private root
-`skyseed_v2._generated_bpf_execution` application composition, which verifies
-`inputs/execution.json`, compact source-scope fingerprints, and generated-input
+`skyseed_v2.experiment.execution` application composition, which verifies
+`runtime/execution.json`, compact source-scope fingerprints, and generated-input
 fingerprints before reconstructing Emulator →
 Simulator/Slicer → Planner → BPF Compiler lazily from `output/inputs/` behind
 the Runner's future-work supplier. These hashes are deterministic
@@ -129,9 +129,7 @@ and isolated read-only inspection bundles:
 
 ```text
 output/
-├── .compose-project-name
 ├── inputs/
-│   ├── execution.json
 │   ├── scenario.yaml
 │   ├── traffic-workload.json
 │   └── zones.yaml
@@ -139,7 +137,13 @@ output/
 ├── run.sh
 ├── launch.sh
 ├── cleanup.sh
+├── domain-history/
+│   ├── slice-history.jsonl.gz
+│   ├── planning-history.jsonl.gz
+│   └── compiled-history.jsonl.gz
 ├── runtime/
+│   ├── compose-project-name
+│   ├── execution.json
 │   ├── docker-compose.yml
 │   └── per-node build contexts
 └── inspection/
@@ -155,7 +159,6 @@ output/
     │   ├── index.html
     │   ├── slice-manifest.json
     │   ├── chunks/slice-*.js
-    │   ├── slice-history.jsonl    # added by run.sh rolling Slicer
     │   ├── summary.txt
     │   ├── inventory.json
     │   └── checksums.sha256
@@ -164,7 +167,6 @@ output/
     │   ├── planner-manifest.json
     │   ├── planner-manifest.js
     │   ├── chunks/*.js       # lazy Plan/Difference/catalog/data chunks
-    │   ├── planning-history.jsonl # added by run.sh rolling Planner
     │   ├── summary.txt
     │   ├── inventory.json
     │   └── checksums.sha256
@@ -179,7 +181,6 @@ output/
     │   ├── manifest.json
     │   ├── manifest.js
     │   ├── chunks/*.js       # paged exact Plan/intent/baseline/diff evidence
-    │   ├── compiled-history.jsonl # added by run.sh rolling supplier
     │   ├── summary.txt
     │   ├── inventory.json
     │   └── checksums.sha256
@@ -209,14 +210,16 @@ Simulator/Topology/Slicer, and prepare consecutive immutable Plans.
 Those already-created facts and decisions feed the five generation-time
 read-only Tools. `main.py` uses its small private continuous compile loop to
 build the BPF realization chain for the Compiler inspection view. It does not
-write `slice-history.jsonl`, `planning-history.jsonl`, or
-`compiled-history.jsonl`. Those append-only histories are produced during
-`run.sh` by the rolling Slicer, Planner, and generated-execution supplier before
-their owners release working facts. Generic output loading, consistency
-verification, supplier creation, and Runner lifecycle are owned by that private
-root application composition; it starts with no real Slices or Plans, advances
-the Slicer with the explicit 300-second simulation-generation lookahead,
-synchronizes one next Plan, and compiles one realization per pull.
+retain full historical domain objects for those Tools. Instead, the canonical
+producer appends compact gzip JSONL evidence under `output/domain-history/`
+before its owners release working facts. The precomputed Tools and later live
+execution reconstruct their exact public inputs from those durable histories;
+Tool directory replacement therefore cannot delete the canonical source.
+Generic output loading, consistency verification, supplier creation, and
+Runner lifecycle are owned by that private root application composition; it
+starts with no real Slices or Plans, advances the Slicer with the configured
+simulation-generation lookahead, synchronizes one next Plan, and compiles one
+realization per pull.
 
 `output/runtime/` is the compiled static container network and
 `output/inspection/` contains only read-only views. Simulator Position,

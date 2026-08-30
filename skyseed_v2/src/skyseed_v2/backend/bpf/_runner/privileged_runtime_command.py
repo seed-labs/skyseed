@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+from concurrent.futures import ThreadPoolExecutor
 import errno
 from ipaddress import IPv4Address, IPv4Network, ip_interface, ip_network
 import json
@@ -14,6 +15,8 @@ import struct
 import subprocess
 import sys
 import traceback
+from threading import Lock
+from time import monotonic, monotonic_ns
 from typing import Any
 
 
@@ -41,6 +44,7 @@ _BPF_MAP_CREATE = 0
 _BPF_MAP_LOOKUP_ELEM = 1
 _BPF_MAP_UPDATE_ELEM = 2
 _BPF_MAP_DELETE_ELEM = 3
+_BPF_MAP_DELETE_BATCH = 27
 _BPF_PROG_LOAD = 5
 _BPF_OBJ_PIN = 6
 _BPF_OBJ_GET = 7
@@ -60,6 +64,77 @@ _TC_ACT_SHOT = 2
 _PIN_PARENT = Path("/sys/fs/bpf/skyseed-v2")
 _INTERFACE_NAME = re.compile(r"sv2[0-9a-f]{10}[ab]")
 _TELEMETRY_RING_CAPACITY = 1 << 20
+_METRICS_LOCK = Lock()
+_ACTIVE_METRICS: dict[str, Any] | None = None
+
+
+def _record_metric(name: str, amount: int = 1) -> None:
+    with _METRICS_LOCK:
+        if _ACTIVE_METRICS is not None:
+            _ACTIVE_METRICS[name] = int(_ACTIVE_METRICS.get(name, 0)) + amount
+
+
+def _record_batch_size(size: int) -> None:
+    if size <= 0:
+        return
+    with _METRICS_LOCK:
+        if _ACTIVE_METRICS is not None:
+            _ACTIVE_METRICS.setdefault("batch_sizes", []).append(size)
+
+
+def _record_worker_limit(workers: int) -> None:
+    with _METRICS_LOCK:
+        if _ACTIVE_METRICS is not None:
+            _ACTIVE_METRICS["worker_limit"] = max(
+                workers, int(_ACTIVE_METRICS.get("worker_limit", 1))
+            )
+
+
+def _run_observed_worker(operation, item):
+    with _METRICS_LOCK:
+        if _ACTIVE_METRICS is not None:
+            active = int(_ACTIVE_METRICS.get("active_workers", 0)) + 1
+            _ACTIVE_METRICS["active_workers"] = active
+            _ACTIVE_METRICS["worker_high_water"] = max(
+                active, int(_ACTIVE_METRICS.get("worker_high_water", 0))
+            )
+    try:
+        return operation(item)
+    finally:
+        with _METRICS_LOCK:
+            if _ACTIVE_METRICS is not None:
+                _ACTIVE_METRICS["active_workers"] = max(
+                    0, int(_ACTIVE_METRICS.get("active_workers", 1)) - 1
+                )
+
+
+def _worker_count(request: dict[str, Any], item_count: int) -> int:
+    value = request.get("worker_count", 1)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError("Runner privileged worker_count must be an int")
+    if value <= 0 or value > 64:
+        raise ValueError("Runner privileged worker_count must be between 1 and 64")
+    return min(value, max(1, item_count))
+
+
+def _parallel_map(request: dict[str, Any], items: list[Any], operation) -> list[Any]:
+    """Run deterministic resource-local batches through one bounded executor."""
+
+    if not items:
+        return []
+    workers = _worker_count(request, len(items))
+    _record_worker_limit(workers)
+    _record_metric("parallel_phase_count")
+    _record_metric("parallel_task_count", len(items))
+    if workers == 1:
+        return [_run_observed_worker(operation, item) for item in items]
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="skyseed-bpf") as pool:
+        return list(
+            pool.map(
+                lambda item: _run_observed_worker(operation, item),
+                items,
+            )
+        )
 
 
 class _BpfMapCreate(ctypes.Structure):
@@ -87,6 +162,19 @@ class _BpfMapElement(ctypes.Structure):
         ("pad", ctypes.c_uint32),
         ("key", ctypes.c_uint64),
         ("value", ctypes.c_uint64),
+        ("flags", ctypes.c_uint64),
+    ]
+
+
+class _BpfMapBatch(ctypes.Structure):
+    _fields_ = [
+        ("in_batch", ctypes.c_uint64),
+        ("out_batch", ctypes.c_uint64),
+        ("keys", ctypes.c_uint64),
+        ("values", ctypes.c_uint64),
+        ("count", ctypes.c_uint32),
+        ("map_fd", ctypes.c_uint32),
+        ("elem_flags", ctypes.c_uint64),
         ("flags", ctypes.c_uint64),
     ]
 
@@ -129,6 +217,13 @@ def _bpf_syscall_number() -> int:
 
 
 def _bpf(command: int, attributes: ctypes.Structure) -> int:
+    _record_metric("bpf_syscalls")
+    if command == _BPF_MAP_UPDATE_ELEM:
+        _record_metric("bpf_map_update_syscalls")
+    elif command in {_BPF_MAP_DELETE_ELEM, _BPF_MAP_DELETE_BATCH}:
+        _record_metric("bpf_map_delete_syscalls")
+        if command == _BPF_MAP_DELETE_BATCH:
+            _record_metric("bpf_map_delete_batch_syscalls")
     result = _LIBC.syscall(
         _bpf_syscall_number(),
         command,
@@ -242,6 +337,43 @@ def _delete_map(file_descriptor: int, key: int | tuple[int, int]) -> bool:
             return False
         raise
     return True
+
+
+def _delete_map_batch(
+    file_descriptor: int,
+    keys: tuple[int | tuple[int, int], ...],
+) -> int:
+    """Delete one exact key set with one fail-closed kernel batch syscall."""
+
+    if not keys:
+        return 0
+    normalized = tuple(
+        (key,) if isinstance(key, int) else tuple(key)
+        for key in keys
+    )
+    key_width = len(normalized[0])
+    if key_width not in {1, 2} or any(
+        len(key) != key_width for key in normalized
+    ):
+        raise ValueError("BPF batch-delete keys must have one fixed width")
+    packed = b"".join(
+        struct.pack(f"={key_width}I", *key) for key in normalized
+    )
+    key_buffer = ctypes.create_string_buffer(packed)
+    attributes = _BpfMapBatch(
+        keys=ctypes.addressof(key_buffer),
+        count=len(normalized),
+        map_fd=file_descriptor,
+    )
+    _bpf(_BPF_MAP_DELETE_BATCH, attributes)
+    deleted = int(attributes.count)
+    if deleted != len(normalized):
+        raise RuntimeError(
+            "BPF batch-delete did not process every requested key: "
+            f"requested={len(normalized)}, deleted={deleted}"
+        )
+    _record_metric("bpf_map_delete_operations", deleted)
+    return deleted
 
 
 def _instruction(
@@ -588,6 +720,11 @@ def _run(
     input_text: str | None = None,
     tolerate_failure: bool = False,
 ) -> subprocess.CompletedProcess[str]:
+    _record_metric("external_processes")
+    if command and command[0] == "nsenter":
+        _record_metric("namespace_processes")
+    if input_text is not None and "-batch" in command:
+        _record_batch_size(sum(bool(line.strip()) for line in input_text.splitlines()))
     result = subprocess.run(
         command,
         input=input_text,
@@ -659,6 +796,33 @@ def _interface_index(pid: int, interface_name: str) -> int:
     if len(values) != 1 or not isinstance(values[0].get("ifindex"), int):
         raise RuntimeError(f"cannot resolve interface index: {interface_name}")
     return int(values[0]["ifindex"])
+
+
+def _interface_indexes(pid: int, interface_names: set[str]) -> dict[str, int]:
+    """Resolve any number of Runner interfaces in one namespace query."""
+
+    expected = {_assert_interface_name(value) for value in interface_names}
+    if not expected:
+        return {}
+    _record_metric("interface_identity_queries")
+    values = _json_list(
+        _in_netns(pid, ["ip", "-j", "link", "show"]),
+        context="Runner interface identity query",
+    )
+    resolved = {
+        value["ifname"]: int(value["ifindex"])
+        for value in values
+        if isinstance(value, dict)
+        and value.get("ifname") in expected
+        and isinstance(value.get("ifindex"), int)
+    }
+    if set(resolved) != expected or any(value <= 0 for value in resolved.values()):
+        missing = sorted(expected - set(resolved))
+        raise RuntimeError(
+            "cannot resolve stable Runner interface identities: "
+            f"missing={missing}"
+        )
+    return resolved
 
 
 def _ip_key(address: str) -> int:
@@ -772,13 +936,9 @@ def _audit_node_addresses(request: dict[str, Any]) -> dict[str, Any]:
     if any(selected_range.overlaps(zone_network) for zone_network in zone_networks):
         raise RuntimeError("Runner node address collides with compiled Zone identity")
 
-    observed_addresses = 0
-    observed_routes = 0
-    for node in nodes:
+    def audit_node(node: dict[str, Any]) -> tuple[int, int]:
         _assert_netns(node)
         address_networks, route_networks = _namespace_ipv4_networks(node)
-        observed_addresses += len(address_networks)
-        observed_routes += len(route_networks)
         for source, networks in (
             ("address", address_networks),
             ("route", route_networks),
@@ -793,6 +953,11 @@ def _audit_node_addresses(request: dict[str, Any]) -> dict[str, Any]:
                     f"{source} before READY: node={node['key']}, "
                     f"selected={selected_range}, observed={collision}"
                 )
+        return len(address_networks), len(route_networks)
+
+    observed = _parallel_map(request, list(nodes), audit_node)
+    observed_addresses = sum(value[0] for value in observed)
+    observed_routes = sum(value[1] for value in observed)
     return {
         "result": "passed",
         "selected_node_address_range": str(selected_range),
@@ -816,14 +981,18 @@ def _initialize(request: dict[str, Any]) -> dict[str, Any]:
     nodes = tuple(request["nodes"])
     for node in nodes:
         _assert_netns(node)
+    collision_audit_started = monotonic()
     collision_audit = _audit_node_addresses(request)
+    collision_audit_seconds = monotonic() - collision_audit_started
     installed_node_keys: set[str] = set()
+    installed_node_keys_lock = Lock()
     root.mkdir(parents=True)
     active_generation_fd = -1
     telemetry_ring_fd = -1
     telemetry_loss_fd = -1
     telemetry_enabled = request.get("telemetry_enabled") is True
     try:
+        shared_scaffolding_started = monotonic()
         active_generation_fd = _create_map(
             "active_gen", key_size=4, max_entries=1
         )
@@ -848,7 +1017,8 @@ def _initialize(request: dict[str, Any]) -> dict[str, Any]:
             )
             _pin_object(telemetry_ring_fd, root / "traffic_events")
             _pin_object(telemetry_loss_fd, root / "traffic_losses")
-        for node in nodes:
+        shared_scaffolding_seconds = monotonic() - shared_scaffolding_started
+        def initialize_node(node: dict[str, Any]) -> dict[str, Any]:
             _in_netns(
                 int(node["pid"]),
                 ["ip", "-batch", "-"],
@@ -857,7 +1027,8 @@ def _initialize(request: dict[str, Any]) -> dict[str, Any]:
                     f"address add {node['node_address']}/32 dev lo\n"
                 ),
             )
-            installed_node_keys.add(node["key"])
+            with installed_node_keys_lock:
+                installed_node_keys.add(node["key"])
             node_root = root / node["pin_component"]
             node_root.mkdir()
             active_path = node_root / "active_links"
@@ -897,6 +1068,15 @@ def _initialize(request: dict[str, Any]) -> dict[str, Any]:
                 for file_descriptor in (program_fd, route_fd, active_fd):
                     if file_descriptor >= 0:
                         os.close(file_descriptor)
+            return {
+                "key": node["key"],
+                "active_links": int(node["active_links_capacity"]),
+                "routes": int(node["routes_capacity"]),
+            }
+
+        node_foundation_started = monotonic()
+        map_capacities = _parallel_map(request, list(nodes), initialize_node)
+        node_foundation_seconds = monotonic() - node_foundation_started
         return {
             "pin_root": str(root),
             "node_count": len(nodes),
@@ -915,14 +1095,16 @@ def _initialize(request: dict[str, Any]) -> dict[str, Any]:
             },
             "collision_audit": collision_audit,
             "installed_node_addresses": sorted(installed_node_keys),
-            "map_capacities": [
-                {
-                    "key": node["key"],
-                    "active_links": int(node["active_links_capacity"]),
-                    "routes": int(node["routes_capacity"]),
-                }
-                for node in nodes
-            ],
+            "map_capacities": map_capacities,
+            "preparation_phases": {
+                "collision_audit_seconds": collision_audit_seconds,
+                "shared_bpf_map_pin_scaffolding_seconds": (
+                    shared_scaffolding_seconds
+                ),
+                "node_address_map_program_scaffolding_seconds": (
+                    node_foundation_seconds
+                ),
+            },
         }
     except BaseException:
         _cleanup(
@@ -959,20 +1141,51 @@ def _prepare_boundary(request: dict[str, Any]) -> dict[str, Any]:
         _assert_netns(node)
     created: list[dict[str, Any]] = []
     try:
-        link_commands = []
-        for connection in request["connections"]:
-            interface_a = _assert_interface_name(connection["interface_a"])
-            interface_b = _assert_interface_name(connection["interface_b"])
-            link_commands.extend(
-                (
-                    f"link add {interface_a} type veth peer name {interface_b}",
-                    f"link set {interface_a} netns {nodes[connection['node_a']]['pid']}",
-                    f"link set {interface_b} netns {nodes[connection['node_b']]['pid']}",
+        physical_link_started = monotonic()
+        connections = list(request["connections"])
+        created.extend(connections)
+        if connections:
+            worker_count = _worker_count(request, len(connections))
+            chunk_size = (len(connections) + worker_count - 1) // worker_count
+            connection_chunks = [
+                connections[index : index + chunk_size]
+                for index in range(0, len(connections), chunk_size)
+            ]
+
+            def create_connection_chunk(
+                chunk: list[dict[str, Any]],
+            ) -> int:
+                commands = []
+                for connection in chunk:
+                    interface_a = _assert_interface_name(
+                        connection["interface_a"]
+                    )
+                    interface_b = _assert_interface_name(
+                        connection["interface_b"]
+                    )
+                    commands.append(
+                        f"link add {interface_a} netns "
+                        f"{nodes[connection['node_a']]['pid']} type veth "
+                        f"peer name {interface_b} netns "
+                        f"{nodes[connection['node_b']]['pid']}"
+                    )
+                _run(
+                    ["ip", "-batch", "-"],
+                    input_text="\n".join(commands) + "\n",
                 )
-            )
-            created.append(connection)
-        if link_commands:
-            _run(["ip", "-batch", "-"], input_text="\n".join(link_commands) + "\n")
+                return len(chunk)
+
+            if sum(
+                _parallel_map(
+                    request,
+                    connection_chunks,
+                    create_connection_chunk,
+                )
+            ) != len(connections):
+                raise RuntimeError(
+                    "Runner physical resource chunk join is incomplete"
+                )
+        physical_link_seconds = monotonic() - physical_link_started
         interfaces_by_node: dict[str, list[tuple[str, dict[str, Any]]]] = {
             key: [] for key in nodes
         }
@@ -983,9 +1196,8 @@ def _prepare_boundary(request: dict[str, Any]) -> dict[str, Any]:
             interfaces_by_node[connection["node_b"]].append(
                 (connection["interface_b"], connection["parameters_b"])
             )
-        for key, interfaces in interfaces_by_node.items():
-            if not interfaces:
-                continue
+        def prepare_node(item: tuple[str, list[tuple[str, dict[str, Any]]]]) -> None:
+            key, interfaces = item
             node = nodes[key]
             ip_commands = [
                 f"link set dev {_assert_interface_name(name)} address {request['common_mac']}"
@@ -1015,15 +1227,46 @@ def _prepare_boundary(request: dict[str, Any]) -> dict[str, Any]:
                 input_text="\n".join(tc_commands) + "\n",
             )
 
+        setup_items = [
+            (key, interfaces)
+            for key, interfaces in sorted(interfaces_by_node.items())
+            if interfaces
+        ]
+        interface_qdisc_started = monotonic()
+        _parallel_map(request, setup_items, prepare_node)
+        interface_qdisc_seconds = monotonic() - interface_qdisc_started
+
         generation = int(request["generation"])
-        generation_keys = []
-        for generation_node in request["generation_nodes"]:
+        def preload_node(generation_node: dict[str, Any]) -> dict[str, Any]:
             node = nodes[generation_node["key"]]
+            cached_indexes: dict[str, int] = {}
+            for identity in generation_node.get("interface_identities", ()):
+                name = _assert_interface_name(identity["interface"])
+                ifindex = int(identity["ifindex"])
+                if ifindex <= 0 or name in cached_indexes:
+                    raise RuntimeError("cached Runner interface identity is invalid")
+                cached_indexes[name] = ifindex
+            required_names = {
+                _assert_interface_name(name)
+                for name in generation_node["active_interfaces"]
+            }
+            required_names.update(
+                _assert_interface_name(route["interface"])
+                for route in generation_node["routes"]
+                if route["interface"] is not None
+            )
+            missing_names = required_names - set(cached_indexes)
+            if missing_names:
+                cached_indexes.update(
+                    _interface_indexes(int(node["pid"]), missing_names)
+                )
+            if len(set(cached_indexes.values())) != len(cached_indexes):
+                raise RuntimeError("Runner interface identities are not unique in one namespace")
             active_fd = _open_pinned(root / node["pin_component"] / "active_links")
             route_fd = _open_pinned(root / node["pin_component"] / "routes")
             try:
                 indexes = [
-                    _interface_index(int(node["pid"]), _assert_interface_name(name))
+                    cached_indexes[_assert_interface_name(name)]
                     for name in generation_node["active_interfaces"]
                 ]
                 for index in indexes:
@@ -1033,22 +1276,33 @@ def _prepare_boundary(request: dict[str, Any]) -> dict[str, Any]:
                     destination = _ip_key(route["destination"])
                     interface = route["interface"]
                     interface_index = (
-                        0 if interface is None else _interface_index(
-                            int(node["pid"]), _assert_interface_name(interface)
-                        )
+                        0
+                        if interface is None
+                        else cached_indexes[_assert_interface_name(interface)]
                     )
                     _update_map(route_fd, (generation, destination), interface_index)
                     route_keys.append(destination)
             finally:
                 os.close(route_fd)
                 os.close(active_fd)
-            generation_keys.append(
-                {
-                    "key": generation_node["key"],
-                    "active_interface_indexes": indexes,
-                    "route_keys": route_keys,
-                }
-            )
+            return {
+                "key": generation_node["key"],
+                "active_interface_indexes": indexes,
+                "route_keys": route_keys,
+                "interface_identities": [
+                    {"interface": name, "ifindex": cached_indexes[name]}
+                    for name in sorted(required_names)
+                ],
+                "new_interface_identity_count": len(missing_names),
+            }
+
+        generation_preload_started = monotonic()
+        generation_keys = _parallel_map(
+            request,
+            list(request["generation_nodes"]),
+            preload_node,
+        )
+        generation_preload_seconds = monotonic() - generation_preload_started
         return {
             "pin_root": str(root),
             "boundary_timestamp": request["boundary_timestamp"],
@@ -1057,8 +1311,24 @@ def _prepare_boundary(request: dict[str, Any]) -> dict[str, Any]:
             "prepared_connections": len(created),
             "prepared_interfaces": len(created) * 2,
             "prepared_links_admin_down": len(created) * 2,
-            "preloaded_active_links": sum(len(value["active_interface_indexes"]) for value in generation_keys),
+            "preloaded_active_links": sum(
+                len(value["active_interface_indexes"])
+                for value in generation_keys
+            ),
             "preloaded_routes": sum(len(value["route_keys"]) for value in generation_keys),
+            "stable_interface_identity_count": sum(
+                len(value["interface_identities"]) for value in generation_keys
+            ),
+            "new_interface_identity_count": sum(
+                value["new_interface_identity_count"] for value in generation_keys
+            ),
+            "preparation_phases": {
+                "physical_veth_creation_seconds": physical_link_seconds,
+                "interface_qdisc_bpf_setup_seconds": interface_qdisc_seconds,
+                "stable_identity_and_generation_preload_seconds": (
+                    generation_preload_seconds
+                ),
+            },
         }
     except BaseException:
         for connection in reversed(created):
@@ -1083,18 +1353,36 @@ def _activate_boundary(request: dict[str, Any]) -> dict[str, Any]:
             )
         for node in request["nodes"]:
             _assert_netns(node)
+            identities = {
+                _assert_interface_name(value["interface"]): int(value["ifindex"])
+                for value in node.get("interface_identities", ())
+            }
             for field in ("link_up", "link_down"):
                 for interface in node[field]:
-                    _interface_index(int(node["pid"]), _assert_interface_name(interface))
+                    name = _assert_interface_name(interface)
+                    if identities.get(name, 0) <= 0:
+                        raise RuntimeError(
+                            "Main activation lacks stable interface identity: " + name
+                        )
 
-        link_updates = qdisc_updates = route_updates = zone_updates = 0
-        access_peer_route_updates = 0
-        for node in request["nodes"]:
-            commands = [f"link set dev {_assert_interface_name(name)} up" for name in node["link_up"]]
+        def link_up_node(node: dict[str, Any]) -> int:
+            commands = [
+                f"link set dev {_assert_interface_name(name)} up"
+                for name in node["link_up"]
+            ]
             if commands:
-                _in_netns(int(node["pid"]), ["ip", "-batch", "-"], input_text="\n".join(commands) + "\n")
-                link_updates += len(commands)
-        for node in request["nodes"]:
+                _in_netns(
+                    int(node["pid"]),
+                    ["ip", "-batch", "-"],
+                    input_text="\n".join(commands) + "\n",
+                )
+            return len(commands)
+
+        link_updates = sum(
+            _parallel_map(request, list(request["nodes"]), link_up_node)
+        )
+
+        def qdisc_node(node: dict[str, Any]) -> int:
             commands = []
             for value in node["qdisc"]:
                 name = _assert_interface_name(value["interface"])
@@ -1104,10 +1392,20 @@ def _activate_boundary(request: dict[str, Any]) -> dict[str, Any]:
                     f"rate {value['bandwidth_bps']}bit"
                 )
             if commands:
-                _in_netns(int(node["pid"]), ["tc", "-batch", "-"], input_text="\n".join(commands) + "\n")
-                qdisc_updates += len(commands)
-        for node in request["nodes"]:
+                _in_netns(
+                    int(node["pid"]),
+                    ["tc", "-batch", "-"],
+                    input_text="\n".join(commands) + "\n",
+                )
+            return len(commands)
+
+        qdisc_updates = sum(
+            _parallel_map(request, list(request["nodes"]), qdisc_node)
+        )
+
+        def route_node(node: dict[str, Any]) -> tuple[int, int]:
             commands = []
+            access_updates = 0
             for route in node["route_delete"]:
                 destination = route["destination"]
                 interface = _assert_interface_name(route["interface"])
@@ -1123,7 +1421,8 @@ def _activate_boundary(request: dict[str, Any]) -> dict[str, Any]:
                 commands.extend(
                     (
                         f"route replace {destination}/32 dev {name} scope link",
-                        f"neigh replace {destination} lladdr {request['common_mac']} nud permanent dev {name}",
+                        f"neigh replace {destination} lladdr "
+                        f"{request['common_mac']} nud permanent dev {name}",
                     )
                 )
             for route in node.get("access_peer_route_delete", ()):
@@ -1135,40 +1434,97 @@ def _activate_boundary(request: dict[str, Any]) -> dict[str, Any]:
                         f"neigh del {destination} dev {interface}",
                     )
                 )
-                access_peer_route_updates += 2
+                access_updates += 2
             for route in node.get("access_peer_route_replace", ()):
                 name = _assert_interface_name(route["interface"])
                 destination = route["destination"]
                 commands.extend(
                     (
                         f"route replace {destination}/32 dev {name} scope link",
-                        f"neigh replace {destination} lladdr {request['common_mac']} nud permanent dev {name}",
+                        f"neigh replace {destination} lladdr "
+                        f"{request['common_mac']} nud permanent dev {name}",
                     )
                 )
-                access_peer_route_updates += 2
+                access_updates += 2
             if commands:
-                _in_netns(int(node["pid"]), ["ip", "-force", "-batch", "-"], input_text="\n".join(commands) + "\n")
-                route_updates += len(commands)
+                _in_netns(
+                    int(node["pid"]),
+                    ["ip", "-force", "-batch", "-"],
+                    input_text="\n".join(commands) + "\n",
+                )
+            return len(commands), access_updates
 
-        _update_map(generation_fd, 0, int(request["generation"]))
+        route_results = _parallel_map(
+            request, list(request["nodes"]), route_node
+        )
+        route_updates = sum(value[0] for value in route_results)
+        access_peer_route_updates = sum(value[1] for value in route_results)
 
-        for node in request["nodes"]:
-            commands = [f"address del {value}/32 dev lo" for value in node["zone_address_delete"]]
-            commands.extend(f"address replace {value}/32 dev lo" for value in node["zone_address_add"])
+        generation_switch_start_monotonic_ns = monotonic_ns()
+        generation_changed = bool(request.get("generation_changed", True))
+        if generation_changed:
+            _update_map(generation_fd, 0, int(request["generation"]))
+        generation_switch_end_monotonic_ns = monotonic_ns()
+        activation_switch_seconds = (
+            generation_switch_end_monotonic_ns
+            - generation_switch_start_monotonic_ns
+        ) / 1_000_000_000
+
+        def post_switch_node(node: dict[str, Any]) -> tuple[int, int, int]:
+            commands = [
+                f"address del {value}/32 dev lo"
+                for value in node["zone_address_delete"]
+            ]
+            commands.extend(
+                f"address replace {value}/32 dev lo"
+                for value in node["zone_address_add"]
+            )
+            zone_count = len(commands)
+            commands.extend(
+                f"link set dev {_assert_interface_name(name)} down"
+                for name in node["link_down"]
+            )
             if commands:
-                _in_netns(int(node["pid"]), ["ip", "-force", "-batch", "-"], input_text="\n".join(commands) + "\n")
-                zone_updates += len(commands)
-        for node in request["nodes"]:
-            commands = [f"link set dev {_assert_interface_name(name)} down" for name in node["link_down"]]
-            if commands:
-                _in_netns(int(node["pid"]), ["ip", "-batch", "-"], input_text="\n".join(commands) + "\n")
-                link_updates += len(commands)
+                _in_netns(
+                    int(node["pid"]),
+                    ["ip", "-force", "-batch", "-"],
+                    input_text="\n".join(commands) + "\n",
+                )
+            return zone_count, len(commands) - zone_count, int(bool(commands))
+
+        post_switch_results = _parallel_map(
+            request,
+            list(request["nodes"]),
+            post_switch_node,
+        )
+        zone_updates = sum(value[0] for value in post_switch_results)
+        link_updates += sum(value[1] for value in post_switch_results)
+        namespace_process_families = {
+            "link_up": sum(bool(node["link_up"]) for node in request["nodes"]),
+            "qdisc": sum(bool(node["qdisc"]) for node in request["nodes"]),
+            "route_neighbour": sum(
+                bool(
+                    node["route_delete"]
+                    or node["route_replace"]
+                    or node.get("access_peer_route_delete")
+                    or node.get("access_peer_route_replace")
+                )
+                for node in request["nodes"]
+            ),
+            "post_switch": sum(value[2] for value in post_switch_results),
+        }
+        separate_post_switch_processes = sum(
+            bool(node["zone_address_delete"] or node["zone_address_add"])
+            + bool(node["link_down"])
+            for node in request["nodes"]
+        )
         return {
             "pin_root": str(root),
             "boundary_timestamp": request["boundary_timestamp"],
             "previous_generation": expected,
             "active_generation": int(request["generation"]),
-            "generation_publications": 1,
+            "generation_publications": int(generation_changed),
+            "generation_reused": not generation_changed,
             "folded_forwarding_constraints": int(
                 request.get("folded_forwarding_constraints", 0)
             ),
@@ -1177,6 +1533,19 @@ def _activate_boundary(request: dict[str, Any]) -> dict[str, Any]:
             "route_neighbour_commands": route_updates,
             "access_peer_route_neighbour_commands": access_peer_route_updates,
             "zone_address_updates": zone_updates,
+            "namespace_process_families": namespace_process_families,
+            "post_switch_namespace_processes_avoided": (
+                separate_post_switch_processes
+                - namespace_process_families["post_switch"]
+            ),
+            "activation_switch_seconds": activation_switch_seconds,
+            "generation_switch_start_monotonic_ns": (
+                generation_switch_start_monotonic_ns
+            ),
+            "generation_switch_end_monotonic_ns": (
+                generation_switch_end_monotonic_ns
+            ),
+            "grouping": request.get("grouping", {}),
         }
     finally:
         os.close(generation_fd)
@@ -1192,38 +1561,62 @@ def _reclaim_generation(request: dict[str, Any]) -> dict[str, Any]:
     root = _pin_root(request["pin_root"])
     nodes = {node["key"]: node for node in request["nodes"]}
     generation = int(request["generation"])
-    deleted = 0
-    for keys in request["generation_keys"]:
+    def reclaim_node(keys: dict[str, Any]) -> int:
         node = nodes[keys["key"]]
         _assert_netns(node)
         active_fd = _open_pinned(root / node["pin_component"] / "active_links")
         route_fd = _open_pinned(root / node["pin_component"] / "routes")
         try:
-            deleted += sum(
-                _delete_map(active_fd, (generation, int(value)))
-                for value in keys["active_interface_indexes"]
+            deleted = _delete_map_batch(
+                active_fd,
+                tuple(
+                    (generation, int(value))
+                    for value in keys["active_interface_indexes"]
+                ),
             )
-            deleted += sum(
-                _delete_map(route_fd, (generation, int(value)))
-                for value in keys["route_keys"]
+            deleted += _delete_map_batch(
+                route_fd,
+                tuple(
+                    (generation, int(value))
+                    for value in keys["route_keys"]
+                ),
             )
         finally:
             os.close(route_fd)
             os.close(active_fd)
+        return deleted
+
+    deleted = sum(
+        _parallel_map(request, list(request["generation_keys"]), reclaim_node)
+    )
     return {"generation": generation, "deleted_entries": deleted}
 
 
 def _reclaim_resources(request: dict[str, Any]) -> dict[str, Any]:
     nodes = {node["key"]: node for node in request["nodes"]}
-    deleted = 0
+    by_node: dict[str, list[dict[str, Any]]] = {}
     for connection in request["connections"]:
-        node = nodes[connection["node_a"]]
+        by_node.setdefault(connection["node_a"], []).append(connection)
+
+    def reclaim_node(item: tuple[str, list[dict[str, Any]]]) -> int:
+        key, connections = item
+        node = nodes[key]
         _assert_netns(node)
-        _in_netns(
-            int(node["pid"]),
-            ["ip", "link", "del", _assert_interface_name(connection["interface_a"])],
-        )
-        deleted += 1
+        commands = [
+            f"link del {_assert_interface_name(connection['interface_a'])}"
+            for connection in connections
+        ]
+        if commands:
+            _in_netns(
+                int(node["pid"]),
+                ["ip", "-force", "-batch", "-"],
+                input_text="\n".join(commands) + "\n",
+            )
+        return len(commands)
+
+    deleted = sum(
+        _parallel_map(request, sorted(by_node.items()), reclaim_node)
+    )
     return {"deleted_connections": deleted}
 
 
@@ -1242,12 +1635,13 @@ def _cleanup(
             _assert_interface_name(connection["interface_b"])
         )
 
-    for key, node in nodes.items():
+    def detach_node(item: tuple[str, dict[str, Any]]) -> list[str]:
+        key, node = item
+        node_errors: list[str] = []
         try:
             _assert_netns(node)
         except RuntimeError as error:
-            errors.append(str(error))
-            continue
+            return [str(error)]
         tc_commands = []
         for interface_name in interfaces_by_node[key]:
             tc_commands.extend(
@@ -1265,30 +1659,57 @@ def _cleanup(
                 tolerate_failure=True,
             )
             if result.returncode != 0 and result.stderr:
-                errors.append(result.stderr.strip())
-    deleted_connections = 0
+                node_errors.append(result.stderr.strip())
+        return node_errors
+
+    node_items = sorted(nodes.items())
+    for node_errors in _parallel_map(request, node_items, detach_node):
+        errors.extend(node_errors)
+
+    connections_by_node: dict[str, list[dict[str, Any]]] = {}
     for connection in request.get("connections", ()):
-        node = nodes[connection["node_a"]]
+        connections_by_node.setdefault(connection["node_a"], []).append(connection)
+
+    def delete_connections(
+        item: tuple[str, list[dict[str, Any]]],
+    ) -> tuple[int, list[str]]:
+        key, connections = item
+        node = nodes[key]
         try:
             _assert_netns(node)
-        except RuntimeError:
-            continue
+        except RuntimeError as error:
+            return 0, [str(error)]
+        commands = [
+            f"link del {_assert_interface_name(connection['interface_a'])}"
+            for connection in connections
+        ]
         result = _in_netns(
             int(node["pid"]),
-            ["ip", "link", "del", connection["interface_a"]],
+            ["ip", "-force", "-batch", "-"],
+            input_text="\n".join(commands) + "\n",
             tolerate_failure=True,
         )
-        if result.returncode == 0:
-            deleted_connections += 1
+        if result.returncode != 0:
+            return 0, [result.stderr.strip()] if result.stderr else []
+        return len(commands), []
 
-    deleted_node_addresses = 0
-    for node in nodes.values():
+    deleted_connections = 0
+    for deleted, node_errors in _parallel_map(
+        request, sorted(connections_by_node.items()), delete_connections
+    ):
+        deleted_connections += deleted
+        errors.extend(node_errors)
+
+    def clean_node_addresses(
+        item: tuple[str, dict[str, Any]],
+    ) -> tuple[int, list[str]]:
+        _, node = item
+        node_errors: list[str] = []
         try:
             _assert_netns(node)
             current_addresses = _namespace_ipv4_local_addresses(node)
         except RuntimeError as error:
-            errors.append(str(error))
-            continue
+            return 0, [str(error)]
         node_address = IPv4Address(node["node_address"])
         zone_addresses = tuple(
             IPv4Address(value) for value in node.get("zone_addresses", ())
@@ -1315,27 +1736,36 @@ def _cleanup(
                 tolerate_failure=True,
             )
             if result.returncode != 0 and result.stderr:
-                errors.append(result.stderr.strip())
+                node_errors.append(result.stderr.strip())
+        deleted = 0
         try:
             remaining = _namespace_ipv4_local_addresses(node)
             if (
                 node.get("node_address_owned") is True
                 and node_address in remaining
             ):
-                errors.append(
+                node_errors.append(
                     "Runner-owned node address remains after cleanup: "
                     f"node={node['key']}, address={node_address}"
                 )
             elif node_address_present:
-                deleted_node_addresses += 1
+                deleted = 1
             for address in zone_addresses:
                 if address in remaining:
-                    errors.append(
+                    node_errors.append(
                         "Runner-owned Zone address remains after cleanup: "
                         f"node={node['key']}, address={address}"
                     )
         except RuntimeError as error:
-            errors.append(str(error))
+            node_errors.append(str(error))
+        return deleted, node_errors
+
+    deleted_node_addresses = 0
+    for deleted, node_errors in _parallel_map(
+        request, node_items, clean_node_addresses
+    ):
+        deleted_node_addresses += deleted
+        errors.extend(node_errors)
 
     if root.exists():
         for path in sorted(root.rglob("*"), reverse=True):
@@ -1369,6 +1799,7 @@ def _cleanup(
 
 
 def main() -> int:
+    global _ACTIVE_METRICS
     if len(sys.argv) != 2 or sys.argv[1] not in {
         "audit_node_addresses",
         "initialize",
@@ -1390,6 +1821,23 @@ def main() -> int:
         )
         return 2
     try:
+        with _METRICS_LOCK:
+            _ACTIVE_METRICS = {
+                "external_processes": 0,
+                "namespace_processes": 0,
+                "interface_identity_queries": 0,
+                "bpf_syscalls": 0,
+                "bpf_map_update_syscalls": 0,
+                "bpf_map_delete_syscalls": 0,
+                "bpf_map_delete_batch_syscalls": 0,
+                "bpf_map_delete_operations": 0,
+                "worker_limit": 1,
+                "worker_high_water": 0,
+                "active_workers": 0,
+                "parallel_phase_count": 0,
+                "parallel_task_count": 0,
+                "batch_sizes": [],
+            }
         request = json.load(sys.stdin)
         if sys.argv[1] == "audit_node_addresses":
             result = _audit_node_addresses(request)
@@ -1407,13 +1855,39 @@ def main() -> int:
             result = _validate(request)
         else:
             result = _cleanup(request)
+        with _METRICS_LOCK:
+            metrics = dict(_ACTIVE_METRICS or {})
+            _ACTIVE_METRICS = None
+        metrics.pop("active_workers", None)
+        batch_sizes = tuple(int(value) for value in metrics.pop("batch_sizes", ()))
+        metrics["batch_count"] = len(batch_sizes)
+        metrics["batch_operation_count"] = sum(batch_sizes)
+        metrics["batch_size_min"] = min(batch_sizes, default=0)
+        metrics["batch_size_max"] = max(batch_sizes, default=0)
+        metrics["batch_size_distribution"] = {
+            label: sum(lower <= value <= upper for value in batch_sizes)
+            for label, lower, upper in (
+                ("1", 1, 1),
+                ("2-4", 2, 4),
+                ("5-16", 5, 16),
+                ("17-64", 17, 64),
+                ("65-256", 65, 256),
+                ("257+", 257, 2**63 - 1),
+            )
+        }
+        result = {**result, "execution_metrics": metrics}
     except BaseException as error:
+        with _METRICS_LOCK:
+            metrics = dict(_ACTIVE_METRICS or {})
+            _ACTIVE_METRICS = None
+        metrics.pop("active_workers", None)
         print(
             json.dumps(
                 {
                     "error": str(error),
                     "error_type": type(error).__name__,
                     "traceback": traceback.format_exc(),
+                    "execution_metrics": metrics,
                 }
             )
         )

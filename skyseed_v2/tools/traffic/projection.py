@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from bisect import bisect_left, bisect_right
 from collections import defaultdict
+from collections.abc import Mapping
 from copy import deepcopy
 from datetime import datetime, timedelta
 from ipaddress import ip_interface
@@ -49,6 +50,11 @@ def project_traffic_replay(observation: TrafficReplayRead) -> dict[str, Any]:
     recorder_end = source["recorder_end"]
     recorder_complete = bool(
         recorder_end is not None and recorder_end.get("complete") is True
+    )
+    inactive_ingress_associations = sum(
+        packet.get("ingress_identity", {}).get("packet_identity_validity")
+        == "unique-observed-physical-inactive-ingress"
+        for packet in source["packets"]
     )
 
     grouped: dict[tuple[object, ...], list[dict[str, Any]]] = defaultdict(list)
@@ -184,6 +190,12 @@ def project_traffic_replay(observation: TrafficReplayRead) -> dict[str, Any]:
         value["observed_transactions"] for value in traffic_lanes
     )
     workload_gaps = sum(value["observed_gap_slots"] for value in traffic_lanes)
+    qualification = _project_probe_qualification(
+        source["qualification"],
+        ping_transactions=ping_transactions,
+        telemetry_complete=recorder_complete,
+        telemetry_losses=loss_total,
+    )
 
     return {
         "format_version": 3,
@@ -192,7 +204,9 @@ def project_traffic_replay(observation: TrafficReplayRead) -> dict[str, Any]:
             "status": "non-authoritative-view",
             "traffic_source": "durable tc-BPF ingress telemetry",
             "active_network_source": (
-                "packet generation plus exact-generation interface identity"
+                "packet generation plus exact-generation active interface identity; "
+                "inactive-ingress drops may use one unambiguous observed physical "
+                "identity without entering the active graph"
             ),
             "zone_source": "already-produced BPF Compiler inspection evidence",
             "position_source": "retained Slice / Difference Position facts",
@@ -220,6 +234,9 @@ def project_traffic_replay(observation: TrafficReplayRead) -> dict[str, Any]:
             "raw_unclassified_observations": len(unclassified),
             "node_identities": len(nodes),
             "interface_identities": len(interfaces),
+            "inactive_ingress_physical_identity_associations": (
+                inactive_ingress_associations
+            ),
             "nominal_boundaries": len(active_networks),
             "foundation_token": source["header"]["foundation_token"],
             "observed_flows": len(observed_flows),
@@ -228,6 +245,9 @@ def project_traffic_replay(observation: TrafficReplayRead) -> dict[str, Any]:
             "scheduled_slots": workload_slots,
             "observed_workload_transactions": workload_observed,
             "scheduled_slots_without_tc_bpf_observation": workload_gaps,
+            "qualification_status": (
+                None if qualification is None else qualification["summary"]["status"]
+            ),
         },
         "clock": {
             **dict(anchor),
@@ -285,6 +305,7 @@ def project_traffic_replay(observation: TrafficReplayRead) -> dict[str, Any]:
         ),
         "position_samples": source["position_samples"],
         "workload": workload,
+        "qualification": qualification,
         "traffic_lanes": traffic_lanes,
         "observed_flows": observed_flows,
         "ping_transactions": tuple(ping_transactions),
@@ -304,6 +325,12 @@ def project_traffic_replay(observation: TrafficReplayRead) -> dict[str, Any]:
             "scheduled_slots": workload_slots,
             "observed_workload_transactions": workload_observed,
             "observed_gap_slots": workload_gaps,
+            "qualification_probe_identities": (
+                0 if qualification is None else qualification["summary"]["probe_identities"]
+            ),
+            "qualification_episodes": (
+                0 if qualification is None else qualification["summary"]["episodes"]
+            ),
         },
         "raw_evidence": {
             "telemetry_header": source["header"],
@@ -315,10 +342,477 @@ def project_traffic_replay(observation: TrafficReplayRead) -> dict[str, Any]:
             ),
             "loss_records": source["loss_records"],
             "recorder_end": recorder_end,
+            "probe_plan": (
+                None if source["qualification"] is None else source["qualification"]["plan"]
+            ),
+            "probe_execution_records": (
+                None
+                if source["qualification"] is None
+                else source["qualification"]["execution"]
+            ),
+            "runner_events": (
+                None
+                if source["qualification"] is None
+                else source["qualification"]["runner_events"]
+            ),
             "record_count": len(source["raw_records"]),
             "raw_record_artifact": "traffic-telemetry.jsonl",
         },
     }
+
+
+def _project_probe_qualification(
+    value: dict[str, Any] | None,
+    *,
+    ping_transactions: tuple[dict[str, Any], ...],
+    telemetry_complete: bool,
+    telemetry_losses: int,
+) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    plan = value["plan"]
+    execution = tuple(value["execution"])
+    runner_events = tuple(value["runner_events"])
+    horizon = plan["planning_horizon"]
+    identities = {
+        item["probe_id"]: dict(item) for item in plan["probe_identities"]
+    }
+    episodes = {item["episode_id"]: dict(item) for item in plan["episodes"]}
+    records_by_episode: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for record in execution[1:]:
+        episode_id = record.get("episode_id")
+        if episode_id in episodes:
+            records_by_episode[str(episode_id)].append(record)
+    executor_end = next(
+        item for item in execution if item.get("record_type") == "executor_end"
+    )
+    execution_complete = bool(
+        executor_end.get("complete") is True
+        and executor_end.get("cleanup_complete") is True
+        and int(executor_end.get("active_generators", -1)) == 0
+    )
+    evidence_complete = bool(
+        execution_complete and telemetry_complete and telemetry_losses == 0
+    )
+    activations = tuple(
+        item for item in runner_events if item.get("event") == "activation_end"
+    )
+    switches = tuple(
+        (
+            int(item["generation_switch_start_monotonic_ns"]),
+            int(item["generation_switch_end_monotonic_ns"]),
+            str(item["active_frontier"]),
+        )
+        for item in activations
+    )
+    actual_frontier = (
+        None
+        if not activations
+        else max(datetime.fromisoformat(str(item["active_frontier"])) for item in activations)
+    )
+    telemetry_by_identifier: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for transaction in ping_transactions:
+        telemetry_by_identifier[int(transaction["identifier"])].append(transaction)
+    migration_records = tuple(
+        dict(item)
+        for item in execution
+        if item.get("record_type") == "zone_source_migration"
+    )
+    episode_results = []
+    activation_anomalies: dict[str, int] = defaultdict(int)
+    for episode_id, episode in episodes.items():
+        identity = identities[episode["probe_id"]]
+        records = records_by_episode.get(episode_id, [])
+        stops = [item for item in records if item.get("record_type") == "generator_stopped"]
+        observations = [
+            item for item in records if item.get("record_type") == "ping_observation"
+        ]
+        armed = any(item.get("record_type") == "episode_armed" for item in records)
+        not_run = any(item.get("record_type") == "episode_not_run" for item in records)
+        sent = sum(int(item.get("sent", 0)) for item in stops)
+        received = sum(int(item.get("received", 0)) for item in stops)
+        rtts = sorted(
+            float(item["rtt_ms"])
+            for item in observations
+            if item.get("observation") == "reply" and item.get("rtt_ms") is not None
+        )
+        reply_times = sorted(
+            int(item["host_monotonic_ns"])
+            for item in observations
+            if item.get("observation") == "reply"
+        )
+        longest_gap = max(
+            (
+                (current - previous) / 1_000_000_000
+                for previous, current in zip(reply_times, reply_times[1:])
+            ),
+            default=0.0,
+        )
+        consecutive = 0
+        consecutive_activation_associated = False
+        longest_consecutive = 0
+        recovered_isolated = False
+        recovered_transient = False
+        recovered_activation_transient = False
+        final_reachable_run = 0
+        final_activation_associated = False
+        expected_unreachable_observations = 0
+        migration_observations = 0
+        for item in sorted(observations, key=lambda record: int(record["host_monotonic_ns"])):
+            observation = item.get("observation")
+            timestamp_ns = int(item["host_monotonic_ns"])
+            in_migration = any(
+                migration["episode_id"] == episode_id
+                and int(migration["migration_start_monotonic_ns"])
+                <= timestamp_ns
+                <= int(migration["migration_end_monotonic_ns"])
+                for migration in migration_records
+            )
+            if in_migration:
+                migration_observations += 1
+                continue
+            if observation in {"timeout", "network-error"}:
+                raw_published = item.get("published_active_frontier")
+                if not isinstance(raw_published, str):
+                    continue
+                published_frontier = datetime.fromisoformat(raw_published)
+                if (
+                    actual_frontier is None
+                    or published_frontier > actual_frontier
+                ):
+                    continue
+                state = _planned_episode_state(episode, published_frontier)
+                if state is not None and state.get("expected_reachable") is False:
+                    expected_unreachable_observations += 1
+                    continue
+                consecutive += 1
+                longest_consecutive = max(longest_consecutive, consecutive)
+                final_reachable_run = consecutive
+                correlated = _activation_for_timestamp(timestamp_ns, switches)
+                if correlated is not None:
+                    activation_anomalies[correlated] += 1
+                    consecutive_activation_associated = True
+                    final_activation_associated = True
+            elif observation == "reply":
+                if consecutive:
+                    if consecutive_activation_associated:
+                        recovered_activation_transient = True
+                    elif consecutive == 1:
+                        recovered_isolated = True
+                    else:
+                        recovered_transient = True
+                consecutive = 0
+                consecutive_activation_associated = False
+                final_reachable_run = 0
+                final_activation_associated = False
+        longest_consecutive = max(longest_consecutive, consecutive)
+        launch_records = [
+            item for item in records if item.get("record_type") == "generator_launched"
+        ]
+        telemetry_transactions = sum(
+            sum(
+                _transaction_matches_generator(transaction, item)
+                for transaction in telemetry_by_identifier.get(
+                    int(item["icmp_identifier"]), ()
+                )
+            )
+            for item in launch_records
+        )
+        cleanup_complete = all(
+            item.get("cleanup_result") == "cleaned" for item in stops
+        ) and len(stops) == len(launch_records)
+        active_overlap = bool(
+            actual_frontier is not None
+            and datetime.fromisoformat(episode["start_time"]) <= actual_frontier
+        )
+        reachable_overlap = any(
+            item.get("expected_reachable") is True
+            and actual_frontier is not None
+            and datetime.fromisoformat(item["start_time"]) <= actual_frontier
+            for item in episode["state_intervals"]
+        )
+        infrastructure_failure = bool(
+            active_overlap
+            and (
+                not evidence_complete
+                or (armed and not cleanup_complete)
+                or (reachable_overlap and armed and not launch_records)
+            )
+        )
+        classifications = []
+        if infrastructure_failure:
+            classifications.append("probe-infrastructure-or-evidence-failure")
+        if expected_unreachable_observations or (
+            armed and not launch_records and active_overlap and not reachable_overlap
+        ):
+            classifications.append("expected-unreachable")
+        if final_reachable_run >= 3:
+            classifications.append("persistent-blackhole")
+        elif final_reachable_run:
+            classifications.append(
+                "transient-activation-associated-disruption"
+                if final_activation_associated
+                else "transient-disruption"
+            )
+        if recovered_activation_transient:
+            classifications.append("transient-activation-associated-disruption")
+        if recovered_transient:
+            classifications.append("transient-disruption")
+        if recovered_isolated:
+            classifications.append("isolated-loss")
+        if not classifications:
+            classifications.append(
+                "not-executed-outside-active-horizon"
+                if not_run and not active_overlap
+                else "pass"
+            )
+        episode_results.append(
+            {
+                "episode_id": episode_id,
+                "probe_id": episode["probe_id"],
+                "direction": identity["direction"],
+                "mode": episode["mode"],
+                "path_stability": identity["path_stability"],
+                "path_length_class": identity["path_length_class"],
+                "selection_reasons": identity["selection_reasons"],
+                "ground_station_id": identity["ground_station_id"],
+                "zone_id": identity["zone_id"],
+                "armed": armed,
+                "active_published_overlap": active_overlap,
+                "execution_disposition": _episode_execution_disposition(records),
+                "rearmable": any(
+                    item.get("record_type")
+                    in {"episode_cancelled", "episode_not_run"}
+                    and item.get("rearmable") is True
+                    for item in records
+                ),
+                "sent": sent,
+                "received": received,
+                "loss": max(0, sent - received),
+                "loss_percent": 0.0 if sent == 0 else (sent - received) * 100 / sent,
+                "rtt_ms": _distribution(rtts),
+                "longest_receive_gap_seconds": longest_gap,
+                "longest_consecutive_loss": longest_consecutive,
+                "expected_unreachable_observations": expected_unreachable_observations,
+                "migration_observations_excluded": migration_observations,
+                "generator_segments": len(launch_records),
+                "cleanup_complete": cleanup_complete,
+                "telemetry_transactions": telemetry_transactions,
+                "packet_path_evidence_present": telemetry_transactions > 0,
+                "classifications": classifications,
+            }
+        )
+    sent = sum(item["sent"] for item in episode_results)
+    received = sum(item["received"] for item in episode_results)
+    rtts = sorted(
+        float(item["rtt_ms"])
+        for item in execution
+        if item.get("record_type") == "ping_observation"
+        and item.get("observation") == "reply"
+        and item.get("rtt_ms") is not None
+    )
+    persistent_failures = [
+        item
+        for item in episode_results
+        if "persistent-blackhole" in item["classifications"]
+    ]
+    infrastructure_failures = [
+        item
+        for item in episode_results
+        if "probe-infrastructure-or-evidence-failure" in item["classifications"]
+    ]
+    worst_flow = max(
+        episode_results,
+        key=lambda item: (
+            item["loss_percent"],
+            item["longest_consecutive_loss"],
+            item["episode_id"],
+        ),
+        default=None,
+    )
+    worst_activation = (
+        None
+        if not activation_anomalies
+        else max(
+            (
+                {"active_frontier": frontier, "anomaly_count": count}
+                for frontier, count in activation_anomalies.items()
+            ),
+            key=lambda item: (item["anomaly_count"], item["active_frontier"]),
+        )
+    )
+    ready_durations = [
+        float(item["duration_seconds"])
+        for item in runner_events
+        if item.get("event") == "maintenance_prepare_end"
+        and item.get("duration_seconds") is not None
+    ]
+    main_durations = [float(item["duration_seconds"]) for item in activations]
+    maintenance_durations = [
+        float(item["duration_seconds"])
+        for item in runner_events
+        if str(item.get("event", "")).startswith("maintenance_")
+        and str(item.get("event", "")).endswith("_end")
+        and item.get("duration_seconds") is not None
+    ]
+    rss_values = [
+        int(item["runner_rss_bytes"])
+        for item in runner_events
+        if item.get("event") == "resource_health_checkpoint"
+        and item.get("runner_rss_bytes") is not None
+    ]
+    status = (
+        "FAIL"
+        if persistent_failures or infrastructure_failures or not evidence_complete
+        else "PASS"
+    )
+    if status == "PASS" and any(
+        any(value != "pass" and value != "not-executed-outside-active-horizon" and value != "expected-unreachable" for value in item["classifications"])
+        for item in episode_results
+    ):
+        status = "WARN"
+    return {
+        "summary": {
+            "status": status,
+            "plan_revision_id": horizon["revision_id"],
+            "probe_plan_construction_duration_seconds": plan["planning"][
+                "duration_seconds"
+            ],
+            "probe_identities": len(identities),
+            "episodes": len(episodes),
+            "persistent_episodes": plan["planning"]["persistent_episode_count"],
+            "rotating_background_episodes": plan["planning"].get(
+                "rotating_background_episode_count", 0
+            ),
+            "activation_window_episodes": plan["planning"]["activation_window_episode_count"],
+            "direction_counts": plan["planning"]["direction_counts"],
+            "path_length_class_counts": plan["planning"]["path_length_class_counts"],
+            "selection_reason_counts": plan["planning"]["selection_reason_counts"],
+            "estimated_echo_requests": plan["planning"]["estimated_echo_requests"],
+            "estimated_telemetry_events": plan["planning"]["estimated_telemetry_events"],
+            "sent": sent,
+            "received": received,
+            "loss": max(0, sent - received),
+            "loss_percent": 0.0 if sent == 0 else (sent - received) * 100 / sent,
+            "rtt_ms": _distribution(rtts),
+            "longest_receive_gap_seconds": max(
+                (item["longest_receive_gap_seconds"] for item in episode_results),
+                default=0.0,
+            ),
+            "longest_consecutive_loss": max(
+                (item["longest_consecutive_loss"] for item in episode_results),
+                default=0,
+            ),
+            "persistent_failure_count": len(persistent_failures),
+            "infrastructure_failure_count": len(infrastructure_failures),
+            "telemetry_complete": telemetry_complete,
+            "telemetry_ring_loss": telemetry_losses,
+            "executor_complete": execution_complete,
+            "cleanup_complete": executor_end.get("cleanup_complete") is True,
+            "global_evidence_complete": evidence_complete,
+            "active_activation_count": len(activations),
+            "active_frontier": None if actual_frontier is None else actual_frontier.isoformat(),
+        },
+        "runner_observer_effect": {
+            "ready_seconds": _distribution(ready_durations),
+            "main_seconds": _distribution(main_durations),
+            "maintenance_max_seconds": max(maintenance_durations, default=0.0),
+            "deadline_misses": sum(
+                item.get("event") == "deadline_miss" for item in runner_events
+            ),
+            "readiness_wait_max_seconds": max(
+                (
+                    float(item.get("readiness_dependency_wait_seconds", 0.0))
+                    for item in activations
+                ),
+                default=0.0,
+            ),
+            "runner_rss_max_bytes": max(rss_values, default=None),
+        },
+        "worst_flow": worst_flow,
+        "worst_activation": worst_activation,
+        "zone_source_migrations": migration_records,
+        "episodes": tuple(episode_results),
+    }
+
+
+def _episode_execution_disposition(
+    records: list[dict[str, Any]],
+) -> str:
+    record_types = {str(item.get("record_type")) for item in records}
+    if "episode_completed" in record_types:
+        return "completed"
+    if "episode_cancelled" in record_types:
+        return "cancelled-rearmable"
+    if "episode_not_run" in record_types:
+        return "not-run-rearmable"
+    if "episode_armed" in record_types:
+        return "armed-incomplete"
+    return "not-observed"
+
+
+def _transaction_matches_generator(
+    transaction: Mapping[str, Any], launch: Mapping[str, Any]
+) -> bool:
+    for direction_name in ("request", "reply"):
+        direction = transaction.get(direction_name)
+        if (
+            isinstance(direction, Mapping)
+            and direction.get("source_ipv4") == launch.get("source_ipv4")
+            and direction.get("destination_ipv4")
+            == launch.get("destination_ipv4")
+        ):
+            return True
+    return False
+
+
+def _planned_episode_state(
+    episode: Mapping[str, Any], nominal_time: datetime
+) -> dict[str, Any] | None:
+    return next(
+        (
+            item
+            for item in episode["state_intervals"]
+            if datetime.fromisoformat(item["start_time"])
+            <= nominal_time
+            < datetime.fromisoformat(item["end_time"])
+        ),
+        None,
+    )
+
+
+def _activation_for_timestamp(
+    timestamp_ns: int,
+    switches: tuple[tuple[int, int, str], ...],
+) -> str | None:
+    candidates = [
+        (min(abs(timestamp_ns - start), abs(timestamp_ns - end)), frontier)
+        for start, end, frontier in switches
+        if start - 1_000_000_000 <= timestamp_ns <= end + 1_000_000_000
+    ]
+    return None if not candidates else min(candidates)[1]
+
+
+def _distribution(values: list[float]) -> dict[str, float | int | None]:
+    ordered = sorted(values)
+    if not ordered:
+        return {"count": 0, "p50": None, "p95": None, "max": None}
+    return {
+        "count": len(ordered),
+        "p50": _percentile(ordered, 0.50),
+        "p95": _percentile(ordered, 0.95),
+        "max": ordered[-1],
+    }
+
+
+def _percentile(values: list[float], quantile: float) -> float:
+    if len(values) == 1:
+        return values[0]
+    position = (len(values) - 1) * quantile
+    lower = int(position)
+    upper = min(len(values) - 1, lower + 1)
+    fraction = position - lower
+    return values[lower] + (values[upper] - values[lower]) * fraction
 
 
 def _resolve_endpoint(
@@ -420,9 +914,7 @@ def _project_icmp_record(
         generation = int(packet["generation"])
         node = nodes[slot]
         node_id = str(node["node_id"])
-        ingress = interfaces[
-            (generation, slot, int(packet["ingress_ifindex"]))
-        ]
+        ingress = _packet_ingress_identity(packet, interfaces)
         ingress_peer = str(ingress["peer_node_id"])
         if ingress_peer != previous_node_id:
             warnings.append(
@@ -465,6 +957,12 @@ def _project_icmp_record(
                 "ingress_ifindex": int(packet["ingress_ifindex"]),
                 "ingress_peer_node_id": ingress_peer,
                 "incoming_connection_id": ingress["connection_id"],
+                "ingress_identity_validity": ingress.get(
+                    "packet_identity_validity", "exact-generation"
+                ),
+                "ingress_identity_generations": tuple(
+                    ingress.get("identity_generations", (generation,))
+                ),
                 "selected_egress_ifindex": egress_ifindex,
                 "egress_peer_node_id": None if egress is None else egress["peer_node_id"],
                 "outgoing_connection_id": (
@@ -1132,6 +1630,21 @@ def _unclassified_packet(
     }
 
 
+def _packet_ingress_identity(
+    packet: Mapping[str, Any],
+    interfaces: Mapping[tuple[int, int, int], Mapping[str, Any]],
+) -> dict[str, Any]:
+    resolved = packet.get("ingress_identity")
+    if isinstance(resolved, Mapping):
+        return dict(resolved)
+    key = (
+        int(packet["generation"]),
+        int(packet["node_slot"]),
+        int(packet["ingress_ifindex"]),
+    )
+    return dict(interfaces[key])
+
+
 def _raw_packet_observation(
     packet: dict[str, Any],
     *,
@@ -1143,7 +1656,7 @@ def _raw_packet_observation(
     packet_ns = int(packet["kernel_monotonic_ns"])
     slot = int(packet["node_slot"])
     generation = int(packet["generation"])
-    ingress = interfaces[(generation, slot, int(packet["ingress_ifindex"]))]
+    ingress = _packet_ingress_identity(packet, interfaces)
     egress_index = packet.get("selected_egress_ifindex")
     egress = None if egress_index is None else interfaces[
         (generation, slot, int(egress_index))
@@ -1158,9 +1671,14 @@ def _raw_packet_observation(
             monotonic_origin_ns=monotonic_origin_ns,
         ).isoformat(),
         "generation": generation,
-        "active_boundary_timestamp": ingress["boundary_timestamp"],
+        "active_boundary_timestamp": packet.get(
+            "active_boundary_timestamp", ingress["boundary_timestamp"]
+        ),
         "ingress_ifindex": packet["ingress_ifindex"],
         "ingress_peer_node_id": ingress["peer_node_id"],
+        "ingress_identity_validity": ingress.get(
+            "packet_identity_validity", "exact-generation"
+        ),
         "selected_egress_ifindex": egress_index,
         "egress_peer_node_id": None if egress is None else egress["peer_node_id"],
         "decision": packet["decision"],

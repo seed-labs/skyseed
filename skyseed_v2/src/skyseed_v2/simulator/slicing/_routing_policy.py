@@ -131,6 +131,103 @@ def _eligible_shortest_next_hops(
     return dict(sorted(result.items(), key=lambda item: _node_key(item[0])))
 
 
+def _required_shortest_next_hops(
+    context: _RoutingPolicyContext,
+    target: RouteTarget,
+    terminal: NodeId,
+    required_sources: frozenset[NodeId],
+) -> Mapping[NodeId, tuple[NodeId, ...]]:
+    """Return only the deterministic shortest-path tree branches in demand.
+
+    The public routing policy can expose every eligible source. The Gateway
+    model has an exact, much smaller demand set, so materializing unrelated
+    Satellite choices is redundant. Reverse-distance and first-choice rules
+    remain identical to ``_eligible_shortest_next_hops``.
+    """
+
+    if not isinstance(required_sources, frozenset):
+        raise TypeError("required_sources must be a frozenset")
+    graph = context.graph
+    result: dict[NodeId, tuple[NodeId, ...]] = {}
+    if isinstance(target, GroundStationRouteTarget):
+        permitted = context.satellites | {terminal}
+        sources = required_sources & context.satellites
+        distances = _reverse_distances(graph, terminal, permitted, sources)
+        for source in sorted(sources, key=_node_key):
+            if source not in distances:
+                continue
+            _materialize_required_branch(
+                result,
+                graph,
+                source,
+                terminal,
+                distances,
+                permitted,
+            )
+    elif isinstance(target, ZoneRouteTarget):
+        ground_sources = required_sources & context.ground_stations
+        required_satellites = frozenset(
+            neighbor
+            for source in ground_sources
+            for neighbor in graph[source]
+            if neighbor in context.satellites
+        )
+        distances = _reverse_distances(
+            graph,
+            terminal,
+            context.satellites,
+            required_satellites,
+        )
+        for source in sorted(ground_sources, key=_node_key):
+            candidates = tuple(
+                neighbor
+                for neighbor in graph[source]
+                if neighbor in context.satellites and neighbor in distances
+            )
+            if not candidates:
+                continue
+            minimum_distance = min(distances[neighbor] for neighbor in candidates)
+            choices = tuple(
+                neighbor
+                for neighbor in candidates
+                if distances[neighbor] == minimum_distance
+            )
+            result[source] = choices
+            _materialize_required_branch(
+                result,
+                graph,
+                choices[0],
+                terminal,
+                distances,
+                context.satellites,
+            )
+    else:
+        raise TypeError(
+            "target must be a GroundStationRouteTarget or ZoneRouteTarget"
+        )
+    return dict(sorted(result.items(), key=lambda item: _node_key(item[0])))
+
+
+def _materialize_required_branch(
+    result: dict[NodeId, tuple[NodeId, ...]],
+    graph: Mapping[NodeId, tuple[NodeId, ...]],
+    source: NodeId,
+    terminal: NodeId,
+    distances: Mapping[NodeId, int],
+    permitted: frozenset[NodeId],
+) -> None:
+    current = source
+    while current != terminal:
+        choices = _closer_neighbors(graph, current, distances, permitted)
+        if not choices:
+            return
+        existing = result.get(current)
+        if existing is not None and existing != choices:
+            raise ValueError("minimum-hop routing tree is inconsistent")
+        result[current] = choices
+        current = choices[0]
+
+
 def route_step_allows_transit(
     source: NodeId,
     current: NodeId,

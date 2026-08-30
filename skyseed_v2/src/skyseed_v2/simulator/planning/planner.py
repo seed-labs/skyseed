@@ -13,7 +13,7 @@ from skyseed_v2.shared import NodeId
 from skyseed_v2.shared._execution_observation import _ExecutionObserver
 from skyseed_v2.shared._durable_evidence import (
     _append_jsonl,
-    _read_jsonl,
+    _iter_jsonl,
     _reset_jsonl,
     _semantic_value,
 )
@@ -291,7 +291,7 @@ class Planner:
         if self._durable_history_path is not None:
             return tuple(
                 _difference_from_data(value["semantic"])
-                for value in _read_jsonl(self._durable_history_path)
+                for value in _iter_jsonl(self._durable_history_path)
                 if value.get("record_type") == "difference_consumed"
             )
         return tuple(self._differences)
@@ -302,7 +302,7 @@ class Planner:
         if self._durable_history_path is not None:
             return tuple(
                 _planning_decision_from_data(value["semantic"])
-                for value in _read_jsonl(self._durable_history_path)
+                for value in _iter_jsonl(self._durable_history_path)
                 if value.get("record_type") == "planning_decision"
             )
         return tuple(self._decisions)
@@ -1044,10 +1044,10 @@ class Planner:
                             else 0
                         ),
                         "precedence_buckets": len(precedence_bucket_sizes),
-                        "precedence_bucket_pair_iterations": sum(
-                            size * size for size in precedence_bucket_sizes
+                        "precedence_indexed_transitions": len(
+                            precedence_transitions
                         ),
-                        "precedence_candidate_pairs": sum(
+                        "precedence_avoided_candidate_pairs": sum(
                             size * (size - 1)
                             for size in precedence_bucket_sizes
                         ),
@@ -2504,16 +2504,13 @@ def _clear_parameter_state(
     persistence_started: dict,
     connection_id: ConnectionId,
 ) -> None:
-    for mapping in (
-        observed,
-        planned,
-        pending,
-        drift_started,
-        persistence_started,
-    ):
-        for key in tuple(mapping):
-            if key[0] == connection_id:
-                mapping.pop(key)
+    for mapping in (observed, planned, pending):
+        for direction in ConnectionDirection:
+            mapping.pop((connection_id, direction), None)
+    for mapping in (drift_started, persistence_started):
+        for direction in ConnectionDirection:
+            for field_name in _PARAMETER_FIELDS:
+                mapping.pop((connection_id, direction, field_name), None)
 
 
 def _update_parameter_temporal_field(
@@ -2765,6 +2762,11 @@ def _validate_plan_region(
     current_dependencies: Mapping[
         RouteKey, tuple[ConnectionId, ...]
     ] = dict(planned_paths_before)
+    dependency_reference_counts = Counter(
+        connection_id
+        for dependencies in current_dependencies.values()
+        for connection_id in dependencies
+    )
     if not faithful_formal_translation and not all(
         set(dependencies) <= set(active_connections)
         for dependencies in current_dependencies.values()
@@ -2852,6 +2854,11 @@ def _validate_plan_region(
                     current_dependencies = _resolve_planned_paths(
                         current_routes, active_connections
                     )
+                    dependency_reference_counts = Counter(
+                        connection_id
+                        for dependencies in current_dependencies.values()
+                        for connection_id in dependencies
+                    )
                     path_reconstructions += 1
                     dependencies_dirty = False
 
@@ -2860,13 +2867,14 @@ def _validate_plan_region(
                     raise ValueError(
                         "Connection withdrawal without active lifetime"
                     )
-                if not faithful_formal_translation and any(
-                        transition.connection_id in dependencies
-                        for dependencies in current_dependencies.values()
-                ):
-                    raise ValueError(
-                        "forwarding state depends on withdrawn Connection"
-                    )
+                if not faithful_formal_translation:
+                    dependency_ids_checked += 1
+                    if dependency_reference_counts.get(
+                        transition.connection_id, 0
+                    ):
+                        raise ValueError(
+                            "forwarding state depends on withdrawn Connection"
+                        )
                 active_connections.pop(transition.connection_id)
 
         slice_id = difference.current_slice_id
@@ -2890,6 +2898,11 @@ def _validate_plan_region(
             current_dependencies = _resolve_planned_paths(
                 current_routes, active_connections
             )
+            dependency_reference_counts = Counter(
+                connection_id
+                for dependencies in current_dependencies.values()
+                for connection_id in dependencies
+            )
             path_reconstructions += 1
             dependencies_dirty = False
         formal_paths_at_boundary = route_paths.get(slice_id, {})
@@ -2904,6 +2917,7 @@ def _validate_plan_region(
         ] = {}
         for route_key, path in current_dependencies.items():
             formal_path = tuple(formal_paths_at_boundary[route_key])
+            dependency_ids_checked += len(path) + len(formal_path)
             if path not in (
                 formal_path,
                 tuple(previous_planned_paths.get(route_key, ())),

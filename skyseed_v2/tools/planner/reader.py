@@ -5,14 +5,19 @@ from __future__ import annotations
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 from pathlib import Path
 
 from skyseed_v2.simulator import (
     Connection,
+    ConnectionDirection,
     ConnectionId,
     ConnectionTransition,
+    ConnectionTransitionOperation,
+    DifferenceOperation,
     ForwardingTransition,
+    ForwardingTransitionPrecedence,
     GroundStationRouteTarget,
     ParameterTransition,
     Plan,
@@ -22,15 +27,26 @@ from skyseed_v2.simulator import (
     TopologyDifference,
     ZoneRouteTarget,
 )
+from skyseed_v2.simulator._history_codec import (
+    _difference_from_data,
+    _planning_decision_from_data,
+)
 
 from tools.slice.reader import (
+    _read_durable_slice_values,
     _read_connection,
     _read_difference,
     _read_route,
     _read_static_nodes,
     _read_zones,
+    _connection_from_semantic,
+    _connection_id_from_semantic,
+    _mapping,
+    _node_id_from_semantic,
+    _route_target_from_semantic,
+    _sequence,
 )
-from tools._history import read_jsonl_records
+from tools._history import iter_jsonl_records, read_jsonl_records
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +79,133 @@ def read_planner_history(path: Path) -> dict[str, Any]:
             value for value in records if value.get("record_type") == "planning_decision"
         ),
     }
+
+
+def read_durable_plan_sequence(path: Path) -> tuple[Plan, ...]:
+    """Reconstruct exact immutable publications from canonical raw JSONL."""
+
+    plans = tuple(
+        _plan_from_semantic(value["semantic"])
+        for value in iter_jsonl_records(path)
+        if value.get("record_type") == "plan_published"
+    )
+    _require_continuous_plans(plans)
+    return plans
+
+
+def _plan_from_semantic(value: object) -> Plan:
+    semantic = _mapping(value, "Plan")
+    connections = tuple(
+        _connection_transition_from_semantic(item)
+        for item in _sequence(
+            semantic["connection_transitions"], "connection transitions"
+        )
+    )
+    parameters = tuple(
+        _parameter_transition_from_semantic(item)
+        for item in _sequence(
+            semantic["parameter_transitions"], "parameter transitions"
+        )
+    )
+    forwarding = tuple(
+        _forwarding_transition_from_semantic(item)
+        for item in _sequence(
+            semantic["forwarding_transitions"], "forwarding transitions"
+        )
+    )
+    by_value = {value: value for value in forwarding}
+    precedences = []
+    for item in _sequence(
+        semantic["forwarding_precedences"], "forwarding precedences"
+    ):
+        precedence = _mapping(item, "ForwardingTransitionPrecedence")
+        predecessor = _forwarding_transition_from_semantic(
+            precedence["predecessor"]
+        )
+        successor = _forwarding_transition_from_semantic(precedence["successor"])
+        try:
+            precedences.append(
+                ForwardingTransitionPrecedence(
+                    by_value[predecessor],
+                    by_value[successor],
+                )
+            )
+        except KeyError as error:
+            raise ValueError(
+                "durable Plan precedence does not reference its forwarding values"
+            ) from error
+    return Plan(
+        start_slice_id=int(semantic["start_slice_id"]),
+        start_timestamp=_optional_semantic_datetime(semantic["start_timestamp"]),
+        end_slice_id=int(semantic["end_slice_id"]),
+        end_timestamp=_semantic_datetime(semantic["end_timestamp"]),
+        connection_transitions=connections,
+        parameter_transitions=parameters,
+        forwarding_transitions=forwarding,
+        forwarding_precedences=tuple(precedences),
+    )
+
+
+def _connection_transition_from_semantic(value: object) -> ConnectionTransition:
+    semantic = _mapping(value, "ConnectionTransition")
+    operation = _mapping(semantic["operation"], "ConnectionTransitionOperation")
+    return ConnectionTransition(
+        nominal_time=_semantic_datetime(semantic["nominal_time"]),
+        operation=ConnectionTransitionOperation(str(operation["value"])),
+        connection_id=_connection_id_from_semantic(semantic["connection_id"]),
+        connection=(
+            None
+            if semantic["connection"] is None
+            else _connection_from_semantic(semantic["connection"])
+        ),
+    )
+
+
+def _parameter_transition_from_semantic(value: object) -> ParameterTransition:
+    semantic = _mapping(value, "ParameterTransition")
+    direction = _mapping(semantic["direction"], "ConnectionDirection")
+    return ParameterTransition(
+        nominal_time=_semantic_datetime(semantic["nominal_time"]),
+        connection_id=_connection_id_from_semantic(semantic["connection_id"]),
+        direction=ConnectionDirection(str(direction["value"])),
+        bandwidth_bps=_optional_int(semantic["bandwidth_bps"]),
+        delay_us=_optional_int(semantic["delay_us"]),
+        packet_loss_ppm=_optional_int(semantic["packet_loss_ppm"]),
+    )
+
+
+def _forwarding_transition_from_semantic(value: object) -> ForwardingTransition:
+    semantic = _mapping(value, "ForwardingTransition")
+    route_key = _mapping(semantic["route_key"], "RouteKey")
+    operation = _mapping(semantic["operation"], "DifferenceOperation")
+    return ForwardingTransition(
+        nominal_time=_semantic_datetime(semantic["nominal_time"]),
+        route_key=RouteKey(
+            _node_id_from_semantic(route_key["source"]),
+            _route_target_from_semantic(route_key["target"]),
+        ),
+        operation=DifferenceOperation(str(operation["value"])),
+        next_hop=(
+            None
+            if semantic["next_hop"] is None
+            else _node_id_from_semantic(semantic["next_hop"])
+        ),
+    )
+
+
+def _semantic_datetime(value: object) -> datetime:
+    semantic = _mapping(value, "datetime")
+    if semantic.get("$type") != "datetime":
+        raise ValueError("durable datetime marker is invalid")
+    return datetime.fromisoformat(str(semantic["value"]))
+
+
+def _optional_semantic_datetime(value: object) -> datetime | None:
+    return None if value is None else _semantic_datetime(value)
+
+
+def _optional_int(value: object) -> int | None:
+    return None if value is None else int(value)
 
 
 def read_planner_inspection(
@@ -146,17 +289,13 @@ def read_planner_inspection(
                     if timeline.end_time is None
                     else timeline.end_time.isoformat()
                 ),
-                "slice_interval_seconds": (
-                    timeline.slice_interval.total_seconds()
-                ),
+                "slice_interval_seconds": timeline.slice_interval.total_seconds(),
             },
-            "topology": {
-                "nodes": nodes,
-                "orbits": orbits,
-                "zones": zones,
-            },
+            "topology": {"nodes": nodes, "orbits": orbits, "zones": zones},
             "slices": slices,
-            "plans": tuple(_read_plan(index, plan) for index, plan in enumerate(plan_values)),
+            "plans": tuple(
+                _read_plan(index, plan) for index, plan in enumerate(plan_values)
+            ),
             "decisions": tuple(_read_decision(value) for value in decision_values),
             "inspection_limits": {
                 "rejected_suppression_candidates": (
@@ -171,6 +310,90 @@ def read_planner_inspection(
     )
 
 
+def read_durable_planner_inspection(
+    slice_history_path: Path,
+    planner_history_path: Path,
+    plans: tuple[Plan, ...],
+    configuration: Mapping[str, object],
+    *,
+    topology: object,
+    timeline: object,
+) -> PlannerInspectionRead:
+    """Read released exact histories without advancing Slicer or Planner."""
+
+    plan_values = tuple(plans)
+    if not plan_values or any(not isinstance(value, Plan) for value in plan_values):
+        raise TypeError("plans must contain at least one Plan")
+    _require_continuous_plans(plan_values)
+    differences = []
+    decisions = []
+    for value in iter_jsonl_records(planner_history_path):
+        if value.get("record_type") == "difference_consumed":
+            differences.append(_difference_from_data(value["semantic"]))
+        elif value.get("record_type") == "planning_decision":
+            decisions.append(_planning_decision_from_data(value["semantic"]))
+    differences = tuple(differences)
+    decisions = tuple(decisions)
+    from tools.slice.reader import read_slice_history
+
+    slice_snapshot = _read_durable_slice_values(
+        read_slice_history(slice_history_path),
+        {value.current_slice_id: value for value in differences},
+        topology=topology,
+        timeline=timeline,
+    ).snapshot
+    retained_ids = tuple(slice_snapshot["timeline"]["retained_slice_ids"])
+    if tuple(value.current_slice_id for value in differences) != retained_ids[1:]:
+        raise ValueError("durable Planner Differences do not align with Slices")
+    slices = tuple(
+        {
+            **value,
+            "difference_from_previous": _expand_difference(
+                value["difference_from_previous"]
+            ),
+        }
+        for value in slice_snapshot["slices"]
+    )
+    timeline_snapshot = deepcopy(slice_snapshot["timeline"])
+    timeline_snapshot["artifact_end_time"] = next(
+        (
+            str(value["timestamp"])
+            for value in reversed(slices)
+            if value["timestamp"] is not None
+        ),
+        timeline_snapshot["start_time"],
+    )
+    return PlannerInspectionRead(
+        {
+            "format_version": 1,
+            "tool": "planner-inspection",
+            "authority": {
+                "status": "non-authoritative-view",
+                "slicer": "complete durable semantic Slicer history",
+                "differences": "complete durable Planner-consumed Differences",
+                "plans": "immutable persisted Plan publications",
+                "decisions": "complete durable Planner decisions",
+                "models": "not invoked by this Tool",
+            },
+            "configuration": deepcopy(dict(configuration)),
+            "timeline": timeline_snapshot,
+            "topology": deepcopy(slice_snapshot["topology"]),
+            "slices": slices,
+            "plans": tuple(
+                _read_plan(index, plan) for index, plan in enumerate(plan_values)
+            ),
+            "decisions": tuple(_read_decision(value) for value in decisions),
+            "inspection_limits": {
+                "rejected_suppression_candidates": (
+                    "not exposed by the current public Planner inspection surface"
+                ),
+                "tuple_order": "deterministic representation, not execution order",
+                "precedence": (
+                    "semantic same-time relation, not backend/runtime scheduling"
+                ),
+            },
+        }
+    )
 def _read_planner_slice(
     slicer: Slicer,
     slice_id: int,
@@ -449,5 +672,7 @@ def _require_continuous_plans(plans: tuple[Plan, ...]) -> None:
 __all__ = [
     "PlannerInspectionRead",
     "read_planner_history",
+    "read_durable_plan_sequence",
     "read_planner_inspection",
+    "read_durable_planner_inspection",
 ]

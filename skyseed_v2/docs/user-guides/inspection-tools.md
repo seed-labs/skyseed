@@ -51,29 +51,18 @@ envelopes. They remain directly usable from `file://`; the browser decompresses
 only the selected chunk, while byte-count/SHA-256 metadata and bundle
 inventories preserve exact auditability.
 
-In the S4 example, heavy Slice, Planner, BPF Compiler, and Observation bundles
+In the Starlink Gen1 example, heavy Slice, Planner, BPF Compiler, and Observation bundles
 are materialized by at most two independent family-level worker processes by
 default. Tool work may overlap later domain execution when worker capacity is
 available; otherwise submission is deferred until the domain chain is complete
 so a Tool cannot become a Slicer → Planner → Compiler dependency. The CLI joins
-only for final artifact completeness. Small
-`inspection/_execution/status.json` metadata keeps Domain and Inspection
-status separate. Tool CPU/wall time is not included in Slicer, Planner, or
-Compiler Observation records.
-
-Each worker writes a deterministic frozen source handoff under
-`inspection/_execution/tool-handoffs/` before projection. After a Tool-only
-fix, rebuild one artifact without rerunning the domain chain:
-
-```bash
-python scripts/rebuild_inspection_from_handoff.py \
-  examples/s4_satellite_internet/output/inspection/_execution/tool-handoffs/planner.json
-```
-
-The handoff is trusted repository-produced gzip/pickle evidence, not an
-untrusted interchange format. The worker builds in a staging directory,
-verifies the Tool checksum inventory, and atomically replaces the canonical
-bundle only on success.
+only for final artifact completeness. Short-lived control files and frozen
+snapshots live under the generated root's `.inspection-control/` directory and
+are deleted after join or termination; they are implementation state, not
+durable evidence. Each worker builds in a staging directory, verifies the Tool
+checksum inventory, and atomically replaces the canonical
+`inspection/<tool>/` bundle only on success. Tool CPU/wall time is not included
+in Slicer, Planner, or Compiler Observation records.
 
 The Observation Tool reads `execution-observations.jsonl`, not live domain
 objects. Its page separates bootstrap from steady p50/p95/max and offers both
@@ -99,25 +88,25 @@ Run the rich bundle:
 python examples/mini_satellite_internet/main.py
 ```
 
-Run the static S4 scale-review bundle without entering the dynamic or BPF
-pipeline (the default):
+Run only the static Starlink Gen1 review boundary without entering the dynamic or
+BPF pipeline:
 
 ```bash
-python examples/s4_satellite_internet/main.py
+python examples/starlink_gen1_satellite_internet/main.py --through topology
 ```
 
 Its existing-tool outputs are
-`examples/s4_satellite_internet/output/inspection/topology/index.html` and
-`examples/s4_satellite_internet/output/inspection/zone/index.html`. Select an
+`examples/starlink_gen1_satellite_internet/output/inspection/topology/index.html` and
+`examples/starlink_gen1_satellite_internet/output/inspection/zone/index.html`. Select an
 orbit ring or GroundStation on the Topology globe, or select a Zone directly
 on either Zone view, to inspect the existing static fields. The subtle
 Natural Earth coastline is embedded for offline orientation only; it is not
 simulation or Zone authority.
 
-Run the same S4 composition through Slicer with:
+Run the same Starlink Gen1 composition through Slicer with:
 
 ```bash
-python examples/s4_satellite_internet/main.py --through slicer
+python examples/starlink_gen1_satellite_internet/main.py --through slicer
 ```
 
 That adds the maintained `output/inspection/slice/index.html` and Observation
@@ -170,11 +159,14 @@ python scripts/check_bpf_compiler_tool_browser.py \
 
 The canonical Mini `main.py` remains generation-only and does not create a
 placeholder Runner artifact. After `start.sh`, `run.sh` uses public automatic
-Runner execution and writes `inspection/runner/index.html` after cleanup for a
-completed, controlled-interruption, ordinary-failure, or cleanup-failure
+Runner execution and writes `inspection/runner/index.html` after teardown for a
+completed, controlled-interruption, ordinary-failure, or teardown-failure
 outcome when finalization can run. The page shows final/last-known lifecycle
-facts, curated history, timing, Maintenance/reclaim, failure/cleanup, and
-recorded current-default-tc-BPF evidence. It is static after opening and does
+facts, curated history, timing, amplification/batching/workers,
+Maintenance/reclaim/backlog, sparse resource health, failure/teardown, and
+recorded current-default-tc-BPF evidence. The complete exact event history
+remains the adjacent JSONL source rather than being duplicated into the page.
+It is static after opening and does
 not inspect the kernel, collect traffic telemetry, inject packets, or control
 Runner.
 

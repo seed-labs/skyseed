@@ -15,6 +15,7 @@ from tools.traffic.projection import (
     _project_workload_activity,
     _project_zone_geometry,
 )
+from tools.traffic.reader import _inactive_ingress_identity
 from tools.traffic.renderer import render_traffic_replay_page
 
 
@@ -849,6 +850,130 @@ def test_future_generation_links_do_not_enter_current_active_graph(
     }
 
 
+def test_inactive_ingress_can_use_unique_future_physical_identity_without_leaking_link(
+    tmp_path: Path,
+) -> None:
+    traffic, dynamic, compiler, workload = _inputs(
+        tmp_path, reply_generation=1
+    )
+    records = [json.loads(line) for line in traffic.read_text().splitlines()]
+    future_connection = f"inter-satellite|{SOURCE}|{DESTINATION}"
+    recorder_index = next(
+        index
+        for index, value in enumerate(records)
+        if value.get("record_type") == "recorder_end"
+    )
+    records[recorder_index:recorder_index] = [
+        {
+            "record_type": "interface_identity",
+            "generation": 1,
+            "boundary_timestamp": END,
+            "node_slot": 0,
+            "node_id": SOURCE,
+            "ifindex": 30,
+            "interface": "sv2futurea",
+            "connection_id": future_connection,
+            "peer_node_id": DESTINATION,
+            "route_destinations": (),
+            "validity": "exact-generation",
+        },
+        {
+            "record_type": "interface_identity",
+            "generation": 1,
+            "boundary_timestamp": END,
+            "node_slot": 2,
+            "node_id": DESTINATION,
+            "ifindex": 31,
+            "interface": "sv2futureb",
+            "connection_id": future_connection,
+            "peer_node_id": SOURCE,
+            "route_destinations": (),
+            "validity": "exact-generation",
+        },
+        {
+            **_packet(
+                105_000_000_000,
+                slot=0,
+                generation=0,
+                ingress=30,
+                egress=None,
+                source="100.64.0.3",
+                destination="100.64.0.1",
+                icmp_type=8,
+            ),
+            "decision": "drop",
+            "reason": "inactive-ingress",
+        },
+    ]
+    recorder = next(
+        value for value in records if value.get("record_type") == "recorder_end"
+    )
+    recorder["packet_records"] += 1
+    traffic.write_text(
+        "".join(json.dumps(value) + "\n" for value in records),
+        encoding="utf-8",
+    )
+
+    data = collect_traffic_replay_data(traffic, dynamic, compiler, workload)
+    transaction = next(
+        value
+        for value in data["ping_transactions"]
+        if value["request"]["final_reason"] == "inactive-ingress"
+    )
+    observation = transaction["request"]["observed_path"][0]
+    networks = {
+        value["generation"]: value for value in data["active_networks"]
+    }
+
+    assert observation["generation"] == 0
+    assert observation["incoming_connection_id"] == future_connection
+    assert observation["ingress_identity_validity"] == (
+        "unique-observed-physical-inactive-ingress"
+    )
+    assert observation["ingress_identity_generations"] == (1,)
+    assert future_connection not in {
+        value["connection_id"] for value in networks[0]["connections"]
+    }
+    assert future_connection in {
+        value["connection_id"] for value in networks[1]["connections"]
+    }
+    assert data["overview"][
+        "inactive_ingress_physical_identity_associations"
+    ] == 1
+
+
+def test_inactive_ingress_identity_fallback_rejects_reuse_ambiguity() -> None:
+    packet = {
+        "decision": "drop",
+        "reason": "inactive-ingress",
+        "selected_egress_ifindex": None,
+    }
+    base = {
+        "generation": 1,
+        "node_id": SOURCE,
+        "ifindex": 30,
+        "interface": "sv2candidate",
+        "connection_id": f"inter-satellite|{SOURCE}|{MIDDLE}",
+        "peer_node_id": MIDDLE,
+    }
+
+    assert _inactive_ingress_identity(
+        packet,
+        (
+            base,
+            {
+                **base,
+                "generation": 2,
+                "connection_id": f"inter-satellite|{SOURCE}|{DESTINATION}",
+                "peer_node_id": DESTINATION,
+            },
+        ),
+    ) is None
+    assert _inactive_ingress_identity(
+        {**packet, "decision": "redirect"}, (base,)
+    ) is None
+
+
 def test_position_projection_preserves_exact_sample_and_marks_interpolation() -> None:
     start = datetime(2026, 1, 1, tzinfo=timezone.utc)
     samples = (
@@ -1156,6 +1281,7 @@ def test_write_produces_dependency_free_file_url_bundle(tmp_path: Path) -> None:
         "pingReplay.phase+=1",
         '$("globe").scrollIntoView({behavior:"smooth",block:"center"})',
         "function drawReplayPulse(positions,width,height)",
+        "if(selectedNodes.has(id))drawLabel",
         'pingReplay.label==="Request"',
         'pingReplay?.label==="Reply"',
         "ctx.setLineDash(dash)",
@@ -1183,6 +1309,7 @@ def test_write_produces_dependency_free_file_url_bundle(tmp_path: Path) -> None:
         "recentPulses",
         "Date.now(",
         '$("selected-ping-section").scrollIntoView',
+        'else if(metadata?.kind==="ground-station")drawLabel',
     ):
         assert forbidden not in page
     assert "context_frames" not in page
@@ -1273,6 +1400,271 @@ def test_tool_owned_cli_writes_replay_without_workload_control_input(
     )
     assert "traffic_workload" not in inventory["inputs"]
     assert (traffic.parent / "index.html").is_file()
+
+
+def test_qualification_inputs_project_plan_execution_and_runner_evidence(
+    tmp_path: Path,
+) -> None:
+    traffic, dynamic, compiler, workload = _inputs(tmp_path, zone_source=True)
+    plan = traffic.parent / "probe-plan.json"
+    execution = traffic.parent / "probe-execution.jsonl"
+    runner_events = tmp_path / "inspection/runner/runner-events.jsonl"
+    runner_events.parent.mkdir(parents=True)
+    revision = "revision-test"
+    probe_id = "probe-test"
+    episode_id = "episode-test"
+    plan.write_text(
+        json.dumps(
+            {
+                "artifact_type": "traffic-probe-plan",
+                "format_version": 1,
+                "authority": "derived-experiment-side-observation-plan",
+                "selection_source": (
+                    "trusted in-memory BpfCompiledRealization sequence"
+                ),
+                "runtime_authority": False,
+                "classification_scope": (
+                    "authoritative-active-published-runtime-only"
+                ),
+                "planning_horizon": {
+                    "coverage_start_time": ORIGIN,
+                    "coverage_end_time": END,
+                    "supplied_realization_count": 1,
+                    "terminality": "unknown",
+                    "revision_semantics": "revisable-lookahead",
+                    "revision_id": revision,
+                    "nominal_boundaries": [ORIGIN],
+                },
+                "planning": {
+                    "selection_strategy": "bounded-stratified-reservoir",
+                    "global_flow_ranking": False,
+                    "candidate_bucket_capacity": 2,
+                    "duration_seconds": 0.1,
+                    "candidate_pair_count": 1,
+                    "selected_probe_identity_count": 1,
+                    "selected_episode_count": 1,
+                    "persistent_episode_count": 1,
+                    "rotating_background_episode_count": 0,
+                    "activation_window_episode_count": 0,
+                    "direction_counts": {"zone-to-ground-station": 1},
+                    "path_length_class_counts": {"short": 1},
+                    "path_stability_counts": {"stable": 1},
+                    "selection_reason_counts": {
+                        "persistent-stable-control": 1
+                    },
+                    "estimated_echo_requests": 1,
+                    "estimated_telemetry_events": 4,
+                    "maximum_concurrent_episode_bound": 1,
+                    "maximum_request_rate_per_second": 1.0,
+                },
+                "probe_identities": [
+                    {
+                        "probe_id": probe_id,
+                        "direction": "zone-to-ground-station",
+                        "logical_source": ZONE_ID,
+                        "logical_destination": DESTINATION,
+                        "ground_station_id": DESTINATION,
+                        "zone_id": ZONE_ID,
+                        "zone_ipv4": "198.18.0.1",
+                        "selection_reasons": ["persistent-stable-control"],
+                        "path_stability": "stable",
+                        "path_length_class": "short",
+                    }
+                ],
+                "episodes": [
+                    {
+                        "episode_id": episode_id,
+                        "probe_id": probe_id,
+                        "mode": "persistent",
+                        "episode_intent": "armed",
+                        "start_time": ORIGIN,
+                        "end_time": END,
+                        "interval_seconds": 1.0,
+                        "affected_activation_times": [],
+                        "state_intervals": [
+                            {
+                                "start_time": ORIGIN,
+                                "end_time": END,
+                                "expected_reachable": True,
+                                "unreachable_reason": None,
+                                "service_satellite_id": SOURCE,
+                                "path_node_ids": [SOURCE, MIDDLE, DESTINATION],
+                                "path_length_hops": 2,
+                                "boundary_reasons": [],
+                            }
+                        ],
+                        "estimated_echo_requests": 1,
+                        "estimated_telemetry_events": 4,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def execution_record(record_type: str, offset: int, **facts):
+        return {
+            "record_type": record_type,
+            "host_monotonic_ns": 100_000_000_000 + offset,
+            "wall_time": ORIGIN,
+            **facts,
+        }
+
+    execution_records = [
+        {
+            "record_type": "execution_header",
+            "artifact_type": "traffic-probe-execution",
+            "format_version": 1,
+            "plan_revision_id": revision,
+            "classification_scope": (
+                "authoritative-active-published-runtime-only"
+            ),
+        },
+        execution_record("executor_start", 1, plan_revision_id=revision),
+        execution_record(
+            "clock_alignment",
+            2,
+            runner_wall_origin=100.0,
+            observed_monotonic_ns=100_000_000_002,
+            observation_delay_seconds=0.0,
+            status="PASS",
+        ),
+        execution_record(
+            "episode_armed",
+            3,
+            episode_id=episode_id,
+            probe_id=probe_id,
+            plan_revision_id=revision,
+        ),
+        execution_record(
+            "generator_launched",
+            4,
+            episode_id=episode_id,
+            probe_id=probe_id,
+            segment_index=1,
+            icmp_identifier=44,
+                physical_source_container_id="container-test",
+                source_ipv4="198.18.0.1",
+                destination_ipv4="100.64.0.3",
+                published_active_frontier=END,
+        ),
+        execution_record(
+            "ping_observation",
+            1_250_000_000,
+            episode_id=episode_id,
+            probe_id=probe_id,
+            segment_index=1,
+            observation="reply",
+            icmp_sequence=1,
+                rtt_ms=1.2,
+                raw_line="64 bytes from test: icmp_seq=1 time=1.2 ms",
+                published_active_frontier=END,
+        ),
+        execution_record(
+            "generator_stopped",
+            9_900_000_000,
+            episode_id=episode_id,
+            probe_id=probe_id,
+            segment_index=1,
+            sent=1,
+            received=1,
+            cleanup_result="cleaned",
+        ),
+        execution_record(
+            "episode_completed",
+            9_910_000_000,
+            episode_id=episode_id,
+            probe_id=probe_id,
+            plan_revision_id=revision,
+            rearmable=False,
+        ),
+        execution_record(
+            "executor_end",
+            9_920_000_000,
+            plan_revision_id=revision,
+            complete=True,
+            cleanup_complete=True,
+            active_generators=0,
+        ),
+    ]
+    execution.write_text(
+        "".join(json.dumps(value) + "\n" for value in execution_records),
+        encoding="utf-8",
+    )
+    switch_start = 105_000_000_000
+    switch_end = 105_010_000_000
+    runner_records = [
+        {
+            "record_type": "history_header",
+            "format_version": 2,
+            "owner": "BpfRunner",
+            "capture": "bounded-nonblocking",
+        },
+        {
+            "record_type": "runner_event",
+            "event": "automatic_run_start",
+            "nominal_origin": ORIGIN,
+            "wall_origin": 100.0,
+        },
+        {
+            "record_type": "runner_event",
+            "event": "activation_end",
+            "active_generation": 0,
+            "active_frontier": ORIGIN,
+            "duration_seconds": 0.02,
+            "activation_switch_seconds": 0.01,
+            "generation_switch_start_monotonic_ns": 100_000_000_000,
+            "generation_switch_end_monotonic_ns": 100_010_000_000,
+        },
+        {
+            "record_type": "runner_event",
+            "event": "activation_end",
+            "active_generation": 1,
+            "active_frontier": END,
+            "duration_seconds": 0.02,
+            "activation_switch_seconds": 0.01,
+            "generation_switch_start_monotonic_ns": switch_start,
+            "generation_switch_end_monotonic_ns": switch_end,
+        },
+    ]
+    runner_events.write_text(
+        "".join(json.dumps(value) + "\n" for value in runner_records),
+        encoding="utf-8",
+    )
+
+    result = write_traffic_replay_tool(
+        traffic,
+        dynamic,
+        compiler,
+        workload,
+        traffic.parent,
+        plan,
+        execution,
+        runner_events,
+    )
+    data = json.loads(
+        (traffic.parent / "traffic-replay.json").read_text(encoding="utf-8")
+    )
+    inventory = json.loads(
+        (traffic.parent / "inventory.json").read_text(encoding="utf-8")
+    )
+
+    assert result["status"] == "PASS"
+    assert data["qualification"]["summary"]["plan_revision_id"] == revision
+    assert data["qualification"]["episodes"][0]["classifications"] == [
+        "pass"
+    ]
+    assert data["qualification"]["episodes"][0][
+        "telemetry_transactions"
+    ] == 1
+    assert set(inventory["inputs"]) >= {
+        "traffic_probe_plan",
+        "traffic_probe_execution",
+        "runner_events",
+    }
+    page = (traffic.parent / "index.html").read_text(encoding="utf-8")
+    assert "Traffic Qualification" in page
+    assert "Selected episode → raw execution evidence" in page
 
 
 def test_zero_and_many_observed_flows_keep_a_fixed_globe_and_scroll_browser(
@@ -1380,3 +1772,8 @@ def test_latest_canonical_artifact_is_v3_or_explicitly_stale_before_rerun() -> N
         "proves_packet_loss": False,
         "packet_observation_authority": "traffic-telemetry.jsonl",
     }
+def test_traffic_renderer_labels_probe_plan_construction_without_simulator_claim() -> None:
+    source = Path("tools/traffic/renderer.py").read_text(encoding="utf-8")
+    assert "Traffic probe-plan construction" in source
+    assert "Simulator Planner duration" not in source
+

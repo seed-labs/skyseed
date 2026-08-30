@@ -8,14 +8,356 @@ from hashlib import sha256
 from json import JSONDecodeError, loads
 from math import isfinite
 from pathlib import Path
-from re import fullmatch
+from re import fullmatch, sub
+from shlex import quote
+import shutil
 from subprocess import CompletedProcess, run
 from time import monotonic, sleep
 from typing import Callable, Iterable, Sequence
 
+from seedemu.compiler import Docker
+
 
 Command = tuple[str, ...]
 CommandRunner = Callable[[Sequence[str]], CompletedProcess[str]]
+
+
+def _prepare_generated_output(output_directory: Path, *, replace: bool) -> Path:
+    """Create one clean generated output root and return its runtime path."""
+
+    output = Path(output_directory)
+    if output.exists() or output.is_symlink():
+        if not replace:
+            raise FileExistsError(f"example output already exists: {output}")
+        if output.is_symlink() or output.is_file():
+            output.unlink()
+        else:
+            shutil.rmtree(output)
+    output.mkdir(parents=True)
+    return output / "runtime"
+
+
+def _write_compose_project_scripts(
+    output_directory: Path,
+    project_name: str,
+    *,
+    build_plan_path: str | None = None,
+    startup_evidence_path: str | None = None,
+    python_executable: str | None = None,
+) -> None:
+    """Write thin generated Compose-only start and cleanup controls."""
+
+    output = Path(output_directory)
+    compose_file = output / "runtime/docker-compose.yml"
+    _validate_generated_compose(compose_file, project_name)
+    shell_project_name = quote(project_name)
+    if (build_plan_path is None) is not (startup_evidence_path is None):
+        raise ValueError(
+            "build_plan_path and startup_evidence_path must be supplied together"
+        )
+    if build_plan_path is None:
+        startup = '"${COMPOSE[@]}" up -d --build\n'
+    else:
+        if not isinstance(python_executable, str) or not python_executable:
+            raise ValueError("planned Compose startup requires python_executable")
+        build_plan = _generated_relative_path(build_plan_path, "build plan")
+        startup_evidence = _generated_relative_path(
+            startup_evidence_path,
+            "startup evidence",
+        )
+        if not (output / build_plan).is_file():
+            raise ValueError("generated Compose build plan is unavailable")
+        startup = f'''BUILD_PLAN="$SCRIPT_DIR/{build_plan}"
+STARTUP_EVIDENCE="$SCRIPT_DIR/{startup_evidence}"
+PYTHON={quote(python_executable)}
+if [[ ! -f "$BUILD_PLAN" ]]; then
+    echo "generated Compose build plan is missing: $BUILD_PLAN" >&2
+    exit 1
+fi
+startup_begin="$($PYTHON -c 'import time; print(time.monotonic_ns())')"
+startup_status=0
+declare -A generated_image_refs=()
+
+validate_build_plan() {{
+    local action source target extra
+    while read -r action source target extra; do
+        [[ -z "$action" || "$action" == \\#* ]] && continue
+        if [[ -n "${{extra:-}}" ]]; then
+            return 1
+        fi
+        if [[ "$action" == "prerequisite" && -n "$source" && -z "${{target:-}}" ]]; then
+            generated_image_refs["$source"]=1
+        elif [[ "$action" == "alias" && -n "$source" && -n "${{target:-}}" ]]; then
+            generated_image_refs["$PROJECT_NAME-$source"]=1
+            generated_image_refs["$PROJECT_NAME-$target"]=1
+        else
+            return 1
+        fi
+    done < "$BUILD_PLAN"
+    (( ${{#generated_image_refs[@]}} > 0 ))
+}}
+
+required_images_match() {{
+    local -a refs=("${{!generated_image_refs[@]}}")
+    local -a metadata=()
+    local -a compose_images=()
+    local raw_metadata raw_compose_images
+    local index image_id image_project extra
+    local action source target
+    declare -A image_ids=()
+
+    raw_metadata="$(
+        docker image inspect \\
+            --format '{{{{.Id}}}} {{{{index .Config.Labels "com.docker.compose.project"}}}}' \\
+            "${{refs[@]}}" 2>/dev/null
+    )" || return 1
+    mapfile -t metadata <<< "$raw_metadata"
+    (( ${{#metadata[@]}} == ${{#refs[@]}} )) || return 1
+    for index in "${{!refs[@]}}"; do
+        read -r image_id image_project extra <<< "${{metadata[$index]}}"
+        [[ -n "$image_id" && "$image_project" == "$PROJECT_NAME" \\
+            && -z "${{extra:-}}" ]] || return 1
+        image_ids["${{refs[$index]}}"]="$image_id"
+    done
+
+    while read -r action source target _extra; do
+        [[ -z "$action" || "$action" == \\#* ]] && continue
+        if [[ "$action" == "alias" ]]; then
+            [[ "${{image_ids["$PROJECT_NAME-$source"]}}" \\
+                == "${{image_ids["$PROJECT_NAME-$target"]}}" ]] || return 1
+        fi
+    done < "$BUILD_PLAN"
+
+    raw_compose_images="$("${{COMPOSE[@]}}" config --images)" || return 1
+    mapfile -t compose_images <<< "$raw_compose_images"
+    (( ${{#compose_images[@]}} > 0 )) || return 1
+    docker image inspect --format '{{{{.Id}}}}' \\
+        "${{compose_images[@]}}" >/dev/null 2>&1
+}}
+
+build_required_images() {{
+    local action source target extra
+    while read -r action source target extra; do
+        [[ -z "$action" || "$action" == \\#* ]] && continue
+        if [[ "$action" == "prerequisite" ]]; then
+            "${{COMPOSE[@]}}" build "$source" || return $?
+        elif [[ "$source" == "$target" ]]; then
+            "${{COMPOSE[@]}}" build "$source" || return $?
+        else
+            docker image tag "$PROJECT_NAME-$source" "$PROJECT_NAME-$target" \\
+                || return $?
+        fi
+    done < "$BUILD_PLAN"
+}}
+
+if ! validate_build_plan; then
+    echo "invalid generated build-plan entry" >&2
+    startup_status=1
+elif required_images_match; then
+    echo "required generated images already match; skipping build plan"
+elif [[ -n "$("${{COMPOSE[@]}}" ps -aq)" ]]; then
+    echo "required generated images are missing or stale while project containers exist" >&2
+    startup_status=1
+else
+    build_required_images || startup_status=$?
+    if (( startup_status == 0 )) && ! required_images_match; then
+        echo "generated image build did not produce the exact required image set" >&2
+        startup_status=1
+    fi
+fi
+if (( startup_status == 0 )); then
+    "${{COMPOSE[@]}}" up -d --no-build || startup_status=$?
+fi
+startup_end="$($PYTHON -c 'import time; print(time.monotonic_ns())')"
+$PYTHON - "$STARTUP_EVIDENCE" "$startup_begin" "$startup_end" "$startup_status" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+begin = int(sys.argv[2])
+end = int(sys.argv[3])
+exit_code = int(sys.argv[4])
+path.write_text(
+    json.dumps(
+        {{
+            "artifact_type": "compose-startup-evidence",
+            "format_version": 1,
+            "status": "completed" if exit_code == 0 else "failed",
+            "duration_seconds": max(0, end - begin) / 1_000_000_000,
+            "exit_code": exit_code,
+        }},
+        indent=2,
+        sort_keys=True,
+    )
+    + "\\n",
+    encoding="utf-8",
+)
+PY
+exit "$startup_status"
+'''
+    _write_executable(
+        output / "start.sh",
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+
+if (( $# != 0 )); then
+    echo "start.sh does not accept arguments" >&2
+    exit 2
+fi
+SCRIPT_DIR="$(cd -- "$(dirname -- "${{BASH_SOURCE[0]}}")" && pwd)"
+COMPOSE_FILE="$SCRIPT_DIR/runtime/docker-compose.yml"
+PROJECT_NAME={shell_project_name}
+COMPOSE=(
+    docker compose
+    -p "$PROJECT_NAME"
+    -f "$COMPOSE_FILE"
+)
+
+"${{COMPOSE[@]}}" config --quiet
+{startup}""",
+    )
+    _write_compose_cleanup_script(output, project_name)
+
+
+def _generated_relative_path(value: str, label: str) -> str:
+    if not isinstance(value, str) or not value or "\n" in value or "\r" in value:
+        raise ValueError(f"{label} must be a generated relative path")
+    path = Path(value)
+    if path.is_absolute() or ".." in path.parts or value == ".":
+        raise ValueError(f"{label} must stay within generated output")
+    return path.as_posix()
+
+
+def _write_compose_cleanup_script(
+    output_directory: Path,
+    project_name: str,
+) -> None:
+    """Write the generated Compose teardown control."""
+
+    output = Path(output_directory)
+    compose_file = output / "runtime/docker-compose.yml"
+    _validate_generated_compose(compose_file, project_name)
+    shell_project_name = quote(project_name)
+    _write_executable(
+        output / "cleanup.sh",
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+
+if (( $# != 0 )); then
+    echo "cleanup.sh does not accept arguments" >&2
+    exit 2
+fi
+SCRIPT_DIR="$(cd -- "$(dirname -- "${{BASH_SOURCE[0]}}")" && pwd)"
+COMPOSE_FILE="$SCRIPT_DIR/runtime/docker-compose.yml"
+PROJECT_NAME={shell_project_name}
+COMPOSE=(
+    docker compose
+    -p "$PROJECT_NAME"
+    -f "$COMPOSE_FILE"
+)
+
+"${{COMPOSE[@]}}" down --remove-orphans
+""",
+    )
+
+
+def _validate_generated_compose(compose_file: Path, project_name: str) -> None:
+    if not compose_file.is_file():
+        raise ValueError(
+            "output_directory must contain runtime/docker-compose.yml"
+        )
+    if not isinstance(project_name, str) or fullmatch(
+        r"[a-z0-9][a-z0-9_-]*", project_name
+    ) is None:
+        raise ValueError(
+            "project_name must contain only lowercase letters, digits, "
+            "hyphens and underscores"
+        )
+
+
+def _write_executable(path: Path, content: str) -> None:
+    path.write_text(content, encoding="utf-8")
+    path.chmod(0o755)
+
+
+class _InterfaceLessRuntimeDocker(Docker):
+    """Compile runtime-only nodes whose links are established by BpfRunner."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            namingScheme="as{asn}{role}-{name}",
+            internetMapEnabled=True,
+        )
+
+    def _getComposeNodeName(self, node) -> str:
+        if node.getInterfaces():
+            return super()._getComposeNodeName(node)
+        name = (
+            f"as{node.getAsn()}"
+            f"{self._nodeRoleToString(node.getRole())}-{node.getName()}"
+        )
+        return sub(r"[^a-zA-Z0-9_.-]", "_", name)
+
+    def _compileNode(self, node) -> str:
+        service = super()._compileNode(node)
+        if node.getInterfaces() or "        network_mode: none\n" in service:
+            return service
+        empty_networks = "        networks:\n"
+        if empty_networks not in service:
+            raise RuntimeError(
+                "upstream Docker service shape changed for an "
+                "interface-less runtime node"
+            )
+        return service.replace(
+            empty_networks,
+            "        network_mode: none\n",
+            1,
+        )
+
+
+def _write_compose_build_plan(runtime_directory: Path) -> Path:
+    """Deduplicate only byte-identical generated node build contexts."""
+
+    runtime = Path(runtime_directory)
+    dummy_directory = runtime / "dummies"
+    prerequisites = tuple(
+        sorted(path.name for path in dummy_directory.iterdir() if path.is_file())
+    )
+    if len(prerequisites) != 1:
+        raise RuntimeError("generated runtime must have one shared base-image build")
+
+    groups: dict[str, list[str]] = {}
+    for directory in sorted(runtime.iterdir(), key=lambda path: path.name):
+        if not directory.is_dir() or not (directory / "Dockerfile").is_file():
+            continue
+        digest = sha256()
+        for path in sorted(
+            (path for path in directory.rglob("*") if path.is_file()),
+            key=lambda path: path.relative_to(directory).as_posix(),
+        ):
+            relative = path.relative_to(directory).as_posix().encode("utf-8")
+            content = path.read_bytes()
+            digest.update(len(relative).to_bytes(4, "big"))
+            digest.update(relative)
+            digest.update(len(content).to_bytes(8, "big"))
+            digest.update(content)
+        groups.setdefault(digest.hexdigest(), []).append(directory.name)
+    if not groups:
+        raise RuntimeError("generated runtime has no node build contexts")
+
+    lines = [
+        "# skyseed-v2-compose-build-plan/v1",
+        f"# contexts={sum(len(group) for group in groups.values())}",
+        f"# identical-content-groups={len(groups)}",
+        *(f"prerequisite {service}" for service in prerequisites),
+    ]
+    for group in sorted(groups.values(), key=lambda values: values[0]):
+        representative = group[0]
+        lines.extend(f"alias {representative} {service}" for service in group)
+    plan = runtime / "skyseed-build-plan.txt"
+    plan.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return plan
 
 
 class ComposeLaunchStrategy(str, Enum):

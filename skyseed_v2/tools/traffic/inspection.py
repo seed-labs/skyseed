@@ -19,6 +19,9 @@ def collect_traffic_replay_data(
     slice_path: Path,
     bpf_compiler_path: Path,
     workload_path: Path | None = None,
+    probe_plan_path: Path | None = None,
+    probe_execution_path: Path | None = None,
+    runner_events_path: Path | None = None,
 ) -> dict[str, Any]:
     """Read detached durable artifacts and build one replay projection."""
 
@@ -28,6 +31,9 @@ def collect_traffic_replay_data(
             slice_path,
             bpf_compiler_path,
             workload_path,
+            probe_plan_path,
+            probe_execution_path,
+            runner_events_path,
         )
     )
 
@@ -38,6 +44,9 @@ def write_traffic_replay_tool(
     bpf_compiler_path: Path,
     workload_path: Path | None,
     directory: Path,
+    probe_plan_path: Path | None = None,
+    probe_execution_path: Path | None = None,
+    runner_events_path: Path | None = None,
 ) -> dict[str, object]:
     """Write one dependency-free offline traffic replay bundle."""
 
@@ -45,6 +54,17 @@ def write_traffic_replay_tool(
     dynamic = Path(slice_path).resolve()
     compiler = Path(bpf_compiler_path).resolve()
     workload = None if workload_path is None else Path(workload_path).resolve()
+    qualification_paths = tuple(
+        None if value is None else Path(value).resolve()
+        for value in (probe_plan_path, probe_execution_path, runner_events_path)
+    )
+    if any(value is not None for value in qualification_paths) and not all(
+        value is not None for value in qualification_paths
+    ):
+        raise ValueError(
+            "Traffic qualification requires plan, execution, and Runner events"
+        )
+    probe_plan, probe_execution, runner_events = qualification_paths
     output = Path(directory).resolve()
     if telemetry.parent != output:
         raise ValueError("traffic telemetry must remain in the replay Tool root")
@@ -56,7 +76,15 @@ def write_traffic_replay_tool(
     checksum_path = output / "checksums.sha256"
     page_path.unlink(missing_ok=True)
 
-    data = collect_traffic_replay_data(telemetry, dynamic, compiler, workload)
+    data = collect_traffic_replay_data(
+        telemetry,
+        dynamic,
+        compiler,
+        workload,
+        probe_plan,
+        probe_execution,
+        runner_events,
+    )
     page = render_traffic_replay_page(data)
 
     write_json(data_path, data)
@@ -67,7 +95,7 @@ def write_traffic_replay_tool(
         summary_path,
         "\n".join(
             (
-                "status=PASS",
+                f"status={overview['qualification_status'] or 'PASS'}",
                 "tool=traffic-path-replay",
                 "authority=non-authoritative-view",
                 f"telemetry_complete={overview['telemetry_complete']}",
@@ -98,6 +126,19 @@ def write_traffic_replay_tool(
                     if workload is None
                     else {"traffic_workload": _file_record(workload, output)}
                 ),
+                **(
+                    {}
+                    if probe_plan is None
+                    else {
+                        "traffic_probe_plan": _file_record(probe_plan, output),
+                        "traffic_probe_execution": _file_record(
+                            probe_execution, output  # type: ignore[arg-type]
+                        ),
+                        "runner_events": _file_record(
+                            runner_events, output  # type: ignore[arg-type]
+                        ),
+                    }
+                ),
             },
             "files": tuple(
                 _file_record(path, output) for path in payload_files[1:]
@@ -107,6 +148,15 @@ def write_traffic_replay_tool(
     checksum_files = (
         *payload_files,
         *((workload,) if workload is not None else ()),
+        *(
+            ()
+            if probe_plan is None
+            else (
+                probe_plan,
+                probe_execution,  # type: ignore[misc]
+                runner_events,  # type: ignore[misc]
+            )
+        ),
         inventory_path,
     )
     write_text(
@@ -117,10 +167,15 @@ def write_traffic_replay_tool(
         ),
     )
     return {
-        "status": "PASS",
+        "status": overview["qualification_status"] or "PASS",
         "message": (
             f"{inventory['ping_transactions']} Ping transaction(s) / "
             f"{inventory['unclassified_observations']} unclassified observation(s)"
+            + (
+                ""
+                if overview["qualification_status"] is None
+                else f" / qualification {overview['qualification_status']}"
+            )
         ),
         "directory": output,
         "files": tuple(

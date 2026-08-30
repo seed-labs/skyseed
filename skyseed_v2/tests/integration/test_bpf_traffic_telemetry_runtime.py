@@ -88,3 +88,61 @@ finally:
 
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["status"] == "ok"
+
+
+def test_privileged_kernel_accepts_exact_hash_map_batch_delete() -> None:
+    image = os.environ.get("SKYSEED_BPF_HELPER_IMAGE")
+    if not image:
+        pytest.skip("set SKYSEED_BPF_HELPER_IMAGE to run the privileged batch test")
+    script = r"""
+import json
+import os
+from skyseed_v2.backend.bpf._runner.privileged_runtime_command import (
+    _create_map,
+    _delete_map_batch,
+    _lookup_map,
+    _update_map,
+)
+descriptor = _create_map("t_batch_del", key_size=8, max_entries=8)
+try:
+    keys = ((7, 11), (7, 13), (7, 17), (7, 19))
+    for index, key in enumerate(keys, start=1):
+        _update_map(descriptor, key, index)
+    deleted = _delete_map_batch(descriptor, keys)
+    remaining = [_lookup_map(descriptor, key) for key in keys]
+    print(json.dumps({"deleted": deleted, "remaining": remaining}))
+finally:
+    os.close(descriptor)
+"""
+    command = (
+        "docker",
+        "run",
+        "--rm",
+        "--privileged",
+        "--pid",
+        "host",
+        "--network",
+        "host",
+        "--mount",
+        "type=bind,source=/,target=/host,readonly",
+        "--entrypoint",
+        "/usr/sbin/chroot",
+        image,
+        "/host",
+        sys.executable,
+        "-c",
+        script,
+    )
+    result = subprocess.run(
+        command,
+        cwd=PROJECT_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "deleted": 4,
+        "remaining": [None, None, None, None],
+    }

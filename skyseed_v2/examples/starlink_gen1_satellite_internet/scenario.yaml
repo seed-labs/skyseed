@@ -1,0 +1,6 @@
+schema_version: skyseed-static-emulator/v1
+skyseed_autonomous_systems:
+  - asn: 65040
+    selected_shell: S3
+    shells_file: shells.yaml
+    ground_stations_file: ground_stations.yaml

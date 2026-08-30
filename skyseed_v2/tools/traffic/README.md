@@ -5,7 +5,9 @@ This repository-local Tool consumes only durable post-run evidence:
 ```text
 inspection/traffic/traffic-telemetry.jsonl
 inspection/slice/slice-manifest.json + chunks/slice-*.js
-inspection/bpf-compiler/manifest.json + chunks/*.js
+inspection/compiler/manifest.json + chunks/*.js     # S4 canonical path
+inspection/traffic/probe-plan.json                  # experiment-side intent
+inspection/traffic/probe-execution.jsonl            # retained Ping execution
 inputs/traffic-workload.json              # optional planned context
         ↓
 read + fail-closed timeline/generation/network validation
@@ -26,6 +28,14 @@ IPv4, type, identifier, and sequence. Echo request/reply records are paired
 into Ping transactions only when their directional identities and ordering
 are unambiguous. Other packet observations remain explicit raw / unclassified
 evidence.
+
+`src/skyseed_v2/experiment/traffic/` is the separate experiment-side producer:
+it derives the bounded probe plan from immutable Compiler outputs and supervises
+ordinary Ping processes around the canonical Runner run. This Tool never imports
+that executor or launches its processes; it independently reads the durable JSON
+artifacts after Runner cleanup. Other examples may retain their established
+Compiler Tool directory name, but S4 uses `inspection/compiler/` directly and
+does not create a compatibility copy.
 
 Legend: `A --> B` means detached evidence A is consumed by read-only Tool stage
 B; the arrow grants no runtime or fact-producing authority.
@@ -72,6 +82,8 @@ read from `output/inputs/` and is not copied into observed evidence:
 
 ```text
 inspection/traffic/
+├── probe-plan.json
+├── probe-execution.jsonl
 ├── traffic-telemetry.jsonl
 ├── traffic-replay.json
 ├── index.html
@@ -80,9 +92,12 @@ inspection/traffic/
 └── checksums.sha256
 ```
 
-`__main__.py` is the Tool-owned command entry point used by generated
-`run.sh`; normal execution omits `--workload`, so the planned canonical Mini
-schedule is not a runtime control input or normal traffic generator.
+`python -m tools.traffic --telemetry ... --slice ... --bpf-compiler ...
+--probe-plan ... --probe-execution ... --runner-events ... --output ...` is the
+Tool-owned command used automatically by generated `run.sh`. Normal execution
+omits `--workload`, so the planned canonical Mini schedule is not a runtime
+control input or normal traffic generator. The same `run.sh` then refreshes
+`inspection/index.html`, which links both Runner and Traffic results.
 
 The page is dependency-free, directly openable through `file://`, and has no
 realtime or runtime-control path. Global Position samples, ACTIVE graphs, and

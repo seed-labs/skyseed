@@ -14,7 +14,7 @@ from examples.mini_satellite_internet.simu import (
     create_mini_satellite_internet_simulator,
     prepare_mini_satellite_internet_planning,
 )
-from skyseed_v2._generated_bpf_execution import _RollingRealizationSupplier
+from skyseed_v2.experiment.execution import _RollingRealizationSupplier
 from skyseed_v2.backend.bpf.runner import _resolve_nominal_boundaries
 from skyseed_v2.shared import NodeId
 from skyseed_v2.shared._durable_evidence import _semantic_value
@@ -34,9 +34,15 @@ from skyseed_v2.simulator.input import (
     SatelliteSimulationInput,
     SimulatorStaticInput,
 )
+from skyseed_v2.simulator._history_codec import _difference_data
 from tools.bpf_compiler.reader import read_bpf_compiler_history
-from tools.slice.reader import read_slice_history
-from tools.planner.reader import read_planner_history
+from tools.slice.reader import read_durable_slice_differences, read_slice_history
+from tools.planner.reader import (
+    read_durable_plan_sequence,
+    read_durable_planner_inspection,
+    read_planner_history,
+)
+from tools.planner.projection import project_planner_data
 
 
 START = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -55,13 +61,13 @@ def _canonical_full_chain():
 
 
 def _rolling_supplier(slicer, planner, directory, *, lookahead):
-    slicer._enable_durable_history(directory / "slice-history.jsonl")
-    planner._enable_durable_history(directory / "planning-history.jsonl")
+    slicer._enable_durable_history(directory / "slice-history.jsonl.gz")
+    planner._enable_durable_history(directory / "planning-history.jsonl.gz")
     return _RollingRealizationSupplier(
         slicer,
         planner,
         generation_lookahead=lookahead,
-        compiled_history_path=directory / "compiled-history.jsonl",
+        compiled_history_path=directory / "compiled-history.jsonl.gz",
     )
 
 
@@ -82,7 +88,7 @@ def _canonical_rolling_chain(directory: Path):
         peaks = {
             key: max(peaks[key], current[key]) for key in peaks
         }
-    history = read_planner_history(directory / "planning-history.jsonl")
+    history = read_planner_history(directory / "planning-history.jsonl.gz")
     return planner, tuple(realizations), supplier, history, peaks
 
 
@@ -126,13 +132,15 @@ def test_rolling_300_seconds_preserves_complete_canonical_semantics(
     ), directory = canonical_comparison
 
     rolling_plan_semantics = tuple(value["semantic"] for value in history["plans"])
-    dynamic = read_slice_history(directory / "slice-history.jsonl")
-    compiled = read_bpf_compiler_history(directory / "compiled-history.jsonl")
+    dynamic = read_slice_history(directory / "slice-history.jsonl.gz")
+    compiled = read_bpf_compiler_history(directory / "compiled-history.jsonl.gz")
     full_slicer = full_planner._slicer
 
-    assert rolling_plan_semantics == tuple(_semantic_value(value) for value in full_plans)
+    assert rolling_plan_semantics == tuple(
+        _semantic_value(value) for value in full_plans
+    )
     assert tuple(
-        (value["slice_id"], value["timestamp"], value["semantic"])
+        (value["slice_id"], value["timestamp"], value["positions"])
         for value in dynamic["slices"]
     ) == tuple(
         (
@@ -140,12 +148,20 @@ def test_rolling_300_seconds_preserves_complete_canonical_semantics(
             None
             if (item := full_slicer.get_slice(slice_id)).timestamp is None
             else item.timestamp.isoformat(),
-            _semantic_value(item),
+            {
+                node_id.value: [
+                    float(position.x_m),
+                    float(position.y_m),
+                    float(position.z_m),
+                ]
+                for node_id, position in item.positions.items()
+            },
         )
         for slice_id in full_slicer.get_retained_slice_ids()
     )
-    assert tuple(value["semantic"] for value in dynamic["differences"]) == tuple(
-        _semantic_value(full_slicer.create_difference(slice_id - 1, slice_id))
+    assert dynamic["differences"] == ()
+    assert tuple(value["semantic"] for value in history["differences"]) == tuple(
+        _difference_data(full_slicer.create_difference(slice_id - 1, slice_id))
         for slice_id in range(1, full_slicer.get_latest_slice_id() + 1)
     )
     assert len(rolling) == len(full) == 16
@@ -179,10 +195,16 @@ def test_rolling_300_seconds_preserves_complete_canonical_semantics(
 def test_canonical_supplier_is_lazy_bounded_and_exhausts_once(
     canonical_comparison,
 ) -> None:
-    _full, (planner, rolling, supplier, _history, peaks), directory = canonical_comparison
+    _full, (
+        planner,
+        rolling,
+        supplier,
+        history,
+        peaks,
+    ), directory = canonical_comparison
     slicer = planner._slicer
-    dynamic = read_slice_history(directory / "slice-history.jsonl")
-    compiled = read_bpf_compiler_history(directory / "compiled-history.jsonl")
+    dynamic = read_slice_history(directory / "slice-history.jsonl.gz")
+    compiled = read_bpf_compiler_history(directory / "compiled-history.jsonl.gz")
 
     assert len(rolling) == 16
     assert slicer.get_latest_slice_id() == 64
@@ -198,10 +220,49 @@ def test_canonical_supplier_is_lazy_bounded_and_exhausts_once(
     # immediately before the first compiled frontier is released.
     assert peaks["slices"] <= 32
     assert len(dynamic["slices"]) == 65
-    assert len(dynamic["differences"]) == 64
+    assert dynamic["differences"] == ()
+    assert len(history["differences"]) == 64
     assert len(compiled["realizations"]) == 16
     assert supplier() is None
     assert supplier() is None
+
+
+def test_released_histories_feed_tools_without_domain_reexecution(
+    canonical_comparison,
+) -> None:
+    (full_planner, full_plans, _full), (
+        rolling_planner,
+        _rolling,
+        _supplier,
+        _history,
+        _peaks,
+    ), directory = canonical_comparison
+    persisted_plans = read_durable_plan_sequence(
+        directory / "planning-history.jsonl.gz"
+    )
+    slicer = rolling_planner._slicer
+    slice_read = read_durable_slice_differences(
+        directory / "slice-history.jsonl.gz",
+        directory / "planning-history.jsonl.gz",
+        topology=slicer.get_topology(),
+        timeline=slicer.get_timeline(),
+    )
+    planner_read = read_durable_planner_inspection(
+        directory / "slice-history.jsonl.gz",
+        directory / "planning-history.jsonl.gz",
+        persisted_plans,
+        {"planning_windows": ()},
+        topology=slicer.get_topology(),
+        timeline=slicer.get_timeline(),
+    )
+
+    assert len(slice_read.snapshot["slices"]) == 65
+    assert len(planner_read.snapshot["plans"]) == len(full_plans) == 16
+    projected = project_planner_data(planner_read)
+    assert projected["inventory"]["plans"] == 16
+    assert projected["inventory"]["differences"] == 64
+    assert persisted_plans == full_plans
+    assert full_planner.get_plan() == full_plans[-1]
 
 
 class _FixedPositionModel:

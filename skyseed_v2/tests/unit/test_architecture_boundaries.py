@@ -427,21 +427,17 @@ def test_static_configuration_is_backend_and_v1_independent() -> None:
             assert forbidden not in source
 
 
-def test_compose_materialization_is_outside_emulator_and_compilation_models() -> None:
+def test_compose_runtime_materializer_is_outside_emulator_and_compilation_models() -> None:
     from skyseed_v2.compose import launcher
 
-    imports = imported_modules(launcher)
-    forbidden_prefixes = (
+    source = inspect.getsource(launcher.ComposeProjectLauncher)
+    forbidden_fragments = (
         "seedemu",
         "skyseed_v2.simulator",
         "skyseed_v2.emulator.entities",
         "skyseed_v2.emulator.seedemu",
     )
-    assert not any(
-        module == prefix or module.startswith(f"{prefix}.")
-        for module in imports
-        for prefix in forbidden_prefixes
-    )
+    assert not any(fragment in source for fragment in forbidden_fragments)
 
 
 def test_configuration_creation_and_input_generation_respect_boundaries() -> None:

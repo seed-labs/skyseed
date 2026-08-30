@@ -6,6 +6,7 @@ from yaml import safe_dump, safe_load
 
 from skyseed_v2.configuration.emulator import (
     SCENARIO_SCHEMA_VERSION,
+    SHELLS_SCHEMA_VERSION,
     StaticEmulatorConfigLoadError,
     load_static_emulator_config,
 )
@@ -131,6 +132,36 @@ def test_valid_yaml_loads_only_immutable_static_config(
     assert not hasattr(result, "compiler")
     with pytest.raises(FrozenInstanceError):
         result.internet_exchanges = ()
+
+
+def test_selected_shell_keeps_exactly_one_configured_shell(
+    tmp_path: Path,
+) -> None:
+    payload = valid_payload()
+    second = payload["skyseed_autonomous_systems"][0]["shells"][0].copy()
+    second["shell_id"] = "shell-b"
+    second["altitude_km"] = 570.0
+    payload["skyseed_autonomous_systems"][0]["shells"].append(second)
+    payload["skyseed_autonomous_systems"][0]["selected_shell"] = "shell-b"
+
+    loaded = load_static_emulator_config(write_payload(tmp_path, payload))
+
+    assert tuple(
+        shell.shell_id
+        for shell in loaded.skyseed_autonomous_systems[0].shells
+    ) == ("shell-b",)
+
+
+@pytest.mark.parametrize("selected", ("missing", "", True))
+def test_selected_shell_fails_closed_without_one_exact_match(
+    tmp_path: Path,
+    selected: object,
+) -> None:
+    payload = valid_payload()
+    payload["skyseed_autonomous_systems"][0]["selected_shell"] = selected
+
+    with pytest.raises(StaticEmulatorConfigLoadError, match="selected_shell"):
+        load_static_emulator_config(write_payload(tmp_path, payload))
 
 
 def test_yaml_requires_exactly_one_inter_orbit_phase_policy(
@@ -395,6 +426,110 @@ def test_external_ground_station_file_is_scoped_versioned_and_required(
         load_static_emulator_config(
             write_payload(tmp_path, payload, "outside-reference.yaml")
         )
+
+
+def test_external_shell_file_is_scoped_versioned_and_selects_one_shell(
+    tmp_path: Path,
+) -> None:
+    payload = valid_payload()
+    autonomous_system = payload["skyseed_autonomous_systems"][0]
+    shells = autonomous_system.pop("shells")
+    second = shells[0].copy()
+    second["shell_id"] = "shell-b"
+    second["altitude_km"] = 570.0
+    shells.append(second)
+    autonomous_system["selected_shell"] = "shell-b"
+    autonomous_system["shells_file"] = "shells.yaml"
+    shells_file = tmp_path / "shells.yaml"
+    shells_file.write_text(
+        safe_dump(
+            {"schema_version": SHELLS_SCHEMA_VERSION, "shells": shells},
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = load_static_emulator_config(write_payload(tmp_path, payload))
+
+    assert tuple(
+        shell.shell_id
+        for shell in loaded.skyseed_autonomous_systems[0].shells
+    ) == ("shell-b",)
+
+
+def test_external_shell_file_fail_closed_contracts(tmp_path: Path) -> None:
+    payload = valid_payload()
+    autonomous_system = payload["skyseed_autonomous_systems"][0]
+    shells = autonomous_system.pop("shells")
+    autonomous_system["shells_file"] = "shells.yaml"
+    shells_file = tmp_path / "shells.yaml"
+    shells_file.write_text(
+        safe_dump(
+            {"schema_version": SHELLS_SCHEMA_VERSION, "shells": shells},
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(StaticEmulatorConfigLoadError, match="selected_shell"):
+        load_static_emulator_config(write_payload(tmp_path, payload, "missing.yaml"))
+
+    autonomous_system["selected_shell"] = "shell-a"
+    duplicate = [shells[0], shells[0].copy()]
+    shells_file.write_text(
+        safe_dump(
+            {"schema_version": SHELLS_SCHEMA_VERSION, "shells": duplicate},
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(StaticEmulatorConfigLoadError, match="exactly one"):
+        load_static_emulator_config(write_payload(tmp_path, payload, "duplicate.yaml"))
+
+    shells_file.write_text(
+        safe_dump(
+            {"schema_version": "wrong/v1", "shells": shells},
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(StaticEmulatorConfigLoadError, match="schema_version"):
+        load_static_emulator_config(write_payload(tmp_path, payload, "schema.yaml"))
+
+    malformed = [dict(shells[0])]
+    del malformed[0]["epoch_utc"]
+    shells_file.write_text(
+        safe_dump(
+            {"schema_version": SHELLS_SCHEMA_VERSION, "shells": malformed},
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(StaticEmulatorConfigLoadError, match="epoch_utc"):
+        load_static_emulator_config(write_payload(tmp_path, payload, "malformed.yaml"))
+
+
+@pytest.mark.parametrize("reference", ("../shells.yaml", "/tmp/shells.yaml"))
+def test_external_shell_file_rejects_unscoped_paths(
+    tmp_path: Path,
+    reference: str,
+) -> None:
+    payload = valid_payload()
+    autonomous_system = payload["skyseed_autonomous_systems"][0]
+    autonomous_system.pop("shells")
+    autonomous_system["selected_shell"] = "shell-a"
+    autonomous_system["shells_file"] = reference
+
+    with pytest.raises(StaticEmulatorConfigLoadError, match="example root"):
+        load_static_emulator_config(write_payload(tmp_path, payload))
+
+
+def test_inline_and_external_shells_are_mutually_exclusive(tmp_path: Path) -> None:
+    payload = valid_payload()
+    payload["skyseed_autonomous_systems"][0]["shells_file"] = "shells.yaml"
+
+    with pytest.raises(StaticEmulatorConfigLoadError, match="both shells"):
+        load_static_emulator_config(write_payload(tmp_path, payload))
 
 
 def test_sequence_and_mapping_order_do_not_change_the_result(tmp_path: Path) -> None:

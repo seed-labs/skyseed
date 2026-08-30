@@ -42,10 +42,12 @@ from .static_emulator_config import (
 
 SCENARIO_SCHEMA_VERSION = "skyseed-static-emulator/v1"
 GROUND_STATIONS_SCHEMA_VERSION = "skyseed-ground-stations/v1"
+SHELLS_SCHEMA_VERSION = "skyseed-shells/v1"
 
 __all__ = [
     "GROUND_STATIONS_SCHEMA_VERSION",
     "SCENARIO_SCHEMA_VERSION",
+    "SHELLS_SCHEMA_VERSION",
     "StaticEmulatorConfigLoadError",
     "load_static_emulator_config",
 ]
@@ -145,13 +147,23 @@ def _parse_skyseed_as(
     _fields(
         mapping,
         required={"asn"},
-        optional={"shells", "ground_stations", "ground_stations_file"},
+        optional={
+            "selected_shell",
+            "shells",
+            "shells_file",
+            "ground_stations",
+            "ground_stations_file",
+        },
         context=context,
     )
     if "ground_stations" in mapping and "ground_stations_file" in mapping:
         raise StaticEmulatorConfigLoadError(
             f"{context} must not specify both ground_stations and "
             "ground_stations_file"
+        )
+    if "shells" in mapping and "shells_file" in mapping:
+        raise StaticEmulatorConfigLoadError(
+            f"{context} must not specify both shells and shells_file"
         )
     stations: tuple[GroundStationConfig, ...]
     if "ground_stations_file" in mapping:
@@ -168,15 +180,79 @@ def _parse_skyseed_as(
                 )
             )
         )
-    return SkyseedAutonomousSystemConfig(
-        asn=mapping["asn"],
-        shells=tuple(
+    parsed_shells = (
+        _load_shells_file(mapping["shells_file"], root, context)
+        if "shells_file" in mapping
+        else tuple(
             _parse_shell(item, shell_index, context)
             for shell_index, item in enumerate(
                 _sequence(mapping.get("shells", []), f"{context}.shells")
             )
-        ),
+        )
+    )
+    selected_shell = mapping.get("selected_shell")
+    if "shells_file" in mapping and selected_shell is None:
+        raise StaticEmulatorConfigLoadError(
+            f"{context}.selected_shell is required with shells_file"
+        )
+    if selected_shell is not None:
+        if not isinstance(selected_shell, str) or not selected_shell.strip():
+            raise StaticEmulatorConfigLoadError(
+                f"{context}.selected_shell must be a non-empty shell_id"
+            )
+        selected = tuple(
+            shell for shell in parsed_shells
+            if shell.shell_id == selected_shell
+        )
+        if len(selected) != 1:
+            raise StaticEmulatorConfigLoadError(
+                f"{context}.selected_shell must match exactly one configured shell"
+            )
+        parsed_shells = selected
+    return SkyseedAutonomousSystemConfig(
+        asn=mapping["asn"],
+        shells=parsed_shells,
         ground_stations=stations,
+    )
+
+
+def _load_shells_file(
+    raw_reference: Any,
+    root: Path,
+    context: str,
+) -> tuple[ShellConfig, ...]:
+    if not isinstance(raw_reference, str) or not raw_reference.strip():
+        raise StaticEmulatorConfigLoadError(
+            f"{context}.shells_file must be a relative path"
+        )
+    reference = Path(raw_reference)
+    if reference.is_absolute() or ".." in reference.parts:
+        raise StaticEmulatorConfigLoadError(
+            f"{context}.shells_file must stay within the example root"
+        )
+    path = (root / reference).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as error:
+        raise StaticEmulatorConfigLoadError(
+            f"{context}.shells_file resolves outside the example root"
+        ) from error
+    payload = _read_document(path, "shell data")
+    _fields(
+        payload,
+        required={"schema_version", "shells"},
+        context="shell data",
+    )
+    if payload["schema_version"] != SHELLS_SCHEMA_VERSION:
+        raise StaticEmulatorConfigLoadError(
+            "unsupported shell schema_version: "
+            f"{payload['schema_version']!r}"
+        )
+    return tuple(
+        _parse_shell(item, index, "shell data")
+        for index, item in enumerate(
+            _sequence(payload["shells"], "shells")
+        )
     )
 
 def _load_ground_stations_file(

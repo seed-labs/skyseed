@@ -405,7 +405,7 @@ def test_mini_execution_emits_slicer_and_planner_stage_and_work_evidence(
         for record in by_component["planner"]
         if record["stage"] == "forwarding-precedence"
     )
-    assert precedence["work"]["precedence_candidate_pairs"] >= (
+    assert precedence["work"]["precedence_avoided_candidate_pairs"] >= (
         precedence["work"]["emitted_precedences"]
     )
     route_context = next(

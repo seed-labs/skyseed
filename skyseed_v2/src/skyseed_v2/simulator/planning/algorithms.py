@@ -1056,49 +1056,7 @@ class DependencyAwareForwardingPlanningModel:
             )
             for transition in transitions
         }
-        candidates_by_key: dict[
-            tuple[datetime, RouteTarget],
-            list[ForwardingTransition],
-        ] = {}
-        for transition in transitions:
-            candidates_by_key.setdefault(
-                (transition.nominal_time, transition.route_key.target), []
-            ).append(transition)
-        result = []
-        for predecessor in transitions:
-            predecessor_old_path, predecessor_new_path = path_states[
-                id(predecessor)
-            ]
-            for successor in candidates_by_key[
-                (predecessor.nominal_time, predecessor.route_key.target)
-            ]:
-                if predecessor is successor:
-                    continue
-                successor_old_path, successor_new_path = path_states[
-                    id(successor)
-                ]
-                prepares_direct_upstream = (
-                    predecessor.operation is not DifferenceOperation.REMOVED
-                    and successor.operation is not DifferenceOperation.REMOVED
-                    and _is_direct_upstream_path(
-                        successor_new_path, predecessor_new_path
-                    )
-                )
-                removes_direct_downstream = (
-                    predecessor.operation is not DifferenceOperation.ADDED
-                    and successor.operation is DifferenceOperation.REMOVED
-                    and _is_direct_upstream_path(
-                        predecessor_old_path, successor_old_path
-                    )
-                )
-                if prepares_direct_upstream or removes_direct_downstream:
-                    result.append(
-                        ForwardingTransitionPrecedence(
-                            predecessor=predecessor,
-                            successor=successor,
-                        )
-                    )
-        return tuple(result)
+        return _indexed_forwarding_precedences(transitions, path_states)
 
 
 class StableForwardingPlanningModel:
@@ -1531,11 +1489,27 @@ class DefaultCoordinationPolicy:
             published_next_hops,
             published_paths,
         )
+        planned_connection_ids_by_slice = {
+            slice_id: frozenset(
+                connection_id
+                for path in paths.values()
+                for connection_id in path
+            )
+            for slice_id, paths in planned_paths_by_slice.items()
+        }
         resolver = _DifferenceTimeResolver(selected)
         active_connection_transition_ids = {
             id(transition) for transition in connections
         }
         excluded_parameter_ids: set[int] = set()
+        parameters_by_connection: dict[
+            ConnectionId, list[tuple[int, ParameterTransition]]
+        ] = {}
+        for transition in parameters:
+            source = resolver.difference_for_time(transition.nominal_time)
+            parameters_by_connection.setdefault(
+                transition.connection_id, []
+            ).append((source.current_slice_id, transition))
         decisions: list[PlanningDecision] = []
 
         for establish, withdraw in candidates:
@@ -1555,22 +1529,19 @@ class DefaultCoordinationPolicy:
             end_id = withdraw_difference.current_slice_id
             connection_id = establish.connection_id
             if any(
-                connection_id in path
+                connection_id
+                in planned_connection_ids_by_slice.get(slice_id, ())
                 for slice_id in range(start_id, end_id + 1)
-                for path in planned_paths_by_slice.get(slice_id, {}).values()
             ):
                 continue
 
             active_connection_transition_ids.remove(id(establish))
             active_connection_transition_ids.remove(id(withdraw))
             removed_parameter_count = 0
-            for transition in parameters:
-                if transition.connection_id != connection_id:
-                    continue
-                source = resolver.difference_for_time(
-                    transition.nominal_time
-                )
-                if start_id <= source.current_slice_id <= end_id:
+            for source_slice_id, transition in parameters_by_connection.get(
+                connection_id, ()
+            ):
+                if start_id <= source_slice_id <= end_id:
                     excluded_parameter_ids.add(id(transition))
                     removed_parameter_count += 1
             decisions.append(
@@ -1766,9 +1737,9 @@ def _clear_parameter_times(
     connection_id: ConnectionId,
 ) -> None:
     for mapping in (drift_started, persistence_started):
-        for key in tuple(mapping):
-            if key[0] == connection_id:
-                mapping.pop(key, None)
+        for direction in ConnectionDirection:
+            for field_name in _PARAMETER_FIELDS:
+                mapping.pop((connection_id, direction, field_name), None)
 
 
 def _route_time_mapping(
@@ -1946,13 +1917,16 @@ def _path_nodes(
 
 def _cached_path_nodes(
     cache: dict[
-        tuple[NodeId, tuple[ConnectionId, ...]], tuple[NodeId, ...] | None
+        tuple[NodeId, int], tuple[NodeId, ...] | None
     ],
     source: NodeId,
     path: tuple[ConnectionId, ...],
     connections: Mapping[ConnectionId, Connection],
 ) -> tuple[NodeId, ...] | None:
-    key = (source, path)
+    # Every path tuple remains strongly owned by the input mappings for the
+    # lifetime of this per-traversal cache. Identity avoids repeatedly hashing
+    # the complete immutable ConnectionId sequence on cache hits.
+    key = (source, id(path))
     if key not in cache:
         cache[key] = _path_nodes(source, path, connections)
     return cache[key]
@@ -1970,24 +1944,18 @@ def _path_delay_us(
 
 
 def _cached_path_delay_us(
-    cache: dict[tuple[NodeId, tuple[ConnectionId, ...]], int],
+    cache: dict[tuple[NodeId, int], int],
     nodes: tuple[NodeId, ...],
     path: tuple[ConnectionId, ...],
     connections: Mapping[ConnectionId, Connection],
 ) -> int:
-    key = (nodes[0], path)
+    key = (nodes[0], id(path))
     cached = cache.get(key)
     if cached is not None:
         return cached
-    if not path:
-        cache[key] = 0
-        return 0
-    result = connections[path[0]].parameters_from(nodes[0]).delay_us
-    result += _cached_path_delay_us(
-        cache,
-        nodes[1:],
-        path[1:],
-        connections,
+    result = sum(
+        connections[connection_id].parameters_from(source).delay_us
+        for source, connection_id in zip(nodes[:-1], path, strict=True)
     )
     cache[key] = result
     return result
@@ -2331,40 +2299,54 @@ def _planned_forwarding_precedences_from_paths(
                 transition.route_key, ()
             ),
         )
-    candidates_by_key: dict[
-        tuple[datetime, RouteTarget], list[ForwardingTransition]
+    return _indexed_forwarding_precedences(values, path_states)
+
+
+def _indexed_forwarding_precedences(
+    transitions: tuple[ForwardingTransition, ...],
+    path_states: Mapping[
+        int, tuple[tuple[ConnectionId, ...], tuple[ConnectionId, ...]]
+    ],
+) -> tuple[ForwardingTransitionPrecedence, ...]:
+    new_upstreams: dict[
+        tuple[datetime, RouteTarget, tuple[ConnectionId, ...]],
+        list[tuple[int, ForwardingTransition]],
     ] = {}
-    for transition in values:
-        candidates_by_key.setdefault(
-            (transition.nominal_time, transition.route_key.target), []
-        ).append(transition)
+    removed_paths: dict[
+        tuple[datetime, RouteTarget, tuple[ConnectionId, ...]],
+        list[tuple[int, ForwardingTransition]],
+    ] = {}
+    for position, transition in enumerate(transitions):
+        old_path, new_path = path_states[id(transition)]
+        key = (transition.nominal_time, transition.route_key.target)
+        if (
+            transition.operation is not DifferenceOperation.REMOVED
+            and new_path
+        ):
+            new_upstreams.setdefault((*key, new_path[1:]), []).append(
+                (position, transition)
+            )
+        if transition.operation is DifferenceOperation.REMOVED:
+            removed_paths.setdefault((*key, old_path), []).append(
+                (position, transition)
+            )
+
     result = []
-    for predecessor in values:
-        predecessor_old_path, predecessor_new_path = path_states[
-            id(predecessor)
-        ]
-        for successor in candidates_by_key[
-            (predecessor.nominal_time, predecessor.route_key.target)
-        ]:
-            if predecessor is successor:
-                continue
-            successor_old_path, successor_new_path = path_states[id(successor)]
-            if (
-                predecessor.operation is not DifferenceOperation.REMOVED
-                and successor.operation is not DifferenceOperation.REMOVED
-                and _is_direct_upstream_path(
-                    successor_new_path, predecessor_new_path
-                )
-            ) or (
-                predecessor.operation is not DifferenceOperation.ADDED
-                and successor.operation is DifferenceOperation.REMOVED
-                and _is_direct_upstream_path(
-                    predecessor_old_path, successor_old_path
-                )
-            ):
-                result.append(
-                    ForwardingTransitionPrecedence(predecessor, successor)
-                )
+    for predecessor in transitions:
+        old_path, new_path = path_states[id(predecessor)]
+        key = (predecessor.nominal_time, predecessor.route_key.target)
+        successors = []
+        if predecessor.operation is not DifferenceOperation.REMOVED:
+            successors.extend(new_upstreams.get((*key, new_path), ()))
+        if (
+            predecessor.operation is not DifferenceOperation.ADDED
+            and old_path
+        ):
+            successors.extend(removed_paths.get((*key, old_path[1:]), ()))
+        for _, successor in sorted(successors, key=lambda value: value[0]):
+            result.append(
+                ForwardingTransitionPrecedence(predecessor, successor)
+            )
     return tuple(result)
 
 
@@ -2388,9 +2370,8 @@ def _clear_parameter_maps(
     connection_id: ConnectionId,
 ) -> None:
     for mapping in (observed, planned):
-        for key in tuple(mapping):
-            if key[0] == connection_id:
-                mapping.pop(key)
+        for direction in ConnectionDirection:
+            mapping.pop((connection_id, direction), None)
 
 
 def _apply_parameter_patch(previous, patch) -> DirectionalConnectionParameters:
@@ -2516,13 +2497,6 @@ def _forwarding_transition_paths(
             )
         ),
     )
-
-
-def _is_direct_upstream_path(
-    upstream: tuple[ConnectionId, ...],
-    downstream: tuple[ConnectionId, ...],
-) -> bool:
-    return len(upstream) == len(downstream) + 1 and upstream[1:] == downstream
 
 
 def _connection_episode_configuration(

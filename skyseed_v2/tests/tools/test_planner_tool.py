@@ -371,7 +371,7 @@ def test_renderer_uses_supplied_scenario_and_current_policy_configuration(
     _, _, mini_data = generated
     s4_data = deepcopy(mini_data)
     s4_data["configuration"] = {
-        "scenario_identity": "s4_satellite_internet",
+        "scenario_identity": "starlink_gen1_satellite_internet",
         "scenario_display_name": "S4 Satellite Internet",
         "slice_interval_seconds": 10.0,
         "qualification_target_slice_id": 20,

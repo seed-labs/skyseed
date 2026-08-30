@@ -50,6 +50,18 @@ def _snapshot() -> dict[str, object]:
             boundary_timestamp=boundary,
             generation=0,
             duration_seconds=1.0,
+            state_materialization_seconds=0.25,
+            target_active_interface_entries=7,
+            target_route_entries=3,
+            generation_map_update_operations=10,
+            execution_metrics={
+                "external_processes": 2,
+                "namespace_processes": 2,
+                "bpf_syscalls": 10,
+                "bpf_map_update_syscalls": 10,
+                "worker_limit": 2,
+                "batch_sizes": [3, 7],
+            },
         ),
         _event(
             "capacity_audit_end",
@@ -94,6 +106,16 @@ def _snapshot() -> dict[str, object]:
             active_frontier=boundary,
             ready_frontier=None,
             active_generation=0,
+            readiness_dependency_wait_seconds=0.0,
+            foundation_validation_seconds=0.03,
+            runtime_apply_seconds=0.1,
+            activation_switch_seconds=0.001,
+            retirement_seconds=0.01,
+            bookkeeping_seconds=0.02,
+            grouping={
+                "grouped_operation_count": 4,
+                "affected_node_count": 1,
+            },
         ),
         _event(
             "generation_reclaimed",
@@ -197,6 +219,19 @@ def test_projection_curates_complete_trace_without_runner_side_indexes() -> None
     assert data["overview"]["preparation_boundary_depth"] == 8
     assert data["overview"]["ready_depth_at_capture"] == 0
     assert data["overview"]["ready_limiting_reason"] == "input"
+    assert data["scale_safety"]["batching"] == {
+        "observed_batch_count": 2,
+        "batch_sizes": (3, 7),
+        "batch_size_distribution": {},
+        "minimum_batch_size": 3,
+        "maximum_batch_size": 7,
+        "external_processes": 2,
+        "namespace_processes": 2,
+        "bpf_syscalls": 10,
+    }
+    assert data["scale_safety"]["main_subphases"][0][
+        "foundation_validation_seconds"
+    ] == 0.03
     assert data["timing"]["activations"] == (
         {
             "boundary_timestamp": "2026-01-01T00:00:00+00:00",
@@ -208,6 +243,16 @@ def test_projection_curates_complete_trace_without_runner_side_indexes() -> None
             "active_frontier": "2026-01-01T00:00:00+00:00",
         },
     )
+    assert data["timing"]["maintenance_preparations"] == (
+        {
+            "boundary_timestamp": "2026-01-01T00:00:00+00:00",
+            "runtime_preparation_seconds": 1.0,
+            "state_materialization_seconds": 0.25,
+            "total_ready_preparation_seconds": 1.25,
+            "generation": 0,
+        },
+    )
+    assert data["timing"]["maintenance_preparation_total_seconds"] == 1.25
     assert [
         value["event"]
         for value in data["timeline"]
@@ -216,10 +261,8 @@ def test_projection_curates_complete_trace_without_runner_side_indexes() -> None
     assert "private_detail_only" not in {
         value["event"] for value in data["timeline"]
     }
-    assert any(
-        value["event"] == "private_detail_only"
-        for value in data["raw"]["events"]
-    )
+    assert data["raw"]["events"]["embedded"] is False
+    assert data["raw"]["events"]["count"] == len(_snapshot()["events"])
     assert data["default_dataplane"]["kind"] == "default-tc-bpf"
     assert data["default_dataplane"]["fresh_kernel_inspection"] is False
 
@@ -460,7 +503,92 @@ def test_tool_reads_complete_durable_history_without_runner_materialization(
 
     assert data["inventory"]["events"] == 700
     assert data["raw"]["event_history"]["scope"] == "complete"
-    assert data["raw"]["events"][0]["generated_index"] == 0
+    assert data["raw"]["events"] == {
+        "embedded": False,
+        "count": 700,
+        "exact_source_path": str(history_path.resolve()),
+        "note": (
+            "Exact events remain in the durable JSONL source; this page "
+            "does not duplicate the complete raw history."
+        ),
+    }
+
+
+def test_tool_rejects_incomplete_bounded_event_history(tmp_path: Path) -> None:
+    history_path = tmp_path / "runner-events.jsonl"
+    history_path.write_text(
+        "\n".join(
+            (
+                json.dumps(
+                    {
+                        "record_type": "history_header",
+                        "format_version": 2,
+                        "owner": "BpfRunner",
+                        "capture": "bounded-nonblocking",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "record_type": "runner_event",
+                        **_event("only-event", 1.0),
+                    }
+                ),
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    snapshot = _snapshot()
+    snapshot["event_history"] = {
+        "scope": "recent-only",
+        "returned_count": 1,
+        "total_count": 2,
+        "durable_history_enabled": True,
+        "durable": {
+            "complete": False,
+            "overflowed": True,
+            "dropped_count": 1,
+        },
+    }
+
+    with pytest.raises(ValueError, match="incomplete or overflowed"):
+        collect_runner_data(
+            snapshot,
+            _outcome(),
+            event_history_path=history_path,
+        )
+
+
+def test_tool_keeps_compose_startup_separate_from_runner_preparation(
+    tmp_path: Path,
+) -> None:
+    startup = tmp_path / "deployment-startup.json"
+    startup.write_text(
+        json.dumps(
+            {
+                "artifact_type": "compose-startup-evidence",
+                "format_version": 1,
+                "duration_seconds": 12.5,
+                "exit_code": 0,
+                "status": "completed",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    data = collect_runner_data(
+        _snapshot(),
+        _outcome(),
+        deployment_startup_path=startup,
+    )
+
+    assert data["scale_safety"]["deployment_startup"] == {
+        "artifact_type": "compose-startup-evidence",
+        "format_version": 1,
+        "duration_seconds": 12.5,
+        "exit_code": 0,
+        "status": "completed",
+    }
 
 
 def test_tool_owned_cli_consumes_detached_generated_execution_handoff(
@@ -585,7 +713,8 @@ def test_bilingual_renderer_reuses_one_evidence_dataset_without_raw_translation(
     assert "foundation-test-token" in page
     assert "container-id-1" in page
     assert 'document.getElementById("raw-json").textContent=pretty(DATA.raw)' in page
-    assert "private_detail_only" in page
+    assert "private_detail_only" not in page
+    assert "does not duplicate the complete raw history" in page
 
 
 def test_tool_has_no_live_runner_kernel_or_controller_dependency() -> None:

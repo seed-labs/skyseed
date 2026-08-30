@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from hashlib import blake2s, sha256
 from ipaddress import IPv4Address, IPv4Network, ip_interface
@@ -78,6 +78,7 @@ class _ReadyDataplaneBoundary:
     prepared_resources: tuple[ConnectionId, ...]
     readiness_sha256: str
     preparation_result: dict[str, Any]
+    generation_changed: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +89,8 @@ class _PendingDataplaneBoundary:
     expected_active_generation: int
     generation: int
     folded_forwarding_constraints: int
+    generation_changed: bool = True
+    runtime_change: dict[str, bool] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,6 +173,18 @@ def _forwarding_key(binding: _ForwardingBinding) -> tuple[str, str, str]:
 
 def _empty_state() -> _MaterializedDataplaneState:
     return _MaterializedDataplaneState((), (), (), ())
+
+
+def _generation_state(
+    state: _MaterializedDataplaneState,
+) -> tuple[
+    tuple[ConnectionId, ...],
+    tuple[_ForwardingBinding, ...],
+    tuple[_ZoneEdgeState, ...],
+]:
+    """Return exactly the state encoded under one BPF generation key."""
+
+    return state.resources, state.forwarding, state.zone_edges
 
 
 def _allocate_node_addresses(
@@ -373,11 +388,13 @@ class _TcBpfRuntimeRealization:
         pin_root: str,
         bindings: Mapping[NodeId, object],
         telemetry_enabled: bool = False,
+        worker_count: int = 1,
     ) -> None:
         self._executor = executor
         self._pin_root = pin_root
         self._bindings = dict(bindings)
         self._telemetry_enabled = telemetry_enabled
+        self._worker_count = worker_count
         self._telemetry_kernel: dict[str, Any] = {}
         self._lock = RLock()
         self._nodes: tuple[dict[str, Any], ...] = ()
@@ -387,6 +404,7 @@ class _TcBpfRuntimeRealization:
         self._all_zone_addresses: dict[NodeId, set[str]] = {}
         self._prepared_resources: set[ConnectionId] = set()
         self._all_prepared_resources: set[ConnectionId] = set()
+        self._interface_indexes: dict[tuple[str, str], int] = {}
         self._generation_keys: dict[
             int, tuple[tuple[str, tuple[int, ...], tuple[int, ...]], ...]
         ] = {}
@@ -397,7 +415,7 @@ class _TcBpfRuntimeRealization:
         self._active: _ReadyDataplaneBoundary | None = None
         self._latest_ready: _ReadyDataplaneBoundary | None = None
         self._preparing: _PendingDataplaneBoundary | None = None
-        self._realizations: dict[int, _ReadyDataplaneBoundary] = {}
+        self._realizations: dict[object, _ReadyDataplaneBoundary] = {}
         self._initialized = False
 
     def initialize(
@@ -464,32 +482,24 @@ class _TcBpfRuntimeRealization:
             }
             for node in self._nodes
         )
-        audit_request = {
-            "nodes": self._nodes,
-            "node_address_range": str(self._node_address_range),
-            "zone_prefixes": tuple(zone_prefixes),
-        }
         try:
-            preliminary_audit = self._executor.execute(
-                "audit_node_addresses", audit_request
+            result = self._executor.execute(
+                "initialize",
+                {
+                    "pin_root": self._pin_root,
+                    "common_mac": _COMMON_MAC,
+                    "nodes": self._nodes,
+                    "inactive_generation": _NO_ACTIVE_GENERATION,
+                    "telemetry_enabled": self._telemetry_enabled,
+                    "node_address_range": str(self._node_address_range),
+                    "zone_prefixes": tuple(zone_prefixes),
+                    "worker_count": self._worker_count,
+                },
             )
         except RuntimeError as error:
             raise _CapacityAuditError(
-                "Runner node address collision audit failed before READY"
+                "Runner node address collision audit or initialization failed before READY"
             ) from error
-        self._validate_collision_audit(preliminary_audit)
-        result = self._executor.execute(
-            "initialize",
-            {
-                "pin_root": self._pin_root,
-                "common_mac": _COMMON_MAC,
-                "nodes": self._nodes,
-                "inactive_generation": _NO_ACTIVE_GENERATION,
-                "telemetry_enabled": self._telemetry_enabled,
-                "node_address_range": str(self._node_address_range),
-                "zone_prefixes": tuple(zone_prefixes),
-            },
-        )
         collision_audit = result.get("collision_audit")
         installed_keys = result.get("installed_node_addresses")
         telemetry_kernel = result.get("traffic_telemetry")
@@ -665,7 +675,8 @@ class _TcBpfRuntimeRealization:
             or audit.get("audited_node_namespaces") != len(self._nodes)
         ):
             raise _CapacityAuditError(
-                "privileged runtime command node address collision evidence is incomplete before READY"
+                "privileged runtime command node address collision evidence "
+                "is incomplete before READY"
             )
 
     def start_preparation(
@@ -681,28 +692,50 @@ class _TcBpfRuntimeRealization:
                 raise RuntimeError(
                     "tc-BPF runtime realization preparation is already in flight"
                 )
-            if len(self._generation_keys) >= self._max_resident_generations:
+            previous = self._latest_ready
+            previous_state = _empty_state() if previous is None else previous.state
+            state = _materialize_boundary(previous_state, boundary)
+            generation_changed = (
+                previous is None
+                or _generation_state(previous_state) != _generation_state(state)
+            )
+            if (
+                generation_changed
+                and len(self._generation_keys) >= self._max_resident_generations
+            ):
                 raise _CapacityAuditError(
                     "resident generation capacity is exhausted before preparation: "
                     f"resident={len(self._generation_keys)}, "
                     f"reserved_in_flight=0, capacity={self._max_resident_generations}"
                 )
-            previous = self._latest_ready
-            previous_state = _empty_state() if previous is None else previous.state
             expected_active_generation = (
                 _NO_ACTIVE_GENERATION if previous is None else previous.generation
             )
-            generation = 0 if previous is None else previous.generation + 1
+            generation = (
+                0
+                if previous is None
+                else previous.generation + int(generation_changed)
+            )
+            runtime_change = self._runtime_change_classification(
+                previous_state, state
+            )
             pending = _PendingDataplaneBoundary(
                 boundary=boundary,
                 previous_state=previous_state,
-                state=_materialize_boundary(previous_state, boundary),
+                state=state,
                 expected_active_generation=expected_active_generation,
                 generation=generation,
+                generation_changed=generation_changed,
+                runtime_change=runtime_change,
                 folded_forwarding_constraints=_validate_boundary_lowering(boundary),
             )
             self._preparing = pending
-        return pending, {"generation": generation}
+        return pending, {
+            "generation": generation,
+            "generation_changed": generation_changed,
+            "generation_reused": not generation_changed,
+            "runtime_change": runtime_change,
+        }
 
     def finish_preparation(
         self,
@@ -730,11 +763,6 @@ class _TcBpfRuntimeRealization:
         ]
         generation_nodes = self._generation_nodes(state)
         try:
-            capacity_audit = self._audit_generation_capacity(
-                generation,
-                generation_nodes=generation_nodes,
-                state=state,
-            )
             request = {
                 "pin_root": self._pin_root,
                 "common_mac": _COMMON_MAC,
@@ -744,16 +772,80 @@ class _TcBpfRuntimeRealization:
                 "generation_nodes": generation_nodes,
                 "boundary_timestamp": boundary.nominal_time.isoformat(),
                 "operation_order_sha256": boundary.order_sha256,
+                "worker_count": self._worker_count,
             }
-            result = {
-                **self._executor.execute("prepare_boundary", request),
-                "capacity_audit": capacity_audit,
-            }
+            if pending.generation_changed:
+                capacity_audit = self._audit_generation_capacity(
+                    generation,
+                    generation_nodes=generation_nodes,
+                    state=state,
+                )
+                result = {
+                    **self._executor.execute("prepare_boundary", request),
+                    "capacity_audit": capacity_audit,
+                }
+                keys_value = result.get("generation_keys")
+            else:
+                with self._lock:
+                    reused_keys = self._generation_keys.get(generation)
+                    resident = len(self._generation_keys)
+                if reused_keys is None:
+                    raise RuntimeError(
+                        "equivalent READY boundary lacks its resident generation"
+                    )
+                capacity_audit = {
+                    "generation": generation,
+                    "resident_generations_before": resident,
+                    "resident_generations_after": resident,
+                    "reserved_in_flight_preparations": 1,
+                    "resident_generation_capacity": self._max_resident_generations,
+                    "audited_node_count": len(generation_nodes),
+                    "minimum_active_link_headroom_after": (
+                        self._capacity_snapshot()["minimum_active_link_headroom"]
+                    ),
+                    "minimum_route_headroom_after": (
+                        self._capacity_snapshot()["minimum_route_headroom"]
+                    ),
+                    "physical_prepared_resources_before": len(
+                        self._prepared_resources
+                    ),
+                    "physical_prepared_resources_after": len(
+                        self._prepared_resources
+                    ),
+                    "generation_reused": True,
+                }
+                keys_value = [
+                    {
+                        "key": key,
+                        "active_interface_indexes": list(active),
+                        "route_keys": list(routes),
+                        "interface_identities": [],
+                    }
+                    for key, active, routes in reused_keys
+                ]
+                result = {
+                    "generation": generation,
+                    "generation_keys": keys_value,
+                    "prepared_connections": 0,
+                    "prepared_interfaces": 0,
+                    "prepared_links_admin_down": 0,
+                    "preloaded_active_links": 0,
+                    "preloaded_routes": 0,
+                    "stable_interface_identity_count": len(
+                        self._interface_indexes
+                    ),
+                    "new_interface_identity_count": 0,
+                    "preparation_phases": {
+                        "physical_veth_creation_seconds": 0.0,
+                        "interface_qdisc_bpf_setup_seconds": 0.0,
+                        "stable_identity_and_generation_preload_seconds": 0.0,
+                    },
+                    "capacity_audit": capacity_audit,
+                }
             for edge in state.zone_edges:
                 self._all_zone_addresses[edge.service_satellite_id].add(
                     str(ip_interface(edge.packet_prefix).ip)
                 )
-            keys_value = result.get("generation_keys")
             if not isinstance(keys_value, list):
                 raise RuntimeError(
                     "privileged runtime command omitted generation key evidence"
@@ -781,12 +873,32 @@ class _TcBpfRuntimeRealization:
                     raise RuntimeError(
                         "privileged runtime command generation preload is incomplete"
                     )
+            interface_identities: dict[tuple[str, str], int] = {}
+            for value in keys_value:
+                key = str(value["key"])
+                for identity in value.get("interface_identities", ()):
+                    cache_key = (key, str(identity["interface"]))
+                    ifindex = int(identity["ifindex"])
+                    prior = self._interface_indexes.get(cache_key)
+                    if ifindex <= 0 or (
+                        prior is not None and prior != ifindex
+                    ):
+                        raise RuntimeError(
+                            "privileged runtime command changed a stable interface identity"
+                        )
+                    interface_identities[cache_key] = ifindex
+            effective_interface_indexes = {
+                **self._interface_indexes,
+                **interface_identities,
+            }
             activation = self._activation_request(
                 boundary,
                 previous_state=previous_state,
                 state=state,
                 expected_active_generation=expected_active_generation,
                 generation=generation,
+                generation_changed=pending.generation_changed,
+                interface_indexes=effective_interface_indexes,
             )
             activation["folded_forwarding_constraints"] = (
                 pending.folded_forwarding_constraints
@@ -799,25 +911,39 @@ class _TcBpfRuntimeRealization:
                 ),
                 "expected_active_generation": expected_active_generation,
                 "generation": generation,
-                "preparation": result,
-                "activation": activation,
+                "generation_changed": pending.generation_changed,
+                "operation_order_sha256": boundary.order_sha256,
+                "prepared_resource_count": len(new_resources),
+                "generation_key_counts": [
+                    {
+                        "key": key,
+                        "active_interfaces": len(active),
+                        "routes": len(routes),
+                    }
+                    for key, active, routes in generation_keys
+                ],
+                "capacity": capacity_audit,
+                "grouping": activation["grouping"],
             }
             readiness_sha256 = sha256(
                 json.dumps(evidence_payload, sort_keys=True).encode("utf-8")
             ).hexdigest()
             ready = _ReadyDataplaneBoundary(
-                boundary,
-                foundation_token,
-                predecessor_time,
-                expected_active_generation,
-                generation,
-                state,
-                request,
-                activation,
-                generation_keys,
-                tuple(sorted(new_resources, key=_connection_key)),
-                readiness_sha256,
-                result,
+                boundary=boundary,
+                foundation_token=foundation_token,
+                predecessor_time=predecessor_time,
+                expected_active_generation=expected_active_generation,
+                generation=generation,
+                state=state,
+                preparation_request=request,
+                activation_request=activation,
+                generation_keys=generation_keys,
+                prepared_resources=tuple(
+                    sorted(new_resources, key=_connection_key)
+                ),
+                readiness_sha256=readiness_sha256,
+                preparation_result=result,
+                generation_changed=pending.generation_changed,
             )
             with self._lock:
                 self._prepared_resources.update(new_resources)
@@ -826,14 +952,38 @@ class _TcBpfRuntimeRealization:
                     self._physical_resource_high_water,
                     len(self._prepared_resources),
                 )
-                self._generation_keys[generation] = generation_keys
-                self._realizations[generation] = ready
+                self._interface_indexes.update(interface_identities)
+                if pending.generation_changed:
+                    self._generation_keys[generation] = generation_keys
+                self._realizations[boundary.nominal_time] = ready
                 self._latest_ready = ready
             return ready, {
                 "generation": generation,
+                "generation_changed": pending.generation_changed,
+                "generation_reused": not pending.generation_changed,
                 "expected_active_generation": expected_active_generation,
                 "readiness_sha256": readiness_sha256,
                 "prepared_resources": len(ready.prepared_resources),
+                "target_active_interface_entries": sum(
+                    len(value[1]) for value in generation_keys
+                ),
+                "target_route_entries": sum(
+                    len(value[2]) for value in generation_keys
+                ),
+                "generation_map_update_operations": (
+                    result.get("preloaded_active_links", 0)
+                    + result.get("preloaded_routes", 0)
+                ),
+                "stable_interface_identity_count": result.get(
+                    "stable_interface_identity_count", 0
+                ),
+                "new_interface_identity_count": result.get(
+                    "new_interface_identity_count", 0
+                ),
+                "execution_metrics": result.get("execution_metrics"),
+                "preparation_phases": result.get("preparation_phases"),
+                "grouping": activation["grouping"],
+                "runtime_change": pending.runtime_change,
                 "capacity_audit": capacity_audit,
             }
         finally:
@@ -870,8 +1020,8 @@ class _TcBpfRuntimeRealization:
                 raise RuntimeError("tc-BPF runtime realization ACTIVE state is stale")
             protected = {
                 resource
-                for generation, realization in self._realizations.items()
-                if generation > active.generation
+                for realization in self._realizations.values()
+                if realization.boundary.nominal_time > active.boundary.nominal_time
                 for resource in realization.state.resources
             }
             if self._preparing is not None:
@@ -882,8 +1032,14 @@ class _TcBpfRuntimeRealization:
                     key=_connection_key,
                 )
             )
+            if prior.generation == active.generation:
+                self._realizations.pop(prior.boundary.nominal_time, None)
         return (
-            _RetiredForwardingRealization(prior.generation),
+            (
+                None
+                if prior.generation == active.generation
+                else _RetiredForwardingRealization(prior.generation)
+            ),
             None if not retired else _RetiredPhysicalRealization(retired),
         )
 
@@ -907,26 +1063,46 @@ class _TcBpfRuntimeRealization:
                     {"key": key, "active_interface_indexes": active, "route_keys": routes}
                     for key, active, routes in keys
                 ],
+                "worker_count": self._worker_count,
             },
         )
         with self._lock:
             self._generation_keys.pop(generation, None)
-            self._realizations.pop(generation, None)
+            for boundary_time, realization in tuple(self._realizations.items()):
+                if realization.generation == generation:
+                    self._realizations.pop(boundary_time, None)
         return {**result, "capacity": self._capacity_snapshot()}
 
-    def generation_capacity_status(self) -> dict[str, Any]:
+    def generation_capacity_status(
+        self, boundary: _NominalBoundary | None = None
+    ) -> dict[str, Any]:
         """Return private fixed-map residency facts for Maintenance scheduling."""
 
         with self._lock:
             resident = len(self._generation_keys)
             reserved = int(self._preparing is not None)
             capacity = self._max_resident_generations
-        return {
+            requires_generation = True
+            if boundary is not None and self._latest_ready is not None:
+                candidate = _materialize_boundary(
+                    self._latest_ready.state, boundary
+                )
+                requires_generation = (
+                    _generation_state(candidate)
+                    != _generation_state(self._latest_ready.state)
+                )
+        result = {
             "resident_generations": resident,
             "reserved_in_flight_preparations": reserved,
             "resident_generation_capacity": capacity,
-            "can_start_preparation": reserved == 0 and resident < capacity,
+            "can_start_preparation": (
+                reserved == 0
+                and (not requires_generation or resident < capacity)
+            ),
         }
+        if boundary is not None:
+            result["preparation_requires_new_generation"] = requires_generation
+        return result
 
     def reclaim_physical(self, retirement_value: object) -> dict[str, Any]:
         if not isinstance(retirement_value, _RetiredPhysicalRealization):
@@ -938,22 +1114,49 @@ class _TcBpfRuntimeRealization:
             missing = tuple(
                 value for value in resources if value not in self._prepared_resources
             )
-        if missing:
-            raise RuntimeError(
-                "formal physical reclaim lost Runner realization ownership evidence"
-            )
-        result = self._executor.execute(
-            "reclaim_resources",
-            {"nodes": self._nodes, "connections": [self._connection_identity(value) for value in resources]},
-        )
-        if int(result.get("deleted_connections", -1)) != len(resources):
-            raise RuntimeError(
-                "formal physical reclaim did not delete every owned resource"
-            )
-        with self._lock:
-            self._prepared_resources.difference_update(resources)
-            self._all_prepared_resources.difference_update(resources)
-        return {**result, "capacity": self._capacity_snapshot()}
+            if missing:
+                raise RuntimeError(
+                    "formal physical reclaim lost Runner realization ownership evidence"
+                )
+            protected = set()
+            if self._active is not None:
+                protected.update(self._active.state.resources)
+            for realization in self._realizations.values():
+                protected.update(realization.state.resources)
+            if self._preparing is not None:
+                protected.update(self._preparing.state.resources)
+            reclaimable = tuple(value for value in resources if value not in protected)
+            protected_candidates = len(resources) - len(reclaimable)
+            if reclaimable:
+                result = self._executor.execute(
+                    "reclaim_resources",
+                    {
+                        "nodes": self._nodes,
+                        "connections": [
+                            self._connection_identity(value) for value in reclaimable
+                        ],
+                        "worker_count": self._worker_count,
+                    },
+                )
+            else:
+                result = {"deleted_connections": 0}
+            if int(result.get("deleted_connections", -1)) != len(reclaimable):
+                raise RuntimeError(
+                    "formal physical reclaim did not delete every unprotected owned "
+                    "resource"
+                )
+            self._prepared_resources.difference_update(reclaimable)
+            self._all_prepared_resources.difference_update(reclaimable)
+            for resource in reclaimable:
+                interface_a, interface_b = _interface_names(resource)
+                self._interface_indexes.pop((resource.endpoint_a.value, interface_a), None)
+                self._interface_indexes.pop((resource.endpoint_b.value, interface_b), None)
+        return {
+            **result,
+            "candidate_connections": len(resources),
+            "protected_connections": protected_candidates,
+            "capacity": self._capacity_snapshot(),
+        }
 
     def _require_pending(self, value: object) -> _PendingDataplaneBoundary:
         if not isinstance(value, _PendingDataplaneBoundary) or value is not self._preparing:
@@ -965,60 +1168,67 @@ class _TcBpfRuntimeRealization:
     def _require_ready(self, value: object) -> _ReadyDataplaneBoundary:
         if not isinstance(value, _ReadyDataplaneBoundary):
             raise TypeError("tc-BPF runtime READY realization is invalid")
-        if self._realizations.get(value.generation) is not value:
+        if self._realizations.get(value.boundary.nominal_time) is not value:
             raise RuntimeError("tc-BPF runtime READY realization is stale")
         return value
 
     def cleanup(self) -> dict[str, Any]:
         if not self._initialized:
             return {"deleted_connections": 0, "pin_root_removed": True, "errors": []}
-        try:
-            return self._executor.execute(
-                "cleanup",
-                {
-                    "pin_root": self._pin_root,
-                    "nodes": [
-                        {
-                            **node,
-                            "node_address_owned": next(
-                                node_id
-                                for node_id in self._bindings
-                                if node_id.value == node["key"]
-                            )
-                            in self._owned_node_addresses,
-                            "zone_addresses": sorted(
-                                self._all_zone_addresses[
-                                    next(
-                                        node_id
-                                        for node_id in self._bindings
-                                        if node_id.value == node["key"]
-                                    )
-                                ]
-                            ),
-                        }
-                        for node in self._nodes
-                    ],
-                    "connections": [
-                        self._connection_identity(value)
-                        for value in sorted(self._all_prepared_resources, key=_connection_key)
-                    ],
-                },
+        result = self._executor.execute(
+            "cleanup",
+            {
+                "pin_root": self._pin_root,
+                "nodes": [
+                    {
+                        **node,
+                        "node_address_owned": next(
+                            node_id
+                            for node_id in self._bindings
+                            if node_id.value == node["key"]
+                        )
+                        in self._owned_node_addresses,
+                        "zone_addresses": sorted(
+                            self._all_zone_addresses[
+                                next(
+                                    node_id
+                                    for node_id in self._bindings
+                                    if node_id.value == node["key"]
+                                )
+                            ]
+                        ),
+                    }
+                    for node in self._nodes
+                ],
+                "connections": [
+                    self._connection_identity(value)
+                    for value in sorted(
+                        self._all_prepared_resources, key=_connection_key
+                    )
+                ],
+                "worker_count": self._worker_count,
+            },
+        )
+        if result.get("pin_root_removed") is not True or result.get("errors"):
+            raise RuntimeError(
+                "Runner teardown evidence is incomplete; ownership retained for retry"
             )
-        finally:
-            self._initialized = False
-            self._telemetry_kernel.clear()
-            self._prepared_resources.clear()
-            self._all_prepared_resources.clear()
-            self._generation_keys.clear()
-            self._map_capacities.clear()
-            self._capacity_plan.clear()
-            self._physical_resource_high_water = 0
-            self._active = None
-            self._latest_ready = None
-            self._preparing = None
-            self._realizations.clear()
-            self._all_zone_addresses.clear()
-            self._owned_node_addresses.clear()
+        self._initialized = False
+        self._telemetry_kernel.clear()
+        self._prepared_resources.clear()
+        self._all_prepared_resources.clear()
+        self._interface_indexes.clear()
+        self._generation_keys.clear()
+        self._map_capacities.clear()
+        self._capacity_plan.clear()
+        self._physical_resource_high_water = 0
+        self._active = None
+        self._latest_ready = None
+        self._preparing = None
+        self._realizations.clear()
+        self._all_zone_addresses.clear()
+        self._owned_node_addresses.clear()
+        return result
 
     def _initial_capacity_plan(
         self,
@@ -1037,9 +1247,14 @@ class _TcBpfRuntimeRealization:
         generation_nodes = []
         known_resources: set[ConnectionId] = set()
         for boundary in boundaries:
-            state = _materialize_boundary(state, boundary)
-            states.append(state)
-            generation_nodes.append(self._generation_nodes(state))
+            previous_state = state
+            state = _materialize_boundary(previous_state, boundary)
+            if (
+                not states
+                or _generation_state(previous_state) != _generation_state(state)
+            ):
+                states.append(state)
+                generation_nodes.append(self._generation_nodes(state))
             known_resources.update(state.resources)
 
         demands = [
@@ -1079,12 +1294,13 @@ class _TcBpfRuntimeRealization:
             node_id.entity_kind == "ground-station" for node_id in self._bindings
         )
         topology_node_count = len(self._bindings)
+        bindings_by_key = {
+            node_id.value: node_id for node_id in self._bindings
+        }
         per_node = []
         for node in self._nodes:
             key = node["key"]
-            node_id = next(
-                value for value in self._bindings if value.value == key
-            )
+            node_id = bindings_by_key[key]
             if rolling:
                 if node_id.entity_kind == "ground-station":
                     per_generation_active_bound = satellite_count
@@ -1221,8 +1437,9 @@ class _TcBpfRuntimeRealization:
             for key, active, routes in keys:
                 used[key][0] += len(active)
                 used[key][1] += len(routes)
-        per_node = []
         failures = []
+        minimum_active_headroom: int | None = None
+        minimum_route_headroom: int | None = None
         for node in generation_nodes:
             key = node["key"]
             active_capacity, route_capacity = self._map_capacities[key]
@@ -1240,18 +1457,15 @@ class _TcBpfRuntimeRealization:
                     f"{key}: routes requires {used[key][1] + route_required}, "
                     f"capacity {route_capacity}"
                 )
-            per_node.append(
-                {
-                    "key": key,
-                    "active_link_entries_before": used[key][0],
-                    "active_link_entries_required": active_required,
-                    "active_link_entries_capacity": active_capacity,
-                    "active_link_entries_remaining": active_remaining,
-                    "route_entries_before": used[key][1],
-                    "route_entries_required": route_required,
-                    "route_entries_capacity": route_capacity,
-                    "route_entries_remaining": route_remaining,
-                }
+            minimum_active_headroom = (
+                active_remaining
+                if minimum_active_headroom is None
+                else min(minimum_active_headroom, active_remaining)
+            )
+            minimum_route_headroom = (
+                route_remaining
+                if minimum_route_headroom is None
+                else min(minimum_route_headroom, route_remaining)
             )
         if failures:
             raise _CapacityAuditError(
@@ -1266,13 +1480,9 @@ class _TcBpfRuntimeRealization:
             "resident_generations_after": len(resident) + 1,
             "reserved_in_flight_preparations": reserved,
             "resident_generation_capacity": self._max_resident_generations,
-            "per_node": per_node,
-            "minimum_active_link_headroom_after": min(
-                value["active_link_entries_remaining"] for value in per_node
-            ),
-            "minimum_route_headroom_after": min(
-                value["route_entries_remaining"] for value in per_node
-            ),
+            "audited_node_count": len(generation_nodes),
+            "minimum_active_link_headroom_after": minimum_active_headroom or 0,
+            "minimum_route_headroom_after": minimum_route_headroom or 0,
             "physical_prepared_resources_before": len(prepared_resources),
             "physical_prepared_resources_after": len(predicted_resources),
         }
@@ -1302,19 +1512,21 @@ class _TcBpfRuntimeRealization:
             for key, active, routes in keys:
                 used[key][0] += len(active)
                 used[key][1] += len(routes)
-        per_node = []
+        minimum_active_headroom: int | None = None
+        minimum_route_headroom: int | None = None
         for key in sorted(self._map_capacities):
             active_capacity, route_capacity = self._map_capacities[key]
-            per_node.append(
-                {
-                    "key": key,
-                    "active_link_entries": used[key][0],
-                    "active_link_capacity": active_capacity,
-                    "active_link_headroom": active_capacity - used[key][0],
-                    "route_entries": used[key][1],
-                    "route_capacity": route_capacity,
-                    "route_headroom": route_capacity - used[key][1],
-                }
+            active_headroom = active_capacity - used[key][0]
+            route_headroom = route_capacity - used[key][1]
+            minimum_active_headroom = (
+                active_headroom
+                if minimum_active_headroom is None
+                else min(minimum_active_headroom, active_headroom)
+            )
+            minimum_route_headroom = (
+                route_headroom
+                if minimum_route_headroom is None
+                else min(minimum_route_headroom, route_headroom)
             )
         return {
             "resident_generations": len(resident),
@@ -1322,15 +1534,9 @@ class _TcBpfRuntimeRealization:
             "resident_generation_capacity": self._max_resident_generations,
             "physical_prepared_resources": prepared_resources,
             "physical_prepared_resource_high_water": high_water,
-            "minimum_active_link_headroom": min(
-                (value["active_link_headroom"] for value in per_node),
-                default=0,
-            ),
-            "minimum_route_headroom": min(
-                (value["route_headroom"] for value in per_node),
-                default=0,
-            ),
-            "per_node": per_node,
+            "audited_node_count": len(self._map_capacities),
+            "minimum_active_link_headroom": minimum_active_headroom or 0,
+            "minimum_route_headroom": minimum_route_headroom or 0,
         }
 
     def _connection_identity(self, connection_id: ConnectionId) -> dict[str, Any]:
@@ -1431,10 +1637,18 @@ class _TcBpfRuntimeRealization:
         interfaces = self._interfaces(state)
         routes = self._routes(state)
         by_key = {node["key"]: node for node in self._nodes}
+        identities_by_node: dict[str, list[dict[str, Any]]] = {
+            key: [] for key in by_key
+        }
+        for (key, name), ifindex in sorted(self._interface_indexes.items()):
+            identities_by_node[key].append(
+                {"interface": name, "ifindex": ifindex}
+            )
         return [
             {
                 **by_key[node_id.value],
                 "active_interfaces": sorted(interfaces[node_id]),
+                "interface_identities": identities_by_node[node_id.value],
                 "routes": [
                     {"destination": destination, "interface": interface}
                     for destination, interface in sorted(routes[node_id].items())
@@ -1442,6 +1656,41 @@ class _TcBpfRuntimeRealization:
             }
             for node_id in sorted(self._bindings, key=_node_key)
         ]
+
+    def _runtime_change_classification(
+        self,
+        previous_state: _MaterializedDataplaneState,
+        state: _MaterializedDataplaneState,
+    ) -> dict[str, bool]:
+        """Classify one target from the concrete runtime representations."""
+
+        physical = previous_state.resources != state.resources
+        qdisc = previous_state.parameters != state.parameters
+        route_neighbour = (
+            self._routes(previous_state) != self._routes(state)
+            or self._ground_station_access_peer_routes(previous_state)
+            != self._ground_station_access_peer_routes(state)
+        )
+        generation_bpf = (
+            _generation_state(previous_state) != _generation_state(state)
+        )
+        zone_address = previous_state.zone_edges != state.zone_edges
+        mutations = (
+            physical,
+            qdisc,
+            route_neighbour,
+            generation_bpf,
+            zone_address,
+        )
+        return {
+            "physical_resource_change": physical,
+            "qdisc_parameter_change": qdisc,
+            "route_neighbour_change": route_neighbour,
+            "generation_bpf_state_change": generation_bpf,
+            "zone_address_change": zone_address,
+            "no_op_equivalent_target": not any(mutations),
+            "mixed_change": sum(mutations) > 1,
+        }
 
     def _activation_request(
         self,
@@ -1451,6 +1700,8 @@ class _TcBpfRuntimeRealization:
         state: _MaterializedDataplaneState,
         expected_active_generation: int,
         generation: int,
+        interface_indexes: Mapping[tuple[str, str], int],
+        generation_changed: bool = True,
     ) -> dict[str, Any]:
         old_resources = set(previous_state.resources)
         new_resources = set(state.resources)
@@ -1463,7 +1714,59 @@ class _TcBpfRuntimeRealization:
         parameter_state = {
             (value.connection_id, value.direction): value for value in state.parameters
         }
-        parameter_changes = []
+        by_key = {node["key"]: node for node in self._nodes}
+        identities_by_node: dict[NodeId, list[dict[str, Any]]] = {
+            node_id: [] for node_id in self._bindings
+        }
+        bindings_by_key = {
+            node_id.value: node_id for node_id in self._bindings
+        }
+        for (key, name), ifindex in sorted(interface_indexes.items()):
+            identities_by_node[bindings_by_key[key]].append(
+                {"interface": name, "ifindex": ifindex}
+            )
+        grouped = {
+            node_id: {
+                "link_up": [],
+                "link_down": [],
+                "qdisc": [],
+                "zone_address_delete": [],
+                "zone_address_add": [],
+            }
+            for node_id in self._bindings
+        }
+        added_resources = new_resources - old_resources
+        removed_resources = old_resources - new_resources
+        for connection_id in added_resources:
+            for endpoint, name in zip(
+                (connection_id.endpoint_a, connection_id.endpoint_b),
+                _interface_names(connection_id),
+            ):
+                grouped[endpoint]["link_up"].append(name)
+        for connection_id in removed_resources:
+            for endpoint, name in zip(
+                (connection_id.endpoint_a, connection_id.endpoint_b),
+                _interface_names(connection_id),
+            ):
+                grouped[endpoint]["link_down"].append(name)
+
+        changed_zone_ids = {
+            zone_id
+            for zone_id in set(old_edges) | set(new_edges)
+            if old_edges.get(zone_id) != new_edges.get(zone_id)
+        }
+        for zone_id in changed_zone_ids:
+            old = old_edges.get(zone_id)
+            new = new_edges.get(zone_id)
+            if old is not None:
+                grouped[old.service_satellite_id]["zone_address_delete"].append(
+                    str(ip_interface(old.packet_prefix).ip)
+                )
+            if new is not None:
+                grouped[new.service_satellite_id]["zone_address_add"].append(
+                    str(ip_interface(new.packet_prefix).ip)
+                )
+
         for operation in boundary.operations:
             intent = operation.intent
             if not isinstance(intent, _QdiscIntent) or intent.connection_id not in old_resources:
@@ -1472,9 +1775,8 @@ class _TcBpfRuntimeRealization:
             source, _ = _direction_endpoints(value.connection_id, value.direction)
             names = _interface_names(value.connection_id)
             interface = names[0] if source == value.connection_id.endpoint_a else names[1]
-            parameter_changes.append(
+            grouped[source]["qdisc"].append(
                 {
-                    "node": source.value,
                     "interface": interface,
                     "bandwidth_bps": value.bandwidth_bps,
                     "delay_us": value.delay_us,
@@ -1482,7 +1784,6 @@ class _TcBpfRuntimeRealization:
                 }
             )
         nodes = []
-        by_key = {node["key"]: node for node in self._nodes}
         for node_id in sorted(self._bindings, key=_node_key):
             route_deletes = [
                 {"destination": destination, "interface": interface}
@@ -1508,54 +1809,60 @@ class _TcBpfRuntimeRealization:
                 )
                 if old_access_peers[node_id].get(destination) != interface
             ]
-            zone_delete = []
-            zone_add = []
-            for zone_id in set(old_edges) | set(new_edges):
-                old = old_edges.get(zone_id)
-                new = new_edges.get(zone_id)
-                if old == new:
-                    continue
-                if old is not None and old.service_satellite_id == node_id:
-                    zone_delete.append(str(ip_interface(old.packet_prefix).ip))
-                if new is not None and new.service_satellite_id == node_id:
-                    zone_add.append(str(ip_interface(new.packet_prefix).ip))
+            local = grouped[node_id]
             nodes.append(
                 {
                     **by_key[node_id.value],
-                    "link_up": sorted(
-                        name
-                        for connection_id in new_resources - old_resources
-                        for endpoint, name in zip(
-                            (connection_id.endpoint_a, connection_id.endpoint_b),
-                            _interface_names(connection_id),
-                        )
-                        if endpoint == node_id
+                    "interface_identities": identities_by_node[node_id],
+                    "link_up": sorted(local["link_up"]),
+                    "link_down": sorted(local["link_down"]),
+                    "qdisc": sorted(
+                        local["qdisc"], key=lambda value: value["interface"]
                     ),
-                    "link_down": sorted(
-                        name
-                        for connection_id in old_resources - new_resources
-                        for endpoint, name in zip(
-                            (connection_id.endpoint_a, connection_id.endpoint_b),
-                            _interface_names(connection_id),
-                        )
-                        if endpoint == node_id
-                    ),
-                    "qdisc": [value for value in parameter_changes if value["node"] == node_id.value],
                     "route_delete": route_deletes,
                     "route_replace": route_replaces,
                     "access_peer_route_delete": access_peer_route_deletes,
                     "access_peer_route_replace": access_peer_route_replaces,
-                    "zone_address_delete": sorted(set(zone_delete)),
-                    "zone_address_add": sorted(set(zone_add)),
+                    "zone_address_delete": sorted(
+                        set(local["zone_address_delete"])
+                    ),
+                    "zone_address_add": sorted(set(local["zone_address_add"])),
                 }
             )
+        grouped_fields = (
+            "link_up",
+            "link_down",
+            "qdisc",
+            "route_delete",
+            "route_replace",
+            "access_peer_route_delete",
+            "access_peer_route_replace",
+            "zone_address_delete",
+            "zone_address_add",
+        )
+        affected_nodes = sum(
+            any(node[field] for field in grouped_fields) for node in nodes
+        )
+        grouped_operation_count = sum(
+            sum(len(node[field]) for field in grouped_fields) for node in nodes
+        )
         return {
             "pin_root": self._pin_root,
             "common_mac": _COMMON_MAC,
             "boundary_timestamp": boundary.nominal_time.isoformat(),
             "expected_active_generation": expected_active_generation,
             "generation": generation,
+            "generation_changed": generation_changed,
             "nodes": nodes,
+            "worker_count": self._worker_count,
+            "grouping": {
+                "full_boundary_operation_count": len(boundary.operations),
+                "added_resource_count": len(added_resources),
+                "removed_resource_count": len(removed_resources),
+                "changed_zone_count": len(changed_zone_ids),
+                "affected_node_count": affected_nodes,
+                "grouped_operation_count": grouped_operation_count,
+            },
         }
 
 

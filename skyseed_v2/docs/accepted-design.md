@@ -37,16 +37,18 @@
   runtime foundation, then owns concrete NodeId→container/PID/netns bindings,
   dynamic physical resources, READY/active frontiers, runtime timing/failure
   evidence, and scoped cleanup, but not Compose compilation/startup/teardown;
-- generated BPF output records one small execution definition naming the same
-  example progression builder used at generation time, its backend/runtime
-  bounds, output identity, bounded/unbounded Timeline facts, compact
-  source-scope fingerprints, and generated-input fingerprints. The private root
-  generated-BPF-execution application composition uses SHA256 only as a deterministic
-  source/output consistency guard: definition drift or stale generated output
-  fails clearly with an instruction to rerun `main.py`. It then composes lazy
-  Slicer → Planner → Compiler input with the unchanged BpfRunner lifecycle; it
-  is not part of the BPF backend, a security mechanism, or a new public runtime
-  authority;
+- generated BPF output records one small execution definition with its
+  backend/runtime bounds, output identity, bounded/unbounded Timeline facts,
+  compact source-scope fingerprints, and generated-input fingerprints.
+  `experiment.execution` is the experiment-side runtime composition. It uses
+  SHA256 only as a deterministic source/output consistency guard: definition
+  drift or stale generated output fails clearly with an instruction to rerun
+  `main.py`. It consumes either the explicitly configured live rolling Slicer
+  → Planner → Compiler progression used by Mini or the persisted canonical
+  `BpfCompiledRealization` sequence produced by the Starlink Gen1 example,
+  then composes that input
+  with the unchanged BpfRunner lifecycle. It is not part of the BPF backend, a
+  security mechanism, or a new public runtime authority;
 - rolling owners retain only facts still needed beyond their successful
   handoff. Slicer and Planner release obsolete owner-local working entries,
   Runner and its private realization reclaim retired input/boundary/generation
@@ -73,6 +75,12 @@
   the nominal semantic transition schedule required by the target simulation
   profile. Simulation sampling resolution, Planner publication cadence, Plan
   nominal transition timing, and Runner execution cadence are separate;
+- BPF generation identity follows the complete backend-local BPF generation
+  state, not every runtime target field. A boundary whose BPF generation state
+  is equivalent may reuse the resident generation while Main still applies its
+  exact non-BPF runtime work, including qdisc, route/neighbour, Zone-address,
+  and physical-resource changes. The Compiler remains one-shot and does not
+  classify runtime reuse;
 - Preparation/Main/Maintenance are internal Runner capabilities, not separate
   public authorities. Exact-next readiness is the minimum correctness
   requirement. In rolling mode Maintenance extends one gap-free READY prefix
@@ -103,26 +111,27 @@
   the complete Runner event history to durable JSONL, which the post-run Runner
   Inspection Tool reads directly; the Tool gains no lifecycle, kernel,
   dataplane, or traffic-observation authority.
-- the S4 example has one formal Simulator/Slicer composition and one offline
+- the Starlink Gen1 example has one formal Simulator/Slicer composition and one offline
   rolling application path. `main.py` advances Slicer far enough for the
   accepted planning lookahead, asks the Simulator-owned Planner to publish a
   continuous prefix, and optionally calls public `compile_bpf(...)` immediately
   with the explicit previous realization. Stage and Slice-limit controls are
   early-stop/execution bounds on this path, not alternate Simulator or domain
-  algorithms. This S4 path stops before Runner;
-- heavy generation-time S4 Inspection materialization runs in a small bounded
+  algorithms. This path stops before Runner after producing the canonical
+  runtime package with its persisted `BpfCompiledRealization` sequence; the
+  generated controls later execute the Runner and Traffic lifecycle;
+- heavy generation-time Starlink Gen1 Inspection materialization runs in a small bounded
   set of independent processes after each required domain evidence boundary is
   immutable. Slicer → Planner → Compiler remains the domain dependency chain:
   Tool work never becomes a prerequisite for a later domain stage, and a task
   is deferred until domain completion when no worker is available. Each worker
-  first persists a deterministic detached handoff under neutral
-  `inspection/_execution/` metadata, then projects and renders in a staging
-  directory, audits its inventory/checksums, and atomically publishes. The
-  final CLI join is an artifact-completion gate, not a domain dependency.
-  Domain and Inspection statuses remain separate, and Tool time is excluded
-  from domain Observation rollups. Repository-produced gzip/pickle handoffs are
-  trusted local rebuild evidence, not portable/untrusted interchange or a
-  public serialization API;
+  first persists a deterministic detached snapshot under short-lived generated
+  `.inspection-control/`, then projects and renders in a staging directory,
+  audits its inventory/checksums, and atomically publishes. The final CLI join
+  is an artifact-completion gate, not a domain dependency, and deletes the
+  temporary control state. Tool time is excluded from domain Observation
+  rollups; gzip/pickle snapshots are runtime bookkeeping, not durable output or
+  a public serialization API;
 - candidate and provenance material is non-authoritative and never a default
   implementation source.
 

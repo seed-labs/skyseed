@@ -150,6 +150,12 @@ def render_runner_page(data: dict[str, Any]) -> str:
 <section class="card scroll"><h3 id="preparation-table-title"></h3><div id="preparation-table"></div></section>
 
 <section>
+  <h2>Scale safety / 规模安全</h2>
+  <p class="muted">Compact derived views; exact events remain in the durable JSONL source.</p>
+  <div class="grid scope-grid" id="scale-safety"></div>
+</section>
+
+<section>
   <h2 id="dataplane-title"></h2>
   <div class="warning" id="dataplane-warning"></div>
   <div class="grid scope-grid" id="dataplane"></div>
@@ -211,8 +217,8 @@ const STRINGS={
     failuresTitle:"失败与 cleanup",boundariesTitle:"证据边界",rawTitle:"Raw detached Runner snapshot 与完整 event history",
     overviewLabels:["Runtime 结果","Lifecycle 状态","执行模式","Last active frontier","捕获时 READY frontier","最后发布的 READY","INPUT frontier","Preparation time lookahead","Preparation boundary depth","捕获时 READY depth","READY limiting reason","成功 activations","Deadline misses","初始 preparation","Cleanup"],
     overviewDetails:{historical:"cleanup 后的历史事实",lastActivation:"最后一次成功 activation",retained:n=>`保留 ${n} 个 READY item`,exhausted:v=>`已耗尽：${v}`,exit:v=>`exit ${v}`},
-    timingLabels:["初始 preparation","最近 Main activation","最大 Main activation","Maintenance preparation 总计","Forwarding reclaim 总计","Physical reclaim 总计","Cleanup"],
-    activationHeaders:["Nominal boundary","Start lag","Duration","Completion lag","已完成"],preparationHeaders:["Nominal boundary","Generation","Duration"],
+    timingLabels:["初始 preparation","最近 Main activation","最大 Main activation","Maintenance READY preparation 总计","Forwarding reclaim 总计","Physical reclaim 总计","Cleanup"],
+    activationHeaders:["Nominal boundary","Start lag","Duration","Completion lag","已完成"],preparationHeaders:["Nominal boundary","Generation","状态物化","Runtime preparation","READY preparation 总计"],
     maintenanceLabels:["捕获时 in flight","Maintenance 失败","INPUT advances","READY publications","Future preparations","Forward-priority decisions","Generation reclaims","Physical reclaims"],pending:n=>`捕获时 ${n} 个 pending`,
     foundationLabels:["Compose project","Foundation token","Expected nodes","Bound nodes"],bindingHeaders:["Node","PID","netns","Container"],bindingFields:{nodeId:"完整 NodeId",service:"Service",containerId:"Container ID",containerName:"Container name",imageId:"Image ID",startedAt:"StartedAt"},bindingGroups:{groundStations:"地面站",satellites:"卫星",dynamicShell:"Dynamic Shell",other:"其他节点",orbit:id=>`轨道 ${id}`,count:n=>`${n} 个节点`},noBindings:"没有 frozen runtime bindings。",
     dataplaneCards:["Dataplane foundation evidence","最新 capacity audit","最新 READY evidence","最新 activation evidence","Generation reclaim evidence","Physical reclaim evidence"],
@@ -258,8 +264,8 @@ const STRINGS={
     failuresTitle:"Failures & cleanup",boundariesTitle:"Evidence boundaries",rawTitle:"Raw detached Runner snapshot and event history",
     overviewLabels:["Runtime outcome","Lifecycle state","Execution mode","Last active frontier","READY frontier at capture","Last READY published","INPUT frontier","Preparation time lookahead","Preparation boundary depth","READY depth at capture","READY limiting reason","Successful activations","Deadline misses","Initial preparation","Cleanup"],
     overviewDetails:{historical:"historical after cleanup",lastActivation:"last successful activation",retained:n=>`${n} retained READY item(s)`,exhausted:v=>`exhausted: ${v}`,exit:v=>`exit ${v}`},
-    timingLabels:["Initial preparation","Recent Main activation","Max Main activation","Maintenance preparation total","Forwarding reclaim total","Physical reclaim total","Cleanup"],
-    activationHeaders:["Nominal boundary","Start lag","Duration","Completion lag","Completed"],preparationHeaders:["Nominal boundary","Generation","Duration"],
+    timingLabels:["Initial preparation","Recent Main activation","Max Main activation","Maintenance READY preparation total","Forwarding reclaim total","Physical reclaim total","Cleanup"],
+    activationHeaders:["Nominal boundary","Start lag","Duration","Completion lag","Completed"],preparationHeaders:["Nominal boundary","Generation","State materialization","Runtime preparation","Total READY preparation"],
     maintenanceLabels:["In flight at capture","Maintenance failed","Input advances","READY publications","Future preparations","Forward-priority decisions","Generation reclaims","Physical reclaims"],pending:n=>`${n} pending at capture`,
     foundationLabels:["Compose project","Foundation token","Expected nodes","Bound nodes"],bindingHeaders:["Node","PID","netns","Container"],bindingFields:{nodeId:"Full NodeId",service:"Service",containerId:"Container ID",containerName:"Container name",imageId:"Image ID",startedAt:"StartedAt"},bindingGroups:{groundStations:"Ground Stations",satellites:"Satellites",dynamicShell:"Dynamic Shell",other:"Other nodes",orbit:id=>`Orbit ${id}`,count:n=>`${n} node${n===1?"":"s"}`},noBindings:"No frozen runtime bindings were recorded.",
     dataplaneCards:["Dataplane foundation evidence","Latest capacity audit","Latest READY evidence","Latest activation evidence","Generation reclaim evidence","Physical reclaim evidence"],
@@ -423,12 +429,30 @@ function renderTiming(){
   const timing=DATA.timing;const l=s().timingLabels;
   document.getElementById("timing-stats").innerHTML=[card(l[0],fmtSeconds(timing.preparation_duration_seconds)),card(l[1],fmtSeconds(timing.recent_activation_duration_seconds)),card(l[2],fmtSeconds(timing.max_activation_duration_seconds)),card(l[3],fmtSeconds(timing.maintenance_preparation_total_seconds)),card(l[4],fmtSeconds(timing.generation_reclaim_total_seconds)),card(l[5],fmtSeconds(timing.physical_reclaim_total_seconds)),card(l[6],fmtSeconds(timing.cleanup_duration_seconds))].join("");
   document.getElementById("activation-table").innerHTML=table(s().activationHeaders,timing.activations.map(value=>[fmtTime(value.boundary_timestamp),fmtSeconds(value.start_lag_seconds),fmtSeconds(value.duration_seconds),fmtSeconds(value.completion_lag_seconds),yesNo(value.completed)]));
-  document.getElementById("preparation-table").innerHTML=table(s().preparationHeaders,timing.maintenance_preparations.map(value=>[fmtTime(value.boundary_timestamp),value.generation,fmtSeconds(value.duration_seconds)]));
+  document.getElementById("preparation-table").innerHTML=table(s().preparationHeaders,timing.maintenance_preparations.map(value=>[fmtTime(value.boundary_timestamp),value.generation,fmtSeconds(value.state_materialization_seconds),fmtSeconds(value.runtime_preparation_seconds),fmtSeconds(value.total_ready_preparation_seconds)]));
 }
 
 function renderMaintenance(){
   const value=DATA.maintenance;const l=s().maintenanceLabels;
   document.getElementById("maintenance").innerHTML=[card(l[0],yesNo(value.in_flight)),card(l[1],yesNo(value.failed)),card(l[2],value.input_advances),card(l[3],value.ready_publications),card(l[4],value.future_preparations),card(l[5],value.forward_priority_events),card(l[6],value.generation_reclaims,s().pending(value.pending_forwarding_reclaim??0)),card(l[7],value.physical_reclaims,s().pending(value.pending_physical_reclaim??0))].join("");
+}
+
+function renderScaleSafety(){
+  const value=DATA.scale_safety||{};
+  const entries=[
+    ["Compose startup / 部署启动",value.deployment_startup],
+    ["Preparation breakdown / 准备分解",value.preparation_breakdown],
+    ["Main subphases / Main 子阶段",value.main_subphases],
+    ["Amplification / 放大关系",value.amplification],
+    ["Batching / 批处理",value.batching],
+    ["Workers / 并发",value.workers],
+    ["Maintenance backlog / 维护积压",value.maintenance_backlog],
+    ["Supplier & normalization / 供给与规范化",value.maintenance_input],
+    ["Resource health / 资源健康",value.resource_health],
+    ["Observation completeness / 证据完整性",value.observation],
+    ["Teardown / 拆卸",value.teardown],
+  ];
+  document.getElementById("scale-safety").innerHTML=entries.map(([title,item])=>evidenceCard(title,item)).join("");
 }
 
 function classifyBinding(binding){
@@ -469,7 +493,7 @@ function renderEvidence(){
 }
 
 function renderAll(){
-  setStaticText();renderGuide();renderOverview();renderGraph();renderTimelineFilters();renderDetailedTimeline();renderTiming();renderMaintenance();renderFoundation();renderEvidence();document.getElementById("raw-json").textContent=pretty(DATA.raw);
+  setStaticText();renderGuide();renderOverview();renderGraph();renderTimelineFilters();renderDetailedTimeline();renderTiming();renderMaintenance();renderScaleSafety();renderFoundation();renderEvidence();document.getElementById("raw-json").textContent=pretty(DATA.raw);
   document.querySelectorAll("[data-language]").forEach(button=>{button.classList.toggle("active",button.dataset.language===currentLanguage);button.setAttribute("aria-pressed",button.dataset.language===currentLanguage?"true":"false");});
 }
 

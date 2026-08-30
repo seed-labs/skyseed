@@ -47,6 +47,7 @@ class _DetachedInspectionExecutor:
         self._max_workers = max_workers
         self._active: list[dict[str, object]] = []
         self._completed: list[dict[str, object]] = []
+        self._closed = False
 
     @property
     def max_workers(self) -> int:
@@ -60,6 +61,8 @@ class _DetachedInspectionExecutor:
     ) -> dict[str, object]:
         """Schedule one Tool from an immutable fork snapshot."""
 
+        if self._closed:
+            raise RuntimeError("detached Inspection executor is already closed")
         if task not in _SUPPORTED_TASKS:
             raise ValueError(f"unsupported detached Inspection task: {task}")
         if any(value["task"] == task for value in (*self._active, *self._completed)):
@@ -133,7 +136,10 @@ class _DetachedInspectionExecutor:
 
         while self._active:
             self._reap(block=True)
-        return self.records()
+        records = self.records()
+        self._closed = True
+        self._discard_control_directory()
+        return records
 
     def terminate(self) -> None:
         """Stop unfinished side work after a primary domain failure."""
@@ -156,6 +162,8 @@ class _DetachedInspectionExecutor:
             )
             self._active.remove(handle)
             self._completed.append(handle)
+        self._closed = True
+        self._discard_control_directory()
 
     def records(self) -> tuple[dict[str, object], ...]:
         ordered = sorted(
@@ -212,6 +220,11 @@ class _DetachedInspectionExecutor:
         if process.exitcode != 0:
             payload["status"] = "FAILED"
             payload.setdefault("message", f"worker exited with code {process.exitcode}")
+        try:
+            handoff = _read_handoff(Path(str(handle["handoff_path"])))
+            payload["input_evidence"] = handoff.get("snapshot")
+        except (OSError, ValueError):
+            payload["input_evidence"] = {"status": "UNAVAILABLE"}
         handle.update(payload)
         handle["exit_code"] = process.exitcode
         handle["status"] = str(payload.get("status", "FAILED"))
@@ -223,39 +236,9 @@ class _DetachedInspectionExecutor:
             flush=True,
         )
 
-
-def rebuild_from_handoff(handoff_path: Path) -> dict[str, object]:
-    """Regenerate one Tool solely from its preserved detached handoff."""
-
-    path = Path(handoff_path).resolve()
-    handoff = _read_handoff(path)
-    task = str(handoff["tool"])
-    output = (path.parent / str(handoff["artifact_directory"])).resolve()
-    snapshot = handoff["snapshot"]
-    if not isinstance(snapshot, Mapping) or snapshot.get("status") != "COMPLETE":
-        raise RuntimeError("Inspection handoff snapshot is incomplete")
-    snapshot_path = (path.parent / str(snapshot["path"])).resolve()
-    _verify_snapshot(snapshot_path, snapshot)
-    _clean_stale_staging(output)
-    staging = _staging_directory(output)
-    staging.mkdir(parents=True)
-    try:
-        if task == "observation":
-            source = handoff.get("source")
-            if not isinstance(source, Mapping):
-                raise ValueError("Observation handoff source is invalid")
-            observation = (path.parent / str(source["path"])).resolve()
-            result = _build_observation(observation, staging)
-        else:
-            detached = _read_snapshot(snapshot_path)
-            result = _build_from_snapshot(task, detached, staging)
-        _audit_bundle(staging)
-        _publish_staged(staging, output)
-        return {**result, "directory": output}
-    except BaseException:
-        if staging.exists():
-            shutil.rmtree(staging)
-        raise
+    def _discard_control_directory(self) -> None:
+        if self._evidence_directory.exists():
+            shutil.rmtree(self._evidence_directory)
 
 
 def _worker_entry(
@@ -321,6 +304,16 @@ def _worker_entry(
 
 def _detach_live_source(task: str, source: Mapping[str, object]) -> dict[str, Any]:
     if task == "slice":
+        if "slice_history_path" in source:
+            from tools.slice.reader import read_durable_slice_differences
+
+            return read_durable_slice_differences(
+                Path(str(source["slice_history_path"])),
+                Path(str(source["planner_history_path"])),
+                topology=source["topology"],
+                timeline=source["timeline"],
+                model_context=_mapping_or_none(source.get("model_context")),
+            ).snapshot
         from tools.slice.reader import read_slice_differences
 
         return read_slice_differences(
@@ -328,6 +321,22 @@ def _detach_live_source(task: str, source: Mapping[str, object]) -> dict[str, An
             model_context=_mapping_or_none(source.get("model_context")),
         ).snapshot
     if task == "planner":
+        if "planner_history_path" in source:
+            from tools.planner.reader import (
+                read_durable_plan_sequence,
+                read_durable_planner_inspection,
+            )
+
+            return read_durable_planner_inspection(
+                Path(str(source["slice_history_path"])),
+                Path(str(source["planner_history_path"])),
+                read_durable_plan_sequence(
+                    Path(str(source["planner_history_path"]))
+                ),
+                _mapping(source["configuration"], "configuration"),
+                topology=source["topology"],
+                timeline=source["timeline"],
+            ).snapshot
         from tools.planner.reader import read_planner_inspection
 
         return read_planner_inspection(
@@ -338,6 +347,25 @@ def _detach_live_source(task: str, source: Mapping[str, object]) -> dict[str, An
             _mapping(source["configuration"], "configuration"),
         ).snapshot
     if task == "compiler":
+        if "realization_manifest" in source:
+            from skyseed_v2.experiment._realization_handoff import (
+                _read_persisted_realization_sequence,
+            )
+            from tools.bpf_compiler.reader import read_bpf_compiler_inspection
+            from tools.planner.reader import read_durable_plan_sequence
+
+            snapshot = read_bpf_compiler_inspection(
+                read_durable_plan_sequence(
+                    Path(str(source["planner_history_path"]))
+                ),
+                _read_persisted_realization_sequence(
+                    Path(str(source["realization_manifest"]))
+                ),
+            ).snapshot
+            snapshot["compile_evidence"] = tuple(
+                source.get("compile_evidence", ())
+            )
+            return snapshot
         from tools.bpf_compiler.reader import read_bpf_compiler_inspection
 
         snapshot = read_bpf_compiler_inspection(
@@ -432,17 +460,6 @@ def _write_snapshot(path: Path, value: Mapping[str, object]) -> dict[str, object
     }
 
 
-def _read_snapshot(path: Path) -> dict[str, Any]:
-    try:
-        with gzip.open(path, "rb") as stream:
-            value = pickle.load(stream)
-    except (OSError, pickle.PickleError, EOFError) as error:
-        raise ValueError("detached Inspection snapshot is invalid") from error
-    if not isinstance(value, dict):
-        raise ValueError("detached Inspection snapshot must be an object")
-    return value
-
-
 def _complete_snapshot_handoff(
     handoff_path: Path, snapshot: Mapping[str, object]
 ) -> None:
@@ -467,17 +484,6 @@ def _complete_file_handoff(handoff_path: Path, source_path: Path) -> None:
     _write_json_atomic(handoff_path, value)
 
 
-def _verify_snapshot(path: Path, value: Mapping[str, object]) -> None:
-    if value.get("encoding") == "source-jsonl":
-        return
-    if value.get("encoding") != _SNAPSHOT_ENCODING:
-        raise ValueError("Inspection handoff snapshot encoding is unsupported")
-    if path.stat().st_size != int(value["size_bytes"]):
-        raise ValueError("Inspection handoff snapshot size differs")
-    if _sha256_file(path) != value["sha256"]:
-        raise ValueError("Inspection handoff snapshot checksum differs")
-
-
 def _handoff_source_description(
     task: str, source: Mapping[str, object]
 ) -> dict[str, object]:
@@ -490,10 +496,16 @@ def _handoff_source_description(
                 Path(str(source["observation_path"])).resolve().parent,
             ),
         }
+    durable = "slice_history_path" in source or "realization_manifest" in source
     return {
-        "kind": "immutable-domain-fork-snapshot",
+        "kind": (
+            "durable-domain-evidence"
+            if durable
+            else "immutable-domain-fork-snapshot"
+        ),
         "detached_before_projection": True,
         "domain_reexecution": False,
+        "full_history_retained_by_parent": not durable,
     }
 
 
@@ -637,4 +649,4 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-__all__ = ["_DetachedInspectionExecutor", "rebuild_from_handoff"]
+__all__ = ["_DetachedInspectionExecutor"]

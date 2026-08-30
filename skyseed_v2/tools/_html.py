@@ -55,7 +55,7 @@ a { color: var(--cyan); }
 }
 .status.PASS { color: #042514; background: var(--pass); }
 .status.FAIL, .status.FAILED { color: #310707; background: var(--fail); }
-.status.OBSERVED { color: #2f2300; background: var(--warn); }
+.status.OBSERVED, .status.WARN { color: #2f2300; background: var(--warn); }
 .warning { border-left: 4px solid var(--warn); padding: 10px 14px; background: #493b1938; }
 button, select, input {
   color: var(--ink); background: var(--panel2); border: 1px solid var(--line);
@@ -272,11 +272,11 @@ def write_aggregate_index(
 ) -> None:
     """Write the available-tool landing page without introducing a framework."""
 
+    statuses = {str(result.get("status", "FAILED")) for result in tool_results.values()}
     overall = (
-        "PASS"
-        if tool_results
-        and all(result.get("status") == "PASS" for result in tool_results.values())
-        else "FAIL"
+        "FAIL"
+        if not tool_results or statuses & {"FAIL", "FAILED"}
+        else "WARN" if statuses - {"PASS"} else "PASS"
     )
     cards = []
     for key, title, description in (
@@ -309,6 +309,16 @@ def write_aggregate_index(
             "compiler",
             "BPF Compiler Tool",
             "Trace Plan deltas into interval operations and complete baselines.",
+        ),
+        (
+            "runner",
+            "BPF Runner Tool",
+            "Inspect detached lifecycle, timing, readiness, and cleanup evidence.",
+        ),
+        (
+            "traffic",
+            "Traffic / Path Replay Tool",
+            "Inspect real Ping and tc-BPF observations against active runtime evolution.",
         ),
     ):
         if key not in ("topology", "zone") and key not in tool_results:
@@ -375,14 +385,72 @@ def write_aggregate_index(
                 "System Observation Tool": "系统 Observation 工具",
                 "Planner Tool": "Planner 工具",
                 "BPF Compiler Tool": "BPF Compiler 工具",
+                "BPF Runner Tool": "BPF Runner 工具",
+                "Traffic / Path Replay Tool": "Traffic / Path Replay 工具",
                 "Inspect selectable static orbit planes, GroundStations, and consistency.": "查看可选择的静态轨道平面、地面站与一致性。",
                 "Inspect and select static Zone boundaries and geometry.": "查看并直接选择静态 Zone 边界与几何信息。",
                 "Inspect sampled formal state and Difference evolution by Slice.": "逐 Slice 检查采样的正式状态和 Difference 演化。",
                 "Inspect measured execution stages, rollups, work, and resources.": "检查已测量的执行 stage、rollup、工作量与资源。",
                 "Compare sampled formal evidence with published planned state.": "比较采样的正式 evidence 与已发布的 planned state。",
                 "Trace Plan deltas into interval operations and complete baselines.": "追踪 Plan delta 如何转换为区间操作和完整 baseline。",
+                "Inspect detached lifecycle, timing, readiness, and cleanup evidence.": "检查分离保存的生命周期、时序、就绪与清理 evidence。",
+                "Inspect real Ping and tc-BPF observations against active runtime evolution.": "对照 ACTIVE runtime 演化检查真实 Ping 与 tc-BPF observation。",
                 "All available Tools completed; each entry contains its exact evidence and audit links.": "所有可用 Tool 均已完成；每个入口都包含精确 evidence 和审计链接。",
                 "Read from formal structure and sampled Slice evidence, through Planner publications and Compiler realizations, then use System Observation for measured execution cost. Every Tool is detached and read-only; a visual selection never creates a domain fact.": "阅读顺序从正式结构与采样 Slice evidence 开始，再查看 Planner 发布和 Compiler realization，最后用 System Observation 检查已测量的执行成本。所有 Tool 均分离且只读；可视化选择不会创建领域事实。",
             },
         ),
     )
+
+
+def finalize_runtime_aggregate_index(directory: Path) -> None:
+    """Add post-run Runner and Traffic results to one generated run index."""
+
+    root = Path(directory)
+    topology_path = root / "topology/topology.json"
+    try:
+        topology = json.loads(topology_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError("generated Topology result is unavailable") from error
+    if not isinstance(topology, dict) or not isinstance(
+        topology.get("counts"), dict
+    ):
+        raise ValueError("generated Topology result is incomplete")
+    counts = {
+        str(key): int(value)
+        for key, value in topology["counts"].items()
+        if isinstance(value, int) and not isinstance(value, bool)
+    }
+    results: dict[str, dict[str, object]] = {}
+    for key, title in (
+        ("topology", "Topology Tool"),
+        ("zone", "Zone Tool"),
+        ("slice", "Slice / Difference Tool"),
+        ("observation", "System Observation Tool"),
+        ("planner", "Planner Tool"),
+        ("compiler", "BPF Compiler Tool"),
+        ("runner", "BPF Runner Tool"),
+        ("traffic", "Traffic / Path Replay Tool"),
+    ):
+        tool_directory = root / key
+        if not tool_directory.exists():
+            continue
+        summary = root / key / "summary.txt"
+        try:
+            lines = summary.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            results[key] = {
+                "status": "FAILED",
+                "message": f"{title} summary is unavailable",
+            }
+            continue
+        status = next(
+            (line.removeprefix("status=") for line in lines if line.startswith("status=")),
+            "FAILED",
+        ).upper()
+        if key == "runner" and status == "COMPLETED":
+            status = "PASS"
+        results[key] = {
+            "status": status,
+            "message": f"{title} durable summary",
+        }
+    write_aggregate_index(root, results, counts)

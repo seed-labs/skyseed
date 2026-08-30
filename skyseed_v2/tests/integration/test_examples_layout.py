@@ -1,22 +1,22 @@
 import os
+import inspect
 from pathlib import Path
 from subprocess import run
 import sys
 
 import pytest
 import skyseed_v2
-from examples import _direct_execution
-from examples._compose_project_scripts import (
-    prepare_example_output,
-    write_compose_project_scripts,
-)
 from examples.complete_static_emulator import emu
 from examples.complete_static_emulator import main as complete
 from examples.complete_static_emulator import simu
 from examples.mini_satellite_internet import main as mini
-from examples.s4_satellite_internet import main as s4
+from examples.starlink_gen1_satellite_internet import main as starlink_gen1
 from seedemu.core import Emulator
 from seedemu.layers import Base
+from skyseed_v2.compose.launcher import (
+    _prepare_generated_output,
+    _write_compose_project_scripts,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -30,7 +30,7 @@ EXPERIMENTS = {
 FORMAL_EXAMPLES = (
     *EXPERIMENTS,
     "mini_satellite_internet",
-    "s4_satellite_internet",
+    "starlink_gen1_satellite_internet",
 )
 
 
@@ -54,7 +54,7 @@ def test_formal_examples_generate_controls_into_unique_project_outputs() -> None
         assert "./output/cleanup.sh" in readme
         assert expected_project in readme
         source = Path(module.__file__).read_text(encoding="utf-8")
-        assert "write_compose_project_scripts(" in source
+        assert "_write_compose_project_scripts(" in source
 
     assert len(set(project_names)) == len(project_names)
     assert not hasattr(complete, "DEFAULT_SCENARIO")
@@ -69,13 +69,15 @@ def test_examples_readme_indexes_current_long_term_roles_and_outputs() -> None:
         assert f"`{name}`" in readme
     assert "Minimal static/canonical example kept deliberately small" in readme
     assert "Small but reasonably rich reusable satellite Internet" in readme
-    assert "one 181-Slice formal Timeline and stage-selected rolling" in readme
+    assert "a 121-Slice formal Timeline and rolling" in readme
     assert "Topology, Zone, Slice / Difference, Planner, BPF Compiler" in readme
     assert mini.DEFAULT_OUTPUT == (
         EXAMPLES_ROOT / "mini_satellite_internet/output"
     )
     assert mini.COMPOSE_PROJECT_PREFIX == "skyseed_v2_mini_satellite_internet"
-    assert s4.DEFAULT_OUTPUT == EXAMPLES_ROOT / "s4_satellite_internet/output"
+    assert starlink_gen1.DEFAULT_OUTPUT == (
+        EXAMPLES_ROOT / "starlink_gen1_satellite_internet/output"
+    )
 
 
 @pytest.mark.parametrize("name", tuple(EXPERIMENTS))
@@ -93,37 +95,18 @@ def test_formal_examples_support_direct_file_execution(name: str) -> None:
     assert "--no-override" in result.stdout
 
 
-def test_direct_execution_never_restarts_through_another_interpreter(
-    monkeypatch,
-) -> None:
-    source = Path(_direct_execution.__file__).read_text(encoding="utf-8")
-    assert ".venv" not in source
-    assert "execv" not in source
-    assert "subprocess" not in source
-
-    monkeypatch.setattr(_direct_execution, "find_spec", lambda _name: None)
-    with pytest.raises(SystemExit) as error:
-        _direct_execution.prepare_direct_file_execution("example/main.py")
-
-    message = str(error.value)
-    assert "skyseed_dev" in message
-    assert "scripts/setup_dev_environment.sh" in message
-    assert "conda activate skyseed_dev" in message
-    assert "correctly configured venv or CI" in message
-
-
 def test_generated_shell_scripts_are_scoped_executable_and_syntax_valid(
     tmp_path: Path,
 ) -> None:
     for name, (_, project_name) in EXPERIMENTS.items():
         output = tmp_path / name / "output"
-        runtime = prepare_example_output(output, override=False)
+        runtime = _prepare_generated_output(output, replace=False)
         runtime.mkdir()
         (runtime / "docker-compose.yml").write_text(
             "services: {}\n",
             encoding="utf-8",
         )
-        write_compose_project_scripts(output, project_name)
+        _write_compose_project_scripts(output, project_name)
         start = output / "start.sh"
         cleanup = output / "cleanup.sh"
         for script in (start, cleanup):
@@ -156,10 +139,8 @@ def test_generated_shell_scripts_are_scoped_executable_and_syntax_valid(
         assert "find " not in cleanup_text
 
 
-def test_shared_compose_script_helper_remains_deployment_only() -> None:
-    source = (
-        EXAMPLES_ROOT / "_compose_project_scripts.py"
-    ).read_text(encoding="utf-8")
+def test_compose_owner_script_generation_remains_deployment_only() -> None:
+    source = inspect.getsource(_write_compose_project_scripts)
     for forbidden in (
         "BpfRunner",
         "runtime.py",
@@ -170,15 +151,171 @@ def test_shared_compose_script_helper_remains_deployment_only() -> None:
         assert forbidden not in source
 
 
+def test_compose_startup_evidence_is_optional_bounded_shell_output(
+    tmp_path: Path,
+) -> None:
+    runtime = _prepare_generated_output(tmp_path / "output", replace=False)
+    runtime.mkdir()
+    (runtime / "docker-compose.yml").write_text(
+        "services: {}\n", encoding="utf-8"
+    )
+    output = runtime.parent
+    build_plan = runtime / "build-plan.txt"
+    build_plan.write_text(
+        "prerequisite base-image\n"
+        "alias node-a node-a\n"
+        "alias node-a node-b\n",
+        encoding="utf-8",
+    )
+    _write_compose_project_scripts(
+        output,
+        "skyseed_v2_startup_evidence",
+        startup_evidence_path="runtime/deployment-startup.json",
+        build_plan_path="runtime/build-plan.txt",
+        python_executable=sys.executable,
+    )
+
+    start = (output / "start.sh").read_text(encoding="utf-8")
+    assert "compose-startup-evidence" in start
+    assert "duration_seconds" in start
+    assert "deployment-startup.json" in start
+    assert '"${COMPOSE[@]}" build "$source"' in start
+    assert 'docker image tag "$PROJECT_NAME-$source"' in start
+    assert "required_images_match" in start
+    assert "required generated images already match; skipping build plan" in start
+    assert "missing or stale while project containers exist" in start
+    assert '"${COMPOSE[@]}" up -d --no-build' in start
+    assert "--parallel" not in start
+    assert "skyseed_v2.experiment.execution" not in start
+    assert "tools.runner" not in start
+    assert "run.sh" not in start
+    assert run(("bash", "-n", str(output / "start.sh"))).returncode == 0
+
+
+def test_planned_compose_start_reuses_matching_images_without_build(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "output"
+    runtime = _prepare_generated_output(output, replace=False)
+    runtime.mkdir()
+    (runtime / "docker-compose.yml").write_text(
+        "services: {}\n", encoding="utf-8"
+    )
+    (runtime / "build-plan.txt").write_text(
+        "prerequisite base-image\n"
+        "alias node-a node-a\n"
+        "alias node-a node-b\n",
+        encoding="utf-8",
+    )
+    _write_compose_project_scripts(
+        output,
+        "skyseed_v2_image_reuse",
+        startup_evidence_path="runtime/deployment-startup.json",
+        build_plan_path="runtime/build-plan.txt",
+        python_executable=sys.executable,
+    )
+
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    docker = fake_bin / "docker"
+    docker.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$DOCKER_LOG"
+if [[ "$1" == "compose" ]]; then
+    for argument in "$@"; do
+        case "$argument" in
+            config)
+                if [[ " $* " == *" --images "* ]]; then
+                    printf '%s\n' \
+                        base-image \
+                        skyseed_v2_image_reuse-node-a \
+                        skyseed_v2_image_reuse-node-b
+                fi
+                exit 0
+                ;;
+            ps)
+                [[ "${FAKE_PROJECT_CONTAINERS:-0}" == "1" ]] && echo existing
+                exit 0
+                ;;
+            build)
+                exit 0
+                ;;
+            up)
+                exit 0
+                ;;
+        esac
+    done
+elif [[ "$1 $2" == "image inspect" ]]; then
+    [[ "${FAKE_IMAGES_MATCH:-1}" == "1" ]] || exit 1
+    shift 2
+    while (( $# )); do
+        if [[ "$1" == "--format" ]]; then
+            shift 2
+            continue
+        fi
+        printf '%s\n' "sha256:matching skyseed_v2_image_reuse"
+        shift
+    done
+    exit 0
+elif [[ "$1 $2" == "image tag" ]]; then
+    exit 0
+fi
+exit 99
+""",
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
+    environment = dict(os.environ)
+    environment["PATH"] = f"{fake_bin}:{environment['PATH']}"
+    docker_log = tmp_path / "docker.log"
+    environment["DOCKER_LOG"] = str(docker_log)
+
+    result = run(
+        (str(output / "start.sh"),),
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "required generated images already match; skipping build plan" in (
+        result.stdout
+    )
+    calls = docker_log.read_text(encoding="utf-8").splitlines()
+    assert not any(" build " in f" {call} " for call in calls)
+    assert not any(call.startswith("image tag ") for call in calls)
+    assert any(" up -d --no-build" in call for call in calls)
+    assert not any("--parallel" in call for call in calls)
+
+    docker_log.write_text("", encoding="utf-8")
+    environment["FAKE_IMAGES_MATCH"] = "0"
+    environment["FAKE_PROJECT_CONTAINERS"] = "1"
+    failed = run(
+        (str(output / "start.sh"),),
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert failed.returncode == 1
+    assert "missing or stale while project containers exist" in failed.stderr
+    failed_calls = docker_log.read_text(encoding="utf-8").splitlines()
+    assert not any(" build " in f" {call} " for call in failed_calls)
+    assert not any(" up -d " in f" {call} " for call in failed_calls)
+
+
 def test_generated_shell_scripts_resolve_runtime_from_any_working_directory(
     tmp_path: Path,
 ) -> None:
     output = tmp_path / "scenario-output"
-    runtime = prepare_example_output(output, override=False)
+    runtime = _prepare_generated_output(output, replace=False)
     runtime.mkdir()
     compose_file = runtime / "docker-compose.yml"
     compose_file.write_text("services: {}\n", encoding="utf-8")
-    write_compose_project_scripts(output, "skyseed_v2_path_test")
+    _write_compose_project_scripts(output, "skyseed_v2_path_test")
 
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir()
@@ -225,7 +362,7 @@ def test_output_script_generation_fails_closed_on_incomplete_output(
     tmp_path: Path,
 ) -> None:
     with pytest.raises(ValueError, match="docker-compose.yml"):
-        write_compose_project_scripts(tmp_path, "skyseed_v2_test")
+        _write_compose_project_scripts(tmp_path, "skyseed_v2_test")
 
     runtime = tmp_path / "runtime"
     runtime.mkdir()
@@ -234,7 +371,7 @@ def test_output_script_generation_fails_closed_on_incomplete_output(
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="project_name"):
-        write_compose_project_scripts(tmp_path, "invalid project")
+        _write_compose_project_scripts(tmp_path, "invalid project")
 
 
 def test_example_output_preparation_replaces_only_the_owned_root(
@@ -248,14 +385,14 @@ def test_example_output_preparation_replaces_only_the_owned_root(
     outside = tmp_path / "outside"
     outside.write_text("preserved", encoding="utf-8")
 
-    runtime = prepare_example_output(output, override=True)
+    runtime = _prepare_generated_output(output, replace=True)
 
     assert runtime == output / "runtime"
     assert output.is_dir()
     assert tuple(output.iterdir()) == ()
     assert outside.read_text(encoding="utf-8") == "preserved"
     with pytest.raises(FileExistsError, match="already exists"):
-        prepare_example_output(output, override=False)
+        _prepare_generated_output(output, replace=False)
 
 
 @pytest.mark.parametrize(
@@ -321,7 +458,6 @@ def test_formal_examples_emit_one_user_facing_output_tree(
     if name == "mini_satellite_internet":
         expected_root.update(
             {
-                ".compose-project-name",
                 "inputs",
                 "run.sh",
                 "launch.sh",
@@ -334,16 +470,16 @@ def test_formal_examples_emit_one_user_facing_output_tree(
         (output / forbidden).exists()
         for forbidden in ("emulator", "simulator", "slice", "tools")
     )
-    assert {
-        path.name for path in (output / "runtime").iterdir()
-    } == {"docker-compose.yml", "compiler-output.txt"}
+    expected_runtime = {"docker-compose.yml", "compiler-output.txt"}
+    if name == "mini_satellite_internet":
+        expected_runtime.update({"compose-project-name", "execution.json"})
+    assert {path.name for path in (output / "runtime").iterdir()} == expected_runtime
     script_names = ["start.sh", "cleanup.sh"]
     if name == "mini_satellite_internet":
         script_names.extend(("run.sh", "launch.sh"))
         assert {
             path.name for path in (output / "inputs").iterdir()
         } == {
-            "execution.json",
             "scenario.yaml",
             "traffic-workload.json",
             "zones.yaml",
@@ -367,7 +503,8 @@ def test_formal_examples_emit_one_user_facing_output_tree(
     expected_directories = set(inspection_tools)
     if name == "mini_satellite_internet":
         assert (output / "inputs/traffic-workload.json").is_file()
-        assert not (inspection / "traffic").exists()
+        expected_directories.add("traffic")
+        assert (inspection / "traffic/probe-plan.json").is_file()
     assert tool_directories == expected_directories
     for tool_name in inspection_tools:
         assert (inspection / tool_name / "index.html").is_file()

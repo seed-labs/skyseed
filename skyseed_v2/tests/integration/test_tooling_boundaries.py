@@ -4,7 +4,7 @@ import ast
 from pathlib import Path
 
 import skyseed_v2
-from tools._html import write_aggregate_index
+from tools._html import finalize_runtime_aggregate_index, write_aggregate_index
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -116,6 +116,8 @@ def test_aggregate_index_links_every_completed_qualification_tool(
             "observation",
             "planner",
             "compiler",
+            "runner",
+            "traffic",
         )
     }
 
@@ -129,9 +131,38 @@ def test_aggregate_index_links_every_completed_qualification_tool(
         "observation/index.html",
         "planner/index.html",
         "compiler/index.html",
+        "runner/index.html",
+        "traffic/index.html",
     ):
         assert f'href="{path}"' in page
     assert "Read from formal structure and sampled Slice evidence" in page
+
+
+def test_generated_runtime_finalizes_one_aggregate_index(tmp_path: Path) -> None:
+    topology = tmp_path / "topology"
+    topology.mkdir()
+    (topology / "topology.json").write_text(
+        '{"counts":{"satellites":1}}\n',
+        encoding="utf-8",
+    )
+    (topology / "summary.txt").write_text(
+        "status=PASS\ntool=topology\n", encoding="utf-8"
+    )
+    for name, status in (("runner", "COMPLETED"), ("traffic", "WARN")):
+        directory = tmp_path / name
+        directory.mkdir()
+        (directory / "summary.txt").write_text(
+            f"status={status}\ntool={name}\n", encoding="utf-8"
+        )
+
+    finalize_runtime_aggregate_index(tmp_path)
+
+    page = (tmp_path / "index.html").read_text(encoding="utf-8")
+    assert 'href="runner/index.html"' in page
+    assert 'href="traffic/index.html"' in page
+    assert '<span class="status PASS">PASS</span>' in page
+    assert '<span class="status WARN">WARN</span>' in page
+    assert not (tmp_path / "_execution").exists()
 
 
 def test_browser_smoke_remains_outside_tool_responsibilities() -> None:

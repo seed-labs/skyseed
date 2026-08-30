@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from hashlib import sha256
 import heapq
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -23,11 +25,7 @@ from skyseed_v2.simulator import (
     GroundStationRouteTarget,
     ZoneRouteTarget,
 )
-from skyseed_v2.shared._durable_evidence import (
-    _append_jsonl,
-    _reset_jsonl,
-)
-
+from ._runner.event_history import _NonBlockingEventHistory
 from ._runner.runtime_realization import (
     _CapacityAuditError,
     _TcBpfRuntimeRealization,
@@ -56,6 +54,54 @@ _TRAFFIC_TELEMETRY_COLLECTOR_PATH = (
     _RUNNER_PRIVATE_ROOT / "traffic_telemetry_collector.py"
 )
 _RECENT_EVENT_LIMIT = 512
+_RUNTIME_WORKER_ENVIRONMENT = "SKYSEED_BPF_RUNTIME_WORKERS"
+_EVENT_SEQUENCE_LIMIT = 64
+_MAINTENANCE_SHUTDOWN_TIMEOUT_SECONDS = 30.0
+
+
+def _runtime_worker_count() -> int:
+    raw = os.environ.get(_RUNTIME_WORKER_ENVIRONMENT)
+    if raw is None:
+        return min(8, max(1, os.cpu_count() or 1))
+    try:
+        value = int(raw)
+    except ValueError as error:
+        raise ValueError(
+            f"{_RUNTIME_WORKER_ENVIRONMENT} must be an integer"
+        ) from error
+    if not 1 <= value <= 64:
+        raise ValueError(
+            f"{_RUNTIME_WORKER_ENVIRONMENT} must be between 1 and 64"
+        )
+    return value
+
+
+def _compact_event_value(value: object) -> object:
+    """Detach bounded evidence without copying large runtime collections."""
+
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, Mapping):
+        result: dict[str, object] = {}
+        for key, item in value.items():
+            name = str(key)
+            if name == "per_node" and isinstance(item, Sequence):
+                result["per_node_count"] = len(item)
+                continue
+            result[name] = _compact_event_value(item)
+        return result
+    if isinstance(value, (set, frozenset)):
+        value = tuple(sorted(value, key=repr))
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        if len(value) > _EVENT_SEQUENCE_LIMIT:
+            return {"item_count": len(value), "detail": "omitted-from-inline-evidence"}
+        return tuple(_compact_event_value(item) for item in value)
+    return {
+        "type": f"{type(value).__module__}.{type(value).__qualname__}",
+        "detail": "omitted-from-inline-evidence",
+    }
 
 
 _Intent: TypeAlias = (
@@ -197,6 +243,30 @@ def _resolve_nominal_boundaries(
         )
         for nominal_time in nominal_times
     )
+
+
+def _append_realization_boundaries(
+    boundaries: tuple[_NominalBoundary, ...],
+    realization: BpfCompiledRealization,
+    *,
+    realization_index: int,
+    active_frontier: datetime | None,
+) -> tuple[tuple[_NominalBoundary, ...], tuple[_NominalBoundary, ...]]:
+    """Normalize only newly supplied work and append its strict time suffix.
+
+    Compiler constraints are scoped to the containing realization. The
+    existing Runner contract already rejects a later realization that changes
+    a known nominal boundary, so incremental ingestion may resolve the new
+    realization independently and require a strictly later boundary suffix.
+    """
+
+    newly_resolved = _resolve_nominal_boundaries(
+        (realization,), realization_index_offset=realization_index
+    )
+    previous_time = boundaries[-1].nominal_time if boundaries else active_frontier
+    if previous_time is not None and newly_resolved[0].nominal_time <= previous_time:
+        raise ValueError("new compiled work changed an existing nominal boundary")
+    return (*boundaries, *newly_resolved), newly_resolved
 
 
 def _resolve_nominal_boundary(
@@ -584,10 +654,11 @@ class BpfRunner:
         "_future_realization_supplier",
         "_preparation_lookahead",
         "_preparation_boundary_depth",
+        "_runtime_worker_count",
         "_docker",
         "_state",
         "_events",
-        "_event_history_path",
+        "_event_history",
         "_event_count",
         "_event_lock",
         "_bindings",
@@ -613,6 +684,13 @@ class BpfRunner:
         "_maintenance_error",
         "_maintenance_in_flight",
         "_maintenance_revision",
+        "_work_produced",
+        "_work_submitted",
+        "_work_completed",
+        "_resources_retired",
+        "_resources_reclaimed",
+        "_generations_reclaimed",
+        "_boundary_known_at",
         "_reclaim_forwarding",
         "_reclaim_physical",
         "_execution_mode",
@@ -662,10 +740,11 @@ class BpfRunner:
         self._future_realization_supplier = future_realization_supplier
         self._preparation_lookahead = preparation_lookahead
         self._preparation_boundary_depth = preparation_boundary_depth
+        self._runtime_worker_count = _runtime_worker_count()
         self._docker = "docker"
         self._state = "new"
         self._events: deque[dict[str, Any]] = deque(maxlen=_RECENT_EVENT_LIMIT)
-        self._event_history_path: Path | None = None
+        self._event_history: _NonBlockingEventHistory | None = None
         self._event_count = 0
         self._event_lock = RLock()
         self._bindings: dict[NodeId, _RuntimeBinding] = {}
@@ -691,6 +770,13 @@ class BpfRunner:
         self._maintenance_error: BaseException | None = None
         self._maintenance_in_flight = False
         self._maintenance_revision = 0
+        self._work_produced = 0
+        self._work_submitted = 0
+        self._work_completed = 0
+        self._resources_retired = 0
+        self._resources_reclaimed = 0
+        self._generations_reclaimed = 0
+        self._boundary_known_at: dict[datetime, float] = {}
         self._reclaim_forwarding: deque[object] = deque()
         self._reclaim_physical: deque[object] = deque()
         self._execution_mode: str | None = None
@@ -713,18 +799,11 @@ class BpfRunner:
     def _enable_event_history(self, path: Path) -> None:
         """Enable complete durable JSONL while recent memory stays bounded."""
 
-        if self._state != "new" or self._events or self._event_history_path is not None:
+        if self._state != "new" or self._events or self._event_history is not None:
             raise RuntimeError(
                 "Runner durable event history must be enabled before preparation"
             )
-        self._event_history_path = _reset_jsonl(
-            path,
-            {
-                "record_type": "history_header",
-                "format_version": 1,
-                "owner": "BpfRunner",
-            },
-        )
+        self._event_history = _NonBlockingEventHistory(path)
 
     def prepare(self) -> None:
         """Freeze the deployment and publish continuous initial READY work."""
@@ -737,17 +816,39 @@ class BpfRunner:
             "preparation_start",
             preparation_lookahead=self._lookahead_fact(),
             preparation_boundary_depth=self._preparation_boundary_depth,
+            runtime_worker_count=self._runtime_worker_count,
         )
         try:
+            input_started = monotonic()
             self._pull_one()
             if not self._future_realizations or not self._boundaries:
                 raise ValueError("BpfRunner requires compiled nominal work")
             self._prime_input_for_capacity()
+            self._record(
+                "preparation_stage",
+                stage="input-and-normalization",
+                duration_seconds=monotonic() - input_started,
+                realization_count=(
+                    self._realization_index_offset + len(self._future_realizations)
+                ),
+                boundary_count=len(self._boundaries),
+            )
             first = self._future_realizations[0]
             if first.start_slice_id != 0:
                 raise ValueError("BpfRunner requires a bootstrap realization")
+            discovery_started = monotonic()
             bindings = self._discover_runtime_bindings(first)
             foundation_token = self._foundation_identity(bindings)
+            self._record(
+                "preparation_stage",
+                stage="runtime-binding-discovery",
+                duration_seconds=monotonic() - discovery_started,
+                node_count=len(bindings),
+                netns_query_count=len(bindings),
+                netns_query_worker_limit=min(
+                    self._runtime_worker_count, len(bindings)
+                ),
+            )
             first_binding = min(bindings.values(), key=lambda value: value.node_id.value)
             helper = _PrivilegedHelper(
                 docker_executable=self._docker,
@@ -755,12 +856,19 @@ class BpfRunner:
                 foundation_token=foundation_token,
                 image_id=first_binding.image_id,
             )
+            helper_started = monotonic()
             helper.start()
+            self._record(
+                "preparation_stage",
+                stage="privileged-helper-start",
+                duration_seconds=monotonic() - helper_started,
+            )
             runtime_realization = _TcBpfRuntimeRealization(
                 executor=helper,
                 pin_root=f"/sys/fs/bpf/skyseed-v2/run-{foundation_token[-12:]}",
                 bindings=bindings,
                 telemetry_enabled=self._traffic_telemetry_directory is not None,
+                worker_count=self._runtime_worker_count,
             )
             self._bindings = bindings
             self._foundation_token = foundation_token
@@ -774,6 +882,7 @@ class BpfRunner:
                 preparation_boundary_depth=self._preparation_boundary_depth,
             )
             try:
+                runtime_initialize_started = monotonic()
                 foundation = runtime_realization.initialize(
                     first._topology_signature,
                     zone_prefixes=tuple(
@@ -795,6 +904,13 @@ class BpfRunner:
                 scope="initial",
                 capacity=foundation.get("capacity_audit"),
             )
+            self._record(
+                "preparation_stage",
+                stage="runtime-initialization",
+                duration_seconds=monotonic() - runtime_initialize_started,
+                execution_metrics=foundation.get("execution_metrics"),
+                phases=foundation.get("preparation_phases"),
+            )
             self._record("runtime_foundation_ready", **foundation)
             if self._traffic_telemetry_directory is not None:
                 telemetry = _TrafficTelemetryRecorder(
@@ -814,7 +930,14 @@ class BpfRunner:
                     "traffic_telemetry_started",
                     **telemetry.snapshot(),
                 )
+            first_ready_started = monotonic()
             self._maintain_until_satisfied()
+            self._record(
+                "preparation_stage",
+                stage="initial-ready",
+                duration_seconds=monotonic() - first_ready_started,
+                ready_depth=len(self._ready),
+            )
             with self._condition:
                 if not self._ready:
                     raise RuntimeError("initial preparation published no READY boundary")
@@ -835,6 +958,7 @@ class BpfRunner:
                     daemon=True,
                 )
                 self._maintenance_thread.start()
+            self._record_resource_health_checkpoint("after-preparation")
         except BaseException as error:
             self._state = "failed"
             self._record_failure("preparation", error)
@@ -851,6 +975,18 @@ class BpfRunner:
 
     def run(self) -> None:
         """Execute all supplied boundaries against a relative monotonic clock."""
+
+        self._run_bounded(None)
+
+    def _run_bounded(self, activation_limit: int | None) -> None:
+        """Execute one canonical prefix for generated runtime qualification."""
+
+        if activation_limit is not None and (
+            isinstance(activation_limit, bool)
+            or not isinstance(activation_limit, int)
+            or activation_limit <= 0
+        ):
+            raise ValueError("Runner activation limit must be a positive int")
 
         with self._condition:
             if self._execution_mode == "manual":
@@ -870,10 +1006,18 @@ class BpfRunner:
             "automatic_run_start",
             nominal_origin=nominal_origin.isoformat(),
             wall_origin=wall_origin,
+            activation_limit=activation_limit,
         )
+        activation_count_at_start = self._active_count
         while True:
             with self._condition:
                 self._raise_maintenance_error()
+                if (
+                    activation_limit is not None
+                    and self._active_count - activation_count_at_start
+                    >= activation_limit
+                ):
+                    break
                 next_boundary = self._next_unactivated_boundary_locked()
                 if next_boundary is None:
                     if self._input_exhausted:
@@ -901,43 +1045,96 @@ class BpfRunner:
                     )
                     raise error
             self._activate_ready(scheduled_wall=due)
-        self._record("automatic_run_end", active_frontier=self._iso(self._active_frontier))
+        self._record(
+            "automatic_run_end",
+            active_frontier=self._iso(self._active_frontier),
+            activation_limit=activation_limit,
+            stopped_by_activation_limit=(
+                activation_limit is not None
+                and self._active_count - activation_count_at_start
+                >= activation_limit
+            ),
+        )
 
     def cleanup(self) -> None:
-        """Stop Maintenance and remove only resources owned by this Runner."""
+        """Bound Maintenance shutdown and tear down only Runner-owned resources."""
 
         if self._state == "cleaned":
             return
         started = monotonic()
-        self._record("cleanup_start")
+        self._record(
+            "cleanup_start",
+            retry=self._state == "teardown-failed",
+            maintenance_in_flight=self._maintenance_in_flight,
+        )
+        self._record_resource_health_checkpoint("before-teardown")
         with self._condition:
             self._stop_maintenance = True
             self._condition.notify_all()
         if self._maintenance_thread is not None:
-            self._maintenance_thread.join()
-        errors = []
+            self._maintenance_thread.join(
+                timeout=_MAINTENANCE_SHUTDOWN_TIMEOUT_SECONDS
+            )
+            if self._maintenance_thread.is_alive():
+                self._state = "teardown-failed"
+                error = RuntimeError(
+                    "BpfRunner Maintenance did not stop within "
+                    f"{_MAINTENANCE_SHUTDOWN_TIMEOUT_SECONDS:.3f}s; "
+                    "runtime ownership is retained for retry/recovery"
+                )
+                self._record_failure(
+                    "maintenance-shutdown",
+                    error,
+                    maintenance_in_flight=self._maintenance_in_flight,
+                    pending_generation_reclaim=len(self._reclaim_forwarding),
+                    pending_physical_reclaim=len(self._reclaim_physical),
+                )
+                raise error
+            self._maintenance_thread = None
+        errors: list[BaseException] = []
+        runtime_clean = self._runtime_realization is None
         if self._runtime_realization is not None:
             try:
-                self._record(
-                    "runtime_cleanup_end", **self._runtime_realization.cleanup()
-                )
+                teardown = self._runtime_realization.cleanup()
+                runtime_clean = True
+                self._record("runtime_cleanup_end", **teardown)
             except BaseException as error:
                 errors.append(error)
-        if self._traffic_telemetry is not None:
+                self._record_failure(
+                    "runtime-teardown",
+                    error,
+                    ownership_preserved=True,
+                    remaining=self._runtime_realization.working_set_counts(),
+                )
+        if runtime_clean and self._traffic_telemetry is not None:
             telemetry = self._traffic_telemetry.stop_and_drain()
             self._record("traffic_telemetry_stopped", **telemetry)
-        if self._helper is not None:
+        if runtime_clean and self._helper is not None:
             try:
                 self._helper.stop()
+                self._helper = None
             except BaseException as error:
                 errors.append(error)
         if errors:
-            self._state = "failed"
+            self._state = "teardown-failed"
             message = "; ".join(str(error) for error in errors)
-            self._record("failure", phase="cleanup", error_type="RuntimeError", error=message)
-            raise RuntimeError(f"BpfRunner cleanup failed: {message}")
+            self._record(
+                "failure",
+                phase="teardown",
+                error_type="RuntimeError",
+                error=message,
+                ownership_preserved=not runtime_clean,
+            )
+            raise RuntimeError(f"BpfRunner teardown failed: {message}")
         self._state = "cleaned"
-        self._record("cleanup_end", duration_seconds=monotonic() - started)
+        self._record(
+            "cleanup_end",
+            duration_seconds=monotonic() - started,
+            bounded_shutdown_seconds=_MAINTENANCE_SHUTDOWN_TIMEOUT_SECONDS,
+        )
+        self._record_resource_health_checkpoint("after-teardown")
+        if self._event_history is not None:
+            self._event_history.close()
 
     def inspection_snapshot(self) -> dict[str, Any]:
         """Return detached lifecycle facts and bounded recent event evidence."""
@@ -972,6 +1169,11 @@ class BpfRunner:
                 if self._runtime_realization is None
                 else self._runtime_realization.working_set_counts()
             )
+            event_history_status = (
+                None
+                if self._event_history is None
+                else self._event_history.snapshot()
+            )
             return deepcopy(
                 {
                     "format_version": 1,
@@ -988,6 +1190,7 @@ class BpfRunner:
                         "preparation_boundary_depth": (
                             self._preparation_boundary_depth
                         ),
+                        "runtime_worker_count": self._runtime_worker_count,
                         "activation_count": self._active_count,
                         "ready_count_at_capture": len(self._ready),
                         "ready_depth_at_capture": len(self._ready),
@@ -1026,6 +1229,7 @@ class BpfRunner:
                             "pending_physical_reclaim": len(
                                 self._reclaim_physical
                             ),
+                            **self._maintenance_facts_locked(),
                         },
                         "working_set": {
                             "received_realization_count": (
@@ -1041,8 +1245,8 @@ class BpfRunner:
                             "recent_event_count": len(self._events),
                             "recorded_event_count": self._event_count,
                             "durable_event_count": (
-                                self._event_count
-                                if self._event_history_path is not None
+                                event_history_status["written_count"]
+                                if event_history_status is not None
                                 else 0
                             ),
                             **runtime_working_set,
@@ -1062,8 +1266,9 @@ class BpfRunner:
                         "returned_count": len(self._events),
                         "total_count": self._event_count,
                         "durable_history_enabled": (
-                            self._event_history_path is not None
+                            self._event_history is not None
                         ),
+                        "durable": event_history_status,
                     },
                     "events": tuple(self._events),
                 }
@@ -1102,11 +1307,16 @@ class BpfRunner:
             self._record("activation_start", start_lag_seconds=start_lag)
             started = monotonic()
             try:
+                foundation_started = monotonic()
                 self._assert_foundation_current()
+                foundation_validation_seconds = monotonic() - foundation_started
                 assert self._runtime_realization is not None
+                runtime_started = monotonic()
                 evidence = self._runtime_realization.activate(
                     ready.runtime_realization
                 )
+                runtime_apply_seconds = monotonic() - runtime_started
+                retirement_started = monotonic()
                 retirements = (
                     None
                     if prior is None
@@ -1115,6 +1325,7 @@ class BpfRunner:
                         ready.runtime_realization,
                     )
                 )
+                retirement_seconds = monotonic() - retirement_started
             except BaseException as error:
                 with self._condition:
                     self._state = "failed"
@@ -1125,7 +1336,7 @@ class BpfRunner:
                     )
                     self._condition.notify_all()
                 raise
-            ended = monotonic()
+            bookkeeping_started = monotonic()
             with self._condition:
                 self._ready.popleft()
                 self._active = ready
@@ -1145,22 +1356,41 @@ class BpfRunner:
                 )
                 if retirements is not None:
                     forwarding_retirement, physical_retirement = retirements
-                    self._reclaim_forwarding.append(forwarding_retirement)
+                    if forwarding_retirement is not None:
+                        self._reclaim_forwarding.append(forwarding_retirement)
                     if physical_retirement is not None:
                         self._reclaim_physical.append(physical_retirement)
-                completion_lag = (
-                    None if scheduled_wall is None else ended - scheduled_wall
-                )
-                self._record(
-                    "activation_end",
-                    duration_seconds=ended - started,
-                    completion_lag_seconds=completion_lag,
-                    active_frontier=self._active_frontier.isoformat(),
-                    ready_frontier=self._iso(self._ready_frontier),
-                    **evidence,
-                )
+                        self._resources_retired += len(
+                            getattr(physical_retirement, "resources", ())
+                        )
+                self._boundary_known_at.pop(ready.boundary.nominal_time, None)
                 self._maintenance_revision += 1
+                maintenance = self._maintenance_facts_locked()
+                ready_frontier_fact = self._iso(self._ready_frontier)
                 self._condition.notify_all()
+            bookkeeping_seconds = monotonic() - bookkeeping_started
+            ended = monotonic()
+            completion_lag = (
+                None if scheduled_wall is None else ended - scheduled_wall
+            )
+            self._record(
+                "activation_end",
+                duration_seconds=ended - started,
+                readiness_dependency_wait_seconds=0.0,
+                foundation_validation_seconds=foundation_validation_seconds,
+                runtime_apply_seconds=runtime_apply_seconds,
+                retirement_seconds=retirement_seconds,
+                bookkeeping_seconds=bookkeeping_seconds,
+                completion_lag_seconds=completion_lag,
+                active_frontier=ready.boundary.nominal_time.isoformat(),
+                ready_frontier=ready_frontier_fact,
+                maintenance=maintenance,
+                **evidence,
+            )
+            if self._active_count in {1, 2, 3, 5, 10}:
+                self._record_resource_health_checkpoint(
+                    f"after-activation-{self._active_count}"
+                )
         finally:
             with self._condition:
                 self._main_in_flight = False
@@ -1217,6 +1447,8 @@ class BpfRunner:
                     duration_seconds=monotonic() - started,
                     **evidence,
                 )
+                with self._condition:
+                    self._generations_reclaimed += 1
                 continue
             if action == "reclaim-physical":
                 started = monotonic()
@@ -1230,14 +1462,26 @@ class BpfRunner:
                     duration_seconds=monotonic() - started,
                     **evidence,
                 )
+                with self._condition:
+                    self._resources_reclaimed += int(
+                        evidence.get("deleted_connections", 0)
+                    )
                 continue
             boundary, predecessor = payload
             self._set_maintenance_in_flight(True)
+            with self._condition:
+                self._work_submitted += 1
             preparation_succeeded = False
             try:
+                materialization_started = monotonic()
                 pending, preparation_evidence = (
                     self._runtime_realization.start_preparation(boundary)
                 )
+                materialization_seconds = monotonic() - materialization_started
+                preparation_evidence = {
+                    **preparation_evidence,
+                    "state_materialization_seconds": materialization_seconds,
+                }
                 started = monotonic()
                 self._record(
                     "maintenance_prepare_start",
@@ -1299,6 +1543,7 @@ class BpfRunner:
             with self._condition:
                 self._ready.append(ready)
                 self._next_prepare_index += 1
+                self._work_completed += 1
                 self._ready_frontier = ready.boundary.nominal_time
                 self._record(
                     "capacity_audit_end",
@@ -1312,6 +1557,34 @@ class BpfRunner:
                     boundary_timestamp=boundary.nominal_time.isoformat(),
                     duration_seconds=monotonic() - started,
                     **preparation_evidence,
+                    target_active_interface_entries=(
+                        ready.readiness_evidence.get(
+                            "target_active_interface_entries"
+                        )
+                    ),
+                    target_route_entries=ready.readiness_evidence.get(
+                        "target_route_entries"
+                    ),
+                    generation_map_update_operations=(
+                        ready.readiness_evidence.get(
+                            "generation_map_update_operations"
+                        )
+                    ),
+                    stable_interface_identity_count=(
+                        ready.readiness_evidence.get(
+                            "stable_interface_identity_count"
+                        )
+                    ),
+                    new_interface_identity_count=ready.readiness_evidence.get(
+                        "new_interface_identity_count"
+                    ),
+                    execution_metrics=ready.readiness_evidence.get(
+                        "execution_metrics"
+                    ),
+                    phases=ready.readiness_evidence.get(
+                        "preparation_phases"
+                    ),
+                    grouping=ready.readiness_evidence.get("grouping"),
                 )
                 self._record(
                     "ready_published",
@@ -1325,6 +1598,7 @@ class BpfRunner:
                     ready_depth=len(self._ready),
                     ready_limiting_reason=self._ready_limiting_reason_locked(),
                     **ready.readiness_evidence,
+                    maintenance=self._maintenance_facts_locked(),
                 )
                 self._condition.notify_all()
 
@@ -1337,7 +1611,9 @@ class BpfRunner:
                 if forward[0] == "prepare":
                     assert self._runtime_realization is not None
                     capacity = (
-                        self._runtime_realization.generation_capacity_status()
+                        self._runtime_realization.generation_capacity_status(
+                            forward[1][0]
+                        )
                     )
                     if not capacity["can_start_preparation"]:
                         if self._reclaim_forwarding:
@@ -1470,15 +1746,24 @@ class BpfRunner:
         return boundary, predecessor
 
     def _pull_one(self) -> None:
+        supplier_started = monotonic()
         value = self._future_realization_supplier()
+        supplier_seconds = monotonic() - supplier_started
         with self._condition:
             if value is None:
                 self._input_exhausted = True
-                self._record("input_exhausted", input_frontier=self._iso(self._input_frontier))
+                self._record(
+                    "input_exhausted",
+                    input_frontier=self._iso(self._input_frontier),
+                    supplier_seconds=supplier_seconds,
+                )
                 self._condition.notify_all()
                 return
             if not isinstance(value, BpfCompiledRealization):
-                raise TypeError("future realization supplier must return BpfCompiledRealization or None")
+                raise TypeError(
+                    "future realization supplier must return "
+                    "BpfCompiledRealization or None"
+                )
             if self._future_realizations:
                 previous = self._future_realizations[-1]
                 if (
@@ -1486,24 +1771,28 @@ class BpfRunner:
                     or previous.end_timestamp != value.start_timestamp
                     or previous._topology_signature != value._topology_signature
                 ):
-                    raise ValueError("future BPF realizations must be continuous and share one topology")
+                    raise ValueError(
+                        "future BPF realizations must be continuous and share one topology"
+                    )
+            realization_index = (
+                self._realization_index_offset + len(self._future_realizations)
+            )
+            normalization_started = monotonic()
+            boundaries, new_boundaries = _append_realization_boundaries(
+                self._boundaries,
+                value,
+                realization_index=realization_index,
+                active_frontier=self._active_frontier,
+            )
+            normalization_seconds = monotonic() - normalization_started
             values = (*self._future_realizations, value)
-            resolved = _resolve_nominal_boundaries(
-                values,
-                realization_index_offset=self._realization_index_offset,
-            )
-            boundaries = tuple(
-                boundary
-                for boundary in resolved
-                if self._active_frontier is None
-                or boundary.nominal_time > self._active_frontier
-            )
-            if boundaries[: len(self._boundaries)] != self._boundaries:
-                raise ValueError("new compiled work changed an existing nominal boundary")
-            new_boundaries = boundaries[len(self._boundaries) :]
             self._future_realizations = values
             self._boundaries = boundaries
             self._input_frontier = value.end_timestamp
+            self._work_produced += len(new_boundaries)
+            known_at = monotonic()
+            for boundary in new_boundaries:
+                self._boundary_known_at[boundary.nominal_time] = known_at
             for boundary in new_boundaries:
                 self._record(
                     "boundary_known",
@@ -1522,6 +1811,16 @@ class BpfRunner:
                 ),
                 input_frontier=value.end_timestamp.isoformat(),
                 boundary_count=len(boundaries),
+                newly_normalized_boundary_count=len(new_boundaries),
+                newly_normalized_operation_count=sum(
+                    len(boundary.operations) for boundary in new_boundaries
+                ),
+                newly_inspected_constraint_count=sum(
+                    boundary.inspected_constraint_count
+                    for boundary in new_boundaries
+                ),
+                supplier_seconds=supplier_seconds,
+                normalization_seconds=normalization_seconds,
             )
             self._condition.notify_all()
 
@@ -1549,22 +1848,25 @@ class BpfRunner:
         self._realization_index_offset += release_count
 
     def _record(self, event: str, **facts: Any) -> None:
+        capture_started = monotonic()
+        compact = _compact_event_value(facts)
+        assert isinstance(compact, dict)
         record = {
             "event": event,
             "monotonic_seconds": monotonic(),
             "wall_time_seconds": time(),
-            **deepcopy(facts),
+            **compact,
         }
+        record["observation_capture_seconds"] = monotonic() - capture_started
         with self._event_lock:
-            if self._event_history_path is not None:
-                _append_jsonl(
-                    self._event_history_path,
-                    {"record_type": "runner_event", **record},
-                )
             self._events.append(record)
             self._event_count += 1
+            history = self._event_history
+        if history is not None:
+            history.enqueue({"record_type": "runner_event", **record})
 
     def _record_failure(self, phase: str, error: BaseException, **facts: Any) -> None:
+        self._record_resource_health_checkpoint(f"failure-{phase}")
         self._record(
             "failure",
             phase=phase,
@@ -1573,9 +1875,94 @@ class BpfRunner:
             **facts,
         )
 
+    def _record_resource_health_checkpoint(self, checkpoint: str) -> None:
+        """Capture sparse process and owned-resource facts without subprocesses."""
+
+        rss_bytes = None
+        thread_count = None
+        try:
+            for line in Path("/proc/self/status").read_text(
+                encoding="utf-8"
+            ).splitlines():
+                if line.startswith("VmRSS:"):
+                    rss_bytes = int(line.split()[1]) * 1024
+                    break
+            thread_count = sum(1 for _ in Path("/proc/self/task").iterdir())
+        except (OSError, ValueError, IndexError):
+            pass
+        runtime = self._runtime_realization
+        try:
+            runtime_working_set = (
+                {} if runtime is None else runtime.working_set_counts()
+            )
+        except BaseException as error:
+            runtime_working_set = {
+                "capture_error_type": type(error).__name__,
+                "capture_error": str(error),
+            }
+        self._record(
+            "resource_health_checkpoint",
+            checkpoint=checkpoint,
+            runner_rss_bytes=rss_bytes,
+            process_count=1,
+            thread_count=thread_count,
+            helper_owned=self._helper is not None,
+            runtime_owned=runtime is not None,
+            runtime_working_set=runtime_working_set,
+        )
+
     def _raise_maintenance_error(self) -> None:
         if self._maintenance_error is not None:
             raise RuntimeError("BpfRunner Maintenance failed") from self._maintenance_error
+
+    def _maintenance_facts_locked(self) -> dict[str, object]:
+        pending_boundaries = max(0, len(self._boundaries) - self._next_prepare_index)
+        pending_times = (
+            boundary.nominal_time
+            for boundary in self._boundaries[self._next_prepare_index :]
+        )
+        oldest_known = min(
+            (
+                self._boundary_known_at[value]
+                for value in pending_times
+                if value in self._boundary_known_at
+            ),
+            default=None,
+        )
+        capacity = (
+            {}
+            if self._runtime_realization is None
+            else self._runtime_realization.generation_capacity_status()
+        )
+        return {
+            "work_produced": self._work_produced,
+            "work_submitted": self._work_submitted,
+            "work_completed": self._work_completed,
+            "required_frontier": self._iso(
+                None if not self._boundaries else self._boundaries[0].nominal_time
+            ),
+            "ready_frontier": self._iso(self._ready_frontier),
+            "ready_depth": len(self._ready),
+            "pending_boundary_count": pending_boundaries,
+            "queue_depth": (
+                pending_boundaries
+                + len(self._reclaim_forwarding)
+                + len(self._reclaim_physical)
+            ),
+            "oldest_pending_age_seconds": (
+                None if oldest_known is None else max(0.0, monotonic() - oldest_known)
+            ),
+            "generation_reclaim_backlog": len(self._reclaim_forwarding),
+            "physical_reclaim_backlog": len(self._reclaim_physical),
+            "generations_reclaimed": self._generations_reclaimed,
+            "resources_retired": self._resources_retired,
+            "resources_reclaimed": self._resources_reclaimed,
+            "input_exhausted": self._input_exhausted,
+            "resident_generations": capacity.get("resident_generations"),
+            "resident_generation_capacity": capacity.get(
+                "resident_generation_capacity"
+            ),
+        }
 
     def _lookahead_fact(self) -> str:
         return "all" if self._preparation_lookahead is None else str(self._preparation_lookahead)
@@ -1634,14 +2021,19 @@ class BpfRunner:
             ),
             context="Runner deployment discovery",
         )
-        container_ids = tuple(value.strip() for value in result.stdout.splitlines() if value.strip())
+        container_ids = tuple(
+            value.strip()
+            for value in result.stdout.splitlines()
+            if value.strip()
+        )
         if not container_ids:
             raise RuntimeError(
                 "current Compose project has no containers; "
                 "start the generated deployment first"
             )
         inspected = self._inspect(container_ids)
-        bindings: dict[NodeId, _RuntimeBinding] = {}
+        candidates = []
+        seen_node_ids: set[NodeId] = set()
         for value in inspected:
             labels = value.get("Config", {}).get("Labels") or {}
             if labels.get(_PROJECT_LABEL) != self._compose_project_name:
@@ -1664,24 +2056,63 @@ class BpfRunner:
                     node_id = NodeId(asn, "ground-station", labels[_GROUND_STATION_ID_LABEL])
             except (KeyError, TypeError, ValueError) as error:
                 raise RuntimeError("Skyseed entity container labels are incomplete") from error
-            if node_id in bindings:
+            if node_id in seen_node_ids:
                 raise RuntimeError(f"duplicate live binding for {node_id.value}")
-            bindings[node_id] = _RuntimeBinding(
+            seen_node_ids.add(node_id)
+            candidates.append(
+                (
+                    node_id,
+                    service_name,
+                    value["Id"],
+                    value["Name"].removeprefix("/"),
+                    value["Image"],
+                    pid,
+                    state.get("StartedAt", ""),
+                )
+            )
+        container_ids = [value[2] for value in candidates]
+        worker_count = min(self._runtime_worker_count, max(1, len(container_ids)))
+        if worker_count == 1:
+            netns_inodes = [
+                self._container_netns_inode(container_id)
+                for container_id in container_ids
+            ]
+        else:
+            with ThreadPoolExecutor(
+                max_workers=worker_count,
+                thread_name_prefix="skyseed-binding",
+            ) as pool:
+                netns_inodes = list(
+                    pool.map(self._container_netns_inode, container_ids)
+                )
+        bindings = {
+            node_id: _RuntimeBinding(
                 node_id=node_id,
                 service_name=service_name,
-                container_id=value["Id"],
-                container_name=value["Name"].removeprefix("/"),
-                image_id=value["Image"],
+                container_id=container_id,
+                container_name=container_name,
+                image_id=image_id,
                 pid=pid,
-                netns_inode=self._container_netns_inode(value["Id"]),
-                started_at=state.get("StartedAt", ""),
+                netns_inode=netns_inode,
+                started_at=started_at,
             )
+            for (
+                node_id,
+                service_name,
+                container_id,
+                container_name,
+                image_id,
+                pid,
+                started_at,
+            ), netns_inode in zip(candidates, netns_inodes)
+        }
         expected = set(first._topology_signature.node_ids)
         if set(bindings) != expected:
             missing = sorted(value.value for value in expected - set(bindings))
             unexpected = sorted(value.value for value in set(bindings) - expected)
             raise RuntimeError(
-                f"live NodeId bindings do not match compiled topology: missing={missing}, unexpected={unexpected}"
+                "live NodeId bindings do not match compiled topology: "
+                f"missing={missing}, unexpected={unexpected}"
             )
         return bindings
 
@@ -1690,7 +2121,12 @@ class BpfRunner:
             raise RuntimeError("BpfRunner has no frozen runtime foundation")
         current = {
             value["Id"]: value
-            for value in self._inspect(tuple(binding.container_id for binding in self._bindings.values()))
+            for value in self._inspect(
+                tuple(
+                    binding.container_id
+                    for binding in self._bindings.values()
+                )
+            )
         }
         for binding in self._bindings.values():
             value = current.get(binding.container_id)
@@ -1703,16 +2139,13 @@ class BpfRunner:
                 or state.get("StartedAt", "") != binding.started_at
                 or value.get("Image") != binding.image_id
             ):
-                raise RuntimeError(f"frozen container incarnation is stale: {binding.node_id.value}")
-        self._helper.execute(
-            "validate",
-            {
-                "nodes": [
-                    {"key": binding.node_id.value, "pid": binding.pid, "netns_inode": binding.netns_inode}
-                    for binding in self._bindings.values()
-                ]
-            },
-        )
+                raise RuntimeError(
+                    "frozen container incarnation is stale: "
+                    f"{binding.node_id.value}"
+                )
+        # The immediately following activation preflight validates every frozen
+        # PID/netns pair before its first mutation. Repeating that same audit in
+        # a separate privileged process here adds no foundation evidence.
 
     def _foundation_identity(self, bindings: Mapping[NodeId, _RuntimeBinding]) -> str:
         facts = [

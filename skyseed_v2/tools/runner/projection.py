@@ -40,6 +40,8 @@ _PRIMARY_EVENTS = {
 def project_runner_inspection(
     runner_snapshot: Mapping[str, object],
     runtime_outcome: Mapping[str, object],
+    *,
+    deployment_startup: Mapping[str, object] | None = None,
 ) -> dict[str, Any]:
     """Build view-only indexes from detached Runner and invocation facts."""
 
@@ -145,6 +147,10 @@ def project_runner_inspection(
             "physical_reclaims": len(timing["physical_reclaims"]),
         }
     )
+    scale_safety = _scale_safety(ordered, event_history)
+    scale_safety["deployment_startup"] = (
+        None if deployment_startup is None else deepcopy(dict(deployment_startup))
+    )
 
     data = {
         "format_version": 1,
@@ -165,6 +171,7 @@ def project_runner_inspection(
         "graphical_timeline": _graphical_timeline(timeline),
         "timing": timing,
         "maintenance": maintenance_summary,
+        "scale_safety": scale_safety,
         "default_dataplane": _default_dataplane_evidence(ordered),
         "failures_cleanup": {
             "primary_error": deepcopy(outcome.get("primary_error")),
@@ -184,7 +191,19 @@ def project_runner_inspection(
         "raw": {
             "runner": runner,
             "event_history": event_history,
-            "events": ordered,
+            "events": {
+                "embedded": False,
+                "count": len(ordered),
+                "exact_source_path": (
+                    event_history.get("exact_source_path")
+                    if isinstance(event_history, Mapping)
+                    else None
+                ),
+                "note": (
+                    "Exact events remain in the durable JSONL source; this page "
+                    "does not duplicate the complete raw history."
+                ),
+            },
         },
     }
     data["inventory"] = {
@@ -197,6 +216,218 @@ def project_runner_inspection(
         "deadline_misses": len(deadline_misses),
     }
     return data
+
+
+def _scale_safety(
+    events: tuple[dict[str, object], ...],
+    event_history: object,
+) -> dict[str, object]:
+    preparation_stages = tuple(
+        _event_details(value)
+        for value in events
+        if value.get("event") == "preparation_stage"
+    )
+    amplification = []
+    worker_limits = []
+    worker_high_waters = []
+    parallel_phases = 0
+    parallel_tasks = 0
+    batch_sizes = []
+    batch_count = 0
+    batch_minimums = []
+    batch_maximums = []
+    batch_distribution: dict[str, int] = {}
+    external_processes = 0
+    namespace_processes = 0
+    bpf_syscalls = 0
+    for value in events:
+        metrics = value.get("execution_metrics")
+        if not isinstance(metrics, Mapping):
+            continue
+        worker = metrics.get("worker_limit")
+        if isinstance(worker, Real):
+            worker_limits.append(int(worker))
+        worker_high_water = metrics.get("worker_high_water")
+        if isinstance(worker_high_water, Real):
+            worker_high_waters.append(int(worker_high_water))
+        parallel_phases += _integer(metrics.get("parallel_phase_count"))
+        parallel_tasks += _integer(metrics.get("parallel_task_count"))
+        sizes = metrics.get("batch_sizes")
+        if isinstance(sizes, (tuple, list)):
+            observed_sizes = [
+                int(size) for size in sizes if isinstance(size, Real)
+            ]
+            batch_sizes.extend(observed_sizes)
+            batch_count += len(observed_sizes)
+            if observed_sizes:
+                batch_minimums.append(min(observed_sizes))
+                batch_maximums.append(max(observed_sizes))
+        else:
+            batch_count += _integer(metrics.get("batch_count"))
+            minimum = metrics.get("batch_size_min")
+            maximum = metrics.get("batch_size_max")
+            if isinstance(minimum, Real) and int(minimum) > 0:
+                batch_minimums.append(int(minimum))
+            if isinstance(maximum, Real) and int(maximum) > 0:
+                batch_maximums.append(int(maximum))
+        distribution = metrics.get("batch_size_distribution")
+        if isinstance(distribution, Mapping):
+            for label, count in distribution.items():
+                if isinstance(count, Real):
+                    batch_distribution[str(label)] = (
+                        batch_distribution.get(str(label), 0) + int(count)
+                    )
+        external_processes += _integer(metrics.get("external_processes"))
+        namespace_processes += _integer(metrics.get("namespace_processes"))
+        bpf_syscalls += _integer(metrics.get("bpf_syscalls"))
+        if value.get("event") in {
+            "preparation_stage",
+            "maintenance_prepare_end",
+            "activation_end",
+            "generation_reclaimed",
+            "resources_reclaimed",
+            "runtime_cleanup_end",
+        }:
+            amplification.append(
+                {
+                    "event": value.get("event"),
+                    "boundary_timestamp": value.get("boundary_timestamp"),
+                    "logical_operations": _logical_operations(value),
+                    "map_update_operations": value.get(
+                        "generation_map_update_operations"
+                    ),
+                    "external_processes": metrics.get("external_processes"),
+                    "namespace_processes": metrics.get("namespace_processes"),
+                    "bpf_syscalls": metrics.get("bpf_syscalls"),
+                    "bpf_map_update_syscalls": metrics.get(
+                        "bpf_map_update_syscalls"
+                    ),
+                    "worker_limit": metrics.get("worker_limit"),
+                    "batch_count": metrics.get("batch_count"),
+                    "batch_operation_count": metrics.get(
+                        "batch_operation_count"
+                    ),
+                    "batch_size_distribution": deepcopy(
+                        metrics.get("batch_size_distribution", {})
+                    ),
+                }
+            )
+    activation_subphases = tuple(
+        {
+            "boundary_timestamp": value.get("active_frontier"),
+            "duration_seconds": value.get("duration_seconds"),
+            "readiness_dependency_wait_seconds": value.get(
+                "readiness_dependency_wait_seconds"
+            ),
+            "foundation_validation_seconds": value.get(
+                "foundation_validation_seconds"
+            ),
+            "runtime_apply_seconds": value.get("runtime_apply_seconds"),
+            "activation_switch_seconds": value.get(
+                "activation_switch_seconds"
+            ),
+            "generation_switch_start_monotonic_ns": value.get(
+                "generation_switch_start_monotonic_ns"
+            ),
+            "generation_switch_end_monotonic_ns": value.get(
+                "generation_switch_end_monotonic_ns"
+            ),
+            "retirement_seconds": value.get("retirement_seconds"),
+            "bookkeeping_seconds": value.get("bookkeeping_seconds"),
+            "observation_capture_seconds": value.get(
+                "observation_capture_seconds"
+            ),
+            "grouping": deepcopy(value.get("grouping")),
+        }
+        for value in events
+        if value.get("event") == "activation_end"
+    )
+    backlog = tuple(
+        {
+            "event": value.get("event"),
+            "boundary_timestamp": value.get("boundary_timestamp")
+            or value.get("active_frontier"),
+            **deepcopy(dict(value["maintenance"])),
+        }
+        for value in events
+        if value.get("event") in {"ready_published", "activation_end"}
+        and isinstance(value.get("maintenance"), Mapping)
+    )
+    history = event_history if isinstance(event_history, Mapping) else {}
+    durable = history.get("durable")
+    durable_status = durable if isinstance(durable, Mapping) else None
+    evidence_complete = (
+        True
+        if not history.get("durable_history_enabled")
+        else durable_status is None or durable_status.get("complete") is True
+    )
+    return {
+        "preparation_breakdown": preparation_stages,
+        "main_subphases": activation_subphases,
+        "amplification": tuple(amplification),
+        "batching": {
+            "observed_batch_count": batch_count,
+            "batch_sizes": tuple(batch_sizes),
+            "batch_size_distribution": batch_distribution,
+            "minimum_batch_size": min(batch_minimums, default=None),
+            "maximum_batch_size": max(batch_maximums, default=None),
+            "external_processes": external_processes,
+            "namespace_processes": namespace_processes,
+            "bpf_syscalls": bpf_syscalls,
+        },
+        "workers": {
+            "observed_limits": tuple(worker_limits),
+            "maximum_observed_limit": max(worker_limits, default=None),
+            "observed_high_water": tuple(worker_high_waters),
+            "maximum_observed_high_water": max(
+                worker_high_waters, default=None
+            ),
+            "parallel_phase_count": parallel_phases,
+            "parallel_task_count": parallel_tasks,
+        },
+        "maintenance_backlog": backlog,
+        "maintenance_input": tuple(
+            _event_details(value)
+            for value in events
+            if value.get("event") in {"input_advanced", "input_exhausted"}
+        ),
+        "resource_health": tuple(
+            _event_details(value)
+            for value in events
+            if value.get("event") == "resource_health_checkpoint"
+        ),
+        "observation": {
+            "complete": evidence_complete,
+            "durable": deepcopy(durable_status),
+        },
+        "teardown": {
+            "runtime": (
+                None
+                if (value := _latest(events, "runtime_cleanup_end")) is None
+                else _event_details(value)
+            ),
+            "runner": (
+                None
+                if (value := _latest(events, "cleanup_end")) is None
+                else _event_details(value)
+            ),
+        },
+    }
+
+
+def _integer(value: object) -> int:
+    return int(value) if isinstance(value, Real) else 0
+
+
+def _logical_operations(event: Mapping[str, object]) -> object:
+    grouping = event.get("grouping")
+    if isinstance(grouping, Mapping):
+        return grouping.get("grouped_operation_count")
+    active = event.get("target_active_interface_entries")
+    routes = event.get("target_route_entries")
+    if isinstance(active, Real) and isinstance(routes, Real):
+        return int(active) + int(routes)
+    return None
 
 
 def _mapping(value: object, label: str) -> Mapping[str, object]:
@@ -631,7 +862,14 @@ def _timing(events: tuple[dict[str, object], ...]) -> dict[str, object]:
     maintenance_preparations = tuple(
         {
             "boundary_timestamp": value.get("boundary_timestamp"),
-            "duration_seconds": value.get("duration_seconds"),
+            "runtime_preparation_seconds": value.get("duration_seconds"),
+            "state_materialization_seconds": value.get(
+                "state_materialization_seconds"
+            ),
+            "total_ready_preparation_seconds": _sum_complete_durations(
+                value.get("state_materialization_seconds"),
+                value.get("duration_seconds"),
+            ),
             "generation": value.get("generation"),
         }
         for value in events
@@ -663,7 +901,8 @@ def _timing(events: tuple[dict[str, object], ...]) -> dict[str, object]:
         ),
         "maintenance_preparations": maintenance_preparations,
         "maintenance_preparation_total_seconds": _duration_total(
-            maintenance_preparations
+            maintenance_preparations,
+            field="total_ready_preparation_seconds",
         ),
         "generation_reclaims": generation_reclaims,
         "generation_reclaim_total_seconds": _duration_total(generation_reclaims),
@@ -677,11 +916,21 @@ def _timing(events: tuple[dict[str, object], ...]) -> dict[str, object]:
     }
 
 
-def _duration_total(values: tuple[dict[str, object], ...]) -> float:
+def _sum_complete_durations(*values: object) -> float | None:
+    if any(not isinstance(value, Real) for value in values):
+        return None
+    return sum(float(value) for value in values)
+
+
+def _duration_total(
+    values: tuple[dict[str, object], ...],
+    *,
+    field: str = "duration_seconds",
+) -> float:
     return sum(
-        float(value["duration_seconds"])
+        float(value[field])
         for value in values
-        if isinstance(value.get("duration_seconds"), Real)
+        if isinstance(value.get(field), Real)
     )
 
 

@@ -29,25 +29,29 @@ Planner Tools:
 python examples/mini_satellite_internet/main.py
 ```
 
-Static-by-default S4 scale input with 348 Satellites, 355 frozen
+Full-generation Starlink Gen1 input with the selected 348-Satellite S4 shell, 355 frozen
 evidence-backed Starlink gateway sites, 703 total dynamic nodes, and the
 732-Zone global layout:
 
 ```bash
-python examples/s4_satellite_internet/main.py
+python examples/starlink_gen1_satellite_internet/main.py
 ```
 
-Use `--through slicer`, `--through planner`, or `--through compiler` to select
-a later boundary on the same rolling S4 progression. `--slice-limit N` is only
-a debug/execution bound; it does not change the formal 30-minute, 10-second,
-181-Slice Timeline. Compiler mode lowers every Plan as it is published and
-stops before Runner or containers.
+Use `--through topology`, `--through slicer`, or `--through planner` to select
+an earlier boundary on the same rolling progression. `--slice-limit N` is only
+a debug/execution bound; it does not change the formal 10-minute, 5-second,
+121-Slice Timeline. Compiler mode lowers every Plan as it is published and
+writes a persisted exact-realization handoff plus generated Compose/Runner
+controls; it does not start Runner or containers. Begin runtime qualification
+with `output/start.sh`, then for example
+`SKYSEED_RUNNER_ACTIVATION_LIMIT=3 output/run.sh`; `output/launch.sh` is only
+the convenience composition of those two commands.
 
 `complete_static_emulator` is the maintained minimal two-Satellite teaching
 and smoke reference. `mini_satellite_internet` is the maintained comprehensive
-rolling reference. `s4_satellite_internet` remains cheap and static by default;
-later `--through` boundaries add detached Slice, Observation, Planner, and
-Compiler artifacts under its example output directory. Its frozen ground body
+rolling reference. `starlink_gen1_satellite_internet` generates through Compiler by
+default; earlier `--through` boundaries remain explicit review/debug modes.
+Its frozen ground body
 includes supported current, planned, and historical Ka/E gateway sites rather
 than a simultaneous operational-network snapshot.
 `examples/reference/` contains historical

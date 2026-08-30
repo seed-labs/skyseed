@@ -26,7 +26,7 @@ flowchart LR
     SLICER -->|read-only facts accessed by| BPF
     BPF -->|produces| REALIZATION["BpfCompiledRealization"]
     REALIZATION -->|future supplier delivers to| RUNNER["backend/bpf BpfRunner"]
-    GENERATED["_generated_bpf_execution"] -->|calls rolling Slice progression| SLICER
+    GENERATED["experiment/execution"] -->|calls rolling Slice progression| SLICER
     GENERATED -->|calls Planner synchronization| PLANNER
     GENERATED -->|calls one-shot compilation| BPF
     GENERATED -->|constructs and drives lifecycle| RUNNER
@@ -44,7 +44,7 @@ is detailed in its implementation owner package README.
 ## Entry points
 
 `emulator_to_simulator.py` is the explicit Emulator → Simulator cross-domain
-projection boundary. `_generated_bpf_execution.py` is the private generated-
+projection boundary. `experiment/execution.py` is the private generated-
 application composition root: it connects rolling Slicer → Planner → BPF
 Compiler work to `BpfRunner` without making `backend/bpf` own upstream
 progression. Other primary entries are `emulator/construction.py`,

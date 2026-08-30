@@ -28,6 +28,7 @@ from .static_emulator_config import (
 from .yaml import (
     GROUND_STATIONS_SCHEMA_VERSION,
     SCENARIO_SCHEMA_VERSION,
+    SHELLS_SCHEMA_VERSION,
     StaticEmulatorConfigLoadError,
     load_static_emulator_config,
 )
@@ -48,6 +49,7 @@ __all__ = [
     "RouterConfig",
     "RightAscensionDistribution",
     "SCENARIO_SCHEMA_VERSION",
+    "SHELLS_SCHEMA_VERSION",
     "SatelliteConfig",
     "ShellConfig",
     "SkyseedAutonomousSystemConfig",

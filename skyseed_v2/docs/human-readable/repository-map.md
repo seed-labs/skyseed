@@ -8,7 +8,7 @@ collapsed. The gate derives this exact graph from production AST imports.
 ```mermaid
 flowchart LR
     ROOT["skyseed_v2 facade"]
-    APP["private generated BPF application composition"]
+    EXPERIMENT["private experiment execution + persisted handoff + Traffic support"]
     SHARED["shared"]
     CONFIG["configuration facade/shared YAML"]
     CONFIG_EMU["configuration/emulator"]
@@ -27,9 +27,9 @@ flowchart LR
     COMPOSE["compose"]
     BPF["backend/bpf"]
 
-    APP --> BPF
-    APP --> SHARED
-    APP --> SIM
+    EXPERIMENT --> BPF
+    EXPERIMENT --> SHARED
+    EXPERIMENT --> SIM
     BRIDGE --> ENTITIES
     BRIDGE --> INPUT
     BRIDGE --> SEED
@@ -77,8 +77,11 @@ flowchart LR
     BPF --> SIM
 ```
 
-`APP` is the single root-private generated-experiment composition entry and is
-not a BPF backend package. `COMPOSE` has no outgoing production-package
+`EXPERIMENT` contains the one private generated-experiment composition, its
+persisted immutable-realization handoff, and the deliberately narrow reusable
+Traffic plan/execution support. It is not a BPF backend package and introduces
+no second runtime authority.
+`COMPOSE` has no outgoing production-package
 dependency. `BPF` consumes public
 Simulator/shared facts and no Compose package object. Simulator and Compose
 have no reverse edge into BPF. External

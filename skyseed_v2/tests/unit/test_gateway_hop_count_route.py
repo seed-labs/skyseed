@@ -33,6 +33,7 @@ from skyseed_v2.simulator.input import (
     SimulatorStaticInput,
 )
 from skyseed_v2.simulator.slicing._routing_policy import (
+    _eligible_shortest_next_hops,
     _prepare_routing_policy_context,
 )
 
@@ -147,7 +148,7 @@ def _route_slice_without_service_tree_reuse(
             )
     for gateway_id in sorted(zones_by_gateway, key=gateway_route._node_key):
         target = GroundStationRouteTarget(gateway_id)
-        choices = gateway_route._eligible_shortest_next_hops(
+        choices = _eligible_shortest_next_hops(
             context, target, gateway_id
         )
         for service_satellite in sorted(
@@ -164,7 +165,7 @@ def _route_slice_without_service_tree_reuse(
         connection_slice.zone_service_assignments.items()
     ):
         target = ZoneRouteTarget(zone_id)
-        choices = gateway_route._eligible_shortest_next_hops(
+        choices = _eligible_shortest_next_hops(
             context, target, service_satellite
         )
         for gateway_id in candidates_by_zone.get(zone_id, ()):
@@ -298,16 +299,16 @@ def test_gateway_routes_reuse_one_zone_tree_per_service_satellite(
     expected = _route_slice_without_service_tree_reuse(
         model, topology, connections
     )
-    original = gateway_route._eligible_shortest_next_hops
+    original = gateway_route._required_shortest_next_hops
     calls = []
 
-    def counted(context, target, terminal, **kwargs):
+    def counted(context, target, terminal, required_sources):
         calls.append((target, terminal))
-        assert kwargs["required_sources"]
-        return original(context, target, terminal, **kwargs)
+        assert required_sources
+        return original(context, target, terminal, required_sources)
 
     monkeypatch.setattr(
-        gateway_route, "_eligible_shortest_next_hops", counted
+        gateway_route, "_required_shortest_next_hops", counted
     )
     actual = model.compute_route_slice(
         topology, EPOCH, connections, RouteSlice()

@@ -26,8 +26,8 @@ flowchart LR
     RUNNER -->|prepare drives internal capability| PREP["Preparation: foundation + initial READY"]
     RUNNER -->|run or activate_next drives internal capability| MAIN["Main: exact-next activation"]
     RUNNER -->|owns background thread / internal capability| MAINT["Maintenance: future preparation + reclaim"]
-    RUNNER -->|cleanup drives internal capability| CLEAN["scoped cleanup"]
-    CALLER["runtime caller"] -->|calls cleanup| RUNNER
+    RUNNER -->|cleanup() drives internal capability| CLEAN["bounded scoped teardown"]
+    CALLER["runtime caller"] -->|requests teardown with cleanup()| RUNNER
     RESULT -->|normalized by Runner into| BOUNDARY["ordered nominal boundaries + constraint DAGs"]
     BOUNDARY -->|prepared by Preparation or Maintenance| READY["continuous READY frontier"]
     PREP -->|publishes initial prefix| READY
@@ -40,7 +40,7 @@ flowchart LR
 
     RUNNER -->|supervises private capability| TELEMETRY["ingress producer + collector + ordinary recorder"]
     TELEMETRY -->|persists| TRAFFIC["traffic-telemetry.jsonl"]
-    RUNNER -->|appends every event| HISTORY["runner-events.jsonl"]
+    RUNNER -->|nonblocking bounded enqueue| HISTORY["detached runner-events.jsonl writer"]
     CALLER -->|"after cleanup attempt calls inspection_snapshot() on"| RUNNER
     RUNNER -->|returns detached projection without lifecycle side effect| SNAP["detached summary + binding scalars + recent events"]
     HISTORY -->|post-run read by| TOOL["Runner Inspection Tool"]
@@ -69,16 +69,22 @@ execution order. Rolling construction requires both a non-negative `timedelta`
 nominal-time lookahead and a positive future-boundary depth. Exact-next READY
 is mandatory; beyond it the continuous READY prefix stops when either bound is
 first satisfied. `None` for both selects bounded finite full-range preparation.
+Each realization is normalized incrementally; already-normalized future
+boundaries are not rebuilt merely because a new continuous realization arrives.
 
-The private root `skyseed_v2._generated_bpf_execution` application composition
-reads `inputs/execution.json`,
+The private `skyseed_v2.experiment.execution` application composition reads
+`runtime/execution.json`,
 verifies the recorded output identity, compact SHA256 source-scope
 fingerprints, and generated-input fingerprints, calls the named experiment
 progression builder, and composes a lazy Slicer → Planner → Compiler supplier
 with `BpfRunner`. SHA256 is only a deterministic change detector for source and
 generated-output consistency; it is not an adversarial security mechanism. A
 mismatch fails before Runner preparation and clearly requires regenerating
-output with `main.py`.
+output with `main.py`. For S4 qualification the same root can validate and
+stream a manifest-backed trusted local gzip/pickle sequence containing the
+exact canonical immutable Compiler outputs. This persisted consumption
+strategy does not recreate upstream progression and decodes one realization
+per supplier call.
 
 `inspection_snapshot()` is the only public read-only evidence handoff. It
 deep-copies Runner summary/current-last-known facts, scalar projections of the
@@ -86,9 +92,11 @@ frozen runtime bindings, and a bounded recent event window into plain data. It
 returns no live binding object, performs no kernel command or lifecycle action,
 and remains readable after cleanup. Event classification, timing aggregation,
 and current-default-dataplane presentation belong to the repository-local
-Tool, not Runner. Standard generated execution writes every event once to
-append-only `inspection/runner/runner-events.jsonl`; the Tool reads that
-complete durable stream directly instead of making Runner materialize it.
+Tool, not Runner. Standard generated execution sends compact records to a
+bounded nonblocking queue whose detached writer owns JSON serialization and
+file I/O. Overflow/writer failure is explicit: Runner does not wait for
+evidence consumption, while the Tool rejects incomplete bounded qualification
+history and does not embed a second complete raw event copy.
 
 The same generated execution enables owner-local append-only histories for Slice /
 Difference, published Plan / PlanningDecision, and compiled-realization /
@@ -130,8 +138,17 @@ would exceed private resident-generation capacity, a legal retired-generation
 reclaim becomes that preparation's resource prerequisite; this is the sole
 priority exception, and physical reclaim does not free a generation slot.
 Formal rolling physical reclaim is strict: kernel deletion must succeed before
-ownership leaves the inventory; final scoped cleanup retains its separate
-best-effort/idempotent role.
+ownership leaves the inventory; final scoped teardown likewise requires
+successful residue evidence before controller inventory is cleared.
+
+Interface ifindex is discovered once per owned interface/container incarnation
+with one namespace inventory query per affected node, then carried in the
+runtime realization inventory for generation preload and activation. Physical
+reclaim invalidates it only after deletion succeeds; PID/netns foundation
+validation remains fail closed. Boundary deltas are grouped once by affected
+node. Privileged operations preserve dependency phases, batch `ip`/`tc` work
+per namespace, and use a bounded hardware-adaptive worker pool only across
+independent node batches.
 
 The private default dataplane materializes complete state for each boundary.
 It preloads generation-qualified node-local forwarding entries while every tc
@@ -240,11 +257,14 @@ already-started project. Rolling callers provide both bounds; full-range
 callers provide `None` for both. The project name is the only deployment
 handoff fact; Runner independently proves its live foundation during
 `prepare()`.
-Generated BPF output normally enters that unchanged API through private root
-`skyseed_v2._generated_bpf_execution`: its supplier returns only
+Generated BPF output normally enters that unchanged API through private
+`skyseed_v2.experiment.execution`: its supplier returns only
 `BpfCompiledRealization | None`, and its lifecycle call sequence is
 `prepare()` → `run()` → `cleanup()`.
-After cleanup, `inspection_snapshot()` returns detached evidence for a
+Here `cleanup()` is the public method name for Runner teardown: Maintenance
+shutdown is bounded to 30 seconds and privileged failure preserves ownership
+inventory for retry instead of falsely claiming clean state. After teardown,
+`inspection_snapshot()` returns detached evidence for a
 post-run consumer, including the Compose identity, foundation token, node
 counts, and per-node scalar container/PID/netns incarnation facts. It does not
 expose live bindings/dataplane objects or add a second Runner state machine.

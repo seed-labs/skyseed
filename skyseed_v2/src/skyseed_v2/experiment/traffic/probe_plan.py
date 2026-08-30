@@ -1,0 +1,1723 @@
+"""Build bounded experiment Traffic probes from compiled intended state."""
+
+from __future__ import annotations
+
+from bisect import bisect_right
+from collections import defaultdict
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from hashlib import sha256
+from ipaddress import IPv4Interface, ip_interface
+import json
+from math import ceil
+import os
+from pathlib import Path
+import tempfile
+from typing import Any
+
+from skyseed_v2.backend.bpf.compiled_realization import BpfCompiledRealization
+from skyseed_v2.shared import NodeId
+from skyseed_v2.simulator import (
+    ConnectionKind,
+    ConnectionTransitionOperation,
+    DifferenceOperation,
+    GroundStationRouteTarget,
+    RouteKey,
+    ZoneRouteTarget,
+)
+
+
+_ARTIFACT_TYPE = "traffic-probe-plan"
+_FORMAT_VERSION = 1
+_DIRECTION_GROUND_TO_ZONE = "ground-station-to-zone"
+_DIRECTION_ZONE_TO_GROUND = "zone-to-ground-station"
+_PERSISTENT = "persistent"
+_ROTATING_BACKGROUND = "rotating-background"
+_ACTIVATION_WINDOW = "activation-window"
+_MAX_PERSISTENT_CONTROLS = 6
+_CANDIDATE_BUCKET_CAPACITY = 2
+_BOUNDARY_CATEGORY_QUOTA = 4
+_BOUNDARY_FACT_INSPECTION_LIMIT = 128
+
+
+@dataclass(frozen=True, slots=True)
+class _ProbeStateInterval:
+    start_time: datetime
+    end_time: datetime
+    expected_reachable: bool
+    unreachable_reason: str | None
+    service_satellite_id: str | None
+    path_node_ids: tuple[str, ...]
+    path_length_hops: int | None
+    boundary_reasons: tuple[str, ...]
+
+    def artifact(self) -> dict[str, object]:
+        return {
+            "start_time": self.start_time.isoformat(),
+            "end_time": self.end_time.isoformat(),
+            "expected_reachable": self.expected_reachable,
+            "unreachable_reason": self.unreachable_reason,
+            "service_satellite_id": self.service_satellite_id,
+            "path_node_ids": list(self.path_node_ids),
+            "path_length_hops": self.path_length_hops,
+            "boundary_reasons": list(self.boundary_reasons),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class _TrafficProbeIdentity:
+    probe_id: str
+    direction: str
+    ground_station_id: str
+    zone_id: str
+    zone_ipv4: str
+    selection_reasons: tuple[str, ...]
+    path_stability: str
+    path_length_class: str
+
+    def artifact(self) -> dict[str, object]:
+        return {
+            "probe_id": self.probe_id,
+            "direction": self.direction,
+            "logical_source": (
+                self.ground_station_id
+                if self.direction == _DIRECTION_GROUND_TO_ZONE
+                else self.zone_id
+            ),
+            "logical_destination": (
+                self.zone_id
+                if self.direction == _DIRECTION_GROUND_TO_ZONE
+                else self.ground_station_id
+            ),
+            "ground_station_id": self.ground_station_id,
+            "zone_id": self.zone_id,
+            "zone_ipv4": self.zone_ipv4,
+            "selection_reasons": list(self.selection_reasons),
+            "path_stability": self.path_stability,
+            "path_length_class": self.path_length_class,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class _TrafficProbeEpisode:
+    episode_id: str
+    probe_id: str
+    mode: str
+    start_time: datetime
+    end_time: datetime
+    interval_seconds: float
+    affected_activation_times: tuple[datetime, ...]
+    state_intervals: tuple[_ProbeStateInterval, ...]
+    estimated_echo_requests: int
+    estimated_telemetry_events: int
+
+    def artifact(self) -> dict[str, object]:
+        return {
+            "episode_id": self.episode_id,
+            "probe_id": self.probe_id,
+            "mode": self.mode,
+            "episode_intent": "armed",
+            "start_time": self.start_time.isoformat(),
+            "end_time": self.end_time.isoformat(),
+            "interval_seconds": self.interval_seconds,
+            "affected_activation_times": [
+                value.isoformat() for value in self.affected_activation_times
+            ],
+            "state_intervals": [value.artifact() for value in self.state_intervals],
+            "estimated_echo_requests": self.estimated_echo_requests,
+            "estimated_telemetry_events": self.estimated_telemetry_events,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class TrafficProbePlan:
+    """Hold one private derived experiment observation plan.
+
+    The application-side builder creates this value from trusted immutable
+    Compiler outputs.  It is not a Simulator Plan, a runtime authority, or a
+    persisted-realization transport contract.
+    """
+
+    coverage_start: datetime
+    coverage_end: datetime
+    probe_identities: tuple[_TrafficProbeIdentity, ...]
+    episodes: tuple[_TrafficProbeEpisode, ...]
+    nominal_boundaries: tuple[datetime, ...]
+    supplied_realization_count: int
+    revision_id: str
+    candidate_pair_count: int
+    planning_duration_seconds: float
+
+    def artifact(self) -> dict[str, object]:
+        persistent = sum(value.mode == _PERSISTENT for value in self.episodes)
+        rotating = sum(
+            value.mode == _ROTATING_BACKGROUND for value in self.episodes
+        )
+        activation = sum(
+            value.mode == _ACTIVATION_WINDOW for value in self.episodes
+        )
+        direction_counts = _counts(
+            value.direction for value in self.probe_identities
+        )
+        path_counts = _counts(
+            value.path_length_class for value in self.probe_identities
+        )
+        stability_counts = _counts(
+            value.path_stability for value in self.probe_identities
+        )
+        reason_counts = _counts(
+            reason
+            for value in self.probe_identities
+            for reason in value.selection_reasons
+        )
+        estimated_echo = sum(
+            value.estimated_echo_requests for value in self.episodes
+        )
+        estimated_telemetry = sum(
+            value.estimated_telemetry_events for value in self.episodes
+        )
+        return {
+            "artifact_type": _ARTIFACT_TYPE,
+            "format_version": _FORMAT_VERSION,
+            "authority": "derived-experiment-side-observation-plan",
+            "selection_source": "trusted in-memory BpfCompiledRealization sequence",
+            "runtime_authority": False,
+            "classification_scope": "authoritative-active-published-runtime-only",
+            "planning_horizon": {
+                "coverage_start_time": self.coverage_start.isoformat(),
+                "coverage_end_time": self.coverage_end.isoformat(),
+                "supplied_realization_count": self.supplied_realization_count,
+                "terminality": "unknown",
+                "revision_semantics": "revisable-lookahead",
+                "revision_id": self.revision_id,
+                "nominal_boundaries": [
+                    value.isoformat() for value in self.nominal_boundaries
+                ],
+            },
+            "planning": {
+                "selection_strategy": "bounded-stratified-reservoir",
+                "global_flow_ranking": False,
+                "candidate_bucket_capacity": _CANDIDATE_BUCKET_CAPACITY,
+                "duration_seconds": self.planning_duration_seconds,
+                "candidate_pair_count": self.candidate_pair_count,
+                "selected_probe_identity_count": len(self.probe_identities),
+                "selected_episode_count": len(self.episodes),
+                "persistent_episode_count": persistent,
+                "rotating_background_episode_count": rotating,
+                "activation_window_episode_count": activation,
+                "direction_counts": direction_counts,
+                "path_length_class_counts": path_counts,
+                "path_stability_counts": stability_counts,
+                "selection_reason_counts": reason_counts,
+                "estimated_echo_requests": estimated_echo,
+                "estimated_telemetry_events": estimated_telemetry,
+                "maximum_concurrent_episode_bound": len(self.episodes),
+                "maximum_request_rate_per_second": sum(
+                    1.0 / value.interval_seconds for value in self.episodes
+                ),
+            },
+            "probe_identities": [
+                value.artifact() for value in self.probe_identities
+            ],
+            "episodes": [value.artifact() for value in self.episodes],
+        }
+
+    @classmethod
+    def from_artifact(cls, value: Mapping[str, object]) -> "TrafficProbePlan":
+        if (
+            value.get("artifact_type") != _ARTIFACT_TYPE
+            or value.get("format_version") != _FORMAT_VERSION
+            or value.get("runtime_authority") is not False
+            or value.get("classification_scope")
+            != "authoritative-active-published-runtime-only"
+        ):
+            raise ValueError("Traffic probe plan artifact is incompatible")
+        simulation = _mapping(
+            value.get("planning_horizon"), "probe plan planning horizon"
+        )
+        planning = _mapping(value.get("planning"), "probe plan planning")
+        start = _timestamp(
+            simulation.get("coverage_start_time"), "probe plan coverage start"
+        )
+        end = _timestamp(
+            simulation.get("coverage_end_time"), "probe plan coverage end"
+        )
+        if (
+            simulation.get("terminality") != "unknown"
+            or simulation.get("revision_semantics") != "revisable-lookahead"
+        ):
+            raise ValueError("Traffic probe planning horizon claims terminality")
+        boundaries = tuple(
+            _timestamp(item, "probe plan boundary")
+            for item in _list(simulation.get("nominal_boundaries"), "probe boundaries")
+        )
+        identities = tuple(
+            _identity_from_artifact(item)
+            for item in _list(
+                value.get("probe_identities"), "probe plan identities"
+            )
+        )
+        if len({item.probe_id for item in identities}) != len(identities):
+            raise ValueError("Traffic probe identity is duplicated")
+        identity_ids = {item.probe_id for item in identities}
+        episodes = tuple(
+            _episode_from_artifact(item, start, end, identity_ids)
+            for item in _list(value.get("episodes"), "probe plan episodes")
+        )
+        if len({item.episode_id for item in episodes}) != len(episodes):
+            raise ValueError("Traffic probe episode identity is duplicated")
+        if planning.get("selected_probe_identity_count") != len(identities):
+            raise ValueError("Traffic probe plan identity count differs")
+        if planning.get("selected_episode_count") != len(episodes):
+            raise ValueError("Traffic probe plan episode count differs")
+        if (
+            planning.get("selection_strategy")
+            != "bounded-stratified-reservoir"
+            or planning.get("global_flow_ranking") is not False
+        ):
+            raise ValueError("Traffic probe plan selection strategy is incompatible")
+        return cls(
+            start,
+            end,
+            identities,
+            episodes,
+            boundaries,
+            _positive_int(
+                simulation.get("supplied_realization_count"),
+                "supplied_realization_count",
+            ),
+            _non_empty_string(simulation.get("revision_id"), "revision_id"),
+            _non_negative_int(
+                planning.get("candidate_pair_count"), "candidate_pair_count"
+            ),
+            _non_negative_number(
+                planning.get("duration_seconds"), "planning duration"
+            ),
+        )
+
+
+@dataclass(slots=True)
+class _BoundaryProjection:
+    nominal_time: datetime
+    forwarding: dict[RouteKey, object]
+    zone_edges: dict[str, tuple[str, NodeId]]
+    resources: set[object]
+    forwarding_changed: list[RouteKey]
+    changed_access_ground_stations: list[NodeId]
+    changed_zones: list[str]
+    prior_zone_edges: dict[str, tuple[str, NodeId]]
+
+
+@dataclass(slots=True)
+class _PairSeed:
+    direction: str
+    ground_station: NodeId
+    zone_id: str
+    reason_times: dict[str, set[datetime]]
+
+    @property
+    def key(self) -> tuple[str, str, str]:
+        return self.direction, self.ground_station.value, self.zone_id
+
+
+_EpisodeRequest = tuple[_PairSeed, str, datetime, datetime, datetime]
+
+
+class TrafficProbePlanBuilder:
+    """Select a small deterministic GS/Zone observation workload."""
+
+    def __init__(
+        self,
+        *,
+        maximum_persistent_probes: int = 12,
+        maximum_activation_window_probes: int = 8,
+        persistent_interval_seconds: float = 1.0,
+        activation_interval_seconds: float = 0.5,
+    ) -> None:
+        for label, value in (
+            ("maximum_persistent_probes", maximum_persistent_probes),
+            ("maximum_activation_window_probes", maximum_activation_window_probes),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{label} must be a non-negative int")
+        for label, value in (
+            ("persistent_interval_seconds", persistent_interval_seconds),
+            ("activation_interval_seconds", activation_interval_seconds),
+        ):
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+                raise ValueError(f"{label} must be positive")
+        if maximum_persistent_probes + maximum_activation_window_probes <= 0:
+            raise ValueError("Traffic probe selection requires a positive bound")
+        self._maximum_persistent = maximum_persistent_probes
+        self._maximum_windowed = maximum_activation_window_probes
+        self._persistent_interval = float(persistent_interval_seconds)
+        self._activation_interval = float(activation_interval_seconds)
+
+    def build(
+        self, realizations: Sequence[BpfCompiledRealization]
+    ) -> TrafficProbePlan:
+        from time import monotonic
+
+        started = monotonic()
+        values = tuple(realizations)
+        _validate_realization_sequence(values)
+        nominal_boundaries = _nominal_boundaries(values)
+        if len(nominal_boundaries) < 2:
+            raise ValueError("Traffic probe planning requires at least two boundaries")
+        coverage_start = nominal_boundaries[0]
+        coverage_end = values[-1].end_timestamp
+        if coverage_end <= coverage_start:
+            raise ValueError("Traffic probe planning requires a positive time range")
+        prefixes = _zone_ipv4(values)
+        seeds = _candidate_pairs(values, nominal_boundaries)
+        episode_requests = _select_episode_requests(
+            seeds,
+            maximum_background=self._maximum_persistent,
+            maximum_events=self._maximum_windowed,
+            nominal_boundaries=nominal_boundaries,
+            coverage_start=coverage_start,
+            coverage_end=coverage_end,
+        )
+        selected_seeds = {value[0].key: value[0] for value in episode_requests}
+        intervals_by_key, affected_by_key = _reconstruct_selected_paths(
+            values,
+            tuple(selected_seeds[key] for key in sorted(selected_seeds)),
+            episode_requests=episode_requests,
+            nominal_boundaries=nominal_boundaries,
+            coverage_end=coverage_end,
+        )
+        if not any(intervals_by_key.values()):
+            raise ValueError("compiled evolution contains no supportable GS/Zone probes")
+        viable_episode_requests = tuple(
+            request
+            for request in episode_requests
+            if any(
+                interval.expected_reachable
+                for interval in intervals_by_key[request[0].key]
+                if interval.end_time > request[3]
+                and interval.start_time < request[4]
+            )
+        )
+        if not viable_episode_requests:
+            raise ValueError("Traffic probe planning selected no reachable probes")
+        viable_keys = {request[0].key for request in viable_episode_requests}
+        identities = {
+            key: _make_identity(
+                selected_seeds[key],
+                intervals_by_key[key],
+                zone_ipv4=prefixes[selected_seeds[key].zone_id],
+            )
+            for key in sorted(viable_keys)
+        }
+        episodes: list[_TrafficProbeEpisode] = []
+        for seed, mode, anchor, start, end in viable_episode_requests:
+            episodes.append(
+                _make_episode(
+                    seed,
+                    intervals_by_key[seed.key],
+                    identity=identities[seed.key],
+                    mode=mode,
+                    start=start,
+                    end=end,
+                    interval_seconds=(
+                        self._activation_interval
+                        if mode == _ACTIVATION_WINDOW
+                        else self._persistent_interval
+                    ),
+                    episode_anchor=anchor,
+                    affected_times=(
+                        tuple(sorted(affected_by_key[seed.key]))
+                        if mode == _PERSISTENT
+                        else (anchor,)
+                    ),
+                )
+            )
+        if not episodes:
+            raise ValueError("Traffic probe planning selected no probes")
+        return TrafficProbePlan(
+            coverage_start,
+            coverage_end,
+            tuple(identities[key] for key in sorted(identities)),
+            tuple(episodes),
+            nominal_boundaries,
+            len(values),
+            _traffic_plan_revision_id(
+                coverage_start,
+                coverage_end,
+                nominal_boundaries,
+                tuple(identities[key] for key in sorted(identities)),
+                tuple(episodes),
+            ),
+            len(seeds),
+            monotonic() - started,
+        )
+
+
+def write_traffic_probe_plan(plan: TrafficProbePlan, path: Path) -> Path:
+    if not isinstance(plan, TrafficProbePlan):
+        raise TypeError("plan must be a TrafficProbePlan")
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(plan.artifact(), indent=2, sort_keys=True) + "\n"
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=destination.parent, prefix=f".{destination.name}."
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(destination)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+    return destination
+
+
+def read_traffic_probe_plan(path: Path) -> TrafficProbePlan:
+    try:
+        value = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError("Traffic probe plan artifact is invalid") from error
+    return TrafficProbePlan.from_artifact(_mapping(value, "Traffic probe plan"))
+
+
+def _validate_realization_sequence(
+    values: tuple[BpfCompiledRealization, ...],
+) -> None:
+    if not values:
+        raise ValueError("Traffic probe planning requires compiled realizations")
+    previous: BpfCompiledRealization | None = None
+    for realization in values:
+        if not isinstance(realization, BpfCompiledRealization):
+            raise TypeError("Traffic probe planning requires BpfCompiledRealization values")
+        if previous is not None and (
+            previous.end_slice_id != realization.start_slice_id
+            or previous.end_timestamp != realization.start_timestamp
+            or previous._topology_signature != realization._topology_signature
+        ):
+            raise ValueError("Traffic probe realization sequence is not continuous")
+        previous = realization
+    signature = values[0]._topology_signature
+    if not any(value.entity_kind == "ground-station" for value in signature.node_ids):
+        raise ValueError("Traffic probe topology has no GroundStation")
+    if not any(value.entity_kind == "satellite" for value in signature.node_ids):
+        raise ValueError("Traffic probe topology has no Satellite")
+    if not signature.zone_ids:
+        raise ValueError("Traffic probe topology has no Zone")
+
+
+def _nominal_boundaries(
+    values: tuple[BpfCompiledRealization, ...],
+) -> tuple[datetime, ...]:
+    return tuple(
+        sorted(
+            {
+                intent.nominal_time
+                for realization in values
+                for attribute in (
+                    "resource_realizations",
+                    "parameter_realizations",
+                    "forwarding_realizations",
+                    "zone_edge_realizations",
+                )
+                for intent in getattr(realization, attribute)
+            }
+        )
+    )
+
+
+def _scan_boundaries(
+    values: tuple[BpfCompiledRealization, ...],
+    visitor: Callable[[_BoundaryProjection], None],
+    *,
+    validate_end_state: bool,
+) -> tuple[datetime, ...]:
+    """Replay deltas with one live state rather than retained full snapshots."""
+
+    resources: set[object] = set()
+    forwarding: dict[RouteKey, object] = {}
+    zone_edges: dict[str, tuple[str, NodeId]] = {}
+    visited = []
+    for realization in values:
+        by_time: dict[datetime, list[object]] = defaultdict(list)
+        for attribute in (
+            "resource_realizations",
+            "parameter_realizations",
+            "forwarding_realizations",
+            "zone_edge_realizations",
+        ):
+            for intent in getattr(realization, attribute):
+                by_time[intent.nominal_time].append(intent)
+        for nominal_time in sorted(by_time):
+            prior_zone_edges = dict(zone_edges)
+            forwarding_changed: list[RouteKey] = []
+            changed_access: list[NodeId] = []
+            changed_access_seen: set[NodeId] = set()
+            changed_zones: list[str] = []
+            changed_zones_seen: set[str] = set()
+            for intent in by_time[nominal_time]:
+                if hasattr(intent, "attachments"):
+                    connection_id = intent.connection_id
+                    if intent.operation is ConnectionTransitionOperation.ESTABLISH:
+                        if connection_id in resources:
+                            raise ValueError("Traffic projection establishes an active resource")
+                        resources.add(connection_id)
+                    else:
+                        if connection_id not in resources:
+                            raise ValueError("Traffic projection withdraws an inactive resource")
+                        resources.remove(connection_id)
+                    if connection_id.kind is ConnectionKind.GROUND_STATION_ACCESS:
+                        for value in (
+                            connection_id.endpoint_a,
+                            connection_id.endpoint_b,
+                        ):
+                            if (
+                                value.entity_kind == "ground-station"
+                                and value not in changed_access_seen
+                            ):
+                                changed_access.append(value)
+                                changed_access_seen.add(value)
+                elif hasattr(intent, "route_key"):
+                    prior = forwarding.get(intent.route_key)
+                    if prior != intent.previous:
+                        raise ValueError("Traffic projection forwarding predecessor is stale")
+                    if intent.operation is DifferenceOperation.REMOVED:
+                        if prior is None or intent.current is not None:
+                            raise ValueError("Traffic projection forwarding removal is invalid")
+                        del forwarding[intent.route_key]
+                    else:
+                        if intent.current is None:
+                            raise ValueError("Traffic projection forwarding update is incomplete")
+                        forwarding[intent.route_key] = intent.current
+                    forwarding_changed.append(intent.route_key)
+                elif hasattr(intent, "zone_id"):
+                    prior = zone_edges.get(intent.zone_id)
+                    prior_service = None if prior is None else prior[1]
+                    if prior_service != intent.previous_service_satellite_id:
+                        raise ValueError("Traffic projection Zone predecessor is stale")
+                    if intent.operation is DifferenceOperation.REMOVED:
+                        if prior is None or intent.service_satellite_id is not None:
+                            raise ValueError("Traffic projection Zone removal is invalid")
+                        del zone_edges[intent.zone_id]
+                    else:
+                        if intent.service_satellite_id is None:
+                            raise ValueError("Traffic projection Zone update is incomplete")
+                        zone_edges[intent.zone_id] = (
+                            intent.packet_prefix,
+                            intent.service_satellite_id,
+                        )
+                    if intent.zone_id not in changed_zones_seen:
+                        changed_zones.append(intent.zone_id)
+                        changed_zones_seen.add(intent.zone_id)
+                else:
+                    # Qdisc facts do not change reachability selection.
+                    continue
+            visitor(
+                _BoundaryProjection(
+                    nominal_time,
+                    forwarding,
+                    zone_edges,
+                    resources,
+                    forwarding_changed,
+                    changed_access,
+                    changed_zones,
+                    prior_zone_edges,
+                )
+            )
+            visited.append(nominal_time)
+        if validate_end_state:
+            expected_resources = {
+                value.connection.connection_id
+                for value in realization.intended_resources
+            }
+            if resources != expected_resources:
+                raise ValueError(
+                    "Traffic projection resource state differs from Compiler"
+                )
+            expected_forwarding = {
+                value.route_key: value for value in realization.intended_forwarding
+            }
+            if forwarding != expected_forwarding:
+                raise ValueError(
+                    "Traffic projection forwarding state differs from Compiler"
+                )
+            expected_zones = {
+                value.zone_id: value for value in realization.intended_zone_edges
+            }
+            if {
+                key: value
+                for key, value in zone_edges.items()
+            } != {
+                key: (value.packet_prefix, value.service_satellite_id)
+                for key, value in expected_zones.items()
+            }:
+                raise ValueError("Traffic projection Zone state differs from Compiler")
+    times = visited
+    if len(times) != len(set(times)) or times != sorted(times):
+        raise ValueError("Traffic projection boundaries are not strictly ordered")
+    return tuple(times)
+
+
+def _zone_ipv4(values: tuple[BpfCompiledRealization, ...]) -> dict[str, str]:
+    prefixes = dict(values[-1].zone_prefixes)
+    if set(prefixes) != set(values[0]._topology_signature.zone_ids):
+        raise ValueError("Traffic probe Zone prefix coverage differs from topology")
+    result = {}
+    for zone_id, prefix in prefixes.items():
+        interface = ip_interface(prefix)
+        if not isinstance(interface, IPv4Interface) or interface.network.prefixlen != 32:
+            raise ValueError("Traffic probe Zone identity must be an IPv4 /32")
+        result[zone_id] = str(interface.ip)
+    return result
+
+
+class _StratifiedCandidateReservoir:
+    """Keep tiny deterministic samples per direction/reason/time stratum."""
+
+    def __init__(
+        self, *, bucket_capacity: int = _CANDIDATE_BUCKET_CAPACITY
+    ) -> None:
+        self._capacity = bucket_capacity
+        self._buckets: dict[
+            tuple[str, str, int],
+            dict[tuple[str, str, str], tuple[_PairSeed, str]],
+        ] = defaultdict(dict)
+
+    def add(
+        self,
+        direction: str,
+        ground: NodeId,
+        zone_id: str,
+        reason: str,
+        nominal_time: datetime,
+        time_stratum: int,
+    ) -> None:
+        if ground.entity_kind != "ground-station":
+            raise ValueError("Traffic candidate GroundStation identity is invalid")
+        seed = _PairSeed(direction, ground, zone_id, defaultdict(set))
+        seed.reason_times[reason].add(nominal_time)
+        bucket = self._buckets[(direction, reason, time_stratum)]
+        existing = bucket.get(seed.key)
+        if existing is not None:
+            for label, times in seed.reason_times.items():
+                existing[0].reason_times[label].update(times)
+            return
+        priority = sha256(
+            "|".join((*seed.key, reason, str(time_stratum))).encode("utf-8")
+        ).hexdigest()
+        if len(bucket) < self._capacity:
+            bucket[seed.key] = seed, priority
+            return
+        worst_key, (_, worst_priority) = max(
+            bucket.items(), key=lambda item: (item[1][1], item[0])
+        )
+        if (priority, seed.key) < (worst_priority, worst_key):
+            del bucket[worst_key]
+            bucket[seed.key] = seed, priority
+
+    def values(self) -> tuple[_PairSeed, ...]:
+        merged: dict[tuple[str, str, str], _PairSeed] = {}
+        for bucket in self._buckets.values():
+            for seed, _priority in bucket.values():
+                current = merged.get(seed.key)
+                if current is None:
+                    current = _PairSeed(
+                        seed.direction,
+                        seed.ground_station,
+                        seed.zone_id,
+                        defaultdict(set),
+                    )
+                    merged[seed.key] = current
+                for label, times in seed.reason_times.items():
+                    current.reason_times[label].update(times)
+        return tuple(
+            sorted(
+                merged.values(),
+                key=lambda value: (
+                    min(
+                        (
+                            timestamp
+                            for times in value.reason_times.values()
+                            for timestamp in times
+                        )
+                    ),
+                    value.key,
+                ),
+            )
+        )
+
+
+def _cyclic_values(
+    values: Sequence[Any],
+    offset: int,
+    *,
+    maximum: int | None = None,
+) -> Iterable[Any]:
+    """Visit a bounded rotating prefix without ranking the supplied facts."""
+
+    if not values:
+        return
+    count = len(values) if maximum is None else min(len(values), maximum)
+    start = offset % len(values)
+    for index in range(count):
+        yield values[(start + index) % len(values)]
+
+
+def _candidate_pairs(
+    values: tuple[BpfCompiledRealization, ...],
+    nominal_boundaries: tuple[datetime, ...],
+) -> tuple[_PairSeed, ...]:
+    reservoir = _StratifiedCandidateReservoir()
+    ground_stations_by_zone: dict[str, set[NodeId]] = defaultdict(set)
+    ground_targets_by_satellite: dict[NodeId, set[NodeId]] = defaultdict(set)
+    zones_by_satellite: dict[NodeId, set[str]] = defaultdict(set)
+    boundary_index = {
+        value: index for index, value in enumerate(nominal_boundaries)
+    }
+    sample_indexes = {
+        0,
+        len(nominal_boundaries) // 4,
+        len(nominal_boundaries) // 2,
+        len(nominal_boundaries) * 3 // 4,
+        len(nominal_boundaries) - 1,
+    }
+
+    def visit(projection: _BoundaryProjection) -> None:
+        index = boundary_index[projection.nominal_time]
+        stratum = min(3, index * 4 // len(nominal_boundaries))
+        quota: dict[tuple[str, str], int] = defaultdict(int)
+
+        for route_key in projection.forwarding_changed:
+            target = route_key.target
+            present = route_key in projection.forwarding
+            if route_key.source.entity_kind == "ground-station" and isinstance(
+                target, ZoneRouteTarget
+            ):
+                update = (
+                    ground_stations_by_zone[target.zone_id].add
+                    if present
+                    else ground_stations_by_zone[target.zone_id].discard
+                )
+                update(route_key.source)
+            elif isinstance(target, GroundStationRouteTarget):
+                update = (
+                    ground_targets_by_satellite[route_key.source].add
+                    if present
+                    else ground_targets_by_satellite[route_key.source].discard
+                )
+                update(target.ground_station_id)
+        for zone_id in projection.changed_zones:
+            prior = projection.prior_zone_edges.get(zone_id)
+            current = projection.zone_edges.get(zone_id)
+            if prior is not None:
+                zones_by_satellite[prior[1]].discard(zone_id)
+            if current is not None:
+                zones_by_satellite[current[1]].add(zone_id)
+
+        def add(
+            direction: str,
+            ground: NodeId,
+            zone_id: str,
+            reason: str,
+            category: str,
+        ) -> bool:
+            quota_key = direction, category
+            if quota[quota_key] >= _BOUNDARY_CATEGORY_QUOTA:
+                return False
+            reservoir.add(
+                direction,
+                ground,
+                zone_id,
+                reason,
+                projection.nominal_time,
+                stratum,
+            )
+            quota[quota_key] += 1
+            return True
+
+        def full(direction: str, category: str) -> bool:
+            return quota[(direction, category)] >= _BOUNDARY_CATEGORY_QUOTA
+
+        if index in sample_indexes:
+            background_reason = (
+                "persistent-control-candidate"
+                if index == 0
+                else "rotating-background-candidate"
+            )
+            zone_ids = sorted(ground_stations_by_zone)
+            for zone_id in _cyclic_values(zone_ids, index):
+                grounds = sorted(
+                    ground_stations_by_zone[zone_id],
+                    key=lambda value: value.value,
+                )
+                for ground in _cyclic_values(grounds, index):
+                    add(
+                        _DIRECTION_GROUND_TO_ZONE,
+                        ground,
+                        zone_id,
+                        background_reason,
+                        "background",
+                    )
+                    if full(_DIRECTION_GROUND_TO_ZONE, "background"):
+                        break
+                if full(_DIRECTION_GROUND_TO_ZONE, "background"):
+                    break
+            satellites = sorted(
+                zones_by_satellite,
+                key=lambda value: value.value,
+            )
+            for satellite in _cyclic_values(satellites, index):
+                zones = sorted(zones_by_satellite[satellite])
+                grounds = sorted(
+                    ground_targets_by_satellite.get(satellite, ()),
+                    key=lambda value: value.value,
+                )
+                if not grounds:
+                    continue
+                for zone_offset, zone_id in enumerate(
+                    _cyclic_values(zones, index)
+                ):
+                    add(
+                        _DIRECTION_ZONE_TO_GROUND,
+                        grounds[(index + zone_offset) % len(grounds)],
+                        zone_id,
+                        background_reason,
+                        "background",
+                    )
+                    if full(_DIRECTION_ZONE_TO_GROUND, "background"):
+                        break
+                if full(_DIRECTION_ZONE_TO_GROUND, "background"):
+                    break
+
+        for route_key in _cyclic_values(
+            projection.forwarding_changed,
+            index * 31,
+            maximum=_BOUNDARY_FACT_INSPECTION_LIMIT,
+        ):
+            if full(
+                _DIRECTION_GROUND_TO_ZONE, "forwarding"
+            ) and full(_DIRECTION_ZONE_TO_GROUND, "forwarding"):
+                break
+            target = route_key.target
+            if route_key.source.entity_kind == "ground-station" and isinstance(
+                target, ZoneRouteTarget
+            ) and not full(_DIRECTION_GROUND_TO_ZONE, "forwarding"):
+                add(
+                    _DIRECTION_GROUND_TO_ZONE,
+                    route_key.source,
+                    target.zone_id,
+                    "forwarding-next-hop-change",
+                    "forwarding",
+                )
+            elif isinstance(target, GroundStationRouteTarget) and not full(
+                _DIRECTION_ZONE_TO_GROUND, "forwarding"
+            ):
+                zones = zones_by_satellite.get(route_key.source, ())
+                for zone_id in sorted(zones)[:2]:
+                    add(
+                        _DIRECTION_ZONE_TO_GROUND,
+                        target.ground_station_id,
+                        zone_id,
+                        "forwarding-next-hop-change",
+                        "forwarding",
+                    )
+                    if full(_DIRECTION_ZONE_TO_GROUND, "forwarding"):
+                        break
+
+        for zone_id in _cyclic_values(
+            projection.changed_zones,
+            index * 17,
+            maximum=_BOUNDARY_FACT_INSPECTION_LIMIT,
+        ):
+            if full(_DIRECTION_GROUND_TO_ZONE, "zone") and full(
+                _DIRECTION_ZONE_TO_GROUND, "zone"
+            ):
+                break
+            old_edge = projection.prior_zone_edges.get(zone_id)
+            new_edge = projection.zone_edges.get(zone_id)
+            reason = (
+                "zone-service-establishment"
+                if old_edge is None and new_edge is not None
+                else "zone-service-withdrawal"
+                if old_edge is not None and new_edge is None
+                else "zone-service-handover"
+            )
+            for ground in sorted(
+                ground_stations_by_zone.get(zone_id, ()),
+                key=lambda value: value.value,
+            )[:2]:
+                add(
+                    _DIRECTION_GROUND_TO_ZONE,
+                    ground,
+                    zone_id,
+                    reason,
+                    "zone",
+                )
+                if full(_DIRECTION_GROUND_TO_ZONE, "zone"):
+                    break
+            services = {
+                edge[1]
+                for edge in (old_edge, new_edge)
+                if edge is not None
+            }
+            reverse_grounds = sorted(
+                {
+                    ground
+                    for service in services
+                    for ground in ground_targets_by_satellite.get(
+                        service, ()
+                    )
+                },
+                key=lambda value: value.value,
+            )
+            for ground in reverse_grounds[:2]:
+                add(
+                    _DIRECTION_ZONE_TO_GROUND,
+                    ground,
+                    zone_id,
+                    reason,
+                    "zone",
+                )
+                if full(_DIRECTION_ZONE_TO_GROUND, "zone"):
+                    break
+
+    visited = _scan_boundaries(
+        values,
+        visit,
+        validate_end_state=True,
+    )
+    if visited != nominal_boundaries:
+        raise ValueError("Traffic candidate scan omitted a nominal boundary")
+    return reservoir.values()
+
+
+def _select_episode_requests(
+    seeds: tuple[_PairSeed, ...],
+    *,
+    maximum_background: int,
+    maximum_events: int,
+    nominal_boundaries: tuple[datetime, ...],
+    coverage_start: datetime,
+    coverage_end: datetime,
+) -> tuple[_EpisodeRequest, ...]:
+    """Apply cheap direction/time quotas before selected-path reconstruction."""
+
+    control_limit = min(maximum_background, _MAX_PERSISTENT_CONTROLS)
+    controls = _take_direction_coverage(
+        tuple(
+            value
+            for value in seeds
+            if "persistent-control-candidate" in value.reason_times
+        ),
+        maximum=control_limit,
+    )
+    result = [
+        (
+            value,
+            _PERSISTENT,
+            coverage_start,
+            coverage_start,
+            coverage_end,
+        )
+        for value in controls
+    ]
+
+    rotating_observations = tuple(
+        (value.direction, timestamp, "background", value)
+        for value in seeds
+        for timestamp in value.reason_times.get(
+            "rotating-background-candidate", ()
+        )
+    )
+    rotating_limit = max(0, maximum_background - len(controls))
+    for _direction, timestamp, _label, seed in _take_stratified_observations(
+        rotating_observations,
+        maximum=rotating_limit,
+        nominal_boundaries=nominal_boundaries,
+    ):
+        start, end = _bounded_episode_window(
+            timestamp,
+            coverage_start=coverage_start,
+            coverage_end=coverage_end,
+            before_seconds=1,
+            after_seconds=4,
+        )
+        if end > start:
+            result.append(
+                (
+                    seed,
+                    _ROTATING_BACKGROUND,
+                    timestamp,
+                    start,
+                    end,
+                )
+            )
+
+    background_labels = {
+        "persistent-control-candidate",
+        "rotating-background-candidate",
+    }
+    event_observations = tuple(
+        (value.direction, timestamp, reason, value)
+        for value in seeds
+        for reason, timestamps in value.reason_times.items()
+        if reason not in background_labels
+        for timestamp in timestamps
+    )
+    for _direction, timestamp, _label, seed in _take_stratified_observations(
+        event_observations,
+        maximum=maximum_events,
+        nominal_boundaries=nominal_boundaries,
+    ):
+        start, end = _bounded_episode_window(
+            timestamp,
+            coverage_start=coverage_start,
+            coverage_end=coverage_end,
+            before_seconds=2,
+            after_seconds=3,
+        )
+        if end > start:
+            result.append(
+                (
+                    seed,
+                    _ACTIVATION_WINDOW,
+                    timestamp,
+                    start,
+                    end,
+                )
+            )
+
+    unique: dict[tuple[tuple[str, str, str], str, datetime], _EpisodeRequest] = {}
+    for value in result:
+        unique[(value[0].key, value[1], value[2])] = value
+    return tuple(
+        sorted(
+            unique.values(),
+            key=lambda value: (value[3], value[1], value[0].key),
+        )
+    )
+
+
+def _take_direction_coverage(
+    values: tuple[_PairSeed, ...], *, maximum: int
+) -> tuple[_PairSeed, ...]:
+    if maximum <= 0:
+        return ()
+    by_direction = {
+        direction: sorted(
+            (value for value in values if value.direction == direction),
+            key=lambda value: value.key,
+        )
+        for direction in (
+            _DIRECTION_GROUND_TO_ZONE,
+            _DIRECTION_ZONE_TO_GROUND,
+        )
+    }
+    selected: list[_PairSeed] = []
+    while len(selected) < maximum:
+        added = False
+        for direction in (
+            _DIRECTION_GROUND_TO_ZONE,
+            _DIRECTION_ZONE_TO_GROUND,
+        ):
+            bucket = by_direction[direction]
+            if bucket and len(selected) < maximum:
+                selected.append(bucket.pop(0))
+                added = True
+        if not added:
+            break
+    return tuple(selected)
+
+
+def _take_stratified_observations(
+    values: tuple[tuple[str, datetime, str, _PairSeed], ...],
+    *,
+    maximum: int,
+    nominal_boundaries: tuple[datetime, ...],
+) -> tuple[tuple[str, datetime, str, _PairSeed], ...]:
+    if maximum <= 0:
+        return ()
+    boundary_index = {
+        value: index for index, value in enumerate(nominal_boundaries)
+    }
+    buckets: dict[
+        tuple[str, int],
+        list[tuple[str, datetime, str, _PairSeed]],
+    ] = defaultdict(list)
+    seen = set()
+    for value in values:
+        direction, timestamp, label, seed = value
+        identity = direction, timestamp, label, seed.key
+        if identity in seen or timestamp not in boundary_index:
+            continue
+        seen.add(identity)
+        index = boundary_index[timestamp]
+        stratum = min(3, index * 4 // len(nominal_boundaries))
+        buckets[(direction, stratum)].append(value)
+    for bucket in buckets.values():
+        bucket.sort(key=lambda value: (value[2], value[3].key, value[1]))
+
+    selected = []
+    selected_episode_keys = set()
+    bucket_order = sorted(
+        buckets,
+        key=lambda value: (
+            value[1],
+            0 if value[0] == _DIRECTION_GROUND_TO_ZONE else 1,
+        ),
+    )
+    while len(selected) < maximum:
+        added = False
+        for bucket_key in bucket_order:
+            bucket = buckets[bucket_key]
+            while bucket:
+                candidate = bucket.pop(0)
+                episode_key = candidate[3].key, candidate[1]
+                if episode_key not in selected_episode_keys:
+                    selected.append(candidate)
+                    selected_episode_keys.add(episode_key)
+                    added = True
+                    break
+            if len(selected) >= maximum:
+                break
+        if not added:
+            break
+    return tuple(selected)
+
+
+def _bounded_episode_window(
+    anchor: datetime,
+    *,
+    coverage_start: datetime,
+    coverage_end: datetime,
+    before_seconds: int,
+    after_seconds: int,
+) -> tuple[datetime, datetime]:
+    start = max(coverage_start, anchor - timedelta(seconds=before_seconds))
+    end = min(coverage_end, anchor + timedelta(seconds=after_seconds))
+    if end <= start and coverage_end > coverage_start:
+        start = max(coverage_start, coverage_end - timedelta(seconds=1))
+        end = coverage_end
+    return start, end
+
+
+def _reconstruction_boundaries(
+    requests: tuple[_EpisodeRequest, ...],
+    nominal_boundaries: tuple[datetime, ...],
+) -> dict[tuple[str, str, str], set[datetime]]:
+    """Select full control horizons and local context for bounded episodes."""
+
+    result: dict[tuple[str, str, str], set[datetime]] = defaultdict(set)
+    for seed, mode, _anchor, start, end in requests:
+        if mode == _PERSISTENT:
+            result[seed.key].update(nominal_boundaries)
+            continue
+        index = max(0, bisect_right(nominal_boundaries, start) - 1)
+        result[seed.key].add(nominal_boundaries[index])
+        index += 1
+        while index < len(nominal_boundaries) and nominal_boundaries[index] < end:
+            result[seed.key].add(nominal_boundaries[index])
+            index += 1
+    return result
+
+
+def _reconstruct_selected_paths(
+    values: tuple[BpfCompiledRealization, ...],
+    seeds: tuple[_PairSeed, ...],
+    *,
+    episode_requests: tuple[_EpisodeRequest, ...],
+    nominal_boundaries: tuple[datetime, ...],
+    coverage_end: datetime,
+) -> tuple[
+    dict[tuple[str, str, str], tuple[_ProbeStateInterval, ...]],
+    dict[tuple[str, str, str], set[datetime]],
+]:
+    """Resolve only selected probe paths at required execution boundaries."""
+
+    required = _reconstruction_boundaries(episode_requests, nominal_boundaries)
+    seeds_by_boundary: dict[datetime, list[_PairSeed]] = defaultdict(list)
+    for seed in seeds:
+        for boundary in required[seed.key]:
+            seeds_by_boundary[boundary].append(seed)
+    interval_by_key: dict[tuple[str, str, str], list[_ProbeStateInterval]] = {
+        seed.key: [] for seed in seeds
+    }
+    affected_by_key: dict[tuple[str, str, str], set[datetime]] = {
+        seed.key: set() for seed in seeds
+    }
+    prior_by_key: dict[
+        tuple[str, str, str],
+        tuple[tuple[bool, tuple[str, ...], str | None], int],
+    ] = {}
+    return_seed_by_key = {
+        seed.key: _PairSeed(
+            (
+                _DIRECTION_ZONE_TO_GROUND
+                if seed.direction == _DIRECTION_GROUND_TO_ZONE
+                else _DIRECTION_GROUND_TO_ZONE
+            ),
+            seed.ground_station,
+            seed.zone_id,
+            defaultdict(set),
+        )
+        for seed in seeds
+    }
+    boundary_index = {
+        value: index for index, value in enumerate(nominal_boundaries)
+    }
+    next_boundary = {
+        value: (
+            nominal_boundaries[index + 1]
+            if index + 1 < len(nominal_boundaries)
+            else coverage_end
+        )
+        for index, value in enumerate(nominal_boundaries)
+    }
+
+    def visit(projection: _BoundaryProjection) -> None:
+        start = projection.nominal_time
+        end = next_boundary[start]
+        current_index = boundary_index[start]
+        if end <= start:
+            return
+        for seed in seeds_by_boundary.get(start, ()):
+            key = seed.key
+            primary_reachable, path, service, primary_unreachable = _resolve_path(
+                seed, projection
+            )
+            return_reachable, return_path, _unused, return_unreachable = _resolve_path(
+                return_seed_by_key[key], projection
+            )
+            reachable = primary_reachable and return_reachable
+            unreachable = (
+                primary_unreachable
+                if not primary_reachable
+                else None if return_reachable else f"return-{return_unreachable}"
+            )
+            path_ids = tuple(value.value for value in path)
+            return_path_ids = tuple(value.value for value in return_path)
+            service_id = None if service is None else service.value
+            current = (
+                reachable,
+                (*path_ids, "<return-path>", *return_path_ids),
+                service_id,
+            )
+            prior_record = prior_by_key.get(key)
+            prior = (
+                prior_record[0]
+                if prior_record is not None and prior_record[1] + 1 == current_index
+                else None
+            )
+            boundary_reasons = set()
+            if seed.ground_station in projection.changed_access_ground_stations:
+                boundary_reasons.add("ground-station-attachment-change")
+            if prior is not None and current[1] != prior[1]:
+                boundary_reasons.add("forwarding-next-hop-change")
+            if prior is not None and current[0] != prior[0]:
+                boundary_reasons.add(
+                    "expected-restoration" if current[0] else "expected-withdrawal"
+                )
+            if prior is not None and current[2] != prior[2]:
+                if prior[2] is None:
+                    boundary_reasons.add("zone-service-establishment")
+                elif current[2] is None:
+                    boundary_reasons.add("zone-service-withdrawal")
+                else:
+                    boundary_reasons.add("zone-service-handover")
+                    if seed.direction == _DIRECTION_ZONE_TO_GROUND:
+                        boundary_reasons.add("zone-source-migration")
+            if boundary_reasons:
+                affected_by_key[key].add(start)
+            path_length = None if not primary_reachable else len(path) - 1
+            _append_state_interval(
+                interval_by_key[key],
+                _ProbeStateInterval(
+                    start,
+                    end,
+                    reachable,
+                    unreachable,
+                    service_id,
+                    path_ids,
+                    path_length,
+                    tuple(sorted(boundary_reasons)),
+                ),
+            )
+            prior_by_key[key] = current, current_index
+
+    visited = _scan_boundaries(values, visit, validate_end_state=False)
+    if visited != nominal_boundaries:
+        raise ValueError("Traffic path scan omitted a nominal boundary")
+    return (
+        {key: tuple(intervals) for key, intervals in interval_by_key.items()},
+        affected_by_key,
+    )
+
+
+def _append_state_interval(
+    intervals: list[_ProbeStateInterval], current: _ProbeStateInterval
+) -> None:
+    if not intervals:
+        intervals.append(current)
+        return
+    prior = intervals[-1]
+    if (
+        prior.end_time == current.start_time
+        and prior.expected_reachable == current.expected_reachable
+        and prior.unreachable_reason == current.unreachable_reason
+        and prior.service_satellite_id == current.service_satellite_id
+        and prior.path_node_ids == current.path_node_ids
+        and prior.path_length_hops == current.path_length_hops
+    ):
+        intervals[-1] = _ProbeStateInterval(
+            prior.start_time,
+            current.end_time,
+            prior.expected_reachable,
+            prior.unreachable_reason,
+            prior.service_satellite_id,
+            prior.path_node_ids,
+            prior.path_length_hops,
+            tuple(sorted(set(prior.boundary_reasons) | set(current.boundary_reasons))),
+        )
+        return
+    intervals.append(current)
+
+
+def _resolve_path(
+    seed: _PairSeed,
+    projection: _BoundaryProjection,
+) -> tuple[bool, tuple[NodeId, ...], NodeId | None, str | None]:
+    edge = projection.zone_edges.get(seed.zone_id)
+    if edge is None:
+        return False, (), None, "zone-unserved"
+    service = edge[1]
+    if seed.direction == _DIRECTION_GROUND_TO_ZONE:
+        current = seed.ground_station
+        target = ZoneRouteTarget(seed.zone_id)
+        terminal = service
+    else:
+        current = service
+        target = GroundStationRouteTarget(seed.ground_station)
+        terminal = seed.ground_station
+    path = [current]
+    seen = {current}
+    while current != terminal:
+        binding = projection.forwarding.get(RouteKey(current, target))
+        if binding is None:
+            return False, tuple(path), service, "missing-forwarding"
+        if binding.connection_id not in projection.resources:
+            raise ValueError("Traffic path uses an inactive compiled resource")
+        current = binding.next_hop
+        if current in seen:
+            raise ValueError("Traffic path contains a forwarding loop")
+        seen.add(current)
+        path.append(current)
+    return True, tuple(path), service, None
+
+
+def _make_identity(
+    seed: _PairSeed,
+    intervals: tuple[_ProbeStateInterval, ...],
+    *,
+    zone_ipv4: str,
+) -> _TrafficProbeIdentity:
+    reachable = tuple(value for value in intervals if value.expected_reachable)
+    paths = {value.path_node_ids for value in reachable}
+    services = {value.service_satellite_id for value in reachable}
+    stable = bool(reachable) and len(reachable) == len(intervals) and len(paths) == 1 and len(services) <= 1
+    reasons = {
+        reason for interval in intervals for reason in interval.boundary_reasons
+    }
+    if {
+        "persistent-control-candidate",
+        "rotating-background-candidate",
+    } & seed.reason_times.keys():
+        reasons.add("bounded-stratified-background-coverage")
+    reasons.add(
+        "persistent-stable-control" if stable else "persistent-changing-path"
+    )
+    representative_length = next(
+        (
+            value.path_length_hops
+            for value in reachable
+            if value.path_length_hops is not None
+        ),
+        0,
+    )
+    path_length_class = (
+        "short"
+        if representative_length <= 3
+        else "long" if representative_length > 8 else "median"
+    )
+    digest = sha256(
+        "|".join(
+            (
+                seed.direction,
+                seed.ground_station.value,
+                seed.zone_id,
+            )
+        ).encode("utf-8")
+    ).hexdigest()[:12]
+    return _TrafficProbeIdentity(
+        f"traffic-probe-{digest}",
+        seed.direction,
+        seed.ground_station.value,
+        seed.zone_id,
+        zone_ipv4,
+        tuple(sorted(reasons)),
+        "stable" if stable else "changing",
+        path_length_class,
+    )
+
+
+def _make_episode(
+    seed: _PairSeed,
+    intervals: tuple[_ProbeStateInterval, ...],
+    *,
+    identity: _TrafficProbeIdentity,
+    mode: str,
+    start: datetime,
+    end: datetime,
+    interval_seconds: float,
+    episode_anchor: datetime,
+    affected_times: tuple[datetime, ...],
+) -> _TrafficProbeEpisode:
+    selected_intervals = tuple(
+        value
+        for value in intervals
+        if value.end_time > start and value.start_time < end
+    )
+    echo_requests = ceil((end - start).total_seconds() / interval_seconds)
+    estimated_events = 0
+    for value in selected_intervals:
+        overlap_start = max(start, value.start_time)
+        overlap_end = min(end, value.end_time)
+        if overlap_end <= overlap_start or not value.expected_reachable:
+            continue
+        requests = ceil((overlap_end - overlap_start).total_seconds() / interval_seconds)
+        estimated_events += requests * 2 * max(1, value.path_length_hops or 0)
+    digest = sha256(
+        "|".join(
+            (
+                seed.direction,
+                identity.probe_id,
+                mode,
+                episode_anchor.isoformat(),
+            )
+        ).encode("utf-8")
+    ).hexdigest()[:12]
+    return _TrafficProbeEpisode(
+        f"traffic-episode-{digest}",
+        identity.probe_id,
+        mode,
+        start,
+        end,
+        interval_seconds,
+        affected_times,
+        selected_intervals,
+        echo_requests,
+        estimated_events,
+    )
+
+
+def _identity_from_artifact(value: object) -> _TrafficProbeIdentity:
+    item = _mapping(value, "Traffic probe identity")
+    direction = _one_of(
+        item.get("direction"),
+        {_DIRECTION_GROUND_TO_ZONE, _DIRECTION_ZONE_TO_GROUND},
+        "probe direction",
+    )
+    return _TrafficProbeIdentity(
+        _non_empty_string(item.get("probe_id"), "probe_id"),
+        direction,
+        _non_empty_string(item.get("ground_station_id"), "ground_station_id"),
+        _non_empty_string(item.get("zone_id"), "zone_id"),
+        _non_empty_string(item.get("zone_ipv4"), "zone_ipv4"),
+        tuple(
+            _non_empty_string(raw, "selection reason")
+            for raw in _list(item.get("selection_reasons"), "selection reasons")
+        ),
+        _one_of(item.get("path_stability"), {"stable", "changing"}, "path stability"),
+        _one_of(item.get("path_length_class"), {"short", "median", "long"}, "path class"),
+    )
+
+
+def _episode_from_artifact(
+    value: object,
+    coverage_start: datetime,
+    coverage_end: datetime,
+    identity_ids: set[str],
+) -> _TrafficProbeEpisode:
+    item = _mapping(value, "Traffic probe episode")
+    probe_id = _non_empty_string(item.get("probe_id"), "episode probe_id")
+    if probe_id not in identity_ids:
+        raise ValueError("Traffic probe episode references an unknown identity")
+    if item.get("episode_intent") != "armed":
+        raise ValueError("Traffic probe episode intent is invalid")
+    mode = _one_of(
+        item.get("mode"),
+        {_PERSISTENT, _ROTATING_BACKGROUND, _ACTIVATION_WINDOW},
+        "episode mode",
+    )
+    start = _timestamp(item.get("start_time"), "probe start")
+    end = _timestamp(item.get("end_time"), "probe end")
+    if not coverage_start <= start < end <= coverage_end:
+        raise ValueError("Traffic probe falls outside its planning horizon")
+    intervals = tuple(
+        _interval_from_artifact(raw, start, end)
+        for raw in _list(item.get("state_intervals"), "probe state intervals")
+    )
+    if not intervals:
+        raise ValueError("Traffic probe has no state intervals")
+    return _TrafficProbeEpisode(
+        _non_empty_string(item.get("episode_id"), "episode_id"),
+        probe_id,
+        mode,
+        start,
+        end,
+        _positive_number(item.get("interval_seconds"), "probe interval"),
+        tuple(
+            _timestamp(raw, "affected activation")
+            for raw in _list(item.get("affected_activation_times"), "affected activations")
+        ),
+        intervals,
+        _non_negative_int(item.get("estimated_echo_requests"), "estimated echo requests"),
+        _non_negative_int(item.get("estimated_telemetry_events"), "estimated telemetry events"),
+    )
+
+
+def _interval_from_artifact(
+    value: object, probe_start: datetime, probe_end: datetime
+) -> _ProbeStateInterval:
+    item = _mapping(value, "Traffic probe state interval")
+    start = _timestamp(item.get("start_time"), "state interval start")
+    end = _timestamp(item.get("end_time"), "state interval end")
+    if end <= probe_start or start >= probe_end or end <= start:
+        raise ValueError("Traffic probe state interval is outside the probe")
+    reachable = item.get("expected_reachable")
+    if not isinstance(reachable, bool):
+        raise ValueError("Traffic probe reachability must be boolean")
+    raw_path = _list(item.get("path_node_ids"), "state interval path")
+    path = tuple(_non_empty_string(raw, "path node") for raw in raw_path)
+    raw_length = item.get("path_length_hops")
+    length = None if raw_length is None else _non_negative_int(raw_length, "path length")
+    if reachable and (not path or length != len(path) - 1):
+        raise ValueError("Traffic probe reachable path evidence is inconsistent")
+    return _ProbeStateInterval(
+        start,
+        end,
+        reachable,
+        (
+            None
+            if item.get("unreachable_reason") is None
+            else _non_empty_string(item.get("unreachable_reason"), "unreachable reason")
+        ),
+        (
+            None
+            if item.get("service_satellite_id") is None
+            else _non_empty_string(item.get("service_satellite_id"), "service satellite")
+        ),
+        path,
+        length,
+        tuple(
+            _non_empty_string(raw, "boundary reason")
+            for raw in _list(item.get("boundary_reasons"), "boundary reasons")
+        ),
+    )
+
+
+def _traffic_plan_revision_id(
+    coverage_start: datetime,
+    coverage_end: datetime,
+    nominal_boundaries: tuple[datetime, ...],
+    identities: tuple[_TrafficProbeIdentity, ...],
+    episodes: tuple[_TrafficProbeEpisode, ...],
+) -> str:
+    payload = {
+        "coverage_start": coverage_start.isoformat(),
+        "coverage_end": coverage_end.isoformat(),
+        "nominal_boundaries": [
+            value.isoformat() for value in nominal_boundaries
+        ],
+        "probe_identities": [value.artifact() for value in identities],
+        "episodes": [value.artifact() for value in episodes],
+    }
+    return sha256(
+        json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _counts(values: Iterable[str]) -> dict[str, int]:
+    result: dict[str, int] = {}
+    for value in values:
+        result[value] = result.get(value, 0) + 1
+    return dict(sorted(result.items()))
+
+
+def _mapping(value: object, label: str) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{label} must be an object")
+    return dict(value)
+
+
+def _list(value: object, label: str) -> list[object]:
+    if not isinstance(value, list):
+        raise ValueError(f"{label} must be a list")
+    return value
+
+
+def _timestamp(value: object, label: str) -> datetime:
+    if not isinstance(value, str):
+        raise ValueError(f"{label} must be a timestamp")
+    try:
+        result = datetime.fromisoformat(value)
+    except ValueError as error:
+        raise ValueError(f"{label} must be a timestamp") from error
+    if result.tzinfo is None or result.utcoffset() is None:
+        raise ValueError(f"{label} must be timezone-aware")
+    return result
+
+
+def _non_empty_string(value: object, label: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{label} must be a non-empty string")
+    return value
+
+
+def _non_negative_int(value: object, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{label} must be a non-negative int")
+    return value
+
+
+def _positive_int(value: object, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{label} must be a positive int")
+    return value
+
+
+def _positive_number(value: object, label: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        raise ValueError(f"{label} must be positive")
+    return float(value)
+
+
+def _non_negative_number(value: object, label: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        raise ValueError(f"{label} must be non-negative")
+    return float(value)
+
+
+def _one_of(value: object, allowed: set[str], label: str) -> str:
+    if not isinstance(value, str) or value not in allowed:
+        raise ValueError(f"{label} is invalid")
+    return value
+
+
+__all__: list[str] = []

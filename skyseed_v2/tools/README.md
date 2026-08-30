@@ -33,12 +33,12 @@ The S4 qualification root schedules heavy Slice, Planner, Compiler, and
 Observation materialization through the private `_detached_inspection` helper.
 At most a small configured number of family-level processes run concurrently.
 Each receives an immutable fork view, persists a deterministic compressed
-snapshot before projection, builds under a same-parent staging directory,
-audits checksums, and atomically publishes. A preserved handoff can rebuild the
-Tool with `scripts/rebuild_inspection_from_handoff.py` without rerunning domain
-progression. These gzip/pickle snapshots are trusted repository-local evidence;
-never load an untrusted handoff. This helper is execution composition for
-Tools, not a public job framework or a domain owner.
+snapshot under short-lived `.inspection-control/`, builds under a same-parent
+staging directory, audits checksums, and atomically publishes. The control
+directory is deleted after join or termination. These gzip/pickle snapshots
+are runtime bookkeeping rather than durable experiment evidence. This helper
+is execution composition for Tools, not a public job framework or a domain
+owner.
 
 Legend: `A -.-> B` means validation A consumes the already-written artifact B;
 it is not a Tool pipeline stage.

@@ -505,7 +505,7 @@ def test_richer_main_builds_once_and_emits_static_and_slice_outputs(
     run_script = (output / "run.sh").read_text(encoding="utf-8")
     launch = (output / "launch.sh").read_text(encoding="utf-8")
     cleanup = (output / "cleanup.sh").read_text(encoding="utf-8")
-    project_name = (output / ".compose-project-name").read_text(
+    project_name = (output / "runtime/compose-project-name").read_text(
         encoding="utf-8"
     ).strip()
     assert project_name.startswith("skyseed_v2_mini_satellite_internet-")
@@ -515,7 +515,7 @@ def test_richer_main_builds_once_and_emits_static_and_slice_outputs(
     assert "up -d --build" in start
     assert "down --remove-orphans" in cleanup
     assert "docker compose" not in run_script
-    assert "-m skyseed_v2._generated_bpf_execution" in run_script
+    assert "-m skyseed_v2.experiment.execution" in run_script
     assert "-m tools.runner" in run_script
     assert "-m tools.traffic" in run_script
     assert "runner-invocation.json" in run_script
@@ -541,7 +541,6 @@ def test_richer_main_builds_once_and_emits_static_and_slice_outputs(
         )
         assert syntax.returncode == 0, syntax.stderr
     assert {path.name for path in output.iterdir()} == {
-        ".compose-project-name",
         "start.sh",
         "run.sh",
         "launch.sh",
@@ -557,7 +556,7 @@ def test_richer_main_builds_once_and_emits_static_and_slice_outputs(
         EXAMPLE_ROOT / "zones.yaml"
     ).read_bytes()
     execution = json.loads(
-        (output / "inputs/execution.json").read_text(encoding="utf-8")
+        (output / "runtime/execution.json").read_text(encoding="utf-8")
     )
     assert execution["generated_output_identity"] == project_name
     assert execution["progression_builder"] == {
@@ -579,10 +578,7 @@ def test_richer_main_builds_once_and_emits_static_and_slice_outputs(
         for scope in execution["generated_inputs"]["scopes"]
         if scope["label"] == "input-snapshots"
     )
-    assert input_scope["excludes"] == [
-        "execution.json",
-        "traffic-workload.json",
-    ]
+    assert input_scope["excludes"] == ["traffic-workload.json"]
     assert {path.name for path in (output / "inspection").iterdir()} == {
         "topology",
         "zone",
@@ -590,9 +586,10 @@ def test_richer_main_builds_once_and_emits_static_and_slice_outputs(
         "planner",
         "observation",
         "bpf-compiler",
+        "traffic",
     }
     assert (output / "inputs/traffic-workload.json").is_file()
-    assert not (output / "inspection/traffic").exists()
+    assert (output / "inspection/traffic/probe-plan.json").is_file()
     for forbidden in ("emulator", "simulator", "slice", "tools"):
         assert not (output / forbidden).exists()
 
@@ -752,7 +749,8 @@ def test_generation_guard_preserves_a_live_or_unverifiable_generation(
 ) -> None:
     output = tmp_path / "output"
     output.mkdir()
-    identity = output / ".compose-project-name"
+    identity = output / "runtime/compose-project-name"
+    identity.parent.mkdir()
     identity.write_text("mini-generation-one\n", encoding="utf-8")
     sentinel = output / "preserve-me"
     sentinel.write_text("original", encoding="utf-8")
@@ -820,7 +818,8 @@ def test_generation_guard_rejects_legacy_output_and_replaces_incomplete_output(
         reference_main._guard_existing_output(output, override=True)
     assert sentinel.read_text(encoding="utf-8") == "legacy"
 
-    (output / ".compose-project-name").write_text(
+    (output / "runtime").mkdir()
+    (output / "runtime/compose-project-name").write_text(
         "mini-incomplete\n",
         encoding="utf-8",
     )
@@ -834,7 +833,7 @@ def test_generation_guard_rejects_legacy_output_and_replaces_incomplete_output(
         ),
     )
     reference_main._guard_existing_output(output, override=True)
-    runtime = reference_main.prepare_example_output(output, override=True)
+    runtime = reference_main._prepare_generated_output(output, replace=True)
     assert runtime == output / "runtime"
     assert tuple(output.iterdir()) == ()
 
@@ -1163,7 +1162,7 @@ def test_richer_reference_sources_do_not_construct_formal_slice_results() -> Non
         assert required in source
     main_source = (EXAMPLE_ROOT / "main.py").read_text(encoding="utf-8")
     bootstrap_source = (
-        PROJECT_ROOT / "src/skyseed_v2/_generated_bpf_execution.py"
+        PROJECT_ROOT / "src/skyseed_v2/experiment/execution.py"
     ).read_text(encoding="utf-8")
     assert main_source.count("write_topology_tool(") == 1
     assert main_source.count("write_zone_tool(") == 1
@@ -1172,15 +1171,12 @@ def test_richer_reference_sources_do_not_construct_formal_slice_results() -> Non
     assert main_source.count("slicer.create_all_slices()") == 1
     assert main_source.count(".get_topology()") == 1
     assert main_source.index(
-        "(arguments.output / _PROJECT_NAME_FILE).write_text"
-    ) < main_source.index("_write_input_snapshots(arguments.output, snapshots)")
-    assert main_source.index(
         "_write_input_snapshots(arguments.output, snapshots)"
     ) < main_source.index(
         "emulator = build_mini_satellite_internet_emulator(snapshot_scenario)"
     )
     assert main_source.index("if not all(result[") < main_source.index(
-        "write_compose_project_scripts("
+        "_write_compose_project_scripts("
     )
     for forbidden in (
         "AccumulatedDeadbandParameterPlanningModel",
@@ -1230,10 +1226,7 @@ def test_richer_reference_sources_do_not_construct_formal_slice_results() -> Non
     ):
         assert forbidden not in bootstrap_source
     assert bootstrap_source.count('"traffic-workload.json"') == 1
-    assert (
-        'excludes=("execution.json", "traffic-workload.json")'
-        in bootstrap_source
-    )
+    assert 'excludes=("traffic-workload.json",)' in bootstrap_source
     assert not (EXAMPLE_ROOT / "_compose_support.py").exists()
     parameters = signature(
         simu.create_mini_satellite_internet_slicer
@@ -1258,7 +1251,7 @@ def test_richer_reference_sources_do_not_construct_formal_slice_results() -> Non
 def test_generation_and_generated_execution_compile_loops_stay_separate() -> None:
     main_source = (EXAMPLE_ROOT / "main.py").read_text(encoding="utf-8")
     bootstrap_source = (
-        PROJECT_ROOT / "src/skyseed_v2/_generated_bpf_execution.py"
+        PROJECT_ROOT / "src/skyseed_v2/experiment/execution.py"
     ).read_text(encoding="utf-8")
 
     assert main_source.count("def _compile_bpf_realizations(") == 1
@@ -1271,7 +1264,6 @@ def test_generation_and_generated_execution_compile_loops_stay_separate() -> Non
         "iter(realizations)",
         "_probe_ground_station_access_peer(",
         "_probe_zone_ground_round_trip(",
-        "_probe_",
     ):
         assert forbidden not in bootstrap_source
     for mini_specific in (

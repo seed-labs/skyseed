@@ -357,8 +357,8 @@ flowchart LR
     COMPILE -->|creates| REAL["BpfCompiledRealization"]
     SUPPLIER["caller-owned future-work supplier"] -->|delivers value| RUNNER["BpfRunner"]
     REAL -->|returned through supplier; consumed by| RUNNER
-    CALLER["runtime caller"] -->|calls prepare / run or activate_next / cleanup| RUNNER
-    CALLER -->|"after cleanup attempt calls inspection_snapshot() on"| RUNNER
+    CALLER["runtime caller"] -->|calls prepare / run or activate_next / teardown via cleanup| RUNNER
+    CALLER -->|"after teardown attempt calls inspection_snapshot() on"| RUNNER
     RUNNER -->|returns detached projection without lifecycle side effect| SNAP["detached Runner evidence"]
 ```
 

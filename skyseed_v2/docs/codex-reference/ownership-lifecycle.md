@@ -33,10 +33,13 @@ handoff.
 | `Plan` | Planner publication | retained as current immutable interval by Planner | caller and future approved semantic consumers |
 | `ForwardingTransitionPrecedence` | ForwardingPlanningModel through Planner | containing Plan | caller and future approved Plan consumers such as Compiler |
 | `BpfCompiledRealization` | `compile_bpf` | immutable caller/backend handoff | next compile call and BpfRunner future-work input |
+| persisted realization handoff | visible application root after canonical Compiler progression | generated execution directory/caller | bounded trusted-local supplier for repeated Runner experiments |
 | Compose project | upstream SEED `Docker` compiler | filesystem/caller | caller-selected deployment startup; optional `ComposeProjectLauncher` |
 | live Compose project identity | deployment caller | caller | `BpfRunner` attachment |
 | `BpfRunner` | runtime caller after deployment startup | sole live BPF lifecycle owner | caller lifecycle operations; detached post-run Inspection handoff |
-| dynamic physical resources/runtime state | BpfRunner Preparation/Maintenance | creating BpfRunner | BpfRunner Main, Maintenance reclaim and scoped cleanup |
+| Traffic probe plan | experiment application from immutable compiled realizations | experiment run/output root | experiment-side probe executor; offline Traffic Tool after persistence |
+| Traffic probe processes | `experiment/traffic` executor after Runner Preparation | experiment-side executor | Ping stdout/stderr evidence only; no Runner lifecycle authority |
+| dynamic physical resources/runtime state | BpfRunner Preparation/Maintenance | creating BpfRunner | BpfRunner Main, Maintenance reclaim and bounded scoped teardown |
 | Runner inspection snapshot | `BpfRunner.inspection_snapshot()` | receiving runtime caller as detached scalars plus bounded recent events | repository-local Runner Inspection Tool, combined with complete durable Runner JSONL |
 
 ## Contract
@@ -61,22 +64,25 @@ working/history facts its planning lifecycle requires.
 The live backend handoff is separately ordered:
 
 ```text
-generated output/inputs/execution.json
-→ private root generated-BPF-execution application composition verifies
+generated output/runtime/execution.json
+→ private `skyseed_v2.experiment.execution` application composition verifies
   source/generated-input consistency
-  and restores the named progression builder
-→ lazy Slicer → Planner → compile_bpf supplier
+  and restores either the named progression builder or its checksum-validated
+  persisted exact Compiler-output handoff
+→ lazy Slicer → Planner → compile_bpf supplier, or bounded persisted supplier
 →
 live Compose project identity + future BpfCompiledRealization callable
 → BpfRunner.prepare() independently discovers/validates/freezes its foundation
+→ experiment-side Traffic executor resolves only frozen Runner bindings and arms probes
 → exact-next plus dual-bound continuous READY coverage
 → BpfRunner Maintenance advances input/READY frontiers and reclaims retired state
 → BpfRunner.activate_next() manually activates the exact next timestamp
   or BpfRunner.run() executes relative to one monotonic wall-clock origin
-→ BpfRunner.cleanup()
+→ BpfRunner.cleanup() performs bounded teardown and retains ownership on failure
 → BpfRunner.inspection_snapshot() detaches summary + frozen-binding scalars + bounded recent events
-→ private root generated-BPF-execution composition persists the detached snapshot + invocation outcome
+→ experiment execution composition persists the detached snapshot + invocation outcome
 → generated run.sh invokes the Runner Tool, which reads that handoff and complete runner-events.jsonl directly
+→ generated run.sh invokes the offline Traffic Tool and refreshes the aggregate inspection index
 ```
 
 Each rolling owner releases only its own obsolete working facts after a
@@ -87,7 +93,9 @@ readers of those streams and do not control the release frontier.
 
 Runner freezes the discovered required deployment incarnation; a recreated
 container or changed PID/netns is stale, never silently rediscovered at a
-boundary. Runner does not own Compose teardown. Runtime active/ready frontiers
+boundary. Owned interface ifindex is stable only for that exact interface and
+container incarnation and is invalidated after successful physical deletion.
+Runner does not own Compose teardown. Runtime active/ready frontiers
 are nominal timestamps; realization Slice coverage remains provenance only. A
 Runner incarnation chooses manual or automatic execution once, never both.
 Rolling construction requires an explicit non-negative nominal-time lookahead
@@ -97,7 +105,7 @@ strictly beyond ACTIVE. The continuous prefix stops at whichever bound is
 reached first, without weakening exact-next readiness. Full-range construction
 uses `None` for both bounds and requires bounded finite input.
 The inspection accessor has no lifecycle side effect and performs no
-Docker/kernel command; cleanup-retained frontiers are last-known history, not
+Docker/kernel command; teardown-retained frontiers are last-known history, not
 a claim that active network semantics still exist.
 
 ## Invariants

@@ -20,7 +20,7 @@ DEFAULT_SCENARIO = EXAMPLE_ROOT / "scenario.yaml"
 DEFAULT_ZONES = EXAMPLE_ROOT / "zones.yaml"
 DEFAULT_OUTPUT = EXAMPLE_ROOT / "output"
 COMPOSE_PROJECT_PREFIX = "skyseed_v2_mini_satellite_internet"
-_PROJECT_NAME_FILE = ".compose-project-name"
+_PROJECT_NAME_FILE = "runtime/compose-project-name"
 _SIMULATION_GENERATION_LOOKAHEAD = timedelta(seconds=300)
 _RUNNER_PREPARATION_LOOKAHEAD = timedelta(seconds=60)
 _RUNNER_PREPARATION_BOUNDARY_DEPTH = 8
@@ -28,14 +28,6 @@ _RUNNER_PREPARATION_BOUNDARY_DEPTH = 8
 if __package__ in (None, ""):
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from examples._direct_execution import prepare_direct_file_execution
-
-prepare_direct_file_execution(__file__)
-
-from examples._compose_project_scripts import (
-    prepare_example_output,
-    write_compose_project_scripts,
-)
 from examples.mini_satellite_internet.emu import (
     build_mini_satellite_internet_emulator,
 )
@@ -50,7 +42,15 @@ from examples.mini_satellite_internet.traffic_workload import (
 )
 from seedemu.compiler import Docker
 from skyseed_v2.backend.bpf import BpfCompiledRealization, compile_bpf
-from skyseed_v2._generated_bpf_execution import _write_execution_definition
+from skyseed_v2.compose.launcher import (
+    _prepare_generated_output,
+    _write_compose_project_scripts,
+)
+from skyseed_v2.experiment.execution import _write_execution_definition
+from skyseed_v2.experiment.traffic.probe_plan import (
+    TrafficProbePlanBuilder,
+    write_traffic_probe_plan,
+)
 from skyseed_v2.simulator import (
     Plan,
     Planner,
@@ -201,6 +201,10 @@ def _guard_existing_output(output: Path, *, override: bool) -> None:
         raise FileExistsError(f"example output already exists: {output}")
     project_file = output / _PROJECT_NAME_FILE
     if not project_file.is_file():
+        legacy_project_file = output / ".compose-project-name"
+        if legacy_project_file.is_file():
+            project_file = legacy_project_file
+    if not project_file.is_file():
         raise RuntimeError(
             "existing generated output uses an unsupported older layout; "
             "clean/remove its deployment and output before regenerating"
@@ -265,7 +269,7 @@ fi
 SCRIPT_DIR="$(cd -- "$(dirname -- "${{BASH_SOURCE[0]}}")" && pwd)"
 for required in \\
     "$SCRIPT_DIR/{_PROJECT_NAME_FILE}" \\
-    "$SCRIPT_DIR/inputs/execution.json" \\
+    "$SCRIPT_DIR/runtime/execution.json" \\
     "$SCRIPT_DIR/inputs/scenario.yaml" \\
     "$SCRIPT_DIR/inputs/zones.yaml" \\
     "$SCRIPT_DIR/runtime/docker-compose.yml"; do
@@ -276,7 +280,7 @@ for required in \\
 done
 
 execution_status=0
-{python} -m skyseed_v2._generated_bpf_execution "$SCRIPT_DIR" \\
+{python} -m skyseed_v2.experiment.execution "$SCRIPT_DIR" \\
     || execution_status=$?
 
 runner_tool_status=0
@@ -291,6 +295,9 @@ traffic_tool_status=0
     --telemetry "$SCRIPT_DIR/inspection/traffic/traffic-telemetry.jsonl" \\
     --slice "$SCRIPT_DIR/inspection/slice/slice-manifest.json" \\
     --bpf-compiler "$SCRIPT_DIR/inspection/bpf-compiler/manifest.json" \\
+    --probe-plan "$SCRIPT_DIR/inspection/traffic/probe-plan.json" \\
+    --probe-execution "$SCRIPT_DIR/inspection/traffic/probe-execution.jsonl" \\
+    --runner-events "$SCRIPT_DIR/inspection/runner/runner-events.jsonl" \\
     --output "$SCRIPT_DIR/inspection/traffic" \\
     || traffic_tool_status=$?
 
@@ -344,16 +351,12 @@ def main() -> int:
 
     snapshots = _capture_input_files(arguments.scenario, arguments.zones)
     _guard_existing_output(arguments.output, override=arguments.override)
-    runtime_output = prepare_example_output(
+    runtime_output = _prepare_generated_output(
         arguments.output,
-        override=True,
+        replace=True,
     )
     compose_project_name = (
         f"{COMPOSE_PROJECT_PREFIX}-{uuid4().hex[:16]}"
-    )
-    (arguments.output / _PROJECT_NAME_FILE).write_text(
-        f"{compose_project_name}\n",
-        encoding="utf-8",
     )
     _write_input_snapshots(arguments.output, snapshots)
     snapshot_scenario = arguments.output / "inputs/scenario.yaml"
@@ -366,6 +369,7 @@ def main() -> int:
     planner_output = arguments.output / "inspection/planner"
     observation_output = arguments.output / "inspection/observation"
     bpf_compiler_output = arguments.output / "inspection/bpf-compiler"
+    traffic_output = arguments.output / "inspection/traffic"
     traffic_workload_input = arguments.output / "inputs"
 
     emulator.render()
@@ -376,6 +380,9 @@ def main() -> int:
         ),
         str(runtime_output),
     )
+    project_file = arguments.output / _PROJECT_NAME_FILE
+    project_file.parent.mkdir(parents=True, exist_ok=True)
+    project_file.write_text(f"{compose_project_name}\n", encoding="utf-8")
     simulator, planner = create_mini_satellite_internet_progression(
         arguments.output / "inputs",
         emulator=emulator,
@@ -408,6 +415,10 @@ def main() -> int:
         observation_output,
     )
     compiled_realizations = _compile_bpf_realizations(slicer, plans)
+    write_traffic_probe_plan(
+        TrafficProbePlanBuilder().build(compiled_realizations),
+        traffic_output / "probe-plan.json",
+    )
     topology = slicer.get_topology()
     topology_result = write_topology_tool(topology, topology_output)
     zone_result = write_zone_tool(topology, zone_output)
@@ -460,7 +471,7 @@ def main() -> int:
         project_root=PROJECT_ROOT,
         example_root=EXAMPLE_ROOT,
     )
-    write_compose_project_scripts(
+    _write_compose_project_scripts(
         arguments.output,
         compose_project_name,
     )

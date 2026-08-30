@@ -121,16 +121,16 @@ Tool-owned projections. Its spatial panel uses exact retained ECEF positions
 from the formal Before/After Slice around a nominal transition; it does not
 interpolate sub-slice geometry.
 
-Normal stage-bounded S4 execution may run the reader/projection/render/write
+Normal stage-bounded Starlink Gen1 execution may run the reader/projection/render/write
 pipeline in a bounded independent worker after the relevant immutable domain
-boundary. The worker persists a deterministic detached snapshot under
-`inspection/_execution/` before projection and builds to a same-parent staging
-directory; checksum audit precedes atomic publication. Tool work is side work
-and cannot delay a later domain stage; when no worker slot is available, its
-submission is deferred until domain completion. The final join gates artifact
-completeness only. Domain and Tool statuses remain distinct in small neutral
-execution metadata. The private gzip/pickle handoff is trusted local rebuild
-evidence and is not a public or untrusted serialization contract.
+boundary. The worker persists a deterministic detached snapshot under the
+short-lived generated `.inspection-control/` directory before projection and
+builds to a same-parent staging directory; checksum audit precedes atomic
+publication. Tool work is side work and cannot delay a later domain stage;
+when no worker slot is available, its submission is deferred until domain
+completion. The final join gates artifact completeness only and deletes the
+temporary control directory. The private gzip/pickle snapshot is runtime
+bookkeeping, not durable evidence or a public serialization contract.
 
 ## Invariants
 

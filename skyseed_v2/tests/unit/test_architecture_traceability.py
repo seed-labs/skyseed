@@ -30,7 +30,7 @@ CURRENT = DOCS_ROOT / "CURRENT.md"
 PUBLIC_IMPORTS = DOCS_ROOT / "codex-reference/public-imports.md"
 BPF_PACKAGE_ROOT = PROJECT_ROOT / "src/skyseed_v2/backend/bpf"
 GENERATED_BPF_EXECUTION = (
-    PROJECT_ROOT / "src/skyseed_v2/_generated_bpf_execution.py"
+    PROJECT_ROOT / "src/skyseed_v2/experiment/execution.py"
 )
 PUBLIC_MODULES = (
     entities,
@@ -141,10 +141,26 @@ def test_document_identity_is_explicit_in_paths() -> None:
 
 
 def test_bpf_package_layout_and_private_residue_are_exact() -> None:
+    experiment = PROJECT_ROOT / "src/skyseed_v2/experiment"
+    assert not (PROJECT_ROOT / "src/skyseed_v2/_traffic").exists()
     assert {
         path.name
-        for path in (PROJECT_ROOT / "src/skyseed_v2").glob("*generated*execution.py")
-    } == {"_generated_bpf_execution.py"}
+        for path in experiment.iterdir()
+        if path.is_dir() and path.name != "__pycache__"
+    } == {
+        "traffic"
+    }
+    assert {
+        path.name
+        for path in (experiment / "traffic").iterdir()
+        if path.suffix == ".py"
+    } == {"__init__.py", "probe_plan.py", "probe_execution.py"}
+    assert not tuple(
+        (PROJECT_ROOT / "src/skyseed_v2").glob("*generated*execution.py")
+    )
+    assert {
+        path.name for path in experiment.iterdir() if path.suffix == ".py"
+    } == {"__init__.py", "execution.py", "_realization_handoff.py"}
     assert {
         path.name
         for path in BPF_PACKAGE_ROOT.iterdir()
@@ -161,6 +177,7 @@ def test_bpf_package_layout_and_private_residue_are_exact() -> None:
         path.name for path in runner_private.iterdir() if path.suffix == ".py"
     } == {
         "__init__.py",
+        "event_history.py",
         "privileged_runtime_command.py",
         "runtime_realization.py",
         "traffic_telemetry.py",
@@ -216,7 +233,7 @@ def test_bpf_package_layout_and_private_residue_are_exact() -> None:
         "progression_builder",
     ):
         assert forbidden not in source
-    assert "_generated_bpf_execution" not in skyseed_v2.__all__
+    assert "experiment" not in skyseed_v2.__all__
 
 
 def test_simulator_history_codec_and_jsonl_mechanics_have_distinct_owners() -> None:
@@ -230,7 +247,7 @@ def test_simulator_history_codec_and_jsonl_mechanics_have_distinct_owners() -> N
     assert "shared._durable_evidence" not in codec
     for generic_helper in (
         "_append_jsonl",
-        "_read_jsonl",
+        "_iter_jsonl",
         "_reset_jsonl",
         "_semantic_value",
     ):
@@ -261,7 +278,7 @@ def test_accepted_anchor_and_current_have_distinct_roles() -> None:
         "Preparation binds",
         "Main alone",
         "Maintenance prepares",
-        "inputs/execution.json",
+        "runtime/execution.json",
         "append-only JSONL",
         "60-second preparation lookahead",
         "eight-boundary future depth",
@@ -274,12 +291,18 @@ def test_accepted_anchor_and_current_have_distinct_roles() -> None:
         "three maintained runnable examples",
         "Manual Tool acceptance is complete",
         "S4 Planner and BPF Compiler scale milestone: **implemented, qualified, and",
-        "The **S4 Planner + BPF Compiler scale stage** is accepted",
-        "181 real Slices / 181 Differences",
-        "90 `BpfCompiledRealization` values",
-        "next scale stage is S4 Runner/runtime",
-        "final S4-specific Zone-service minimum is 25 degrees",
-        "Slice 0 plus 20 real Slices/20 Differences",
+        "Round 2 is implemented and qualified",
+        "720 Satellites",
+        "1,003 Up / 73 Created",
+        "61 Slices/Differences",
+        "61 READY",
+        "Traffic completed 17/17",
+        "`starlink_gen1_satellite_internet`",
+        "S1–S5 choices",
+        "10 minutes at a 10-second interval",
+        "Equivalent BPF state",
+        "full-width validated through R20",
+        "Round-1 Traffic",
         "Traffic / Path Replay",
         "traffic-telemetry.jsonl",
         "Normal generated `run.sh` neither reads nor starts that",
@@ -288,7 +311,6 @@ def test_accepted_anchor_and_current_have_distinct_roles() -> None:
     for deferred in (
         "automatic rollback",
         "public dataplane plugin API",
-        "large-network performance",
         "realtime/live traffic visualization",
     ):
         assert deferred in current

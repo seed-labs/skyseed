@@ -1,4 +1,4 @@
-"""Assemble the one formal S4 Simulator, Slicer, and Planner composition."""
+"""Assemble the one formal Starlink Gen1 Simulator, Slicer, and Planner composition."""
 
 from __future__ import annotations
 
@@ -32,12 +32,12 @@ from skyseed_v2.simulator import (
 EXAMPLE_ROOT = Path(__file__).resolve().parent
 ZONE_LAYOUT_FILE = EXAMPLE_ROOT / "zones.yaml"
 REFERENCE_EPOCH = datetime(2026, 1, 1, tzinfo=timezone.utc)
-S4_SLICE_INTERVAL = timedelta(seconds=10)
-S4_DURATION = timedelta(minutes=30)
-S4_TIMELINE_END = REFERENCE_EPOCH + S4_DURATION
-S4_REAL_SLICE_COUNT = 181
+STARLINK_GEN1_SLICE_INTERVAL = timedelta(seconds=5)
+STARLINK_GEN1_DURATION = timedelta(minutes=10)
+STARLINK_GEN1_TIMELINE_END = REFERENCE_EPOCH + STARLINK_GEN1_DURATION
+STARLINK_GEN1_REAL_SLICE_COUNT = 121
 
-# These are explicit S4 scenario policies, not generic library defaults or
+# These are explicit Starlink Gen1 scenario policies, not generic library defaults or
 # claims that every real Gateway site uses identical hardware.
 MAXIMUM_ISL_DISTANCE_M = 6_000_000.0
 GROUND_STATION_MINIMUM_ELEVATION_DEG = 5.0
@@ -56,11 +56,11 @@ PACKET_LOSS_PPM_BY_KIND = {
 GATEWAY_CANDIDATE_COUNT = 3
 GATEWAY_CANDIDATE_MAX_DISTANCE_M = None
 
-# The accepted normal S4 Planner composition uses one 50-second planning
+# The accepted normal Starlink Gen1 Planner composition uses one 50-second planning
 # lookahead and publishes one continuous prefix of at most 20 seconds.
-S4_PLANNING_LOOKAHEAD = timedelta(seconds=50)
-S4_PUBLICATION_HORIZON = timedelta(seconds=20)
-S4_PARAMETER_CONFIGURATION = ParameterPlanningConfiguration(
+STARLINK_GEN1_PLANNING_LOOKAHEAD = timedelta(seconds=50)
+STARLINK_GEN1_PUBLICATION_HORIZON = timedelta(seconds=20)
+STARLINK_GEN1_PARAMETER_CONFIGURATION = ParameterPlanningConfiguration(
     delay_us=ParameterFieldConfiguration(
         absolute_deadband=191,
         relative_deadband=0.024067890929326655,
@@ -72,7 +72,7 @@ S4_PARAMETER_CONFIGURATION = ParameterPlanningConfiguration(
 
 
 class _IdentityCoordinationPolicy:
-    """Keep the normal example's three Model results unchanged."""
+    """Keep the reference example's three Model results unchanged."""
 
     __slots__ = ()
 
@@ -92,18 +92,18 @@ class _IdentityCoordinationPolicy:
         )
 
 
-def create_s4_simulator(
+def create_starlink_gen1_simulator(
     emulator: Emulator,
     *,
     zone_layout_path: Path = ZONE_LAYOUT_FILE,
 ) -> Simulator:
-    """Create the one S4 Topology/Slicer composition without advancing it."""
+    """Create the one Starlink Gen1 Topology/Slicer composition without advancing it."""
 
     if not isinstance(emulator, Emulator):
         raise TypeError("emulator must be an upstream Emulator")
     base = emulator.getLayer("Base")
     if not isinstance(base, Base):
-        raise TypeError("S4 Base layer must be a Base")
+        raise TypeError("Starlink Gen1 Base layer must be a Base")
     static_input = create_simulator_static_input(
         get_skyseed_autonomous_systems(base)
     )
@@ -112,8 +112,8 @@ def create_s4_simulator(
             static_input=static_input,
             timeline=SimulationTimeline(
                 start_time=REFERENCE_EPOCH,
-                end_time=S4_TIMELINE_END,
-                slice_interval=S4_SLICE_INTERVAL,
+                end_time=STARLINK_GEN1_TIMELINE_END,
+                slice_interval=STARLINK_GEN1_SLICE_INTERVAL,
             ),
         )
     )
@@ -150,27 +150,47 @@ def create_s4_simulator(
     return simulator
 
 
-def create_s4_planner(simulator: Simulator) -> Planner:
+def create_starlink_gen1_planner(simulator: Simulator) -> Planner:
     """Attach the one accepted normal Planner composition."""
 
     if not isinstance(simulator, Simulator):
         raise TypeError("simulator must be a Simulator")
     return simulator.create_planner(
         planning_window_policy=TimeHorizonPlanningWindowPolicy(
-            planning_lookahead=S4_PLANNING_LOOKAHEAD,
-            publication_horizon=S4_PUBLICATION_HORIZON,
+            planning_lookahead=STARLINK_GEN1_PLANNING_LOOKAHEAD,
+            publication_horizon=STARLINK_GEN1_PUBLICATION_HORIZON,
         ),
         connection_model=SampleBoundaryConnectionPlanningModel(),
         parameter_model=AccumulatedDeadbandParameterPlanningModel(
-            configuration=S4_PARAMETER_CONFIGURATION,
+            configuration=STARLINK_GEN1_PARAMETER_CONFIGURATION,
         ),
         forwarding_model=DependencyAwareForwardingPlanningModel(),
         coordination_policy=_IdentityCoordinationPolicy(),
     )
 
 
-def s4_slicing_configuration() -> dict[str, object]:
-    """Project exact S4 Slicer policy facts for read-only inspection."""
+def create_starlink_gen1_runtime_progression(
+    input_directory: Path,
+) -> tuple[Simulator, Planner]:
+    """Restore the generated Starlink Gen1 progression without advancing it."""
+
+    inputs = Path(input_directory)
+    from examples.starlink_gen1_satellite_internet.emu import (
+        build_starlink_gen1_satellite_internet_emulator,
+    )
+
+    emulator = build_starlink_gen1_satellite_internet_emulator(
+        inputs / "scenario.yaml"
+    )
+    simulator = create_starlink_gen1_simulator(
+        emulator,
+        zone_layout_path=inputs / "zones.yaml",
+    )
+    return simulator, create_starlink_gen1_planner(simulator)
+
+
+def starlink_gen1_slicing_configuration() -> dict[str, object]:
+    """Project exact Starlink Gen1 Slicer policy facts for read-only inspection."""
 
     return {
         "models": {
@@ -180,7 +200,7 @@ def s4_slicing_configuration() -> dict[str, object]:
                     "computes the exact formal node positions at each Slice "
                     "timestamp"
                 ),
-                "configuration": "one accepted S4 circular-orbit shell",
+                "configuration": "one accepted Starlink Gen1 circular-orbit shell",
             },
             "connection": {
                 "selected": "GeometricConnectionModel",
@@ -229,7 +249,7 @@ def s4_slicing_configuration() -> dict[str, object]:
         "interpretation_notes": [
             (
                 "Unserved Zones are expected: this workload maps a global "
-                "732-Zone surface onto only one 348-Satellite shell."
+                "732-Zone surface onto one selected Starlink Gen1 shell."
             ),
             (
                 "The 25-degree Zone-service minimum rejects distant, "
@@ -237,8 +257,8 @@ def s4_slicing_configuration() -> dict[str, object]:
                 "coverage."
             ),
             (
-                "Cross-plane ISLs concentrate toward high latitude because "
-                "60-degree-RAAN neighbour planes still require Earth-clear LOS."
+                "Cross-plane ISLs remain subject to the configured neighbouring "
+                "plane geometry and exact Earth-clear LOS."
             ),
             (
                 "A long formal Route can remain the minimum-hop path under "
@@ -248,27 +268,27 @@ def s4_slicing_configuration() -> dict[str, object]:
     }
 
 
-def s4_planning_configuration(simulator: Simulator) -> dict[str, object]:
+def starlink_gen1_planning_configuration(simulator: Simulator) -> dict[str, object]:
     """Describe the exact accepted normal Planner composition."""
 
     if not isinstance(simulator, Simulator):
         raise TypeError("simulator must be a Simulator")
-    delay_configuration = S4_PARAMETER_CONFIGURATION.delay_us
+    delay_configuration = STARLINK_GEN1_PARAMETER_CONFIGURATION.delay_us
     latest_slice_id = simulator.get_slicer().get_latest_slice_id()
     return {
-        "scenario_identity": "s4_satellite_internet",
-        "scenario_display_name": "S4 Satellite Internet",
+        "scenario_identity": "starlink_gen1_satellite_internet",
+        "scenario_display_name": "Starlink Gen1 Satellite Internet",
         "numeric_defaults_status": (
-            "S4 scenario candidate; no generic Planner defaults selected"
+            "reference oracle; no optimized Planner numeric defaults selected"
         ),
-        "slice_interval_seconds": S4_SLICE_INTERVAL.total_seconds(),
-        "timeline_real_slice_count": S4_REAL_SLICE_COUNT,
+        "slice_interval_seconds": STARLINK_GEN1_SLICE_INTERVAL.total_seconds(),
+        "timeline_real_slice_count": STARLINK_GEN1_REAL_SLICE_COUNT,
         "execution_through_slice_id": latest_slice_id,
         "planning_through_slice_id": latest_slice_id,
         "planning_window": "bounded exact time prefix",
         "planning_window_policy": "TimeHorizonPlanningWindowPolicy",
-        "planning_lookahead_seconds": S4_PLANNING_LOOKAHEAD.total_seconds(),
-        "publication_horizon_seconds": S4_PUBLICATION_HORIZON.total_seconds(),
+        "planning_lookahead_seconds": STARLINK_GEN1_PLANNING_LOOKAHEAD.total_seconds(),
+        "publication_horizon_seconds": STARLINK_GEN1_PUBLICATION_HORIZON.total_seconds(),
         "connection_model": "SampleBoundaryConnectionPlanningModel",
         "connection_timing": "sample boundary",
         "connection_episode_omission": "disabled",
@@ -288,8 +308,8 @@ def s4_planning_configuration(simulator: Simulator) -> dict[str, object]:
 
 
 __all__ = [
-    "create_s4_planner",
-    "create_s4_simulator",
-    "s4_planning_configuration",
-    "s4_slicing_configuration",
+    "create_starlink_gen1_planner",
+    "create_starlink_gen1_simulator",
+    "starlink_gen1_planning_configuration",
+    "starlink_gen1_slicing_configuration",
 ]
