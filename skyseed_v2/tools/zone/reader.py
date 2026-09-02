@@ -5,23 +5,23 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from skyseed_v2.simulator import Topology
+from skyseed_v2.simulator import PhysicalWorld
 
 
 @dataclass(frozen=True, slots=True)
 class ZoneRead:
-    """Hold detached values returned by one exact Topology/Zone read."""
+    """Hold detached values returned by one exact PhysicalWorld/Zone read."""
 
     snapshot: dict[str, Any]
 
 
-def read_zones(topology: Topology) -> ZoneRead:
+def read_zones(physical_world: PhysicalWorld) -> ZoneRead:
     """Read owned Zone layout fields without executing membership Models."""
 
-    if not isinstance(topology, Topology):
-        raise TypeError("topology must be a Topology")
+    if not isinstance(physical_world, PhysicalWorld):
+        raise TypeError("physical_world must be a PhysicalWorld")
     try:
-        layout = topology.get_zone_layout()
+        layout = physical_world.get_zone_layout()
     except RuntimeError:
         return ZoneRead(
             {

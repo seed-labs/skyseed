@@ -12,22 +12,21 @@ from typing import Any, Mapping, Protocol
 
 from skyseed_v2.shared import NodeId
 from skyseed_v2.simulator import (
-    ConnectionDirection,
-    ConnectionId,
-    ConnectionKind,
-    ConnectionTransitionOperation,
-    DifferenceOperation,
-    GroundStationRouteTarget,
-    RouteKey,
-    ZoneRouteTarget,
+    GroundStationRouteDemandTarget,
+    OperationalConnectionId,
+    OperationalConnectionKind,
+    ZoneRouteDemandTarget,
 )
 
 from ..compiled_realization import (
     _ForwardingBinding,
     _ForwardingIntent,
+    _MutationOperation,
     _QdiscIntent,
     _ResourceIntent,
+    _ResourceOperation,
     _ZoneEdgeIntent,
+    _ZoneEdgePhase,
     _ZoneEdgeState,
 )
 
@@ -49,8 +48,9 @@ class _PrivilegedCommandExecutor(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class _QdiscValue:
-    connection_id: ConnectionId
-    direction: ConnectionDirection
+    connection_id: OperationalConnectionId
+    source: NodeId
+    target: NodeId
     bandwidth_bps: int
     delay_us: int
     packet_loss_ppm: int
@@ -58,7 +58,7 @@ class _QdiscValue:
 
 @dataclass(frozen=True, slots=True)
 class _MaterializedDataplaneState:
-    resources: tuple[ConnectionId, ...]
+    resources: tuple[OperationalConnectionId, ...]
     parameters: tuple[_QdiscValue, ...]
     forwarding: tuple[_ForwardingBinding, ...]
     zone_edges: tuple[_ZoneEdgeState, ...]
@@ -75,7 +75,7 @@ class _ReadyDataplaneBoundary:
     preparation_request: dict[str, Any]
     activation_request: dict[str, Any]
     generation_keys: tuple[tuple[str, tuple[int, ...], tuple[int, ...]], ...]
-    prepared_resources: tuple[ConnectionId, ...]
+    prepared_resources: tuple[OperationalConnectionId, ...]
     readiness_sha256: str
     preparation_result: dict[str, Any]
     generation_changed: bool = True
@@ -100,14 +100,14 @@ class _RetiredForwardingRealization:
 
 @dataclass(frozen=True, slots=True)
 class _RetiredPhysicalRealization:
-    resources: tuple[ConnectionId, ...]
+    resources: tuple[OperationalConnectionId, ...]
 
 
 def _node_key(node_id: NodeId) -> tuple[int, str, str]:
     return node_id.asn, node_id.entity_kind, node_id.entity_id
 
 
-def _connection_key(connection_id: ConnectionId) -> str:
+def _connection_key(connection_id: OperationalConnectionId) -> str:
     return "|".join(
         (
             connection_id.kind.value,
@@ -122,26 +122,36 @@ def _component(prefix: str, value: str, *, size: int = 5) -> str:
     return f"{prefix}{digest}"
 
 
-def _interface_names(connection_id: ConnectionId) -> tuple[str, str]:
+def _interface_names(
+    connection_id: OperationalConnectionId,
+) -> tuple[str, str]:
     component = _component("", _connection_key(connection_id))
     return f"sv2{component}a", f"sv2{component}b"
 
 
-def _direction_endpoints(
-    connection_id: ConnectionId,
-    direction: ConnectionDirection,
-) -> tuple[NodeId, NodeId]:
-    if direction is ConnectionDirection.ENDPOINT_A_TO_B:
-        return connection_id.endpoint_a, connection_id.endpoint_b
-    return connection_id.endpoint_b, connection_id.endpoint_a
+def _interface_name_for_source(
+    connection_id: OperationalConnectionId,
+    source: NodeId,
+) -> str:
+    interface_a, interface_b = _interface_names(connection_id)
+    if source == connection_id.endpoint_a:
+        return interface_a
+    if source == connection_id.endpoint_b:
+        return interface_b
+    raise ValueError("compiled direction source is not a Connection endpoint")
 
 
 def _ground_station_access_endpoints(
-    connection_id: ConnectionId,
+    connection_id: OperationalConnectionId,
 ) -> tuple[NodeId, NodeId]:
-    if not isinstance(connection_id, ConnectionId):
-        raise TypeError("access peer probe requires a ConnectionId")
-    if connection_id.kind is not ConnectionKind.GROUND_STATION_ACCESS:
+    if not isinstance(connection_id, OperationalConnectionId):
+        raise TypeError(
+            "access peer probe requires an OperationalConnectionId"
+        )
+    if (
+        connection_id.kind
+        is not OperationalConnectionKind.GROUND_STATION_ACCESS
+    ):
         raise ValueError("access peer reachability requires ground-station access")
     endpoints = (connection_id.endpoint_a, connection_id.endpoint_b)
     ground_stations = tuple(
@@ -160,13 +170,13 @@ def _ground_station_access_endpoints(
 
 def _forwarding_key(binding: _ForwardingBinding) -> tuple[str, str, str]:
     target = binding.route_key.target
-    if isinstance(target, GroundStationRouteTarget):
+    if isinstance(target, GroundStationRouteDemandTarget):
         return (
             binding.route_key.source.value,
             "ground-station",
             target.ground_station_id.value,
         )
-    if isinstance(target, ZoneRouteTarget):
+    if isinstance(target, ZoneRouteDemandTarget):
         return binding.route_key.source.value, "zone", target.zone_id
     raise TypeError("compiled forwarding has an unknown target")
 
@@ -178,7 +188,7 @@ def _empty_state() -> _MaterializedDataplaneState:
 def _generation_state(
     state: _MaterializedDataplaneState,
 ) -> tuple[
-    tuple[ConnectionId, ...],
+    tuple[OperationalConnectionId, ...],
     tuple[_ForwardingBinding, ...],
     tuple[_ZoneEdgeState, ...],
 ]:
@@ -240,15 +250,20 @@ def _validate_boundary_lowering(boundary: _NominalBoundary) -> int:
         if isinstance(intent, _ResourceIntent):
             return (
                 0
-                if intent.operation is ConnectionTransitionOperation.ESTABLISH
-                else 4
+                if intent.operation is _ResourceOperation.ESTABLISH
+                else 5
             )
         if isinstance(intent, _QdiscIntent):
             return 1
-        if isinstance(intent, _ForwardingIntent):
+        if (
+            isinstance(intent, _ZoneEdgeIntent)
+            and intent.phase is _ZoneEdgePhase.READINESS
+        ):
             return 2
-        if isinstance(intent, _ZoneEdgeIntent):
+        if isinstance(intent, _ForwardingIntent):
             return 3
+        if isinstance(intent, _ZoneEdgeIntent):
+            return 4
         raise TypeError("unknown boundary operation")
 
     folded_forwarding_edges = 0
@@ -277,7 +292,7 @@ def _materialize_boundary(
 
     resources = {value: value for value in previous.resources}
     parameters = {
-        (value.connection_id, value.direction): value
+        (value.connection_id, value.source, value.target): value
         for value in previous.parameters
     }
     forwarding = {value.route_key: value for value in previous.forwarding}
@@ -285,7 +300,7 @@ def _materialize_boundary(
     for operation in boundary.operations:
         intent = operation.intent
         if isinstance(intent, _ResourceIntent):
-            if intent.operation is ConnectionTransitionOperation.ESTABLISH:
+            if intent.operation is _ResourceOperation.ESTABLISH:
                 if intent.connection_id in resources:
                     raise ValueError("compiled boundary establishes an active resource")
                 resources[intent.connection_id] = intent.connection_id
@@ -293,12 +308,13 @@ def _materialize_boundary(
                 if intent.connection_id not in resources:
                     raise ValueError("compiled boundary withdraws an inactive resource")
                 del resources[intent.connection_id]
-                for direction in ConnectionDirection:
-                    parameters.pop((intent.connection_id, direction), None)
+                for key in tuple(parameters):
+                    if key[0] == intent.connection_id:
+                        del parameters[key]
         elif isinstance(intent, _QdiscIntent):
             if intent.connection_id not in resources:
                 raise ValueError("compiled qdisc uses an inactive resource")
-            key = intent.connection_id, intent.direction
+            key = intent.connection_id, intent.source, intent.target
             prior = parameters.get(key)
             bandwidth = (
                 intent.bandwidth_bps
@@ -318,13 +334,18 @@ def _materialize_boundary(
             if bandwidth is None or delay is None or loss is None:
                 raise ValueError("compiled qdisc transition lacks a complete baseline")
             parameters[key] = _QdiscValue(
-                intent.connection_id, intent.direction, bandwidth, delay, loss
+                intent.connection_id,
+                intent.source,
+                intent.target,
+                bandwidth,
+                delay,
+                loss,
             )
         elif isinstance(intent, _ForwardingIntent):
             prior = forwarding.get(intent.route_key)
             if prior != intent.previous:
                 raise ValueError("compiled forwarding predecessor is stale")
-            if intent.operation is DifferenceOperation.REMOVED:
+            if intent.operation is _MutationOperation.REMOVE:
                 if intent.current is not None or prior is None:
                     raise ValueError("compiled forwarding removal is inconsistent")
                 del forwarding[intent.route_key]
@@ -335,34 +356,49 @@ def _materialize_boundary(
         elif isinstance(intent, _ZoneEdgeIntent):
             prior = zone_edges.get(intent.zone_id)
             prior_service = None if prior is None else prior.service_satellite_id
-            if prior_service != intent.previous_service_satellite_id:
-                raise ValueError("compiled Zone-edge predecessor is stale")
-            if intent.operation is DifferenceOperation.REMOVED:
-                if intent.service_satellite_id is not None or prior is None:
-                    raise ValueError("compiled Zone-edge removal is inconsistent")
-                del zone_edges[intent.zone_id]
-            else:
-                if intent.service_satellite_id is None:
-                    raise ValueError("compiled Zone-edge update has no service node")
+            if intent.phase is _ZoneEdgePhase.READINESS:
+                if (
+                    prior_service != intent.previous_service_satellite_id
+                    or intent.service_satellite_id is None
+                ):
+                    raise ValueError("compiled Zone readiness is inconsistent")
                 zone_edges[intent.zone_id] = _ZoneEdgeState(
                     intent.zone_id,
                     intent.packet_prefix,
                     intent.service_satellite_id,
                 )
+            else:
+                if intent.previous_service_satellite_id is None:
+                    raise ValueError("compiled Zone retirement has no predecessor")
+                if intent.service_satellite_id is None:
+                    if prior_service != intent.previous_service_satellite_id:
+                        raise ValueError("compiled Zone retirement is stale")
+                    del zone_edges[intent.zone_id]
+                elif prior_service != intent.service_satellite_id:
+                    raise ValueError(
+                        "compiled Zone replacement retirement is stale"
+                    )
         else:  # pragma: no cover - boundary inventory is closed
             raise TypeError("unknown compiled boundary operation")
 
     expected_parameters = {
-        (connection_id, direction)
+        (connection_id, source, target)
         for connection_id in resources
-        for direction in ConnectionDirection
+        for source, target in (
+            (connection_id.endpoint_a, connection_id.endpoint_b),
+            (connection_id.endpoint_b, connection_id.endpoint_a),
+        )
     }
     if set(parameters) != expected_parameters:
         raise ValueError("materialized qdisc state does not cover active resources")
     for binding in forwarding.values():
         if binding.connection_id not in resources:
             raise ValueError("materialized forwarding uses an inactive resource")
-        if (binding.connection_id, binding.direction) not in parameters:
+        if (
+            binding.connection_id,
+            binding.route_key.source,
+            binding.next_hop,
+        ) not in parameters:
             raise ValueError("materialized forwarding lacks qdisc state")
     return _MaterializedDataplaneState(
         tuple(sorted(resources, key=_connection_key)),
@@ -370,7 +406,11 @@ def _materialize_boundary(
             parameters[key]
             for key in sorted(
                 parameters,
-                key=lambda value: (_connection_key(value[0]), value[1].value),
+                key=lambda value: (
+                    _connection_key(value[0]),
+                    _node_key(value[1]),
+                    _node_key(value[2]),
+                ),
             )
         ),
         tuple(sorted(forwarding.values(), key=_forwarding_key)),
@@ -402,8 +442,8 @@ class _TcBpfRuntimeRealization:
         self._node_address_range: IPv4Network | None = None
         self._owned_node_addresses: set[NodeId] = set()
         self._all_zone_addresses: dict[NodeId, set[str]] = {}
-        self._prepared_resources: set[ConnectionId] = set()
-        self._all_prepared_resources: set[ConnectionId] = set()
+        self._prepared_resources: set[OperationalConnectionId] = set()
+        self._all_prepared_resources: set[OperationalConnectionId] = set()
         self._interface_indexes: dict[tuple[str, str], int] = {}
         self._generation_keys: dict[
             int, tuple[tuple[str, tuple[int, ...], tuple[int, ...]], ...]
@@ -420,7 +460,7 @@ class _TcBpfRuntimeRealization:
 
     def initialize(
         self,
-        topology_signature: object,
+        physical_world_projection: object,
         *,
         zone_prefixes: tuple[str, ...],
         capacity_boundaries: tuple[_NominalBoundary, ...],
@@ -429,16 +469,24 @@ class _TcBpfRuntimeRealization:
     ) -> dict[str, Any]:
         if self._initialized:
             raise RuntimeError("tc-BPF runtime realization is already initialized")
-        topology_nodes = tuple(
-            sorted(getattr(topology_signature, "node_ids"), key=_node_key)
+        physical_world_nodes = tuple(
+            sorted(
+                getattr(physical_world_projection, "node_ids"),
+                key=_node_key,
+            )
         )
-        if set(topology_nodes) != set(self._bindings):
-            raise ValueError("runtime bindings do not match compiled topology")
+        if set(physical_world_nodes) != set(self._bindings):
+            raise ValueError(
+                "runtime bindings do not match compiled PhysicalWorld"
+            )
         self._node_addresses, self._node_address_range = (
-            _allocate_node_addresses(topology_nodes, tuple(zone_prefixes))
+            _allocate_node_addresses(
+                physical_world_nodes, tuple(zone_prefixes)
+            )
         )
         components = {
-            node_id: _component("n-", node_id.value) for node_id in topology_nodes
+            node_id: _component("n-", node_id.value)
+            for node_id in physical_world_nodes
         }
         if len(set(components.values())) != len(components):
             raise ValueError("default Runner node pin hash collision")
@@ -451,9 +499,11 @@ class _TcBpfRuntimeRealization:
                 "pin_component": components[node_id],
                 "node_address": self._node_addresses[node_id],
             }
-            for node_slot, node_id in enumerate(topology_nodes)
+            for node_slot, node_id in enumerate(physical_world_nodes)
         )
-        self._all_zone_addresses = {node_id: set() for node_id in topology_nodes}
+        self._all_zone_addresses = {
+            node_id: set() for node_id in physical_world_nodes
+        }
         capacity_plan = self._initial_capacity_plan(
             capacity_boundaries,
             preparation_lookahead=preparation_lookahead,
@@ -541,7 +591,7 @@ class _TcBpfRuntimeRealization:
                 },
             )
             raise
-        self._owned_node_addresses = set(topology_nodes)
+        self._owned_node_addresses = set(physical_world_nodes)
         if self._telemetry_enabled:
             assert isinstance(telemetry_kernel, dict)
             self._telemetry_kernel = dict(telemetry_kernel)
@@ -755,7 +805,8 @@ class _TcBpfRuntimeRealization:
         generation = pending.generation
         new_resources = set(state.resources) - self._prepared_resources
         parameters = {
-            (value.connection_id, value.direction): value for value in state.parameters
+            (value.connection_id, value.source, value.target): value
+            for value in state.parameters
         }
         connections = [
             self._connection_request(value, parameters)
@@ -1245,7 +1296,7 @@ class _TcBpfRuntimeRealization:
         states = []
         state = _empty_state()
         generation_nodes = []
-        known_resources: set[ConnectionId] = set()
+        known_resources: set[OperationalConnectionId] = set()
         for boundary in boundaries:
             previous_state = state
             state = _materialize_boundary(previous_state, boundary)
@@ -1489,9 +1540,9 @@ class _TcBpfRuntimeRealization:
 
     @staticmethod
     def _assert_unique_resource_bindings(
-        resources: set[ConnectionId],
+        resources: set[OperationalConnectionId],
     ) -> None:
-        names: dict[str, ConnectionId] = {}
+        names: dict[str, OperationalConnectionId] = {}
         for connection_id in resources:
             for name in _interface_names(connection_id):
                 prior = names.setdefault(name, connection_id)
@@ -1539,7 +1590,9 @@ class _TcBpfRuntimeRealization:
             "minimum_route_headroom": minimum_route_headroom or 0,
         }
 
-    def _connection_identity(self, connection_id: ConnectionId) -> dict[str, Any]:
+    def _connection_identity(
+        self, connection_id: OperationalConnectionId
+    ) -> dict[str, Any]:
         interface_a, interface_b = _interface_names(connection_id)
         return {
             "connection": _connection_key(connection_id),
@@ -1551,15 +1604,25 @@ class _TcBpfRuntimeRealization:
 
     def _connection_request(
         self,
-        connection_id: ConnectionId,
-        parameters: Mapping[tuple[ConnectionId, ConnectionDirection], _QdiscValue],
+        connection_id: OperationalConnectionId,
+        parameters: Mapping[
+            tuple[OperationalConnectionId, NodeId, NodeId], _QdiscValue
+        ],
     ) -> dict[str, Any]:
         value = self._connection_identity(connection_id)
-        for suffix, direction in (
-            ("a", ConnectionDirection.ENDPOINT_A_TO_B),
-            ("b", ConnectionDirection.ENDPOINT_B_TO_A),
+        for suffix, source, target in (
+            (
+                "a",
+                connection_id.endpoint_a,
+                connection_id.endpoint_b,
+            ),
+            (
+                "b",
+                connection_id.endpoint_b,
+                connection_id.endpoint_a,
+            ),
         ):
-            parameter = parameters[(connection_id, direction)]
+            parameter = parameters[(connection_id, source, target)]
             value[f"parameters_{suffix}"] = {
                 "bandwidth_bps": parameter.bandwidth_bps,
                 "delay_us": parameter.delay_us,
@@ -1584,20 +1647,27 @@ class _TcBpfRuntimeRealization:
         for edge in state.zone_edges:
             result[edge.service_satellite_id][str(ip_interface(edge.packet_prefix).ip)] = None
         for binding in state.forwarding:
-            source, next_hop = _direction_endpoints(binding.connection_id, binding.direction)
-            if source != binding.route_key.source or next_hop != binding.next_hop:
-                raise ValueError("compiled forwarding contradicts its direction")
+            source = binding.route_key.source
+            next_hop = binding.next_hop
+            if {source, next_hop} != {
+                binding.connection_id.endpoint_a,
+                binding.connection_id.endpoint_b,
+            }:
+                raise ValueError(
+                    "compiled forwarding contradicts its Connection"
+                )
             target = binding.route_key.target
-            if isinstance(target, GroundStationRouteTarget):
+            if isinstance(target, GroundStationRouteDemandTarget):
                 destination = self._node_addresses[target.ground_station_id]
-            elif isinstance(target, ZoneRouteTarget):
+            elif isinstance(target, ZoneRouteDemandTarget):
                 if binding.packet_prefix is None:
                     raise ValueError("compiled Zone forwarding lacks packet identity")
                 destination = str(ip_interface(binding.packet_prefix).ip)
             else:  # pragma: no cover
                 raise TypeError("compiled forwarding has an unknown target")
-            interface_a, interface_b = _interface_names(binding.connection_id)
-            interface = interface_a if source == binding.connection_id.endpoint_a else interface_b
+            interface = _interface_name_for_source(
+                binding.connection_id, source
+            )
             prior = result[source].setdefault(destination, interface)
             if prior != interface:
                 raise ValueError("compiled forwarding has conflicting destinations")
@@ -1612,7 +1682,10 @@ class _TcBpfRuntimeRealization:
             node_id: {} for node_id in self._bindings
         }
         for connection_id in state.resources:
-            if connection_id.kind is not ConnectionKind.GROUND_STATION_ACCESS:
+            if (
+                connection_id.kind
+                is not OperationalConnectionKind.GROUND_STATION_ACCESS
+            ):
                 continue
             ground_station, satellite = _ground_station_access_endpoints(
                 connection_id
@@ -1712,7 +1785,8 @@ class _TcBpfRuntimeRealization:
         old_edges = {value.zone_id: value for value in previous_state.zone_edges}
         new_edges = {value.zone_id: value for value in state.zone_edges}
         parameter_state = {
-            (value.connection_id, value.direction): value for value in state.parameters
+            (value.connection_id, value.source, value.target): value
+            for value in state.parameters
         }
         by_key = {node["key"]: node for node in self._nodes}
         identities_by_node: dict[NodeId, list[dict[str, Any]]] = {
@@ -1771,10 +1845,13 @@ class _TcBpfRuntimeRealization:
             intent = operation.intent
             if not isinstance(intent, _QdiscIntent) or intent.connection_id not in old_resources:
                 continue
-            value = parameter_state[(intent.connection_id, intent.direction)]
-            source, _ = _direction_endpoints(value.connection_id, value.direction)
-            names = _interface_names(value.connection_id)
-            interface = names[0] if source == value.connection_id.endpoint_a else names[1]
+            value = parameter_state[
+                (intent.connection_id, intent.source, intent.target)
+            ]
+            source = value.source
+            interface = _interface_name_for_source(
+                value.connection_id, source
+            )
             grouped[source]["qdisc"].append(
                 {
                     "interface": interface,

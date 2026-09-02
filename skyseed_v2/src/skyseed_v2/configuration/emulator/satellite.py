@@ -100,6 +100,7 @@ class GeneratedOrbitLayout:
         InOrbitPhaseDistribution()
     )
     max_simultaneous_ground_station_accesses: int | None = None
+    maximum_simultaneous_inter_satellite_links: int | None = None
 
     def __post_init__(self) -> None:
         _positive_integer(self.orbit_count, "orbit_count")
@@ -116,6 +117,11 @@ class GeneratedOrbitLayout:
             _positive_integer(
                 self.max_simultaneous_ground_station_accesses,
                 "max_simultaneous_ground_station_accesses",
+            )
+        if self.maximum_simultaneous_inter_satellite_links is not None:
+            _positive_integer(
+                self.maximum_simultaneous_inter_satellite_links,
+                "maximum_simultaneous_inter_satellite_links",
             )
         if not isinstance(
             self.in_orbit_phase_distribution,
@@ -169,6 +175,7 @@ class SatelliteConfig:
     mean_anomaly_deg: float
     payload_items: tuple[tuple[str, str], ...] = ()
     max_simultaneous_ground_station_accesses: int | None = None
+    maximum_simultaneous_inter_satellite_links: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -204,6 +211,11 @@ class SatelliteConfig:
             _positive_integer(
                 self.max_simultaneous_ground_station_accesses,
                 "max_simultaneous_ground_station_accesses",
+            )
+        if self.maximum_simultaneous_inter_satellite_links is not None:
+            _positive_integer(
+                self.maximum_simultaneous_inter_satellite_links,
+                "maximum_simultaneous_inter_satellite_links",
             )
 
 

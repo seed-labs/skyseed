@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import defaultdict
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
@@ -9,350 +11,373 @@ import time
 
 import pytest
 
+from examples.complete_static_emulator.emu import build_emulator
+from examples.complete_static_emulator.simu import (
+    create_complete_static_simulator,
+    run_complete_static_chain,
+)
+from skyseed_v2.shared import NodeId
+from skyseed_v2.backend.bpf import BpfRunner
+from skyseed_v2.backend.bpf.compiled_realization import (
+    _ForwardingBinding,
+    _ForwardingKey,
+)
+from skyseed_v2.experiment.traffic.probe_execution import TrafficProbeExecutor
+from skyseed_v2.simulator import (
+    GroundStationRouteDemandTarget,
+    OperationalConnectionId,
+    OperationalConnectionKind,
+    ReachableRouteOutcome,
+    RouteDemand,
+    RouteUnreachableReason,
+    UnreachableRouteOutcome,
+    ZoneRouteDemandTarget,
+)
 from skyseed_v2.experiment.traffic.probe_plan import (
+    IncrementalTrafficProbePlanBuilder,
     TrafficProbePlanBuilder,
+    _BoundaryProjection,
     _DIRECTION_GROUND_TO_ZONE,
     _DIRECTION_ZONE_TO_GROUND,
     _PairSeed,
+    _ProbeStateInterval,
+    _make_identity,
+    _resolve_path,
     read_traffic_probe_plan,
     write_traffic_probe_plan,
-)
-from skyseed_v2.experiment.traffic.probe_execution import TrafficProbeExecutor
-from skyseed_v2.backend.bpf import BpfRunner
-from skyseed_v2.backend.bpf.compiled_realization import (
-    BpfCompiledRealization,
-    _AttachmentDemand,
-    _ForwardingBinding,
-    _ForwardingIntent,
-    _IntendedState,
-    _QdiscIntent,
-    _ResourceIntent,
-    _ResourceState,
-    _TopologySignature,
-    _ZoneEdgeIntent,
-    _ZoneEdgeState,
-)
-from skyseed_v2.shared import NodeId
-from skyseed_v2.simulator import (
-    Connection,
-    ConnectionDirection,
-    ConnectionId,
-    ConnectionKind,
-    ConnectionTransitionOperation,
-    DifferenceOperation,
-    DirectionalConnectionParameters,
-    GroundStationRouteTarget,
-    RouteKey,
-    ZoneRouteTarget,
 )
 
 
 START = datetime(2026, 1, 1, tzinfo=timezone.utc)
-GROUND = NodeId(65001, "ground-station", "ground-1")
-SATELLITE_A = NodeId(65001, "satellite", "satellite-a")
-SATELLITE_B = NodeId(65001, "satellite", "satellite-b")
-ZONE = "zone-a"
-ZONE_PREFIX = "198.18.0.1/32"
-ACCESS = ConnectionId(
-    ConnectionKind.GROUND_STATION_ACCESS, GROUND, SATELLITE_A
-)
-ISL = ConnectionId(
-    ConnectionKind.INTER_SATELLITE, SATELLITE_A, SATELLITE_B
-)
-PARAMETERS = DirectionalConnectionParameters(1_000_000, 1_000, 0)
 
 
-def _connection(connection_id: ConnectionId) -> Connection:
-    return Connection(connection_id, PARAMETERS, PARAMETERS)
+@pytest.fixture(scope="module")
+def complete_chain():
+    simulator = create_complete_static_simulator(build_emulator())
+    plans, realizations, snapshot = run_complete_static_chain(simulator)
+    return simulator, plans, realizations, snapshot
 
 
-def _direction(connection_id: ConnectionId, source: NodeId) -> ConnectionDirection:
-    return (
-        ConnectionDirection.ENDPOINT_A_TO_B
-        if connection_id.endpoint_a == source
-        else ConnectionDirection.ENDPOINT_B_TO_A
+def test_probe_plan_uses_all_formal_activation_boundaries(
+    complete_chain,
+) -> None:
+    _, plans, realizations, _ = complete_chain
+    plan = TrafficProbePlanBuilder().build(plans, realizations)
+    assert plan.nominal_boundaries == tuple(
+        timestamp
+        for realization in realizations
+        for timestamp in realization.activation_timestamps
+    )
+    assert plan.coverage_start == realizations[0].start_timestamp
+    assert plan.coverage_end == realizations[-1].end_timestamp
+    assert plan.probe_identities
+    assert plan.episodes
+
+
+def test_probe_selection_is_deterministic_and_round_trips(
+    tmp_path, complete_chain
+) -> None:
+    _, plans, realizations, _ = complete_chain
+    builder = TrafficProbePlanBuilder()
+    first = builder.build(plans, realizations)
+    second = builder.build(plans, realizations)
+    assert first.revision_id == second.revision_id
+    assert first.probe_identities == second.probe_identities
+    assert first.episodes == second.episodes
+    path = write_traffic_probe_plan(first, tmp_path / "probe-plan.json")
+    loaded = read_traffic_probe_plan(path)
+    assert loaded.revision_id == first.revision_id
+    assert loaded.probe_identities == first.probe_identities
+    assert loaded.episodes == first.episodes
+
+
+def test_incremental_probe_projection_exactly_matches_batch_builder(
+    complete_chain,
+) -> None:
+    _, plans, realizations, _ = complete_chain
+    expected = TrafficProbePlanBuilder().build(plans, realizations).artifact()
+    builder = IncrementalTrafficProbePlanBuilder()
+    for plan, realization in zip(plans, realizations, strict=True):
+        builder.append(plan, realization)
+    actual = builder.finalize().artifact()
+
+    # Wall duration is diagnostic; every selected identity and semantic fact
+    # must otherwise be byte-for-byte equivalent.
+    expected["planning"]["duration_seconds"] = 0.0
+    actual["planning"]["duration_seconds"] = 0.0
+    assert actual == expected
+
+
+def test_incremental_probe_duration_counts_work_not_interleaved_wait(
+    complete_chain,
+    monkeypatch,
+) -> None:
+    import time
+
+    _, plans, realizations, _ = complete_chain
+    ticks = iter(float(value) for value in range(0, 10_000, 2))
+    monkeypatch.setattr(time, "monotonic", lambda: next(ticks))
+    builder = IncrementalTrafficProbePlanBuilder()
+    for plan, realization in zip(plans, realizations, strict=True):
+        builder.append(plan, realization)
+
+    # Each append and finalize consumes two adjacent synthetic ticks. Time
+    # between calls is deliberately absent from the diagnostic duration.
+    artifact = builder.finalize().artifact()
+    assert artifact["planning"]["duration_seconds"] == 2.0 * (
+        len(realizations) + 1
     )
 
 
-def _binding(
-    source: NodeId,
-    target,
-    next_hop: NodeId,
-    connection_id: ConnectionId,
-) -> _ForwardingBinding:
-    return _ForwardingBinding(
-        RouteKey(source, target),
-        next_hop,
-        connection_id,
-        _direction(connection_id, source),
-        ZONE_PREFIX if isinstance(target, ZoneRouteTarget) else None,
-    )
-
-
-def _resource_intent(connection_id: ConnectionId) -> _ResourceIntent:
-    first, second = connection_id.endpoint_a, connection_id.endpoint_b
-    return _ResourceIntent(
-        START,
-        ConnectionTransitionOperation.ESTABLISH,
-        connection_id,
-        (
-            _AttachmentDemand(
-                connection_id,
-                ConnectionDirection.ENDPOINT_A_TO_B,
-                first,
-                second,
-            ),
-            _AttachmentDemand(
-                connection_id,
-                ConnectionDirection.ENDPOINT_B_TO_A,
-                second,
-                first,
-            ),
-        ),
-    )
-
-
-def _handover_realization(
-    *, loop: bool = False, one_way_initial: bool = False
-) -> BpfCompiledRealization:
-    zone_target = ZoneRouteTarget(ZONE)
-    ground_target = GroundStationRouteTarget(GROUND)
-    ground_to_a = _binding(GROUND, zone_target, SATELLITE_A, ACCESS)
-    a_to_b = _binding(
-        SATELLITE_A,
-        zone_target,
-        GROUND if loop else SATELLITE_B,
-        ACCESS if loop else ISL,
-    )
-    b_to_a = _binding(SATELLITE_B, ground_target, SATELLITE_A, ISL)
-    a_to_ground = _binding(SATELLITE_A, ground_target, GROUND, ACCESS)
-    initial_forwarding = (
-        (ground_to_a, b_to_a, a_to_ground)
-        if one_way_initial
-        else (ground_to_a, a_to_b, b_to_a, a_to_ground)
-    )
-    forwarding_intents = [
-        _ForwardingIntent(
-            START, DifferenceOperation.ADDED, value.route_key, None, value
-        )
-        for value in initial_forwarding
+def test_reachable_intervals_carry_explicit_non_looping_paths(
+    complete_chain,
+) -> None:
+    _, plans, realizations, _ = complete_chain
+    plan = TrafficProbePlanBuilder().build(plans, realizations)
+    reachable = [
+        interval
+        for episode in plan.episodes
+        for interval in episode.state_intervals
+        if interval.expected_reachable
     ]
-    if not loop:
-        forwarding_intents.extend(
-            tuple(
-                _ForwardingIntent(
-                    START + timedelta(seconds=10),
-                    DifferenceOperation.REMOVED,
-                    value.route_key,
-                    value,
-                    None,
-                )
-                for value in (
-                    (b_to_a,) if one_way_initial else (a_to_b, b_to_a)
-                )
-            )
-        )
-    intended_forwarding = (
-        (ground_to_a, a_to_ground)
-        if not loop
-        else (ground_to_a, a_to_b, b_to_a, a_to_ground)
+    assert reachable
+    assert all(
+        interval.path_length_hops == len(interval.path_node_ids) - 1
+        for interval in reachable
     )
-    zone_intents = [
-        _ZoneEdgeIntent(
-            START,
-            DifferenceOperation.ADDED,
-            ZONE,
-            ZONE_PREFIX,
-            None,
-            SATELLITE_B,
-        )
-    ]
-    intended_service = SATELLITE_B
-    if not loop:
-        zone_intents.append(
-            _ZoneEdgeIntent(
-                START + timedelta(seconds=10),
-                DifferenceOperation.CHANGED,
-                ZONE,
-                ZONE_PREFIX,
-                SATELLITE_B,
-                SATELLITE_A,
-            )
-        )
-        intended_service = SATELLITE_A
-    return BpfCompiledRealization._create(
-        start_slice_id=0,
-        start_timestamp=None,
-        end_slice_id=2,
-        end_timestamp=START + timedelta(seconds=20),
-        resource_realizations=(_resource_intent(ACCESS), _resource_intent(ISL)),
-        parameter_realizations=(
-            (
-                _QdiscIntent(
-                    START + timedelta(seconds=10),
-                    ACCESS,
-                    _direction(ACCESS, GROUND),
-                    GROUND,
-                    SATELLITE_A,
-                    None,
-                    2_000,
-                    None,
-                    "test-boundary",
-                ),
-            )
-            if loop
-            else ()
-        ),
-        forwarding_realizations=tuple(forwarding_intents),
-        zone_edge_realizations=tuple(zone_intents),
-        constraints=(),
-        intended_state=_IntendedState(
-            (_ResourceState(_connection(ACCESS)), _ResourceState(_connection(ISL))),
-            (),
-            tuple(intended_forwarding),
-            (_ZoneEdgeState(ZONE, ZONE_PREFIX, intended_service),),
-            ((ZONE, ZONE_PREFIX),),
-        ),
-        topology_signature=_TopologySignature(
-            (GROUND, SATELLITE_A, SATELLITE_B), (ZONE,)
-        ),
+    assert all(
+        len(interval.path_node_ids) == len(set(interval.path_node_ids))
+        for interval in reachable
     )
 
 
-def _extension_realization() -> BpfCompiledRealization:
-    base = _handover_realization()
-    return BpfCompiledRealization._create(
-        start_slice_id=2,
-        start_timestamp=START + timedelta(seconds=20),
-        end_slice_id=3,
-        end_timestamp=START + timedelta(seconds=30),
-        resource_realizations=(),
-        parameter_realizations=(
-            _QdiscIntent(
-                START + timedelta(seconds=20),
-                ACCESS,
-                _direction(ACCESS, GROUND),
-                GROUND,
-                SATELLITE_A,
-                None,
-                3_000,
-                None,
-                "extension-boundary",
+def test_absent_route_outcome_is_not_inferred_unreachable() -> None:
+    ground = NodeId(65001, "ground-station", "ground")
+    satellite = NodeId(65001, "satellite", "satellite")
+    projection = _BoundaryProjection(
+        nominal_time=complete_time(),
+        route_outcomes={},
+        forwarding={},
+        zone_edges={"zone-a": ("198.18.0.1/32", satellite)},
+        resources=set(),
+        route_outcomes_changed=[],
+        changed_access_ground_stations=[],
+        changed_zones=[],
+        prior_zone_edges={},
+    )
+    seed = _PairSeed(
+        _DIRECTION_GROUND_TO_ZONE,
+        ground,
+        "zone-a",
+        defaultdict(set),
+    )
+    with pytest.raises(ValueError, match="no explicit planned Route outcome"):
+        _resolve_path(seed, projection)
+
+
+def test_probe_selection_discards_candidate_without_full_route_horizon(
+    monkeypatch: pytest.MonkeyPatch,
+    complete_chain,
+) -> None:
+    from skyseed_v2.experiment.traffic import probe_plan as probe_plan_module
+
+    _, plans, realizations, _ = complete_chain
+    original_candidates = probe_plan_module._candidate_pairs
+    invalid_ground = NodeId(65001, "ground-station", "000-missing-demand")
+    invalid_key = (
+        _DIRECTION_GROUND_TO_ZONE,
+        invalid_ground.value,
+        "zone-a",
+    )
+
+    def candidates(plan_values, values, nominal_boundaries):
+        return (
+            _PairSeed(
+                _DIRECTION_GROUND_TO_ZONE,
+                invalid_ground,
+                "zone-a",
+                {"persistent-control-candidate": {nominal_boundaries[0]}},
             ),
-        ),
-        forwarding_realizations=(),
-        zone_edge_realizations=(),
-        constraints=(),
-        intended_state=base._intended_state,
-        topology_signature=base._topology_signature,
+            *original_candidates(plan_values, values, nominal_boundaries),
+        )
+
+    monkeypatch.setattr(probe_plan_module, "_candidate_pairs", candidates)
+    result = TrafficProbePlanBuilder().build(plans, realizations)
+
+    assert invalid_key not in {
+        (value.direction, value.ground_station_id, value.zone_id)
+        for value in result.probe_identities
+    }
+    assert result.episodes
+
+
+def test_explicit_unreachable_reason_is_preserved() -> None:
+    ground = NodeId(65001, "ground-station", "ground")
+    satellite = NodeId(65001, "satellite", "satellite")
+    demand = RouteDemand(ground, ZoneRouteDemandTarget("zone-a"))
+    outcome = UnreachableRouteOutcome(
+        demand,
+        RouteUnreachableReason.NO_OPERATIONAL_PATH,
     )
+    projection = _BoundaryProjection(
+        nominal_time=complete_time(),
+        route_outcomes={demand: outcome},
+        forwarding={},
+        zone_edges={"zone-a": ("198.18.0.1/32", satellite)},
+        resources=set(),
+        route_outcomes_changed=[demand],
+        changed_access_ground_stations=[],
+        changed_zones=[],
+        prior_zone_edges={},
+    )
+    seed = _PairSeed(
+        _DIRECTION_GROUND_TO_ZONE,
+        ground,
+        "zone-a",
+        defaultdict(set),
+    )
+    reachable, path, service, reason = _resolve_path(seed, projection)
+    assert reachable is False
+    assert path == ()
+    assert service == satellite
+    assert reason == RouteUnreachableReason.NO_OPERATIONAL_PATH.value
 
 
-def test_probe_plan_selection_is_deterministic_bounded_and_horizon_scoped(tmp_path):
+def test_probe_planning_rejects_broken_realization_lineage(
+    complete_chain,
+) -> None:
+    _, plans, realizations, _ = complete_chain
+    with pytest.raises(ValueError, match="bootstrap|lineage"):
+        TrafficProbePlanBuilder().build(
+            tuple(reversed(plans)), tuple(reversed(realizations))
+        )
+
+
+def complete_time():
+    return START
+
+
+def test_probe_plan_selection_is_deterministic_bounded_and_horizon_scoped(
+    tmp_path: Path,
+    complete_chain,
+) -> None:
+    _, plans, realizations, _ = complete_chain
     builder = TrafficProbePlanBuilder()
 
-    first = builder.build((_handover_realization(),))
-    second = builder.build((_handover_realization(),))
-    first_artifact = first.artifact()
-    second_artifact = second.artifact()
+    first = builder.build(plans, realizations)
+    second = builder.build(plans, realizations)
+    artifact = first.artifact()
 
-    assert [value["probe_id"] for value in first_artifact["probe_identities"]] == [
-        value["probe_id"] for value in second_artifact["probe_identities"]
-    ]
+    assert first.revision_id == second.revision_id
+    assert first.probe_identities == second.probe_identities
+    assert first.episodes == second.episodes
     assert len(first.episodes) <= 20
     assert {value.direction for value in first.probe_identities} == {
-        "ground-station-to-zone",
-        "zone-to-ground-station",
+        _DIRECTION_GROUND_TO_ZONE,
+        _DIRECTION_ZONE_TO_GROUND,
     }
-    assert any(
-        "zone-service-handover" in value.selection_reasons
-        for value in first.probe_identities
-    )
-    assert any(value.mode == "activation-window" for value in first.episodes)
-    assert any(value.mode == "rotating-background" for value in first.episodes)
-    assert first_artifact["planning_horizon"] == {
-        "coverage_start_time": START.isoformat(),
-        "coverage_end_time": (START + timedelta(seconds=20)).isoformat(),
-        "supplied_realization_count": 1,
+    assert {value.mode for value in first.episodes} >= {
+        "persistent",
+        "activation-window",
+        "rotating-background",
+    }
+    assert artifact["planning_horizon"] == {
+        "coverage_start_time": realizations[0].start_timestamp.isoformat(),
+        "coverage_end_time": realizations[-1].end_timestamp.isoformat(),
+        "supplied_realization_count": len(realizations),
         "terminality": "unknown",
         "revision_semantics": "revisable-lookahead",
         "revision_id": first.revision_id,
         "nominal_boundaries": [
-            START.isoformat(),
-            (START + timedelta(seconds=10)).isoformat(),
+            value.isoformat() for value in first.nominal_boundaries
         ],
     }
-    assert first_artifact["planning"]["maximum_request_rate_per_second"] <= 40
-    assert first_artifact["planning"]["selection_strategy"] == (
+    assert artifact["planning"]["maximum_request_rate_per_second"] <= 40
+    assert artifact["planning"]["selection_strategy"] == (
         "bounded-stratified-reservoir"
     )
-    assert first_artifact["planning"]["global_flow_ranking"] is False
+    assert artifact["planning"]["global_flow_ranking"] is False
 
     path = write_traffic_probe_plan(first, tmp_path / "probe-plan.json")
-    loaded = read_traffic_probe_plan(path)
-    assert [value.probe_id for value in loaded.probe_identities] == [
-        value.probe_id for value in first.probe_identities
-    ]
-    assert [value.episode_id for value in loaded.episodes] == [
-        value.episode_id for value in first.episodes
-    ]
-    assert json.loads(path.read_text())["runtime_authority"] is False
-    assert (
-        json.loads(path.read_text())["classification_scope"]
-        == "authoritative-active-published-runtime-only"
+    assert read_traffic_probe_plan(path).revision_id == first.revision_id
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    assert persisted["runtime_authority"] is False
+    assert persisted["classification_scope"] == (
+        "authoritative-active-published-runtime-only"
     )
 
 
 def test_probe_plan_resolves_paths_only_after_bounded_coverage_selection(
-    monkeypatch,
-):
+    monkeypatch: pytest.MonkeyPatch,
+    complete_chain,
+) -> None:
     from skyseed_v2.experiment.traffic import probe_plan as probe_plan_module
 
+    _, plans, realizations, _ = complete_chain
     original_candidates = probe_plan_module._candidate_pairs
     original_resolve = probe_plan_module._resolve_path
-    resolved = []
+    base_candidates = original_candidates(
+        tuple(plans),
+        tuple(realizations),
+        tuple(
+            timestamp
+            for realization in realizations
+            for timestamp in realization.activation_timestamps
+        ),
+    )
+    template = base_candidates[0]
+    resolved: list[tuple[str, str, str]] = []
 
-    def many_candidates(values, nominal_boundaries):
-        selected = list(original_candidates(values, nominal_boundaries))
+    def many_candidates(plan_values, values, nominal_boundaries):
+        selected = list(
+            original_candidates(plan_values, values, nominal_boundaries)
+        )
         for index in range(60):
-            selected.append(
-                _PairSeed(
-                    (
-                        _DIRECTION_GROUND_TO_ZONE
-                        if index % 2 == 0
-                        else _DIRECTION_ZONE_TO_GROUND
-                    ),
-                    NodeId(
-                        65001,
-                        "ground-station",
-                        f"zz-background-{index:03d}",
-                    ),
-                    ZONE,
-                    {"persistent-control-candidate": {START}},
-                )
+            seed = _PairSeed(
+                (
+                    _DIRECTION_GROUND_TO_ZONE
+                    if index % 2 == 0
+                    else _DIRECTION_ZONE_TO_GROUND
+                ),
+                NodeId(
+                    template.ground_station.asn,
+                    "ground-station",
+                    f"bounded-background-{index:03d}",
+                ),
+                template.zone_id,
+                {"persistent-control-candidate": {START}},
             )
+            selected.append(seed)
         return tuple(selected)
 
     def count_resolve(seed, projection):
         resolved.append(seed.key)
+        if seed.ground_station.entity_id.startswith("bounded-background-"):
+            return False, (), None, RouteUnreachableReason.NO_OPERATIONAL_PATH.value
         return original_resolve(seed, projection)
 
     monkeypatch.setattr(probe_plan_module, "_candidate_pairs", many_candidates)
     monkeypatch.setattr(probe_plan_module, "_resolve_path", count_resolve)
 
-    plan = TrafficProbePlanBuilder().build((_handover_realization(),))
+    plan = TrafficProbePlanBuilder().build(plans, realizations)
 
-    assert plan.candidate_pair_count == 62
+    assert plan.candidate_pair_count == len(base_candidates) + 60
     assert len(set(resolved)) <= 20
     assert len(resolved) <= 20 * len(plan.nominal_boundaries)
-    assert len(resolved) < plan.candidate_pair_count * len(plan.nominal_boundaries)
+    assert len(resolved) < plan.candidate_pair_count * len(
+        plan.nominal_boundaries
+    )
 
 
-def test_windowed_probe_reconstruction_is_event_local(monkeypatch):
+def test_windowed_probe_reconstruction_is_event_local(
+    monkeypatch: pytest.MonkeyPatch,
+    complete_chain,
+) -> None:
     from skyseed_v2.experiment.traffic import probe_plan as probe_plan_module
 
+    _, plans, realizations, _ = complete_chain
     original = probe_plan_module._resolve_path
-    resolved = []
+    resolved: list[tuple[tuple[str, str, str], datetime]] = []
 
     def count_resolve(seed, projection):
         resolved.append((seed.key, projection.nominal_time))
@@ -362,19 +387,22 @@ def test_windowed_probe_reconstruction_is_event_local(monkeypatch):
     plan = TrafficProbePlanBuilder(
         maximum_persistent_probes=0,
         maximum_activation_window_probes=8,
-    ).build((_handover_realization(), _extension_realization()))
+    ).build(plans, realizations)
 
     assert plan.episodes
-    assert {episode.mode for episode in plan.episodes} == {"activation-window"}
+    assert {episode.mode for episode in plan.episodes} == {
+        "activation-window"
+    }
     assert len(resolved) < (
         len(plan.probe_identities) * len(plan.nominal_boundaries) * 2
     )
 
 
-def test_adjacent_semantically_equal_probe_states_are_compressed():
-    plan = TrafficProbePlanBuilder().build(
-        (_handover_realization(), _extension_realization())
-    )
+def test_adjacent_semantically_equal_probe_states_are_compressed(
+    complete_chain,
+) -> None:
+    _, plans, realizations, _ = complete_chain
+    plan = TrafficProbePlanBuilder().build(plans, realizations)
     persistent = [
         episode for episode in plan.episodes if episode.mode == "persistent"
     ]
@@ -392,84 +420,146 @@ def test_adjacent_semantically_equal_probe_states_are_compressed():
                 prior.end_time == current.start_time
                 and prior.expected_reachable == current.expected_reachable
                 and prior.unreachable_reason == current.unreachable_reason
-                and prior.service_satellite_id == current.service_satellite_id
+                and prior.service_satellite_id
+                == current.service_satellite_id
                 and prior.path_node_ids == current.path_node_ids
                 and prior.path_length_hops == current.path_length_hops
             )
 
 
-def test_probe_plan_classifies_zone_source_migration_and_path_change():
-    plan = TrafficProbePlanBuilder().build((_handover_realization(),))
-
-    reverse_ids = {
-        value.probe_id
-        for value in plan.probe_identities
-        if value.direction == "zone-to-ground-station"
-    }
-    reverse_identities = [
-        value for value in plan.probe_identities if value.probe_id in reverse_ids
-    ]
-    reverse_episodes = [
-        value for value in plan.episodes if value.probe_id in reverse_ids
-    ]
-
-    assert reverse_identities
-    assert reverse_episodes
-    assert any(value.path_stability == "changing" for value in reverse_identities)
-    assert any(
-        "zone-source-migration" in interval.boundary_reasons
-        for value in reverse_episodes
-        for interval in value.state_intervals
+def test_probe_plan_classifies_zone_source_migration_and_path_change() -> None:
+    ground = NodeId(65001, "ground-station", "ground")
+    first_satellite = NodeId(65001, "satellite", "satellite-a")
+    second_satellite = NodeId(65001, "satellite", "satellite-b")
+    seed = _PairSeed(
+        _DIRECTION_ZONE_TO_GROUND,
+        ground,
+        "zone-a",
+        {"zone-service-handover": {START + timedelta(seconds=10)}},
     )
-    assert {
-        interval.service_satellite_id
-        for value in reverse_episodes
-        for interval in value.state_intervals
-    } == {SATELLITE_A.value, SATELLITE_B.value}
-
-
-def test_probe_reachability_requires_request_and_echo_return_paths():
-    plan = TrafficProbePlanBuilder().build(
-        (_handover_realization(one_way_initial=True),)
+    intervals = (
+        _ProbeStateInterval(
+            START,
+            START + timedelta(seconds=10),
+            True,
+            None,
+            first_satellite.value,
+            (first_satellite.value, ground.value),
+            1,
+            ("zone-source-migration",),
+        ),
+        _ProbeStateInterval(
+            START + timedelta(seconds=10),
+            START + timedelta(seconds=20),
+            True,
+            None,
+            second_satellite.value,
+            (second_satellite.value, ground.value),
+            1,
+            ("zone-source-migration",),
+        ),
     )
-    reverse_episodes = [
-        value
-        for value in plan.episodes
-        if next(
-            identity
-            for identity in plan.probe_identities
-            if identity.probe_id == value.probe_id
-        ).direction
-        == _DIRECTION_ZONE_TO_GROUND
-    ]
 
-    assert reverse_episodes
-    intervals = reverse_episodes[0].state_intervals
-    assert intervals[0].expected_reachable is False
-    assert intervals[0].unreachable_reason == "return-missing-forwarding"
-    assert intervals[1].expected_reachable is True
+    identity = _make_identity(seed, intervals, zone_ipv4="198.18.0.1")
+
+    assert identity.path_stability == "changing"
+    assert "zone-source-migration" in identity.selection_reasons
+    assert "persistent-changing-path" in identity.selection_reasons
 
 
-def test_probe_plan_fails_closed_on_forwarding_loop():
-    with pytest.raises(ValueError, match="forwarding loop"):
-        TrafficProbePlanBuilder().build((_handover_realization(loop=True),))
+def test_probe_reachability_requires_request_and_echo_return_paths() -> None:
+    ground = NodeId(65001, "ground-station", "ground")
+    satellite = NodeId(65001, "satellite", "satellite")
+    zone_target = ZoneRouteDemandTarget("zone-a")
+    ground_target = GroundStationRouteDemandTarget(ground)
+    access = OperationalConnectionId(
+        OperationalConnectionKind.GROUND_STATION_ACCESS,
+        ground,
+        satellite,
+    )
+    outward_demand = RouteDemand(ground, zone_target)
+    outward = ReachableRouteOutcome(
+        outward_demand,
+        satellite,
+        (ground, satellite),
+    )
+    projection = _BoundaryProjection(
+        nominal_time=START,
+        route_outcomes={outward_demand: outward},
+        forwarding={
+            _ForwardingKey(ground, zone_target): _ForwardingBinding(
+                _ForwardingKey(ground, zone_target),
+                satellite,
+                access,
+                "198.18.0.1/32",
+            )
+        },
+        zone_edges={"zone-a": ("198.18.0.1/32", satellite)},
+        resources={access},
+        route_outcomes_changed=[outward_demand],
+        changed_access_ground_stations=[],
+        changed_zones=[],
+        prior_zone_edges={},
+    )
+
+    reachable, path, _, reason = _resolve_path(
+        _PairSeed(
+            _DIRECTION_GROUND_TO_ZONE,
+            ground,
+            "zone-a",
+            defaultdict(set),
+        ),
+        projection,
+    )
+    assert reachable is True
+    assert path == (ground, satellite)
+    assert reason is None
+    with pytest.raises(ValueError, match="no explicit planned Route outcome"):
+        _resolve_path(
+            _PairSeed(
+                _DIRECTION_ZONE_TO_GROUND,
+                ground,
+                "zone-a",
+                defaultdict(set),
+            ),
+            projection,
+        )
+    assert RouteDemand(satellite, ground_target) not in projection.route_outcomes
 
 
-def test_probe_plan_does_not_claim_complete_experiment():
-    artifact = TrafficProbePlanBuilder().build((_handover_realization(),)).artifact()
+def test_probe_plan_fails_closed_on_forwarding_loop() -> None:
+    ground = NodeId(65001, "ground-station", "ground")
+    satellite = NodeId(65001, "satellite", "satellite")
+    demand = RouteDemand(ground, ZoneRouteDemandTarget("zone-a"))
 
+    with pytest.raises(ValueError, match="loop-free"):
+        ReachableRouteOutcome(
+            demand,
+            satellite,
+            (ground, satellite, ground),
+        )
+
+
+def test_probe_plan_does_not_claim_complete_experiment(
+    complete_chain,
+) -> None:
+    from skyseed_v2.experiment.traffic.probe_plan import TrafficProbePlan
+
+    _, plans, realizations, _ = complete_chain
+    artifact = TrafficProbePlanBuilder().build(plans, realizations).artifact()
     artifact["planning_horizon"]["terminality"] = "terminal"
 
     with pytest.raises(ValueError, match="claims terminality"):
-        from skyseed_v2.experiment.traffic.probe_plan import TrafficProbePlan
-
         TrafficProbePlan.from_artifact(artifact)
 
 
-def test_probe_identity_and_episode_identity_survive_horizon_extension():
+def test_probe_identity_and_episode_identity_survive_horizon_extension(
+    complete_chain,
+) -> None:
+    _, plans, realizations, _ = complete_chain
     builder = TrafficProbePlanBuilder()
-    prefix = builder.build((_handover_realization(),))
-    extended = builder.build((_handover_realization(), _extension_realization()))
+    prefix = builder.build(plans[:1], realizations[:1])
+    extended = builder.build(plans, realizations)
 
     assert prefix.revision_id != extended.revision_id
     assert {value.probe_id for value in prefix.probe_identities} <= {
@@ -492,14 +582,64 @@ def test_probe_identity_and_episode_identity_survive_horizon_extension():
     )
 
 
-def _runner_snapshot(*, omit: str | None = None) -> dict[str, object]:
+def test_unserved_zone_preserves_explicit_route_outcome_reason() -> None:
+    ground = NodeId(65001, "ground-station", "ground")
+    demand = RouteDemand(ground, ZoneRouteDemandTarget("zone-a"))
+    outcome = UnreachableRouteOutcome(
+        demand,
+        RouteUnreachableReason.NO_OPERATIONAL_PATH,
+    )
+    projection = _BoundaryProjection(
+        nominal_time=START,
+        route_outcomes={demand: outcome},
+        forwarding={},
+        zone_edges={},
+        resources=set(),
+        route_outcomes_changed=[demand],
+        changed_access_ground_stations=[],
+        changed_zones=["zone-a"],
+        prior_zone_edges={},
+    )
+
+    reachable, path, service, reason = _resolve_path(
+        _PairSeed(
+            _DIRECTION_GROUND_TO_ZONE,
+            ground,
+            "zone-a",
+            defaultdict(set),
+        ),
+        projection,
+    )
+
+    assert reachable is False
+    assert path == ()
+    assert service is None
+    assert reason == RouteUnreachableReason.NO_OPERATIONAL_PATH.value
+
+
+def _runner_snapshot(
+    plan,
+    *,
+    omit: str | None = None,
+    extra_nodes: tuple[str, ...] = (),
+) -> dict[str, object]:
+    node_ids = {
+        identity.ground_station_id for identity in plan.probe_identities
+    }
+    node_ids.update(
+        interval.service_satellite_id
+        for episode in plan.episodes
+        for interval in episode.state_intervals
+        if interval.service_satellite_id is not None
+    )
+    node_ids.update(extra_nodes)
     bindings = []
-    for index, node in enumerate((GROUND, SATELLITE_A, SATELLITE_B), start=1):
-        if node.value == omit:
+    for index, node_id in enumerate(sorted(node_ids), start=1):
+        if node_id == omit:
             continue
         bindings.append(
             {
-                "node_id": node.value,
+                "node_id": node_id,
                 "container_id": f"container-{index}",
                 "container_name": f"node-{index}",
                 "pid": 1000 + index,
@@ -537,14 +677,16 @@ class _OriginRunner(BpfRunner):
                     "nominal_origin": self._test_plan.coverage_start.isoformat(),
                     "wall_origin": self._test_origin,
                 },
-            )
+            ),
         }
 
 
 class _JumpedOriginRunner(_OriginRunner):
     def __init__(self, plan) -> None:
         super().__init__(plan)
-        self._test_origin -= (plan.coverage_end - plan.coverage_start).total_seconds()
+        self._test_origin -= (
+            plan.coverage_end - plan.coverage_start
+        ).total_seconds()
 
     def inspection_snapshot(self) -> dict[str, object]:
         value = super().inspection_snapshot()
@@ -554,7 +696,11 @@ class _JumpedOriginRunner(_OriginRunner):
         return value
 
 
-def _install_fake_docker_processes(monkeypatch, *, ignore_term: bool = False):
+def _install_fake_docker_processes(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    ignore_term: bool = False,
+):
     from skyseed_v2.experiment.traffic import probe_execution as execution_module
 
     real_popen = subprocess.Popen
@@ -567,14 +713,20 @@ def _install_fake_docker_processes(monkeypatch, *, ignore_term: bool = False):
             if isinstance(value, str)
             and value.startswith("SKYSEED_TRAFFIC_GENERATOR_ID=")
         )
-        term_handler = "trap '' TERM; " if ignore_term else (
-            "trap 'printf \"2 packets transmitted, 1 received, 50% packet loss\\n\"; exit 0' TERM; "
+        term_handler = (
+            "trap '' TERM; "
+            if ignore_term
+            else (
+                "trap 'printf \"2 packets transmitted, 1 received, "
+                "50% packet loss\\n\"; exit 0' TERM; "
+            )
         )
         process = real_popen(
             (
                 "sh",
                 "-c",
-                "printf '[1.0] 64 bytes from test: icmp_seq=1 ttl=64 time=1.25 ms\\n'; "
+                "printf '[1.0] 64 bytes from test: icmp_seq=1 ttl=64 "
+                "time=1.25 ms\\n'; "
                 "printf '[2.0] no answer yet for icmp_seq=2\\n'; "
                 + term_handler
                 + "while :; do sleep 0.05; done",
@@ -590,7 +742,11 @@ def _install_fake_docker_processes(monkeypatch, *, ignore_term: bool = False):
         action = command[-3]
         runtime_identity = command[-1]
         process = processes.get(runtime_identity)
-        state = "missing" if process is None else "active" if process.poll() is None else "stale"
+        state = (
+            "missing"
+            if process is None
+            else "active" if process.poll() is None else "stale"
+        )
         if action == "term" and state == "active":
             if not ignore_term:
                 process.terminate()
@@ -612,22 +768,27 @@ def _install_fake_docker_processes(monkeypatch, *, ignore_term: bool = False):
 
 
 def test_probe_executor_resolves_bindings_parses_ping_and_cleans_every_process(
-    tmp_path, monkeypatch
-):
-    plan = TrafficProbePlanBuilder().build((_handover_realization(),))
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    complete_chain,
+) -> None:
+    _, plans, realizations, _ = complete_chain
+    plan = TrafficProbePlanBuilder().build(plans, realizations)
     processes = _install_fake_docker_processes(monkeypatch)
     evidence = tmp_path / "probe-execution.jsonl"
     executor = TrafficProbeExecutor(
         docker_executable="docker",
         plan=plan,
-        runner_snapshot=_runner_snapshot(),
+        runner_snapshot=_runner_snapshot(plan),
         evidence_path=evidence,
     )
 
     executor.start(_OriginRunner(plan))
     time.sleep(0.2)
     snapshot = executor.stop()
-    records = [json.loads(line) for line in evidence.read_text().splitlines()]
+    records = [
+        json.loads(line) for line in evidence.read_text().splitlines()
+    ]
 
     assert snapshot["complete"] is True
     assert snapshot["cleanup_complete"] is True
@@ -648,7 +809,8 @@ def test_probe_executor_resolves_bindings_parses_ping_and_cleans_every_process(
         for value in observations
     )
     assert any(
-        value["observation"] == "timeout" and value["icmp_sequence"] == 2
+        value["observation"] == "timeout"
+        and value["icmp_sequence"] == 2
         for value in observations
     )
     assert all(
@@ -661,11 +823,14 @@ def test_probe_executor_resolves_bindings_parses_ping_and_cleans_every_process(
 
 
 def test_cancelled_episode_can_rearm_under_a_revised_lookahead(
-    tmp_path, monkeypatch
-):
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    complete_chain,
+) -> None:
+    _, plans, realizations, _ = complete_chain
     builder = TrafficProbePlanBuilder()
-    first = builder.build((_handover_realization(),))
-    revised = builder.build((_handover_realization(), _extension_realization()))
+    first = builder.build(plans[:1], realizations[:1])
+    revised = builder.build(plans, realizations)
     processes = _install_fake_docker_processes(monkeypatch)
     evidence_sets = []
 
@@ -674,7 +839,7 @@ def test_cancelled_episode_can_rearm_under_a_revised_lookahead(
         executor = TrafficProbeExecutor(
             docker_executable="docker",
             plan=plan,
-            runner_snapshot=_runner_snapshot(),
+            runner_snapshot=_runner_snapshot(plan),
             evidence_path=evidence,
         )
         executor.start(_OriginRunner(plan))
@@ -685,9 +850,7 @@ def test_cancelled_episode_can_rearm_under_a_revised_lookahead(
         )
 
     common_persistent = {
-        value.episode_id
-        for value in first.episodes
-        if value.mode == "persistent"
+        value.episode_id for value in first.episodes if value.mode == "persistent"
     } & {
         value.episode_id
         for value in revised.episodes
@@ -712,14 +875,17 @@ def test_cancelled_episode_can_rearm_under_a_revised_lookahead(
 
 
 def test_frontier_jump_does_not_reconcile_one_episode_twice(
-    tmp_path, monkeypatch
-):
-    plan = TrafficProbePlanBuilder().build((_handover_realization(),))
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    complete_chain,
+) -> None:
+    _, plans, realizations, _ = complete_chain
+    plan = TrafficProbePlanBuilder().build(plans, realizations)
     processes = _install_fake_docker_processes(monkeypatch)
     executor = TrafficProbeExecutor(
         docker_executable="docker",
         plan=plan,
-        runner_snapshot=_runner_snapshot(),
+        runner_snapshot=_runner_snapshot(plan),
         evidence_path=tmp_path / "frontier-jump-execution.jsonl",
     )
 
@@ -736,63 +902,127 @@ def test_frontier_jump_does_not_reconcile_one_episode_twice(
     assert all(process.poll() is not None for process in processes.values())
 
 
-def test_zone_to_ground_probe_migrates_its_physical_source(tmp_path, monkeypatch):
-    plan = TrafficProbePlanBuilder().build((_handover_realization(),))
+def test_zone_to_ground_probe_migrates_its_physical_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    complete_chain,
+) -> None:
+    _, plans, realizations, _ = complete_chain
+    original = TrafficProbePlanBuilder().build(plans, realizations)
     episode = next(
-        episode
-        for episode in plan.episodes
-        if episode.mode == "persistent"
+        value
+        for value in original.episodes
+        if value.mode == "persistent"
         and next(
             identity
-            for identity in plan.probe_identities
-            if identity.probe_id == episode.probe_id
+            for identity in original.probe_identities
+            if identity.probe_id == value.probe_id
         ).direction
         == _DIRECTION_ZONE_TO_GROUND
+    )
+    identity = next(
+        value
+        for value in original.probe_identities
+        if value.probe_id == episode.probe_id
+    )
+    first = episode.state_intervals[0]
+    second_service = NodeId(
+        65001, "satellite", "migration-target"
+    ).value
+    migration_time = original.nominal_boundaries[1]
+    migrated_episode = replace(
+        episode,
+        state_intervals=(
+            replace(first, end_time=migration_time),
+            replace(
+                first,
+                start_time=migration_time,
+                end_time=original.coverage_end,
+                service_satellite_id=second_service,
+                path_node_ids=(
+                    second_service,
+                    identity.ground_station_id,
+                ),
+                boundary_reasons=("zone-source-migration",),
+            ),
+        ),
+    )
+    plan = replace(
+        original,
+        probe_identities=(identity,),
+        episodes=(migrated_episode,),
     )
     processes = _install_fake_docker_processes(monkeypatch)
     evidence = tmp_path / "migration-execution.jsonl"
     executor = TrafficProbeExecutor(
         docker_executable="docker",
         plan=plan,
-        runner_snapshot=_runner_snapshot(),
+        runner_snapshot=_runner_snapshot(plan),
         evidence_path=evidence,
     )
 
-    executor._start_episode(episode)
-    executor._published_frontier = START
-    executor._reconcile_episode(episode)
-    assert executor._active[episode.episode_id].binding.node_id == SATELLITE_B.value
-    assert executor._active[episode.episode_id].source_ipv4 == "198.18.0.1"
-    executor._published_frontier = START + timedelta(seconds=10)
-    executor._reconcile_episode(episode)
-    assert executor._active[episode.episode_id].binding.node_id == SATELLITE_A.value
+    executor._start_episode(migrated_episode)
+    executor._published_frontier = original.coverage_start
+    executor._reconcile_episode(migrated_episode)
+    first_service = first.service_satellite_id
+    assert first_service is not None
+    assert executor._active[migrated_episode.episode_id].binding.node_id == (
+        first_service
+    )
+    assert executor._active[migrated_episode.episode_id].source_ipv4 == (
+        identity.zone_ipv4
+    )
+    executor._published_frontier = migration_time
+    executor._reconcile_episode(migrated_episode)
+    assert executor._active[migrated_episode.episode_id].binding.node_id == (
+        second_service
+    )
     executor._terminate_all("test-finalization")
     executor._selector.close()
 
     records = [json.loads(line) for line in evidence.read_text().splitlines()]
     migrations = [
-        value for value in records if value["record_type"] == "zone_source_migration"
+        value
+        for value in records
+        if value["record_type"] == "zone_source_migration"
     ]
     assert len(migrations) == 1
-    assert migrations[0]["previous_source_node_id"] == SATELLITE_B.value
-    assert migrations[0]["current_source_node_id"] == SATELLITE_A.value
+    assert migrations[0]["previous_source_node_id"] == first_service
+    assert migrations[0]["current_source_node_id"] == second_service
     assert all(process.poll() is not None for process in processes.values())
 
 
-def test_probe_stop_escalates_from_term_to_kill(tmp_path, monkeypatch):
-    plan = TrafficProbePlanBuilder().build((_handover_realization(),))
-    episode = next(value for value in plan.episodes if value.mode == "persistent")
+def test_probe_stop_escalates_from_term_to_kill(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    complete_chain,
+) -> None:
+    _, plans, realizations, _ = complete_chain
+    original = TrafficProbePlanBuilder().build(plans, realizations)
+    episode = next(
+        value for value in original.episodes if value.mode == "persistent"
+    )
+    identity = next(
+        value
+        for value in original.probe_identities
+        if value.probe_id == episode.probe_id
+    )
+    plan = replace(
+        original,
+        probe_identities=(identity,),
+        episodes=(episode,),
+    )
     processes = _install_fake_docker_processes(monkeypatch, ignore_term=True)
     evidence = tmp_path / "kill-execution.jsonl"
     executor = TrafficProbeExecutor(
         docker_executable="docker",
         plan=plan,
-        runner_snapshot=_runner_snapshot(),
+        runner_snapshot=_runner_snapshot(plan),
         evidence_path=evidence,
     )
 
     executor._start_episode(episode)
-    executor._published_frontier = START
+    executor._published_frontier = plan.coverage_start
     executor._reconcile_episode(episode)
     executor._terminate_all("test-finalization")
     executor._selector.close()
@@ -807,13 +1037,23 @@ def test_probe_stop_escalates_from_term_to_kill(tmp_path, monkeypatch):
     assert all(process.poll() is not None for process in processes.values())
 
 
-def test_probe_executor_fails_closed_when_required_binding_is_missing(tmp_path):
-    plan = TrafficProbePlanBuilder().build((_handover_realization(),))
+def test_probe_executor_fails_closed_when_required_binding_is_missing(
+    tmp_path: Path,
+    complete_chain,
+) -> None:
+    _, plans, realizations, _ = complete_chain
+    plan = TrafficProbePlanBuilder().build(plans, realizations)
+    omitted = next(
+        interval.service_satellite_id
+        for episode in plan.episodes
+        for interval in episode.state_intervals
+        if interval.service_satellite_id is not None
+    )
 
     with pytest.raises(ValueError, match="lacks required Runner bindings"):
         TrafficProbeExecutor(
             docker_executable="docker",
             plan=plan,
-            runner_snapshot=_runner_snapshot(omit=SATELLITE_B.value),
-            evidence_path=Path(tmp_path) / "probe-execution.jsonl",
+            runner_snapshot=_runner_snapshot(plan, omit=omitted),
+            evidence_path=tmp_path / "probe-execution.jsonl",
         )

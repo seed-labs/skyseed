@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import shutil
 import sys
@@ -19,68 +18,56 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from examples.complete_static_emulator.emu import build_emulator
+from examples.complete_static_emulator.simu import (
+    create_complete_static_planner,
+    create_complete_static_simulator,
+)
 from seedemu.compiler import Docker
-from seedemu.layers import Base
 from skyseed_v2.compose.launcher import (
     _prepare_generated_output,
     _write_compose_project_scripts,
 )
-from skyseed_v2.configuration.simulator import load_zone_layout_definition
-from skyseed_v2.emulator.seedemu import get_skyseed_autonomous_systems
-from skyseed_v2.simulator import (
-    CircularOrbitPositionModel,
-    SimulationDefinition,
-    SimulationTimeline,
-    Simulator,
-    Topology,
+from skyseed_v2.experiment._realization_producer import (
+    _IncrementalRealizationProducer,
 )
-from skyseed_v2.emulator_to_simulator import create_simulator_static_input
+from skyseed_v2.simulator import PhysicalWorld, Simulator
 from tools._html import (
     write_aggregate_index,
     write_failed_tool,
 )
-from tools.physical_frame import write_physical_frame_tool
-from tools.topology import write_topology_tool
+from tools.bpf_compiler import write_bpf_compiler_tool
+from tools.observation import write_observation_tool
+from tools.physical_world import write_physical_world_tool
+from tools.planner import write_planner_tool
+from tools.planner.reader import read_planner_history
 from tools.zone import write_zone_tool
 
 
-DEFAULT_START_TIME = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
-DEFAULT_END_TIME = datetime(2026, 1, 1, 0, 0, 30, tzinfo=timezone.utc)
-DEFAULT_SLICE_INTERVAL = timedelta(seconds=10)
-ZONE_LAYOUT_FILE = EXAMPLE_ROOT / "zones.yaml"
-ENABLED_TOOLS = ("topology", "zone", "physical-frame")
+ENABLED_TOOLS = (
+    "physical-world",
+    "zone",
+    "planner",
+    "bpf-compiler",
+    "observation",
+)
 
 
-def _create_simulator_topology(emulator: object) -> Topology:
+def _create_simulator(emulator: object) -> Simulator:
     """Use the visible formal assembly chain for this one example run."""
 
-    if not hasattr(emulator, "getLayer"):
-        raise TypeError("emulator must provide the upstream Emulator facade")
-    base = emulator.getLayer("Base")
-    if not isinstance(base, Base):
-        raise TypeError("complete example Base layer must be a Base")
-    skyseed_autonomous_systems = get_skyseed_autonomous_systems(base)
-    simulator_input = create_simulator_static_input(skyseed_autonomous_systems)
-    timeline = SimulationTimeline(
-        start_time=DEFAULT_START_TIME,
-        end_time=DEFAULT_END_TIME,
-        slice_interval=DEFAULT_SLICE_INTERVAL,
-    )
-    definition = SimulationDefinition(
-        static_input=simulator_input,
-        timeline=timeline,
-    )
-    simulator = Simulator(definition)
-    zone_layout_definition = load_zone_layout_definition(ZONE_LAYOUT_FILE)
-    return simulator.create_topology(
-        position_model=CircularOrbitPositionModel(),
-        zone_layout_definition=zone_layout_definition,
-    )
+    return create_complete_static_simulator(emulator)
 
 
 def _write_tool_snapshot(
-    topology: Topology,
+    physical_world: PhysicalWorld,
     output: Path,
+    *,
+    physical_link_model,
+    physical_frame,
+    physical_link_observation,
+    plans,
+    realizations,
+    observation_path: Path,
 ) -> tuple[dict[str, dict[str, object]], bool]:
     staging = Path(tempfile.mkdtemp(prefix=".inspection-", dir=output))
     results: dict[str, dict[str, object]] = {}
@@ -89,16 +76,44 @@ def _write_tool_snapshot(
         for tool_name in ENABLED_TOOLS:
             tool_directory = staging / tool_name
             try:
-                if tool_name == "topology":
-                    result = write_topology_tool(topology, tool_directory)
-                elif tool_name == "zone":
-                    result = write_zone_tool(topology, tool_directory)
-                elif tool_name == "physical-frame":
-                    physical_frame = topology.frame_at(DEFAULT_START_TIME)
-                    result = write_physical_frame_tool(
-                        topology,
-                        physical_frame,
+                if tool_name == "physical-world":
+                    result = write_physical_world_tool(
+                        physical_world,
                         tool_directory,
+                        physical_frames_path=(
+                            output / "domain-history/physical-frames.jsonl"
+                            if (
+                                output
+                                / "domain-history/physical-frames.jsonl"
+                            ).is_file()
+                            else None
+                        ),
+                        physical_frame=physical_frame,
+                        physical_link_observation=physical_link_observation,
+                        physical_link_model=physical_link_model,
+                    )
+                elif tool_name == "zone":
+                    result = write_zone_tool(physical_world, tool_directory)
+                elif tool_name == "planner":
+                    result = write_planner_tool(
+                        read_planner_history(
+                            output / "domain-history/planning.jsonl.gz"
+                        ),
+                        tool_directory,
+                        physical_frames_path=(
+                            output / "domain-history/physical-frames.jsonl"
+                        ),
+                    )
+                elif tool_name == "bpf-compiler":
+                    result = write_bpf_compiler_tool(
+                        plans,
+                        realizations,
+                        tool_directory,
+                        observation_path=observation_path,
+                    )
+                elif tool_name == "observation":
+                    result = write_observation_tool(
+                        observation_path, tool_directory
                     )
                 else:  # pragma: no cover - frozen tuple is explicit
                     raise ValueError(f"unknown enabled tool: {tool_name}")
@@ -117,8 +132,8 @@ def _write_tool_snapshot(
                         f"{artifact_error}"
                     )
 
-        topology_result = results.get("topology", {})
-        raw_counts = topology_result.get("counts", {})
+        physical_world_result = results.get("physical-world", {})
+        raw_counts = physical_world_result.get("counts", {})
         counts = (
             {key: int(value) for key, value in raw_counts.items()}
             if isinstance(raw_counts, dict)
@@ -159,7 +174,8 @@ def main() -> int:
     arguments = parser.parse_args()
 
     emulator = build_emulator()
-    topology = _create_simulator_topology(emulator)
+    simulator = _create_simulator(emulator)
+    physical_world = simulator.get_physical_world()
     runtime_output = _prepare_generated_output(
         arguments.output,
         replace=arguments.override,
@@ -173,25 +189,97 @@ def main() -> int:
         str(runtime_output),
     )
     _write_compose_project_scripts(arguments.output, COMPOSE_PROJECT_NAME)
-    tool_results, aggregate_ok = _write_tool_snapshot(
-        topology,
-        arguments.output,
+    planner = create_complete_static_planner(simulator)
+    observation_path = (
+        arguments.output
+        / "inspection/observation/execution-observations.jsonl"
     )
+    simulator._enable_execution_observation(
+        observation_path,
+        metadata={
+            "scenario_identity": "complete_static_emulator",
+            "timeline_start": simulator.get_timeline().start_time.isoformat(),
+            "timeline_end": simulator.get_timeline().end_time.isoformat(),
+            "observation_interval_seconds": (
+                simulator.get_timeline().observation_interval.total_seconds()
+            ),
+            "progression": "physical-world-planner-plan-compiler",
+        },
+    )
+    producer = _IncrementalRealizationProducer(
+        simulator.get_timeline(),
+        physical_world,
+        simulator.get_physical_link_model(),
+        planner,
+        evidence_path=arguments.output / "domain-history",
+    )
+    plans = []
+    realizations = []
+    try:
+        while True:
+            realization = producer.produce_next_realization()
+            if realization is None:
+                break
+            plans.append(producer.latest_plan)
+            realizations.append(realization)
+        producer_snapshot = producer.snapshot()
+        physical_frame, physical_link_observation = (
+            producer.first_formal_input()
+        )
+    finally:
+        producer.close()
+    simulator._write_execution_observations()
+    try:
+        tool_results, aggregate_ok = _write_tool_snapshot(
+            physical_world,
+            arguments.output,
+            physical_link_model=simulator.get_physical_link_model(),
+            physical_frame=physical_frame,
+            physical_link_observation=physical_link_observation,
+            plans=tuple(plans),
+            realizations=tuple(realizations),
+            observation_path=observation_path,
+        )
+    except Exception as error:
+        message = f"{type(error).__name__}: {error}"
+        tool_results = {
+            name: {"status": "FAILED", "message": message}
+            for name in ENABLED_TOOLS
+        }
+        aggregate_ok = False
     print(f"compiled complete static Emulator to {runtime_output}")
     print(f"start with {arguments.output / 'start.sh'}")
     print(f"cleanup with {arguments.output / 'cleanup.sh'}")
     print(f"Inspection index: {arguments.output / 'inspection/index.html'}")
+    print(
+        "Planner/Compiler: "
+        f"{len(plans)} Plans, {len(realizations)} realizations, "
+        f"{producer_snapshot['transition_count']} formal transitions"
+    )
     for tool_name in ENABLED_TOOLS:
         result = tool_results[tool_name]
+        tool_title = {
+            "physical-world": "Physical World",
+            "zone": "Zone",
+            "planner": "Planner",
+            "bpf-compiler": "BPF Compiler",
+            "observation": "System Observation",
+        }[tool_name]
         print(
-            f"{tool_name.capitalize()} Tool: {result['status']} "
+            f"{tool_title} Tool: {result['status']} "
             f"({arguments.output / 'inspection' / tool_name / 'index.html'})"
         )
     overall_pass = aggregate_ok and all(
         result.get("status") == "PASS" for result in tool_results.values()
     )
     print(f"Tooling overall: {'PASS' if overall_pass else 'FAIL'}")
-    return 0 if overall_pass else 1
+    if not overall_pass:
+        print(
+            "Inspection side-work failure did not invalidate the completed "
+            "Planner/Compiler domain output.",
+            file=sys.stderr,
+        )
+    return 0
 
 
 if __name__ == "__main__":

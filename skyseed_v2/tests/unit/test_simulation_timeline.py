@@ -12,10 +12,11 @@ def test_bounded_timeline_yields_only_interval_aligned_timestamps() -> None:
     timeline = SimulationTimeline(
         start_time=start,
         end_time=start + timedelta(seconds=25),
-        slice_interval=timedelta(seconds=10),
+        observation_interval=timedelta(seconds=10),
     )
 
     assert timeline.is_bounded is True
+    assert not hasattr(timeline, "slice_interval")
     assert tuple(timeline.iter_timestamps()) == (
         start,
         start + timedelta(seconds=10),
@@ -29,7 +30,7 @@ def test_unbounded_timeline_is_lazy_and_normalizes_to_utc() -> None:
     timeline = SimulationTimeline(
         start_time=start,
         end_time=None,
-        slice_interval=timedelta(seconds=10),
+        observation_interval=timedelta(seconds=10),
     )
 
     timestamps = timeline.iter_timestamps()
@@ -50,7 +51,7 @@ def test_unbounded_timeline_is_lazy_and_normalizes_to_utc() -> None:
     (timedelta(0), timedelta(microseconds=-1)),
 )
 def test_timeline_rejects_non_positive_intervals(interval: timedelta) -> None:
-    with pytest.raises(ValueError, match="slice_interval"):
+    with pytest.raises(ValueError, match="observation_interval"):
         SimulationTimeline(
             datetime(2026, 1, 1, tzinfo=timezone.utc), None, interval
         )
@@ -64,7 +65,7 @@ def test_timeline_rejects_invalid_order_and_naive_datetimes() -> None:
         SimulationTimeline(
             start_time=naive,
             end_time=naive - timedelta(seconds=1),
-            slice_interval=timedelta(seconds=10),
+            observation_interval=timedelta(seconds=10),
         )
     with pytest.raises(ValueError, match="timezone-aware"):
         SimulationTimeline(naive, aware, timedelta(seconds=10))
@@ -72,7 +73,7 @@ def test_timeline_rejects_invalid_order_and_naive_datetimes() -> None:
         SimulationTimeline(
             start_time=aware,
             end_time=aware - timedelta(seconds=1),
-            slice_interval=timedelta(seconds=10),
+            observation_interval=timedelta(seconds=10),
         )
 
 
@@ -80,8 +81,18 @@ def test_timeline_rejects_invalid_order_and_naive_datetimes() -> None:
     ("start", "end", "interval", "message"),
     (
         ("2026-01-01", None, timedelta(seconds=10), "start_time"),
-        (datetime(2026, 1, 1, tzinfo=timezone.utc), "2026-01-02", timedelta(seconds=10), "end_time"),
-        (datetime(2026, 1, 1, tzinfo=timezone.utc), None, 10, "slice_interval"),
+        (
+            datetime(2026, 1, 1, tzinfo=timezone.utc),
+            "2026-01-02",
+            timedelta(seconds=10),
+            "end_time",
+        ),
+        (
+            datetime(2026, 1, 1, tzinfo=timezone.utc),
+            None,
+            10,
+            "observation_interval",
+        ),
     ),
 )
 def test_timeline_rejects_wrong_value_types(start, end, interval, message) -> None:

@@ -84,8 +84,22 @@ def complete_programmatic_config() -> StaticEmulatorConfig:
                                 orbit_id="orbit-1",
                                 right_ascension_deg=245.0,
                                 satellites=(
-                                    SatelliteConfig("satellite-0", 0, 126.0),
-                                    SatelliteConfig("satellite-1", 1, 146.0),
+                                    SatelliteConfig(
+                                        "satellite-0",
+                                        0,
+                                        126.0,
+                                        maximum_simultaneous_inter_satellite_links=(
+                                            4
+                                        ),
+                                    ),
+                                    SatelliteConfig(
+                                        "satellite-1",
+                                        1,
+                                        146.0,
+                                        maximum_simultaneous_inter_satellite_links=(
+                                            4
+                                        ),
+                                    ),
                                 ),
                             ),
                         ),

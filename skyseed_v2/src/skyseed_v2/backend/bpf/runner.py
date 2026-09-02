@@ -21,9 +21,8 @@ from typing import Any, Callable, Mapping, Sequence, TypeAlias
 
 from skyseed_v2.shared import NodeId
 from skyseed_v2.simulator import (
-    ConnectionId,
-    GroundStationRouteTarget,
-    ZoneRouteTarget,
+    GroundStationRouteDemandTarget,
+    ZoneRouteDemandTarget,
 )
 from ._runner.event_history import _NonBlockingEventHistory
 from ._runner.runtime_realization import (
@@ -34,10 +33,13 @@ from ._runner.traffic_telemetry import _TrafficTelemetryRecorder
 from .compiled_realization import (
     BpfCompiledRealization,
     _ForwardingIntent,
+    _MutationOperation,
+    _PhysicalWorldProjection,
     _QdiscIntent,
     _ResourceIntent,
-    _TopologySignature,
+    _ResourceOperation,
     _ZoneEdgeIntent,
+    _ZoneEdgePhase,
 )
 
 
@@ -137,9 +139,9 @@ class _NominalBoundary:
 
     nominal_time: datetime
     operations: tuple[_BoundaryOperation, ...]
-    topology_signature: _TopologySignature
+    physical_world_projection: _PhysicalWorldProjection
     source_realization_indexes: tuple[int, ...]
-    coverage: tuple[tuple[int, int], ...]
+    coverage: tuple[tuple[str, str, str], ...]
     inspected_constraint_count: int = field(compare=False)
     source_constraint_count: int
     applied_constraint_count: int
@@ -180,9 +182,9 @@ def _connection_key(value: object) -> tuple[str, str, str]:
 
 def _route_key(intent: _ForwardingIntent) -> tuple[str, str, str]:
     target = intent.route_key.target
-    if isinstance(target, GroundStationRouteTarget):
+    if isinstance(target, GroundStationRouteDemandTarget):
         target_key = ("ground-station", target.ground_station_id.value)
-    elif isinstance(target, ZoneRouteTarget):
+    elif isinstance(target, ZoneRouteDemandTarget):
         target_key = ("zone", target.zone_id)
     else:  # pragma: no cover - RouteKey owns this validation
         raise TypeError("compiled forwarding has an unknown route target")
@@ -196,16 +198,36 @@ def _stable_operation_key(operation: _BoundaryOperation) -> tuple[object, ...]:
     elif isinstance(intent, _QdiscIntent):
         semantic = (
             *_connection_key(intent),
-            intent.direction.value,
+            intent.source.value,
+            intent.target.value,
             intent.reason,
         )
     elif isinstance(intent, _ForwardingIntent):
         semantic = (*_route_key(intent), intent.operation.value)
     elif isinstance(intent, _ZoneEdgeIntent):
-        semantic = (intent.zone_id, intent.operation.value)
+        semantic = (
+            intent.zone_id,
+            intent.phase.value,
+            intent.operation.value,
+        )
     else:  # pragma: no cover - inventory is closed above
         raise TypeError("unknown compiled boundary operation")
-    return (_DOMAIN_RANK[operation.domain], *semantic)
+    if isinstance(intent, _ResourceIntent):
+        phase = 0 if intent.operation is _ResourceOperation.ESTABLISH else 5
+    elif isinstance(intent, _QdiscIntent):
+        phase = 1
+    elif (
+        isinstance(intent, _ZoneEdgeIntent)
+        and intent.phase is _ZoneEdgePhase.READINESS
+    ):
+        phase = 2
+    elif isinstance(intent, _ForwardingIntent):
+        phase = 3
+    elif isinstance(intent, _ZoneEdgeIntent):
+        phase = 4
+    else:  # pragma: no cover - inventory is closed above
+        raise TypeError("unknown compiled boundary operation")
+    return (phase, _DOMAIN_RANK[operation.domain], *semantic)
 
 
 def _operation_label(operation: _BoundaryOperation) -> str:
@@ -229,16 +251,50 @@ def _resolve_nominal_boundaries(
     inventory = _operation_inventory(
         realizations, realization_index_offset=realization_index_offset
     )
-    if not inventory:
-        raise ValueError("compiled future work contains no nominal operations")
-    nominal_times = tuple(
-        sorted({operation.intent.nominal_time for operation in inventory.values()})
-    )
+    declarations: dict[datetime, int] = {}
+    for realization_index, realization in enumerate(
+        realizations, start=realization_index_offset
+    ):
+        timestamps = realization.activation_timestamps
+        if not timestamps:
+            raise ValueError("compiled realization has no activation boundaries")
+        if timestamps != tuple(sorted(set(timestamps))):
+            raise ValueError(
+                "compiled activation boundaries must be unique and ordered"
+            )
+        if (
+            timestamps[0] != realization.start_timestamp
+            or timestamps[-1] != realization.end_timestamp
+        ):
+            raise ValueError(
+                "compiled activation boundaries differ from realization interval"
+            )
+        for timestamp in timestamps:
+            if timestamp in declarations:
+                raise ValueError(
+                    "compiled realizations duplicate a formal activation boundary"
+                )
+            declarations[timestamp] = realization_index
+        if any(
+            intent.nominal_time not in set(timestamps)
+            for attribute in (
+                "resource_realizations",
+                "parameter_realizations",
+                "forwarding_realizations",
+                "zone_edge_realizations",
+            )
+            for intent in getattr(realization, attribute)
+        ):
+            raise ValueError(
+                "compiled operation has no declared activation boundary"
+            )
+    nominal_times = tuple(sorted(declarations))
     return tuple(
         _resolve_nominal_boundary(
             realizations,
             inventory=inventory,
             nominal_time=nominal_time,
+            declared_realization_index=declarations[nominal_time],
             realization_index_offset=realization_index_offset,
         )
         for nominal_time in nominal_times
@@ -274,6 +330,7 @@ def _resolve_nominal_boundary(
     *,
     inventory: dict[_Reference, _BoundaryOperation],
     nominal_time: datetime,
+    declared_realization_index: int,
     realization_index_offset: int = 0,
 ) -> _NominalBoundary:
     selected = {
@@ -281,9 +338,12 @@ def _resolve_nominal_boundary(
         for reference, operation in inventory.items()
         if operation.intent.nominal_time == nominal_time
     }
-    selected_realization_indexes = {
-        operation.realization_index for operation in selected.values()
-    }
+    selected_realization_indexes = {declared_realization_index}
+    if any(
+        operation.realization_index != declared_realization_index
+        for operation in selected.values()
+    ):
+        raise ValueError("activation boundary contains foreign realization work")
     source_constraint_count = sum(
         len(realizations[index - realization_index_offset].constraints)
         for index in selected_realization_indexes
@@ -383,18 +443,16 @@ def _resolve_nominal_boundary(
     if len(ordered) != len(selected):
         raise ValueError("nominal boundary dependency constraints contain a cycle")
 
-    source_indexes = tuple(
-        sorted({operation.realization_index for operation in ordered})
-    )
-    signature = realizations[
-        source_indexes[0] - realization_index_offset
-    ]._topology_signature
+    source_indexes = (declared_realization_index,)
+    projection = realizations[
+        declared_realization_index - realization_index_offset
+    ]._physical_world_projection
     if any(
-        realizations[index - realization_index_offset]._topology_signature
-        != signature
+        realizations[index - realization_index_offset]._physical_world_projection
+        != projection
         for index in source_indexes
     ):
-        raise ValueError("one nominal boundary spans different topologies")
+        raise ValueError("one boundary spans different PhysicalWorld projections")
     operation_counts = tuple(
         (domain, sum(value.domain == domain for value in ordered))
         for domain, _ in _DOMAIN_ATTRIBUTES
@@ -403,12 +461,17 @@ def _resolve_nominal_boundary(
     return _NominalBoundary(
         nominal_time=nominal_time,
         operations=tuple(ordered),
-        topology_signature=signature,
+        physical_world_projection=projection,
         source_realization_indexes=source_indexes,
         coverage=tuple(
             (
-                realizations[index - realization_index_offset].start_slice_id,
-                realizations[index - realization_index_offset].end_slice_id,
+                realizations[index - realization_index_offset].source_plan_id,
+                realizations[
+                    index - realization_index_offset
+                ].start_timestamp.isoformat(),
+                realizations[
+                    index - realization_index_offset
+                ].end_timestamp.isoformat(),
             )
             for index in source_indexes
         ),
@@ -646,7 +709,7 @@ class BpfRunner:
     ``preparation_lookahead=None`` selects bounded full-range preparation and
     therefore requires both a terminating input and
     ``preparation_boundary_depth=None``. The callable remains only a pull seam;
-    the Runner does not own compilation, planning, slicing, or Compose startup.
+    the Runner does not own compilation, planning, observation, or Compose startup.
     """
 
     __slots__ = (
@@ -834,7 +897,10 @@ class BpfRunner:
                 boundary_count=len(self._boundaries),
             )
             first = self._future_realizations[0]
-            if first.start_slice_id != 0:
+            if (
+                first.source_previous_plan_id is not None
+                or first.input_state_fingerprint is not None
+            ):
                 raise ValueError("BpfRunner requires a bootstrap realization")
             discovery_started = monotonic()
             bindings = self._discover_runtime_bindings(first)
@@ -884,7 +950,7 @@ class BpfRunner:
             try:
                 runtime_initialize_started = monotonic()
                 foundation = runtime_realization.initialize(
-                    first._topology_signature,
+                    first._physical_world_projection,
                     zone_prefixes=tuple(
                         prefix for _, prefix in first.zone_prefixes
                     ),
@@ -1155,7 +1221,9 @@ class BpfRunner:
                     None
                     if not self._future_realizations
                     else len(
-                        self._future_realizations[0]._topology_signature.node_ids
+                        self._future_realizations[
+                            0
+                        ]._physical_world_projection.node_ids
                     )
                 )
             )
@@ -1767,12 +1835,18 @@ class BpfRunner:
             if self._future_realizations:
                 previous = self._future_realizations[-1]
                 if (
-                    previous.end_slice_id != value.start_slice_id
-                    or previous.end_timestamp != value.start_timestamp
-                    or previous._topology_signature != value._topology_signature
+                    value.source_previous_plan_id != previous.source_plan_id
+                    or value.input_state_fingerprint
+                    != previous.output_state_fingerprint
+                    or previous.end_timestamp >= value.start_timestamp
+                    or previous.physical_world_fingerprint
+                    != value.physical_world_fingerprint
+                    or previous._physical_world_projection
+                    != value._physical_world_projection
                 ):
                     raise ValueError(
-                        "future BPF realizations must be continuous and share one topology"
+                        "future BPF realizations must preserve Plan/state lineage "
+                        "and one PhysicalWorld"
                     )
             realization_index = (
                 self._realization_index_offset + len(self._future_realizations)
@@ -2106,12 +2180,12 @@ class BpfRunner:
                 started_at,
             ), netns_inode in zip(candidates, netns_inodes)
         }
-        expected = set(first._topology_signature.node_ids)
+        expected = set(first._physical_world_projection.node_ids)
         if set(bindings) != expected:
             missing = sorted(value.value for value in expected - set(bindings))
             unexpected = sorted(value.value for value in set(bindings) - expected)
             raise RuntimeError(
-                "live NodeId bindings do not match compiled topology: "
+                "live NodeId bindings do not match compiled PhysicalWorld: "
                 f"missing={missing}, unexpected={unexpected}"
             )
         return bindings

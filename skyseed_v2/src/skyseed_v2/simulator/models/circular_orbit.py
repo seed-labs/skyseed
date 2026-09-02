@@ -12,7 +12,7 @@ from skyseed_v2.shared import NodeId
 
 from ..geometry import EarthFixedPosition, geodetic_to_ecef
 from ..geometry.coordinates import _gcrs_cartesian_batch_to_ecef
-from ..topology import Topology
+from ..physical import PhysicalWorld
 
 
 _EARTH_GRAVITATIONAL_PARAMETER_M3_PER_S2 = 3.986_004_418e14
@@ -41,7 +41,7 @@ class CircularOrbitPositionModel:
     inertial-frame value crosses the public Position boundary.
 
     Layer: built-in stateless Simulator physical Model. Users explicitly create
-    it, one ``Topology`` owns it, and ``Topology.frame_at()`` invokes it. It is
+    it, one ``PhysicalWorld`` owns it, and ``PhysicalWorld.frame_at()`` invokes it. It is
     not a default, ephemeris owner, velocity source, time cursor or fallback
     and is public from ``skyseed_v2.simulator``.
     """
@@ -50,16 +50,16 @@ class CircularOrbitPositionModel:
 
     def compute_positions(
         self,
-        topology: Topology,
+        physical_world: PhysicalWorld,
         timestamp: datetime,
     ) -> Mapping[NodeId, EarthFixedPosition]:
-        if not isinstance(topology, Topology):
-            raise TypeError("topology must be a Topology")
+        if not isinstance(physical_world, PhysicalWorld):
+            raise TypeError("physical_world must be a PhysicalWorld")
         utc = normalize_utc_datetime(timestamp, "timestamp")
         positions: dict[NodeId, EarthFixedPosition] = {}
         satellite_ids: list[NodeId] = []
         inertial_points: list[tuple[float, float, float]] = []
-        for autonomous_system in topology.autonomous_systems:
+        for autonomous_system in physical_world.autonomous_systems:
             for shell in autonomous_system.shells:
                 for orbit in shell.orbits:
                     radius_m = (

@@ -23,7 +23,7 @@ flowchart LR
     RENDER --> WRITE["atomic artifact writes"]
 ```
 
-- `reader.py` reads and validates either legacy complete history or the bounded
+- `reader.py` reads and validates either a complete historical record or the bounded
   nonblocking Runner event stream;
 - `projection.py` stable-sorts the supplied complete event history by monotonic time
   with original list order as the tie-break, curates the human timeline,

@@ -1,122 +1,70 @@
-# Built-in Simulator Models
+# Built-in physical Models
 
-This package owns the four built-in algorithm implementations. The
-`PositionModel` Protocol, its Topology ownership, and its formal call boundary
-are owned by `../topology/README.md`. The temporary legacy Slicer's
-Connection/Route Protocol ownership and call order remain owned by
-`../slicing/README.md`.
+This package exports two built-in implementations:
 
 ## Local assembly / ownership map
 
-Legend: `Implementation ..|> Protocol` is UML Protocol realization. No edge
-expresses runtime ownership or call order.
+Legend: `..|>` is Protocol realization. Each built-in Model implements exactly
+one physical-domain role and acquires no planning authority.
 
 ```mermaid
 classDiagram
     class PositionModel
-    class ConnectionModel
-    class RouteModel
-    class CircularOrbitPositionModel
-    class GeometricConnectionModel
-    class HopCountRouteModel
-    class GatewayHopCountRouteModel
-
+    class PhysicalLinkModel
+    class CircularOrbitPositionModel {
+        +compute_positions()
+    }
+    class GeometricPhysicalLinkModel {
+        +compute_observation()
+    }
     CircularOrbitPositionModel ..|> PositionModel
-    GeometricConnectionModel ..|> ConnectionModel
-    HopCountRouteModel ..|> RouteModel
-    GatewayHopCountRouteModel ..|> RouteModel
+    GeometricPhysicalLinkModel ..|> PhysicalLinkModel
 ```
+
+`CircularOrbitPositionModel` computes complete deterministic positions for the
+exact requested timestamp and expected node set. It is owned and called only by
+PhysicalWorld.
+
+`GeometricPhysicalLinkModel` consumes one exact PhysicalWorld, PhysicalFrame,
+and bounded PhysicalLinkRequest. It evaluates range, Earth-clear LOS, distance,
+propagation delay, GroundStation/Zone elevation, and deterministic work counts.
+Only feasible candidate facts are returned.
+
+The Model does not choose candidate scope, select operational relationships,
+advance acquisition, assign Zone service, plan parameters, compute Routes, or
+own history. Canonical K3 and 2+2 are injected planning policy; maximum 4 is a
+PhysicalWorld capability.
+
+`_geometric_physical.py` is a private shared optimized calculation core. It
+uses the single geometry-owned elevation primitive and static indexes. It owns
+no operational state.
+
+Operational reference Models live in `../planning/models.py` because Planner
+owns their contracts.
 
 ## Detailed public class/member diagrams
 
-Legend: `Implementation ..|> Protocol` is UML Protocol realization with the
-implementation's public algorithm entry expanded.
+These blocks and the exact table below are the maintenance source for every
+class owned by this public package. Re-exporting facades do not duplicate the
+owner detail.
+
+Legend: `<<...>>` states each public class role and `+` lists its
+complete direct public member contract. No connector means no ownership
+relationship is asserted by this inventory block.
 
 ```mermaid
 classDiagram
-    class PositionModel
-    class ConnectionModel
-    class RouteModel
     class CircularOrbitPositionModel {
-        <<built-in Position algorithm>>
+        <<reference Position Model>>
         +compute_positions()
     }
-    class GeometricConnectionModel {
-        <<built-in Connection algorithm>>
-        +compute_connection_slice()
+    class GeometricPhysicalLinkModel {
+        <<reference physical-link Model>>
+        +compute_observation()
     }
-    class HopCountRouteModel {
-        <<built-in Route algorithm>>
-        +compute_route_slice()
-    }
-    class GatewayHopCountRouteModel {
-        <<built-in Route algorithm>>
-        +compute_route_slice()
-    }
-
-    CircularOrbitPositionModel ..|> PositionModel
-    GeometricConnectionModel ..|> ConnectionModel
-    HopCountRouteModel ..|> RouteModel
-    GatewayHopCountRouteModel ..|> RouteModel
 ```
 
 | Diagram class | Public contract | Required public members |
 |---|---|---|
 | `CircularOrbitPositionModel` | `skyseed_v2.simulator.models.CircularOrbitPositionModel` | `compute_positions()` |
-| `GeometricConnectionModel` | `skyseed_v2.simulator.models.GeometricConnectionModel` | `compute_connection_slice()` |
-| `HopCountRouteModel` | `skyseed_v2.simulator.models.HopCountRouteModel` | `compute_route_slice()` |
-| `GatewayHopCountRouteModel` | `skyseed_v2.simulator.models.GatewayHopCountRouteModel` | `compute_route_slice()` |
-
-## Entry points
-
-Code entries are `circular_orbit.py`, `geometric_connection.py`,
-`hop_count_route.py`, and `gateway_hop_count_route.py`.
-
-## Dependencies
-
-`CircularOrbitPositionModel` depends on the PositionModel Protocol owned by
-`../topology/`, static Topology objects, geometry capabilities, and neutral
-values. Connection and Route implementations depend on their temporary legacy
-Protocols in `../slicing/`, physical positions supplied through a
-`PhysicalFrame`, static Topology objects, geometry capabilities, and neutral
-shared values. The implementations do not call one another.
-
-`GeometricConnectionModel` keeps its global GroundStation access-count policy.
-For each site, it uses that value when the site's
-`max_simultaneous_satellite_accesses` capability is `None`, otherwise the
-smaller of the two. When any Satellite has an explicit
-`max_simultaneous_ground_station_accesses` capability, the model uses a
-deterministic two-phase capacitated matching over the same geometric
-candidates. It first maximizes primary GroundStation coverage and, among
-maximum-cardinality primary matchings, minimizes aggregate candidate rank
-(higher elevation, then stable Satellite identity). Those primaries are
-frozen before residual capacity is used to maximize redundant access links;
-redundancy cannot move or degrade a frozen primary. This is a simple Skyseed
-baseline policy, not a claim about an operational constellation scheduler.
-The temporary legacy Slicer independently enforces every explicit site and
-Satellite access cap on all ConnectionModel output before Slice publication.
-
-The implementation uses private conservative spatial indexes to prune
-GroundStation and Zone candidate checks before applying the unchanged exact
-ECEF/LOS/elevation/distance predicates. Focused exhaustive-reference tests
-verify that pruning does not alter published Connections or Zone assignments.
-
-`HopCountRouteModel` is the full-reachability baseline for small/reference
-scenarios. `GatewayHopCountRouteModel` is the satellite-Internet default: it
-selects each Zone's ordered candidate GroundStations once from static
-geographic distance and materializes only the current two-way candidate
-demands over deterministic, demand-bounded hop-count traversals.
-
-## Examples and tests
-
-Assembly is in `examples/mini_satellite_internet/simu.py`. Dynamic main-chain,
-routing, reference-output, and Model lifecycle tests cover these
-implementations.
-
-## Maintenance checklist
-
-When a built-in algorithm boundary changes, update this realization map,
-Model/routing contracts, public imports, the dynamic example, canonical
-output, and focused tests. Position call order changes only in the Topology
-owner README and its contracts; Connection/Route call order changes only in
-the temporary slicing owner README and its contracts.
+| `GeometricPhysicalLinkModel` | `skyseed_v2.simulator.models.GeometricPhysicalLinkModel` | `compute_observation()` |

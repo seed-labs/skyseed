@@ -1,8 +1,7 @@
 # Getting started
 
-## Environment
-
-The canonical local environment is Conda `skyseed_dev`:
+Use the repository's `skyseed_dev` Conda environment or another Python 3.12
+environment with the project and upstream SEED dependency installed.
 
 ```bash
 scripts/setup_dev_environment.sh
@@ -10,58 +9,71 @@ conda activate skyseed_dev
 python scripts/check_dev_environment.py
 ```
 
-The Python package itself also works in another environment with equivalent
-dependencies. Examples never create or switch environments.
+## Small teaching example
 
-## Readable examples
-
-Static Emulator, Simulator projection, compiler, Compose launcher, and static
-Tools:
+From the repository root:
 
 ```bash
-python examples/complete_static_emulator/main.py
+python -m examples.complete_static_emulator.main
 ```
 
-Mini satellite Internet reference with Topology, Zone, Slice / Difference, and
-Planner Tools:
+This constructs the static Emulator, creates one Simulator/PhysicalWorld and
+public Planner, runs a short Plan-to-Compiler chain, compiles the static Docker
+project, and writes detached physical inspection artifacts.
+
+For the domain chain without output generation:
 
 ```bash
-python examples/mini_satellite_internet/main.py
+python -m examples.complete_static_emulator.simu
 ```
 
-Full-generation Starlink Gen1 input with the selected 348-Satellite S4 shell, 355 frozen
-evidence-backed Starlink gateway sites, 703 total dynamic nodes, and the
-732-Zone global layout:
+## Mini generated runtime
 
 ```bash
-python examples/starlink_gen1_satellite_internet/main.py
+python -m examples.mini_satellite_internet.main
 ```
 
-Use `--through topology`, `--through slicer`, or `--through planner` to select
-an earlier boundary on the same rolling progression. `--slice-limit N` is only
-a debug/execution bound; it does not change the formal 10-minute, 5-second,
-121-Slice Timeline. Compiler mode lowers every Plan as it is published and
-writes a persisted exact-realization handoff plus generated Compose/Runner
-controls; it does not start Runner or containers. Begin runtime qualification
-with `output/start.sh`, then for example
-`SKYSEED_RUNNER_ACTIVATION_LIMIT=3 output/run.sh`; `output/launch.sh` is only
-the convenience composition of those two commands.
+Generation drains the common incremental realization producer, writes
+`output/domain-history/`, persists the realization handoff, and creates runtime
+scripts plus detached inspection. Generated execution consumes only the
+persisted handoff.
 
-`complete_static_emulator` is the maintained minimal two-Satellite teaching
-and smoke reference. `mini_satellite_internet` is the maintained comprehensive
-rolling reference. `starlink_gen1_satellite_internet` generates through Compiler by
-default; earlier `--through` boundaries remain explicit review/debug modes.
-Its frozen ground body
-includes supported current, planned, and historical Ka/E gateway sites rather
-than a simultaneous operational-network snapshot.
-`examples/reference/` contains historical
-provenance/investigation helpers and is not a formal runnable example or public
-API.
+Follow the generated `output/start.sh`, `run.sh`, and `cleanup.sh` controls only
+in an environment where Docker/network privileges are appropriate.
 
-Generated example output is ignored under `examples/*/output/`.
+## Canonical S3 offline stages
 
-## Architecture entry
+The Starlink Gen1 example keeps the full 720-Satellite, 355-GroundStation,
+732-Zone, ten-minute scenario:
 
-Read `../CURRENT.md`, `../accepted-design.md`, then the single relevant
-contract under `../codex-reference/`. Package navigation is graphical in
-`../human-readable/`.
+```bash
+python -m examples.starlink_gen1_satellite_internet.main \
+  --through physical-world
+
+python -m examples.starlink_gen1_satellite_internet.main \
+  --through planner
+
+python -m examples.starlink_gen1_satellite_internet.main \
+  --through compiler
+```
+
+Planner mode exercises the public 50-second planning / 20-second publication
+contract. Compiler mode drains the one producer and verifies 121 formal frames
+and transitions, 30 Plans, 30 realizations, and 121 activation boundaries.
+
+Do not treat offline Compiler success as full S3 runtime qualification. The
+full persisted Runner/Traffic deployment is a later dedicated stage.
+
+## Current chain
+
+```text
+PhysicalWorld / PhysicalFrame
+→ PhysicalLinkObservation
+→ Planner / PlannedOperationalState
+→ Plan
+→ Compiler / BpfCompiledRealization
+→ Runner / RealizedRuntimeState
+```
+
+See [inspection Tools](inspection-tools.md) for artifact paths and
+[`../accepted-design.md`](../accepted-design.md) for ownership details.

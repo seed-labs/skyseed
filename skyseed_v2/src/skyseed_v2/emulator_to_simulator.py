@@ -130,6 +130,9 @@ def _create_satellite_simulation_input(
         max_simultaneous_ground_station_accesses=(
             satellite.max_simultaneous_ground_station_accesses
         ),
+        maximum_simultaneous_inter_satellite_links=(
+            satellite.maximum_simultaneous_inter_satellite_links
+        ),
     )
 
 

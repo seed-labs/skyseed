@@ -1,4 +1,4 @@
-"""Construct the Emulator for the richer Slice / Difference reference example."""
+"""Construct the Emulator for the richer persisted-Plan reference example."""
 
 from __future__ import annotations
 

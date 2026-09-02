@@ -24,7 +24,14 @@ from skyseed_v2.emulator.seedemu import (
 __all__ = ["create_static_emulator"]
 
 
-_SatelliteInput = tuple[str, int, float, dict[str, str], int | None]
+_SatelliteInput = tuple[
+    str,
+    int,
+    float,
+    dict[str, str],
+    int | None,
+    int | None,
+]
 _OrbitInput = tuple[str, OrbitParameters, tuple[_SatelliteInput, ...]]
 
 
@@ -73,6 +80,7 @@ def _create_skyseed_autonomous_system(
                 anomaly,
                 payload,
                 max_ground_station_accesses,
+                maximum_inter_satellite_links,
             ) in satellite_inputs:
                 orbit.create_satellite(
                     satellite_id,
@@ -81,6 +89,9 @@ def _create_skyseed_autonomous_system(
                     payload=payload,
                     max_simultaneous_ground_station_accesses=(
                         max_ground_station_accesses
+                    ),
+                    maximum_simultaneous_inter_satellite_links=(
+                        maximum_inter_satellite_links
                     ),
                 )
 
@@ -168,6 +179,7 @@ def _expand_orbit_inputs(config: ShellConfig) -> tuple[_OrbitInput, ...]:
                         satellite.mean_anomaly_deg,
                         dict(satellite.payload_items),
                         satellite.max_simultaneous_ground_station_accesses,
+                        satellite.maximum_simultaneous_inter_satellite_links,
                     )
                     for satellite in orbit.satellites
                 ),
@@ -222,6 +234,10 @@ def _expand_orbit_inputs(config: ShellConfig) -> tuple[_OrbitInput, ...]:
                 mean_anomaly,
                 {},
                 generated_orbit_layout.max_simultaneous_ground_station_accesses,
+                (
+                    generated_orbit_layout
+                    .maximum_simultaneous_inter_satellite_links
+                ),
             )
             for satellite_index, mean_anomaly in enumerate(anomalies)
         )

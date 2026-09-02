@@ -9,7 +9,7 @@ recorded only in [`CURRENT.md`](../CURRENT.md).
 
 Construction of one upstream SEED `Emulator` from one immutable
 `StaticEmulatorConfig`. This contract ends before Emulator-to-Simulator
-projection, Docker compilation, Compose launch, or dynamic slicing.
+projection, physical simulation, Docker compilation, or Compose launch.
 
 ## Owners and consumers
 
@@ -64,7 +64,7 @@ legacy constructor, compatibility alias, or partial return.
 ## Prohibited behavior
 
 No Simulator projection, static-input DTO creation, Docker compilation,
-Compose launch, Slice calculation, example-specific branch, mutable
+Compose launch, physical/planning calculation, example-specific branch, mutable
 global registry, forwarding import, or alternative owner tree.
 
 ## Extension points

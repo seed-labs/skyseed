@@ -53,7 +53,7 @@ def layout_definition(
     return ZoneLayoutDefinition(zones=zones, allow_overlap=allow_overlap)
 
 
-def create_zone_topology(
+def create_zone_physical_world(
     definition: ZoneLayoutDefinition,
     model=None,
 ):
@@ -67,12 +67,12 @@ def create_zone_topology(
             ),
         )
     )
-    topology = simulator.create_topology(
+    physical_world = simulator.create_physical_world(
         position_model=CircularOrbitPositionModel(),
         zone_layout_definition=definition,
         zone_membership_model=model,
     )
-    return simulator, topology
+    return simulator, physical_world
 
 
 def test_programmatic_definitions_are_canonical_immutable_and_snapshotted() -> None:
@@ -299,19 +299,19 @@ def test_overlap_policy_handles_area_edges_corners_poles_and_wrapping() -> None:
 def test_default_membership_is_sorted_and_resolution_is_deterministic() -> None:
     low = zone_definition("z-low", priority=1)
     high = zone_definition("a-high", priority=2)
-    _, topology = create_zone_topology(layout_definition(low, high))
+    _, physical_world = create_zone_physical_world(layout_definition(low, high))
 
-    assert topology.find_zones(0, 0) == (
-        topology.get_zone("a-high"),
-        topology.get_zone("z-low"),
+    assert physical_world.find_zones(0, 0) == (
+        physical_world.get_zone("a-high"),
+        physical_world.get_zone("z-low"),
     )
-    assert topology.resolve_zone(0, 0) is topology.get_zone("a-high")
-    assert topology.find_zones(50, 50) == ()
+    assert physical_world.resolve_zone(0, 0) is physical_world.get_zone("a-high")
+    assert physical_world.find_zones(50, 50) == ()
     with pytest.raises(LookupError, match="no Zone"):
-        topology.resolve_zone(50, 50)
+        physical_world.resolve_zone(50, 50)
 
 
-def test_topology_intersection_facade_delegates_with_identical_overlap_results() -> None:
+def test_physical_world_intersection_facade_delegates_with_identical_overlap_results() -> None:
     broad = zone_definition(
         "broad",
         geometry=rectangle_definition(-20, 20, -30, 30),
@@ -321,14 +321,14 @@ def test_topology_intersection_facade_delegates_with_identical_overlap_results()
         priority=10,
         geometry=rectangle_definition(-5, 5, -5, 5),
     )
-    _, topology = create_zone_topology(
+    _, physical_world = create_zone_physical_world(
         layout_definition(broad, focused, allow_overlap=True)
     )
-    layout = topology.get_zone_layout()
+    layout = physical_world.get_zone_layout()
     coverage = SphericalCap((0.0, 0.0), 1.0)
 
     direct = layout.find_intersecting_zones(coverage)
-    through_facade = topology.find_intersecting_zones(coverage)
+    through_facade = physical_world.find_intersecting_zones(coverage)
 
     assert through_facade == direct
     assert all(
@@ -350,13 +350,13 @@ def test_resolution_uses_haversine_center_distance_then_zone_id() -> None:
         "distant",
         geometry=rectangle_definition(-20, 20, -180, -140),
     )
-    _, topology = create_zone_topology(layout_definition(distant, dateline))
-    assert topology.resolve_zone(0, -179).zone_id == "dateline"
+    _, physical_world = create_zone_physical_world(layout_definition(distant, dateline))
+    assert physical_world.resolve_zone(0, -179).zone_id == "dateline"
 
     tied_a = zone_definition("a-tie")
     tied_b = zone_definition("b-tie")
-    _, topology = create_zone_topology(layout_definition(tied_b, tied_a))
-    assert topology.resolve_zone(0, 0).zone_id == "a-tie"
+    _, physical_world = create_zone_physical_world(layout_definition(tied_b, tied_a))
+    assert physical_world.resolve_zone(0, 0).zone_id == "a-tie"
 
 
 class ReverseModel:
@@ -395,11 +395,11 @@ class NonMatchWinnerModel:
 
 def test_custom_model_is_injectable_but_layout_normalizes_its_results() -> None:
     model = ReverseModel()
-    _, topology = create_zone_topology(
+    _, physical_world = create_zone_physical_world(
         layout_definition(zone_definition("b"), zone_definition("a")),
         model,
     )
-    layout = topology.get_zone_layout()
+    layout = physical_world.get_zone_layout()
 
     assert layout.get_membership_model() is model
     assert layout.get_membership_model() is layout.get_membership_model()
@@ -413,10 +413,10 @@ def test_custom_model_is_injectable_but_layout_normalizes_its_results() -> None:
 
 
 def test_default_membership_model_has_one_readonly_owner_query() -> None:
-    _, topology = create_zone_topology(
+    _, physical_world = create_zone_physical_world(
         layout_definition(zone_definition("zone"))
     )
-    layout = topology.get_zone_layout()
+    layout = physical_world.get_zone_layout()
     model = layout.get_membership_model()
 
     assert isinstance(model, DefaultZoneMembershipModel)
@@ -437,15 +437,15 @@ def test_default_membership_model_has_one_readonly_owner_query() -> None:
 def test_custom_model_cannot_inject_or_duplicate_zones_or_select_nonmatch(
     model, message
 ) -> None:
-    _, topology = create_zone_topology(
+    _, physical_world = create_zone_physical_world(
         layout_definition(zone_definition("a"), zone_definition("b")),
         model,
     )
     with pytest.raises(ValueError, match=message):
-        topology.resolve_zone(0, 0)
+        physical_world.resolve_zone(0, 0)
 
 
-def test_topology_zone_lifecycle_facade_identity_and_atomic_failure() -> None:
+def test_physical_world_zone_lifecycle_facade_identity_and_atomic_failure() -> None:
     simulation_definition = SimulationDefinition(
         SimulatorStaticInput(),
         SimulationTimeline(
@@ -454,7 +454,7 @@ def test_topology_zone_lifecycle_facade_identity_and_atomic_failure() -> None:
             timedelta(seconds=10),
         ),
     )
-    unconfigured = Simulator(simulation_definition).create_topology(
+    unconfigured = Simulator(simulation_definition).create_physical_world(
         position_model=CircularOrbitPositionModel()
     )
     for operation in (
@@ -469,39 +469,39 @@ def test_topology_zone_lifecycle_facade_identity_and_atomic_failure() -> None:
         with pytest.raises(RuntimeError, match="ZoneLayout"):
             operation()
 
-    _, topology = create_zone_topology(
+    _, physical_world = create_zone_physical_world(
         layout_definition(zone_definition("zone"))
     )
-    layout = topology.get_zone_layout()
-    assert topology.get_zone("zone") is layout.get_zone("zone")
-    assert topology.find_zones(0, 0)[0] is layout.zones[0]
-    assert topology.resolve_zone(0, 0) is layout.zones[0]
+    layout = physical_world.get_zone_layout()
+    assert physical_world.get_zone("zone") is layout.get_zone("zone")
+    assert physical_world.find_zones(0, 0)[0] is layout.zones[0]
+    assert physical_world.resolve_zone(0, 0) is layout.zones[0]
     with pytest.raises(KeyError, match="Zone not found"):
-        topology.get_zone("missing")
-    assert not hasattr(topology, "set_zone_layout")
-    assert not hasattr(topology, "set_zone_model")
+        physical_world.get_zone("missing")
+    assert not hasattr(physical_world, "set_zone_layout")
+    assert not hasattr(physical_world, "set_zone_model")
 
     simulator = Simulator(simulation_definition)
     with pytest.raises(ValueError, match="requires"):
-        simulator.create_topology(
+        simulator.create_physical_world(
             position_model=CircularOrbitPositionModel(),
             zone_membership_model=DefaultZoneMembershipModel()
         )
     with pytest.raises(RuntimeError, match="not been created"):
-        simulator.get_topology()
+        simulator.get_physical_world()
 
     class InvalidModel:
         def find_zones(self, zones, latitude_deg, longitude_deg):
             return zones
 
     with pytest.raises(TypeError, match="ZoneMembershipModel"):
-        simulator.create_topology(
+        simulator.create_physical_world(
             position_model=CircularOrbitPositionModel(),
             zone_layout_definition=layout_definition(zone_definition("zone")),
             zone_membership_model=InvalidModel(),
         )
     with pytest.raises(RuntimeError, match="not been created"):
-        simulator.get_topology()
+        simulator.get_physical_world()
 
 
 def test_zone_public_types_remain_with_owner_modules_not_root() -> None:

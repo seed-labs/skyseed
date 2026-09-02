@@ -14,7 +14,7 @@ surface and implementation boundaries are documented in
 [`bpf/README.md`](bpf/README.md).
 
 The Simulator remains upstream semantic authority. A backend may consume only
-its approved public facts/contracts and cannot own Simulator/Slicer/Planner
+its approved public facts/contracts and cannot own Simulator/Planner
 progression. Generated cross-domain application composition remains in the
 private `skyseed_v2.experiment.execution` module, outside this namespace.
 

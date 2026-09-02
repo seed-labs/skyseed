@@ -13114,6 +13114,8 @@ shells:
             index_in_orbit: 21
             mean_anomaly_deg: 137.8
             max_simultaneous_ground_station_accesses: 2
+  # Canonical S3 assumes a maximum of four simultaneous ISLs per Satellite.
+  # This scenario input is not a claim about proven Starlink hardware.
   - shell_id: S3
     altitude_km: 570.0
     inclination_deg: 70.0
@@ -13126,82 +13128,102 @@ shells:
             index_in_orbit: 0
             mean_anomaly_deg: 0
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-001-satellite-0002
             index_in_orbit: 1
             mean_anomaly_deg: 18
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-001-satellite-0003
             index_in_orbit: 2
             mean_anomaly_deg: 36
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-001-satellite-0004
             index_in_orbit: 3
             mean_anomaly_deg: 54
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-001-satellite-0005
             index_in_orbit: 4
             mean_anomaly_deg: 72
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-001-satellite-0006
             index_in_orbit: 5
             mean_anomaly_deg: 90
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-001-satellite-0007
             index_in_orbit: 6
             mean_anomaly_deg: 108
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-001-satellite-0008
             index_in_orbit: 7
             mean_anomaly_deg: 126
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-001-satellite-0009
             index_in_orbit: 8
             mean_anomaly_deg: 144
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-001-satellite-0010
             index_in_orbit: 9
             mean_anomaly_deg: 162
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-001-satellite-0011
             index_in_orbit: 10
             mean_anomaly_deg: 180
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-001-satellite-0012
             index_in_orbit: 11
             mean_anomaly_deg: 198
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-001-satellite-0013
             index_in_orbit: 12
             mean_anomaly_deg: 216
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-001-satellite-0014
             index_in_orbit: 13
             mean_anomaly_deg: 234
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-001-satellite-0015
             index_in_orbit: 14
             mean_anomaly_deg: 252
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-001-satellite-0016
             index_in_orbit: 15
             mean_anomaly_deg: 270
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-001-satellite-0017
             index_in_orbit: 16
             mean_anomaly_deg: 288
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-001-satellite-0018
             index_in_orbit: 17
             mean_anomaly_deg: 306
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-001-satellite-0019
             index_in_orbit: 18
             mean_anomaly_deg: 324
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-001-satellite-0020
             index_in_orbit: 19
             mean_anomaly_deg: 342
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
       - orbit_id: s3-orbit-002
         right_ascension_deg: 10
         satellites:
@@ -13209,82 +13231,102 @@ shells:
             index_in_orbit: 0
             mean_anomaly_deg: 7.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-002-satellite-0002
             index_in_orbit: 1
             mean_anomaly_deg: 25.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-002-satellite-0003
             index_in_orbit: 2
             mean_anomaly_deg: 43.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-002-satellite-0004
             index_in_orbit: 3
             mean_anomaly_deg: 61.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-002-satellite-0005
             index_in_orbit: 4
             mean_anomaly_deg: 79.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-002-satellite-0006
             index_in_orbit: 5
             mean_anomaly_deg: 97.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-002-satellite-0007
             index_in_orbit: 6
             mean_anomaly_deg: 115.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-002-satellite-0008
             index_in_orbit: 7
             mean_anomaly_deg: 133.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-002-satellite-0009
             index_in_orbit: 8
             mean_anomaly_deg: 151.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-002-satellite-0010
             index_in_orbit: 9
             mean_anomaly_deg: 169.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-002-satellite-0011
             index_in_orbit: 10
             mean_anomaly_deg: 187.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-002-satellite-0012
             index_in_orbit: 11
             mean_anomaly_deg: 205.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-002-satellite-0013
             index_in_orbit: 12
             mean_anomaly_deg: 223.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-002-satellite-0014
             index_in_orbit: 13
             mean_anomaly_deg: 241.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-002-satellite-0015
             index_in_orbit: 14
             mean_anomaly_deg: 259.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-002-satellite-0016
             index_in_orbit: 15
             mean_anomaly_deg: 277.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-002-satellite-0017
             index_in_orbit: 16
             mean_anomaly_deg: 295.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-002-satellite-0018
             index_in_orbit: 17
             mean_anomaly_deg: 313.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-002-satellite-0019
             index_in_orbit: 18
             mean_anomaly_deg: 331.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-002-satellite-0020
             index_in_orbit: 19
             mean_anomaly_deg: 349.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
       - orbit_id: s3-orbit-003
         right_ascension_deg: 20
         satellites:
@@ -13292,82 +13334,102 @@ shells:
             index_in_orbit: 0
             mean_anomaly_deg: 15.3
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-003-satellite-0002
             index_in_orbit: 1
             mean_anomaly_deg: 33.3
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-003-satellite-0003
             index_in_orbit: 2
             mean_anomaly_deg: 51.3
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-003-satellite-0004
             index_in_orbit: 3
             mean_anomaly_deg: 69.3
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-003-satellite-0005
             index_in_orbit: 4
             mean_anomaly_deg: 87.3
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-003-satellite-0006
             index_in_orbit: 5
             mean_anomaly_deg: 105.3
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-003-satellite-0007
             index_in_orbit: 6
             mean_anomaly_deg: 123.3
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-003-satellite-0008
             index_in_orbit: 7
             mean_anomaly_deg: 141.3
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-003-satellite-0009
             index_in_orbit: 8
             mean_anomaly_deg: 159.3
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-003-satellite-0010
             index_in_orbit: 9
             mean_anomaly_deg: 177.3
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-003-satellite-0011
             index_in_orbit: 10
             mean_anomaly_deg: 195.3
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-003-satellite-0012
             index_in_orbit: 11
             mean_anomaly_deg: 213.3
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-003-satellite-0013
             index_in_orbit: 12
             mean_anomaly_deg: 231.3
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-003-satellite-0014
             index_in_orbit: 13
             mean_anomaly_deg: 249.3
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-003-satellite-0015
             index_in_orbit: 14
             mean_anomaly_deg: 267.3
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-003-satellite-0016
             index_in_orbit: 15
             mean_anomaly_deg: 285.3
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-003-satellite-0017
             index_in_orbit: 16
             mean_anomaly_deg: 303.3
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-003-satellite-0018
             index_in_orbit: 17
             mean_anomaly_deg: 321.3
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-003-satellite-0019
             index_in_orbit: 18
             mean_anomaly_deg: 339.3
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-003-satellite-0020
             index_in_orbit: 19
             mean_anomaly_deg: 357.3
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
       - orbit_id: s3-orbit-004
         right_ascension_deg: 30
         satellites:
@@ -13375,82 +13437,102 @@ shells:
             index_in_orbit: 0
             mean_anomaly_deg: 22.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-004-satellite-0002
             index_in_orbit: 1
             mean_anomaly_deg: 40.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-004-satellite-0003
             index_in_orbit: 2
             mean_anomaly_deg: 58.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-004-satellite-0004
             index_in_orbit: 3
             mean_anomaly_deg: 76.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-004-satellite-0005
             index_in_orbit: 4
             mean_anomaly_deg: 94.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-004-satellite-0006
             index_in_orbit: 5
             mean_anomaly_deg: 112.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-004-satellite-0007
             index_in_orbit: 6
             mean_anomaly_deg: 130.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-004-satellite-0008
             index_in_orbit: 7
             mean_anomaly_deg: 148.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-004-satellite-0009
             index_in_orbit: 8
             mean_anomaly_deg: 166.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-004-satellite-0010
             index_in_orbit: 9
             mean_anomaly_deg: 184.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-004-satellite-0011
             index_in_orbit: 10
             mean_anomaly_deg: 202.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-004-satellite-0012
             index_in_orbit: 11
             mean_anomaly_deg: 220.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-004-satellite-0013
             index_in_orbit: 12
             mean_anomaly_deg: 238.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-004-satellite-0014
             index_in_orbit: 13
             mean_anomaly_deg: 256.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-004-satellite-0015
             index_in_orbit: 14
             mean_anomaly_deg: 274.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-004-satellite-0016
             index_in_orbit: 15
             mean_anomaly_deg: 292.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-004-satellite-0017
             index_in_orbit: 16
             mean_anomaly_deg: 310.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-004-satellite-0018
             index_in_orbit: 17
             mean_anomaly_deg: 328.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-004-satellite-0019
             index_in_orbit: 18
             mean_anomaly_deg: 346.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-004-satellite-0020
             index_in_orbit: 19
             mean_anomaly_deg: 4.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
       - orbit_id: s3-orbit-005
         right_ascension_deg: 40
         satellites:
@@ -13458,82 +13540,102 @@ shells:
             index_in_orbit: 0
             mean_anomaly_deg: 30.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-005-satellite-0002
             index_in_orbit: 1
             mean_anomaly_deg: 48.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-005-satellite-0003
             index_in_orbit: 2
             mean_anomaly_deg: 66.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-005-satellite-0004
             index_in_orbit: 3
             mean_anomaly_deg: 84.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-005-satellite-0005
             index_in_orbit: 4
             mean_anomaly_deg: 102.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-005-satellite-0006
             index_in_orbit: 5
             mean_anomaly_deg: 120.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-005-satellite-0007
             index_in_orbit: 6
             mean_anomaly_deg: 138.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-005-satellite-0008
             index_in_orbit: 7
             mean_anomaly_deg: 156.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-005-satellite-0009
             index_in_orbit: 8
             mean_anomaly_deg: 174.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-005-satellite-0010
             index_in_orbit: 9
             mean_anomaly_deg: 192.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-005-satellite-0011
             index_in_orbit: 10
             mean_anomaly_deg: 210.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-005-satellite-0012
             index_in_orbit: 11
             mean_anomaly_deg: 228.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-005-satellite-0013
             index_in_orbit: 12
             mean_anomaly_deg: 246.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-005-satellite-0014
             index_in_orbit: 13
             mean_anomaly_deg: 264.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-005-satellite-0015
             index_in_orbit: 14
             mean_anomaly_deg: 282.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-005-satellite-0016
             index_in_orbit: 15
             mean_anomaly_deg: 300.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-005-satellite-0017
             index_in_orbit: 16
             mean_anomaly_deg: 318.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-005-satellite-0018
             index_in_orbit: 17
             mean_anomaly_deg: 336.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-005-satellite-0019
             index_in_orbit: 18
             mean_anomaly_deg: 354.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-005-satellite-0020
             index_in_orbit: 19
             mean_anomaly_deg: 12.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
       - orbit_id: s3-orbit-006
         right_ascension_deg: 50
         satellites:
@@ -13541,82 +13643,102 @@ shells:
             index_in_orbit: 0
             mean_anomaly_deg: 38.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-006-satellite-0002
             index_in_orbit: 1
             mean_anomaly_deg: 56.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-006-satellite-0003
             index_in_orbit: 2
             mean_anomaly_deg: 74.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-006-satellite-0004
             index_in_orbit: 3
             mean_anomaly_deg: 92.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-006-satellite-0005
             index_in_orbit: 4
             mean_anomaly_deg: 110.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-006-satellite-0006
             index_in_orbit: 5
             mean_anomaly_deg: 128.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-006-satellite-0007
             index_in_orbit: 6
             mean_anomaly_deg: 146.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-006-satellite-0008
             index_in_orbit: 7
             mean_anomaly_deg: 164.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-006-satellite-0009
             index_in_orbit: 8
             mean_anomaly_deg: 182.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-006-satellite-0010
             index_in_orbit: 9
             mean_anomaly_deg: 200.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-006-satellite-0011
             index_in_orbit: 10
             mean_anomaly_deg: 218.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-006-satellite-0012
             index_in_orbit: 11
             mean_anomaly_deg: 236.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-006-satellite-0013
             index_in_orbit: 12
             mean_anomaly_deg: 254.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-006-satellite-0014
             index_in_orbit: 13
             mean_anomaly_deg: 272.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-006-satellite-0015
             index_in_orbit: 14
             mean_anomaly_deg: 290.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-006-satellite-0016
             index_in_orbit: 15
             mean_anomaly_deg: 308.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-006-satellite-0017
             index_in_orbit: 16
             mean_anomaly_deg: 326.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-006-satellite-0018
             index_in_orbit: 17
             mean_anomaly_deg: 344.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-006-satellite-0019
             index_in_orbit: 18
             mean_anomaly_deg: 2.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-006-satellite-0020
             index_in_orbit: 19
             mean_anomaly_deg: 20.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
       - orbit_id: s3-orbit-007
         right_ascension_deg: 60
         satellites:
@@ -13624,82 +13746,102 @@ shells:
             index_in_orbit: 0
             mean_anomaly_deg: 45.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-007-satellite-0002
             index_in_orbit: 1
             mean_anomaly_deg: 63.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-007-satellite-0003
             index_in_orbit: 2
             mean_anomaly_deg: 81.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-007-satellite-0004
             index_in_orbit: 3
             mean_anomaly_deg: 99.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-007-satellite-0005
             index_in_orbit: 4
             mean_anomaly_deg: 117.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-007-satellite-0006
             index_in_orbit: 5
             mean_anomaly_deg: 135.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-007-satellite-0007
             index_in_orbit: 6
             mean_anomaly_deg: 153.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-007-satellite-0008
             index_in_orbit: 7
             mean_anomaly_deg: 171.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-007-satellite-0009
             index_in_orbit: 8
             mean_anomaly_deg: 189.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-007-satellite-0010
             index_in_orbit: 9
             mean_anomaly_deg: 207.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-007-satellite-0011
             index_in_orbit: 10
             mean_anomaly_deg: 225.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-007-satellite-0012
             index_in_orbit: 11
             mean_anomaly_deg: 243.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-007-satellite-0013
             index_in_orbit: 12
             mean_anomaly_deg: 261.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-007-satellite-0014
             index_in_orbit: 13
             mean_anomaly_deg: 279.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-007-satellite-0015
             index_in_orbit: 14
             mean_anomaly_deg: 297.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-007-satellite-0016
             index_in_orbit: 15
             mean_anomaly_deg: 315.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-007-satellite-0017
             index_in_orbit: 16
             mean_anomaly_deg: 333.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-007-satellite-0018
             index_in_orbit: 17
             mean_anomaly_deg: 351.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-007-satellite-0019
             index_in_orbit: 18
             mean_anomaly_deg: 9.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-007-satellite-0020
             index_in_orbit: 19
             mean_anomaly_deg: 27.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
       - orbit_id: s3-orbit-008
         right_ascension_deg: 70
         satellites:
@@ -13707,82 +13849,102 @@ shells:
             index_in_orbit: 0
             mean_anomaly_deg: 53.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-008-satellite-0002
             index_in_orbit: 1
             mean_anomaly_deg: 71.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-008-satellite-0003
             index_in_orbit: 2
             mean_anomaly_deg: 89.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-008-satellite-0004
             index_in_orbit: 3
             mean_anomaly_deg: 107.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-008-satellite-0005
             index_in_orbit: 4
             mean_anomaly_deg: 125.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-008-satellite-0006
             index_in_orbit: 5
             mean_anomaly_deg: 143.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-008-satellite-0007
             index_in_orbit: 6
             mean_anomaly_deg: 161.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-008-satellite-0008
             index_in_orbit: 7
             mean_anomaly_deg: 179.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-008-satellite-0009
             index_in_orbit: 8
             mean_anomaly_deg: 197.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-008-satellite-0010
             index_in_orbit: 9
             mean_anomaly_deg: 215.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-008-satellite-0011
             index_in_orbit: 10
             mean_anomaly_deg: 233.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-008-satellite-0012
             index_in_orbit: 11
             mean_anomaly_deg: 251.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-008-satellite-0013
             index_in_orbit: 12
             mean_anomaly_deg: 269.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-008-satellite-0014
             index_in_orbit: 13
             mean_anomaly_deg: 287.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-008-satellite-0015
             index_in_orbit: 14
             mean_anomaly_deg: 305.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-008-satellite-0016
             index_in_orbit: 15
             mean_anomaly_deg: 323.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-008-satellite-0017
             index_in_orbit: 16
             mean_anomaly_deg: 341.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-008-satellite-0018
             index_in_orbit: 17
             mean_anomaly_deg: 359.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-008-satellite-0019
             index_in_orbit: 18
             mean_anomaly_deg: 17.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-008-satellite-0020
             index_in_orbit: 19
             mean_anomaly_deg: 35.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
       - orbit_id: s3-orbit-009
         right_ascension_deg: 80
         satellites:
@@ -13790,82 +13952,102 @@ shells:
             index_in_orbit: 0
             mean_anomaly_deg: 61.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-009-satellite-0002
             index_in_orbit: 1
             mean_anomaly_deg: 79.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-009-satellite-0003
             index_in_orbit: 2
             mean_anomaly_deg: 97.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-009-satellite-0004
             index_in_orbit: 3
             mean_anomaly_deg: 115.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-009-satellite-0005
             index_in_orbit: 4
             mean_anomaly_deg: 133.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-009-satellite-0006
             index_in_orbit: 5
             mean_anomaly_deg: 151.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-009-satellite-0007
             index_in_orbit: 6
             mean_anomaly_deg: 169.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-009-satellite-0008
             index_in_orbit: 7
             mean_anomaly_deg: 187.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-009-satellite-0009
             index_in_orbit: 8
             mean_anomaly_deg: 205.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-009-satellite-0010
             index_in_orbit: 9
             mean_anomaly_deg: 223.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-009-satellite-0011
             index_in_orbit: 10
             mean_anomaly_deg: 241.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-009-satellite-0012
             index_in_orbit: 11
             mean_anomaly_deg: 259.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-009-satellite-0013
             index_in_orbit: 12
             mean_anomaly_deg: 277.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-009-satellite-0014
             index_in_orbit: 13
             mean_anomaly_deg: 295.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-009-satellite-0015
             index_in_orbit: 14
             mean_anomaly_deg: 313.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-009-satellite-0016
             index_in_orbit: 15
             mean_anomaly_deg: 331.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-009-satellite-0017
             index_in_orbit: 16
             mean_anomaly_deg: 349.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-009-satellite-0018
             index_in_orbit: 17
             mean_anomaly_deg: 7.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-009-satellite-0019
             index_in_orbit: 18
             mean_anomaly_deg: 25.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-009-satellite-0020
             index_in_orbit: 19
             mean_anomaly_deg: 43.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
       - orbit_id: s3-orbit-010
         right_ascension_deg: 90
         satellites:
@@ -13873,82 +14055,102 @@ shells:
             index_in_orbit: 0
             mean_anomaly_deg: 68.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-010-satellite-0002
             index_in_orbit: 1
             mean_anomaly_deg: 86.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-010-satellite-0003
             index_in_orbit: 2
             mean_anomaly_deg: 104.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-010-satellite-0004
             index_in_orbit: 3
             mean_anomaly_deg: 122.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-010-satellite-0005
             index_in_orbit: 4
             mean_anomaly_deg: 140.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-010-satellite-0006
             index_in_orbit: 5
             mean_anomaly_deg: 158.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-010-satellite-0007
             index_in_orbit: 6
             mean_anomaly_deg: 176.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-010-satellite-0008
             index_in_orbit: 7
             mean_anomaly_deg: 194.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-010-satellite-0009
             index_in_orbit: 8
             mean_anomaly_deg: 212.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-010-satellite-0010
             index_in_orbit: 9
             mean_anomaly_deg: 230.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-010-satellite-0011
             index_in_orbit: 10
             mean_anomaly_deg: 248.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-010-satellite-0012
             index_in_orbit: 11
             mean_anomaly_deg: 266.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-010-satellite-0013
             index_in_orbit: 12
             mean_anomaly_deg: 284.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-010-satellite-0014
             index_in_orbit: 13
             mean_anomaly_deg: 302.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-010-satellite-0015
             index_in_orbit: 14
             mean_anomaly_deg: 320.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-010-satellite-0016
             index_in_orbit: 15
             mean_anomaly_deg: 338.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-010-satellite-0017
             index_in_orbit: 16
             mean_anomaly_deg: 356.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-010-satellite-0018
             index_in_orbit: 17
             mean_anomaly_deg: 14.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-010-satellite-0019
             index_in_orbit: 18
             mean_anomaly_deg: 32.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-010-satellite-0020
             index_in_orbit: 19
             mean_anomaly_deg: 50.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
       - orbit_id: s3-orbit-011
         right_ascension_deg: 100
         satellites:
@@ -13956,82 +14158,102 @@ shells:
             index_in_orbit: 0
             mean_anomaly_deg: 76.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-011-satellite-0002
             index_in_orbit: 1
             mean_anomaly_deg: 94.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-011-satellite-0003
             index_in_orbit: 2
             mean_anomaly_deg: 112.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-011-satellite-0004
             index_in_orbit: 3
             mean_anomaly_deg: 130.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-011-satellite-0005
             index_in_orbit: 4
             mean_anomaly_deg: 148.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-011-satellite-0006
             index_in_orbit: 5
             mean_anomaly_deg: 166.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-011-satellite-0007
             index_in_orbit: 6
             mean_anomaly_deg: 184.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-011-satellite-0008
             index_in_orbit: 7
             mean_anomaly_deg: 202.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-011-satellite-0009
             index_in_orbit: 8
             mean_anomaly_deg: 220.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-011-satellite-0010
             index_in_orbit: 9
             mean_anomaly_deg: 238.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-011-satellite-0011
             index_in_orbit: 10
             mean_anomaly_deg: 256.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-011-satellite-0012
             index_in_orbit: 11
             mean_anomaly_deg: 274.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-011-satellite-0013
             index_in_orbit: 12
             mean_anomaly_deg: 292.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-011-satellite-0014
             index_in_orbit: 13
             mean_anomaly_deg: 310.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-011-satellite-0015
             index_in_orbit: 14
             mean_anomaly_deg: 328.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-011-satellite-0016
             index_in_orbit: 15
             mean_anomaly_deg: 346.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-011-satellite-0017
             index_in_orbit: 16
             mean_anomaly_deg: 4.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-011-satellite-0018
             index_in_orbit: 17
             mean_anomaly_deg: 22.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-011-satellite-0019
             index_in_orbit: 18
             mean_anomaly_deg: 40.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-011-satellite-0020
             index_in_orbit: 19
             mean_anomaly_deg: 58.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
       - orbit_id: s3-orbit-012
         right_ascension_deg: 110
         satellites:
@@ -14039,82 +14261,102 @@ shells:
             index_in_orbit: 0
             mean_anomaly_deg: 84.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-012-satellite-0002
             index_in_orbit: 1
             mean_anomaly_deg: 102.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-012-satellite-0003
             index_in_orbit: 2
             mean_anomaly_deg: 120.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-012-satellite-0004
             index_in_orbit: 3
             mean_anomaly_deg: 138.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-012-satellite-0005
             index_in_orbit: 4
             mean_anomaly_deg: 156.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-012-satellite-0006
             index_in_orbit: 5
             mean_anomaly_deg: 174.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-012-satellite-0007
             index_in_orbit: 6
             mean_anomaly_deg: 192.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-012-satellite-0008
             index_in_orbit: 7
             mean_anomaly_deg: 210.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-012-satellite-0009
             index_in_orbit: 8
             mean_anomaly_deg: 228.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-012-satellite-0010
             index_in_orbit: 9
             mean_anomaly_deg: 246.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-012-satellite-0011
             index_in_orbit: 10
             mean_anomaly_deg: 264.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-012-satellite-0012
             index_in_orbit: 11
             mean_anomaly_deg: 282.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-012-satellite-0013
             index_in_orbit: 12
             mean_anomaly_deg: 300.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-012-satellite-0014
             index_in_orbit: 13
             mean_anomaly_deg: 318.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-012-satellite-0015
             index_in_orbit: 14
             mean_anomaly_deg: 336.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-012-satellite-0016
             index_in_orbit: 15
             mean_anomaly_deg: 354.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-012-satellite-0017
             index_in_orbit: 16
             mean_anomaly_deg: 12.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-012-satellite-0018
             index_in_orbit: 17
             mean_anomaly_deg: 30.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-012-satellite-0019
             index_in_orbit: 18
             mean_anomaly_deg: 48.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-012-satellite-0020
             index_in_orbit: 19
             mean_anomaly_deg: 66.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
       - orbit_id: s3-orbit-013
         right_ascension_deg: 120
         satellites:
@@ -14122,82 +14364,102 @@ shells:
             index_in_orbit: 0
             mean_anomaly_deg: 91.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-013-satellite-0002
             index_in_orbit: 1
             mean_anomaly_deg: 109.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-013-satellite-0003
             index_in_orbit: 2
             mean_anomaly_deg: 127.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-013-satellite-0004
             index_in_orbit: 3
             mean_anomaly_deg: 145.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-013-satellite-0005
             index_in_orbit: 4
             mean_anomaly_deg: 163.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-013-satellite-0006
             index_in_orbit: 5
             mean_anomaly_deg: 181.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-013-satellite-0007
             index_in_orbit: 6
             mean_anomaly_deg: 199.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-013-satellite-0008
             index_in_orbit: 7
             mean_anomaly_deg: 217.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-013-satellite-0009
             index_in_orbit: 8
             mean_anomaly_deg: 235.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-013-satellite-0010
             index_in_orbit: 9
             mean_anomaly_deg: 253.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-013-satellite-0011
             index_in_orbit: 10
             mean_anomaly_deg: 271.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-013-satellite-0012
             index_in_orbit: 11
             mean_anomaly_deg: 289.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-013-satellite-0013
             index_in_orbit: 12
             mean_anomaly_deg: 307.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-013-satellite-0014
             index_in_orbit: 13
             mean_anomaly_deg: 325.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-013-satellite-0015
             index_in_orbit: 14
             mean_anomaly_deg: 343.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-013-satellite-0016
             index_in_orbit: 15
             mean_anomaly_deg: 1.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-013-satellite-0017
             index_in_orbit: 16
             mean_anomaly_deg: 19.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-013-satellite-0018
             index_in_orbit: 17
             mean_anomaly_deg: 37.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-013-satellite-0019
             index_in_orbit: 18
             mean_anomaly_deg: 55.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-013-satellite-0020
             index_in_orbit: 19
             mean_anomaly_deg: 73.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
       - orbit_id: s3-orbit-014
         right_ascension_deg: 130
         satellites:
@@ -14205,82 +14467,102 @@ shells:
             index_in_orbit: 0
             mean_anomaly_deg: 99.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-014-satellite-0002
             index_in_orbit: 1
             mean_anomaly_deg: 117.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-014-satellite-0003
             index_in_orbit: 2
             mean_anomaly_deg: 135.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-014-satellite-0004
             index_in_orbit: 3
             mean_anomaly_deg: 153.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-014-satellite-0005
             index_in_orbit: 4
             mean_anomaly_deg: 171.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-014-satellite-0006
             index_in_orbit: 5
             mean_anomaly_deg: 189.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-014-satellite-0007
             index_in_orbit: 6
             mean_anomaly_deg: 207.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-014-satellite-0008
             index_in_orbit: 7
             mean_anomaly_deg: 225.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-014-satellite-0009
             index_in_orbit: 8
             mean_anomaly_deg: 243.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-014-satellite-0010
             index_in_orbit: 9
             mean_anomaly_deg: 261.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-014-satellite-0011
             index_in_orbit: 10
             mean_anomaly_deg: 279.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-014-satellite-0012
             index_in_orbit: 11
             mean_anomaly_deg: 297.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-014-satellite-0013
             index_in_orbit: 12
             mean_anomaly_deg: 315.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-014-satellite-0014
             index_in_orbit: 13
             mean_anomaly_deg: 333.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-014-satellite-0015
             index_in_orbit: 14
             mean_anomaly_deg: 351.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-014-satellite-0016
             index_in_orbit: 15
             mean_anomaly_deg: 9.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-014-satellite-0017
             index_in_orbit: 16
             mean_anomaly_deg: 27.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-014-satellite-0018
             index_in_orbit: 17
             mean_anomaly_deg: 45.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-014-satellite-0019
             index_in_orbit: 18
             mean_anomaly_deg: 63.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-014-satellite-0020
             index_in_orbit: 19
             mean_anomaly_deg: 81.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
       - orbit_id: s3-orbit-015
         right_ascension_deg: 140
         satellites:
@@ -14288,82 +14570,102 @@ shells:
             index_in_orbit: 0
             mean_anomaly_deg: 107.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-015-satellite-0002
             index_in_orbit: 1
             mean_anomaly_deg: 125.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-015-satellite-0003
             index_in_orbit: 2
             mean_anomaly_deg: 143.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-015-satellite-0004
             index_in_orbit: 3
             mean_anomaly_deg: 161.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-015-satellite-0005
             index_in_orbit: 4
             mean_anomaly_deg: 179.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-015-satellite-0006
             index_in_orbit: 5
             mean_anomaly_deg: 197.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-015-satellite-0007
             index_in_orbit: 6
             mean_anomaly_deg: 215.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-015-satellite-0008
             index_in_orbit: 7
             mean_anomaly_deg: 233.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-015-satellite-0009
             index_in_orbit: 8
             mean_anomaly_deg: 251.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-015-satellite-0010
             index_in_orbit: 9
             mean_anomaly_deg: 269.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-015-satellite-0011
             index_in_orbit: 10
             mean_anomaly_deg: 287.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-015-satellite-0012
             index_in_orbit: 11
             mean_anomaly_deg: 305.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-015-satellite-0013
             index_in_orbit: 12
             mean_anomaly_deg: 323.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-015-satellite-0014
             index_in_orbit: 13
             mean_anomaly_deg: 341.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-015-satellite-0015
             index_in_orbit: 14
             mean_anomaly_deg: 359.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-015-satellite-0016
             index_in_orbit: 15
             mean_anomaly_deg: 17.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-015-satellite-0017
             index_in_orbit: 16
             mean_anomaly_deg: 35.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-015-satellite-0018
             index_in_orbit: 17
             mean_anomaly_deg: 53.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-015-satellite-0019
             index_in_orbit: 18
             mean_anomaly_deg: 71.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-015-satellite-0020
             index_in_orbit: 19
             mean_anomaly_deg: 89.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
       - orbit_id: s3-orbit-016
         right_ascension_deg: 150
         satellites:
@@ -14371,82 +14673,102 @@ shells:
             index_in_orbit: 0
             mean_anomaly_deg: 114.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-016-satellite-0002
             index_in_orbit: 1
             mean_anomaly_deg: 132.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-016-satellite-0003
             index_in_orbit: 2
             mean_anomaly_deg: 150.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-016-satellite-0004
             index_in_orbit: 3
             mean_anomaly_deg: 168.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-016-satellite-0005
             index_in_orbit: 4
             mean_anomaly_deg: 186.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-016-satellite-0006
             index_in_orbit: 5
             mean_anomaly_deg: 204.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-016-satellite-0007
             index_in_orbit: 6
             mean_anomaly_deg: 222.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-016-satellite-0008
             index_in_orbit: 7
             mean_anomaly_deg: 240.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-016-satellite-0009
             index_in_orbit: 8
             mean_anomaly_deg: 258.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-016-satellite-0010
             index_in_orbit: 9
             mean_anomaly_deg: 276.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-016-satellite-0011
             index_in_orbit: 10
             mean_anomaly_deg: 294.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-016-satellite-0012
             index_in_orbit: 11
             mean_anomaly_deg: 312.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-016-satellite-0013
             index_in_orbit: 12
             mean_anomaly_deg: 330.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-016-satellite-0014
             index_in_orbit: 13
             mean_anomaly_deg: 348.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-016-satellite-0015
             index_in_orbit: 14
             mean_anomaly_deg: 6.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-016-satellite-0016
             index_in_orbit: 15
             mean_anomaly_deg: 24.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-016-satellite-0017
             index_in_orbit: 16
             mean_anomaly_deg: 42.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-016-satellite-0018
             index_in_orbit: 17
             mean_anomaly_deg: 60.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-016-satellite-0019
             index_in_orbit: 18
             mean_anomaly_deg: 78.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-016-satellite-0020
             index_in_orbit: 19
             mean_anomaly_deg: 96.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
       - orbit_id: s3-orbit-017
         right_ascension_deg: 160
         satellites:
@@ -14454,82 +14776,102 @@ shells:
             index_in_orbit: 0
             mean_anomaly_deg: 122.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-017-satellite-0002
             index_in_orbit: 1
             mean_anomaly_deg: 140.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-017-satellite-0003
             index_in_orbit: 2
             mean_anomaly_deg: 158.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-017-satellite-0004
             index_in_orbit: 3
             mean_anomaly_deg: 176.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-017-satellite-0005
             index_in_orbit: 4
             mean_anomaly_deg: 194.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-017-satellite-0006
             index_in_orbit: 5
             mean_anomaly_deg: 212.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-017-satellite-0007
             index_in_orbit: 6
             mean_anomaly_deg: 230.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-017-satellite-0008
             index_in_orbit: 7
             mean_anomaly_deg: 248.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-017-satellite-0009
             index_in_orbit: 8
             mean_anomaly_deg: 266.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-017-satellite-0010
             index_in_orbit: 9
             mean_anomaly_deg: 284.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-017-satellite-0011
             index_in_orbit: 10
             mean_anomaly_deg: 302.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-017-satellite-0012
             index_in_orbit: 11
             mean_anomaly_deg: 320.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-017-satellite-0013
             index_in_orbit: 12
             mean_anomaly_deg: 338.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-017-satellite-0014
             index_in_orbit: 13
             mean_anomaly_deg: 356.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-017-satellite-0015
             index_in_orbit: 14
             mean_anomaly_deg: 14.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-017-satellite-0016
             index_in_orbit: 15
             mean_anomaly_deg: 32.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-017-satellite-0017
             index_in_orbit: 16
             mean_anomaly_deg: 50.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-017-satellite-0018
             index_in_orbit: 17
             mean_anomaly_deg: 68.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-017-satellite-0019
             index_in_orbit: 18
             mean_anomaly_deg: 86.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-017-satellite-0020
             index_in_orbit: 19
             mean_anomaly_deg: 104.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
       - orbit_id: s3-orbit-018
         right_ascension_deg: 170
         satellites:
@@ -14537,82 +14879,102 @@ shells:
             index_in_orbit: 0
             mean_anomaly_deg: 130
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-018-satellite-0002
             index_in_orbit: 1
             mean_anomaly_deg: 148
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-018-satellite-0003
             index_in_orbit: 2
             mean_anomaly_deg: 166
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-018-satellite-0004
             index_in_orbit: 3
             mean_anomaly_deg: 184
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-018-satellite-0005
             index_in_orbit: 4
             mean_anomaly_deg: 202
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-018-satellite-0006
             index_in_orbit: 5
             mean_anomaly_deg: 220
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-018-satellite-0007
             index_in_orbit: 6
             mean_anomaly_deg: 238
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-018-satellite-0008
             index_in_orbit: 7
             mean_anomaly_deg: 256
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-018-satellite-0009
             index_in_orbit: 8
             mean_anomaly_deg: 274
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-018-satellite-0010
             index_in_orbit: 9
             mean_anomaly_deg: 292
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-018-satellite-0011
             index_in_orbit: 10
             mean_anomaly_deg: 310
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-018-satellite-0012
             index_in_orbit: 11
             mean_anomaly_deg: 328
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-018-satellite-0013
             index_in_orbit: 12
             mean_anomaly_deg: 346
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-018-satellite-0014
             index_in_orbit: 13
             mean_anomaly_deg: 4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-018-satellite-0015
             index_in_orbit: 14
             mean_anomaly_deg: 22
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-018-satellite-0016
             index_in_orbit: 15
             mean_anomaly_deg: 40
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-018-satellite-0017
             index_in_orbit: 16
             mean_anomaly_deg: 58
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-018-satellite-0018
             index_in_orbit: 17
             mean_anomaly_deg: 76
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-018-satellite-0019
             index_in_orbit: 18
             mean_anomaly_deg: 94
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-018-satellite-0020
             index_in_orbit: 19
             mean_anomaly_deg: 112
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
       - orbit_id: s3-orbit-019
         right_ascension_deg: 180
         satellites:
@@ -14620,82 +14982,102 @@ shells:
             index_in_orbit: 0
             mean_anomaly_deg: 137.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-019-satellite-0002
             index_in_orbit: 1
             mean_anomaly_deg: 155.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-019-satellite-0003
             index_in_orbit: 2
             mean_anomaly_deg: 173.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-019-satellite-0004
             index_in_orbit: 3
             mean_anomaly_deg: 191.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-019-satellite-0005
             index_in_orbit: 4
             mean_anomaly_deg: 209.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-019-satellite-0006
             index_in_orbit: 5
             mean_anomaly_deg: 227.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-019-satellite-0007
             index_in_orbit: 6
             mean_anomaly_deg: 245.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-019-satellite-0008
             index_in_orbit: 7
             mean_anomaly_deg: 263.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-019-satellite-0009
             index_in_orbit: 8
             mean_anomaly_deg: 281.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-019-satellite-0010
             index_in_orbit: 9
             mean_anomaly_deg: 299.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-019-satellite-0011
             index_in_orbit: 10
             mean_anomaly_deg: 317.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-019-satellite-0012
             index_in_orbit: 11
             mean_anomaly_deg: 335.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-019-satellite-0013
             index_in_orbit: 12
             mean_anomaly_deg: 353.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-019-satellite-0014
             index_in_orbit: 13
             mean_anomaly_deg: 11.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-019-satellite-0015
             index_in_orbit: 14
             mean_anomaly_deg: 29.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-019-satellite-0016
             index_in_orbit: 15
             mean_anomaly_deg: 47.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-019-satellite-0017
             index_in_orbit: 16
             mean_anomaly_deg: 65.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-019-satellite-0018
             index_in_orbit: 17
             mean_anomaly_deg: 83.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-019-satellite-0019
             index_in_orbit: 18
             mean_anomaly_deg: 101.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-019-satellite-0020
             index_in_orbit: 19
             mean_anomaly_deg: 119.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
       - orbit_id: s3-orbit-020
         right_ascension_deg: 190
         satellites:
@@ -14703,82 +15085,102 @@ shells:
             index_in_orbit: 0
             mean_anomaly_deg: 145.3
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-020-satellite-0002
             index_in_orbit: 1
             mean_anomaly_deg: 163.3
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-020-satellite-0003
             index_in_orbit: 2
             mean_anomaly_deg: 181.3
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-020-satellite-0004
             index_in_orbit: 3
             mean_anomaly_deg: 199.3
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-020-satellite-0005
             index_in_orbit: 4
             mean_anomaly_deg: 217.3
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-020-satellite-0006
             index_in_orbit: 5
             mean_anomaly_deg: 235.3
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-020-satellite-0007
             index_in_orbit: 6
             mean_anomaly_deg: 253.3
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-020-satellite-0008
             index_in_orbit: 7
             mean_anomaly_deg: 271.3
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-020-satellite-0009
             index_in_orbit: 8
             mean_anomaly_deg: 289.3
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-020-satellite-0010
             index_in_orbit: 9
             mean_anomaly_deg: 307.3
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-020-satellite-0011
             index_in_orbit: 10
             mean_anomaly_deg: 325.3
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-020-satellite-0012
             index_in_orbit: 11
             mean_anomaly_deg: 343.3
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-020-satellite-0013
             index_in_orbit: 12
             mean_anomaly_deg: 1.3
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-020-satellite-0014
             index_in_orbit: 13
             mean_anomaly_deg: 19.3
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-020-satellite-0015
             index_in_orbit: 14
             mean_anomaly_deg: 37.3
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-020-satellite-0016
             index_in_orbit: 15
             mean_anomaly_deg: 55.3
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-020-satellite-0017
             index_in_orbit: 16
             mean_anomaly_deg: 73.3
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-020-satellite-0018
             index_in_orbit: 17
             mean_anomaly_deg: 91.3
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-020-satellite-0019
             index_in_orbit: 18
             mean_anomaly_deg: 109.3
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-020-satellite-0020
             index_in_orbit: 19
             mean_anomaly_deg: 127.3
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
       - orbit_id: s3-orbit-021
         right_ascension_deg: 200
         satellites:
@@ -14786,82 +15188,102 @@ shells:
             index_in_orbit: 0
             mean_anomaly_deg: 153
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-021-satellite-0002
             index_in_orbit: 1
             mean_anomaly_deg: 171
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-021-satellite-0003
             index_in_orbit: 2
             mean_anomaly_deg: 189
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-021-satellite-0004
             index_in_orbit: 3
             mean_anomaly_deg: 207
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-021-satellite-0005
             index_in_orbit: 4
             mean_anomaly_deg: 225
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-021-satellite-0006
             index_in_orbit: 5
             mean_anomaly_deg: 243
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-021-satellite-0007
             index_in_orbit: 6
             mean_anomaly_deg: 261
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-021-satellite-0008
             index_in_orbit: 7
             mean_anomaly_deg: 279
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-021-satellite-0009
             index_in_orbit: 8
             mean_anomaly_deg: 297
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-021-satellite-0010
             index_in_orbit: 9
             mean_anomaly_deg: 315
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-021-satellite-0011
             index_in_orbit: 10
             mean_anomaly_deg: 333
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-021-satellite-0012
             index_in_orbit: 11
             mean_anomaly_deg: 351
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-021-satellite-0013
             index_in_orbit: 12
             mean_anomaly_deg: 8.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-021-satellite-0014
             index_in_orbit: 13
             mean_anomaly_deg: 26.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-021-satellite-0015
             index_in_orbit: 14
             mean_anomaly_deg: 44.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-021-satellite-0016
             index_in_orbit: 15
             mean_anomaly_deg: 62.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-021-satellite-0017
             index_in_orbit: 16
             mean_anomaly_deg: 81
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-021-satellite-0018
             index_in_orbit: 17
             mean_anomaly_deg: 99
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-021-satellite-0019
             index_in_orbit: 18
             mean_anomaly_deg: 117
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-021-satellite-0020
             index_in_orbit: 19
             mean_anomaly_deg: 135
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
       - orbit_id: s3-orbit-022
         right_ascension_deg: 210
         satellites:
@@ -14869,82 +15291,102 @@ shells:
             index_in_orbit: 0
             mean_anomaly_deg: 160.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-022-satellite-0002
             index_in_orbit: 1
             mean_anomaly_deg: 178.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-022-satellite-0003
             index_in_orbit: 2
             mean_anomaly_deg: 196.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-022-satellite-0004
             index_in_orbit: 3
             mean_anomaly_deg: 214.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-022-satellite-0005
             index_in_orbit: 4
             mean_anomaly_deg: 232.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-022-satellite-0006
             index_in_orbit: 5
             mean_anomaly_deg: 250.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-022-satellite-0007
             index_in_orbit: 6
             mean_anomaly_deg: 268.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-022-satellite-0008
             index_in_orbit: 7
             mean_anomaly_deg: 286.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-022-satellite-0009
             index_in_orbit: 8
             mean_anomaly_deg: 304.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-022-satellite-0010
             index_in_orbit: 9
             mean_anomaly_deg: 322.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-022-satellite-0011
             index_in_orbit: 10
             mean_anomaly_deg: 340.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-022-satellite-0012
             index_in_orbit: 11
             mean_anomaly_deg: 358.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-022-satellite-0013
             index_in_orbit: 12
             mean_anomaly_deg: 16.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-022-satellite-0014
             index_in_orbit: 13
             mean_anomaly_deg: 34.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-022-satellite-0015
             index_in_orbit: 14
             mean_anomaly_deg: 52.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-022-satellite-0016
             index_in_orbit: 15
             mean_anomaly_deg: 70.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-022-satellite-0017
             index_in_orbit: 16
             mean_anomaly_deg: 88.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-022-satellite-0018
             index_in_orbit: 17
             mean_anomaly_deg: 106.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-022-satellite-0019
             index_in_orbit: 18
             mean_anomaly_deg: 124.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-022-satellite-0020
             index_in_orbit: 19
             mean_anomaly_deg: 142.6
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
       - orbit_id: s3-orbit-023
         right_ascension_deg: 220
         satellites:
@@ -14952,82 +15394,102 @@ shells:
             index_in_orbit: 0
             mean_anomaly_deg: 168.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-023-satellite-0002
             index_in_orbit: 1
             mean_anomaly_deg: 186.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-023-satellite-0003
             index_in_orbit: 2
             mean_anomaly_deg: 204.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-023-satellite-0004
             index_in_orbit: 3
             mean_anomaly_deg: 222.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-023-satellite-0005
             index_in_orbit: 4
             mean_anomaly_deg: 240.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-023-satellite-0006
             index_in_orbit: 5
             mean_anomaly_deg: 258.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-023-satellite-0007
             index_in_orbit: 6
             mean_anomaly_deg: 276.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-023-satellite-0008
             index_in_orbit: 7
             mean_anomaly_deg: 294.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-023-satellite-0009
             index_in_orbit: 8
             mean_anomaly_deg: 312.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-023-satellite-0010
             index_in_orbit: 9
             mean_anomaly_deg: 330.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-023-satellite-0011
             index_in_orbit: 10
             mean_anomaly_deg: 348.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-023-satellite-0012
             index_in_orbit: 11
             mean_anomaly_deg: 6.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-023-satellite-0013
             index_in_orbit: 12
             mean_anomaly_deg: 24.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-023-satellite-0014
             index_in_orbit: 13
             mean_anomaly_deg: 42.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-023-satellite-0015
             index_in_orbit: 14
             mean_anomaly_deg: 60.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-023-satellite-0016
             index_in_orbit: 15
             mean_anomaly_deg: 78.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-023-satellite-0017
             index_in_orbit: 16
             mean_anomaly_deg: 96.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-023-satellite-0018
             index_in_orbit: 17
             mean_anomaly_deg: 114.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-023-satellite-0019
             index_in_orbit: 18
             mean_anomaly_deg: 132.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-023-satellite-0020
             index_in_orbit: 19
             mean_anomaly_deg: 150.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
       - orbit_id: s3-orbit-024
         right_ascension_deg: 230
         satellites:
@@ -15035,82 +15497,102 @@ shells:
             index_in_orbit: 0
             mean_anomaly_deg: 175.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-024-satellite-0002
             index_in_orbit: 1
             mean_anomaly_deg: 193.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-024-satellite-0003
             index_in_orbit: 2
             mean_anomaly_deg: 211.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-024-satellite-0004
             index_in_orbit: 3
             mean_anomaly_deg: 229.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-024-satellite-0005
             index_in_orbit: 4
             mean_anomaly_deg: 247.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-024-satellite-0006
             index_in_orbit: 5
             mean_anomaly_deg: 265.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-024-satellite-0007
             index_in_orbit: 6
             mean_anomaly_deg: 283.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-024-satellite-0008
             index_in_orbit: 7
             mean_anomaly_deg: 301.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-024-satellite-0009
             index_in_orbit: 8
             mean_anomaly_deg: 319.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-024-satellite-0010
             index_in_orbit: 9
             mean_anomaly_deg: 337.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-024-satellite-0011
             index_in_orbit: 10
             mean_anomaly_deg: 355.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-024-satellite-0012
             index_in_orbit: 11
             mean_anomaly_deg: 13.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-024-satellite-0013
             index_in_orbit: 12
             mean_anomaly_deg: 31.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-024-satellite-0014
             index_in_orbit: 13
             mean_anomaly_deg: 49.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-024-satellite-0015
             index_in_orbit: 14
             mean_anomaly_deg: 67.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-024-satellite-0016
             index_in_orbit: 15
             mean_anomaly_deg: 85.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-024-satellite-0017
             index_in_orbit: 16
             mean_anomaly_deg: 103.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-024-satellite-0018
             index_in_orbit: 17
             mean_anomaly_deg: 121.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-024-satellite-0019
             index_in_orbit: 18
             mean_anomaly_deg: 139.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-024-satellite-0020
             index_in_orbit: 19
             mean_anomaly_deg: 157.9
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
       - orbit_id: s3-orbit-025
         right_ascension_deg: 240
         satellites:
@@ -15118,82 +15600,102 @@ shells:
             index_in_orbit: 0
             mean_anomaly_deg: 183.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-025-satellite-0002
             index_in_orbit: 1
             mean_anomaly_deg: 201.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-025-satellite-0003
             index_in_orbit: 2
             mean_anomaly_deg: 219.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-025-satellite-0004
             index_in_orbit: 3
             mean_anomaly_deg: 237.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-025-satellite-0005
             index_in_orbit: 4
             mean_anomaly_deg: 255.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-025-satellite-0006
             index_in_orbit: 5
             mean_anomaly_deg: 273.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-025-satellite-0007
             index_in_orbit: 6
             mean_anomaly_deg: 291.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-025-satellite-0008
             index_in_orbit: 7
             mean_anomaly_deg: 309.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-025-satellite-0009
             index_in_orbit: 8
             mean_anomaly_deg: 327.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-025-satellite-0010
             index_in_orbit: 9
             mean_anomaly_deg: 345.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-025-satellite-0011
             index_in_orbit: 10
             mean_anomaly_deg: 3.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-025-satellite-0012
             index_in_orbit: 11
             mean_anomaly_deg: 21.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-025-satellite-0013
             index_in_orbit: 12
             mean_anomaly_deg: 39.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-025-satellite-0014
             index_in_orbit: 13
             mean_anomaly_deg: 57.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-025-satellite-0015
             index_in_orbit: 14
             mean_anomaly_deg: 75.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-025-satellite-0016
             index_in_orbit: 15
             mean_anomaly_deg: 93.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-025-satellite-0017
             index_in_orbit: 16
             mean_anomaly_deg: 111.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-025-satellite-0018
             index_in_orbit: 17
             mean_anomaly_deg: 129.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-025-satellite-0019
             index_in_orbit: 18
             mean_anomaly_deg: 147.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-025-satellite-0020
             index_in_orbit: 19
             mean_anomaly_deg: 165.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
       - orbit_id: s3-orbit-026
         right_ascension_deg: 250
         satellites:
@@ -15201,82 +15703,102 @@ shells:
             index_in_orbit: 0
             mean_anomaly_deg: 191.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-026-satellite-0002
             index_in_orbit: 1
             mean_anomaly_deg: 209.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-026-satellite-0003
             index_in_orbit: 2
             mean_anomaly_deg: 227.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-026-satellite-0004
             index_in_orbit: 3
             mean_anomaly_deg: 245.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-026-satellite-0005
             index_in_orbit: 4
             mean_anomaly_deg: 263.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-026-satellite-0006
             index_in_orbit: 5
             mean_anomaly_deg: 281.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-026-satellite-0007
             index_in_orbit: 6
             mean_anomaly_deg: 299.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-026-satellite-0008
             index_in_orbit: 7
             mean_anomaly_deg: 317.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-026-satellite-0009
             index_in_orbit: 8
             mean_anomaly_deg: 335.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-026-satellite-0010
             index_in_orbit: 9
             mean_anomaly_deg: 353.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-026-satellite-0011
             index_in_orbit: 10
             mean_anomaly_deg: 11.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-026-satellite-0012
             index_in_orbit: 11
             mean_anomaly_deg: 29.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-026-satellite-0013
             index_in_orbit: 12
             mean_anomaly_deg: 47.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-026-satellite-0014
             index_in_orbit: 13
             mean_anomaly_deg: 65.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-026-satellite-0015
             index_in_orbit: 14
             mean_anomaly_deg: 83.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-026-satellite-0016
             index_in_orbit: 15
             mean_anomaly_deg: 101.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-026-satellite-0017
             index_in_orbit: 16
             mean_anomaly_deg: 119.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-026-satellite-0018
             index_in_orbit: 17
             mean_anomaly_deg: 137.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-026-satellite-0019
             index_in_orbit: 18
             mean_anomaly_deg: 155.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-026-satellite-0020
             index_in_orbit: 19
             mean_anomaly_deg: 173.2
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
       - orbit_id: s3-orbit-027
         right_ascension_deg: 260
         satellites:
@@ -15284,82 +15806,102 @@ shells:
             index_in_orbit: 0
             mean_anomaly_deg: 198.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-027-satellite-0002
             index_in_orbit: 1
             mean_anomaly_deg: 216.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-027-satellite-0003
             index_in_orbit: 2
             mean_anomaly_deg: 234.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-027-satellite-0004
             index_in_orbit: 3
             mean_anomaly_deg: 252.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-027-satellite-0005
             index_in_orbit: 4
             mean_anomaly_deg: 270.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-027-satellite-0006
             index_in_orbit: 5
             mean_anomaly_deg: 288.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-027-satellite-0007
             index_in_orbit: 6
             mean_anomaly_deg: 306.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-027-satellite-0008
             index_in_orbit: 7
             mean_anomaly_deg: 324.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-027-satellite-0009
             index_in_orbit: 8
             mean_anomaly_deg: 342.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-027-satellite-0010
             index_in_orbit: 9
             mean_anomaly_deg: 0.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-027-satellite-0011
             index_in_orbit: 10
             mean_anomaly_deg: 18.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-027-satellite-0012
             index_in_orbit: 11
             mean_anomaly_deg: 36.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-027-satellite-0013
             index_in_orbit: 12
             mean_anomaly_deg: 54.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-027-satellite-0014
             index_in_orbit: 13
             mean_anomaly_deg: 72.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-027-satellite-0015
             index_in_orbit: 14
             mean_anomaly_deg: 90.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-027-satellite-0016
             index_in_orbit: 15
             mean_anomaly_deg: 108.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-027-satellite-0017
             index_in_orbit: 16
             mean_anomaly_deg: 126.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-027-satellite-0018
             index_in_orbit: 17
             mean_anomaly_deg: 144.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-027-satellite-0019
             index_in_orbit: 18
             mean_anomaly_deg: 162.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-027-satellite-0020
             index_in_orbit: 19
             mean_anomaly_deg: 180.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
       - orbit_id: s3-orbit-028
         right_ascension_deg: 270
         satellites:
@@ -15367,82 +15909,102 @@ shells:
             index_in_orbit: 0
             mean_anomaly_deg: 206.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-028-satellite-0002
             index_in_orbit: 1
             mean_anomaly_deg: 224.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-028-satellite-0003
             index_in_orbit: 2
             mean_anomaly_deg: 242.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-028-satellite-0004
             index_in_orbit: 3
             mean_anomaly_deg: 260.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-028-satellite-0005
             index_in_orbit: 4
             mean_anomaly_deg: 278.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-028-satellite-0006
             index_in_orbit: 5
             mean_anomaly_deg: 296.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-028-satellite-0007
             index_in_orbit: 6
             mean_anomaly_deg: 314.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-028-satellite-0008
             index_in_orbit: 7
             mean_anomaly_deg: 332.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-028-satellite-0009
             index_in_orbit: 8
             mean_anomaly_deg: 350.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-028-satellite-0010
             index_in_orbit: 9
             mean_anomaly_deg: 8.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-028-satellite-0011
             index_in_orbit: 10
             mean_anomaly_deg: 26.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-028-satellite-0012
             index_in_orbit: 11
             mean_anomaly_deg: 44.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-028-satellite-0013
             index_in_orbit: 12
             mean_anomaly_deg: 62.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-028-satellite-0014
             index_in_orbit: 13
             mean_anomaly_deg: 80.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-028-satellite-0015
             index_in_orbit: 14
             mean_anomaly_deg: 98.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-028-satellite-0016
             index_in_orbit: 15
             mean_anomaly_deg: 116.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-028-satellite-0017
             index_in_orbit: 16
             mean_anomaly_deg: 134.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-028-satellite-0018
             index_in_orbit: 17
             mean_anomaly_deg: 152.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-028-satellite-0019
             index_in_orbit: 18
             mean_anomaly_deg: 170.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-028-satellite-0020
             index_in_orbit: 19
             mean_anomaly_deg: 188.5
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
       - orbit_id: s3-orbit-029
         right_ascension_deg: 280
         satellites:
@@ -15450,82 +16012,102 @@ shells:
             index_in_orbit: 0
             mean_anomaly_deg: 214.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-029-satellite-0002
             index_in_orbit: 1
             mean_anomaly_deg: 232.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-029-satellite-0003
             index_in_orbit: 2
             mean_anomaly_deg: 250.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-029-satellite-0004
             index_in_orbit: 3
             mean_anomaly_deg: 268.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-029-satellite-0005
             index_in_orbit: 4
             mean_anomaly_deg: 286.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-029-satellite-0006
             index_in_orbit: 5
             mean_anomaly_deg: 304.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-029-satellite-0007
             index_in_orbit: 6
             mean_anomaly_deg: 322.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-029-satellite-0008
             index_in_orbit: 7
             mean_anomaly_deg: 340.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-029-satellite-0009
             index_in_orbit: 8
             mean_anomaly_deg: 358.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-029-satellite-0010
             index_in_orbit: 9
             mean_anomaly_deg: 16.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-029-satellite-0011
             index_in_orbit: 10
             mean_anomaly_deg: 34.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-029-satellite-0012
             index_in_orbit: 11
             mean_anomaly_deg: 52.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-029-satellite-0013
             index_in_orbit: 12
             mean_anomaly_deg: 70.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-029-satellite-0014
             index_in_orbit: 13
             mean_anomaly_deg: 88.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-029-satellite-0015
             index_in_orbit: 14
             mean_anomaly_deg: 106.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-029-satellite-0016
             index_in_orbit: 15
             mean_anomaly_deg: 124.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-029-satellite-0017
             index_in_orbit: 16
             mean_anomaly_deg: 142.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-029-satellite-0018
             index_in_orbit: 17
             mean_anomaly_deg: 160.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-029-satellite-0019
             index_in_orbit: 18
             mean_anomaly_deg: 178.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-029-satellite-0020
             index_in_orbit: 19
             mean_anomaly_deg: 196.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
       - orbit_id: s3-orbit-030
         right_ascension_deg: 290
         satellites:
@@ -15533,82 +16115,102 @@ shells:
             index_in_orbit: 0
             mean_anomaly_deg: 221.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-030-satellite-0002
             index_in_orbit: 1
             mean_anomaly_deg: 239.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-030-satellite-0003
             index_in_orbit: 2
             mean_anomaly_deg: 257.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-030-satellite-0004
             index_in_orbit: 3
             mean_anomaly_deg: 275.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-030-satellite-0005
             index_in_orbit: 4
             mean_anomaly_deg: 293.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-030-satellite-0006
             index_in_orbit: 5
             mean_anomaly_deg: 311.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-030-satellite-0007
             index_in_orbit: 6
             mean_anomaly_deg: 329.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-030-satellite-0008
             index_in_orbit: 7
             mean_anomaly_deg: 347.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-030-satellite-0009
             index_in_orbit: 8
             mean_anomaly_deg: 5.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-030-satellite-0010
             index_in_orbit: 9
             mean_anomaly_deg: 23.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-030-satellite-0011
             index_in_orbit: 10
             mean_anomaly_deg: 41.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-030-satellite-0012
             index_in_orbit: 11
             mean_anomaly_deg: 59.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-030-satellite-0013
             index_in_orbit: 12
             mean_anomaly_deg: 77.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-030-satellite-0014
             index_in_orbit: 13
             mean_anomaly_deg: 95.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-030-satellite-0015
             index_in_orbit: 14
             mean_anomaly_deg: 113.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-030-satellite-0016
             index_in_orbit: 15
             mean_anomaly_deg: 131.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-030-satellite-0017
             index_in_orbit: 16
             mean_anomaly_deg: 149.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-030-satellite-0018
             index_in_orbit: 17
             mean_anomaly_deg: 167.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-030-satellite-0019
             index_in_orbit: 18
             mean_anomaly_deg: 185.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-030-satellite-0020
             index_in_orbit: 19
             mean_anomaly_deg: 203.8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
       - orbit_id: s3-orbit-031
         right_ascension_deg: 300
         satellites:
@@ -15616,82 +16218,102 @@ shells:
             index_in_orbit: 0
             mean_anomaly_deg: 229.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-031-satellite-0002
             index_in_orbit: 1
             mean_anomaly_deg: 247.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-031-satellite-0003
             index_in_orbit: 2
             mean_anomaly_deg: 265.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-031-satellite-0004
             index_in_orbit: 3
             mean_anomaly_deg: 283.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-031-satellite-0005
             index_in_orbit: 4
             mean_anomaly_deg: 301.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-031-satellite-0006
             index_in_orbit: 5
             mean_anomaly_deg: 319.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-031-satellite-0007
             index_in_orbit: 6
             mean_anomaly_deg: 337.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-031-satellite-0008
             index_in_orbit: 7
             mean_anomaly_deg: 355.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-031-satellite-0009
             index_in_orbit: 8
             mean_anomaly_deg: 13.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-031-satellite-0010
             index_in_orbit: 9
             mean_anomaly_deg: 31.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-031-satellite-0011
             index_in_orbit: 10
             mean_anomaly_deg: 49.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-031-satellite-0012
             index_in_orbit: 11
             mean_anomaly_deg: 67.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-031-satellite-0013
             index_in_orbit: 12
             mean_anomaly_deg: 85.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-031-satellite-0014
             index_in_orbit: 13
             mean_anomaly_deg: 103.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-031-satellite-0015
             index_in_orbit: 14
             mean_anomaly_deg: 121.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-031-satellite-0016
             index_in_orbit: 15
             mean_anomaly_deg: 139.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-031-satellite-0017
             index_in_orbit: 16
             mean_anomaly_deg: 157.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-031-satellite-0018
             index_in_orbit: 17
             mean_anomaly_deg: 175.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-031-satellite-0019
             index_in_orbit: 18
             mean_anomaly_deg: 193.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-031-satellite-0020
             index_in_orbit: 19
             mean_anomaly_deg: 211.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
       - orbit_id: s3-orbit-032
         right_ascension_deg: 310
         satellites:
@@ -15699,82 +16321,102 @@ shells:
             index_in_orbit: 0
             mean_anomaly_deg: 237.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-032-satellite-0002
             index_in_orbit: 1
             mean_anomaly_deg: 255.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-032-satellite-0003
             index_in_orbit: 2
             mean_anomaly_deg: 273.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-032-satellite-0004
             index_in_orbit: 3
             mean_anomaly_deg: 291.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-032-satellite-0005
             index_in_orbit: 4
             mean_anomaly_deg: 309.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-032-satellite-0006
             index_in_orbit: 5
             mean_anomaly_deg: 327.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-032-satellite-0007
             index_in_orbit: 6
             mean_anomaly_deg: 345.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-032-satellite-0008
             index_in_orbit: 7
             mean_anomaly_deg: 3.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-032-satellite-0009
             index_in_orbit: 8
             mean_anomaly_deg: 21.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-032-satellite-0010
             index_in_orbit: 9
             mean_anomaly_deg: 39.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-032-satellite-0011
             index_in_orbit: 10
             mean_anomaly_deg: 57.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-032-satellite-0012
             index_in_orbit: 11
             mean_anomaly_deg: 75.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-032-satellite-0013
             index_in_orbit: 12
             mean_anomaly_deg: 93.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-032-satellite-0014
             index_in_orbit: 13
             mean_anomaly_deg: 111.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-032-satellite-0015
             index_in_orbit: 14
             mean_anomaly_deg: 129.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-032-satellite-0016
             index_in_orbit: 15
             mean_anomaly_deg: 147.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-032-satellite-0017
             index_in_orbit: 16
             mean_anomaly_deg: 165.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-032-satellite-0018
             index_in_orbit: 17
             mean_anomaly_deg: 183.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-032-satellite-0019
             index_in_orbit: 18
             mean_anomaly_deg: 201.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-032-satellite-0020
             index_in_orbit: 19
             mean_anomaly_deg: 219.1
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
       - orbit_id: s3-orbit-033
         right_ascension_deg: 320
         satellites:
@@ -15782,82 +16424,102 @@ shells:
             index_in_orbit: 0
             mean_anomaly_deg: 244.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-033-satellite-0002
             index_in_orbit: 1
             mean_anomaly_deg: 262.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-033-satellite-0003
             index_in_orbit: 2
             mean_anomaly_deg: 280.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-033-satellite-0004
             index_in_orbit: 3
             mean_anomaly_deg: 298.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-033-satellite-0005
             index_in_orbit: 4
             mean_anomaly_deg: 316.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-033-satellite-0006
             index_in_orbit: 5
             mean_anomaly_deg: 334.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-033-satellite-0007
             index_in_orbit: 6
             mean_anomaly_deg: 352.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-033-satellite-0008
             index_in_orbit: 7
             mean_anomaly_deg: 10.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-033-satellite-0009
             index_in_orbit: 8
             mean_anomaly_deg: 28.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-033-satellite-0010
             index_in_orbit: 9
             mean_anomaly_deg: 46.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-033-satellite-0011
             index_in_orbit: 10
             mean_anomaly_deg: 64.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-033-satellite-0012
             index_in_orbit: 11
             mean_anomaly_deg: 82.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-033-satellite-0013
             index_in_orbit: 12
             mean_anomaly_deg: 100.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-033-satellite-0014
             index_in_orbit: 13
             mean_anomaly_deg: 118.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-033-satellite-0015
             index_in_orbit: 14
             mean_anomaly_deg: 136.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-033-satellite-0016
             index_in_orbit: 15
             mean_anomaly_deg: 154.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-033-satellite-0017
             index_in_orbit: 16
             mean_anomaly_deg: 172.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-033-satellite-0018
             index_in_orbit: 17
             mean_anomaly_deg: 190.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-033-satellite-0019
             index_in_orbit: 18
             mean_anomaly_deg: 208.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-033-satellite-0020
             index_in_orbit: 19
             mean_anomaly_deg: 226.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
       - orbit_id: s3-orbit-034
         right_ascension_deg: 330
         satellites:
@@ -15865,82 +16527,102 @@ shells:
             index_in_orbit: 0
             mean_anomaly_deg: 252.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-034-satellite-0002
             index_in_orbit: 1
             mean_anomaly_deg: 270.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-034-satellite-0003
             index_in_orbit: 2
             mean_anomaly_deg: 288.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-034-satellite-0004
             index_in_orbit: 3
             mean_anomaly_deg: 306.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-034-satellite-0005
             index_in_orbit: 4
             mean_anomaly_deg: 324.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-034-satellite-0006
             index_in_orbit: 5
             mean_anomaly_deg: 342.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-034-satellite-0007
             index_in_orbit: 6
             mean_anomaly_deg: 0.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-034-satellite-0008
             index_in_orbit: 7
             mean_anomaly_deg: 18.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-034-satellite-0009
             index_in_orbit: 8
             mean_anomaly_deg: 36.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-034-satellite-0010
             index_in_orbit: 9
             mean_anomaly_deg: 54.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-034-satellite-0011
             index_in_orbit: 10
             mean_anomaly_deg: 72.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-034-satellite-0012
             index_in_orbit: 11
             mean_anomaly_deg: 90.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-034-satellite-0013
             index_in_orbit: 12
             mean_anomaly_deg: 108.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-034-satellite-0014
             index_in_orbit: 13
             mean_anomaly_deg: 126.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-034-satellite-0015
             index_in_orbit: 14
             mean_anomaly_deg: 144.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-034-satellite-0016
             index_in_orbit: 15
             mean_anomaly_deg: 162.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-034-satellite-0017
             index_in_orbit: 16
             mean_anomaly_deg: 180.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-034-satellite-0018
             index_in_orbit: 17
             mean_anomaly_deg: 198.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-034-satellite-0019
             index_in_orbit: 18
             mean_anomaly_deg: 216.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-034-satellite-0020
             index_in_orbit: 19
             mean_anomaly_deg: 234.4
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
       - orbit_id: s3-orbit-035
         right_ascension_deg: 340
         satellites:
@@ -15948,82 +16630,102 @@ shells:
             index_in_orbit: 0
             mean_anomaly_deg: 260
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-035-satellite-0002
             index_in_orbit: 1
             mean_anomaly_deg: 278
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-035-satellite-0003
             index_in_orbit: 2
             mean_anomaly_deg: 296
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-035-satellite-0004
             index_in_orbit: 3
             mean_anomaly_deg: 314
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-035-satellite-0005
             index_in_orbit: 4
             mean_anomaly_deg: 332
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-035-satellite-0006
             index_in_orbit: 5
             mean_anomaly_deg: 350
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-035-satellite-0007
             index_in_orbit: 6
             mean_anomaly_deg: 8
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-035-satellite-0008
             index_in_orbit: 7
             mean_anomaly_deg: 26
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-035-satellite-0009
             index_in_orbit: 8
             mean_anomaly_deg: 44
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-035-satellite-0010
             index_in_orbit: 9
             mean_anomaly_deg: 62
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-035-satellite-0011
             index_in_orbit: 10
             mean_anomaly_deg: 80
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-035-satellite-0012
             index_in_orbit: 11
             mean_anomaly_deg: 98
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-035-satellite-0013
             index_in_orbit: 12
             mean_anomaly_deg: 116
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-035-satellite-0014
             index_in_orbit: 13
             mean_anomaly_deg: 134
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-035-satellite-0015
             index_in_orbit: 14
             mean_anomaly_deg: 152
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-035-satellite-0016
             index_in_orbit: 15
             mean_anomaly_deg: 170
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-035-satellite-0017
             index_in_orbit: 16
             mean_anomaly_deg: 188
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-035-satellite-0018
             index_in_orbit: 17
             mean_anomaly_deg: 206
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-035-satellite-0019
             index_in_orbit: 18
             mean_anomaly_deg: 224
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-035-satellite-0020
             index_in_orbit: 19
             mean_anomaly_deg: 242
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
       - orbit_id: s3-orbit-036
         right_ascension_deg: 350
         satellites:
@@ -16031,82 +16733,102 @@ shells:
             index_in_orbit: 0
             mean_anomaly_deg: 267.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-036-satellite-0002
             index_in_orbit: 1
             mean_anomaly_deg: 285.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-036-satellite-0003
             index_in_orbit: 2
             mean_anomaly_deg: 303.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-036-satellite-0004
             index_in_orbit: 3
             mean_anomaly_deg: 321.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-036-satellite-0005
             index_in_orbit: 4
             mean_anomaly_deg: 339.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-036-satellite-0006
             index_in_orbit: 5
             mean_anomaly_deg: 357.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-036-satellite-0007
             index_in_orbit: 6
             mean_anomaly_deg: 15.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-036-satellite-0008
             index_in_orbit: 7
             mean_anomaly_deg: 33.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-036-satellite-0009
             index_in_orbit: 8
             mean_anomaly_deg: 51.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-036-satellite-0010
             index_in_orbit: 9
             mean_anomaly_deg: 69.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-036-satellite-0011
             index_in_orbit: 10
             mean_anomaly_deg: 87.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-036-satellite-0012
             index_in_orbit: 11
             mean_anomaly_deg: 105.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-036-satellite-0013
             index_in_orbit: 12
             mean_anomaly_deg: 123.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-036-satellite-0014
             index_in_orbit: 13
             mean_anomaly_deg: 141.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-036-satellite-0015
             index_in_orbit: 14
             mean_anomaly_deg: 159.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-036-satellite-0016
             index_in_orbit: 15
             mean_anomaly_deg: 177.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-036-satellite-0017
             index_in_orbit: 16
             mean_anomaly_deg: 195.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-036-satellite-0018
             index_in_orbit: 17
             mean_anomaly_deg: 213.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-036-satellite-0019
             index_in_orbit: 18
             mean_anomaly_deg: 231.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
           - satellite_id: s3-orbit-036-satellite-0020
             index_in_orbit: 19
             mean_anomaly_deg: 249.7
             max_simultaneous_ground_station_accesses: 2
+            maximum_simultaneous_inter_satellite_links: 4
   - shell_id: S4
     altitude_km: 560.0
     inclination_deg: 97.6

@@ -1,117 +1,103 @@
 # BPF Compiler contract
 
-## Authority
+The BPF Compiler lowers one self-contained semantic Plan into one immutable
+compiled realization. It is downstream of Planner and upstream of BpfRunner.
 
-Normative detail under `../accepted-design.md`. Implementation state is
-recorded only in [`CURRENT.md`](../CURRENT.md). Simulator `Plan` and retained
-Slice facts remain upstream semantic authority.
+## Public entry
 
-## Scope
+```python
+from skyseed_v2.backend.bpf import compile_bpf
 
-The top-level `backend/bpf` domain contains the one-shot `compile_bpf`
-capability and immutable `BpfCompiledRealization`. It deterministically lowers
-one continuous Plan interval into symbolic BPF/resource/parameter/Zone intent,
-ordering constraints, and interval-end intended dynamic state.
+realization = compile_bpf(plan, physical_world, previous_realization)
+```
 
-## Owners and consumers
+The three arguments are the complete source boundary:
 
-| Fact/capability | Owner | Compiler use / consumer |
-|---|---|---|
-| `Plan` | Simulator Planner | immutable semantic input |
-| retained `TopologySlice` / Topology facts | Simulator Slicer | current API receives the exact Slicer and uses only `get_slice()` / `get_topology()` read-only lookup |
-| `compile_bpf` | BPF backend | one-shot lowering only |
-| `BpfCompiledRealization` | BPF backend | downstream immutable handoff and explicit next-call baseline |
-| container software/files/commands/daemon | future functional Layer through SEED deployment | not installed or modified by BPF backend |
-| PID/netns/ifindex/MAC/veth/BPF object/map state | `BpfRunner` | never compile-time bound here |
+- `plan`: timestamped semantic transitions, precedence, and lineage;
+- `physical_world`: exact static identity, capability, and provenance;
+- `previous_realization`: preceding compiled semantic/backend state, or `None`
+  for bootstrap.
 
-The retained `TopologySlice` lookup through exact `Slicer` is a visible
-temporary legacy source-fact dependency in Round 1. It remains unchanged here
-only while the current Planner/Compiler chain still consumes the old mixed
-operational records. The Network Planner migration will replace this source
-path after Connection, effective Parameter, Route, and Coordination planning
-move, and the Slicer/Slice/Difference seam is then deleted.
+Compiler never queries Planner history, physical candidates, or a hidden
+context object. It does not run selection, acquisition, Zone assignment,
+parameter policy, Route planning, LOS, or elevation algorithms.
+No Planner output-state side channel is accepted: semantic output is always
+reconstructed by replaying `plan` from the previous realization output.
 
-## Contract
+## Validation and lowering
 
-Slice-0 compilation starts from the canonical empty dynamic-realization state.
-A nonzero Plan start requires a previous compiled result with an exactly
-matching end Slice/timestamp and topology/Zone-identity signature. There is no
-hidden progression or implicit reconstruction from the current Slice.
+Compilation:
 
-The architecture-level input is `Plan + approved read-only Simulator facts +
-explicit previous intended baseline`. The current public API is
-`compile_bpf(plan, *, slicer=exact_slicer, previous=...)`; no separate
-`SlicerFacts` DTO exists. Receiving the exact Slicer is only the present
-read-only access path to retained coverage Slices and static Topology facts. It
-does not make the Compiler a consumer or owner of Slicer progression.
+1. compares `plan.physical_world_fingerprint` with
+   `physical_world.semantic_fingerprint()`;
+2. validates bootstrap or immediate previous-Plan lineage;
+3. compares input fingerprint with the previous realization output;
+4. replays every transition through the public semantic apply contract;
+5. verifies the Plan output fingerprint;
+6. lowers Connection establish/withdraw and effective parameters;
+7. lowers Zone assign/change/unassign;
+8. lowers Route reachable/change/unreachable/withdraw;
+9. maps semantic precedence into backend constraints;
+10. adds backend-only resource and ordering constraints;
+11. verifies the resulting intended state.
 
-Connection transitions produce symbolic per-direction attachment demands.
-Initial full directional qdisc targets accompany establishment; later
-ParameterTransitions retain their sparse changed fields while interval-end
-state folds them onto the previous full target. Forwarding ADDED/CHANGED uses
-the transition source and next hop to query the unique formal Connection and
-derive direction; REMOVED and CHANGED recover old realization from explicit
-previous intended state. No full path, FEC, MPLS label, live attachment, or
-backend strategy is invented.
+Zone lowering separates readiness, forwarding publication, and retirement so
+new reachability becomes available before old resources disappear.
 
-Every Zone has a deterministic backend-local unique `/32` identity allocated
-by sorted Zone ID from `198.18.0.0/15`. It remains stable when the formal Zone
-service satellite changes. This is packet-facing BPF identity, not a Simulator
-Zone field or a future UT operational-address contract.
+Compiler validates misuse and backend feasibility; it is not a second Planner
+and does not rerun physical or planning algorithms. It does not reject a valid
+semantic choice merely because another policy could have chosen differently.
 
-The result preserves each exact `ForwardingTransitionPrecedence` and adds only
-mechanical technical constraints: resource before qdisc/use, qdisc before use,
-every stop-use transition before resource retirement, and a Zone Difference's
-forwarding state before service-edge activation/retirement. It is structured
-intent, not a command list or runtime schedule.
+## BpfCompiledRealization
 
-Planner short-lifetime suppression is authoritative. Compiled active
-Connections therefore need only be a consistent subset of formal boundary
-Slice Connections, and omitted Connection/forwarding evolution is not
-reconstructed from raw Slices. Zone service-edge changes follow folded planned
-forwarding terminals when packet-facing route evidence exists; a raw Zone
-assignment alone does not replace an existing edge without a planned
-forwarding change.
+The public immutable result carries:
 
-## Invariants
+- `source_plan_id` and `source_previous_plan_id`;
+- `physical_world_fingerprint`;
+- `input_state_fingerprint` and `output_state_fingerprint`;
+- exact `observation_interval` and aggregate semantic-precedence folding proof;
+- `start_timestamp` and `end_timestamp`;
+- `output_planned_state`;
+- `compiled_activation_boundaries` and `activation_timestamps`;
+- Connection/resource, parameter, forwarding, and Zone-edge intentions;
+- semantic and backend constraints;
+- compact intended backend state required by the next compile.
 
-- dependency direction is backend → public Simulator facts/contracts;
-- no Simulator state mutation, Slicer advancement, Planner synchronization, or
-  Model/RouteModel execution;
-- compilation is deterministic for equal inputs and deeply immutable on
-  success;
-- baseline lineage, Plan/Slice provenance, unique connection resolution,
-  planned-resource use, and interval-end consistency fail closed;
-- intended end state is sufficient for deterministic consecutive compilation;
-- the Compiler's public concepts remain only `compile_bpf` and
-  `BpfCompiledRealization`; the same backend facade separately exports the
-  approved stateful `BpfRunner` lifecycle owner.
+Each PlanTransition produces one `BpfCompiledActivationBoundary` containing its
+timestamp and fingerprint. Empty transitions remain explicit. Across
+canonical S3, 30 realizations therefore retain all 121 activation timestamps.
 
-## Failure semantics
+The output planned state is intended semantic truth at the realization
+boundary. It is not `RealizedRuntimeState`; only BpfRunner owns live kernel
+truth.
 
-Wrong public argument types raise `TypeError`. Missing/mismatched lineage,
-contradictory Plan/Slice evidence, inactive forwarding dependencies, exhausted
-Zone identity space, and inconsistent intended state raise `ValueError`. A
-failure publishes no object and mutates no input.
+## Persistence and Tools
 
-## Prohibited behavior
+The realization handoff uses a strict format-version-3 checksum manifest and
+`deterministic-gzip-json-v1` records. Construction of the persisted supplier is
+the eager reader boundary: before `BpfRunner` exists, it validates the manifest,
+compressed and uncompressed hashes, sequence lineage, and references, then
+decodes the complete bounded sequence. It requires valid intent references,
+state fingerprints, equal adjacent realization intervals, and an exact next
+start boundary. It does not reconstruct the source Plan or repeat Compiler
+lowering; the aligned authoritative Plan remains in Planner history for Traffic,
+Tools, and qualification. Only the resulting immutable tuple reaches Runner.
+No pickle or live Planner object is accepted.
 
-No generic backend framework, Compiler owner inside Simulator, semantic route
-recomputation, compile-time runtime binding, Runner lifecycle inside the
-Compiler, shell command generation, container installation, v1 adapter/object migration, UT
-prerequisite, or public Context/Resolver/Registry/Manager/Model/Bundle/Slot/
-Generation/OperationGraph.
+The sealed `domain-history/compiler.jsonl` has a different, deliberately compact
+contract: lineage, fingerprints, timestamps, activation timestamps, and intent
+counts. It does not duplicate complete intended state or backend intentions;
+the canonical realization handoff owns that payload and
+`runtime/execution.json` anchors its hashes.
 
-## Extension points
+The BPF Compiler Tool renders full Plan/realization values as lineage,
+transitions, activation boundaries, intended state, operations, and constraints.
+Its compact-history reader validates only the compact `compiler.jsonl` contract;
+it does not reconstruct missing semantic payload. Neither path recompiles.
 
-The private symbolic intent formats, qdisc mechanism, Zone allocator, and
-technical constraint construction may evolve without creating a public
-architecture concept. Runtime binding belongs to `BpfRunner`; functional-Layer
-deployment remains a separate future approval.
+## Failure behavior
 
-## Maintenance
-
-Update `backend/bpf/README.md`, public imports, maintenance/object/import maps,
-architecture gates, focused unit tests, canonical main-chain smoke, and
-`CURRENT.md` together. Do not add an Inspection Tool as part of Compiler
-maintenance.
+Wrong world, wrong predecessor, stale fingerprints, malformed transition
+references, invalid output state, missing resulting semantic state, or
+impossible backend lowering raises before publishing a realization. The
+previous realization remains immutable.

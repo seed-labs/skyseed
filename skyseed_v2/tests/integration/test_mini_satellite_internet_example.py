@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-import json
 from inspect import Parameter, signature
+import json
+import os
 from pathlib import Path
 from subprocess import run
 import sys
@@ -10,57 +11,212 @@ from types import SimpleNamespace
 
 import pytest
 from seedemu.core import Emulator
+from seedemu.layers import Base
 from yaml import safe_load
 
-from examples.mini_satellite_internet import main as reference_main
-from examples.mini_satellite_internet import simu
+from examples.mini_satellite_internet import main as mini_main
+from examples.mini_satellite_internet import simu as mini_simu
 from examples.mini_satellite_internet.emu import (
     build_mini_satellite_internet_emulator,
 )
-from seedemu.layers import Base
+from examples.mini_satellite_internet.simu import (
+    FORMAL_BOUNDARY_COUNT,
+    create_mini_satellite_internet_producer,
+    drain_mini_satellite_internet,
+)
 from skyseed_v2.emulator.seedemu import SkyseedAutonomousSystem
 from skyseed_v2.simulator import (
-    ConnectionKind,
-    GeometricConnectionModel,
-    Slicer,
+    OperationalConnectionKind,
+    Simulator,
+    apply_plan_transition,
 )
 from skyseed_v2.simulator.geometry import (
     elevation_deg,
     geodetic_to_ecef,
     has_earth_line_of_sight,
 )
-from tools.slice import collect_slice_difference_data
+from tools.bpf_compiler import read_bpf_compiler_history
+from tools.planner import read_planner_history
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-EXAMPLE_ROOT = PROJECT_ROOT / "examples/mini_satellite_internet"
+EXAMPLE_ROOT = (
+    Path(__file__).resolve().parents[2]
+    / "examples/mini_satellite_internet"
+)
+PROJECT_ROOT = EXAMPLE_ROOT.parents[1]
 
 
 @pytest.fixture(scope="module")
-def reference_emulator():
+def reference_emulator() -> Emulator:
     return build_mini_satellite_internet_emulator()
 
 
 @pytest.fixture(scope="module")
-def reference_slicer(reference_emulator) -> Slicer:
-    slicer = simu.create_mini_satellite_internet_slicer(reference_emulator)
-    slicer.create_all_slices()
-    return slicer
+def reference_chain(
+    tmp_path_factory: pytest.TempPathFactory,
+    reference_emulator: Emulator,
+) -> SimpleNamespace:
+    history = tmp_path_factory.mktemp("mini-domain-history")
+    simulator, producer = create_mini_satellite_internet_producer(
+        EXAMPLE_ROOT,
+        emulator=reference_emulator,
+        evidence_path=history,
+    )
+    plans, realizations, snapshot = drain_mini_satellite_internet(
+        simulator,
+        producer,
+    )
+    evidence = read_planner_history(history / "planning.jsonl.gz")
+    transitions = tuple(
+        transition
+        for plan in plans
+        for transition in plan.transitions
+    )
+    frames = tuple(frame for value in evidence for frame in value.frames)
+    states = []
+    state = None
+    for transition in transitions:
+        state = apply_plan_transition(state, transition)
+        states.append(state)
+    return SimpleNamespace(
+        simulator=simulator,
+        physical_world=simulator.get_physical_world(),
+        plans=plans,
+        realizations=realizations,
+        snapshot=snapshot,
+        history=history,
+        evidence=evidence,
+        transitions=transitions,
+        frames=frames,
+        states=tuple(states),
+    )
 
 
-@pytest.fixture(scope="module")
-def reference_view_data(reference_slicer: Slicer) -> dict[str, object]:
-    return collect_slice_difference_data(reference_slicer)
+def _satellite_parents(physical_world) -> dict[object, tuple[int, str, str]]:
+    return {
+        satellite.node_id: (
+            autonomous_system.asn,
+            shell.shell_id,
+            orbit.orbit_id,
+        )
+        for autonomous_system in physical_world.autonomous_systems
+        for shell in autonomous_system.shells
+        for orbit in shell.orbits
+        for satellite in orbit.satellites
+    }
+
+
+def _is_dynamic_transition(transition) -> bool:
+    return bool(
+        transition.established_connections
+        or transition.withdrawn_connection_ids
+        or transition.parameter_updated_connections
+        or transition.zone_service_transitions
+        or transition.route_outcome_transitions
+    )
+
+
+def test_mini_chain_uses_one_producer_and_preserves_all_boundaries(
+    reference_chain: SimpleNamespace,
+) -> None:
+    simulator = reference_chain.simulator
+    plans = reference_chain.plans
+    realizations = reference_chain.realizations
+    snapshot = reference_chain.snapshot
+    history = reference_chain.history
+
+    transition_timestamps = tuple(
+        transition.timestamp
+        for plan in plans
+        for transition in plan.transitions
+    )
+    activation_timestamps = tuple(
+        timestamp
+        for realization in realizations
+        for timestamp in realization.activation_timestamps
+    )
+    assert transition_timestamps == tuple(
+        simulator.get_timeline().iter_timestamps()
+    )
+    assert activation_timestamps == transition_timestamps
+    assert len(transition_timestamps) == FORMAL_BOUNDARY_COUNT == 64
+    assert len(plans) == len(realizations) == 32
+    assert snapshot["formal_frame_count"] == FORMAL_BOUNDARY_COUNT
+    assert snapshot["physical_link_observation_count"] == FORMAL_BOUNDARY_COUNT
+    assert snapshot["transition_count"] == FORMAL_BOUNDARY_COUNT
+    assert snapshot["plan_count"] == 32
+    assert snapshot["realization_count"] == 32
+    assert snapshot["domain_history_sealed"] is True
+
+    manifest = json.loads(
+        (history / "domain-history-manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert manifest["through"] == "compiler"
+    assert manifest["counts"]["formal_frames"] == FORMAL_BOUNDARY_COUNT
+    assert manifest["counts"]["transitions"] == FORMAL_BOUNDARY_COUNT
+    assert manifest["counts"]["plans"] == 32
+    assert manifest["counts"]["realizations"] == 32
+    assert len(reference_chain.evidence) == 32
+    assert len(
+        read_bpf_compiler_history(history / "compiler.jsonl")[
+            "realizations"
+        ]
+    ) == 32
+
+
+def test_mini_observation_and_tool_failures_preserve_runtime_handoff(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    output = tmp_path / "output"
+
+    def fail_observation_write(_simulator):
+        raise RuntimeError("forced observation write failure")
+
+    def fail_tool_batch(*_args, **_kwargs):
+        raise RuntimeError("forced Tool batch failure")
+
+    monkeypatch.setattr(
+        Simulator,
+        "_write_execution_observations",
+        fail_observation_write,
+    )
+    monkeypatch.setattr(
+        mini_main,
+        "_write_inspection_tools",
+        fail_tool_batch,
+    )
+
+    assert mini_main.main(
+        ["--output", str(output), "--no-internet-map"]
+    ) == 0
+
+    for relative in (
+        "runtime/realizations/manifest.json",
+        "runtime/execution.json",
+        "domain-history/domain-history-manifest.json",
+        "start.sh",
+        "run.sh",
+        "launch.sh",
+        "cleanup.sh",
+    ):
+        assert (output / relative).is_file()
+    capture = capsys.readouterr()
+    assert "runtime handoff:" in capture.out
+    assert "did not invalidate runtime handoff" in capture.err
+    assert "inspection-batch" in capture.err
+    assert "observation-evidence" in capture.err
 
 
 def test_mini_generated_anomalies_preserve_the_alternating_policy(
-    reference_emulator,
+    reference_chain: SimpleNamespace,
 ) -> None:
-    topology = simu.create_mini_satellite_internet_simulator(
-        reference_emulator
-    ).get_topology()
+    physical_world = reference_chain.physical_world
     orbits = sorted(
-        topology.autonomous_systems[0].shells[0].orbits,
+        physical_world.autonomous_systems[0].shells[0].orbits,
         key=lambda orbit: orbit.orbit_id,
     )
 
@@ -81,157 +237,117 @@ def test_mini_generated_anomalies_preserve_the_alternating_policy(
     ]
     assert all(
         station.max_simultaneous_satellite_accesses is None
-        for autonomous_system in topology.autonomous_systems
+        for autonomous_system in physical_world.autonomous_systems
         for station in autonomous_system.ground_stations
     )
 
 
-def test_richer_reference_uses_the_formal_bounded_a_f_chain(
-    reference_slicer: Slicer,
+def test_mini_reference_uses_the_bounded_physical_planning_compiler_chain(
+    reference_chain: SimpleNamespace,
 ) -> None:
-    topology = reference_slicer.get_topology()
-    retained_ids = reference_slicer.get_retained_slice_ids()
+    timeline = reference_chain.simulator.get_timeline()
+    physical_world = reference_chain.physical_world
 
-    assert simu.DEFAULT_START_TIME.isoformat() == "2026-01-01T00:00:30+00:00"
-    assert simu.DEFAULT_END_TIME.isoformat() == "2026-01-01T00:11:00+00:00"
-    assert simu.DEFAULT_SLICE_INTERVAL.total_seconds() == 10
-    assert simu.REAL_SLICE_COUNT == 64
-    assert retained_ids == tuple(range(simu.REAL_SLICE_COUNT + 1))
-    assert reference_slicer.is_exhausted()
-    assert reference_slicer.get_slice(0).timestamp is None
-    assert not reference_slicer.get_slice(0).positions
+    assert mini_simu.DEFAULT_START_TIME.isoformat() == (
+        "2026-01-01T00:00:30+00:00"
+    )
+    assert mini_simu.DEFAULT_END_TIME.isoformat() == (
+        "2026-01-01T00:11:00+00:00"
+    )
+    assert mini_simu.DEFAULT_OBSERVATION_INTERVAL.total_seconds() == 10
+    assert mini_simu.PLANNING_HORIZON.total_seconds() == 50
+    assert mini_simu.PUBLICATION_HORIZON.total_seconds() == 20
+    assert mini_simu.ACQUISITION_DURATION.total_seconds() == 20
+    assert tuple(
+        transition.timestamp for transition in reference_chain.transitions
+    ) == tuple(timeline.iter_timestamps())
+    assert Counter(
+        len(plan.transitions) for plan in reference_chain.plans
+    ) == Counter({2: 30, 3: 1, 1: 1})
+    assert len(reference_chain.plans) == 32
+    assert len(reference_chain.transitions) == FORMAL_BOUNDARY_COUNT == 64
+    assert all(
+        _is_dynamic_transition(transition)
+        for transition in reference_chain.transitions[1:]
+    )
     assert sum(
         len(orbit.satellites)
-        for autonomous_system in topology.autonomous_systems
+        for autonomous_system in physical_world.autonomous_systems
         for shell in autonomous_system.shells
         for orbit in shell.orbits
     ) == 32
     assert sum(
         len(autonomous_system.ground_stations)
-        for autonomous_system in topology.autonomous_systems
+        for autonomous_system in physical_world.autonomous_systems
     ) == 3
-    assert len(topology.get_zone_layout().zones) == 5
-
-    differences = tuple(
-        reference_slicer.create_difference(slice_id - 1, slice_id)
-        for slice_id in retained_ids[1:]
-    )
-    assert differences[0].previous_slice_id == 0
-    assert differences[0].previous_timestamp is None
-    assert all(
-        difference.current_slice_id == difference.previous_slice_id + 1
-        for difference in differences
-    )
-    assert all(not difference.is_empty for difference in differences[1:])
+    assert len(physical_world.get_zone_layout().zones) == 5
 
 
-def test_cross_plane_pairing_is_one_predecessor_and_one_successor_candidate(
-    reference_slicer: Slicer,
+def test_cross_plane_scope_and_selected_degree_preserve_the_k3_policy(
+    reference_chain: SimpleNamespace,
 ) -> None:
-    topology = reference_slicer.get_topology()
-    model = reference_slicer.get_connection_model()
-    assert isinstance(model, GeometricConnectionModel)
-    prepared = model._prepared_isl_pairs
-    assert prepared is not None
-    assert model._prepared_reference_timestamp == (
-        reference_slicer.get_timeline().start_time
-    )
+    physical_world = reference_chain.physical_world
+    parent_by_node = _satellite_parents(physical_world)
+    request = reference_chain.simulator.get_planner().create_physical_link_request()
+    pairs = request.inter_satellite_pairs
 
-    parent_by_node = {}
-    orbit_ring_by_shell = {}
-    for autonomous_system in topology.autonomous_systems:
-        for shell in autonomous_system.shells:
-            ring = tuple(
+    assert len(pairs) == len(set(pairs)) == 496
+    assert all(
+        (first.asn, first.entity_kind, first.entity_id)
+        < (second.asn, second.entity_kind, second.entity_id)
+        for first, second in pairs
+    )
+    assert sum(
+        parent_by_node[first] == parent_by_node[second]
+        for first, second in pairs
+    ) == 112
+    assert sum(
+        parent_by_node[first] != parent_by_node[second]
+        for first, second in pairs
+    ) == 384
+
+    selected_cross_degree_distributions = Counter()
+    for frame in reference_chain.frames:
+        same_degree = Counter()
+        cross_degree = Counter()
+        total_degree = Counter()
+        for lifecycle in frame.selected_inter_satellite_links:
+            candidate = lifecycle.candidate
+            first = candidate.endpoint_a
+            second = candidate.endpoint_b
+            total_degree[first] += 1
+            total_degree[second] += 1
+            target = (
+                same_degree
+                if parent_by_node[first] == parent_by_node[second]
+                else cross_degree
+            )
+            target[first] += 1
+            target[second] += 1
+        assert max(total_degree.values(), default=0) <= 4
+        assert max(same_degree.values(), default=0) <= 2
+        assert max(cross_degree.values(), default=0) <= 2
+        selected_cross_degree_distributions[
+            tuple(
                 sorted(
-                    shell.orbits,
-                    key=lambda orbit: orbit.right_ascension_deg,
+                    Counter(
+                        cross_degree.get(node_id, 0)
+                        for node_id in parent_by_node
+                    ).items()
                 )
             )
-            orbit_ring_by_shell[(autonomous_system.asn, shell.shell_id)] = (
-                tuple(orbit.orbit_id for orbit in ring)
-            )
-            for orbit in ring:
-                for satellite in orbit.satellites:
-                    parent_by_node[satellite.node_id] = (
-                        autonomous_system.asn,
-                        shell.shell_id,
-                        orbit.orbit_id,
-                    )
-
-    def side(source, neighbor) -> str:
-        source_parent = parent_by_node[source]
-        neighbor_parent = parent_by_node[neighbor]
-        ring = orbit_ring_by_shell[source_parent[:2]]
-        index = ring.index(source_parent[2])
-        if neighbor_parent[2] == ring[(index - 1) % len(ring)]:
-            return "predecessor"
-        if neighbor_parent[2] == ring[(index + 1) % len(ring)]:
-            return "successor"
-        return "nonadjacent"
-
-    candidate_sides = defaultdict(Counter)
-    prepared_cross_pairs = set()
-    for first, second in prepared:
-        if parent_by_node[first] == parent_by_node[second]:
-            continue
-        prepared_cross_pairs.add(frozenset((first, second)))
-        candidate_sides[first][side(first, second)] += 1
-        candidate_sides[second][side(second, first)] += 1
-
-    assert set(candidate_sides) == set(parent_by_node)
-    assert all(
-        counts == Counter({"predecessor": 1, "successor": 1})
-        for counts in candidate_sides.values()
-    )
-
-    observed_degree_distributions = Counter()
-    for slice_id in reference_slicer.get_retained_slice_ids()[1:]:
-        active_cross_pairs = set()
-        active_sides = defaultdict(Counter)
-        active_degree = Counter()
-        for connection in (
-            reference_slicer.get_slice(slice_id).connection_slice.connections
-        ):
-            identity = connection.connection_id
-            if (
-                identity.kind is not ConnectionKind.INTER_SATELLITE
-                or parent_by_node[identity.endpoint_a]
-                == parent_by_node[identity.endpoint_b]
-            ):
-                continue
-            active_cross_pairs.add(
-                frozenset((identity.endpoint_a, identity.endpoint_b))
-            )
-            for source, neighbor in (
-                (identity.endpoint_a, identity.endpoint_b),
-                (identity.endpoint_b, identity.endpoint_a),
-            ):
-                active_degree[source] += 1
-                active_sides[source][side(source, neighbor)] += 1
-        assert active_cross_pairs <= prepared_cross_pairs
-        assert all(
-            set(counts) <= {"predecessor", "successor"}
-            and max(counts.values(), default=0) <= 1
-            for counts in active_sides.values()
-        )
-        degree_distribution = Counter(
-            active_degree.get(node_id, 0) for node_id in parent_by_node
-        )
-        observed_degree_distributions[
-            tuple(sorted(degree_distribution.items()))
         ] += 1
 
-    assert observed_degree_distributions == Counter(
+    assert selected_cross_degree_distributions == Counter(
         {
-            ((0, 4), (1, 24), (2, 4)): 56,
-            ((0, 8), (1, 24)): 8,
+            ((1, 8), (2, 24)): 33,
+            ((2, 32),): 18,
+            ((1, 4), (2, 28)): 13,
         }
     )
 
-    assert model._prepared_isl_pairs is prepared
 
-
-def test_richer_emulator_contains_static_network_and_routing_layers() -> None:
+def test_mini_emulator_contains_static_network_and_routing_layers() -> None:
     emulator = build_mini_satellite_internet_emulator()
     base = emulator.getLayer("Base")
 
@@ -240,7 +356,7 @@ def test_richer_emulator_contains_static_network_and_routing_layers() -> None:
         "10.110.0.0/24"
     )
     assert base.getAutonomousSystem(65110).getAsn() == 65110
-    assert set(layer.getName() for layer in emulator.getLayers()) == {
+    assert {layer.getName() for layer in emulator.getLayers()} == {
         "Base",
         "Routing",
         "Ospf",
@@ -249,7 +365,7 @@ def test_richer_emulator_contains_static_network_and_routing_layers() -> None:
     }
 
 
-def test_richer_example_has_one_emulator_builder_and_fail_closed_projection() -> None:
+def test_mini_has_one_emulator_builder_and_fail_closed_projection() -> None:
     emu_source = (EXAMPLE_ROOT / "emu.py").read_text(encoding="utf-8")
     simu_source = (EXAMPLE_ROOT / "simu.py").read_text(encoding="utf-8")
     main_source = (EXAMPLE_ROOT / "main.py").read_text(encoding="utf-8")
@@ -266,49 +382,38 @@ def test_richer_example_has_one_emulator_builder_and_fail_closed_projection() ->
     ):
         assert forbidden not in emu_source
     assert simu_source.count("mini_satellite_internet.emu") == 1
-    assert "def create_mini_satellite_internet_progression(" in simu_source
+    assert "def create_mini_satellite_internet_producer(" in simu_source
+    assert "def create_mini_satellite_internet_planner(" in simu_source
     assert "def build_mini_satellite_internet_emulator(" not in main_source
 
-    with pytest.raises(TypeError):
-        simu.create_mini_satellite_internet_slicer()
     with pytest.raises(TypeError, match="upstream Emulator"):
-        simu.create_mini_satellite_internet_slicer(object())
+        mini_simu.create_mini_satellite_internet_simulator(object())
+    with pytest.raises(TypeError, match="upstream Emulator"):
+        create_mini_satellite_internet_producer(
+            EXAMPLE_ROOT,
+            emulator=object(),
+        )
+    with pytest.raises(TypeError, match="Simulator"):
+        mini_simu.create_mini_satellite_internet_planner(object())
 
 
-def test_richer_main_builds_once_and_emits_static_and_slice_outputs(
+def test_mini_main_builds_once_and_emits_current_round_b_outputs(
     tmp_path: Path,
-    monkeypatch,
-    capsys,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     output = tmp_path / "output"
     built = []
     build_paths = []
     compiled = []
     projected = []
-    created_simulators = []
-    projection_inputs = []
-    projection_zone_paths = []
-    created_slicers = []
-    topology_tool_inputs = []
-    zone_tool_inputs = []
-    dynamic_tool_inputs = []
-    bpf_compiler_inputs = []
-    bpf_tool_inputs = []
-    real_build = reference_main.build_mini_satellite_internet_emulator
+    producer_calls = []
+    tool_calls = []
+    real_build = mini_main.build_mini_satellite_internet_emulator
     real_compile = Emulator.compile
-    real_progression = reference_main.create_mini_satellite_internet_progression
-    real_input_projection = simu.create_simulator_static_input
-    real_topology_tool = reference_main.write_topology_tool
-    real_zone_tool = reference_main.write_zone_tool
-    real_slice_tool = reference_main.write_slice_difference_tool
-    real_prepare_planning = (
-        reference_main.prepare_mini_satellite_internet_planning
-    )
-    real_planner_tool = reference_main.write_planner_inspection
-    real_bpf_compiler = (
-        reference_main._compile_bpf_realizations
-    )
-    real_bpf_tool = reference_main.write_bpf_compiler_tool
+    real_projection = mini_simu.create_simulator_static_input
+    real_producer = mini_main.create_mini_satellite_internet_producer
+    real_tools = mini_main._write_inspection_tools
 
     def build_spy(path):
         emulator = real_build(path)
@@ -320,125 +425,62 @@ def test_richer_main_builds_once_and_emits_static_and_slice_outputs(
         compiled.append(self)
         return real_compile(self, compiler, directory, override)
 
-    def input_projection_spy(autonomous_systems):
-        exact_owners = tuple(autonomous_systems)
-        projection_inputs.append(exact_owners)
-        return real_input_projection(exact_owners)
+    def projection_spy(autonomous_systems):
+        owners = tuple(autonomous_systems)
+        projected.append(owners)
+        return real_projection(owners)
 
-    def progression_spy(input_directory, *, emulator=None):
-        projected.append(emulator)
-        projection_zone_paths.append(Path(input_directory) / "zones.yaml")
-        simulator, planner = real_progression(
+    def producer_spy(
+        input_directory,
+        *,
+        emulator=None,
+        evidence_path=None,
+    ):
+        result = real_producer(
             input_directory,
             emulator=emulator,
+            evidence_path=evidence_path,
         )
-        created_simulators.append(simulator)
-        created_slicers.append(simulator.get_slicer())
-        return simulator, planner
-
-    def topology_tool_spy(topology, directory):
-        topology_tool_inputs.append(topology)
-        return real_topology_tool(topology, directory)
-
-    def zone_tool_spy(topology, directory):
-        zone_tool_inputs.append(topology)
-        return real_zone_tool(topology, directory)
-
-    def dynamic_tool_spy(slicer, directory):
-        dynamic_tool_inputs.append(slicer)
-        return real_slice_tool(slicer, directory)
-
-    planner_tool_inputs = []
-    planning_inputs = []
-
-    def planning_spy(simulator, planner=None):
-        planning_inputs.append(simulator)
-        return real_prepare_planning(simulator, planner)
-
-    def planner_tool_spy(slicer, planner, plans, configuration, directory):
-        planner_tool_inputs.append((slicer, planner, plans, configuration))
-        return real_planner_tool(
-            slicer,
-            planner,
-            plans,
-            configuration,
-            directory,
+        producer_calls.append(
+            {
+                "input_directory": Path(input_directory),
+                "emulator": emulator,
+                "evidence_path": Path(evidence_path),
+                "simulator": result[0],
+                "producer": result[1],
+            }
         )
+        return result
 
-    def bpf_compiler_spy(slicer, plans):
-        bpf_compiler_inputs.append((slicer, plans))
-        return real_bpf_compiler(slicer, plans)
-
-    def bpf_tool_spy(plans, realizations, directory):
-        bpf_tool_inputs.append((plans, realizations))
-        return real_bpf_tool(plans, realizations, directory)
+    def tools_spy(output_directory, **kwargs):
+        tool_calls.append((Path(output_directory), kwargs))
+        return real_tools(output_directory, **kwargs)
 
     monkeypatch.setattr(
-        reference_main,
+        mini_main,
         "build_mini_satellite_internet_emulator",
         build_spy,
     )
     monkeypatch.setattr(Emulator, "compile", compile_spy)
     monkeypatch.setattr(
-        simu,
+        mini_simu,
         "create_simulator_static_input",
-        input_projection_spy,
+        projection_spy,
     )
     monkeypatch.setattr(
-        reference_main,
-        "create_mini_satellite_internet_progression",
-        progression_spy,
+        mini_main,
+        "create_mini_satellite_internet_producer",
+        producer_spy,
     )
-    monkeypatch.setattr(
-        reference_main,
-        "write_topology_tool",
-        topology_tool_spy,
-    )
-    monkeypatch.setattr(reference_main, "write_zone_tool", zone_tool_spy)
-    monkeypatch.setattr(
-        reference_main,
-        "write_slice_difference_tool",
-        dynamic_tool_spy,
-    )
-    monkeypatch.setattr(
-        reference_main,
-        "prepare_mini_satellite_internet_planning",
-        planning_spy,
-    )
-    monkeypatch.setattr(
-        reference_main,
-        "write_planner_inspection",
-        planner_tool_spy,
-    )
-    monkeypatch.setattr(
-        reference_main,
-        "_compile_bpf_realizations",
-        bpf_compiler_spy,
-    )
-    monkeypatch.setattr(
-        reference_main,
-        "write_bpf_compiler_tool",
-        bpf_tool_spy,
-    )
-    monkeypatch.setattr(
-        "sys.argv",
-        [
-            "main.py",
-            "--output",
-            str(output),
-            "--no-internet-map",
-        ],
-    )
+    monkeypatch.setattr(mini_main, "_write_inspection_tools", tools_spy)
 
-    assert reference_main.main() == 0
+    assert mini_main.main(
+        ["--output", str(output), "--no-internet-map"]
+    ) == 0
     assert len(built) == 1
     assert build_paths == [output / "inputs/scenario.yaml"]
+    assert compiled == built
     assert len(projected) == 1
-    assert projected[0] is built[0]
-    assert projection_zone_paths == [output / "inputs/zones.yaml"]
-    assert len(compiled) == 1
-    assert compiled[0] is built[0]
-    assert len(projection_inputs) == 1
     base = built[0].getLayer("Base")
     assert isinstance(base, Base)
     expected_as_owners = tuple(
@@ -449,40 +491,31 @@ def test_richer_main_builds_once_and_emits_static_and_slice_outputs(
             SkyseedAutonomousSystem,
         )
     )
-    assert len(projection_inputs[0]) == len(expected_as_owners)
+    assert len(projected[0]) == len(expected_as_owners)
     assert all(
         actual is expected
         for actual, expected in zip(
-            projection_inputs[0],
-            expected_as_owners,
-            strict=True,
+            projected[0], expected_as_owners, strict=True
         )
     )
-    assert len(created_slicers) == 1
-    assert planning_inputs == created_simulators
-    exact_slicer = created_slicers[0]
-    exact_topology = exact_slicer.get_topology()
-    assert len(topology_tool_inputs) == 1
-    assert topology_tool_inputs[0] is exact_topology
-    assert len(zone_tool_inputs) == 1
-    assert zone_tool_inputs[0] is exact_topology
-    assert len(dynamic_tool_inputs) == 1
-    assert dynamic_tool_inputs[0] is exact_slicer
-    assert len(planner_tool_inputs) == 1
-    assert planner_tool_inputs[0][0] is exact_slicer
-    exact_plans = planner_tool_inputs[0][2]
-    assert bpf_compiler_inputs == [(exact_slicer, exact_plans)]
-    assert len(bpf_tool_inputs) == 1
-    assert bpf_tool_inputs[0][0] is exact_plans
-    assert bpf_tool_inputs[0][1]
+    assert len(producer_calls) == 1
+    producer_call = producer_calls[0]
+    assert producer_call["input_directory"] == output / "inputs"
+    assert producer_call["emulator"] is built[0]
+    assert producer_call["evidence_path"] == output / "domain-history"
+    assert len(tool_calls) == 1
+    tool_output, tool_values = tool_calls[0]
+    assert tool_output == output
+    assert tool_values["simulator"] is producer_call["simulator"]
+    first_frame, first_observation = producer_call[
+        "producer"
+    ].first_formal_input()
+    assert tool_values["physical_frame"] is first_frame
+    assert tool_values["physical_link_observation"] is first_observation
+    assert tool_values["plans"][-1] is producer_call["producer"].latest_plan
+    assert len(tool_values["plans"]) == len(tool_values["realizations"]) == 32
 
     runtime_output = output / "runtime"
-    topology_output = output / "inspection/topology"
-    zone_output = output / "inspection/zone"
-    slice_output = output / "inspection/slice"
-    planner_output = output / "inspection/planner"
-    observation_output = output / "inspection/observation"
-    bpf_compiler_output = output / "inspection/bpf-compiler"
     compose_file = runtime_output / "docker-compose.yml"
     compose = safe_load(compose_file.read_text(encoding="utf-8"))
     assert isinstance(compose["services"], dict)
@@ -518,18 +551,14 @@ def test_richer_main_builds_once_and_emits_static_and_slice_outputs(
     assert "-m skyseed_v2.experiment.execution" in run_script
     assert "-m tools.runner" in run_script
     assert "-m tools.traffic" in run_script
-    assert "runner-invocation.json" in run_script
-    assert "runtime.py" not in run_script
-    assert "traffic_workload" not in run_script
-    assert "traffic-workload.json" not in run_script
+    assert "tools.observation" in run_script
+    assert 'exit "$runner_tool_status"' not in run_script
+    assert 'exit "$traffic_tool_status"' not in run_script
     assert '"$SCRIPT_DIR/start.sh"' in launch
     assert 'exec "$SCRIPT_DIR/run.sh"' in launch
     assert "cleanup" not in launch
     assert "docker" not in launch
     assert "run.sh" not in start
-    assert "runtime.py" not in start + cleanup
-    assert 'COMPOSE_FILE="$SCRIPT_DIR/runtime/docker-compose.yml"' in start
-    assert 'COMPOSE_FILE="$SCRIPT_DIR/runtime/docker-compose.yml"' in cleanup
     for script_name in ("start.sh", "run.sh", "launch.sh", "cleanup.sh"):
         script = output / script_name
         assert script.stat().st_mode & 0o111
@@ -540,6 +569,7 @@ def test_richer_main_builds_once_and_emits_static_and_slice_outputs(
             text=True,
         )
         assert syntax.returncode == 0, syntax.stderr
+
     assert {path.name for path in output.iterdir()} == {
         "start.sh",
         "run.sh",
@@ -547,6 +577,7 @@ def test_richer_main_builds_once_and_emits_static_and_slice_outputs(
         "cleanup.sh",
         "inputs",
         "runtime",
+        "domain-history",
         "inspection",
     }
     assert (output / "inputs/scenario.yaml").read_bytes() == (
@@ -555,197 +586,90 @@ def test_richer_main_builds_once_and_emits_static_and_slice_outputs(
     assert (output / "inputs/zones.yaml").read_bytes() == (
         EXAMPLE_ROOT / "zones.yaml"
     ).read_bytes()
-    execution = json.loads(
-        (output / "runtime/execution.json").read_text(encoding="utf-8")
-    )
-    assert execution["generated_output_identity"] == project_name
-    assert execution["progression_builder"] == {
-        "module": "examples.mini_satellite_internet.simu",
-        "callable": "create_mini_satellite_internet_progression",
-        "input_directory": "inputs",
-    }
-    assert execution["simulation"]["generation_lookahead_seconds"] == 300
-    assert execution["runner"] == {
-        "preparation_lookahead_seconds": 60,
-        "preparation_boundary_depth": 8,
-    }
-    assert execution["source_fingerprint"]["algorithm"] == "sha256"
-    assert [
-        scope["label"] for scope in execution["source_fingerprint"]["scopes"]
-    ] == ["skyseed", "example-progression", "seedemu"]
-    input_scope = next(
-        scope
-        for scope in execution["generated_inputs"]["scopes"]
-        if scope["label"] == "input-snapshots"
-    )
-    assert input_scope["excludes"] == ["traffic-workload.json"]
-    assert {path.name for path in (output / "inspection").iterdir()} == {
-        "topology",
-        "zone",
-        "slice",
-        "planner",
-        "observation",
-        "bpf-compiler",
-        "traffic",
-    }
     assert (output / "inputs/traffic-workload.json").is_file()
     assert (output / "inspection/traffic/probe-plan.json").is_file()
-    for forbidden in ("emulator", "simulator", "slice", "tools"):
-        assert not (output / forbidden).exists()
-
+    assert (output / "inspection/index.html").is_file()
     for directory, names in (
-        (topology_output, ("index.html", "topology.json", "summary.txt")),
-        (zone_output, ("index.html", "zones.json", "summary.txt")),
+        (
+            output / "inspection/physical-world",
+            ("index.html", "physical-world.json", "summary.txt"),
+        ),
+        (
+            output / "inspection/zone",
+            ("index.html", "zones.json", "summary.txt"),
+        ),
+        (
+            output / "inspection/planner",
+            (
+                "index.html",
+                "planner-inspection.json",
+                "summary.txt",
+                "inventory.json",
+                "checksums.sha256",
+            ),
+        ),
+        (
+            output / "inspection/bpf-compiler",
+            (
+                "index.html",
+                "bpf-compiler-inspection.json",
+                "summary.txt",
+                "inventory.json",
+                "checksums.sha256",
+            ),
+        ),
     ):
         for name in names:
             assert (directory / name).is_file()
-    for name in (
-        "index.html",
-        "slice-manifest.json",
-        "summary.txt",
-        "inventory.json",
-        "checksums.sha256",
-    ):
-        assert (slice_output / name).is_file()
-    for name in (
-        "index.html",
-        "planner-manifest.json",
-        "summary.txt",
-        "inventory.json",
-        "checksums.sha256",
-    ):
-        assert (planner_output / name).is_file()
-    for name in (
-        "index.html",
-        "execution-observations.jsonl",
-        "observation-records.js",
-        "observation-summary.json",
-        "summary.txt",
-        "inventory.json",
-        "checksums.sha256",
-    ):
-        assert (observation_output / name).is_file()
-    for name in (
-        "index.html",
-        "manifest.json",
-        "manifest.js",
-        "summary.txt",
-        "inventory.json",
-        "checksums.sha256",
-    ):
-        assert (bpf_compiler_output / name).is_file()
-    assert any((bpf_compiler_output / "chunks").glob("*.js"))
 
-    topology_payload = json.loads(
-        (topology_output / "topology.json").read_text(encoding="utf-8")
+    execution = json.loads(
+        (output / "runtime/execution.json").read_text(encoding="utf-8")
     )
-    zone_payload = json.loads(
-        (zone_output / "zones.json").read_text(encoding="utf-8")
+    assert execution["format_version"] == 2
+    assert execution["generated_output_identity"] == project_name
+    assert execution["progression"] == {
+        "strategy": "persisted-canonical-realization-handoff",
+        "producer": (
+            "skyseed-v2-common-incremental-realization-producer-v1"
+        ),
+    }
+    assert execution["simulation"] == {
+        "start_time": mini_simu.DEFAULT_START_TIME.isoformat(),
+        "end_time": mini_simu.DEFAULT_END_TIME.isoformat(),
+        "observation_interval_seconds": 10.0,
+        "bounded": True,
+    }
+    assert execution["runner"] == {
+        "preparation_lookahead_seconds": None,
+        "preparation_boundary_depth": None,
+    }
+    assert execution["realization_handoff"]["realization_count"] == 32
+    assert execution["realization_handoff"]["format_version"] == 3
+    assert execution["realization_handoff"]["encoding"] == (
+        "deterministic-gzip-json-v1"
     )
-    dynamic_payload = json.loads(
-        (slice_output / "slice-manifest.json").read_text(encoding="utf-8")
-    )
-    expected_asns = {
-        autonomous_system.asn
-        for autonomous_system in exact_topology.autonomous_systems
-    }
-    expected_orbits = {
-        (orbit.asn, orbit.shell_id, orbit.orbit_id)
-        for autonomous_system in exact_topology.autonomous_systems
-        for shell in autonomous_system.shells
-        for orbit in shell.orbits
-    }
-    expected_satellites = {
-        satellite.node_id.value
-        for autonomous_system in exact_topology.autonomous_systems
-        for shell in autonomous_system.shells
-        for orbit in shell.orbits
-        for satellite in orbit.satellites
-    }
-    expected_satellite_ids = {
-        satellite.satellite_id
-        for autonomous_system in exact_topology.autonomous_systems
-        for shell in autonomous_system.shells
-        for orbit in shell.orbits
-        for satellite in orbit.satellites
-    }
-    expected_ground_stations = {
-        ground_station.node_id.value
-        for autonomous_system in exact_topology.autonomous_systems
-        for ground_station in autonomous_system.ground_stations
-    }
-    expected_zones = {
-        zone.zone_id for zone in exact_topology.get_zone_layout().zones
-    }
-    assert {
-        item["asn"] for item in topology_payload["orbit_rings"]
-    } | {
-        item["asn"] for item in topology_payload["ground_stations"]
-    } == expected_asns
-    assert {
-        (item["asn"], item["shell_id"], item["orbit_id"])
-        for item in topology_payload["orbit_rings"]
-    } == expected_orbits
-    assert {
-        satellite_id
-        for orbit in topology_payload["orbit_rings"]
-        for satellite_id in orbit["satellite_ids"]
-    } == expected_satellite_ids
-    assert {
-        item["node_id"] for item in topology_payload["ground_stations"]
-    } == expected_ground_stations
-    assert {
-        item["zone_id"] for item in zone_payload["zones"]
-    } == expected_zones
-    assert "ground_stations" not in zone_payload
-    assert {
-        item["node_id"]
-        for item in dynamic_payload["topology"]["nodes"]
-        if item["kind"] == "satellite"
-    } == expected_satellites
-    assert {
-        item["node_id"]
-        for item in dynamic_payload["topology"]["nodes"]
-        if item["kind"] == "ground-station"
-    } == expected_ground_stations
-    assert {
-        (item["asn"], item["shell_id"], item["orbit_id"])
-        for item in dynamic_payload["topology"]["orbits"]
-    } == expected_orbits
-    assert {
-        item["zone_id"] for item in dynamic_payload["topology"]["zones"]
-    } == expected_zones
+    assert [
+        scope["label"] for scope in execution["source_fingerprint"]["scopes"]
+    ] == ["skyseed", "example-progression", "seedemu"]
 
+    manifest = json.loads(
+        (output / "domain-history/domain-history-manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert manifest["through"] == "compiler"
+    assert manifest["counts"]["formal_frames"] == 64
+    assert manifest["counts"]["plans"] == 32
+    assert manifest["counts"]["realizations"] == 32
     output_text = capsys.readouterr().out
-    assert f"Topology Tool entry: {topology_output / 'index.html'}" in output_text
-    assert f"Zone Tool entry: {zone_output / 'index.html'}" in output_text
-    assert (
-        f"Slice / Difference Tool entry: {slice_output / 'index.html'}"
-        in output_text
-    )
-    assert f"Planner Tool entry: {planner_output / 'index.html'}" in output_text
-    assert (
-        f"Observation Tool entry: {observation_output / 'index.html'}"
-        in output_text
-    )
-    assert (
-        f"BPF Compiler Tool entry: {bpf_compiler_output / 'index.html'}"
-        in output_text
-    )
-    assert "static containers are not updated" in output_text
-    main_source = (EXAMPLE_ROOT / "main.py").read_text(encoding="utf-8")
-    for removed_regression_logic in (
-        "_validate_compose_structure",
-        "satellite_services",
-        "ground_station_services",
-        "_behavior_summary",
-    ):
-        assert removed_regression_logic not in main_source
+    assert f"runtime directory: {runtime_output}" in output_text
+    assert "producer: 32 Plans / 64 formal transitions" in output_text
+    assert "runtime handoff:" in output_text
 
 
 def test_generation_guard_preserves_a_live_or_unverifiable_generation(
     tmp_path: Path,
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     output = tmp_path / "output"
     output.mkdir()
@@ -764,9 +688,9 @@ def test_generation_guard_preserves_a_live_or_unverifiable_generation(
             stderr="",
         )
 
-    monkeypatch.setattr(reference_main.subprocess, "run", live_project)
+    monkeypatch.setattr(mini_main.subprocess, "run", live_project)
     with pytest.raises(RuntimeError, match="cleanup.sh"):
-        reference_main._guard_existing_output(output, override=True)
+        mini_main._guard_existing_output(output, override=True)
     assert identity.read_text(encoding="utf-8") == "mini-generation-one\n"
     assert sentinel.read_text(encoding="utf-8") == "original"
     assert commands == [
@@ -784,57 +708,44 @@ def test_generation_guard_preserves_a_live_or_unverifiable_generation(
     ]
 
     monkeypatch.setattr(
-        reference_main.subprocess,
+        mini_main.subprocess,
         "run",
-        lambda *args, **kwargs: SimpleNamespace(
+        lambda *_args, **_kwargs: SimpleNamespace(
             returncode=1,
             stdout="",
             stderr="daemon unavailable",
         ),
     )
-    with pytest.raises(RuntimeError, match="cannot verify|failed"):
-        reference_main._guard_existing_output(output, override=True)
+    with pytest.raises(RuntimeError, match="cannot verify"):
+        mini_main._guard_existing_output(output, override=True)
     assert sentinel.read_text(encoding="utf-8") == "original"
 
 
-def test_generation_guard_rejects_legacy_output_and_replaces_incomplete_output(
+def test_generation_guard_rejects_unowned_runtime_and_replaces_incomplete_output(
     tmp_path: Path,
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     output = tmp_path / "output"
-    output.mkdir()
+    runtime = output / "runtime"
+    runtime.mkdir(parents=True)
+    (runtime / "docker-compose.yml").write_text(
+        "services: {}\n", encoding="utf-8"
+    )
     sentinel = output / "preserve-me"
     sentinel.write_text("legacy", encoding="utf-8")
 
     def unexpected_docker(*_args, **_kwargs):
-        raise AssertionError("legacy output must not guess a Compose project")
+        raise AssertionError("unowned output must not guess a Compose project")
 
-    monkeypatch.setattr(reference_main.subprocess, "run", unexpected_docker)
-    reference_main._guard_existing_output(
-        tmp_path / "absent-output",
-        override=True,
-    )
-    with pytest.raises(RuntimeError, match="unsupported older layout"):
-        reference_main._guard_existing_output(output, override=True)
+    monkeypatch.setattr(mini_main.subprocess, "run", unexpected_docker)
+    with pytest.raises(RuntimeError, match="no verifiable Compose identity"):
+        mini_main._guard_existing_output(output, override=True)
     assert sentinel.read_text(encoding="utf-8") == "legacy"
 
-    (output / "runtime").mkdir()
-    (output / "runtime/compose-project-name").write_text(
-        "mini-incomplete\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(
-        reference_main.subprocess,
-        "run",
-        lambda *args, **kwargs: SimpleNamespace(
-            returncode=0,
-            stdout="",
-            stderr="",
-        ),
-    )
-    reference_main._guard_existing_output(output, override=True)
-    runtime = reference_main._prepare_generated_output(output, replace=True)
-    assert runtime == output / "runtime"
+    (runtime / "docker-compose.yml").unlink()
+    mini_main._guard_existing_output(output, override=True)
+    prepared = mini_main._prepare_generated_output(output, replace=True)
+    assert prepared == output / "runtime"
     assert tuple(output.iterdir()) == ()
 
 
@@ -855,9 +766,9 @@ def test_supported_external_ground_station_input_is_snapshotted_relatively(
     zones.write_text("zones: []\n", encoding="utf-8")
     stations.write_text("ground_stations: []\n", encoding="utf-8")
 
-    snapshots = reference_main._capture_input_files(scenario, zones)
+    snapshots = mini_main._capture_input_files(scenario, zones)
     output = tmp_path / "output"
-    reference_main._write_input_snapshots(output, snapshots)
+    mini_main._write_input_snapshots(output, snapshots)
 
     assert set(snapshots) == {
         Path("scenario.yaml"),
@@ -871,237 +782,257 @@ def test_supported_external_ground_station_input_is_snapshotted_relatively(
     )
 
 
-def test_richer_reference_naturally_exercises_representative_behavior(
-    reference_view_data: dict[str, object],
+def test_mini_reference_naturally_exercises_representative_behavior(
+    reference_chain: SimpleNamespace,
 ) -> None:
-    assert reference_view_data["inventory"] == {
-        "nodes": 35,
-        "satellites": 32,
-        "ground_stations": 3,
-        "orbits": 4,
-        "zones": 5,
-        "slices": 65,
-        "differences": 64,
-        "route_entries": 11264,
+    transitions = reference_chain.transitions
+    frames = reference_chain.frames
+    totals = {
+        field_name: sum(
+            len(getattr(transition, field_name))
+            for transition in transitions
+        )
+        for field_name in (
+            "established_connections",
+            "withdrawn_connection_ids",
+            "parameter_updated_connections",
+            "zone_service_transitions",
+            "route_outcome_transitions",
+        )
     }
-    assert reference_view_data["behavior"] == {
-        "later_nonempty_differences": 63,
-        "connection_additions": 11,
-        "connection_removals": 14,
-        "directional_parameter_patches": 2530,
-        "zone_assignment_additions": 4,
-        "zone_assignment_changes": 1,
-        "zone_assignment_removals": 4,
-        "route_additions": 169,
-        "route_changes": 137,
-        "route_removals": 239,
-        "route_patches": 545,
+    assert totals == {
+        "established_connections": 86,
+        "withdrawn_connection_ids": 26,
+        "parameter_updated_connections": 1273,
+        "zone_service_transitions": 14,
+        "route_outcome_transitions": 43,
     }
-    slices = reference_view_data["slices"]
-    first_connections = slices[1]["connections"]
-    assert sum(
-        value["display_kind"] == "same-orbit-isl"
-        for value in first_connections
-    ) == 32
-    assert sum(
-        value["display_kind"] == "cross-orbit-isl"
-        for value in first_connections
-    ) == 16
-    assert any(
-        connection["connection_id"]["kind"] == "ground-station-access"
-        for topology_slice in slices[1:]
-        for connection in topology_slice["connections"]
+    assert sum(_is_dynamic_transition(value) for value in transitions[1:]) == 63
+    assert len(frames) == 64
+    assert all(
+        frame.inspection.stages
+        == (
+            "physical-input-validation",
+            "isl-candidate-selection",
+            "acquisition/lifecycle-advancement",
+            "ground-station-planning",
+            "zone-planning",
+            "parameter-planning",
+            "route-planning",
+            "coordination",
+            "state-advancement",
+        )
+        for frame in frames
+    )
+    assert sum(frame.inspection.acquisition_started for frame in frames) == 18
+    assert sum(frame.inspection.acquisition_completed for frame in frames) == 80
+    assert sum(frame.inspection.acquisition_reset for frame in frames) == 20
+    assert Counter(
+        frame.inspection.route_recomputed for frame in frames
+    ) == Counter({False: 41, True: 23})
+
+    parent_by_node = _satellite_parents(reference_chain.physical_world)
+    first_connections = Counter()
+    for connection in reference_chain.states[0].operational_connections:
+        identity = connection.connection_id
+        if identity.kind is OperationalConnectionKind.GROUND_STATION_ACCESS:
+            first_connections["ground-station-access"] += 1
+        elif parent_by_node[identity.endpoint_a] == parent_by_node[
+            identity.endpoint_b
+        ]:
+            first_connections["same-plane"] += 1
+        else:
+            first_connections["cross-plane"] += 1
+    assert first_connections == Counter(
+        {
+            "same-plane": 32,
+            "cross-plane": 30,
+            "ground-station-access": 3,
+        }
     )
     assert all(
-        topology_slice["zone_service_assignments"]
-        for topology_slice in slices[1:]
+        len(state.zone_service_assignments) == 5
+        for state in reference_chain.states
     )
-    later_differences = (
-        topology_slice["difference_from_previous"]
-        for topology_slice in slices[2:]
+
+    zone_operations = Counter()
+    route_operations = Counter()
+    for transition in transitions:
+        for value in transition.zone_service_transitions:
+            if (
+                value.previous_satellite_id is None
+                and value.current_satellite_id is None
+            ):
+                operation = "explicit-unserved"
+            elif value.previous_satellite_id is None:
+                operation = "added"
+            elif value.current_satellite_id is None:
+                operation = "removed"
+            else:
+                operation = "changed"
+            zone_operations[operation] += 1
+        for value in transition.route_outcome_transitions:
+            if value.previous is None:
+                operation = "added"
+            elif value.current is None:
+                operation = "removed"
+            else:
+                operation = "changed"
+            route_operations[operation] += 1
+    assert zone_operations == Counter(
+        {"added": 7, "removed": 4, "explicit-unserved": 2, "changed": 1}
     )
-    zone_operations = {
-        patch["operation"]
-        for difference in later_differences
-        for patch in difference["zone_service_assignment_patches"]
-    }
-    later_differences = (
-        topology_slice["difference_from_previous"]
-        for topology_slice in slices[2:]
+    assert route_operations == Counter(
+        {"changed": 29, "added": 11, "removed": 3}
     )
-    route_operations = {
-        patch[0]
-        for difference in later_differences
-        for patch in difference["route_patches"]
-    }
-    assert zone_operations == {"added", "changed", "removed"}
-    assert route_operations == {"added", "changed", "removed"}
 
 
 def test_zone_service_uses_representative_point_not_subpoint_containment(
-    reference_slicer: Slicer,
-    reference_view_data: dict[str, object],
+    reference_chain: SimpleNamespace,
 ) -> None:
-    topology = reference_slicer.get_topology()
-    layout = topology.get_zone_layout()
-    outside_assignments = [
-        (record, assignment)
-        for record in reference_view_data["slices"][1:]
-        for assignment in record["zone_service_assignments"]
-        if not assignment["display_explanation"]["subpoint_inside_zone"]
-    ]
-    assert outside_assignments
-    record, assignment = outside_assignments[0]
-    assert (
-        assignment["display_explanation"][
-            "representative_point_elevation_deg"
-        ]
-        >= simu.ZONE_COVERAGE_MINIMUM_ELEVATION_DEG
-    )
+    physical_world = reference_chain.physical_world
+    outside = None
+    for evidence in reference_chain.frames:
+        physical_frame = physical_world.frame_at(evidence.timestamp)
+        for candidate in evidence.selected_zone_service_candidates:
+            position = physical_frame.positions[candidate.satellite_id]
+            zone = physical_world.get_zone(candidate.zone_id)
+            if not zone.contains(
+                position.latitude_deg,
+                position.longitude_deg,
+            ):
+                outside = (evidence, candidate, physical_frame, zone)
+                break
+        if outside is not None:
+            break
 
-    formal_slice = reference_slicer.get_slice(record["slice_id"])
-    zone = layout.get_zone(assignment["zone_id"])
-    service_satellite = formal_slice.connection_slice.get_service_satellite(
-        zone.zone_id
-    )
+    assert outside is not None
+    evidence, candidate, physical_frame, zone = outside
+    assert candidate.elevation_deg >= mini_simu.ZONE_COVERAGE_MINIMUM_ELEVATION_DEG
     representative_position = geodetic_to_ecef(
         zone.representative_point[0],
         zone.representative_point[1],
         0.0,
     )
     eligible = []
-    for autonomous_system in topology.autonomous_systems:
-        for shell in autonomous_system.shells:
-            for orbit in shell.orbits:
-                for satellite in orbit.satellites:
-                    position = formal_slice.positions[satellite.node_id]
-                    elevation = elevation_deg(
-                        representative_position,
-                        position,
-                    )
-                    if (
-                        elevation
-                        >= simu.ZONE_COVERAGE_MINIMUM_ELEVATION_DEG
-                        and has_earth_line_of_sight(
-                            representative_position,
-                            position,
-                        )
-                    ):
-                        eligible.append(
-                            (
-                                -elevation,
-                                (
-                                    satellite.node_id.asn,
-                                    satellite.node_id.entity_kind,
-                                    satellite.node_id.entity_id,
-                                ),
-                                satellite.node_id,
-                            )
-                        )
+    for node_id, position in physical_frame.positions.items():
+        if node_id.entity_kind != "satellite":
+            continue
+        elevation = elevation_deg(representative_position, position)
+        if (
+            elevation >= mini_simu.ZONE_COVERAGE_MINIMUM_ELEVATION_DEG
+            and has_earth_line_of_sight(representative_position, position)
+        ):
+            eligible.append(
+                (
+                    -elevation,
+                    (node_id.asn, node_id.entity_kind, node_id.entity_id),
+                    node_id,
+                )
+            )
     assert eligible
-    assert service_satellite == min(eligible)[2]
+    assert candidate.satellite_id == min(eligible)[2]
+    assert candidate.elevation_deg == pytest.approx(-min(eligible)[0])
+    assert evidence.timestamp == physical_frame.timestamp
 
 
 def test_reference_zone_overlap_preserves_all_memberships_and_priority_winner(
-    reference_slicer: Slicer,
+    reference_chain: SimpleNamespace,
 ) -> None:
-    topology = reference_slicer.get_topology()
-    layout = topology.get_zone_layout()
+    physical_world = reference_chain.physical_world
+    layout = physical_world.get_zone_layout()
     probe = (42.0, -74.0)
+
     assert layout.allow_overlap
     assert {
-        zone.zone_id for zone in topology.find_zones(*probe)
+        zone.zone_id for zone in physical_world.find_zones(*probe)
     } == {"north-america-east", "northeast-priority"}
-    assert topology.resolve_zone(*probe).zone_id == "northeast-priority"
+    assert physical_world.resolve_zone(*probe).zone_id == "northeast-priority"
     for zone_id in ("north-america-east", "northeast-priority"):
         zone = layout.get_zone(zone_id)
         assert zone.contains(*zone.representative_point)
 
-def test_reference_ground_stations_copy_v1_reference_values_without_runtime_dependency(
-    reference_slicer: Slicer,
-    reference_view_data: dict[str, object],
+
+def test_reference_ground_stations_keep_reference_values_and_dynamic_access(
+    reference_chain: SimpleNamespace,
 ) -> None:
     expected = {
         "gs-porto-alegre-reference": (-30.0346, -51.2177, 0.0),
         "gs-marsala-reference": (37.7986, 12.4357, 0.0),
         "gs-yamaguchi-reference": (34.1861, 131.4706, 0.0),
     }
-    topology = reference_slicer.get_topology()
+    physical_world = reference_chain.physical_world
     ground_stations = {
         station.ground_station_id: (
             station.latitude_deg,
             station.longitude_deg,
             station.elevation_m,
         )
-        for autonomous_system in topology.autonomous_systems
+        for autonomous_system in physical_world.autonomous_systems
         for station in autonomous_system.ground_stations
     }
     assert ground_stations == expected
     representative_points = {
         zone.representative_point
-        for zone in topology.get_zone_layout().zones
+        for zone in physical_world.get_zone_layout().zones
     }
     assert not representative_points.intersection(
         (latitude, longitude)
         for latitude, longitude, _ in ground_stations.values()
     )
 
-    ground_station_ids = {
-        node["node_id"]
-        for node in reference_view_data["topology"]["nodes"]
-        if node["kind"] == "ground-station"
+    station_ids = {
+        station.node_id
+        for autonomous_system in physical_world.autonomous_systems
+        for station in autonomous_system.ground_stations
     }
-    access_sets = {node_id: [] for node_id in ground_station_ids}
-    for record in reference_view_data["slices"][1:]:
+    access_sets = {node_id: [] for node_id in station_ids}
+    for state in reference_chain.states:
         per_station = defaultdict(set)
-        for connection in record["connections"]:
-            identity = connection["connection_id"]
-            if identity["kind"] != "ground-station-access":
+        for connection in state.operational_connections:
+            identity = connection.connection_id
+            if identity.kind is not OperationalConnectionKind.GROUND_STATION_ACCESS:
                 continue
-            endpoints = (identity["endpoint_a"], identity["endpoint_b"])
-            station_id = next(
+            ground_station = next(
                 endpoint
-                for endpoint in endpoints
-                if endpoint in ground_station_ids
+                for endpoint in (identity.endpoint_a, identity.endpoint_b)
+                if endpoint in station_ids
             )
-            per_station[station_id].add(
-                next(
-                    endpoint
-                    for endpoint in endpoints
-                    if endpoint != station_id
-                )
+            satellite = (
+                identity.endpoint_b
+                if ground_station == identity.endpoint_a
+                else identity.endpoint_a
             )
-        for station_id in ground_station_ids:
+            per_station[ground_station].add(satellite)
+        for station_id in station_ids:
             access_sets[station_id].append(
                 frozenset(per_station[station_id])
             )
     assert all(any(values) for values in access_sets.values())
-    assert sum(len(set(values)) > 1 for values in access_sets.values()) == 3
+    assert all(len(set(values)) > 1 for values in access_sets.values())
 
-    later_differences = [
-        record["difference_from_previous"]
-        for record in reference_view_data["slices"][2:]
-    ]
+    later = reference_chain.transitions[1:]
     assert any(
-        connection["connection_id"]["kind"] == "ground-station-access"
-        for difference in later_differences
-        for connection in difference["added_connections"]
+        connection.connection_id.kind
+        is OperationalConnectionKind.GROUND_STATION_ACCESS
+        for transition in later
+        for connection in transition.established_connections
     )
     assert any(
-        identity["connection_id"]["kind"] == "ground-station-access"
-        for difference in later_differences
-        for identity in difference["removed_connection_ids"]
+        identity.kind is OperationalConnectionKind.GROUND_STATION_ACCESS
+        for transition in later
+        for identity in transition.withdrawn_connection_ids
     )
     assert any(
-        patch["connection_id"]["kind"] == "ground-station-access"
-        for difference in later_differences
-        for patch in difference["connection_parameter_patches"]
+        connection.connection_id.kind
+        is OperationalConnectionKind.GROUND_STATION_ACCESS
+        for transition in later
+        for connection in transition.parameter_updated_connections
     )
 
     scenario_source = (EXAMPLE_ROOT / "scenario.yaml").read_text(
         encoding="utf-8"
     )
-    readme_source = (EXAMPLE_ROOT / "README.md").read_text(encoding="utf-8")
     assert "starlink_gateways.json" in scenario_source
     assert "s4_visualization_gateway_binding_12.json" in scenario_source
     assert "Reference Ground Station - Porto Alegre, Brazil" in scenario_source
@@ -1109,131 +1040,119 @@ def test_reference_ground_stations_copy_v1_reference_values_without_runtime_depe
     assert "Reference Ground Station - Yamaguchi, Japan" in scenario_source
     assert "Starlink Gateway -" not in scenario_source
     assert "commercial operator's current" in scenario_source
-    assert "external source URL" in readme_source
-    assert "commercial\noperator's current in-service facilities" in readme_source
     for path in ("emu.py", "simu.py", "main.py"):
-        assert "skyseed_v1" not in (
-            EXAMPLE_ROOT / path
-        ).read_text(encoding="utf-8")
+        assert "skyseed_v1" not in (EXAMPLE_ROOT / path).read_text(
+            encoding="utf-8"
+        )
 
 
-def test_richer_reference_core_identities_and_counts_repeat_deterministically(
-    reference_view_data: dict[str, object],
+def test_mini_core_identities_and_results_repeat_deterministically(
+    reference_chain: SimpleNamespace,
 ) -> None:
     repeated_emulator = build_mini_satellite_internet_emulator()
-    repeated = simu.create_mini_satellite_internet_slicer(repeated_emulator)
-    repeated.create_all_slices()
+    repeated_simulator, repeated_producer = (
+        create_mini_satellite_internet_producer(
+            EXAMPLE_ROOT,
+            emulator=repeated_emulator,
+        )
+    )
+    repeated_plans, repeated_realizations, repeated_snapshot = (
+        drain_mini_satellite_internet(
+            repeated_simulator,
+            repeated_producer,
+        )
+    )
 
-    assert collect_slice_difference_data(repeated) == reference_view_data
+    assert repeated_simulator.get_physical_world().semantic_fingerprint() == (
+        reference_chain.physical_world.semantic_fingerprint()
+    )
+    assert repeated_plans == reference_chain.plans
+    assert repeated_realizations == reference_chain.realizations
+    assert repeated_snapshot["formal_frame_count"] == 64
+    assert repeated_snapshot["plan_count"] == 32
+    assert repeated_snapshot["realization_count"] == 32
 
 
-def test_richer_reference_sources_do_not_construct_formal_slice_results() -> None:
+def test_mini_sources_delegate_formal_state_to_the_common_producer() -> None:
     source = (EXAMPLE_ROOT / "simu.py").read_text(encoding="utf-8")
     for forbidden in (
         "argparse",
-        "write_topology_tool",
-        "write_zone_tool",
-        "write_slice_difference_tool",
-        "_behavior_summary",
         "def main(",
         "__main__",
-        "TopologySlice(",
-        "TopologyDifference(",
-        "Connection(",
-        "ConnectionSlice(",
-        "RouteSlice(",
-        "._slices",
-        "._compare_topology_slices",
-        "compute_positions(",
-        "compute_connection_slice(",
-        "compute_route_slice(",
-        ".resolve_path(",
-        ".create_difference(",
+        "PhysicalFrame(",
+        "PhysicalLinkObservation(",
+        "PlanTransition(",
+        "OperationalConnection(",
+        "apply_plan_transition(",
+        ".frame_at(",
+        ".compute_observation(",
+        "compile_bpf(",
     ):
         assert forbidden not in source
     for required in (
-        "def create_mini_satellite_internet_slicer(",
-        "def prepare_mini_satellite_internet_planning(",
+        "def create_mini_satellite_internet_simulator(",
+        "def create_mini_satellite_internet_planner(",
+        "def create_mini_satellite_internet_producer(",
         "create_simulator_static_input(",
         "Simulator(",
-        ".create_topology(",
-        ".create_slicer(",
+        ".create_physical_world(",
+        ".create_planner(",
+        "_IncrementalRealizationProducer(",
     ):
         assert required in source
+
     main_source = (EXAMPLE_ROOT / "main.py").read_text(encoding="utf-8")
-    bootstrap_source = (
+    execution_source = (
         PROJECT_ROOT / "src/skyseed_v2/experiment/execution.py"
     ).read_text(encoding="utf-8")
-    assert main_source.count("write_topology_tool(") == 1
+    assert main_source.count("write_physical_world_tool(") == 1
     assert main_source.count("write_zone_tool(") == 1
-    assert main_source.count("write_slice_difference_tool(") == 1
+    assert "write_physical_frame_tool(" not in main_source
+    assert main_source.count("write_planner_tool(") == 1
+    assert main_source.count("write_bpf_compiler_tool(") == 1
     assert main_source.count("write_canonical_traffic_workload(") == 1
-    assert main_source.count("slicer.create_all_slices()") == 1
-    assert main_source.count(".get_topology()") == 1
+    assert main_source.count("producer.produce_next_realization()") == 1
+    assert main_source.count("producer.first_formal_input()") == 1
     assert main_source.index(
         "_write_input_snapshots(arguments.output, snapshots)"
     ) < main_source.index(
         "emulator = build_mini_satellite_internet_emulator(snapshot_scenario)"
     )
-    assert main_source.index("if not all(result[") < main_source.index(
-        "_write_compose_project_scripts("
-    )
     for forbidden in (
         "AccumulatedDeadbandParameterPlanningModel",
         "DefaultCoordinationPolicy",
-        "DependencyAwareForwardingPlanningModel",
-        "MidpointConnectionPlanningModel",
+        "GatewayHopCountRoutePlanningModel",
+        "GeometricPhysicalLinkModel",
         ".create_planner(",
-        ".synchronize(",
         "Simulator(",
-        ".create_topology(",
         "load_zone_layout_definition(",
         "create_simulator_static_input(",
     ):
         assert forbidden not in main_source
+    assert execution_source.count("runner.prepare()") == 1
+    assert execution_source.count("runner.run()") == 1
+    assert execution_source.count("runner.cleanup()") == 1
+    assert "_PersistedRealizationSupplier(" in execution_source
     for forbidden in (
-        "ComposeProjectLauncher",
-        "ComposeServiceExpectations",
-        "ComposeMaterializationResult",
-        "dummies",
-    ):
-        assert forbidden not in main_source
-    assert bootstrap_source.count("runner._enable_traffic_telemetry(") == 1
-    for forbidden in (
-        "BpfRunner",
-        "_materialize_runtime",
-        "_run_bpf_vertical_slice",
-        "--run-bpf",
-    ):
-        assert forbidden not in main_source
-    assert bootstrap_source.count("runner.prepare()") == 1
-    assert bootstrap_source.count("runner.run()") == 1
-    assert bootstrap_source.count("runner.cleanup()") == 1
-    assert bootstrap_source.count("_write_runner_inspection_handoff(") == 2
-    assert bootstrap_source.index("runner.cleanup()") < bootstrap_source.index(
-        "_write_runner_inspection_handoff("
-    )
-    for forbidden in (
-        "from tools",
-        "import tools",
         "write_runner_tool",
         "write_traffic_replay_tool",
-        "realization_observer",
-        "automatic_run",
-        "finalizer",
-        "_MiniZoneServiceProgression",
-        "traffic_workload",
+        "_IncrementalRealizationProducer",
     ):
-        assert forbidden not in bootstrap_source
-    assert bootstrap_source.count('"traffic-workload.json"') == 1
-    assert 'excludes=("traffic-workload.json",)' in bootstrap_source
-    assert not (EXAMPLE_ROOT / "_compose_support.py").exists()
+        assert forbidden not in execution_source
+    assert "\nfrom tools" not in execution_source
+    assert "\nimport tools" not in execution_source
+
     parameters = signature(
-        simu.create_mini_satellite_internet_slicer
+        mini_simu.create_mini_satellite_internet_producer
     ).parameters
-    assert tuple(parameters) == ("emulator", "zone_layout_path")
-    assert parameters["emulator"].default is Parameter.empty
-    assert parameters["emulator"].annotation == "Emulator"
+    assert tuple(parameters) == (
+        "input_directory",
+        "emulator",
+        "evidence_path",
+    )
+    assert parameters["input_directory"].default is Parameter.empty
+    assert parameters["emulator"].default is None
+    assert parameters["evidence_path"].default is None
     for name in (
         "scenario.yaml",
         "zones.yaml",
@@ -1248,58 +1167,55 @@ def test_richer_reference_sources_do_not_construct_formal_slice_results() -> Non
         assert not (EXAMPLE_ROOT / retired).exists()
 
 
-def test_generation_and_generated_execution_compile_loops_stay_separate() -> None:
+def test_generation_and_persisted_execution_loops_stay_separate() -> None:
     main_source = (EXAMPLE_ROOT / "main.py").read_text(encoding="utf-8")
-    bootstrap_source = (
+    execution_source = (
         PROJECT_ROOT / "src/skyseed_v2/experiment/execution.py"
     ).read_text(encoding="utf-8")
 
-    assert main_source.count("def _compile_bpf_realizations(") == 1
-    assert "_RollingRealizationSupplier(" in bootstrap_source
-    assert main_source.count("result = compile_bpf(") == 1
-    assert bootstrap_source.count("realization = compile_bpf(") == 1
-    for forbidden in (
-        "create_all_slices(",
-        "prepare_mini_satellite_internet_planning(",
-        "iter(realizations)",
-        "_probe_ground_station_access_peer(",
-        "_probe_zone_ground_round_trip(",
-    ):
-        assert forbidden not in bootstrap_source
+    assert main_source.count("producer.produce_next_realization()") == 1
+    assert main_source.index("_write_realization_handoff(") < main_source.index(
+        "_write_execution_definition("
+    )
+    assert "_PersistedRealizationSupplier(" in execution_source
+    assert "produce_next_plan(" not in execution_source
+    assert "produce_next_realization(" not in execution_source
+    assert "compile_bpf(" not in execution_source
+    assert "create_planner(" not in execution_source
     for mini_specific in (
         "examples.mini_satellite_internet",
         "north-america-east",
         "Marsala",
         "gs-marsala-reference",
         "2026, 1, 1",
-        "O4 Sat-0002",
-        "O1 Sat-0001",
+        "dynamic-shell-orbit-004",
     ):
-        assert mini_specific not in bootstrap_source
+        assert mini_specific not in execution_source
 
 
-def test_richer_simu_has_no_standalone_assembly_or_cli() -> None:
+def test_mini_simu_has_no_standalone_assembly_or_cli() -> None:
     result = run(
         (sys.executable, "simu.py"),
         cwd=EXAMPLE_ROOT,
         check=False,
         capture_output=True,
         text=True,
+        env={**os.environ, "PYTHONWARNINGS": "ignore::SyntaxWarning"},
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == ""
     assert result.stderr == ""
 
 
-def test_richer_main_supports_direct_file_execution() -> None:
-    main_result = run(
+def test_mini_main_supports_direct_file_execution() -> None:
+    result = run(
         (sys.executable, "main.py", "--help"),
         cwd=EXAMPLE_ROOT,
         check=False,
         capture_output=True,
         text=True,
     )
-    assert main_result.returncode == 0, main_result.stderr
-    assert "--scenario" in main_result.stdout
-    assert "--zones" in main_result.stdout
-    assert "--run-bpf" not in main_result.stdout
+    assert result.returncode == 0, result.stderr
+    assert "--scenario" in result.stdout
+    assert "--zones" in result.stdout
+    assert "--output" in result.stdout

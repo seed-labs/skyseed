@@ -30,7 +30,7 @@ class LatitudeLongitudeRectangleDefinition:
     """Describe one rectangular Zone geometry construction input.
 
     Layer: immutable configuration definition. Callers or the YAML loader create
-    it and Topology materialization consumes it. It is not runtime geometry,
+    it and PhysicalWorld materialization consumes it. It is not runtime geometry,
     dynamic position state or a public generic geometry abstraction.
     """
 
@@ -65,7 +65,7 @@ class ZoneDefinition:
     """Describe one immutable Zone construction input.
 
     Layer: immutable configuration definition. A ZoneLayoutDefinition owns this
-    input until Topology materializes the domain Zone. It is not a runtime Zone,
+    input until PhysicalWorld materializes the domain Zone. It is not a runtime Zone,
     owner, service assignment or public mutable registry.
     """
 
@@ -88,7 +88,7 @@ class ZoneLayoutDefinition:
     """Contain the complete deterministic Zone layout construction input.
 
     Layer: immutable configuration definition and materialization boundary.
-    Programmatic callers or the public YAML loader create it; Topology consumes
+    Programmatic callers or the public YAML loader create it; PhysicalWorld consumes
     it. It is not the query-owning ZoneLayout or runtime mutable state.
     """
 

@@ -217,9 +217,13 @@ Interpreter** 并选择 `skyseed_dev`。仓库设置会在后续新终端中激�
 python main.py
 ```
 
-同一个 Emulator 会创建一次 Simulator/Topology，并在 Compose 编译完成后
-生成 `output/runtime/docker-compose.yml`、根级 start/cleanup controls
-以及 `output/inspection/index.html`、Topology 页面和 Zone 页面。页面内嵌
-本次数据，可以离线直接打开；相邻 JSON 是私有 tooling audit artifact，
+同一个 Emulator 会创建一次 Simulator/PhysicalWorld，并在 Compose 编译完成后
+生成 `examples/complete_static_emulator/output/runtime/docker-compose.yml`、
+start/cleanup controls，以及同一示例自有 `output/inspection/index.html`。
+默认 output 由 `main.py` 所在目录锚定，不受 shell 当前目录影响；
+`--output PATH` 可显式覆盖。inspection 包括联动 3D/2D Physical World、Zone、
+分阶段 Planner、紧凑 Compiler 和 System Observation 页面；精确 PhysicalFrame
+事实由 Physical World Tool 在同一时间游标下检查，不另设独立 Tool。
+页面内嵌或相邻保存本次离线数据；这些 JSON 是私有 tooling audit artifact，
 不是 Simulator 或领域合同。独立的 `simu.py` 保留可读的正式调用链，不
 生成工具。

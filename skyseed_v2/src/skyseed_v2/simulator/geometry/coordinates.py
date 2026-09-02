@@ -5,7 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from functools import lru_cache
-from math import acos, cos, degrees, isfinite, radians, sin, sqrt
+from math import isfinite, sqrt
 from numbers import Real
 from threading import RLock
 from typing import Iterator
@@ -22,6 +22,11 @@ from astropy.utils import iers
 
 from skyseed_v2.shared.time import normalize_utc_datetime
 
+from ._elevation import (
+    _elevation_distance_m,
+    _elevation_deg_from_local_up_and_distance,
+    _wgs84_local_up_unit_vector,
+)
 from .position import EarthFixedPosition, ecef_to_geodetic
 
 _WGS84_SEMI_MAJOR_AXIS_M = 6_378_137.0
@@ -152,27 +157,12 @@ def elevation_deg(
 
     _require_position(observer)
     _require_position(target)
-    latitude_deg, longitude_deg, _ = ecef_to_geodetic(observer)
-    latitude = radians(latitude_deg)
-    longitude = radians(longitude_deg)
-    local_up = (
-        cos(latitude) * cos(longitude),
-        cos(latitude) * sin(longitude),
-        sin(latitude),
+    return _elevation_deg_from_local_up_and_distance(
+        observer,
+        target,
+        _wgs84_local_up_unit_vector(observer),
+        _elevation_distance_m(observer, target),
     )
-    delta = (
-        target.x_m - observer.x_m,
-        target.y_m - observer.y_m,
-        target.z_m - observer.z_m,
-    )
-    distance = sqrt(sum(value * value for value in delta))
-    if distance == 0.0:
-        raise ValueError("elevation is undefined for coincident positions")
-    sine_elevation = sum(
-        direction * up
-        for direction, up in zip(delta, local_up, strict=True)
-    ) / distance
-    return 90.0 - degrees(acos(min(1.0, max(-1.0, sine_elevation))))
 
 
 def _gcrs_cartesian_to_ecef(

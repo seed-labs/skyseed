@@ -9,6 +9,7 @@ skyseed_autonomous_systems:
         generation:
           orbit_count: 4
           satellites_per_orbit: 8
+          maximum_simultaneous_inter_satellite_links: 4
           raan:
             start_deg: 0.0
             step_deg: 90.0

@@ -1,48 +1,16 @@
-# Shared values
+# Shared values and private mechanics
 
-This package owns narrow cross-production primitives. `NodeId` is the only
-public class; `identifier.py`, `time.py`, `_durable_evidence.py`, and
-`_execution_observation.py` remain
-internal mechanical boundaries and own no lookup, domain history, retention,
-or lifecycle.
+`skyseed_v2.shared` owns narrow cross-domain primitives only. `NodeId` is the
+public immutable structural identity:
 
 ## Local assembly / ownership map
 
-`shared` is not a destination for unrelated helpers: a value belongs here only
-when multiple production boundaries need the same neutral contract and no
-domain owner can own it.
-
-Legend: `-->` means the named production boundary consumes the neutral shared
-value or normalization capability; it is not ownership.
-
-```mermaid
-flowchart LR
-    NODE["NodeId"] --> SAT_INPUT["SatelliteSimulationInput"]
-    NODE --> GS_INPUT["GroundStationSimulationInput"]
-    NODE --> TOPOLOGY["Topology node identities"]
-    NODE --> SLICING["Connection / Route / Slice values"]
-```
-
-Legend: `-->` means an internal validation/normalization primitive supplies
-the public/shared consumer; it creates no public owner.
-
-```mermaid
-flowchart LR
-    IDENTIFIER["identifier.py"] --> NODE["NodeId"]
-    TIME["time.py"] --> TIME_USERS["configuration / geometry / Simulator"]
-    DURABLE["_durable_evidence.py"] -->|mechanical JSONL / detached serialization| EVIDENCE_USERS["Slicer / Planner / generated execution / BpfRunner"]
-    OBSERVE["_execution_observation.py"] -->|optional detached numeric records| OBSERVERS["Slicer / Planner / future components"]
-```
-
-## Detailed public class/member diagrams
-
-Legend: the class block is the complete local public member contract; no
-relationship is implied.
+Legend: the class block is the one shared public identity value; `+` marks its
+public immutable fields and derived value property.
 
 ```mermaid
 classDiagram
     class NodeId {
-        <<immutable structural identity>>
         +asn
         +entity_kind
         +entity_id
@@ -50,41 +18,39 @@ classDiagram
     }
 ```
 
+`identifier.py` and `time.py` provide private validation/UTC normalization.
+`_durable_evidence.py` provides authority-free deterministic JSONL mechanics.
+`_execution_observation.py` buffers optional diagnostic component/stage/scope/
+duration/work/resource records.
+
+Each physical, planning, Compiler, Runner, or Traffic owner still defines its
+own record schema, write timing, retention frontier, and meaning. Shared helpers
+do not create a cross-domain history or lifecycle owner.
+
+This package has no entity lookup, Model, operational state, planning,
+compilation, runtime control, or Tool rendering responsibility.
+
+## Detailed public class/member diagrams
+
+These blocks and the exact table below are the maintenance source for every
+class owned by this public package. Re-exporting facades do not duplicate the
+owner detail.
+
+Legend: `<<...>>` states each public class role and `+` lists its
+complete direct public member contract. No connector means no ownership
+relationship is asserted by this inventory block.
+
+```mermaid
+classDiagram
+    class NodeId {
+        <<immutable cross-domain identity>>
+        +asn
+        +entity_id
+        +entity_kind
+        +value
+    }
+```
+
 | Diagram class | Public contract | Required public members |
 |---|---|---|
-| `NodeId` | `skyseed_v2.shared.NodeId` | `asn`, `entity_kind`, `entity_id`, `value` |
-
-## Entry points
-
-`node_id.py` owns the public `NodeId`; `identifier.py` and `time.py` remain
-private validation/normalization boundaries. `_durable_evidence.py` provides
-only authority-free `_reset_jsonl`, `_append_jsonl`, `_read_jsonl`, and
-deterministic `_semantic_value` mechanics. Each fact-producing owner still
-defines its own record schema, write timing, retention frontier, and history
-meaning; this helper does not create a shared history subsystem.
-`_execution_observation.py` similarly buffers optional non-authoritative
-component/stage/scope/duration/work/resource records. It is private, adds no
-semantic-value fields or public Simulator contract, and persists only after
-the observed execution.
-
-## Dependencies
-
-This package depends only on standard-library value types. Configuration,
-Simulator input/topology/slicing/planning, generated application composition,
-and the BPF Runner consume its narrow primitives.
-
-## Examples and tests
-
-All Simulator examples carry `NodeId` through the boundary.
-`test_simulation_node_identity.py`, static-input tests, Timeline tests, and
-architecture-boundary tests cover it. Continuous-progression and Runner tests
-cover the private durable-evidence mechanics through their fact-producing
-owners.
-
-## Maintenance checklist
-
-Update the global object model only if `NodeId`'s system role changes; update
-the local map and detailed diagram, public imports, identity/time contracts,
-and owner tests when its public members change. Durable-evidence changes must
-also preserve owner-local authority and must not introduce a cross-domain
-history lifecycle.
+| `NodeId` | `skyseed_v2.shared.NodeId` | `asn`, `entity_id`, `entity_kind`, `value` |

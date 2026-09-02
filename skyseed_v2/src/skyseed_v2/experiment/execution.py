@@ -6,7 +6,6 @@ import argparse
 from collections.abc import Mapping
 from datetime import datetime, timedelta
 from hashlib import sha256
-import importlib
 from importlib import metadata, util
 import json
 import os
@@ -15,23 +14,18 @@ import platform
 import re
 from shlex import quote
 import sys
-from threading import RLock
+from time import perf_counter
 from typing import Any
 
-from skyseed_v2.simulator import Plan, Planner, Simulator, Slicer
-from skyseed_v2.shared._durable_evidence import (
-    _append_jsonl,
-    _reset_jsonl,
-    _semantic_value,
-)
+from skyseed_v2.shared._durable_evidence import _semantic_value
+from skyseed_v2.shared._execution_observation import _ExecutionObserver
 
-from ..backend.bpf.compiler import compile_bpf
 from ..backend.bpf.runner import BpfRunner
-from ..backend.bpf.compiled_realization import BpfCompiledRealization
 from ._realization_handoff import (
     _PersistedRealizationSupplier,
-    _read_persisted_realization_sequence,
+    _read_persisted_realization_manifest_snapshot,
 )
+from ._realization_producer import _read_persisted_plan_sequence
 from .traffic.probe_execution import TrafficProbeExecutor
 from .traffic.probe_plan import (
     TrafficProbePlanBuilder,
@@ -40,276 +34,75 @@ from .traffic.probe_plan import (
 )
 
 
-_FORMAT_VERSION = 1
+_FORMAT_VERSION = 2
 _KIND = "skyseed-v2-generated-bpf-execution"
 _PROJECT_NAME_FILE = "runtime/compose-project-name"
 _PROJECT_NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9_-]*")
 
 
-class _RollingRealizationSupplier:
-    """Compose one bounded-memory Slicer→Planner→Compiler pull seam."""
-
-    def __init__(
-        self,
-        slicer: Slicer,
-        planner: Planner,
-        *,
-        generation_lookahead: timedelta,
-        compiled_history_path: Path,
-        final_slice_id: int | None = None,
-        include_compiled_semantics: bool = True,
-    ) -> None:
-        if not isinstance(slicer, Slicer):
-            raise TypeError("slicer must be a Slicer")
-        if not isinstance(planner, Planner):
-            raise TypeError("planner must be a Planner")
-        if (
-            not isinstance(generation_lookahead, timedelta)
-            or generation_lookahead <= timedelta(0)
-        ):
-            raise ValueError("generation_lookahead must be a positive timedelta")
-        self._slicer = slicer
-        self._planner = planner
-        self._generation_lookahead = generation_lookahead
-        self._compiled_history_path = _reset_jsonl(
-            compiled_history_path,
-            {
-                "record_type": "history_header",
-                "format_version": 1,
-                "owner": "BPF Compiler handoff",
-            },
-        )
-        self._lock = RLock()
-        self._previous_realization: BpfCompiledRealization | None = None
-        self._last_plan_identity: tuple[int, datetime | None, int, datetime] | None = None
-        self._last_plan_end: datetime | None = None
-        if final_slice_id is not None and (
-            isinstance(final_slice_id, bool)
-            or not isinstance(final_slice_id, int)
-            or final_slice_id <= 0
-        ):
-            raise ValueError("final_slice_id must be a positive integer or None")
-        self._final_slice_id = final_slice_id
-        if not isinstance(include_compiled_semantics, bool):
-            raise TypeError("include_compiled_semantics must be a bool")
-        self._include_compiled_semantics = include_compiled_semantics
-        self._latest_plan: Plan | None = None
-        self._working_set_high_water = {
-            "retained_slices": 0,
-            "slice_timestamp_index": 0,
-            "planner_differences": 0,
-            "planner_route_contexts": 0,
-            "planner_decisions": 0,
-        }
-        self._realization_count = 0
-        self._input_exhausted = False
-
-    def __call__(self) -> BpfCompiledRealization | None:
-        with self._lock:
-            if self._input_exhausted:
-                return None
-            self._generate_planning_facts()
-            plan = self._planner.synchronize()
-            identity = _plan_identity(plan)
-            if identity == self._last_plan_identity:
-                if not self._at_input_limit():
-                    self._slicer.create_next_slice()
-                    plan = self._planner.synchronize()
-                    identity = _plan_identity(plan)
-                if identity == self._last_plan_identity:
-                    if not self._at_input_limit():
-                        raise RuntimeError(
-                            "Planner did not publish after new Slice facts"
-                        )
-                    self._input_exhausted = True
-                    return None
-
-            realization = compile_bpf(
-                plan,
-                slicer=self._slicer,
-                previous=self._previous_realization,
-            )
-            _append_jsonl(
-                self._compiled_history_path,
-                {
-                    "record_type": "compiled_realization",
-                    "realization_index": self._realization_count,
-                    "start_slice_id": realization.start_slice_id,
-                    "end_slice_id": realization.end_slice_id,
-                    "start_timestamp": (
-                        None
-                        if realization.start_timestamp is None
-                        else realization.start_timestamp.isoformat()
-                    ),
-                    "end_timestamp": realization.end_timestamp.isoformat(),
-                    "nominal_boundaries": sorted(
-                        {
-                            intent.nominal_time.isoformat()
-                            for attribute in (
-                                "resource_realizations",
-                                "parameter_realizations",
-                                "forwarding_realizations",
-                                "zone_edge_realizations",
-                            )
-                            for intent in getattr(realization, attribute)
-                        }
-                    ),
-                    **(
-                        {"semantic": _semantic_value(realization)}
-                        if self._include_compiled_semantics
-                        else {
-                            "semantic_source": (
-                                "persisted canonical realization handoff"
-                            )
-                        }
-                    ),
-                },
-            )
-            self._previous_realization = realization
-            self._last_plan_identity = identity
-            self._last_plan_end = plan.end_timestamp
-            self._latest_plan = plan
-            self._realization_count += 1
-            self._capture_working_set_high_water()
-            self._planner._release_compiled_through(plan.end_slice_id)
-            self._slicer._release_before(plan.end_slice_id)
-            return realization
-
-    @property
-    def latest_plan(self) -> Plan:
-        """Return the latest immutable publication for immediate persistence."""
-
-        if self._latest_plan is None:
-            raise RuntimeError("no realization has been produced")
-        return self._latest_plan
-
-    def _at_input_limit(self) -> bool:
-        return self._slicer.is_exhausted() or (
-            self._final_slice_id is not None
-            and self._slicer.get_latest_slice_id() >= self._final_slice_id
-        )
-
-    def _capture_working_set_high_water(self) -> None:
-        current = {
-            "retained_slices": len(self._slicer.get_retained_slice_ids()),
-            "slice_timestamp_index": len(self._slicer._slices_by_timestamp),
-            "planner_differences": len(self._planner._differences),
-            "planner_route_contexts": len(
-                set(self._planner._route_next_hops)
-                | set(self._planner._route_path_connection_ids)
-                | set(self._planner._connection_values_by_slice_id)
-            ),
-            "planner_decisions": len(self._planner._decisions),
-        }
-        self._working_set_high_water = {
-            key: max(self._working_set_high_water[key], value)
-            for key, value in current.items()
-        }
-
-    def producer_snapshot(self) -> dict[str, object]:
-        """Return bounded progression bookkeeping without semantic history."""
-
-        return {
-            "realization_count": self._realization_count,
-            "input_exhausted": self._input_exhausted,
-            "working_set_high_water": dict(self._working_set_high_water),
-            "retained_at_capture": {
-                "slices": len(self._slicer.get_retained_slice_ids()),
-                "planner_differences": len(self._planner._differences),
-                "planner_route_contexts": len(
-                    set(self._planner._route_next_hops)
-                    | set(self._planner._route_path_connection_ids)
-                    | set(self._planner._connection_values_by_slice_id)
-                ),
-                "planner_decisions": len(self._planner._decisions),
-            },
-        }
-
-    def _generate_planning_facts(self) -> None:
-        anchor = (
-            self._slicer.get_timeline().start_time
-            if self._last_plan_end is None
-            else self._last_plan_end
-        )
-        target = anchor + self._generation_lookahead
-        while (
-            (next_timestamp := self._slicer.get_next_timestamp()) is not None
-            and next_timestamp <= target
-            and (
-                self._final_slice_id is None
-                or self._slicer.get_latest_slice_id() < self._final_slice_id
-            )
-        ):
-            self._slicer.create_next_slice()
 def _write_execution_definition(
     output_directory: Path,
     *,
-    builder_module: str | None,
-    builder_callable: str | None,
     generated_output_identity: str,
-    generation_lookahead: timedelta,
     preparation_lookahead: timedelta | None,
     preparation_boundary_depth: int | None,
     timeline_start: datetime,
-    timeline_end: datetime | None,
-    slice_interval: timedelta,
+    timeline_end: datetime,
+    observation_interval: timedelta,
     project_root: Path,
     example_root: Path,
-    realization_handoff: str | None = None,
-    realization_producer: str | None = None,
+    realization_handoff: str,
+    realization_producer: str,
 ) -> Path:
-    """Write the sole generated BPF execution definition used by run.sh."""
+    """Write the persisted-only generated BPF execution definition."""
 
     _validate_execution_parameters(
-        generation_lookahead,
         preparation_lookahead,
         preparation_boundary_depth,
     )
+    if not isinstance(timeline_end, datetime):
+        raise TypeError("timeline_end must be a datetime")
+    if not isinstance(observation_interval, timedelta) or (
+        observation_interval <= timedelta(0)
+    ):
+        raise ValueError("observation_interval must be a positive timedelta")
+    if not isinstance(realization_producer, str) or not realization_producer:
+        raise ValueError("realization_producer must be a non-empty identity")
+    relative_manifest = _safe_relative_path(
+        realization_handoff,
+        "realization handoff manifest",
+    )
+    manifest_path = Path(output_directory).resolve() / relative_manifest
+    supplier_snapshot = _read_persisted_realization_manifest_snapshot(
+        manifest_path
+    )
+    manifest_sha256 = sha256(manifest_path.read_bytes()).hexdigest()
     fingerprint = _build_source_fingerprint(project_root, example_root)
     generated_inputs = _build_generated_input_fingerprint(output_directory)
-    if realization_handoff is None:
-        if builder_module is None or builder_callable is None:
-            raise ValueError("live generated execution requires a progression builder")
-        progression = {
-            "progression_builder": {
-                "module": builder_module,
-                "callable": builder_callable,
-                "input_directory": "inputs",
-            }
-        }
-    else:
-        if not isinstance(realization_producer, str) or not realization_producer:
-            raise ValueError("persisted execution requires realization producer identity")
-        progression = {
-            "progression": {
-                "strategy": "persisted-canonical-realization-handoff",
-                "producer": realization_producer,
-            }
-        }
     value = {
         "format_version": _FORMAT_VERSION,
         "kind": _KIND,
         "backend": "bpf",
         "generated_output_identity": generated_output_identity,
-        **progression,
-        **(
-            {}
-            if realization_handoff is None
-            else {
-                "realization_handoff": {
-                    "manifest": _safe_relative_path(
-                        realization_handoff,
-                        "realization handoff manifest",
-                    )
-                }
-            }
-        ),
+        "progression": {
+            "strategy": "persisted-canonical-realization-handoff",
+            "producer": realization_producer,
+        },
+        "realization_handoff": {
+            "manifest": relative_manifest,
+            "format_version": supplier_snapshot["format_version"],
+            "encoding": supplier_snapshot["encoding"],
+            "realization_count": supplier_snapshot["realization_count"],
+            "sequence_sha256": supplier_snapshot["sequence_sha256"],
+            "manifest_sha256": manifest_sha256,
+        },
         "simulation": {
             "start_time": timeline_start.isoformat(),
-            "end_time": None if timeline_end is None else timeline_end.isoformat(),
-            "slice_interval_seconds": slice_interval.total_seconds(),
-            "bounded": timeline_end is not None,
-            "generation_lookahead_seconds": generation_lookahead.total_seconds(),
+            "end_time": timeline_end.isoformat(),
+            "observation_interval_seconds": (
+                observation_interval.total_seconds()
+            ),
+            "bounded": True,
         },
         "runner": {
             "preparation_lookahead_seconds": (
@@ -390,7 +183,7 @@ if [[ ! -f "$TOOL_PACKAGE_PARENT/tools/__init__.py" ]]; then
 fi
 INVOCATION_ID="$(date -u +%Y%m%dT%H%M%S.%NZ)-${{BASHPID}}"
 INVOCATION_DIR="$SCRIPT_DIR/inspection/runtime-runs/$INVOCATION_ID"
-mkdir -p "$INVOCATION_DIR/runner" "$INVOCATION_DIR/traffic"
+mkdir -p "$INVOCATION_DIR/runner" "$INVOCATION_DIR/traffic" "$INVOCATION_DIR/observation"
 TOOL_PYTHONPATH="$TOOL_PACKAGE_PARENT${{PYTHONPATH:+:$PYTHONPATH}}"
 
 execution_status=0
@@ -413,13 +206,20 @@ PYTHONPATH="$TOOL_PYTHONPATH" $PYTHON -m tools.runner \\
 traffic_tool_status=0
 PYTHONPATH="$TOOL_PYTHONPATH" $PYTHON -m tools.traffic \\
     --telemetry "$INVOCATION_DIR/traffic/traffic-telemetry.jsonl" \\
-    --slice "$SCRIPT_DIR/inspection/slice/slice-manifest.json" \\
-    --bpf-compiler "$SCRIPT_DIR/inspection/{compiler_directory}/manifest.json" \\
+    --physical-frames "$SCRIPT_DIR/domain-history/physical-frames.jsonl" \\
+    --planning "$SCRIPT_DIR/domain-history/planning.jsonl.gz" \\
+    --bpf-compiler "$SCRIPT_DIR/inspection/{compiler_directory}/bpf-compiler-inspection.json" \\
     --probe-plan "$SCRIPT_DIR/inspection/traffic/probe-plan.json" \\
     --probe-execution "$INVOCATION_DIR/traffic/probe-execution.jsonl" \\
     --runner-events "$INVOCATION_DIR/runner/runner-events.jsonl" \\
     --output "$SCRIPT_DIR/inspection/traffic" \\
     || traffic_tool_status=$?
+
+observation_tool_status=0
+PYTHONPATH="$TOOL_PYTHONPATH" $PYTHON -c 'import sys; from pathlib import Path; from tools.observation import write_observation_tool; write_observation_tool(Path(sys.argv[1]), Path(sys.argv[2]))' \
+    "$INVOCATION_DIR/observation/execution-observations.jsonl" \
+    "$SCRIPT_DIR/inspection/observation" \
+    || observation_tool_status=$?
 
 aggregate_status=0
 PYTHONPATH="$TOOL_PYTHONPATH" $PYTHON -c 'import importlib,sys; from pathlib import Path; importlib.import_module("tools._html").finalize_runtime_aggregate_index(Path(sys.argv[1]))' \\
@@ -429,13 +229,10 @@ PYTHONPATH="$TOOL_PYTHONPATH" $PYTHON -c 'import importlib,sys; from pathlib imp
 if (( execution_status != 0 )); then
     exit "$execution_status"
 fi
-if (( runner_tool_status != 0 )); then
-    exit "$runner_tool_status"
+if (( runner_tool_status != 0 || traffic_tool_status != 0 || observation_tool_status != 0 || aggregate_status != 0 )); then
+    echo "runtime completed; one or more detached inspection Tools failed" >&2
 fi
-if (( traffic_tool_status != 0 )); then
-    exit "$traffic_tool_status"
-fi
-exit "$aggregate_status"
+exit 0
 """,
         encoding="utf-8",
     )
@@ -481,58 +278,39 @@ def _run_generated_bpf_experiment(
         runner_evidence.mkdir(parents=True, exist_ok=True)
         traffic_evidence.mkdir(parents=True, exist_ok=True)
         invocation_id = invocation.name
-        _write_runtime_invocation_index(
-            invocation_root,
-            invocation_id=invocation_id,
-            status="running",
-        )
+        try:
+            _write_runtime_invocation_index(
+                invocation_root,
+                invocation_id=invocation_id,
+                status="running",
+            )
+        except BaseException as error:
+            print(
+                "runtime invocation index side work failed without replacing "
+                f"domain execution: {error}",
+                file=sys.stderr,
+            )
     definition = _read_and_verify_execution_definition(output)
-    simulation = _mapping(definition["simulation"], "simulation")
     runner_settings = _mapping(definition["runner"], "runner")
-    handoff_value = definition.get("realization_handoff")
+    handoff = _mapping(
+        definition.get("realization_handoff"), "realization_handoff"
+    )
+    relative_manifest = _safe_relative_path(
+        handoff.get("manifest"), "realization handoff manifest"
+    )
+    manifest_path = output / relative_manifest
+    supplier = _PersistedRealizationSupplier(manifest_path)
     probe_plan_path = output / "inspection/traffic/probe-plan.json"
-    if handoff_value is None:
-        if not probe_plan_path.is_file():
-            raise RuntimeError(
-                "generated rolling execution lacks its derived Traffic probe plan; "
-                "rerun the example main.py"
-            )
-        slicer, planner = _construct_progression(output, definition)
-        slicer._enable_durable_history(
-            output / "domain-history/slice-history.jsonl.gz"
+    if not probe_plan_path.is_file():
+        plans = _read_persisted_plan_sequence(
+            output / "domain-history/planning.jsonl.gz"
         )
-        planner._enable_durable_history(
-            output / "domain-history/planning-history.jsonl.gz"
-        )
-        supplier = _RollingRealizationSupplier(
-            slicer,
-            planner,
-            generation_lookahead=timedelta(
-                seconds=_number(
-                    simulation["generation_lookahead_seconds"],
-                    "generation_lookahead_seconds",
-                )
+        write_traffic_probe_plan(
+            TrafficProbePlanBuilder().build(
+                plans, supplier.validated_sequence()
             ),
-            compiled_history_path=(
-                output / "domain-history/compiled-history.jsonl.gz"
-            ),
+            probe_plan_path,
         )
-    else:
-        handoff = _mapping(handoff_value, "realization_handoff")
-        relative_manifest = _safe_relative_path(
-            handoff.get("manifest"), "realization handoff manifest"
-        )
-        manifest_path = output / relative_manifest
-        if not probe_plan_path.is_file():
-            planning_realizations = _read_persisted_realization_sequence(
-                manifest_path
-            )
-            write_traffic_probe_plan(
-                TrafficProbePlanBuilder().build(planning_realizations),
-                probe_plan_path,
-            )
-            del planning_realizations
-        supplier = _PersistedRealizationSupplier(manifest_path)
     probe_plan = read_traffic_probe_plan(probe_plan_path)
     project_name = str(definition["generated_output_identity"])
     raw_lookahead = runner_settings["preparation_lookahead_seconds"]
@@ -552,13 +330,23 @@ def _run_generated_bpf_experiment(
         runner_evidence / "runner-events.jsonl"
     )
     runner._enable_traffic_telemetry(traffic_evidence)
+    runtime_observer = _ExecutionObserver(
+        {
+            "scope": "generated-runtime",
+            "invocation_id": invocation_id,
+            "realization_count": len(supplier.validated_sequence()),
+        }
+    )
 
     primary_error: BaseException | None = None
     traffic_error: BaseException | None = None
     cleanup_error: BaseException | None = None
     traffic_executor: TrafficProbeExecutor | None = None
+    runner_started = perf_counter()
+    traffic_started: float | None = None
     try:
         runner.prepare()
+        traffic_started = perf_counter()
         traffic_executor = TrafficProbeExecutor(
             docker_executable="docker",
             plan=probe_plan,
@@ -595,12 +383,55 @@ def _run_generated_bpf_experiment(
                     "secondary Traffic probe execution failure: "
                     f"{type(error).__name__}: {error}"
                 )
+    if traffic_started is not None:
+        runtime_observer.record(
+            component="traffic",
+            stage="traffic-total",
+            phase="one-shot",
+            duration_seconds=perf_counter() - traffic_started,
+            duration_role="rollup",
+            scope={"invocation_id": invocation_id},
+            work={
+                "probe_episodes": len(probe_plan.episodes),
+                "completed": int(traffic_error is None),
+            },
+            started_monotonic=traffic_started,
+        )
     try:
         runner.cleanup()
     except BaseException as error:
         cleanup_error = error
+    runtime_observer.record(
+        component="runner",
+        stage="runner-total",
+        phase="one-shot",
+        duration_seconds=perf_counter() - runner_started,
+        duration_role="rollup",
+        scope={"invocation_id": invocation_id},
+        work={
+            "realizations_consumed": int(
+                supplier.snapshot()["consumed_count"]
+            ),
+            "completed": int(
+                primary_error is None and cleanup_error is None
+            ),
+        },
+        started_monotonic=runner_started,
+    )
+    try:
+        _write_runtime_execution_observations(
+            output,
+            runner_evidence.parent
+            / "observation/execution-observations.jsonl",
+            runtime_observer,
+        )
+    except BaseException as error:
+        print(
+            "runtime Observation side work failed without replacing domain "
+            f"execution: {error}",
+            file=sys.stderr,
+        )
 
-    handoff_error: BaseException | None = None
     try:
         _write_runner_inspection_handoff(
             runner_evidence / "runner-invocation.json",
@@ -613,31 +444,105 @@ def _run_generated_bpf_experiment(
             ),
         )
     except BaseException as error:
-        handoff_error = error
-        if primary_error is not None or cleanup_error is not None:
+        print(
+            "generated BPF inspection handoff side work failed without "
+            f"replacing domain execution: {error}",
+            file=sys.stderr,
+        )
+    if invocation_id is not None:
+        try:
+            _write_runtime_invocation_index(
+                (output / "inspection/runtime-runs").resolve(),
+                invocation_id=invocation_id,
+                status=(
+                    "completed"
+                    if primary_error is None and cleanup_error is None
+                    else "failed"
+                ),
+            )
+        except BaseException as error:
             print(
-                "generated BPF inspection handoff failed without replacing "
-                f"the runtime error: {error}",
+                "runtime invocation index side work failed without replacing "
+                f"domain execution: {error}",
                 file=sys.stderr,
             )
-    if invocation_id is not None:
-        _write_runtime_invocation_index(
-            (output / "inspection/runtime-runs").resolve(),
-            invocation_id=invocation_id,
-            status=(
-                "completed"
-                if primary_error is None
-                and cleanup_error is None
-                and handoff_error is None
-                else "failed"
-            ),
-        )
     if primary_error is not None:
         raise primary_error
     if cleanup_error is not None:
         raise cleanup_error
-    if handoff_error is not None:
-        raise handoff_error
+
+
+def _write_runtime_execution_observations(
+    output: Path,
+    destination: Path,
+    runtime_observer: _ExecutionObserver,
+) -> None:
+    """Combine generation and runtime observations as detached side work."""
+
+    generation_path = (
+        output / "inspection/observation/execution-observations.jsonl"
+    )
+    generation_header: dict[str, object] | None = None
+    generation_records: list[dict[str, object]] = []
+    if generation_path.is_file():
+        values = [
+            json.loads(line)
+            for line in generation_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        if not values or not isinstance(values[0], dict):
+            raise ValueError("generation Observation stream is invalid")
+        generation_header = values[0]
+        for index, value in enumerate(values[1:]):
+            if (
+                not isinstance(value, dict)
+                or value.get("record_type") != "execution_observation"
+                or value.get("sequence") != index
+            ):
+                raise ValueError(
+                    "generation Observation records are not continuous"
+                )
+            generation_records.append(value)
+    runtime = runtime_observer.snapshot()
+    runtime_header = runtime["header"]
+    runtime_records = runtime["records"]
+    assert isinstance(runtime_header, dict)
+    assert isinstance(runtime_records, tuple)
+    header = {
+        "record_type": "execution_observation_header",
+        "format_version": 2,
+        "metadata": {
+            "scope": "combined-generation-runtime",
+            "generation": (
+                None
+                if generation_header is None
+                else generation_header.get("metadata", {})
+            ),
+            "runtime": runtime_header.get("metadata", {}),
+        },
+    }
+    records = []
+    for value in (*generation_records, *runtime_records):
+        copied = dict(value)
+        copied["sequence"] = len(records)
+        records.append(copied)
+    target = Path(destination)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        "".join(
+            json.dumps(
+                value,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            + "\n"
+            for value in (header, *records)
+        ),
+        encoding="utf-8",
+    )
+
+
 def _write_runner_inspection_handoff(
     path: Path,
     snapshot: Mapping[str, object],
@@ -745,10 +650,6 @@ def _read_and_verify_execution_definition(output: Path) -> dict[str, Any]:
         raise RuntimeError("generated execution backend is not BPF")
     simulation = _mapping(value.get("simulation"), "simulation")
     runner = _mapping(value.get("runner"), "runner")
-    raw_generation_lookahead = _number(
-        simulation.get("generation_lookahead_seconds"),
-        "generation_lookahead_seconds",
-    )
     raw_preparation_lookahead = runner.get("preparation_lookahead_seconds")
     preparation_lookahead = (
         None
@@ -767,7 +668,6 @@ def _read_and_verify_execution_definition(output: Path) -> dict[str, Any]:
         raise RuntimeError("generated execution boundary depth is invalid")
     try:
         _validate_execution_parameters(
-            timedelta(seconds=raw_generation_lookahead),
             preparation_lookahead,
             depth,
         )
@@ -775,36 +675,49 @@ def _read_and_verify_execution_definition(output: Path) -> dict[str, Any]:
         raise RuntimeError("generated BPF execution bounds are invalid") from error
     start_time = _aware_datetime(simulation.get("start_time"), "start_time")
     end_value = simulation.get("end_time")
-    end_time = (
-        None if end_value is None else _aware_datetime(end_value, "end_time")
-    )
+    end_time = _aware_datetime(end_value, "end_time")
     bounded = simulation.get("bounded")
-    if not isinstance(bounded, bool) or bounded is not (end_time is not None):
-        raise RuntimeError("generated execution Timeline boundedness is invalid")
-    if end_time is not None and end_time < start_time:
+    if bounded is not True:
+        raise RuntimeError("generated execution must be bounded and persisted")
+    if end_time < start_time:
         raise RuntimeError("generated execution Timeline range is invalid")
-    if end_time is None and preparation_lookahead is None:
+    if (
+        _number(
+            simulation.get("observation_interval_seconds"),
+            "observation_interval_seconds",
+        )
+        <= 0
+    ):
         raise RuntimeError(
-            "unbounded generated execution requires rolling preparation bounds"
+            "generated execution observation interval is invalid"
         )
-    if _number(simulation.get("slice_interval_seconds"), "slice_interval_seconds") <= 0:
-        raise RuntimeError("generated execution Slice interval is invalid")
-    handoff_value = value.get("realization_handoff")
-    if handoff_value is None:
-        _mapping(value.get("progression_builder"), "progression_builder")
-    else:
-        progression = _mapping(value.get("progression"), "progression")
-        if (
-            progression.get("strategy")
-            != "persisted-canonical-realization-handoff"
-            or not isinstance(progression.get("producer"), str)
-        ):
-            raise RuntimeError("generated persisted progression identity is invalid")
-        handoff = _mapping(handoff_value, "realization_handoff")
-        relative_manifest = _safe_relative_path(
-            handoff.get("manifest"), "realization handoff manifest"
-        )
-        _PersistedRealizationSupplier(output / relative_manifest)
+    progression = _mapping(value.get("progression"), "progression")
+    if (
+        progression.get("strategy")
+        != "persisted-canonical-realization-handoff"
+        or not isinstance(progression.get("producer"), str)
+        or not progression.get("producer")
+    ):
+        raise RuntimeError("generated persisted progression identity is invalid")
+    handoff = _mapping(
+        value.get("realization_handoff"), "realization_handoff"
+    )
+    relative_manifest = _safe_relative_path(
+        handoff.get("manifest"), "realization handoff manifest"
+    )
+    manifest_path = output / relative_manifest
+    supplier_snapshot = _PersistedRealizationSupplier(manifest_path).snapshot()
+    if (
+        handoff.get("format_version") != supplier_snapshot["format_version"]
+        or handoff.get("encoding") != supplier_snapshot["encoding"]
+        or handoff.get("realization_count")
+        != supplier_snapshot["realization_count"]
+        or handoff.get("sequence_sha256")
+        != supplier_snapshot["sequence_sha256"]
+        or handoff.get("manifest_sha256")
+        != sha256(manifest_path.read_bytes()).hexdigest()
+    ):
+        raise RuntimeError("generated realization handoff changed; rerun main.py")
     project_name = _read_compose_project_name(output)
     if value.get("generated_output_identity") != project_name:
         raise RuntimeError("generated output identity does not match Compose controls")
@@ -821,49 +734,6 @@ def _read_and_verify_execution_definition(output: Path) -> dict[str, Any]:
     if environment.get("seedemu_distribution_version") != metadata.version("seedemu"):
         raise RuntimeError("generated output SEED version differs; rerun main.py")
     return value
-
-
-def _construct_progression(
-    output: Path, definition: Mapping[str, object]
-) -> tuple[Slicer, Planner]:
-    builder = _mapping(definition["progression_builder"], "progression_builder")
-    module_name = _single_line(builder.get("module"), "builder module")
-    callable_name = _single_line(builder.get("callable"), "builder callable")
-    input_directory = _single_line(
-        builder.get("input_directory"), "builder input_directory"
-    )
-    if Path(input_directory).is_absolute() or ".." in Path(input_directory).parts:
-        raise RuntimeError("builder input_directory must stay within generated output")
-    module = importlib.import_module(module_name)
-    factory = getattr(module, callable_name, None)
-    if not callable(factory):
-        raise RuntimeError("generated progression builder is not callable")
-    value = factory(output / input_directory)
-    if (
-        not isinstance(value, tuple)
-        or len(value) != 2
-        or not isinstance(value[0], Simulator)
-        or not isinstance(value[1], Planner)
-    ):
-        raise TypeError("progression builder must return (Simulator, Planner)")
-    simulator, planner = value
-    slicer = simulator.get_slicer()
-    timeline = slicer.get_timeline()
-    expected = _mapping(definition["simulation"], "simulation")
-    actual = {
-        "start_time": timeline.start_time.isoformat(),
-        "end_time": None if timeline.end_time is None else timeline.end_time.isoformat(),
-        "slice_interval_seconds": timeline.slice_interval.total_seconds(),
-        "bounded": timeline.is_bounded,
-    }
-    for key, item in actual.items():
-        if expected.get(key) != item:
-            raise RuntimeError(
-                f"restored progression {key} differs from generated definition"
-            )
-    if slicer.get_latest_slice_id() != 0:
-        raise RuntimeError("progression builder must not precompute Slices")
-    return slicer, planner
 
 
 def _build_source_fingerprint(
@@ -1141,12 +1011,9 @@ def _error_fact(error: BaseException | None) -> dict[str, str] | None:
 
 
 def _validate_execution_parameters(
-    generation_lookahead: timedelta,
     preparation_lookahead: timedelta | None,
     preparation_boundary_depth: int | None,
 ) -> None:
-    if not isinstance(generation_lookahead, timedelta) or generation_lookahead <= timedelta(0):
-        raise ValueError("generation_lookahead must be a positive timedelta")
     if preparation_lookahead is None:
         if preparation_boundary_depth is not None:
             raise ValueError("full-range execution requires no boundary depth")
@@ -1159,16 +1026,6 @@ def _validate_execution_parameters(
         or preparation_boundary_depth <= 0
     ):
         raise ValueError("rolling execution requires a positive boundary depth")
-
-
-def _plan_identity(plan: Plan) -> tuple[int, datetime | None, int, datetime]:
-    return (
-        plan.start_slice_id,
-        plan.start_timestamp,
-        plan.end_slice_id,
-        plan.end_timestamp,
-    )
-
 
 def _mapping(value: object, label: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):

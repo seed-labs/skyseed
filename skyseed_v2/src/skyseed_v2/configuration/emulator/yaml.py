@@ -341,7 +341,10 @@ def _parse_generation(value: Any, parent: str) -> GeneratedOrbitLayout:
     _fields(
         mapping,
         required={"orbit_count", "satellites_per_orbit", "raan", "phase"},
-        optional={"max_simultaneous_ground_station_accesses"},
+        optional={
+            "max_simultaneous_ground_station_accesses",
+            "maximum_simultaneous_inter_satellite_links",
+        },
         context=context,
     )
     raan = _mapping(mapping["raan"], f"{context}.raan")
@@ -388,6 +391,9 @@ def _parse_generation(value: Any, parent: str) -> GeneratedOrbitLayout:
         max_simultaneous_ground_station_accesses=mapping.get(
             "max_simultaneous_ground_station_accesses"
         ),
+        maximum_simultaneous_inter_satellite_links=mapping.get(
+            "maximum_simultaneous_inter_satellite_links"
+        ),
     )
 
 def _parse_orbit(
@@ -423,7 +429,11 @@ def _parse_satellite(
     _fields(
         mapping,
         required={"satellite_id", "index_in_orbit", "mean_anomaly_deg"},
-        optional={"payload", "max_simultaneous_ground_station_accesses"},
+        optional={
+            "payload",
+            "max_simultaneous_ground_station_accesses",
+            "maximum_simultaneous_inter_satellite_links",
+        },
         context=context,
     )
     payload = _mapping(mapping.get("payload", {}), f"{context}.payload")
@@ -441,6 +451,9 @@ def _parse_satellite(
         payload_items=tuple(payload.items()),
         max_simultaneous_ground_station_accesses=mapping.get(
             "max_simultaneous_ground_station_accesses"
+        ),
+        maximum_simultaneous_inter_satellite_links=mapping.get(
+            "maximum_simultaneous_inter_satellite_links"
         ),
     )
 

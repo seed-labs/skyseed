@@ -1,7 +1,7 @@
 # Natural Earth coastline display reference
 
 This adjacent JSON file is a frozen, Tool-private orientation reference. It is
-not a Topology, Zone, membership, coverage, or GIS authority and is not exposed
+not a PhysicalWorld, Zone, membership, coverage, or GIS authority and is not exposed
 as a public data API.
 
 - Project: Natural Earth

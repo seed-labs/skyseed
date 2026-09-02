@@ -3,18 +3,24 @@ from __future__ import annotations
 from hashlib import sha256
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from examples.mini_satellite_internet.emu import (
-    build_mini_satellite_internet_emulator,
+from examples.complete_static_emulator.emu import build_emulator
+from examples.complete_static_emulator.simu import (
+    create_complete_static_simulator,
+    run_complete_static_chain,
 )
-from examples.mini_satellite_internet.simu import (
-    create_mini_satellite_internet_simulator,
-    prepare_mini_satellite_internet_planning,
-)
-from skyseed_v2.backend.bpf import compile_bpf
 from skyseed_v2.backend.bpf.compiler import _compile_bpf_observed
+from skyseed_v2.experiment import execution
+from skyseed_v2.experiment._realization_handoff import (
+    _write_realization_handoff,
+)
+from skyseed_v2.experiment.traffic.probe_plan import (
+    TrafficProbePlanBuilder,
+    write_traffic_probe_plan,
+)
 from skyseed_v2.shared._execution_observation import _ExecutionObserver
 from tools.observation import (
     collect_observation_data,
@@ -25,522 +31,652 @@ from tools.observation import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TOOL_SOURCES = tuple(sorted((PROJECT_ROOT / "tools/observation").glob("*.py")))
-EXPECTED_FILES = {
-    "checksums.sha256",
-    "execution-observations.jsonl",
-    "index.html",
-    "inventory.json",
-    "observation-records.js",
-    "observation-summary.json",
-    "summary.txt",
-}
 
 
 def _records(path: Path) -> Path:
-    observer = _ExecutionObserver({"scenario": "observation-tool-test"})
-    timestamps = {
-        1: "2026-01-01T00:00:00+00:00",
-        2: "2026-01-01T00:00:10+00:00",
-        3: "2026-01-01T00:00:20+00:00",
-    }
-    for phase, duration, slice_id, routes in (
-        ("bootstrap", 100.0, 1, 5),
-        ("steady", 1.0, 2, 10),
-        ("steady", 3.0, 3, 30),
-    ):
-        observer.record(
-            component="slicer",
-            stage="route-compute",
-            phase=phase,
-            duration_seconds=duration,
-            scope={"slice_id": slice_id, "timestamp": timestamps[slice_id]},
-            work={"route_entries": routes},
-        )
-    for phase, duration, slice_id in (
-        ("bootstrap", 120.0, 1),
-        ("steady", 2.0, 2),
-        ("steady", 4.0, 3),
-    ):
-        observer.record(
-            component="slicer",
-            stage="complete-slice",
-            phase=phase,
-            duration_seconds=duration,
-            duration_role="rollup",
-            scope={"slice_id": slice_id, "timestamp": timestamps[slice_id]},
-            work={"slices_published": 1},
-        )
-    observer.record(
-        component="slicer",
-        stage="difference",
-        phase="steady",
-        duration_seconds=0.5,
-        scope={
-            "previous_slice_id": 2,
-            "current_slice_id": 3,
-            "timestamp": timestamps[3],
-        },
-        work={"difference_operations": 4},
+    observer = _ExecutionObserver(
+        {"scenario": "observation-tool-test", "formal_interval_seconds": 5}
     )
+    timestamps = (
+        "2026-01-01T00:00:00+00:00",
+        "2026-01-01T00:00:05+00:00",
+    )
+    for timestamp in timestamps:
+        observer.record(
+            component="physical-world",
+            stage="physical-projection",
+            phase="one-shot",
+            duration_seconds=2.0,
+            duration_role="rollup",
+            scope={"timestamp": timestamp},
+            work={"positions": 3},
+            resources={"rss_bytes": 100},
+        )
+        observer.record(
+            component="physical-link",
+            stage="physical-link-observation",
+            phase="one-shot",
+            duration_seconds=0.02,
+            scope={"timestamp": timestamp},
+            work={"pairs_evaluated": 3},
+        )
+    stages = (
+        "physical-input-validation",
+        "isl-candidate-selection",
+        "acquisition/lifecycle-advancement",
+        "ground-station-planning",
+        "zone-planning",
+        "parameter-planning",
+        "route-planning",
+        "coordination",
+        "state-advancement",
+    )
+    for index, timestamp in enumerate(timestamps):
+        phase = "bootstrap" if index == 0 else "steady"
+        for stage_index, stage in enumerate(stages):
+            observer.record(
+                component="planner",
+                stage=stage,
+                phase=phase,
+                duration_seconds=0.01 * (stage_index + index + 1),
+                duration_role=(
+                    "rollup"
+                    if stage == "ground-station-planning"
+                    else "stage"
+                ),
+                scope={
+                    "timestamp": timestamp,
+                },
+                work={"items": stage_index + 1},
+            )
+        for stage in (
+            "ground-station-selection-and-ranking",
+            "ground-station-validation",
+            "ground-station-evidence-projection",
+        ):
+            observer.record(
+                component="planner",
+                stage=stage,
+                phase=phase,
+                duration_seconds=0.005,
+                scope={"timestamp": timestamp},
+                work={"items": 1},
+            )
+        observer.record(
+            component="planner",
+            stage="planning-total",
+            phase=phase,
+            duration_seconds=0.5,
+            duration_role="rollup",
+            scope={"timestamp": timestamp},
+            work={"formal_transitions": int(index > 0)},
+        )
+        if index > 0:
+            for stage, role, duration in (
+                ("plan-creation", "stage", 0.04),
+                ("publication-total", "rollup", 0.08),
+            ):
+                observer.record(
+                    component="planner",
+                    stage=stage,
+                    phase=phase,
+                    duration_seconds=duration,
+                    duration_role=role,
+                    scope={
+                        "plan_id": f"plan-{index}",
+                        "start_timestamp": timestamp,
+                        "end_timestamp": timestamp,
+                    },
+                    work={"plans": 1, "transitions": 1},
+                )
+    for stage, role, duration in (
+        ("plan-lineage-and-replay", "stage", 0.1),
+        ("semantic-to-bpf-lowering", "stage", 0.2),
+        ("compile-total", "rollup", 0.35),
+    ):
+        observer.record(
+            component="compiler",
+            stage=stage,
+            phase="steady",
+            duration_seconds=duration,
+            duration_role=role,
+            scope={"plan_id": "plan-1", "timestamp": timestamps[1]},
+            work={"activation_boundaries": 1},
+        )
+    for component, stage in (
+        ("realization-producer", "producer-total"),
+        ("realization-handoff-writer", "writer-total"),
+        ("runner", "runner-total"),
+        ("traffic", "traffic-total"),
+    ):
+        observer.record(
+            component=component,
+            stage=stage,
+            phase="steady",
+            duration_seconds=0.4,
+            duration_role="rollup",
+            scope={"timestamp": timestamps[1], "invocation_index": 1},
+            work={"input_bytes": 10, "output_bytes": 20},
+            resources={"rss_bytes": 200},
+        )
+    return observer.write_jsonl(path)
+
+
+def _percentile_records(path: Path) -> Path:
+    observer = _ExecutionObserver({"scenario": "percentile-proof"})
+    for phase, duration, route_entries in (
+        ("bootstrap", 100.0, 5),
+        ("steady", 1.0, 10),
+        ("steady", 3.0, 30),
+    ):
+        observer.record(
+            component="planner",
+            stage="route-planning",
+            phase=phase,
+            duration_seconds=duration,
+            work={"route_entries": route_entries},
+        )
     observer.record(
-        component="slicer",
+        component="planner",
         stage="resource-sample",
         phase="steady",
         duration_seconds=0.0,
         duration_role="sample",
-        scope={"slice_id": 3, "timestamp": timestamps[3]},
         work={"sample_units": 1},
         resources={"rss_bytes": 123_456},
-    )
-    observer.record(
-        component="planner",
-        stage="total-synchronize",
-        phase="bootstrap",
-        duration_seconds=7.0,
-        duration_role="rollup",
-        scope={
-            "publication_index": 0,
-            "planning_start_slice_id": 0,
-            "planning_end_slice_id": 3,
-            "publication_start_slice_id": 0,
-            "publication_end_slice_id": 2,
-            "start_timestamp": None,
-            "end_timestamp": timestamps[3],
-        },
-        work={"planning_window_differences": 3},
     )
     return observer.write_jsonl(path)
 
 
-def test_projection_separates_bootstrap_from_steady_percentiles(tmp_path) -> None:
-    data = collect_observation_data(_records(tmp_path / "source.jsonl"))
-    slicer = next(
-        row for row in data["components"] if row["component"] == "slicer"
+def test_projection_uses_actual_pipeline_groups_and_duration_roles(tmp_path) -> None:
+    data = collect_observation_data(_records(tmp_path / "records.jsonl"))
+    groups = {value["label"]: value for value in data["pipeline_groups"]}
+
+    for label in (
+        "physical projection",
+        "physical-link observation",
+        "ISL selection",
+        "acquisition / lifecycle",
+        "GroundStation planning",
+        "GroundStation selection / ranking",
+        "GroundStation validation",
+        "GroundStation evidence projection",
+        "Zone planning",
+        "parameter planning",
+        "Route planning",
+        "semantic transition / application",
+        "coordination / precedence",
+        "Plan publication",
+        "Compiler",
+        "realization producer",
+        "realization handoff writer",
+        "Runner",
+        "Traffic",
+    ):
+        assert groups[label]["observations"] > 0
+    planner = next(
+        value for value in data["components"] if value["component"] == "planner"
     )
-    stage = next(
-        row for row in slicer["stages"] if row["label"] == "route-compute"
+    route = next(
+        value for value in planner["stages"] if value["label"] == "route-planning"
+    )
+    assert route["bootstrap_run_seconds"] == 0.07
+    assert route["steady_p50_seconds"] == 0.08
+    assert route["work_totals"] == {"items": 14}
+    assert data["timeline"]["formal_transition_unit_count"] == 1
+    assert data["timeline"]["physical_frame_unit_count"] == 1
+    assert data["timeline"]["prehistory_physical_frame_unit_count"] == 1
+    assert data["timeline"]["plan_publication_unit_count"] == 1
+    assert data["timeline"]["compiler_realization_unit_count"] == 1
+    assert data["timeline"]["formal_interval_seconds"] == 5.0
+    assert {row["duration_role"] for row in data["top_level_timing_series"]} == {
+        "rollup"
+    }
+    assert {row["label"] for row in data["ground_station_timing"]} == {
+        "ground-station-planning",
+        "ground-station-selection-and-ranking",
+        "ground-station-validation",
+        "ground-station-evidence-projection",
+    }
+
+
+def test_execution_timeline_uses_exact_span_union_and_overlap_wall(
+    tmp_path,
+) -> None:
+    observer = _ExecutionObserver({"scenario": "span-overlap-proof"})
+    origin = observer._run_origin_monotonic
+    for component, stage, role, start, end in (
+        ("planner", "planning-total", "rollup", 1.0, 5.0),
+        ("planner", "ground-station-planning", "stage", 2.0, 4.0),
+        ("compiler", "compile-total", "rollup", 3.0, 6.0),
+    ):
+        observer.record(
+            component=component,
+            stage=stage,
+            phase="steady",
+            duration_seconds=end - start,
+            duration_role=role,
+            started_monotonic=origin + start,
+            ended_monotonic=origin + end,
+        )
+    data = collect_observation_data(
+        observer.write_jsonl(tmp_path / "span-overlap.jsonl")
+    )
+    timeline = data["execution_timeline"]
+    statistics = timeline["statistics"]
+
+    assert timeline["available"] is True
+    assert timeline["start_seconds"] == pytest.approx(1.0)
+    assert timeline["end_seconds"] == pytest.approx(6.0)
+    assert statistics["busy_union_seconds"] == pytest.approx(5.0)
+    assert statistics["overlap_seconds"] == pytest.approx(3.0)
+    assert statistics["overlap_ratio"] == pytest.approx(0.6)
+    assert statistics["cross_component_overlap_seconds"] == pytest.approx(2.0)
+    assert statistics["cross_component_overlap_ratio"] == pytest.approx(0.4)
+    assert statistics["maximum_active_distinct_components"] == 2
+    assert statistics["excess_span_seconds"] == pytest.approx(4.0)
+    assert statistics["maximum_concurrency"] == 3
+    assert statistics["idle_gap_seconds"] == 0.0
+    assert statistics["component_active_wall_seconds"] == pytest.approx(
+        {"compiler": 3.0, "planner": 4.0}
+    )
+    assert all(
+        "work" in span and "resources" in span
+        for lane in timeline["lanes"]
+        for span in lane["spans"]
     )
 
-    assert stage["duration_role"] == "stage"
-    assert stage["bootstrap_run_seconds"] == 100.0
-    assert stage["steady_count"] == 2
-    assert stage["steady_p50_seconds"] == 2.0
-    assert stage["steady_p95_seconds"] == 3.0
-    assert stage["steady_max_seconds"] == 3.0
-    assert stage["run_seconds"] == 104.0
-    assert stage["work_totals"] == {"route_entries": 45}
+
+def test_projection_separates_bootstrap_from_steady_percentiles(tmp_path) -> None:
+    data = collect_observation_data(
+        _percentile_records(tmp_path / "percentiles.jsonl")
+    )
+    planner = next(
+        value for value in data["components"] if value["component"] == "planner"
+    )
+    stage = next(
+        value for value in planner["stages"] if value["label"] == "route-planning"
+    )
+    assert stage == {
+        "label": "route-planning",
+        "duration_role": "stage",
+        "observations": 3,
+        "bootstrap_count": 1,
+        "bootstrap_run_seconds": 100.0,
+        "steady_count": 2,
+        "steady_p50_seconds": 2.0,
+        "steady_p95_seconds": 3.0,
+        "steady_max_seconds": 3.0,
+        "one_shot_count": 0,
+        "one_shot_p50_seconds": None,
+        "one_shot_p95_seconds": None,
+        "one_shot_max_seconds": None,
+        "run_seconds": 104.0,
+        "work_totals": {"route_entries": 45},
+        "resource_maxima": {},
+    }
     sample = next(
-        row
-        for row in slicer["stages"]
-        if row["label"] == "resource-sample"
+        value
+        for value in planner["stages"]
+        if value["label"] == "resource-sample"
     )
     assert sample["duration_role"] == "sample"
     assert sample["steady_count"] == 1
     assert sample["bootstrap_run_seconds"] is None
     assert sample["steady_p50_seconds"] is None
     assert sample["run_seconds"] is None
+    assert sample["resource_maxima"] == {"rss_bytes": 123_456}
     assert "recorded_duration_seconds" not in data
-    assert "total_seconds" not in slicer
-    assert [
-        (row["component"], row["label"], row["duration_role"])
-        for row in data["top_level_timing_series"]
-    ] == [
-        ("planner", "total-synchronize", "rollup"),
-        ("slicer", "complete-slice", "rollup"),
-        ("slicer", "difference", "stage"),
-    ]
-    assert data["stage_work_measurement_names"] == [
-        "difference_operations",
-        "route_entries",
-    ]
-    assert data["timeline"] == {
-        "simulation_start_timestamp": "2026-01-01T00:00:00+00:00",
-        "simulation_end_timestamp": "2026-01-01T00:00:20+00:00",
-        "slice_interval_seconds": 10.0,
-        "physical_frame_unit_count": 0,
-        "slicer_unit_count": 3,
-        "planner_unit_count": 1,
-        "compiler_unit_count": 0,
-        "x_axis_semantics": (
-            "simulation timestamp aligned by PhysicalFrame timestamp, legacy "
-            "Slice identity, Planner publication coverage, and its 1:1 "
-            "Compiler realization"
-        ),
-    }
-    assert data["inventory"] == {
-        "observations": 9,
-        "components": 2,
-        "stages": 5,
-        "bootstrap_observations": 3,
-        "steady_observations": 6,
-        "idle_observations": 0,
-        "one_shot_observations": 0,
-        "work_measurements": 5,
-        "resource_measurements": 1,
-    }
+    assert "total_seconds" not in planner
 
 
-def test_writer_uses_external_records_and_deterministic_checksums(tmp_path) -> None:
-    source = _records(tmp_path / "source.jsonl")
-    output = tmp_path / "inspection"
+def test_writer_retains_external_raw_records_and_checksums(tmp_path) -> None:
+    source = _records(tmp_path / "records.jsonl")
+    output = tmp_path / "output"
     result = write_observation_tool(source, output)
 
     assert result["status"] == "PASS"
-    assert {path.name for path in output.iterdir()} == EXPECTED_FILES
+    assert {value.name for value in output.iterdir()} == {
+        "checksums.sha256",
+        "execution-observations.jsonl",
+        "index.html",
+        "inventory.json",
+        "observation-records.js",
+        "observation-summary.json",
+        "summary.txt",
+    }
     page = (output / "index.html").read_text()
     assert "observation-records.js" in page
-    assert "__SKYSEED_EXECUTION_OBSERVATIONS__=" not in page
-    assert '"duration_seconds":100.0' not in page
-    assert "Topology projection, legacy Slicer, Planner, Compiler, or Runner" in page
-    browser_records = (output / "observation-records.js").read_text()
-    assert "__SKYSEED_EXECUTION_OBSERVATIONS__=" in browser_records
-    assert '"duration_seconds":100.0' in browser_records
-    assert "Rows are never added into a component or pipeline total" in page
-    assert 'record.duration_role==="stage"' in page
-    assert '<option value="stage" selected>Exclusive leaf stages</option>' in page
+    assert "Raw invocation records" in page
     assert "Rollups overlap their child stages" in page
-    assert "Legacy Slicer Difference work occurs outside complete-slice" in page
-    assert "Samples carry resource evidence and have zero duration" in page
-    assert '<option value="route_entries">route_entries</option>' in page
-    assert '<option value="slices_published">' not in page
-    assert "recorded_duration_seconds" not in (
-        output / "summary.txt"
-    ).read_text()
-
-
-def test_page_uses_unified_logical_scope_and_non_additive_duration_ux(
-    tmp_path,
-) -> None:
-    source = _records(tmp_path / "source.jsonl")
-    output = tmp_path / "inspection"
-    write_observation_tool(source, output)
-    page = (output / "index.html").read_text()
-
-    for identifier in (
-        "mode-progression",
-        "mode-unit",
-        "unit-component",
-        "unit-selector",
-        "unit-summary",
-        "unit-decomposition",
-        "unit-rollups",
-        "unit-independent",
-        "fit-selection",
-        "role-filter",
-        "clear-annotation",
-        "persistent-annotation",
-    ):
-        assert identifier in page
-    assert "Stage progression" in page
-    assert "Per-Slice / Plan breakdown" in page
-    assert "unit-scrubber-track" in page
-    assert "unit-heatmap" in page
-    assert "HEATMAP_MAX_COLUMNS=64" in page
-    assert "Missing means no observation record" in page
-    assert "exact measured zero" in page
-    assert "Unattributed / gap" in page
-    assert "publication (" in page
-    assert "Difference S" in page
-    assert "formal Slice interval" in page
-    assert "shared Topology/Slicer/Planner duration scale" in page
-    assert "niceStep" in page
-    assert "recordPosition(record)" in page
-    assert "record.sequence" not in page.split(
-        "function recordPosition(record)", 1
-    )[1].split("function filteredRecords", 1)[0]
-    assert "isIndependent(record)" in page
-    assert "The subtotal excludes all nested/overlapping rollups" in page
-    assert "They are never summed with child stages" in page
-    assert "function stageHue(stage)" in page
-    assert "heatColor(stage,duration" in page
-    assert "stageColor(record.stage,1)" in page
-    assert "share>=9" in page
-    assert "Short segments intentionally omit internal text" in page
-    assert "decomposition-legend" in page
-
-    checksums = (output / "checksums.sha256").read_text().splitlines()
-    for line in checksums:
-        expected, relative = line.split("  ", 1)
-        assert sha256((output / relative).read_bytes()).hexdigest() == expected
+    assert "RSS, input, output" in page
+    browser = (output / "observation-records.js").read_text()
+    assert "__SKYSEED_EXECUTION_OBSERVATIONS__=" in browser
+    assert "__SKYSEED_EXECUTION_OBSERVATIONS__=" not in page
+    assert '"duration_seconds":2.0' in browser
+    for line in (output / "checksums.sha256").read_text().splitlines():
+        digest, relative = line.split("  ", 1)
+        assert sha256((output / relative).read_bytes()).hexdigest() == digest
     before = {path.name: path.read_bytes() for path in output.iterdir()}
     write_observation_tool(source, output)
     assert before == {path.name: path.read_bytes() for path in output.iterdir()}
 
 
-def test_tool_sources_do_not_import_or_execute_domain_components() -> None:
-    combined = "\n".join(path.read_text() for path in TOOL_SOURCES)
-    assert "skyseed_v2.simulator" not in combined
-    assert ".create_next_slice(" not in combined
-    assert ".create_difference(" not in combined
-    assert ".synchronize(" not in combined
-    assert "compile_bpf(" not in combined
+def test_page_exposes_detached_scope_filters_and_non_additive_duration_ux(
+    tmp_path,
+) -> None:
+    output = tmp_path / "output"
+    write_observation_tool(_records(tmp_path / "records.jsonl"), output)
+    page = (output / "index.html").read_text(encoding="utf-8")
+
+    for identifier in (
+        'id="component-filter"',
+        'id="role-filter"',
+        'id="raw-count"',
+        'id="raw-records"',
+    ):
+        assert identifier in page
+    for heading in (
+        "Detached execution evidence",
+        "Formal progression",
+        "Actual pipeline groups",
+        "Independent top-level timing series",
+        "GroundStation timing decomposition",
+        "Stage timing, work, and resources",
+        "Raw invocation records",
+    ):
+        assert heading in page
+    assert "Rollups overlap their child stages and are never added to them" in page
+    assert "Samples carry resource evidence with zero duration" in page
+    assert '<option value="stage">stage</option>' in page
+    assert '<option value="rollup">rollup</option>' in page
+    assert '<option value="sample">sample</option>' in page
+    assert "source.records.filter" in page
+    assert 'recordScript.src="observation-records.js"' in page
+    assert "Unable to load raw records" in page
+    assert "exact detached rows" in page
+    assert 'id="timeline-reset"' in page
+    assert 'id="timeline-focus-selected"' in page
+    assert "cross-component overlap ratio" in page
+    assert "raw span overlap including nested rollups" in page
+    assert "wheel: cursor zoom" in page
+    assert '<details class="card"><summary><strong>Advanced timing statistics' in page
+    assert '<details class="card" id="raw-invocation-evidence">' in page
 
 
-def test_reader_rejects_sequence_or_format_drift(tmp_path) -> None:
-    source = _records(tmp_path / "source.jsonl")
+@pytest.mark.parametrize(
+    ("row_index", "field", "value", "message"),
+    (
+        (0, "format_version", 3, "format version"),
+        (1, "sequence", 10, "sequence"),
+        (1, "duration_role", "aggregate", "duration_role"),
+    ),
+)
+def test_reader_rejects_format_sequence_or_role_drift(
+    tmp_path,
+    row_index,
+    field,
+    value,
+    message,
+) -> None:
+    source = _records(tmp_path / "records.jsonl")
     rows = [json.loads(line) for line in source.read_text().splitlines()]
-    rows[1]["sequence"] = 9
-    source.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
-    with pytest.raises(ValueError, match="sequence"):
+    rows[row_index][field] = value
+    source.write_text("\n".join(json.dumps(value) for value in rows) + "\n")
+    with pytest.raises(ValueError, match=message):
         read_execution_observations(source)
 
 
-def test_mini_execution_emits_slicer_and_planner_stage_and_work_evidence(
-    tmp_path,
-) -> None:
-    simulator = create_mini_satellite_internet_simulator(
-        build_mini_satellite_internet_emulator()
-    )
-    path = tmp_path / "mini-observations.jsonl"
-    simulator._enable_execution_observation(
-        path,
-        metadata={"scenario_identity": "mini-observation-test"},
-    )
-    slicer = simulator.get_slicer()
-    slicer.create_all_slices()
-    planner, plans, _ = prepare_mini_satellite_internet_planning(simulator)
-    simulator._write_execution_observations()
-    observations = read_execution_observations(path)
+def test_observation_sources_do_not_import_or_execute_domain_components() -> None:
+    combined = "\n".join(path.read_text() for path in TOOL_SOURCES)
+    assert "skyseed_v2.simulator" not in combined
+    assert "compute_observation(" not in combined
+    assert "plan_route_outcomes(" not in combined
+    assert "compile_bpf(" not in combined
 
+
+def test_real_pipeline_and_runtime_wrapper_emit_owned_observation_evidence(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    output = tmp_path / "output"
+    observation_path = (
+        output / "inspection/observation/execution-observations.jsonl"
+    )
+    simulator = create_complete_static_simulator(build_emulator())
+    simulator._enable_execution_observation(
+        observation_path,
+        metadata={
+            "scenario_identity": "round-b-observation-proof",
+            "formal_interval_seconds": 10,
+        },
+    )
+    plans, realizations, _snapshot = run_complete_static_chain(simulator)
+    simulator._write_execution_observations()
+    manifest = _write_realization_handoff(
+        realizations,
+        output / "runtime/realizations",
+    )
+    write_traffic_probe_plan(
+        TrafficProbePlanBuilder().build(plans, realizations),
+        output / "inspection/traffic/probe-plan.json",
+    )
+
+    class _Runner:
+        def __init__(self, **facts) -> None:
+            self._supplier = facts["future_realization_supplier"]
+            self._realizations = []
+            self._state = "new"
+
+        def _enable_event_history(self, _path) -> None:
+            pass
+
+        def _enable_traffic_telemetry(self, _path) -> None:
+            pass
+
+        def prepare(self) -> None:
+            while True:
+                value = self._supplier()
+                if value is None:
+                    break
+                self._realizations.append(value)
+            self._state = "prepared"
+
+        def run(self) -> None:
+            self._state = "completed"
+
+        def cleanup(self) -> None:
+            self._state = "cleaned"
+
+        def inspection_snapshot(self):
+            return {
+                "runner": {
+                    "lifecycle_state": self._state,
+                    "realization_count": len(self._realizations),
+                }
+            }
+
+    class _Traffic:
+        def __init__(self, **_facts) -> None:
+            pass
+
+        def start(self, _runner) -> None:
+            pass
+
+        def stop(self) -> None:
+            pass
+
+    monkeypatch.setattr(execution, "BpfRunner", _Runner)
+    monkeypatch.setattr(execution, "TrafficProbeExecutor", _Traffic)
+    monkeypatch.setattr(
+        execution,
+        "_read_and_verify_execution_definition",
+        lambda _output: {
+            "runner": {
+                "preparation_lookahead_seconds": None,
+                "preparation_boundary_depth": None,
+            },
+            "realization_handoff": {
+                "manifest": str(manifest.relative_to(output)),
+            },
+            "generated_output_identity": "observation-runtime-proof",
+        },
+    )
+
+    execution._run_generated_bpf_experiment(output)
+
+    observations = read_execution_observations(observation_path)
     by_component = {
-        component: [
-            record
-            for record in observations.records
-            if record["component"] == component
-        ]
-        for component in ("topology", "slicer", "planner")
+        component: tuple(
+            value
+            for value in observations.records
+            if value["component"] == component
+        )
+        for component in (
+            "physical-world",
+            "physical-link",
+            "planner",
+            "compiler",
+            "realization-producer",
+            "runner",
+            "traffic",
+        )
     }
-    topology_stages = {
-        record["stage"] for record in by_component["topology"]
-    }
-    slicer_stages = {record["stage"] for record in by_component["slicer"]}
-    planner_stages = {record["stage"] for record in by_component["planner"]}
+    assert all(by_component.values())
     assert {
         "position-compute",
         "position-validation",
         "physical-frame-publication",
         "physical-projection",
-    } <= topology_stages
+    } <= {value["stage"] for value in by_component["physical-world"]}
+    assert {value["stage"] for value in by_component["physical-link"]} == {
+        "physical-link-observation"
+    }
     assert {
-        "connection-preparation",
-        "connection-compute",
-        "connection-validation",
-        "route-compute",
-        "route-validation",
-        "slice-publication",
-        "complete-slice",
-        "difference",
-    } <= slicer_stages
-    assert "position-compute" not in slicer_stages
-    assert "position-validation" not in slicer_stages
-    assert {
-        "difference-acquisition",
-        "window-selection",
-        "route-context",
-        "connection-planning",
-        "connection-output-validation",
+        "physical-input-validation",
+        "isl-candidate-selection",
+        "acquisition/lifecycle-advancement",
+        "ground-station-planning",
+        "zone-planning",
         "parameter-planning",
-        "parameter-output-validation",
-        "forwarding-planning",
-        "forwarding-output-validation",
-        "suppression-candidate-discovery",
-        "coordination-policy",
-        "coordination-output-validation",
+        "route-planning",
         "coordination",
-        "forwarding-precedence",
         "state-advancement",
-        "validation",
-        "publication-plan-construction",
-        "publication-state-advancement",
-        "publication-evidence-persistence",
-        "publication-state-commit",
-        "publication",
-        "total-synchronize",
-    } <= planner_stages
-    complete_slices = [
-        record
-        for record in by_component["slicer"]
-        if record["stage"] == "complete-slice"
-    ]
-    physical_projections = [
-        record
-        for record in by_component["topology"]
-        if record["stage"] == "physical-projection"
-    ]
-    total_synchronizations = [
-        record
-        for record in by_component["planner"]
-        if record["stage"] == "total-synchronize"
-    ]
-    assert len(complete_slices) == 64
-    assert len(physical_projections) == 64
-    assert all(record["phase"] == "one-shot" for record in physical_projections)
-    assert [record["phase"] for record in complete_slices].count(
-        "bootstrap"
-    ) == 1
-    assert len(total_synchronizations) == len(plans) == 16
-    assert total_synchronizations[0]["phase"] == "bootstrap"
-    assert all(
-        record["phase"] == "steady"
-        for record in total_synchronizations[1:]
+        "plan-creation",
+        "publication-total",
+        "planning-total",
+    } <= {value["stage"] for value in by_component["planner"]}
+    assert {value["stage"] for value in by_component["compiler"]} == {
+        "plan-lineage-and-replay",
+        "event-and-world-indexing",
+        "transition-lowering",
+        "constraint-folding-and-materialization",
+        "backend-state-validation-and-freeze",
+        "semantic-to-bpf-lowering",
+        "compile-total",
+    }
+    assert {value["stage"] for value in by_component["realization-producer"]} == {
+        "producer-total"
+    }
+    assert {
+        (value["component"], value["stage"], value["phase"], value["duration_role"])
+        for component in ("runner", "traffic")
+        for value in by_component[component]
+    } == {
+        ("runner", "runner-total", "one-shot", "rollup"),
+        ("traffic", "traffic-total", "one-shot", "rollup"),
+    }
+    data = collect_observation_data(observation_path)
+    assert data["timeline"]["formal_transition_unit_count"] == 4
+    assert data["timeline"]["physical_frame_unit_count"] == 4
+    assert data["timeline"]["plan_publication_unit_count"] == len(plans) == 2
+    assert data["timeline"]["compiler_realization_unit_count"] == (
+        len(realizations)
+    ) == 2
+    handoff = json.loads(
+        (output / "inspection/runner/runner-invocation.json").read_text(
+            encoding="utf-8"
+        )
     )
-    rollups = physical_projections + complete_slices + total_synchronizations + [
-        record
-        for record in by_component["planner"]
-        if record["stage"] in {"coordination", "validation", "publication"}
-    ]
-    assert all(
-        record["duration_role"] == "rollup"
-        for record in rollups
-    )
-    assert all(
-        record["duration_role"] == "stage"
-        for records in by_component.values()
-        for record in records
-        if record["stage"]
-        not in {
-            "physical-projection",
-            "complete-slice",
-            "coordination",
-            "validation",
-            "publication",
-            "total-synchronize",
-            "resource-sample",
-            "retained-state-sample",
-        }
-    )
-    candidate_discovery = next(
-        record
-        for record in by_component["planner"]
-        if record["stage"] == "suppression-candidate-discovery"
-    )
-    assert "suppression_candidates" in candidate_discovery["work"]
-    assert sum(
-        record["work"]["published_differences"]
-        for record in total_synchronizations
-    ) == len(planner.get_consumed_differences()) == 64
-    precedence = next(
-        record
-        for record in by_component["planner"]
-        if record["stage"] == "forwarding-precedence"
-    )
-    assert precedence["work"]["precedence_avoided_candidate_pairs"] >= (
-        precedence["work"]["emitted_precedences"]
-    )
-    route_context = next(
-        record
-        for record in by_component["planner"]
-        if record["stage"] == "route-context"
-    )
-    assert route_context["work"]["route_entries_processed"] > 10_000
-    assert route_context["work"]["path_edges_processed"] > 10_000
+    assert handoff["runtime_outcome"]["status"] == "completed"
+    assert handoff["runner_snapshot"]["runner"]["realization_count"] == 2
 
 
-def test_compiler_joins_unified_observation_as_one_shot_plan_units() -> None:
-    emulator = build_mini_satellite_internet_emulator()
-    simulator = create_mini_satellite_internet_simulator(emulator)
-    slicer = simulator.get_slicer()
-    slicer.create_all_slices()
-    _, plans, _ = prepare_mini_satellite_internet_planning(simulator)
-    selected_plans = plans[:2]
-    observer = _ExecutionObserver({"scenario": "mini-compiler-observation"})
+def test_compiler_observation_is_one_shot_and_semantically_inert() -> None:
+    simulator = create_complete_static_simulator(build_emulator())
+    plans, expected, _snapshot = run_complete_static_chain(simulator)
+    observer = _ExecutionObserver({"scenario": "compiler-observation-proof"})
     observed = []
     previous = None
-    for compile_index, plan in enumerate(selected_plans):
-        result = _compile_bpf_observed(
+    for compile_index, plan in enumerate(plans):
+        realization = _compile_bpf_observed(
             plan,
-            slicer=slicer,
-            previous=previous,
+            simulator.get_physical_world(),
+            previous,
             execution_observer=observer,
             compile_index=compile_index,
         )
-        observed.append(result)
-        previous = result
+        observed.append(realization)
+        previous = realization
 
-    plain = []
-    previous = None
-    for plan in selected_plans:
-        result = compile_bpf(plan, slicer=slicer, previous=previous)
-        plain.append(result)
-        previous = result
-    assert tuple(observed) == tuple(plain)
-
-    compiler_records = tuple(
+    assert tuple(observed) == expected
+    records = tuple(
         value
         for value in observer.snapshot()["records"]
         if value["component"] == "compiler"
     )
-    assert {value["phase"] for value in compiler_records} == {"one-shot"}
-    assert {
-        value["scope"]["compile_index"] for value in compiler_records
-    } == {0, 1}
-    assert {
-        "input-validation",
-        "slice-coverage",
-        "temporal-source-indexing",
-        "topology-preparation",
-        "baseline-initialization",
-        "plan-transition-validation",
-        "resource-parameter-lowering",
-        "forwarding-lowering",
-        "zone-edge-lowering",
-        "constraint-compilation",
-        "end-state-validation",
-        "realization-freeze",
-        "total-compile",
-    } <= {value["stage"] for value in compiler_records}
-    rollups = [
-        value for value in compiler_records if value["stage"] == "total-compile"
-    ]
-    assert len(rollups) == 2
-    assert all(value["duration_role"] == "rollup" for value in rollups)
-    assert all(value["work"]["baseline_records"] > 0 for value in rollups)
+    assert len(records) == len(plans) * 7
+    assert {value["phase"] for value in records} == {"one-shot"}
+    assert {value["scope"]["compile_index"] for value in records} == {0, 1}
+    assert {value["stage"] for value in records} == {
+        "plan-lineage-and-replay",
+        "event-and-world-indexing",
+        "transition-lowering",
+        "constraint-folding-and-materialization",
+        "backend-state-validation-and-freeze",
+        "semantic-to-bpf-lowering",
+        "compile-total",
+    }
+    totals = tuple(
+        value for value in records if value["stage"] == "compile-total"
+    )
+    assert len(totals) == len(plans)
+    assert all(value["duration_role"] == "rollup" for value in totals)
+    assert all(value["work"]["activation_boundaries"] > 0 for value in totals)
 
 
 @pytest.mark.parametrize("poison_observer", (False, True))
-def test_execution_observation_does_not_change_mini_formal_results(
+def test_execution_observation_does_not_change_formal_results(
     tmp_path,
     poison_observer: bool,
 ) -> None:
-    baseline = create_mini_satellite_internet_simulator(
-        build_mini_satellite_internet_emulator()
-    )
-    observed = create_mini_satellite_internet_simulator(
-        build_mini_satellite_internet_emulator()
-    )
+    baseline = create_complete_static_simulator(build_emulator())
+    observed = create_complete_static_simulator(build_emulator())
     path = tmp_path / f"observed-{poison_observer}.jsonl"
     observer = observed._enable_execution_observation(path)
     if poison_observer:
         observer.record(
-            component="slicer",
+            component="",
             stage="forced-recording-failure",
             phase="steady",
-            duration_seconds=-1.0,
+            duration_seconds=0.0,
         )
 
-    baseline_slices = baseline.get_slicer().create_all_slices()
-    observed_slices = observed.get_slicer().create_all_slices()
-    baseline_planner, baseline_plans, _ = (
-        prepare_mini_satellite_internet_planning(baseline)
+    baseline_plans, baseline_realizations, baseline_snapshot = (
+        run_complete_static_chain(baseline)
     )
-    observed_planner, observed_plans, _ = (
-        prepare_mini_satellite_internet_planning(observed)
+    observed_plans, observed_realizations, observed_snapshot = (
+        run_complete_static_chain(observed)
     )
 
-    assert observed_slices == baseline_slices
     assert observed_plans == baseline_plans
-    assert (
-        observed_planner.get_consumed_differences()
-        == baseline_planner.get_consumed_differences()
-    )
-    assert (
-        observed_planner.get_planning_decisions()
-        == baseline_planner.get_planning_decisions()
-    )
+    assert observed_realizations == baseline_realizations
+    assert observed_snapshot == baseline_snapshot
     if poison_observer:
         assert observer._get_recording_failure() is not None
         with pytest.raises(RuntimeError, match="observation is incomplete"):
             observed._write_execution_observations()
+        assert not path.exists()
     else:
         observed._write_execution_observations()
         assert read_execution_observations(path).records

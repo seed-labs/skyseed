@@ -11,12 +11,12 @@ def test_execution_observer_detaches_metadata_records_and_persists_jsonl(
     tmp_path,
 ) -> None:
     metadata = {"scenario": "probe", "nested": {"generation": 1}}
-    scope = {"slice_id": 3}
+    scope = {"frame_index": 3}
     work = {"route_entries": 12}
     observer = _ExecutionObserver(metadata)
     observer.record(
-        component="slicer",
-        stage="route-compute",
+        component="planner",
+        stage="route-planning",
         phase="steady",
         duration_seconds=0.125,
         scope=scope,
@@ -24,7 +24,7 @@ def test_execution_observer_detaches_metadata_records_and_persists_jsonl(
         resources={"rss_bytes": 2048},
     )
     metadata["nested"]["generation"] = 2
-    scope["slice_id"] = 99
+    scope["frame_index"] = 99
     work["route_entries"] = 99
 
     snapshot = observer.snapshot()
@@ -32,7 +32,7 @@ def test_execution_observer_detaches_metadata_records_and_persists_jsonl(
         "scenario": "probe",
         "nested": {"generation": 1},
     }
-    assert snapshot["records"][0]["scope"] == {"slice_id": 3}
+    assert snapshot["records"][0]["scope"] == {"frame_index": 3}
     assert snapshot["records"][0]["work"] == {"route_entries": 12}
 
     path = observer.write_jsonl(tmp_path / "observations.jsonl")

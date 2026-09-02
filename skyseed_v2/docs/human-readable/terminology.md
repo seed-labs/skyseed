@@ -1,52 +1,35 @@
-# Terminology navigation
+# Terminology
 
-This is a short disambiguation index, not a second contract. Follow each link
-for exact semantics.
+| Term | Current meaning |
+|---|---|
+| SimulationTimeline | inclusive formal timestamp sequence with one observation interval |
+| PhysicalWorld | authoritative static physical aggregate and requested-time projection owner |
+| PhysicalFrame | exact timestamp plus complete immutable positions |
+| PhysicalLinkRequest | Planner-created bounded candidate scope for one physical evaluation |
+| PhysicalLinkObservation | sparse feasible physical candidates and work counts for one frame/request |
+| physical candidate | feasible relationship fact; never automatically operational |
+| selected | candidate chosen by operational policy for lifecycle advancement |
+| acquiring | selected ISL whose acquisition reference has not elapsed |
+| operational Connection | planned usable relationship with effective parameters |
+| PlannedOperationalState | complete operational Connections, Zone assignments, and Route outcomes at one timestamp |
+| PlanTransition | replay-complete semantic delta for exactly one formal timestamp; may be empty |
+| Plan | immutable contiguous group of transitions with Plan/world/state lineage and precedence |
+| planning frontier | latest fully planned formal timestamp |
+| publication frontier | latest formal timestamp included in a published Plan |
+| planning horizon | lookahead required before normal publication; canonical value 50 seconds |
+| publication horizon | maximum earliest contiguous prefix per normal Plan; canonical value 20 seconds |
+| semantic event reference | deterministic transition-derived event identity |
+| CoordinationPolicy | precedence-only policy over semantic event references |
+| BpfCompiledRealization | compiled intended state and backend intentions for one Plan boundary |
+| activation boundary | compiled record for one formal transition, including a no-op transition |
+| RealizedRuntimeState | Runner-owned observation of live runtime state |
+| incremental realization producer | sole Timeline cursor and frame-to-observation-to-Plan-to-Compiler orchestrator |
+| precomputed mode | draining the common producer and persisting every realization before runtime |
+| future rolling mode | the same producer plus a bounded concurrent coordinator, buffer, and Runner consumer |
+| planned unreachable | explicit Route outcome such as Zone unserved or no operational path |
+| unexplained reachable loss | runtime failure while the compiled planned outcome says reachable |
+| detached Tool | read-only consumer of durable records that cannot affect semantic compute or runtime handoff |
 
-| Term | Meaning here | Contract |
-|---|---|---|
-| Emulator | upstream SEED composition and the Skyseed entities it owns | [ownership](../codex-reference/ownership-lifecycle.md) |
-| Emulator entity | Shell/Orbit/Satellite/GroundStation used by SEED construction | [Emulator boundary](../codex-reference/emulator-simulator-boundary.md) |
-| extension-node lifecycle index | AS-held same-object reference used for SEED registration/configuration, not Satellite domain ownership | [ownership](../codex-reference/ownership-lifecycle.md) |
-| future functional Layer | unfrozen Skyseed boundary for shared software/files/commands/daemons; no current class or API | [extension points](../codex-reference/extension-points.md) |
-| Simulator input | immutable receiver-owned copied scalar DTO; never an Emulator object | [Emulator–Simulator boundary](../codex-reference/emulator-simulator-boundary.md) |
-| Simulator | composition root that creates one physical Topology; Round 1 also creates the explicitly temporary legacy Slicer and at most one current Planner | [ownership](../codex-reference/ownership-lifecycle.md) |
-| Topology | Simulator physical aggregate, static lookup facade, owner of one PositionModel, and deterministic `frame_at(timestamp)` projection authority; not a time cursor | [Topology/PhysicalFrame/Zone](../codex-reference/topology-zone-contracts.md) |
-| PositionModel | physical Protocol owned and invoked by Topology to project every node at one requested timestamp; not a Slicer role | [accepted design](../accepted-design.md) |
-| PhysicalFrame | immutable physical-domain value containing one normalized timestamp and exactly the Topology node Position mapping; timestamp is its identity, with no sequence ID or operational/planning/runtime state | [accepted design](../accepted-design.md) |
-| Position | one authoritative `EarthFixedPosition` per spatial node and timestamp | [Position/Connection](../codex-reference/position-connection-values.md) |
-| Connection | currently effective bidirectional dynamic edge with directional parameters | [Position/Connection](../codex-reference/position-connection-values.md) |
-| G target | a `GroundStationRouteTarget` carrying GroundStation `NodeId` | [routing](../codex-reference/routing-path-contracts.md) |
-| Z target | a `ZoneRouteTarget` carrying ZoneId; terminal is current service Satellite | [routing](../codex-reference/routing-path-contracts.md) |
-| Slicer | temporary legacy operational seam that requests a PhysicalFrame, computes old Connection/Route state, and retains mixed TopologySlice values; it owns no PositionModel and is scheduled for complete removal | [accepted design](../accepted-design.md) |
-| Slice 0 | legacy synthetic empty baseline, not a Timeline instant or PhysicalFrame | [Timeline/Slice/Difference](../codex-reference/timeline-slice-difference-contracts.md) |
-| TopologySlice | temporary legacy mixed Position/Connection/Route aggregate, distinct from physical-only PhysicalFrame | [Timeline/Slice/Difference](../codex-reference/timeline-slice-difference-contracts.md) |
-| TopologyDifference | temporary legacy on-request sparse change for retained adjacent Slices | [Timeline/Slice/Difference](../codex-reference/timeline-slice-difference-contracts.md) |
-| Planner | current persistent Simulator sibling that incrementally converts legacy Difference evolution into semantic plans; preserved during Round 1, not the accepted final owner split | [planning](../codex-reference/planning-contracts.md) |
-| Network Planner | accepted future owner of Connection, effective Parameter/resource, Route, and Coordination planning after the legacy Slicer seam is removed | [accepted design](../accepted-design.md) |
-| PlannedOperationalState | accepted future complete operational selection produced by Network Planner, kept distinct from PhysicalFrame and realized runtime state | [accepted design](../accepted-design.md) |
-| available Differences | exact not-yet-published `TopologyDifference` values available to the Planner policy | [planning](../codex-reference/planning-contracts.md) |
-| planning window | exact available-Difference prefix selected for Models and Coordination in one synchronization | [planning](../codex-reference/planning-contracts.md) |
-| publication window | non-empty planning-window prefix owned by the next published Plan | [planning](../codex-reference/planning-contracts.md) |
-| Plan | immutable backend-independent Connection/Parameter/Forwarding transition publication for one continuous non-overlapping `(start, end]` interval | [planning](../codex-reference/planning-contracts.md) |
-| Forwarding precedence | Plan-owned same-time `predecessor → successor` semantic constraint; not tuple order or an execution schedule | [planning](../codex-reference/planning-contracts.md) |
-| nominal semantic time | simulation timestamp to which Planner assigns a transition, not runtime completion time | [planning](../codex-reference/planning-contracts.md) |
-| BPF Compiler | one-shot deterministic downstream lowering over Plan and approved read-only Simulator facts | [BPF Compiler](../codex-reference/bpf-compiler.md) |
-| BpfCompiledRealization | immutable symbolic interval handoff and next-compilation intended baseline; not live runtime state | [BPF Compiler](../codex-reference/bpf-compiler.md) |
-| RealizedRuntimeState | state actually realized by Compiler/Runner and the live dataplane, distinct from both physical state and planned operational state | [accepted design](../accepted-design.md) |
-| BpfRunner | sole stateful live BPF lifecycle owner attached by exact live Compose project identity; independently validates/freezes its required foundation and owns rolling Preparation/Maintenance, Main activation, reclaim, timing and bounded scoped teardown through public `cleanup()` | [ownership](../codex-reference/ownership-lifecycle.md) |
-| preparation lookahead | explicit rolling nominal-time bound for extending the continuous READY prefix beyond ACTIVE; exact-next readiness remains mandatory | [accepted design](../accepted-design.md) |
-| preparation boundary depth | explicit positive rolling count bound on continuous READY future boundaries; startup counts bootstrap, while ACTIVE itself never counts | [accepted design](../accepted-design.md) |
-| ready frontier | nominal timestamp of the last boundary in the continuous prepared inactive prefix; it may be limited by time, depth, or input and is not a realization end Slice ID | [accepted design](../accepted-design.md) |
-| active frontier | latest nominal timestamp whose prepared semantics Main has activated; no boundary is active before bootstrap activation | [accepted design](../accepted-design.md) |
-| input frontier | highest boundary covered by Runner-consumed future compiled work | [accepted design](../accepted-design.md) |
-| Inspection Tool | repository-local read-only projection/display/artifact pipeline | [user guide](../user-guides/inspection-tools.md) |
-| Traffic / Path Replay Tool | post-run read-only consumer of durable tc-BPF traffic, retained Slice Position/on-request Difference evidence, existing BPF Compiler inspection evidence, and optional example-owned planned-workload comparison context; it is neither a generator, collector, Compiler, nor forwarding authority | [user guide](../user-guides/inspection-tools.md) |
-| ComposeProjectLauncher | launcher/verifier for an already compiled static Compose project | [system overview](system-overview.md) |
-
-The object names and owner cardinalities are in
-[`object-model.md`](object-model.md). Current implementation status appears
-only in [`CURRENT.md`](../CURRENT.md). References to Slicer, TopologySlice,
-TopologyDifference, and the current Difference-based Planner describe the
-temporary Round-1 implementation seam, never an alternate accepted
-architecture.
+Physical, planned, compiled intended, and realized truths are never synonyms.
+Likewise, candidate, selected/acquiring, operational, routed, compiled, and
+realized are distinct lifecycle meanings.

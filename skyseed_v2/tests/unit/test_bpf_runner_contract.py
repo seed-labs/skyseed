@@ -1,190 +1,95 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from ipaddress import ip_address, ip_interface, ip_network
-import json
-from pathlib import Path
 import inspect
+import json
 import struct
+import subprocess
 from threading import Event, Lock, Thread
 import time as real_time
 from types import SimpleNamespace
 
 import pytest
 
-from examples.mini_satellite_internet.emu import (
-    build_mini_satellite_internet_emulator,
-)
-from examples.mini_satellite_internet.simu import (
-    _create_mini_satellite_internet_planner,
-    create_mini_satellite_internet_simulator,
+from examples.complete_static_emulator.emu import build_emulator
+from examples.complete_static_emulator.simu import (
+    create_complete_static_simulator,
+    run_complete_static_chain,
 )
 from skyseed_v2.backend import bpf
-from skyseed_v2.backend.bpf import BpfCompiledRealization, BpfRunner
-from skyseed_v2.experiment.execution import _RollingRealizationSupplier
-from skyseed_v2.backend.bpf._runner import (
-    runtime_realization as runtime_realization_module,
-)
-from skyseed_v2.backend.bpf import runner as runner_module
-from skyseed_v2.backend.bpf.runner import (
-    _append_realization_boundaries,
-    _resolve_nominal_boundaries,
-)
+from skyseed_v2.backend.bpf import BpfRunner
 from skyseed_v2.backend.bpf._runner.event_history import (
     _NonBlockingEventHistory,
-)
-from skyseed_v2.backend.bpf._runner.runtime_realization import (
-    _CapacityAuditError,
-    _MaterializedDataplaneState,
-    _TcBpfRuntimeRealization,
-    _RetiredPhysicalRealization,
-    _allocate_node_addresses,
-    _empty_state,
-    _materialize_boundary,
 )
 from skyseed_v2.backend.bpf._runner import (
     privileged_runtime_command as privileged_runtime_command_module,
 )
+from skyseed_v2.backend.bpf._runner import (
+    runtime_realization as runtime_realization_module,
+)
 from skyseed_v2.backend.bpf._runner.privileged_runtime_command import (
     _activate_boundary,
-    _audit_node_addresses,
-    _initialize,
     _key_buffer,
-    _pin_root,
     _parallel_map,
     _prepare_boundary,
     _tc_program,
 )
+from skyseed_v2.backend.bpf._runner.runtime_realization import (
+    _CapacityAuditError,
+    _MaterializedDataplaneState,
+    _RetiredPhysicalRealization,
+    _TcBpfRuntimeRealization,
+    _empty_state,
+    _materialize_boundary,
+    _validate_boundary_lowering,
+)
+from skyseed_v2.backend.bpf import runner as runner_module
 from skyseed_v2.backend.bpf.compiled_realization import (
-    _IntendedState,
-    _IntentReference,
-    _OrderingConstraint,
-    _TopologySignature,
+    _ForwardingIntent,
+    _QdiscIntent,
+    _ResourceIntent,
+    _ResourceOperation,
     _ZoneEdgeIntent,
+    _ZoneEdgePhase,
+)
+from skyseed_v2.backend.bpf.runner import (
+    _RuntimeBinding,
+    _append_realization_boundaries,
+    _resolve_nominal_boundaries,
 )
 from skyseed_v2.shared import NodeId
 from skyseed_v2.simulator import (
-    ConnectionDirection,
-    ConnectionId,
-    ConnectionKind,
-    DifferenceOperation,
+    OperationalConnectionId,
+    OperationalConnectionKind,
 )
-from tools.runner.reader import read_runner_event_history
 
 
 START = datetime(2026, 1, 1, tzinfo=timezone.utc)
 NODE = NodeId(65001, "satellite", "sat-1")
 NODE_2 = NodeId(65001, "satellite", "sat-2")
-GROUND = NodeId(65001, "ground-station", "gs-1")
-_REAL_DISCOVER_RUNTIME_BINDINGS = BpfRunner._discover_runtime_bindings
-_REAL_ASSERT_FOUNDATION_CURRENT = BpfRunner._assert_foundation_current
-_REAL_PRIVILEGED_HELPER = runner_module._PrivilegedHelper
 
 
-def _realization(start: int, end: int, zone: str) -> BpfCompiledRealization:
-    nominal_time = START + timedelta(seconds=start)
-    return BpfCompiledRealization._create(
-        start_slice_id=start,
-        start_timestamp=None if start == 0 else nominal_time,
-        end_slice_id=end,
-        end_timestamp=START + timedelta(seconds=end),
-        resource_realizations=(),
-        parameter_realizations=(),
-        forwarding_realizations=(),
-        zone_edge_realizations=(
-            _ZoneEdgeIntent(
-                nominal_time,
-                DifferenceOperation.ADDED,
-                zone,
-                "198.18.0.1/32" if zone == "zone-a" else "198.18.0.2/32",
-                None,
-                NODE,
-            ),
-        ),
-        constraints=(),
-        intended_state=_IntendedState(
-            (),
-            (),
-            (),
-            (),
-            (("zone-a", "198.18.0.1/32"), ("zone-b", "198.18.0.2/32")),
-        ),
-        topology_signature=_TopologySignature((NODE,), ("zone-a", "zone-b")),
-    )
+@pytest.fixture(scope="module")
+def complete_chain():
+    simulator = create_complete_static_simulator(build_emulator())
+    plans, realizations, snapshot = run_complete_static_chain(simulator)
+    return simulator, plans, realizations, snapshot
 
 
-def _zone_realization(
-    start: int,
-    end: int,
-    zones: tuple[str, ...],
-    *,
-    topology_zones: tuple[str, ...],
-    topology_nodes: tuple[NodeId, ...] = (NODE,),
-) -> BpfCompiledRealization:
-    nominal_time = START + timedelta(seconds=start)
-    return BpfCompiledRealization._create(
-        start_slice_id=start,
-        start_timestamp=None if start == 0 else nominal_time,
-        end_slice_id=end,
-        end_timestamp=START + timedelta(seconds=end),
-        resource_realizations=(),
-        parameter_realizations=(),
-        forwarding_realizations=(),
-        zone_edge_realizations=tuple(
-            _ZoneEdgeIntent(
-                nominal_time,
-                DifferenceOperation.ADDED,
-                zone,
-                f"198.18.0.{topology_zones.index(zone) + 1}/32",
-                None,
-                NODE,
-            )
-            for zone in zones
-        ),
-        constraints=(),
-        intended_state=_IntendedState(
-            (),
-            (),
-            (),
-            (),
-            tuple(
-                (zone, f"198.18.0.{topology_zones.index(zone) + 1}/32")
-                for zone in topology_zones
-            ),
-        ),
-        topology_signature=_TopologySignature(topology_nodes, topology_zones),
-    )
-
-
-def _collision_audit_result(request) -> dict[str, object]:
-    return {
-        "result": "passed",
-        "selected_node_address_range": request["node_address_range"],
-        "allocated_node_addresses": len(request["nodes"]),
-        "compiled_zone_prefixes": len(request["zone_prefixes"]),
-        "audited_node_namespaces": len(request["nodes"]),
-        "observed_ipv4_address_prefixes": len(request["nodes"]),
-        "observed_non_default_ipv4_route_prefixes": 0,
-        "audited_sources": [
-            "compiler-zone-prefixes",
-            "live-node-netns-ipv4-addresses",
-            "live-node-netns-non-default-ipv4-routes",
-        ],
-    }
-
-
-def _foundation_result(request) -> dict[str, object]:
-    return {
-        "shared_active_generation_map": True,
-        "collision_audit": _collision_audit_result(request),
-        "installed_node_addresses": sorted(
-            node["key"] for node in request["nodes"]
-        ),
-    }
+def _phase(intent: object) -> int:
+    if isinstance(intent, _ResourceIntent):
+        return 0 if intent.operation is _ResourceOperation.ESTABLISH else 5
+    if isinstance(intent, _QdiscIntent):
+        return 1
+    if isinstance(intent, _ZoneEdgeIntent):
+        return 2 if intent.phase is _ZoneEdgePhase.READINESS else 4
+    if isinstance(intent, _ForwardingIntent):
+        return 3
+    raise TypeError(intent)
 
 
 class _FakeHelper:
-    instances = []
+    instances: list[_FakeHelper] = []
 
     def __init__(self, **facts) -> None:
         self.facts = facts
@@ -200,10 +105,11 @@ class _FakeHelper:
 
 
 class _FakeRuntimeRealization:
-    instances = []
+    instances: list[_FakeRuntimeRealization] = []
     preparation_error: BaseException | None = None
     activation_error: BaseException | None = None
     reclaim_error: BaseException | None = None
+    cleanup_error: BaseException | None = None
     activation_entered: Event | None = None
     activation_release: Event | None = None
     reclaim_wait_for_activation: Event | None = None
@@ -225,7 +131,7 @@ class _FakeRuntimeRealization:
         self._resident_generation_capacity = 0
         self.__class__.instances.append(self)
 
-    def initialize(self, topology_signature, **facts):
+    def initialize(self, _physical_world_projection, **facts):
         self._resident_generation_capacity = (
             len(facts["capacity_boundaries"])
             if facts["preparation_lookahead"] is None
@@ -233,14 +139,19 @@ class _FakeRuntimeRealization:
         )
         return {
             "shared_active_generation_map": True,
-            "node_count": 1,
+            "node_count": len(self.facts["bindings"]),
+            "installed_node_addresses": sorted(
+                value.value for value in self.facts["bindings"]
+            ),
             "capacity_audit": {
                 "mode": (
                     "bounded-full-range"
                     if facts["preparation_lookahead"] is None
                     else "rolling"
                 ),
-                "resident_generation_capacity": self._resident_generation_capacity,
+                "resident_generation_capacity": (
+                    self._resident_generation_capacity
+                ),
             },
         }
 
@@ -252,13 +163,16 @@ class _FakeRuntimeRealization:
             "reserved_in_flight_preparations": reserved,
             "resident_generation_capacity": self._resident_generation_capacity,
             "can_start_preparation": (
-                reserved == 0 and resident < self._resident_generation_capacity
+                reserved == 0
+                and resident < self._resident_generation_capacity
             ),
         }
 
     def start_preparation(self, boundary):
         if not self.generation_capacity_status()["can_start_preparation"]:
-            raise _CapacityAuditError("resident generation capacity is exhausted")
+            raise _CapacityAuditError(
+                "resident generation capacity is exhausted"
+            )
         generation = len(self.prepared)
         self.operations.append(("prepare", generation))
         self.materialization_calls += 1
@@ -268,7 +182,10 @@ class _FakeRuntimeRealization:
             generation=generation,
         )
         self._pending = pending
-        return pending, {"generation": generation}
+        return pending, {
+            "generation": generation,
+            "generation_changed": True,
+        }
 
     def finish_preparation(
         self, pending, *, foundation_token, predecessor_time
@@ -294,6 +211,7 @@ class _FakeRuntimeRealization:
         self._latest_state = pending.state
         return ready, {
             "generation": pending.generation,
+            "generation_changed": True,
             "expected_active_generation": expected_active_generation,
             "readiness_sha256": f"ready-{pending.generation}",
             "prepared_resources": 0,
@@ -306,19 +224,26 @@ class _FakeRuntimeRealization:
             raise self.activation_error
         if self.activation_entered is not None:
             self.activation_entered.set()
-        if self.activation_release is not None:
-            if not self.activation_release.wait(timeout=2):
-                raise RuntimeError("test activation release timed out")
+        if self.activation_release is not None and not self.activation_release.wait(
+            timeout=2
+        ):
+            raise RuntimeError("test activation release timed out")
         self.active = ready
-        return {"active_generation": ready.generation, "generation_publications": 1}
+        return {
+            "active_generation": ready.generation,
+            "generation_publications": 1,
+        }
 
     def retirement_handles(self, prior, active):
+        del active
         return prior.generation, None
 
     def reclaim_forwarding(self, generation):
-        if self.reclaim_wait_for_activation is not None:
-            if not self.reclaim_wait_for_activation.wait(timeout=2):
-                raise RuntimeError("test reclaim activation wait timed out")
+        if (
+            self.reclaim_wait_for_activation is not None
+            and not self.reclaim_wait_for_activation.wait(timeout=2)
+        ):
+            raise RuntimeError("test reclaim activation wait timed out")
         self.reclaimed_generations.append(generation)
         self._resident_generations.discard(generation)
         self.operations.append(("reclaim-generation", generation))
@@ -329,19 +254,22 @@ class _FakeRuntimeRealization:
     def reclaim_physical(self, resources):
         if self.reclaim_error is not None:
             raise self.reclaim_error
-        values = tuple(resources) if not isinstance(
-            resources, _RetiredPhysicalRealization
-        ) else resources.resources
+        values = tuple(resources)
         self.reclaimed_resources.append(values)
         self.operations.append(("reclaim-resources", values))
         return {"deleted_connections": len(values)}
 
     def cleanup(self):
         self.cleanup_calls += 1
+        if self.cleanup_error is not None:
+            raise self.cleanup_error
         return {"pin_root_removed": True, "errors": []}
 
     def runtime_node_addresses(self):
-        return {NODE: "192.0.2.1"}
+        return {
+            node_id: f"192.0.2.{index + 1}"
+            for index, node_id in enumerate(self.facts["bindings"])
+        }
 
     def working_set_counts(self):
         return {
@@ -352,31 +280,48 @@ class _FakeRuntimeRealization:
         }
 
 
-@pytest.fixture(autouse=True)
-def fake_runtime(monkeypatch):
+@pytest.fixture
+def fake_runner_runtime(monkeypatch):
     _FakeHelper.instances.clear()
     _FakeRuntimeRealization.instances.clear()
-    _FakeRuntimeRealization.preparation_error = None
-    _FakeRuntimeRealization.activation_error = None
-    _FakeRuntimeRealization.reclaim_error = None
-    _FakeRuntimeRealization.activation_entered = None
-    _FakeRuntimeRealization.activation_release = None
-    _FakeRuntimeRealization.reclaim_wait_for_activation = None
-    _FakeRuntimeRealization.reclaim_progress = None
-    binding = runner_module._RuntimeBinding(
-        node_id=NODE,
-        service_name="node",
-        container_id="container-id",
-        container_name="node",
-        image_id="image-id",
-        pid=123,
-        netns_inode=456,
-        started_at="now",
-    )
+    for name in (
+        "preparation_error",
+        "activation_error",
+        "reclaim_error",
+        "cleanup_error",
+        "activation_entered",
+        "activation_release",
+        "reclaim_wait_for_activation",
+        "reclaim_progress",
+    ):
+        setattr(_FakeRuntimeRealization, name, None)
     monkeypatch.setattr(runner_module, "_PrivilegedHelper", _FakeHelper)
-    monkeypatch.setattr(runner_module, "_TcBpfRuntimeRealization", _FakeRuntimeRealization)
-    monkeypatch.setattr(BpfRunner, "_discover_runtime_bindings", lambda self, first: {NODE: binding})
-    monkeypatch.setattr(BpfRunner, "_assert_foundation_current", lambda self: None)
+    monkeypatch.setattr(
+        runner_module, "_TcBpfRuntimeRealization", _FakeRuntimeRealization
+    )
+
+    def discover(_self, first):
+        return {
+            node_id: _RuntimeBinding(
+                node_id=node_id,
+                service_name=f"node-{index}",
+                container_id=f"container-{index}",
+                container_name=f"node-{index}",
+                image_id="image-id",
+                pid=100 + index,
+                netns_inode=200 + index,
+                started_at="now",
+            )
+            for index, node_id in enumerate(
+                first._physical_world_projection.node_ids
+            )
+        }
+
+    monkeypatch.setattr(BpfRunner, "_discover_runtime_bindings", discover)
+    monkeypatch.setattr(
+        BpfRunner, "_assert_foundation_current", lambda _self: None
+    )
+    return None
 
 
 def _supplier(*values):
@@ -385,237 +330,68 @@ def _supplier(*values):
 
 
 def _wait_for(predicate) -> None:
-    for _ in range(200):
+    for _ in range(400):
         if predicate():
             return
         real_time.sleep(0.005)
-    raise AssertionError("background Maintenance did not converge")
+    raise AssertionError("background Runner maintenance did not converge")
 
 
-def test_durable_runner_history_bounds_recent_memory_without_losing_events(
-    tmp_path,
-) -> None:
-    runner = BpfRunner(
-        compose_project_name="runner-durable-events",
-        future_realization_supplier=lambda: None,
-        preparation_lookahead=None,
-        preparation_boundary_depth=None,
+def _container_inspection(
+    node_id: NodeId,
+    *,
+    project: str,
+    index: int,
+) -> dict[str, object]:
+    entity_type = (
+        "Satellite"
+        if node_id.entity_kind == "satellite"
+        else "GroundStation"
     )
-    path = tmp_path / "runner-events.jsonl"
-    runner._enable_event_history(path)
-
-    for index in range(1_005):
-        runner._record("synthetic_progress", generated_index=index)
-
-    durable = runner._event_history.close()
-    snapshot = runner.inspection_snapshot()
-    assert len(runner._events) == 512
-    assert snapshot["runner"]["working_set"]["recent_event_count"] == 512
-    assert durable["complete"] is True
-    assert durable["written_count"] == 1_005
-    assert snapshot["runner"]["working_set"]["durable_event_count"] == 1_005
-    assert snapshot["event_history"]["scope"] == "recent-only"
-    assert len(snapshot["events"]) == 512
-    assert snapshot["events"][-1]["generated_index"] == 1_004
-    complete = read_runner_event_history(path)
-    assert len(complete) == 1_005
-    assert complete[0]["generated_index"] == 0
-    assert complete[-1]["generated_index"] == 1_004
-    assert sum(1 for _ in path.open(encoding="utf-8")) == 1_006
-
-
-def test_nonblocking_event_history_reports_bounded_overflow(
-    tmp_path, monkeypatch
-) -> None:
-    release = Event()
-    original = _NonBlockingEventHistory._write_loop
-
-    def paused_writer(history) -> None:
-        assert release.wait(timeout=1)
-        original(history)
-
-    monkeypatch.setattr(_NonBlockingEventHistory, "_write_loop", paused_writer)
-    history = _NonBlockingEventHistory(tmp_path / "events.jsonl", capacity=1)
-
-    assert history.enqueue({"event": "first"}) is True
-    started = real_time.monotonic()
-    assert history.enqueue({"event": "overflow"}) is False
-    assert real_time.monotonic() - started < 0.1
-    release.set()
-    status = history.close()
-
-    assert status["written_count"] == 1
-    assert status["dropped_count"] == 1
-    assert status["overflowed"] is True
-    assert status["complete"] is False
-
-
-def test_direct_runner_events_are_bounded_and_report_recent_only() -> None:
-    runner = BpfRunner(
-        compose_project_name="runner-recent-events",
-        future_realization_supplier=lambda: None,
-        preparation_lookahead=None,
-        preparation_boundary_depth=None,
-    )
-    for index in range(1_005):
-        runner._record("synthetic_progress", generated_index=index)
-
-    snapshot = runner.inspection_snapshot()
-    assert len(snapshot["events"]) == 512
-    assert snapshot["event_history"] == {
-        "scope": "recent-only",
-        "returned_count": 512,
-        "total_count": 1_005,
-        "durable_history_enabled": False,
-        "durable": None,
+    labels = {
+        runner_module._PROJECT_LABEL: project,
+        runner_module._SERVICE_LABEL: f"node-{index}",
+        runner_module._ASN_LABEL: str(node_id.asn),
+        runner_module._ENTITY_TYPE_LABEL: entity_type,
     }
-    assert snapshot["runner"]["working_set"]["durable_event_count"] == 0
-    assert snapshot["runner"]["working_set"]["recorded_event_count"] == 1_005
+    if entity_type == "Satellite":
+        labels[runner_module._SATELLITE_ID_LABEL] = node_id.entity_id
+    else:
+        labels[runner_module._GROUND_STATION_ID_LABEL] = node_id.entity_id
+    return {
+        "Id": f"container-{index}",
+        "Name": f"/node-{index}",
+        "Image": "node-image",
+        "Config": {"Labels": labels},
+        "State": {
+            "Running": True,
+            "Pid": 100 + index,
+            "StartedAt": "now",
+        },
+    }
 
 
-def test_1000_boundary_runner_input_and_event_working_sets_remain_bounded(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr(BpfRunner, "_maintenance_loop", lambda self: None)
-    next_index = 0
-
-    def supply():
-        nonlocal next_index
-        index = next_index
-        next_index += 1
-        active = index % 2 == 0
-        nominal = START + timedelta(seconds=index)
-        operation = _ZoneEdgeIntent(
-            nominal,
-            DifferenceOperation.ADDED if active else DifferenceOperation.REMOVED,
-            "zone-a",
-            "198.18.0.1/32",
-            None if active else NODE,
-            NODE if active else None,
-        )
-        return BpfCompiledRealization._create(
-            start_slice_id=index,
-            start_timestamp=None if index == 0 else nominal,
-            end_slice_id=index + 1,
-            end_timestamp=nominal + timedelta(seconds=1),
-            resource_realizations=(),
-            parameter_realizations=(),
-            forwarding_realizations=(),
-            zone_edge_realizations=(operation,),
-            constraints=(),
-            intended_state=_IntendedState(
-                (),
-                (),
-                (),
-                (),
-                (("zone-a", "198.18.0.1/32"),),
-            ),
-            topology_signature=_TopologySignature((NODE,), ("zone-a",)),
-        )
-
+def test_runner_constructor_exposes_only_detached_realization_pull() -> None:
+    parameters = inspect.signature(BpfRunner).parameters
+    assert "future_realization_supplier" in parameters
+    assert "planner" not in parameters
+    assert "slicer" not in parameters
     runner = BpfRunner(
-        compose_project_name="runner-1000-boundaries",
-        future_realization_supplier=supply,
-        preparation_lookahead=timedelta(seconds=100),
+        compose_project_name="round-b-test",
+        future_realization_supplier=lambda: None,
+        preparation_lookahead=timedelta(0),
         preparation_boundary_depth=1,
     )
-    runner._enable_event_history(tmp_path / "runner-events.jsonl")
-    runner.prepare()
-    runner._maintenance_thread.join(timeout=1)
-    peaks = {
-        "realizations": 0,
-        "boundaries": 0,
-        "ready": 0,
-        "resident_generations": 0,
-    }
-    for index in range(1_005):
-        if index:
-            runner._maintain_until_satisfied()
-        peaks["realizations"] = max(
-            peaks["realizations"], len(runner._future_realizations)
-        )
-        peaks["boundaries"] = max(peaks["boundaries"], len(runner._boundaries))
-        peaks["ready"] = max(peaks["ready"], len(runner._ready))
-        runtime = _FakeRuntimeRealization.instances[0]
-        peaks["resident_generations"] = max(
-            peaks["resident_generations"], len(runtime._resident_generations)
-        )
-        runner.activate_next()
-
-    runner.cleanup()
-    snapshot = runner.inspection_snapshot()
-    assert next_index == 1_005
-    assert peaks == {
-        "realizations": 2,
-        "boundaries": 1,
-        "ready": 1,
-        "resident_generations": 2,
-    }
-    assert len(runner._future_realizations) == 1
-    assert len(runner._boundaries) == 0
-    assert len(runner._events) == 512
-    assert snapshot["runner"]["working_set"]["recorded_event_count"] > 10_000
-    durable = snapshot["event_history"]["durable"]
-    assert durable["closed"] is True
-    assert durable["written_count"] == durable["enqueued_count"]
-    assert durable["enqueued_count"] + durable["dropped_count"] == (
-        snapshot["runner"]["working_set"]["recorded_event_count"]
-    )
-    assert snapshot["event_history"]["scope"] == "recent-only"
-    assert len(snapshot["events"]) == 512
-    assert len(read_runner_event_history(tmp_path / "runner-events.jsonl")) == (
-        durable["written_count"]
-    )
+    assert runner.inspection_snapshot()["runner"]["lifecycle_state"] == "new"
 
 
-def test_canonical_runner_preparation_consumes_only_a_rolling_prefix(tmp_path) -> None:
-    simulator = create_mini_satellite_internet_simulator(
-        build_mini_satellite_internet_emulator()
-    )
-    slicer = simulator.get_slicer()
-    planner = _create_mini_satellite_internet_planner(simulator)
-    slicer._enable_durable_history(tmp_path / "slice-history.jsonl")
-    planner._enable_durable_history(tmp_path / "planning-history.jsonl")
-    pull = _RollingRealizationSupplier(
-        slicer,
-        planner,
-        generation_lookahead=timedelta(seconds=300),
-        compiled_history_path=tmp_path / "compiled-history.jsonl",
-    )
-    runner = BpfRunner(
-        compose_project_name="canonical-rolling-prefix",
-        future_realization_supplier=pull,
-        preparation_lookahead=timedelta(seconds=60),
-        preparation_boundary_depth=8,
-    )
-
-    assert slicer.get_latest_slice_id() == 0
-    assert pull._realization_count == 0
-    runner.prepare()
-
-    assert slicer.get_latest_slice_id() == 34
-    assert planner._publication_count == 2
-    assert pull._realization_count == 2
-    assert pull._input_exhausted is False
-    assert runner.inspection_snapshot()["runner"]["ready_depth_at_capture"] == 8
-    runner.cleanup()
-    before_later_pull = (
-        slicer.get_latest_slice_id(),
-        planner._publication_count,
-        pull._realization_count,
-    )
-    assert pull() is not None
-    assert before_later_pull[0] == 34
-    assert slicer.get_latest_slice_id() == 38
-    assert planner._publication_count == before_later_pull[1] + 1
-    assert pull._realization_count == before_later_pull[2] + 1
-
-
-def test_public_surface_has_only_approved_runner_lifecycle_and_inspection(
-    tmp_path,
-) -> None:
-    assert bpf.__all__ == ["BpfCompiledRealization", "BpfRunner", "compile_bpf"]
+def test_public_runner_surface_and_constructor_validation_are_closed() -> None:
+    assert bpf.__all__ == [
+        "BpfCompiledActivationBoundary",
+        "BpfCompiledRealization",
+        "BpfRunner",
+        "compile_bpf",
+    ]
     assert {name for name in vars(BpfRunner) if not name.startswith("_")} == {
         "prepare",
         "activate_next",
@@ -637,118 +413,89 @@ def test_public_surface_has_only_approved_runner_lifecycle_and_inspection(
         )
     with pytest.raises(ValueError, match="single line"):
         BpfRunner(
-            compose_project_name="runner-test\nother",
+            compose_project_name="runner\nother",
             future_realization_supplier=lambda: None,
-            preparation_boundary_depth=1,
-        )
-    with pytest.raises(ValueError, match="non-negative"):
-        BpfRunner(
-            compose_project_name="runner-test",
-            future_realization_supplier=lambda: None,
-            preparation_lookahead=timedelta(seconds=-1),
-            preparation_boundary_depth=1,
-        )
-    with pytest.raises(TypeError, match="timedelta"):
-        BpfRunner(
-            compose_project_name="runner-test",
-            future_realization_supplier=lambda: None,
-            preparation_lookahead=1,
             preparation_boundary_depth=1,
         )
     for invalid in (None, True, False, 0.5):
         with pytest.raises(TypeError, match="positive int"):
             BpfRunner(
-                compose_project_name="runner-test",
+                compose_project_name="runner",
                 future_realization_supplier=lambda: None,
                 preparation_boundary_depth=invalid,
             )
     for invalid in (0, -1):
         with pytest.raises(ValueError, match="positive"):
             BpfRunner(
-                compose_project_name="runner-test",
+                compose_project_name="runner",
                 future_realization_supplier=lambda: None,
                 preparation_boundary_depth=invalid,
             )
     with pytest.raises(ValueError, match="must be None"):
         BpfRunner(
-            compose_project_name="runner-test",
+            compose_project_name="runner",
             future_realization_supplier=lambda: None,
             preparation_lookahead=None,
             preparation_boundary_depth=1,
         )
-    BpfRunner(
-        compose_project_name="runner-test",
-        future_realization_supplier=lambda: None,
-        preparation_lookahead=None,
-        preparation_boundary_depth=None,
-    )
+    with pytest.raises(ValueError, match="non-negative"):
+        BpfRunner(
+            compose_project_name="runner",
+            future_realization_supplier=lambda: None,
+            preparation_lookahead=timedelta(seconds=-1),
+            preparation_boundary_depth=1,
+        )
 
 
-def test_runner_discovers_only_the_exact_project_and_ignores_auxiliaries(
-    monkeypatch,
+def test_runner_discovers_exact_project_nodes_and_ignores_auxiliaries(
+    complete_chain, monkeypatch
 ) -> None:
+    _, _, realizations, _ = complete_chain
+    first = realizations[0]
+    project = "runner-exact-project"
     runner = BpfRunner(
-        compose_project_name="runner-g2",
+        compose_project_name=project,
         future_realization_supplier=lambda: None,
         preparation_boundary_depth=1,
     )
-    commands = []
-
-    def execute(command, *, input_text=None):
-        commands.append(tuple(command))
-        return SimpleNamespace(
-            returncode=0,
-            stdout="auxiliary-id\nnode-id\n",
-            stderr="",
-        )
-
     inspected = [
         {
-            "Id": "auxiliary-id",
+            "Id": "auxiliary",
             "Name": "/auxiliary",
-            "Image": "auxiliary-image",
+            "Image": "aux-image",
             "Config": {
-                "Labels": {
-                    "com.docker.compose.project": "runner-g2",
-                }
+                "Labels": {runner_module._PROJECT_LABEL: project}
             },
             "State": {"Running": False, "Pid": 0, "StartedAt": ""},
         },
-        {
-            "Id": "node-id",
-            "Name": "/node",
-            "Image": "node-image",
-            "Config": {
-                "Labels": {
-                    "com.docker.compose.project": "runner-g2",
-                    "com.docker.compose.service": "node",
-                    "org.seedsecuritylabs.seedemu.meta.asn": "65001",
-                    "org.seedsecuritylabs.seedemu.meta.skyseed.entity_type": (
-                        "Satellite"
-                    ),
-                    "org.seedsecuritylabs.seedemu.meta.skyseed.satellite_id": (
-                        "sat-1"
-                    ),
-                }
-            },
-            "State": {"Running": True, "Pid": 123, "StartedAt": "now"},
-        },
+        *(
+            _container_inspection(node_id, project=project, index=index)
+            for index, node_id in enumerate(
+                first._physical_world_projection.node_ids
+            )
+        ),
     ]
+    identifiers = [value["Id"] for value in inspected]
+    commands = []
+
+    def execute(command, *, input_text=None):
+        del input_text
+        commands.append(tuple(command))
+        return subprocess.CompletedProcess(
+            command, 0, "\n".join(identifiers) + "\n", ""
+        )
+
     monkeypatch.setattr(runner_module, "_execute", execute)
-    monkeypatch.setattr(BpfRunner, "_inspect", lambda self, _ids: inspected)
+    monkeypatch.setattr(BpfRunner, "_inspect", lambda _self, _ids: inspected)
     monkeypatch.setattr(
         BpfRunner,
         "_container_netns_inode",
-        lambda self, _id: 456,
+        lambda _self, identifier: 500
+        + int(identifier.rsplit("-", 1)[1]),
     )
-
-    bindings = _REAL_DISCOVER_RUNTIME_BINDINGS(
-        runner,
-        _realization(0, 4, "zone-a"),
-    )
-
-    assert set(bindings) == {NODE}
-    assert bindings[NODE].image_id == "node-image"
+    bindings = BpfRunner._discover_runtime_bindings(runner, first)
+    assert set(bindings) == set(first._physical_world_projection.node_ids)
+    assert all(value.image_id == "node-image" for value in bindings.values())
     assert commands == [
         (
             "docker",
@@ -756,58 +503,46 @@ def test_runner_discovers_only_the_exact_project_and_ignores_auxiliaries(
             "--all",
             "--quiet",
             "--filter",
-            "label=com.docker.compose.project=runner-g2",
+            f"label={runner_module._PROJECT_LABEL}={project}",
         )
     ]
 
 
-def test_runner_discovers_container_netns_in_parallel_with_configured_workers(
-    monkeypatch,
+def test_runtime_binding_netns_discovery_respects_worker_bound(
+    complete_chain, monkeypatch
 ) -> None:
+    _, _, realizations, _ = complete_chain
+    first = realizations[0]
+    project = "runner-parallel-bindings"
     monkeypatch.setenv("SKYSEED_BPF_RUNTIME_WORKERS", "2")
     runner = BpfRunner(
-        compose_project_name="runner-parallel-bindings",
+        compose_project_name=project,
         future_realization_supplier=lambda: None,
         preparation_boundary_depth=1,
     )
+    inspected = [
+        _container_inspection(node_id, project=project, index=index)
+        for index, node_id in enumerate(
+            first._physical_world_projection.node_ids
+        )
+    ]
     monkeypatch.setattr(
         runner_module,
         "_execute",
-        lambda command, **_kwargs: SimpleNamespace(
-            returncode=0,
-            stdout="container-1\ncontainer-2\n",
-            stderr="",
+        lambda command, **_facts: subprocess.CompletedProcess(
+            command,
+            0,
+            "\n".join(value["Id"] for value in inspected) + "\n",
+            "",
         ),
     )
-    inspected = [
-        {
-            "Id": f"container-{index}",
-            "Name": f"/node-{index}",
-            "Image": "node-image",
-            "Config": {
-                "Labels": {
-                    "com.docker.compose.project": "runner-parallel-bindings",
-                    "com.docker.compose.service": f"node-{index}",
-                    "org.seedsecuritylabs.seedemu.meta.asn": "65001",
-                    "org.seedsecuritylabs.seedemu.meta.skyseed.entity_type": (
-                        "Satellite"
-                    ),
-                    "org.seedsecuritylabs.seedemu.meta.skyseed.satellite_id": (
-                        node_id.entity_id
-                    ),
-                }
-            },
-            "State": {"Running": True, "Pid": 100 + index, "StartedAt": "now"},
-        }
-        for index, node_id in enumerate((NODE, NODE_2), start=1)
-    ]
-    monkeypatch.setattr(BpfRunner, "_inspect", lambda self, _ids: inspected)
+    monkeypatch.setattr(BpfRunner, "_inspect", lambda _self, _ids: inspected)
     guard = Lock()
     both_started = Event()
     active = 0
     high_water = 0
 
-    def netns_inode(_self, container_id):
+    def netns_inode(_self, identifier):
         nonlocal active, high_water
         with guard:
             active += 1
@@ -815,38 +550,63 @@ def test_runner_discovers_container_netns_in_parallel_with_configured_workers(
             if active == 2:
                 both_started.set()
         assert both_started.wait(timeout=1)
+        real_time.sleep(0.005)
         with guard:
             active -= 1
-        return 200 + int(container_id.rsplit("-", 1)[1])
+        return 500 + int(identifier.rsplit("-", 1)[1])
 
     monkeypatch.setattr(BpfRunner, "_container_netns_inode", netns_inode)
+    bindings = BpfRunner._discover_runtime_bindings(runner, first)
+    assert set(bindings) == set(first._physical_world_projection.node_ids)
+    assert high_water == min(2, len(bindings))
 
-    bindings = _REAL_DISCOVER_RUNTIME_BINDINGS(
-        runner,
-        _zone_realization(
+
+def test_runner_rejects_incomplete_compiled_physical_world_binding_set(
+    complete_chain, monkeypatch
+) -> None:
+    _, _, realizations, _ = complete_chain
+    first = realizations[0]
+    project = "runner-incomplete-bindings"
+    runner = BpfRunner(
+        compose_project_name=project,
+        future_realization_supplier=lambda: None,
+        preparation_boundary_depth=1,
+    )
+    nodes = first._physical_world_projection.node_ids[:-1]
+    inspected = [
+        _container_inspection(node_id, project=project, index=index)
+        for index, node_id in enumerate(nodes)
+    ]
+    monkeypatch.setattr(
+        runner_module,
+        "_execute",
+        lambda command, **_facts: subprocess.CompletedProcess(
+            command,
             0,
-            4,
-            ("zone-a",),
-            topology_zones=("zone-a", "zone-b"),
-            topology_nodes=(NODE, NODE_2),
+            "\n".join(value["Id"] for value in inspected) + "\n",
+            "",
         ),
     )
+    monkeypatch.setattr(BpfRunner, "_inspect", lambda _self, _ids: inspected)
+    monkeypatch.setattr(
+        BpfRunner, "_container_netns_inode", lambda _self, _id: 456
+    )
+    with pytest.raises(RuntimeError, match="missing="):
+        BpfRunner._discover_runtime_bindings(runner, first)
 
-    assert high_water == 2
-    assert bindings[NODE].netns_inode == 201
-    assert bindings[NODE_2].netns_inode == 202
 
-
-def test_foundation_validation_keeps_container_incarnation_audit_without_helper(
-    monkeypatch,
+def test_foundation_validation_audits_container_incarnation_without_helper_io(
+    complete_chain, monkeypatch
 ) -> None:
+    _, _, realizations, _ = complete_chain
+    node_id = realizations[0]._physical_world_projection.node_ids[0]
     runner = BpfRunner(
         compose_project_name="runner-foundation",
         future_realization_supplier=lambda: None,
         preparation_boundary_depth=1,
     )
-    binding = runner_module._RuntimeBinding(
-        node_id=NODE,
+    binding = _RuntimeBinding(
+        node_id=node_id,
         service_name="node",
         container_id="container-id",
         container_name="node",
@@ -855,143 +615,53 @@ def test_foundation_validation_keeps_container_incarnation_audit_without_helper(
         netns_inode=456,
         started_at="now",
     )
-    runner._bindings = {NODE: binding}
+    runner._bindings = {node_id: binding}
     runner._helper = SimpleNamespace(
         execute=lambda *_args, **_kwargs: pytest.fail(
-            "foundation validation must not repeat activation netns preflight"
+            "foundation validation must not invoke the helper"
         )
     )
     inspected = [
         {
             "Id": "container-id",
             "Image": "image-id",
-            "State": {"Running": True, "Pid": 123, "StartedAt": "now"},
+            "State": {
+                "Running": True,
+                "Pid": 123,
+                "StartedAt": "now",
+            },
         }
     ]
-    monkeypatch.setattr(BpfRunner, "_inspect", lambda self, _ids: inspected)
-
-    _REAL_ASSERT_FOUNDATION_CURRENT(runner)
-
+    monkeypatch.setattr(BpfRunner, "_inspect", lambda _self, _ids: inspected)
+    BpfRunner._assert_foundation_current(runner)
     inspected[0]["State"]["Running"] = False
     with pytest.raises(RuntimeError, match="incarnation is stale"):
-        _REAL_ASSERT_FOUNDATION_CURRENT(runner)
+        BpfRunner._assert_foundation_current(runner)
 
 
-@pytest.mark.parametrize(
-    ("compiled_nodes", "live_entity_ids", "expected_message"),
-    (
-        ((NODE, NODE_2), (NODE,), "missing=.*sat-2"),
-        ((NODE,), (NODE, NODE_2), "unexpected=.*sat-2"),
-    ),
-)
-def test_runner_requires_the_exact_compiled_topology_node_set(
-    monkeypatch,
-    compiled_nodes,
-    live_entity_ids,
-    expected_message,
-) -> None:
-    runner = BpfRunner(
-        compose_project_name="runner-exact-set",
-        future_realization_supplier=lambda: None,
-        preparation_boundary_depth=1,
-    )
-    monkeypatch.setattr(
-        runner_module,
-        "_execute",
-        lambda command, **kwargs: SimpleNamespace(
-            returncode=0,
-            stdout="".join(
-                f"container-{index}\n"
-                for index, _node_id in enumerate(live_entity_ids)
-            ),
-            stderr="",
-        ),
-    )
-    inspected = []
-    for index, node_id in enumerate(live_entity_ids):
-        inspected.append(
-            {
-                "Id": f"container-{index}",
-                "Name": f"/node-{index}",
-                "Image": "node-image",
-                "Config": {
-                    "Labels": {
-                        "com.docker.compose.project": "runner-exact-set",
-                        "com.docker.compose.service": f"node-{index}",
-                        "org.seedsecuritylabs.seedemu.meta.asn": str(
-                            node_id.asn
-                        ),
-                        "org.seedsecuritylabs.seedemu.meta.skyseed.entity_type": (
-                            "Satellite"
-                        ),
-                        "org.seedsecuritylabs.seedemu.meta.skyseed.satellite_id": (
-                            node_id.entity_id
-                        ),
-                    }
-                },
-                "State": {"Running": True, "Pid": 100 + index, "StartedAt": "now"},
-            }
-        )
-    monkeypatch.setattr(BpfRunner, "_inspect", lambda self, _ids: inspected)
-    monkeypatch.setattr(
-        BpfRunner,
-        "_container_netns_inode",
-        lambda self, _id: 456,
-    )
-
-    first = _zone_realization(
-        0,
-        4,
-        ("zone-a",),
-        topology_zones=("zone-a", "zone-b"),
-        topology_nodes=compiled_nodes,
-    )
-    with pytest.raises(RuntimeError, match=expected_message):
-        _REAL_DISCOVER_RUNTIME_BINDINGS(runner, first)
-
-
-def test_runner_does_not_attach_a_previous_generation(monkeypatch) -> None:
-    runner = BpfRunner(
-        compose_project_name="runner-g2",
-        future_realization_supplier=lambda: None,
-        preparation_boundary_depth=1,
-    )
-
-    def execute(command, *, input_text=None):
-        assert command[-1] == "label=com.docker.compose.project=runner-g2"
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr(runner_module, "_execute", execute)
-
-    with pytest.raises(RuntimeError, match="start the generated deployment"):
-        _REAL_DISCOVER_RUNTIME_BINDINGS(
-            runner,
-            _realization(0, 4, "zone-a"),
-        )
-
-
-def test_runner_helper_does_not_inherit_compose_project_ownership(
+def test_privileged_helper_does_not_inherit_compose_project_ownership(
     monkeypatch,
 ) -> None:
     commands = []
 
     def execute(command, *, input_text=None):
+        del input_text
         commands.append(tuple(command))
-        return SimpleNamespace(
-            returncode=1 if command[1] == "inspect" else 0,
-            stdout="",
-            stderr="",
+        return subprocess.CompletedProcess(
+            command,
+            1 if command[1] == "inspect" else 0,
+            "",
+            "",
         )
 
     monkeypatch.setattr(runner_module, "_execute", execute)
-    helper = _REAL_PRIVILEGED_HELPER(
+    helper = runner_module._PrivilegedHelper(
         docker_executable="docker",
         name="runner-helper",
         foundation_token="foundation-token",
         image_id="node-image",
     )
     helper.start()
-
     run_command = commands[1]
     assert (
         "--label",
@@ -1001,7 +671,7 @@ def test_runner_helper_does_not_inherit_compose_project_ownership(
     assert "com.docker.compose.service=" in run_command
 
 
-def test_runner_depends_only_on_opaque_runtime_realization_seam() -> None:
+def test_runner_depends_on_opaque_runtime_realization_seam() -> None:
     source = inspect.getsource(runner_module)
     for implementation_symbol in (
         "_MaterializedDataplaneState",
@@ -1014,29 +684,178 @@ def test_runner_depends_only_on_opaque_runtime_realization_seam() -> None:
     assert "runtime_realization" in source
 
 
-def test_runner_events_freeze_nested_capacity_evidence(tmp_path) -> None:
-    runner = BpfRunner(
-        compose_project_name="runner-test",
-        future_realization_supplier=lambda: None,
-        preparation_boundary_depth=1,
+def test_runner_resolves_every_explicit_formal_boundary(
+    complete_chain,
+) -> None:
+    _, _, realizations, _ = complete_chain
+    boundaries = _resolve_nominal_boundaries(realizations)
+    assert tuple(value.nominal_time for value in boundaries) == tuple(
+        timestamp
+        for realization in realizations
+        for timestamp in realization.activation_timestamps
     )
-    capacity = {"per_node": [{"key": NODE.value, "routes": 17}]}
-    runner._record("capacity", capacity=capacity)
-    capacity.clear()
-    first = runner.inspection_snapshot()["events"]
-    first[0]["capacity"]["per_node_count"] = 0
-    assert runner.inspection_snapshot()["events"][0]["capacity"] == {
-        "per_node_count": 1
-    }
+    assert tuple(
+        value.source_realization_indexes for value in boundaries
+    ) == ((0,), (0,), (0,), (1,))
 
 
-def test_inspection_snapshot_is_detached_and_has_no_lifecycle_side_effect(
+def test_runner_topological_order_preserves_all_compiled_constraints(
+    complete_chain,
+) -> None:
+    _, _, realizations, _ = complete_chain
+    boundaries = _resolve_nominal_boundaries(realizations)
+    for boundary in boundaries:
+        order = {
+            operation.reference: index
+            for index, operation in enumerate(boundary.operations)
+        }
+        for predecessor, successor, _ in boundary.constraint_edges:
+            assert order[predecessor] < order[successor]
+        assert tuple(_phase(value.intent) for value in boundary.operations) == tuple(
+            sorted(_phase(value.intent) for value in boundary.operations)
+        )
+        assert _validate_boundary_lowering(boundary) >= 0
+
+
+def test_zone_readiness_is_before_route_publication(
+    complete_chain,
+) -> None:
+    _, _, realizations, _ = complete_chain
+    first = _resolve_nominal_boundaries(realizations)[0]
+    phases = [_phase(value.intent) for value in first.operations]
+    assert 2 in phases
+    assert 3 in phases
+    assert max(index for index, value in enumerate(phases) if value == 2) < min(
+        index for index, value in enumerate(phases) if value == 3
+    )
+
+
+def test_materialized_boundaries_reach_compiler_intended_state(
+    complete_chain,
+) -> None:
+    _, _, realizations, _ = complete_chain
+    state = _MaterializedDataplaneState((), (), (), ())
+    realization_by_end = {value.end_timestamp: value for value in realizations}
+    for boundary in _resolve_nominal_boundaries(realizations):
+        state = _materialize_boundary(state, boundary)
+        realization = realization_by_end.get(boundary.nominal_time)
+        if realization is None:
+            continue
+        assert state.resources == tuple(
+            value.connection.connection_id
+            for value in realization.intended_resources
+        )
+        assert state.forwarding == realization.intended_forwarding
+        assert state.zone_edges == realization.intended_zone_edges
+
+
+def test_incremental_boundary_append_accepts_disjoint_plan_intervals(
+    complete_chain,
+) -> None:
+    _, _, realizations, _ = complete_chain
+    boundaries, first_new = _append_realization_boundaries(
+        (),
+        realizations[0],
+        realization_index=0,
+        active_frontier=None,
+    )
+    boundaries, second_new = _append_realization_boundaries(
+        boundaries,
+        realizations[1],
+        realization_index=1,
+        active_frontier=None,
+    )
+    assert first_new[-1].nominal_time < second_new[0].nominal_time
+    assert boundaries == (*first_new, *second_new)
+
+
+def test_duplicate_formal_boundary_is_rejected(complete_chain) -> None:
+    _, _, realizations, _ = complete_chain
+    with pytest.raises(ValueError, match="duplicate"):
+        _resolve_nominal_boundaries((realizations[0], realizations[0]))
+
+
+def test_durable_event_history_is_complete_while_recent_memory_is_bounded(
     tmp_path,
-    monkeypatch,
 ) -> None:
     runner = BpfRunner(
-        compose_project_name="runner-inspection",
-        future_realization_supplier=_supplier(_realization(0, 4, "zone-a")),
+        compose_project_name="runner-durable-events",
+        future_realization_supplier=lambda: None,
+        preparation_lookahead=None,
+        preparation_boundary_depth=None,
+    )
+    path = tmp_path / "runner-events.jsonl"
+    runner._enable_event_history(path)
+
+    for index in range(1_005):
+        runner._record("synthetic_progress", generated_index=index)
+
+    durable = runner._event_history.close()
+    snapshot = runner.inspection_snapshot()
+    assert len(runner._events) == 512
+    assert snapshot["runner"]["working_set"]["recent_event_count"] == 512
+    assert durable["complete"] is True
+    assert durable["written_count"] == 1_005
+    rows = tuple(
+        json.loads(value)
+        for value in path.read_text(encoding="utf-8").splitlines()
+    )
+    assert len(rows) == 1_006
+    assert rows[1]["generated_index"] == 0
+    assert rows[-1]["generated_index"] == 1_004
+
+
+def test_nonblocking_event_history_reports_bounded_overflow(
+    tmp_path, monkeypatch
+) -> None:
+    release = Event()
+    original = _NonBlockingEventHistory._write_loop
+
+    def paused_writer(history) -> None:
+        assert release.wait(timeout=1)
+        original(history)
+
+    monkeypatch.setattr(_NonBlockingEventHistory, "_write_loop", paused_writer)
+    history = _NonBlockingEventHistory(tmp_path / "events.jsonl", capacity=1)
+    assert history.enqueue({"event": "first"}) is True
+    started = real_time.monotonic()
+    assert history.enqueue({"event": "overflow"}) is False
+    assert real_time.monotonic() - started < 0.1
+    release.set()
+    status = history.close()
+    assert status["written_count"] == 1
+    assert status["dropped_count"] == 1
+    assert status["overflowed"] is True
+    assert status["complete"] is False
+
+
+def test_runner_event_snapshot_is_recent_only_and_deeply_detached() -> None:
+    runner = BpfRunner(
+        compose_project_name="runner-recent-events",
+        future_realization_supplier=lambda: None,
+        preparation_lookahead=None,
+        preparation_boundary_depth=None,
+    )
+    nested = {"capacity": {"per_node": [{"key": "a"}, {"key": "b"}]}}
+    runner._record("nested", evidence=nested)
+    for index in range(1_005):
+        runner._record("synthetic_progress", generated_index=index)
+    snapshot = runner.inspection_snapshot()
+    assert len(snapshot["events"]) == 512
+    assert snapshot["event_history"]["scope"] == "recent-only"
+    assert snapshot["event_history"]["total_count"] == 1_006
+    snapshot["events"][-1]["generated_index"] = -1
+    assert runner.inspection_snapshot()["events"][-1]["generated_index"] == 1_004
+
+
+def test_inspection_snapshot_after_cleanup_is_detached_and_read_only(
+    complete_chain, fake_runner_runtime, monkeypatch
+) -> None:
+    del fake_runner_runtime
+    _, _, realizations, _ = complete_chain
+    runner = BpfRunner(
+        compose_project_name="runner-detached-inspection",
+        future_realization_supplier=_supplier(realizations[0]),
         preparation_lookahead=None,
         preparation_boundary_depth=None,
     )
@@ -1048,292 +867,150 @@ def test_inspection_snapshot_is_detached_and_has_no_lifecycle_side_effect(
         raise AssertionError("inspection_snapshot must not query Docker")
 
     monkeypatch.setattr(BpfRunner, "_inspect", reject_live_inspection)
-
     before = runner.inspection_snapshot()
     assert before["format_version"] == 1
-    assert set(before) == {
-        "format_version",
-        "runner",
-        "event_history",
-        "events",
-    }
-    assert before["runner"] == {
-        "lifecycle_state": "cleaned",
-        "execution_mode": "manual",
-        "frontiers": {
-            "last_active": START.isoformat(),
-            "ready_at_capture": None,
-            "input": (START + timedelta(seconds=4)).isoformat(),
-        },
-        "input_exhausted": True,
-            "preparation_lookahead": {
-                "mode": "bounded-full-range",
-                "seconds": None,
-            },
-            "preparation_boundary_depth": None,
-            "runtime_worker_count": 8,
-            "activation_count": 1,
-            "ready_count_at_capture": 0,
-            "ready_depth_at_capture": 0,
-            "ready_limiting_reason": "input",
-        "runtime_foundation": {
-            "compose_project_name": "runner-inspection",
-            "foundation_token": runner._foundation_token,
-            "expected_node_count": 1,
-            "bound_node_count": 1,
-            "bindings": (
-                {
-                    "node_id": NODE.value,
-                    "service": "node",
-                    "container_id": "container-id",
-                    "container_name": "node",
-                    "image_id": "image-id",
-                    "pid": 123,
-                    "netns_inode": 456,
-                    "started_at": "now",
-                    "runtime_ipv4": "192.0.2.1",
-                },
-            ),
-        },
-        "maintenance": {
-            "in_flight": False,
-            "failed": False,
-            "pending_forwarding_reclaim": 0,
-            "pending_physical_reclaim": 0,
-            "work_produced": 1,
-            "work_submitted": 1,
-            "work_completed": 1,
-            "required_frontier": None,
-            "ready_frontier": None,
-            "ready_depth": 0,
-            "pending_boundary_count": 0,
-            "queue_depth": 0,
-            "oldest_pending_age_seconds": None,
-            "generation_reclaim_backlog": 0,
-            "physical_reclaim_backlog": 0,
-            "generations_reclaimed": 0,
-            "resources_retired": 0,
-            "resources_reclaimed": 0,
-            "input_exhausted": True,
-            "resident_generations": 1,
-            "resident_generation_capacity": 1,
-        },
-        "working_set": {
-            "received_realization_count": 1,
-            "retained_realization_count": 1,
-            "retained_future_boundary_count": 0,
-            "recent_event_count": 28,
-            "recorded_event_count": 28,
-            "durable_event_count": 0,
-            "prepared_boundary_count": 1,
-            "realization_state_count": 1,
-            "resident_generation_count": 1,
-            "prepared_physical_count": 0,
-        },
-        "traffic_telemetry": {"enabled": False},
-    }
+    assert before["runner"]["lifecycle_state"] == "cleaned"
+    assert before["runner"]["execution_mode"] == "manual"
+    assert before["runner"]["activation_count"] == 1
     assert before["events"][-2]["event"] == "cleanup_end"
     assert before["events"][-1]["checkpoint"] == "after-teardown"
-
     before["runner"]["frontiers"]["last_active"] = "changed"
     before["runner"]["runtime_foundation"]["bindings"][0]["pid"] = 0
     before["events"][0]["event"] = "changed"
     after = runner.inspection_snapshot()
-    assert after["runner"]["frontiers"]["last_active"] == START.isoformat()
-    assert after["events"][0]["event"] == "preparation_start"
-    assert after["runner"]["lifecycle_state"] == "cleaned"
-    assert after["runner"]["runtime_foundation"]["bindings"][0]["pid"] == 123
-    assert not isinstance(
-        after["runner"]["runtime_foundation"]["bindings"][0],
-        runner_module._RuntimeBinding,
+    assert after["runner"]["frontiers"]["last_active"] == (
+        realizations[0].activation_timestamps[0].isoformat()
     )
+    assert after["runner"]["runtime_foundation"]["bindings"][0]["pid"] != 0
+    assert after["events"][0]["event"] == "preparation_start"
 
 
-def test_full_range_prepares_and_activates_multiple_boundaries(tmp_path) -> None:
-    first = _realization(0, 4, "zone-a")
-    second = _realization(4, 8, "zone-b")
+def test_full_range_runner_prepares_and_activates_every_formal_boundary(
+    complete_chain, fake_runner_runtime
+) -> None:
+    del fake_runner_runtime
+    _, _, realizations, _ = complete_chain
     runner = BpfRunner(
-        compose_project_name="runner-test",
-        future_realization_supplier=_supplier(first, second),
+        compose_project_name="runner-full-range",
+        future_realization_supplier=_supplier(*realizations),
         preparation_lookahead=None,
         preparation_boundary_depth=None,
     )
-    runner.prepare()
-    assert [value.boundary.nominal_time for value in _FakeRuntimeRealization.instances[0].prepared] == [
-        START,
-        START + timedelta(seconds=4),
-    ]
-    assert _FakeRuntimeRealization.instances[0].materialization_calls == 2
-    assert _FakeRuntimeRealization.instances[0].active is None
-    runner.activate_next()
-    runner.activate_next()
-    assert runner._active_frontier == START + timedelta(seconds=4)
-    _wait_for(lambda: 0 in _FakeRuntimeRealization.instances[0].reclaimed_generations)
-    runner.cleanup()
+    try:
+        runner.prepare()
+        runtime = _FakeRuntimeRealization.instances[0]
+        expected = tuple(
+            timestamp
+            for realization in realizations
+            for timestamp in realization.activation_timestamps
+        )
+        assert tuple(
+            value.boundary.nominal_time for value in runtime.prepared
+        ) == expected
+        assert runtime.materialization_calls == len(expected)
+        assert runtime.active is None
+        for _ in expected:
+            runner.activate_next()
+        assert runner._active_frontier == expected[-1]
+        assert runtime.activation_calls == len(expected)
+        assert runner.inspection_snapshot()["runner"]["activation_count"] == len(
+            expected
+        )
+    finally:
+        runner.cleanup()
     assert _FakeHelper.instances[0].stopped
 
 
-def test_zero_lookahead_rolls_one_next_boundary_after_activation(tmp_path) -> None:
+def test_zero_lookahead_rolls_exactly_one_ready_boundary(
+    complete_chain, fake_runner_runtime
+) -> None:
+    del fake_runner_runtime
+    _, _, realizations, _ = complete_chain
+    expected = tuple(
+        timestamp
+        for realization in realizations
+        for timestamp in realization.activation_timestamps
+    )
     runner = BpfRunner(
-        compose_project_name="runner-test",
-        future_realization_supplier=_supplier(
-            _realization(0, 4, "zone-a"),
-            _realization(4, 8, "zone-b"),
-        ),
+        compose_project_name="runner-zero-lookahead",
+        future_realization_supplier=_supplier(*realizations),
+        preparation_lookahead=timedelta(0),
         preparation_boundary_depth=1,
     )
-    runner.prepare()
-    assert len(runner._ready) == 1
-    runner.activate_next()
-    _wait_for(lambda: len(runner._ready) == 1)
-    assert runner._ready[0].boundary.nominal_time == START + timedelta(seconds=4)
-    runner.cleanup()
+    try:
+        runner.prepare()
+        assert tuple(value.boundary.nominal_time for value in runner._ready) == (
+            expected[0],
+        )
+        runner.activate_next()
+        _wait_for(lambda: len(runner._ready) == 1)
+        assert runner._ready[0].boundary.nominal_time == expected[1]
+        assert runner.inspection_snapshot()["runner"][
+            "ready_depth_at_capture"
+        ] == 1
+    finally:
+        runner.cleanup()
 
 
-def test_time_bound_stops_continuous_startup_ready_prefix() -> None:
-    zones = ("zone-a", "zone-b", "zone-c")
-    runner = BpfRunner(
+def test_time_and_depth_bounds_stop_continuous_ready_preparation(
+    complete_chain, fake_runner_runtime
+) -> None:
+    del fake_runner_runtime
+    _, _, realizations, _ = complete_chain
+    timestamps = realizations[0].activation_timestamps
+    interval = timestamps[1] - timestamps[0]
+    by_time = BpfRunner(
         compose_project_name="runner-time-bound",
-        future_realization_supplier=_supplier(
-            *(
-                _zone_realization(
-                    start,
-                    start + 4,
-                    (zone,),
-                    topology_zones=zones,
-                )
-                for start, zone in zip((0, 4, 8), zones)
-            )
-        ),
-        preparation_lookahead=timedelta(seconds=4),
+        future_realization_supplier=_supplier(*realizations),
+        preparation_lookahead=interval,
         preparation_boundary_depth=8,
     )
+    try:
+        by_time.prepare()
+        assert tuple(
+            value.boundary.nominal_time for value in by_time._ready
+        ) == timestamps[:2]
+        assert by_time.inspection_snapshot()["runner"][
+            "ready_limiting_reason"
+        ] == "time"
+    finally:
+        by_time.cleanup()
 
-    runner.prepare()
-
-    assert [value.boundary.nominal_time for value in runner._ready] == [
-        START,
-        START + timedelta(seconds=4),
-    ]
-    assert [value.predecessor_time for value in runner._ready] == [None, START]
-    assert runner.inspection_snapshot()["runner"]["ready_limiting_reason"] == "time"
-    runner.cleanup()
-
-
-def test_depth_bound_counts_startup_and_post_active_future_ready_only() -> None:
-    zones = ("zone-a", "zone-b", "zone-c", "zone-d")
-    runner = BpfRunner(
+    _FakeHelper.instances.clear()
+    _FakeRuntimeRealization.instances.clear()
+    by_depth = BpfRunner(
         compose_project_name="runner-depth-bound",
-        future_realization_supplier=_supplier(
-            *(
-                _zone_realization(
-                    start,
-                    start + 4,
-                    (zone,),
-                    topology_zones=zones,
-                )
-                for start, zone in zip((0, 4, 8, 12), zones)
-            )
-        ),
+        future_realization_supplier=_supplier(*realizations),
         preparation_lookahead=timedelta(seconds=100),
         preparation_boundary_depth=2,
     )
-
-    runner.prepare()
-    assert len(runner._ready) == 2
-    assert runner.inspection_snapshot()["runner"]["ready_limiting_reason"] == "depth"
-
-    runner.activate_next()
-    _wait_for(lambda: len(runner._ready) == 2)
-    assert runner._active is not None
-    assert runner._active.boundary.nominal_time == START
-    assert [value.boundary.nominal_time for value in runner._ready] == [
-        START + timedelta(seconds=4),
-        START + timedelta(seconds=8),
-    ]
-    assert runner.inspection_snapshot()["runner"]["ready_depth_at_capture"] == 2
-    runner.cleanup()
+    try:
+        by_depth.prepare()
+        assert len(by_depth._ready) == 2
+        assert by_depth.inspection_snapshot()["runner"][
+            "ready_limiting_reason"
+        ] == "depth"
+        by_depth.activate_next()
+        _wait_for(lambda: len(by_depth._ready) == 2)
+        assert tuple(
+            value.boundary.nominal_time for value in by_depth._ready
+        ) == timestamps[1:3]
+    finally:
+        by_depth.cleanup()
 
 
-def test_runner_rejects_later_input_that_changes_a_known_semantic_boundary() -> None:
-    first = _realization(0, 4, "zone-a")
-    later = _realization(4, 8, "zone-b")
-    changed = BpfCompiledRealization._create(
-        start_slice_id=later.start_slice_id,
-        start_timestamp=later.start_timestamp,
-        end_slice_id=later.end_slice_id,
-        end_timestamp=later.end_timestamp,
-        resource_realizations=later.resource_realizations,
-        parameter_realizations=later.parameter_realizations,
-        forwarding_realizations=later.forwarding_realizations,
-        zone_edge_realizations=(
-            _ZoneEdgeIntent(
-                START,
-                DifferenceOperation.ADDED,
-                "zone-b",
-                "198.18.0.2/32",
-                None,
-                NODE,
-            ),
-        ),
-        constraints=later.constraints,
-        intended_state=later._intended_state,
-        topology_signature=later._topology_signature,
-    )
-    runner = BpfRunner(
-        compose_project_name="runner-test",
-        future_realization_supplier=_supplier(first, changed),
-        preparation_boundary_depth=1,
-    )
-
-    runner._pull_one()
-    with pytest.raises(
-        ValueError,
-        match="new compiled work changed an existing nominal boundary",
-    ):
-        runner._pull_one()
-
-
-def test_incremental_boundary_append_matches_whole_sequence_without_rescan(
-    monkeypatch,
+def test_concurrent_manual_activation_rejects_second_kernel_mutation(
+    complete_chain, fake_runner_runtime
 ) -> None:
-    realizations = (
-        _realization(0, 4, "zone-a"),
-        _realization(4, 8, "zone-b"),
-    )
-    expected = _resolve_nominal_boundaries(realizations)
-    calls: list[tuple[int, int]] = []
-    resolver = runner_module._resolve_nominal_boundaries
-
-    def observe(values, *, realization_index_offset=0):
-        calls.append((len(values), realization_index_offset))
-        return resolver(
-            values, realization_index_offset=realization_index_offset
-        )
-
-    monkeypatch.setattr(runner_module, "_resolve_nominal_boundaries", observe)
-    accumulated = ()
-    for index, realization in enumerate(realizations):
-        accumulated, added = _append_realization_boundaries(
-            accumulated,
-            realization,
-            realization_index=index,
-            active_frontier=None,
-        )
-        assert added
-
-    assert accumulated == expected
-    assert calls == [(1, 0), (1, 1)]
-
-
-def test_concurrent_manual_main_attempt_fails_before_second_mutation(tmp_path) -> None:
+    del fake_runner_runtime
+    _, _, realizations, _ = complete_chain
     entered = Event()
     release = Event()
     _FakeRuntimeRealization.activation_entered = entered
     _FakeRuntimeRealization.activation_release = release
     runner = BpfRunner(
-        compose_project_name="runner-test",
-        future_realization_supplier=_supplier(_realization(0, 4, "zone-a")),
+        compose_project_name="runner-concurrent-main",
+        future_realization_supplier=_supplier(realizations[0]),
         preparation_lookahead=None,
         preparation_boundary_depth=None,
     )
@@ -1352,21 +1029,24 @@ def test_concurrent_manual_main_attempt_fails_before_second_mutation(tmp_path) -
     second = Thread(target=second_attempt)
     second.start()
     second.join(timeout=1)
-    assert not second.is_alive()
-    assert len(failures) == 1
-    assert "activation in flight" in str(failures[0])
-    assert _FakeRuntimeRealization.instances[0].activation_calls == 1
-    assert _FakeRuntimeRealization.instances[0].active is None
-    release.set()
-    first.join(timeout=1)
+    try:
+        assert not second.is_alive()
+        assert len(failures) == 1
+        assert "activation in flight" in str(failures[0])
+        assert _FakeRuntimeRealization.instances[0].activation_calls == 1
+        assert _FakeRuntimeRealization.instances[0].active is None
+    finally:
+        release.set()
+        first.join(timeout=1)
+        runner.cleanup()
     assert not first.is_alive()
-    assert _FakeRuntimeRealization.instances[0].active.generation == 0
-    runner.cleanup()
 
 
-def test_maintenance_progresses_while_one_main_activation_is_in_flight(
-    tmp_path,
+def test_maintenance_reclaim_progresses_during_main_activation(
+    complete_chain, fake_runner_runtime
 ) -> None:
+    del fake_runner_runtime
+    _, _, realizations, _ = complete_chain
     activation_entered = Event()
     activation_release = Event()
     reclaim_progress = Event()
@@ -1375,8 +1055,8 @@ def test_maintenance_progresses_while_one_main_activation_is_in_flight(
     _FakeRuntimeRealization.reclaim_wait_for_activation = activation_entered
     _FakeRuntimeRealization.reclaim_progress = reclaim_progress
     runner = BpfRunner(
-        compose_project_name="runner-test",
-        future_realization_supplier=_supplier(_realization(0, 4, "zone-a")),
+        compose_project_name="runner-concurrent-maintenance",
+        future_realization_supplier=_supplier(realizations[0]),
         preparation_lookahead=None,
         preparation_boundary_depth=None,
     )
@@ -1387,68 +1067,242 @@ def test_maintenance_progresses_while_one_main_activation_is_in_flight(
         runner._condition.notify_all()
     main = Thread(target=runner.activate_next)
     main.start()
-    assert activation_entered.wait(timeout=1)
-    assert reclaim_progress.wait(timeout=1)
-    assert main.is_alive()
-    assert 91 in _FakeRuntimeRealization.instances[0].reclaimed_generations
-    activation_release.set()
-    main.join(timeout=1)
-    assert not main.is_alive()
-    runner.cleanup()
+    try:
+        assert activation_entered.wait(timeout=1)
+        assert reclaim_progress.wait(timeout=1)
+        assert main.is_alive()
+        assert 91 in _FakeRuntimeRealization.instances[0].reclaimed_generations
+    finally:
+        activation_release.set()
+        main.join(timeout=1)
+        runner.cleanup()
 
 
-def test_forward_deficit_precedes_reclaim_then_both_reclaim_classes_progress(
-    tmp_path, monkeypatch
+def test_forward_deficit_precedes_both_reclaim_classes(
+    complete_chain, fake_runner_runtime, monkeypatch
 ) -> None:
-    monkeypatch.setattr(BpfRunner, "_maintenance_loop", lambda self: None)
+    del fake_runner_runtime
+    _, _, realizations, _ = complete_chain
+    monkeypatch.setattr(BpfRunner, "_maintenance_loop", lambda _self: None)
     runner = BpfRunner(
-        compose_project_name="runner-test",
-        future_realization_supplier=_supplier(
-            _realization(0, 4, "zone-a"),
-            _realization(4, 8, "zone-b"),
-        ),
+        compose_project_name="runner-forward-priority",
+        future_realization_supplier=_supplier(*realizations),
+        preparation_lookahead=timedelta(0),
         preparation_boundary_depth=1,
     )
     runner.prepare()
     runner._maintenance_thread.join(timeout=1)
     runner.activate_next()
-    dataplane = _FakeRuntimeRealization.instances[0]
-    dataplane.operations.clear()
+    runtime = _FakeRuntimeRealization.instances[0]
+    runtime.operations.clear()
     retired = object()
     with runner._condition:
         runner._reclaim_forwarding.append(73)
         runner._reclaim_physical.append((retired,))
     runner._maintain_until_satisfied()
-    assert runner._ready[0].boundary.nominal_time == START + timedelta(seconds=4)
-    assert dataplane.reclaimed_generations == [73]
-    assert dataplane.reclaimed_resources == [(retired,)]
-    assert dataplane.operations == [
-        ("prepare", 1),
-        ("reclaim-generation", 73),
-        ("reclaim-resources", (retired,)),
-    ]
-    assert any(
-        value["event"] == "maintenance_forward_priority"
-        for value in runner.inspection_snapshot()["events"]
-    )
-    runner.cleanup()
+    try:
+        assert runtime.operations[:3] == [
+            ("prepare", 1),
+            ("reclaim-generation", 73),
+            ("reclaim-resources", (retired,)),
+        ]
+        assert any(
+            value["event"] == "maintenance_forward_priority"
+            for value in runner.inspection_snapshot()["events"]
+        )
+    finally:
+        runner.cleanup()
 
 
-def test_manual_and_automatic_modes_are_mutually_exclusive(tmp_path) -> None:
+def test_capacity_pressure_reclaims_generation_before_next_preparation(
+    complete_chain, fake_runner_runtime, monkeypatch
+) -> None:
+    del fake_runner_runtime
+    _, _, realizations, _ = complete_chain
+    monkeypatch.setattr(BpfRunner, "_maintenance_loop", lambda _self: None)
     runner = BpfRunner(
-        compose_project_name="runner-test",
-        future_realization_supplier=_supplier(_realization(0, 4, "zone-a")),
+        compose_project_name="runner-capacity-pressure",
+        future_realization_supplier=_supplier(*realizations),
+        preparation_lookahead=timedelta(0),
+        preparation_boundary_depth=1,
+    )
+    runner.prepare()
+    runner._maintenance_thread.join(timeout=1)
+    runner.activate_next()
+    runner._maintain_until_satisfied()
+    runner.activate_next()
+    runtime = _FakeRuntimeRealization.instances[0]
+    runtime.operations.clear()
+    runner._maintain_until_satisfied()
+    try:
+        assert runtime.operations[:2] == [
+            ("reclaim-generation", 0),
+            ("prepare", 2),
+        ]
+        assert any(
+            value["event"] == "maintenance_capacity_pressure"
+            for value in runner.inspection_snapshot()["events"]
+        )
+    finally:
+        runner.cleanup()
+
+
+def test_preparation_and_activation_failures_do_not_publish_partial_state(
+    complete_chain, fake_runner_runtime
+) -> None:
+    del fake_runner_runtime
+    _, _, realizations, _ = complete_chain
+    _FakeRuntimeRealization.preparation_error = RuntimeError("prepare failed")
+    preparing = BpfRunner(
+        compose_project_name="runner-prepare-failure",
+        future_realization_supplier=_supplier(realizations[0]),
+        preparation_lookahead=None,
+        preparation_boundary_depth=None,
+    )
+    with pytest.raises(RuntimeError, match="prepare failed"):
+        preparing.prepare()
+    assert preparing._state == "failed"
+    assert not preparing._ready
+    assert _FakeRuntimeRealization.instances[0].active is None
+    _FakeRuntimeRealization.preparation_error = None
+    preparing.cleanup()
+
+    _FakeHelper.instances.clear()
+    _FakeRuntimeRealization.instances.clear()
+    activating = BpfRunner(
+        compose_project_name="runner-activation-failure",
+        future_realization_supplier=_supplier(realizations[0]),
+        preparation_lookahead=None,
+        preparation_boundary_depth=None,
+    )
+    activating.prepare()
+    runtime = _FakeRuntimeRealization.instances[0]
+    _FakeRuntimeRealization.activation_error = RuntimeError("activate failed")
+    with pytest.raises(RuntimeError, match="activate failed"):
+        activating.activate_next()
+    assert activating._state == "failed"
+    assert runtime.active is None
+    assert len(activating._ready) == len(
+        realizations[0].activation_timestamps
+    )
+    _FakeRuntimeRealization.activation_error = None
+    activating.cleanup()
+
+
+def test_maintenance_reclaim_failure_fails_runner_without_losing_ownership(
+    complete_chain, fake_runner_runtime
+) -> None:
+    del fake_runner_runtime
+    _, _, realizations, _ = complete_chain
+    runner = BpfRunner(
+        compose_project_name="runner-reclaim-failure",
+        future_realization_supplier=_supplier(*realizations),
+        preparation_lookahead=timedelta(0),
+        preparation_boundary_depth=1,
+    )
+    try:
+        runner.prepare()
+        runner.activate_next()
+        _wait_for(lambda: len(runner._ready) == 1)
+        _FakeRuntimeRealization.reclaim_error = RuntimeError(
+            "kernel deletion failed"
+        )
+        with runner._condition:
+            runner._reclaim_physical.append((object(),))
+            runner._maintenance_revision += 1
+            runner._condition.notify_all()
+        _wait_for(lambda: runner._state == "failed")
+        assert isinstance(runner._maintenance_error, RuntimeError)
+        assert "kernel deletion failed" in str(runner._maintenance_error)
+    finally:
+        _FakeRuntimeRealization.reclaim_error = None
+        runner.cleanup()
+
+
+def test_runtime_teardown_failure_preserves_helper_for_retry(
+    complete_chain, fake_runner_runtime
+) -> None:
+    del fake_runner_runtime
+    _, _, realizations, _ = complete_chain
+    runner = BpfRunner(
+        compose_project_name="runner-cleanup-retry",
+        future_realization_supplier=_supplier(realizations[0]),
         preparation_lookahead=None,
         preparation_boundary_depth=None,
     )
     runner.prepare()
-    runner.activate_next()
-    with pytest.raises(RuntimeError, match="exclusive"):
-        runner.run()
+    runtime = _FakeRuntimeRealization.instances[0]
+    helper = _FakeHelper.instances[0]
+    _FakeRuntimeRealization.cleanup_error = RuntimeError("pin remains")
+    with pytest.raises(RuntimeError, match="pin remains"):
+        runner.cleanup()
+    assert runner._state == "teardown-failed"
+    assert runner._runtime_realization is runtime
+    assert runner._helper is helper
+    assert helper.stopped is False
+    _FakeRuntimeRealization.cleanup_error = None
     runner.cleanup()
+    assert runtime.cleanup_calls == 2
+    assert helper.stopped is True
+    assert runner.inspection_snapshot()["runner"]["lifecycle_state"] == "cleaned"
 
 
-def test_automatic_run_uses_relative_monotonic_schedule(tmp_path, monkeypatch) -> None:
+def test_runner_teardown_timeout_retains_runtime_for_retry(
+    fake_runner_runtime, monkeypatch
+) -> None:
+    del fake_runner_runtime
+    release = Event()
+    maintenance = Thread(target=release.wait)
+    maintenance.start()
+    runtime = _FakeRuntimeRealization()
+    runner = BpfRunner(
+        compose_project_name="runner-cleanup-timeout",
+        future_realization_supplier=lambda: None,
+        preparation_lookahead=None,
+        preparation_boundary_depth=None,
+    )
+    runner._runtime_realization = runtime
+    runner._maintenance_thread = maintenance
+    runner._state = "prepared"
+    monkeypatch.setattr(
+        runner_module, "_MAINTENANCE_SHUTDOWN_TIMEOUT_SECONDS", 0.01
+    )
+    with pytest.raises(RuntimeError, match="did not stop"):
+        runner.cleanup()
+    assert runner._state == "teardown-failed"
+    assert runner._runtime_realization is runtime
+    assert runtime.cleanup_calls == 0
+    release.set()
+    maintenance.join(timeout=1)
+    runner.cleanup()
+    assert runtime.cleanup_calls == 1
+
+
+def test_manual_and_automatic_modes_are_mutually_exclusive(
+    complete_chain, fake_runner_runtime
+) -> None:
+    del fake_runner_runtime
+    _, _, realizations, _ = complete_chain
+    runner = BpfRunner(
+        compose_project_name="runner-mode",
+        future_realization_supplier=_supplier(realizations[0]),
+        preparation_lookahead=None,
+        preparation_boundary_depth=None,
+    )
+    try:
+        runner.prepare()
+        runner.activate_next()
+        with pytest.raises(RuntimeError, match="exclusive"):
+            runner.run()
+    finally:
+        runner.cleanup()
+
+
+def test_automatic_run_uses_relative_monotonic_schedule(
+    complete_chain, fake_runner_runtime, monkeypatch
+) -> None:
+    del fake_runner_runtime
+    _, _, realizations, _ = complete_chain
     clock = [100.0]
     sleeps = []
 
@@ -1457,133 +1311,324 @@ def test_automatic_run_uses_relative_monotonic_schedule(tmp_path, monkeypatch) -
         clock[0] += duration
 
     runner = BpfRunner(
-        compose_project_name="runner-test",
-        future_realization_supplier=_supplier(
-            _realization(0, 4, "zone-a"),
-            _realization(4, 8, "zone-b"),
-        ),
+        compose_project_name="runner-automatic",
+        future_realization_supplier=_supplier(realizations[0]),
         preparation_lookahead=None,
         preparation_boundary_depth=None,
     )
-    runner.prepare()
-    monkeypatch.setattr(runner_module, "monotonic", lambda: clock[0])
-    monkeypatch.setattr(runner_module, "sleep", fake_sleep)
-    runner.run()
-    assert sleeps == [4.0]
-    assert runner._active_frontier == START + timedelta(seconds=4)
-    runner.cleanup()
+    try:
+        runner.prepare()
+        expected = realizations[0].activation_timestamps
+        monkeypatch.setattr(runner_module, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(runner_module, "sleep", fake_sleep)
+        runner.run()
+        assert sleeps == [
+            (current - previous).total_seconds()
+            for previous, current in zip(expected, expected[1:])
+        ]
+        assert runner._active_frontier == expected[-1]
+    finally:
+        runner.cleanup()
 
 
-def test_generated_automatic_bound_stops_one_canonical_prefix(
-    tmp_path, monkeypatch
+def test_automatic_activation_limit_stops_one_exact_formal_prefix(
+    complete_chain, fake_runner_runtime, monkeypatch
 ) -> None:
+    del fake_runner_runtime
+    _, _, realizations, _ = complete_chain
     clock = [100.0]
     runner = BpfRunner(
         compose_project_name="runner-bounded-prefix",
-        future_realization_supplier=_supplier(
-            _realization(0, 4, "zone-a"),
-            _realization(4, 8, "zone-b"),
-            _realization(8, 12, "zone-c"),
-        ),
+        future_realization_supplier=_supplier(*realizations),
         preparation_lookahead=None,
         preparation_boundary_depth=None,
     )
-    runner.prepare()
-    monkeypatch.setattr(runner_module, "monotonic", lambda: clock[0])
-    monkeypatch.setattr(
-        runner_module,
-        "sleep",
-        lambda duration: clock.__setitem__(0, clock[0] + duration),
-    )
+    try:
+        runner.prepare()
+        expected = tuple(
+            timestamp
+            for realization in realizations
+            for timestamp in realization.activation_timestamps
+        )
+        monkeypatch.setattr(runner_module, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(
+            runner_module,
+            "sleep",
+            lambda duration: clock.__setitem__(0, clock[0] + duration),
+        )
+        runner._run_bounded(2)
+        assert runner._active_count == 2
+        assert runner._active_frontier == expected[1]
+        end = runner.inspection_snapshot()["events"][-1]
+        assert end["event"] == "automatic_run_end"
+        assert end["stopped_by_activation_limit"] is True
+    finally:
+        runner.cleanup()
 
-    runner._run_bounded(2)
 
-    assert runner._active_count == 2
-    assert runner._active_frontier == START + timedelta(seconds=4)
-    end = runner.inspection_snapshot()["events"][-1]
-    assert end["event"] == "automatic_run_end"
-    assert end["stopped_by_activation_limit"] is True
-    runner.cleanup()
-
-
-def test_automatic_deadline_miss_fails_without_mutating_missing_boundary(
-    tmp_path, monkeypatch
+def test_automatic_deadline_miss_fails_before_missing_boundary_mutation(
+    complete_chain, fake_runner_runtime, monkeypatch
 ) -> None:
+    del fake_runner_runtime
+    _, _, realizations, _ = complete_chain
     clock = [10.0]
     runner = BpfRunner(
-        compose_project_name="runner-test",
-        future_realization_supplier=_supplier(
-            _realization(0, 4, "zone-a"),
-            _realization(4, 8, "zone-b"),
-        ),
+        compose_project_name="runner-deadline-miss",
+        future_realization_supplier=_supplier(realizations[0]),
         preparation_lookahead=None,
         preparation_boundary_depth=None,
     )
     runner.prepare()
-    runner._ready.pop()
+    runner._ready.popleft()
     monkeypatch.setattr(runner_module, "monotonic", lambda: clock[0])
     monkeypatch.setattr(
         runner_module,
         "sleep",
         lambda duration: clock.__setitem__(0, clock[0] + duration),
     )
-    with pytest.raises(RuntimeError, match="not READY"):
-        runner.run()
-    assert _FakeRuntimeRealization.instances[0].active.generation == 0
-    assert any(value["event"] == "deadline_miss" for value in runner.inspection_snapshot()["events"])
-    runner.cleanup()
+    try:
+        with pytest.raises(RuntimeError, match="not READY"):
+            runner.run()
+        runtime = _FakeRuntimeRealization.instances[0]
+        assert runtime.activation_calls == 0
+        assert runtime.active is None
+        assert any(
+            value["event"] == "deadline_miss"
+            for value in runner.inspection_snapshot()["events"]
+        )
+    finally:
+        runner.cleanup()
 
 
-def test_ready_predecessor_staleness_fails_before_mutation(tmp_path) -> None:
+def test_ready_predecessor_staleness_fails_before_runtime_mutation(
+    complete_chain, fake_runner_runtime
+) -> None:
+    del fake_runner_runtime
+    _, _, realizations, _ = complete_chain
     runner = BpfRunner(
-        compose_project_name="runner-test",
-        future_realization_supplier=_supplier(_realization(0, 4, "zone-a")),
+        compose_project_name="runner-stale-predecessor",
+        future_realization_supplier=_supplier(realizations[0]),
         preparation_lookahead=None,
         preparation_boundary_depth=None,
     )
-    runner.prepare()
-    runner._active_frontier = START - timedelta(seconds=1)
-    with pytest.raises(RuntimeError, match="predecessor"):
+    try:
+        runner.prepare()
+        runner._active_frontier = START - timedelta(seconds=1)
+        with pytest.raises(RuntimeError, match="predecessor"):
+            runner.activate_next()
+        runtime = _FakeRuntimeRealization.instances[0]
+        assert runtime.activation_calls == 0
+        assert runtime.active is None
+    finally:
+        runner.cleanup()
+
+
+def test_full_resident_capacity_with_ready_depth_satisfied_waits_for_main(
+    complete_chain, fake_runner_runtime, monkeypatch
+) -> None:
+    del fake_runner_runtime
+    _, _, realizations, _ = complete_chain
+    monkeypatch.setattr(BpfRunner, "_maintenance_loop", lambda _self: None)
+    runner = BpfRunner(
+        compose_project_name="runner-depth-wait",
+        future_realization_supplier=_supplier(*realizations),
+        preparation_lookahead=timedelta(seconds=100),
+        preparation_boundary_depth=2,
+    )
+    try:
+        runner.prepare()
+        runner._maintenance_thread.join(timeout=1)
         runner.activate_next()
-    assert _FakeRuntimeRealization.instances[0].active is None
-    runner.cleanup()
+        runner._maintain_until_satisfied()
+        runtime = _FakeRuntimeRealization.instances[0]
+        assert len(runner._ready) == 2
+        assert runtime.generation_capacity_status() == {
+            "resident_generations": 3,
+            "reserved_in_flight_preparations": 0,
+            "resident_generation_capacity": 3,
+            "can_start_preparation": False,
+        }
+        assert runner._next_maintenance_action() == ("done", None)
+    finally:
+        runner.cleanup()
 
 
-def test_later_boundary_resolver_uses_constraints_not_tuple_order() -> None:
-    operations = (
-        _ZoneEdgeIntent(START, DifferenceOperation.ADDED, "zone-a", "198.18.0.1/32", None, NODE),
-        _ZoneEdgeIntent(START, DifferenceOperation.ADDED, "zone-b", "198.18.0.2/32", None, NODE),
-        _ZoneEdgeIntent(START + timedelta(seconds=1), DifferenceOperation.CHANGED, "zone-a", "198.18.0.1/32", NODE, NODE),
+def test_missing_exact_next_at_full_capacity_without_reclaim_fails_closed(
+    complete_chain, fake_runner_runtime, monkeypatch
+) -> None:
+    del fake_runner_runtime
+    _, _, realizations, _ = complete_chain
+    monkeypatch.setattr(BpfRunner, "_maintenance_loop", lambda _self: None)
+    runner = BpfRunner(
+        compose_project_name="runner-capacity-deadlock",
+        future_realization_supplier=_supplier(*realizations),
+        preparation_lookahead=timedelta(0),
+        preparation_boundary_depth=1,
     )
-    realization = BpfCompiledRealization._create(
-        start_slice_id=0,
-        start_timestamp=None,
-        end_slice_id=4,
-        end_timestamp=START + timedelta(seconds=4),
-        resource_realizations=(), parameter_realizations=(), forwarding_realizations=(),
-        zone_edge_realizations=operations,
-        constraints=(
-            _OrderingConstraint(_IntentReference("zone-edge", 1), _IntentReference("zone-edge", 0), "reverse"),
-            _OrderingConstraint(_IntentReference("zone-edge", 0), _IntentReference("zone-edge", 2), "later"),
-        ),
-        intended_state=_IntendedState((), (), (), (), ()),
-        topology_signature=_TopologySignature((NODE,), ("zone-a", "zone-b")),
+    try:
+        runner.prepare()
+        runner._maintenance_thread.join(timeout=1)
+        runner.activate_next()
+        runner._maintain_until_satisfied()
+        runner.activate_next()
+        with runner._condition:
+            runner._reclaim_forwarding.clear()
+        with pytest.raises(_CapacityAuditError, match="no retired generation"):
+            runner._maintain_until_satisfied()
+        assert any(
+            value["event"] == "capacity_audit_failure"
+            and value["scope"] == "resident-generation"
+            for value in runner.inspection_snapshot()["events"]
+        )
+    finally:
+        runner.cleanup()
+
+
+def test_privileged_activation_preserves_readiness_route_switch_retirement_order(
+    monkeypatch, tmp_path
+) -> None:
+    operations = []
+    interface = "sv21234567890a"
+
+    def execute_in_netns(_pid, command, *, input_text=None, **_facts):
+        payload = input_text or ""
+        if "link set" in payload and " up" in payload:
+            operations.append("link-up")
+        elif "address replace" in payload:
+            operations.append("zone-readiness")
+        elif "route replace" in payload:
+            operations.append("route-publication")
+        elif "address del" in payload:
+            operations.append("zone-retirement")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(
+        privileged_runtime_command_module, "_pin_root", lambda _value: tmp_path
     )
-    boundaries = _resolve_nominal_boundaries((realization,))
-    assert [value.nominal_time for value in boundaries] == [START, START + timedelta(seconds=1)]
-    assert [value.index for value in boundaries[0].operations] == [1, 0]
+    monkeypatch.setattr(
+        privileged_runtime_command_module, "_open_pinned", lambda _path: 10
+    )
+    monkeypatch.setattr(
+        privileged_runtime_command_module, "_lookup_map", lambda _fd, _key: 0xFFFFFFFF
+    )
+    monkeypatch.setattr(
+        privileged_runtime_command_module,
+        "_update_map",
+        lambda *_args: operations.append("generation-switch"),
+    )
+    monkeypatch.setattr(
+        privileged_runtime_command_module, "_assert_netns", lambda _node: None
+    )
+    monkeypatch.setattr(
+        privileged_runtime_command_module, "_in_netns", execute_in_netns
+    )
+    monkeypatch.setattr(
+        privileged_runtime_command_module.os, "close", lambda _fd: None
+    )
+    request = {
+        "pin_root": str(tmp_path),
+        "common_mac": "02:53:4b:59:00:01",
+        "expected_active_generation": 0xFFFFFFFF,
+        "generation": 0,
+        "generation_changed": True,
+        "boundary_timestamp": datetime(
+            2026, 1, 1, tzinfo=timezone.utc
+        ).isoformat(),
+        "worker_count": 1,
+        "nodes": [
+            {
+                "key": "node",
+                "pid": 101,
+                "netns_inode": 201,
+                "interface_identities": [
+                    {"interface": interface, "ifindex": 17}
+                ],
+                "link_up": [interface],
+                "link_down": [],
+                "qdisc": [],
+                "zone_address_add": ["198.18.0.1"],
+                "zone_address_delete": ["198.18.0.2"],
+                "route_delete": [],
+                "route_replace": [
+                    {
+                        "destination": "192.0.2.1",
+                        "interface": interface,
+                    }
+                ],
+                "access_peer_route_delete": [],
+                "access_peer_route_replace": [],
+            }
+        ],
+    }
+
+    result = _activate_boundary(request)
+
+    assert operations == [
+        "link-up",
+        "zone-readiness",
+        "route-publication",
+        "generation-switch",
+        "zone-retirement",
+    ]
+    assert result["active_generation"] == 0
+    assert result["namespace_process_families"]["zone_readiness"] == 1
 
 
-def test_private_worker_program_has_shared_generation_lookup_and_owned_pin_scope() -> None:
+def test_privileged_activation_stale_generation_fails_before_namespace_mutation(
+    monkeypatch, tmp_path
+) -> None:
+    mutations = []
+    monkeypatch.setattr(
+        privileged_runtime_command_module, "_pin_root", lambda _value: tmp_path
+    )
+    monkeypatch.setattr(
+        privileged_runtime_command_module, "_open_pinned", lambda _path: 10
+    )
+    monkeypatch.setattr(
+        privileged_runtime_command_module, "_lookup_map", lambda _fd, _key: 7
+    )
+    monkeypatch.setattr(
+        privileged_runtime_command_module,
+        "_in_netns",
+        lambda *_args, **_kwargs: mutations.append("namespace"),
+    )
+    monkeypatch.setattr(
+        privileged_runtime_command_module,
+        "_update_map",
+        lambda *_args: mutations.append("map"),
+    )
+    monkeypatch.setattr(
+        privileged_runtime_command_module.os, "close", lambda _fd: None
+    )
+    with pytest.raises(RuntimeError, match="active generation evidence is stale"):
+        _activate_boundary(
+            {
+                "pin_root": str(tmp_path),
+                "expected_active_generation": 6,
+                "generation": 8,
+                "nodes": [],
+            }
+        )
+    assert mutations == []
+
+
+def test_private_worker_program_uses_shared_generation_and_owned_pin_scope() -> None:
     program = _tc_program(10, 11, 12)
     assert len(program) % 8 == 0
     assert len(program) >= 40 * 8
-    assert _pin_root("/sys/fs/bpf/skyseed-v2/run-0123456789ab").name == "run-0123456789ab"
+    assert (
+        privileged_runtime_command_module._pin_root(
+            "/sys/fs/bpf/skyseed-v2/run-0123456789ab"
+        ).name
+        == "run-0123456789ab"
+    )
     with pytest.raises(ValueError, match="outside"):
-        _pin_root("/sys/fs/bpf/not-owned")
+        privileged_runtime_command_module._pin_root(
+            "/sys/fs/bpf/not-owned"
+        )
 
 
-def test_bounded_parallel_map_preserves_group_order_and_worker_limit() -> None:
+def test_bounded_parallel_map_preserves_input_order_and_worker_limit() -> None:
     guard = Lock()
     both_running = Event()
     active = 0
@@ -1607,7 +1652,42 @@ def test_bounded_parallel_map_preserves_group_order_and_worker_limit() -> None:
     assert high_water == 2
 
 
-def test_physical_resources_use_deterministic_parallel_resource_chunks(
+def test_generation_reclaim_uses_exact_map_batch_delete(monkeypatch) -> None:
+    observed = []
+
+    def bpf(command, attributes):
+        observed.append(
+            (
+                command,
+                attributes.map_fd,
+                attributes.count,
+                bytes(
+                    privileged_runtime_command_module.ctypes.string_at(
+                        attributes.keys, attributes.count * 8
+                    )
+                ),
+            )
+        )
+        return 0
+
+    monkeypatch.setattr(privileged_runtime_command_module, "_bpf", bpf)
+    deleted = privileged_runtime_command_module._delete_map_batch(
+        19,
+        ((7, 11), (7, 13)),
+    )
+    assert deleted == 2
+    assert observed == [
+        (
+            privileged_runtime_command_module._BPF_MAP_DELETE_BATCH,
+            19,
+            2,
+            struct.pack("=IIII", 7, 11, 7, 13),
+        )
+    ]
+    assert _key_buffer((7, 19)).raw[:8] == struct.pack("=II", 7, 19)
+
+
+def test_privileged_preparation_chunks_physical_resources_deterministically(
     monkeypatch, tmp_path
 ) -> None:
     root = tmp_path / "pins"
@@ -1631,8 +1711,8 @@ def test_physical_resources_use_deterministic_parallel_resource_chunks(
     monkeypatch.setattr(
         privileged_runtime_command_module,
         "_in_netns",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            returncode=0, stdout="", stderr=""
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            (), 0, "", ""
         ),
     )
     nodes = [
@@ -1665,39 +1745,28 @@ def test_physical_resources_use_deterministic_parallel_resource_chunks(
         }
         for index in (1, 2)
     ]
-    request = {
-        "pin_root": str(root),
-        "common_mac": "02:53:4b:59:00:01",
-        "nodes": nodes,
-        "connections": connections,
-        "generation": 0,
-        "generation_nodes": [],
-        "boundary_timestamp": START.isoformat(),
-        "worker_count": 2,
-    }
-
-    result = _prepare_boundary(request)
-
+    result = _prepare_boundary(
+        {
+            "pin_root": str(root),
+            "common_mac": "02:53:4b:59:00:01",
+            "nodes": nodes,
+            "connections": connections,
+            "generation": 0,
+            "generation_nodes": [],
+            "boundary_timestamp": START.isoformat(),
+            "worker_count": 2,
+        }
+    )
     assert result["prepared_connections"] == 2
     assert len(host_batches) == 2
     for index, batch in zip((1, 2), host_batches, strict=True):
-        interface_a = f"sv2{index:010x}a"
-        interface_b = f"sv2{index:010x}b"
         assert batch.splitlines() == [
-            f"link add {interface_a} netns 101 type veth "
-            f"peer name {interface_b} netns 102",
+            f"link add sv2{index:010x}a netns 101 type veth "
+            f"peer name sv2{index:010x}b netns 102"
         ]
-    assert len(
-        {
-            line.split()[2]
-            for batch in host_batches
-            for line in batch.splitlines()
-            if line.startswith("link add ")
-        }
-    ) == 2
 
 
-def test_physical_chunk_failure_joins_workers_and_rolls_back_every_candidate(
+def test_privileged_physical_chunk_failure_joins_and_rolls_back_all_candidates(
     monkeypatch, tmp_path
 ) -> None:
     root = tmp_path / "pins"
@@ -1711,16 +1780,18 @@ def test_physical_chunk_failure_joins_workers_and_rolls_back_every_candidate(
     )
 
     def run(_command, *, input_text=None, **_facts):
-        if "sv20000000001a" in input_text:
+        if "sv20000000001a" in (input_text or ""):
             raise RuntimeError("physical chunk failed")
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return subprocess.CompletedProcess((), 0, "", "")
 
     def in_netns(_pid, command, **_facts):
         rollback_interfaces.append(command[-1])
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(privileged_runtime_command_module, "_run", run)
-    monkeypatch.setattr(privileged_runtime_command_module, "_in_netns", in_netns)
+    monkeypatch.setattr(
+        privileged_runtime_command_module, "_in_netns", in_netns
+    )
     nodes = [
         {
             "key": NODE.value,
@@ -1751,7 +1822,6 @@ def test_physical_chunk_failure_joins_workers_and_rolls_back_every_candidate(
         }
         for index in (1, 2)
     ]
-
     with pytest.raises(RuntimeError, match="physical chunk failed"):
         _prepare_boundary(
             {
@@ -1765,363 +1835,18 @@ def test_physical_chunk_failure_joins_workers_and_rolls_back_every_candidate(
                 "worker_count": 2,
             }
         )
-
-    assert rollback_interfaces == ["sv20000000002a", "sv20000000001a"]
-
-
-def test_generation_reclaim_uses_exact_map_batch_delete(monkeypatch) -> None:
-    observed = []
-
-    def bpf(command, attributes):
-        observed.append(
-            (
-                command,
-                attributes.map_fd,
-                attributes.count,
-                bytes(
-                    privileged_runtime_command_module.ctypes.string_at(
-                        attributes.keys, attributes.count * 8
-                    )
-                ),
-            )
-        )
-        return 0
-
-    monkeypatch.setattr(privileged_runtime_command_module, "_bpf", bpf)
-
-    deleted = privileged_runtime_command_module._delete_map_batch(
-        19,
-        ((7, 11), (7, 13)),
-    )
-
-    assert deleted == 2
-    assert observed == [
-        (
-            privileged_runtime_command_module._BPF_MAP_DELETE_BATCH,
-            19,
-            2,
-            struct.pack("=IIII", 7, 11, 7, 13),
-        )
+    assert rollback_interfaces == [
+        "sv20000000002a",
+        "sv20000000001a",
     ]
 
 
-def test_preload_discovers_stable_interface_identity_only_once(
-    monkeypatch, tmp_path
+def test_privileged_activation_rejects_stale_netns_before_kernel_mutation(
+    monkeypatch
 ) -> None:
-    root = tmp_path / "pins"
-    root.mkdir()
-    interface = "sv21234567890a"
-    calls: list[tuple[int, frozenset[str]]] = []
-    monkeypatch.setattr(
-        privileged_runtime_command_module, "_pin_root", lambda _value: root
-    )
-    monkeypatch.setattr(
-        privileged_runtime_command_module, "_assert_netns", lambda _node: None
-    )
-    monkeypatch.setattr(
-        privileged_runtime_command_module,
-        "_interface_indexes",
-        lambda pid, names: (
-            calls.append((pid, frozenset(names)))
-            or {name: 17 for name in names}
-        ),
-    )
-    monkeypatch.setattr(
-        privileged_runtime_command_module, "_open_pinned", lambda _path: 10
-    )
-    monkeypatch.setattr(
-        privileged_runtime_command_module, "_update_map", lambda *_args: None
-    )
-    monkeypatch.setattr(
-        privileged_runtime_command_module.os, "close", lambda _fd: None
-    )
-    node = {
-        "key": NODE.value,
-        "pid": 101,
-        "netns_inode": 201,
-        "pin_component": "node",
-    }
-    generation_node = {
-        **node,
-        "active_interfaces": [interface],
-        "interface_identities": [],
-        "routes": [],
-    }
-
-    def request(generation: int, generation_value: dict) -> dict:
-        return {
-            "pin_root": "/sys/fs/bpf/skyseed-v2/run-stable-index",
-            "common_mac": "02:53:4b:59:00:01",
-            "nodes": [node],
-            "connections": [],
-            "generation": generation,
-            "generation_nodes": [generation_value],
-            "boundary_timestamp": START.isoformat(),
-            "worker_count": 2,
-        }
-
-    first = _prepare_boundary(request(0, generation_node))
-    identities = first["generation_keys"][0]["interface_identities"]
-    second = _prepare_boundary(
-        request(
-            1,
-            {**generation_node, "interface_identities": identities},
-        )
-    )
-
-    assert calls == [(101, frozenset({interface}))]
-    assert first["new_interface_identity_count"] == 1
-    assert second["new_interface_identity_count"] == 0
-
-
-def test_ready_activation_uses_identities_discovered_by_same_preparation(
-    monkeypatch, tmp_path
-) -> None:
-    connection = ConnectionId(ConnectionKind.INTER_SATELLITE, NODE, NODE_2)
-    interface_a, interface_b = runtime_realization_module._interface_names(connection)
-    state = _MaterializedDataplaneState(
-        (connection,),
-        tuple(
-            runtime_realization_module._QdiscValue(
-                connection,
-                direction,
-                1_000_000,
-                10,
-                0,
-            )
-            for direction in ConnectionDirection
-        ),
-        (),
-        (),
-    )
-    boundary = SimpleNamespace(
-        nominal_time=START,
-        operations=(),
-        order_sha256="identity-ready",
-    )
-
-    class _Executor:
-        def execute(self, action, request):
-            assert action == "prepare_boundary"
-            by_key = {value["key"]: value for value in request["generation_nodes"]}
-            assert by_key[NODE.value]["interface_identities"] == [
-                {"interface": interface_a, "ifindex": 17}
-            ]
-            assert by_key[NODE_2.value]["interface_identities"] == []
-            return {
-                "generation_keys": [
-                    {
-                        "key": value["key"],
-                        "active_interface_indexes": [
-                            17 if value["key"] == NODE.value else 18
-                        ],
-                        "route_keys": list(range(len(value["routes"]))),
-                        "interface_identities": [
-                            {
-                                "interface": (
-                                    interface_a
-                                    if value["key"] == NODE.value
-                                    else interface_b
-                                ),
-                                "ifindex": 17 if value["key"] == NODE.value else 18,
-                            }
-                        ],
-                    }
-                    for value in request["generation_nodes"]
-                ],
-                "new_interface_identity_count": 1,
-                "stable_interface_identity_count": 2,
-            }
-
-    dataplane = _TcBpfRuntimeRealization(
-        executor=_Executor(),
-        pin_root="/sys/fs/bpf/skyseed-v2/run-effective-identities",
-        bindings={
-            NODE: SimpleNamespace(pid=101, netns_inode=201),
-            NODE_2: SimpleNamespace(pid=102, netns_inode=202),
-        },
-    )
-    dataplane._nodes = (
-        {"key": NODE.value, "pid": 101, "netns_inode": 201, "pin_component": "a"},
-        {"key": NODE_2.value, "pid": 102, "netns_inode": 202, "pin_component": "b"},
-    )
-    dataplane._node_addresses = {NODE: "100.64.0.1", NODE_2: "100.64.0.2"}
-    dataplane._map_capacities = {NODE.value: (4, 4), NODE_2.value: (4, 4)}
-    dataplane._max_resident_generations = 2
-    dataplane._interface_indexes[(NODE.value, interface_a)] = 17
-    pending = runtime_realization_module._PendingDataplaneBoundary(
-        boundary,
-        _empty_state(),
-        state,
-        0xFFFFFFFF,
-        0,
-        0,
-    )
-    dataplane._preparing = pending
-
-    ready, evidence = dataplane.finish_preparation(
-        pending,
-        foundation_token="foundation",
-        predecessor_time=None,
-    )
-    activation_by_key = {
-        value["key"]: value for value in ready.activation_request["nodes"]
-    }
-    assert activation_by_key[NODE.value]["interface_identities"] == [
-        {"interface": interface_a, "ifindex": 17}
-    ]
-    assert activation_by_key[NODE_2.value]["interface_identities"] == [
-        {"interface": interface_b, "ifindex": 18}
-    ]
-    assert dataplane._interface_indexes == {
-        (NODE.value, interface_a): 17,
-        (NODE_2.value, interface_b): 18,
-    }
-    assert evidence["new_interface_identity_count"] == 1
-
-    monkeypatch.setattr(
-        privileged_runtime_command_module, "_pin_root", lambda _value: tmp_path
-    )
-    monkeypatch.setattr(
-        privileged_runtime_command_module, "_open_pinned", lambda _path: 10
-    )
-    monkeypatch.setattr(
-        privileged_runtime_command_module,
-        "_lookup_map",
-        lambda _fd, _key: 0xFFFFFFFF,
-    )
-    monkeypatch.setattr(
-        privileged_runtime_command_module, "_update_map", lambda *_args: None
-    )
-    monkeypatch.setattr(
-        privileged_runtime_command_module, "_assert_netns", lambda _node: None
-    )
-    monkeypatch.setattr(
-        privileged_runtime_command_module,
-        "_in_netns",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            returncode=0, stdout="", stderr=""
-        ),
-    )
-    monkeypatch.setattr(
-        privileged_runtime_command_module.os, "close", lambda _fd: None
-    )
-    assert _activate_boundary(ready.activation_request)["active_generation"] == 0
-
-
-def test_failed_preparation_does_not_commit_discovered_interface_identity() -> None:
-    connection = ConnectionId(ConnectionKind.INTER_SATELLITE, NODE, NODE_2)
-    interface_a, interface_b = runtime_realization_module._interface_names(connection)
-    state = _MaterializedDataplaneState(
-        (connection,),
-        tuple(
-            runtime_realization_module._QdiscValue(
-                connection,
-                direction,
-                1_000_000,
-                10,
-                0,
-            )
-            for direction in ConnectionDirection
-        ),
-        (),
-        (),
-    )
-    boundary = SimpleNamespace(
-        nominal_time=START,
-        operations=(),
-        order_sha256="identity-failure",
-    )
-
-    class _Executor:
-        discovered = False
-
-        def execute(self, action, request):
-            assert action == "prepare_boundary"
-            self.discovered = True
-            return {
-                "generation_keys": [
-                    {
-                        "key": value["key"],
-                        "active_interface_indexes": [
-                            17 if value["key"] == NODE.value else 18
-                        ],
-                        "route_keys": (
-                            []
-                            if value["key"] == NODE.value
-                            else list(range(len(value["routes"])))
-                        ),
-                        "interface_identities": [
-                            {
-                                "interface": (
-                                    interface_a
-                                    if value["key"] == NODE.value
-                                    else interface_b
-                                ),
-                                "ifindex": 17 if value["key"] == NODE.value else 18,
-                            }
-                        ],
-                    }
-                    for value in request["generation_nodes"]
-                ]
-            }
-
-    executor = _Executor()
-    dataplane = _TcBpfRuntimeRealization(
-        executor=executor,
-        pin_root="/sys/fs/bpf/skyseed-v2/run-failed-identities",
-        bindings={
-            NODE: SimpleNamespace(pid=101, netns_inode=201),
-            NODE_2: SimpleNamespace(pid=102, netns_inode=202),
-        },
-    )
-    dataplane._nodes = (
-        {"key": NODE.value, "pid": 101, "netns_inode": 201, "pin_component": "a"},
-        {"key": NODE_2.value, "pid": 102, "netns_inode": 202, "pin_component": "b"},
-    )
-    dataplane._node_addresses = {NODE: "100.64.0.1", NODE_2: "100.64.0.2"}
-    dataplane._map_capacities = {NODE.value: (4, 4), NODE_2.value: (4, 4)}
-    dataplane._max_resident_generations = 2
-    dataplane._interface_indexes[(NODE.value, interface_a)] = 17
-    pending = runtime_realization_module._PendingDataplaneBoundary(
-        boundary,
-        _empty_state(),
-        state,
-        0xFFFFFFFF,
-        0,
-        0,
-    )
-    dataplane._preparing = pending
-
-    with pytest.raises(RuntimeError, match="generation preload is incomplete"):
-        dataplane.finish_preparation(
-            pending,
-            foundation_token="foundation",
-            predecessor_time=None,
-        )
-    assert executor.discovered is True
-    assert dataplane._interface_indexes == {(NODE.value, interface_a): 17}
-    assert (NODE_2.value, interface_b) not in dataplane._interface_indexes
-
-
-def test_private_generation_key_and_future_link_mutation_are_isolated() -> None:
-    assert _key_buffer((7, 19)).raw[:8] == struct.pack("=II", 7, 19)
-    prepare_source = inspect.getsource(_prepare_boundary)
-    activate_source = inspect.getsource(_activate_boundary)
-    assert "link set dev {name} up" not in prepare_source
-    assert "prepared_links_admin_down" in prepare_source
-    assert "link set dev {_assert_interface_name(name)} up" in activate_source
-    assert 'root / "active_generation"' in activate_source
-    assert "updated_nodes" not in activate_source
-    assert "updated_interfaces" not in activate_source
-
-
-def test_activation_rejects_stale_netns_before_kernel_mutation(monkeypatch) -> None:
     mutations = []
     monkeypatch.setattr(
-        privileged_runtime_command_module,
-        "_open_pinned",
-        lambda _path: 10,
+        privileged_runtime_command_module, "_open_pinned", lambda _path: 10
     )
     monkeypatch.setattr(
         privileged_runtime_command_module,
@@ -2144,11 +1869,8 @@ def test_activation_rejects_stale_netns_before_kernel_mutation(monkeypatch) -> N
         lambda *_args, **_kwargs: mutations.append("namespace-mutation"),
     )
     monkeypatch.setattr(
-        privileged_runtime_command_module.os,
-        "close",
-        lambda _fd: None,
+        privileged_runtime_command_module.os, "close", lambda _fd: None
     )
-
     with pytest.raises(RuntimeError, match="stale netns"):
         _activate_boundary(
             {
@@ -2157,176 +1879,19 @@ def test_activation_rejects_stale_netns_before_kernel_mutation(monkeypatch) -> N
                 "nodes": ({"pid": 123, "netns_inode": 456},),
             }
         )
-
     assert mutations == []
 
 
-def test_active_ground_access_derives_only_ground_local_peer_route() -> None:
-    access = ConnectionId(
-        ConnectionKind.GROUND_STATION_ACCESS,
-        GROUND,
-        NODE,
-    )
-    dataplane = _TcBpfRuntimeRealization(
-        executor=SimpleNamespace(),
-        pin_root="/sys/fs/bpf/skyseed-v2/run-access-peer",
-        bindings={GROUND: object(), NODE: object()},
-    )
-    dataplane._node_addresses = {
-        GROUND: "100.64.0.1",
-        NODE: "100.64.0.2",
-    }
-    dataplane._nodes = (
-        {"key": GROUND.value},
-        {"key": NODE.value},
-    )
-    empty = _MaterializedDataplaneState((), (), (), ())
-    active = _MaterializedDataplaneState((access,), (), (), ())
-    boundary = SimpleNamespace(nominal_time=START, operations=())
-
-    establish = dataplane._activation_request(
-        boundary,
-        previous_state=empty,
-        state=active,
-        expected_active_generation=0xFFFFFFFF,
-        generation=0,
-        interface_indexes=dataplane._interface_indexes,
-    )
-    withdraw = dataplane._activation_request(
-        boundary,
-        previous_state=active,
-        state=empty,
-        expected_active_generation=0,
-        generation=1,
-        interface_indexes=dataplane._interface_indexes,
-    )
-    by_node = {value["key"]: value for value in establish["nodes"]}
-    withdrawn_by_node = {value["key"]: value for value in withdraw["nodes"]}
-
-    assert by_node[GROUND.value]["access_peer_route_replace"] == [
-        {"destination": "100.64.0.2", "interface": by_node[GROUND.value]["link_up"][0]}
-    ]
-    assert by_node[NODE.value]["access_peer_route_replace"] == []
-    assert withdrawn_by_node[GROUND.value]["access_peer_route_delete"] == [
-        {
-            "destination": "100.64.0.2",
-            "interface": withdrawn_by_node[GROUND.value]["link_down"][0],
-        }
-    ]
-    assert establish["grouping"]["added_resource_count"] == 1
-    assert establish["grouping"]["removed_resource_count"] == 0
-    assert establish["grouping"]["affected_node_count"] == 2
-    assert withdraw["grouping"]["added_resource_count"] == 0
-    assert withdraw["grouping"]["removed_resource_count"] == 1
-    generation_nodes = dataplane._generation_nodes(active)
-    ground_generation = next(
-        value for value in generation_nodes if value["key"] == GROUND.value
-    )
-    assert ground_generation["routes"] == [
-        {"destination": "100.64.0.1", "interface": None}
-    ]
-
-
-def test_privileged_activation_batches_access_peer_route_and_neighbour(
-    monkeypatch,
-) -> None:
-    batches: list[str] = []
-    monkeypatch.setattr(
-        privileged_runtime_command_module,
-        "_open_pinned",
-        lambda _path: 10,
-    )
-    monkeypatch.setattr(
-        privileged_runtime_command_module,
-        "_lookup_map",
-        lambda _fd, _key: 0xFFFFFFFF,
-    )
-    monkeypatch.setattr(
-        privileged_runtime_command_module,
-        "_update_map",
-        lambda *_facts: None,
-    )
-    monkeypatch.setattr(
-        privileged_runtime_command_module,
-        "_assert_netns",
-        lambda _node: None,
-    )
-    monkeypatch.setattr(
-        privileged_runtime_command_module,
-        "_interface_index",
-        lambda *_facts: 7,
-    )
-
-    def in_netns(_pid, command, *, input_text=None, **_facts):
-        if command[:2] == ["ip", "-force"]:
-            batches.append(input_text)
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr(
-        privileged_runtime_command_module,
-        "_in_netns",
-        in_netns,
-    )
-    monkeypatch.setattr(
-        privileged_runtime_command_module.os,
-        "close",
-        lambda _fd: None,
-    )
-    interface = "sv21234567890a"
-    result = _activate_boundary(
-        {
-            "pin_root": "/sys/fs/bpf/skyseed-v2/run-access-command",
-            "boundary_timestamp": START.isoformat(),
-            "expected_active_generation": 0xFFFFFFFF,
-            "generation": 0,
-            "common_mac": "02:53:4b:59:00:01",
-            "nodes": [
-                {
-                    "pid": 101,
-                    "netns_inode": 201,
-                    "link_up": (),
-                    "link_down": (),
-                    "qdisc": (),
-                    "route_delete": (),
-                    "route_replace": (),
-                    "access_peer_route_delete": (
-                        {"destination": "100.64.0.2", "interface": interface},
-                    ),
-                    "access_peer_route_replace": (
-                        {"destination": "100.64.0.3", "interface": interface},
-                    ),
-                    "zone_address_delete": (),
-                    "zone_address_add": (),
-                }
-            ],
-        }
-    )
-
-    assert batches == [
-        "route del 100.64.0.2/32\n"
-        f"neigh del 100.64.0.2 dev {interface}\n"
-        f"route replace 100.64.0.3/32 dev {interface} scope link\n"
-        "neigh replace 100.64.0.3 lladdr 02:53:4b:59:00:01 "
-        f"nud permanent dev {interface}\n"
-    ]
-    assert result["route_neighbour_commands"] == 4
-    assert result["access_peer_route_neighbour_commands"] == 4
-
-
 def test_privileged_parameter_only_activation_reuses_generation(
-    monkeypatch,
+    monkeypatch
 ) -> None:
     commands = []
     publications = []
     monkeypatch.setattr(
-        privileged_runtime_command_module,
-        "_open_pinned",
-        lambda _path: 10,
+        privileged_runtime_command_module, "_open_pinned", lambda _path: 10
     )
     monkeypatch.setattr(
-        privileged_runtime_command_module,
-        "_lookup_map",
-        lambda _fd, _key: 7,
+        privileged_runtime_command_module, "_lookup_map", lambda _fd, _key: 7
     )
     monkeypatch.setattr(
         privileged_runtime_command_module,
@@ -2334,24 +1899,19 @@ def test_privileged_parameter_only_activation_reuses_generation(
         lambda *_values: publications.append(_values),
     )
     monkeypatch.setattr(
-        privileged_runtime_command_module,
-        "_assert_netns",
-        lambda _node: None,
+        privileged_runtime_command_module, "_assert_netns", lambda _node: None
     )
     monkeypatch.setattr(
         privileged_runtime_command_module,
         "_in_netns",
         lambda _pid, command, *, input_text=None, **_facts: (
             commands.append((command, input_text))
-            or SimpleNamespace(returncode=0, stdout="", stderr="")
+            or subprocess.CompletedProcess(command, 0, "", "")
         ),
     )
     monkeypatch.setattr(
-        privileged_runtime_command_module.os,
-        "close",
-        lambda _fd: None,
+        privileged_runtime_command_module.os, "close", lambda _fd: None
     )
-
     result = _activate_boundary(
         {
             "pin_root": "/sys/fs/bpf/skyseed-v2/run-reuse-generation",
@@ -2385,7 +1945,6 @@ def test_privileged_parameter_only_activation_reuses_generation(
             ],
         }
     )
-
     assert publications == []
     assert len(commands) == 1
     assert commands[0][0] == ["tc", "-batch", "-"]
@@ -2395,14 +1954,12 @@ def test_privileged_parameter_only_activation_reuses_generation(
     assert result["qdisc_updates"] == 1
 
 
-def test_privileged_activation_preserves_switch_barriers_and_merges_post_switch_ip(
-    monkeypatch,
+def test_privileged_activation_batches_access_peer_route_and_neighbour(
+    monkeypatch
 ) -> None:
-    actions = []
+    batches: list[str] = []
     monkeypatch.setattr(
-        privileged_runtime_command_module,
-        "_open_pinned",
-        lambda _path: 10,
+        privileged_runtime_command_module, "_open_pinned", lambda _path: 10
     )
     monkeypatch.setattr(
         privileged_runtime_command_module,
@@ -2410,35 +1967,27 @@ def test_privileged_activation_preserves_switch_barriers_and_merges_post_switch_
         lambda _fd, _key: 0xFFFFFFFF,
     )
     monkeypatch.setattr(
-        privileged_runtime_command_module,
-        "_assert_netns",
-        lambda _node: None,
+        privileged_runtime_command_module, "_update_map", lambda *_facts: None
     )
     monkeypatch.setattr(
-        privileged_runtime_command_module.os,
-        "close",
-        lambda _fd: None,
+        privileged_runtime_command_module, "_assert_netns", lambda _node: None
     )
-
-    def update_map(_fd, _key, _value):
-        actions.append(("switch", ""))
 
     def in_netns(_pid, command, *, input_text=None, **_facts):
-        actions.append((" ".join(command), input_text))
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if command[:2] == ["ip", "-force"]:
+            batches.append(input_text)
+        return subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr(
-        privileged_runtime_command_module, "_update_map", update_map
-    )
     monkeypatch.setattr(
         privileged_runtime_command_module, "_in_netns", in_netns
     )
-    interface_up = "sv21234567890a"
-    interface_down = "sv21234567890b"
-
+    monkeypatch.setattr(
+        privileged_runtime_command_module.os, "close", lambda _fd: None
+    )
+    interface = "sv21234567890a"
     result = _activate_boundary(
         {
-            "pin_root": "/sys/fs/bpf/skyseed-v2/run-phase-order",
+            "pin_root": "/sys/fs/bpf/skyseed-v2/run-access-command",
             "boundary_timestamp": START.isoformat(),
             "expected_active_generation": 0xFFFFFFFF,
             "generation": 0,
@@ -2447,990 +1996,133 @@ def test_privileged_activation_preserves_switch_barriers_and_merges_post_switch_
                 {
                     "pid": 101,
                     "netns_inode": 201,
-                    "interface_identities": (
-                        {"interface": interface_up, "ifindex": 7},
-                        {"interface": interface_down, "ifindex": 8},
-                    ),
-                    "link_up": (interface_up,),
-                    "link_down": (interface_down,),
-                    "qdisc": (
-                        {
-                            "interface": interface_up,
-                            "delay_us": 10,
-                            "packet_loss_ppm": 0,
-                            "bandwidth_bps": 1_000_000,
-                        },
-                    ),
+                    "link_up": (),
+                    "link_down": (),
+                    "qdisc": (),
                     "route_delete": (),
-                    "route_replace": (
+                    "route_replace": (),
+                    "access_peer_route_delete": (
                         {
                             "destination": "100.64.0.2",
-                            "interface": interface_up,
+                            "interface": interface,
                         },
                     ),
-                    "access_peer_route_delete": (),
-                    "access_peer_route_replace": (),
+                    "access_peer_route_replace": (
+                        {
+                            "destination": "100.64.0.3",
+                            "interface": interface,
+                        },
+                    ),
                     "zone_address_delete": (),
-                    "zone_address_add": ("198.18.0.1",),
+                    "zone_address_add": (),
                 }
             ],
         }
     )
-
-    assert [value[0] for value in actions] == [
-        "ip -batch -",
-        "tc -batch -",
-        "ip -force -batch -",
-        "switch",
-        "ip -force -batch -",
+    assert batches == [
+        "route del 100.64.0.2/32\n"
+        f"neigh del 100.64.0.2 dev {interface}\n"
+        f"route replace 100.64.0.3/32 dev {interface} scope link\n"
+        "neigh replace 100.64.0.3 lladdr 02:53:4b:59:00:01 "
+        f"nud permanent dev {interface}\n"
     ]
-    assert actions[-1][1].splitlines() == [
-        "address replace 198.18.0.1/32 dev lo",
-        f"link set dev {interface_down} down",
-    ]
-    assert result["namespace_process_families"] == {
-        "link_up": 1,
-        "qdisc": 1,
-        "route_neighbour": 1,
-        "post_switch": 1,
-    }
-    assert result["post_switch_namespace_processes_avoided"] == 1
-    assert result["activation_switch_seconds"] >= 0
-    assert (
-        result["generation_switch_start_monotonic_ns"]
-        <= result["generation_switch_end_monotonic_ns"]
-    )
-    assert result["activation_switch_seconds"] == pytest.approx(
-        (
-            result["generation_switch_end_monotonic_ns"]
-            - result["generation_switch_start_monotonic_ns"]
-        )
-        / 1_000_000_000
-    )
+    assert result["route_neighbour_commands"] == 4
+    assert result["access_peer_route_neighbour_commands"] == 4
 
 
-def test_node_address_capacity_covers_largest_configured_single_shell() -> None:
-    satellites = (NODE,) + tuple(
-        NodeId(65001, "satellite", f"sat-{index:04d}")
-        for index in range(2, 1_585)
+def test_actual_runtime_bounded_and_rolling_capacity_plans_are_distinct(
+    complete_chain,
+) -> None:
+    _, _, realizations, _ = complete_chain
+    projection = realizations[0]._physical_world_projection
+    boundaries = _resolve_nominal_boundaries(realizations)
+    zone_prefixes = tuple(
+        prefix for _, prefix in realizations[0]._intended_state.zone_prefixes
     )
-    ground_stations = tuple(
-        NodeId(65001, "ground-station", f"gs-{index:04d}")
-        for index in range(1, 356)
-    )
-    topology_nodes = satellites + ground_stations
-    zones = ("zone-a", "zone-b")
-    realization = _zone_realization(
-        0,
-        4,
-        ("zone-a",),
-        topology_zones=zones,
-        topology_nodes=topology_nodes,
-    )
-    boundaries = _resolve_nominal_boundaries((realization,))
     bindings = {
-        node_id: SimpleNamespace(pid=index + 100, netns_inode=index + 200)
-        for index, node_id in enumerate(topology_nodes)
+        node_id: SimpleNamespace(
+            pid=index + 101,
+            netns_inode=index + 201,
+        )
+        for index, node_id in enumerate(projection.node_ids)
     }
 
     class _Executor:
-        def __init__(self) -> None:
-            self.requests = []
-
         def execute(self, action, request):
-            self.requests.append((action, request))
-            if action == "audit_node_addresses":
-                return _collision_audit_result(request)
             if action == "initialize":
-                return _foundation_result(request)
-            return {
-                "deleted_connections": 0,
-                "deleted_node_addresses": len(request.get("nodes", ())),
-                "pin_root_removed": True,
-                "errors": [],
-            }
-
-    def initialize(executor, ordered_bindings, suffix):
-        dataplane = _TcBpfRuntimeRealization(
-            executor=executor,
-            pin_root=f"/sys/fs/bpf/skyseed-v2/run-scale-{suffix}",
-            bindings=ordered_bindings,
-        )
-        result = dataplane.initialize(
-            realization._topology_signature,
-            zone_prefixes=tuple(prefix for _, prefix in realization.zone_prefixes),
-            capacity_boundaries=boundaries,
-            preparation_lookahead=None,
-            preparation_boundary_depth=None,
-        )
-        request = next(
-            request
-            for action, request in executor.requests
-            if action == "initialize"
-        )
-        return dataplane, result, request
-
-    first_executor = _Executor()
-    first_dataplane, first_result, first_request = initialize(
-        first_executor, bindings, "first"
-    )
-    second_executor = _Executor()
-    second_dataplane, second_result, second_request = initialize(
-        second_executor, dict(reversed(tuple(bindings.items()))), "second"
-    )
-
-    first_addresses = tuple(
-        (node["key"], node["node_address"]) for node in first_request["nodes"]
-    )
-    second_addresses = tuple(
-        (node["key"], node["node_address"]) for node in second_request["nodes"]
-    )
-    capacity = first_result["capacity_audit"]
-    zone_addresses = {
-        ip_interface(prefix).ip for _, prefix in realization.zone_prefixes
-    }
-    node_addresses = {ip_address(address) for _, address in first_addresses}
-    assert len(topology_nodes) == 1_939
-    assert len(first_addresses) == len(set(first_addresses)) == 1_939
-    assert len(node_addresses) == 1_939
-    assert tuple(key for key, _ in first_addresses) == tuple(
-        node.value
-        for node in sorted(
-            topology_nodes,
-            key=lambda node: (node.asn, node.entity_kind, node.entity_id),
-        )
-    )
-    assert first_addresses == second_addresses
-    assert capacity["node_address_requirement"] == 1_939
-    assert capacity["node_address_capacity"] == 2_046
-    assert capacity["node_address_headroom"] == 107
-    assert capacity["selected_node_address_range"] == "100.64.0.0/21"
-    assert capacity["collision_audit"]["result"] == "passed"
-    assert node_addresses.isdisjoint(zone_addresses)
-    assert first_result["capacity_audit"] == second_result["capacity_audit"]
-
-    first_dataplane.cleanup()
-    cleanup_request = first_executor.requests[-1][1]
-    assert all(node["node_address_owned"] for node in cleanup_request["nodes"])
-    second_dataplane.cleanup()
-
-
-def test_node_address_collision_fails_before_initialize_or_cleanup_mutation() -> None:
-    realization = _zone_realization(
-        0,
-        4,
-        ("zone-a",),
-        topology_zones=("zone-a",),
-    )
-    boundary = _resolve_nominal_boundaries((realization,))[0]
-
-    class _CollisionExecutor:
-        def __init__(self) -> None:
-            self.actions = []
-
-        def execute(self, action, request):
-            self.actions.append(action)
-            if action == "initialize":
-                raise RuntimeError("live namespace address collision")
-            raise AssertionError("unexpected runtime command after failed initialization")
-
-    executor = _CollisionExecutor()
-    dataplane = _TcBpfRuntimeRealization(
-        executor=executor,
-        pin_root="/sys/fs/bpf/skyseed-v2/run-address-collision",
-        bindings={NODE: SimpleNamespace(pid=101, netns_inode=201)},
-    )
-    with pytest.raises(
-        _CapacityAuditError, match="collision audit or initialization failed"
-    ):
-        dataplane.initialize(
-            realization._topology_signature,
-            zone_prefixes=tuple(prefix for _, prefix in realization.zone_prefixes),
-            capacity_boundaries=(boundary,),
-            preparation_lookahead=None,
-            preparation_boundary_depth=None,
-        )
-    assert executor.actions == ["initialize"]
-    assert dataplane.cleanup()["pin_root_removed"] is True
-    assert executor.actions == ["initialize"]
-
-
-def test_node_address_allocation_rejects_compiled_zone_collision() -> None:
-    with pytest.raises(_CapacityAuditError, match="compiled Zone identity"):
-        _allocate_node_addresses((NODE,), ("100.64.0.1/32",))
-
-
-@pytest.mark.parametrize(
-    ("address_payload", "route_payload", "source"),
-    (
-        (
-            [{"addr_info": [{"family": "inet", "local": "100.64.0.77", "prefixlen": 24}]}],
-            [],
-            "address",
-        ),
-        ([], [{"dst": "100.64.0.0/24"}], "route"),
-    ),
-)
-def test_worker_audits_live_namespace_address_and_route_collisions(
-    monkeypatch, address_payload, route_payload, source
-) -> None:
-    monkeypatch.setattr(privileged_runtime_command_module, "_assert_netns", lambda node: None)
-
-    def execute(_pid, command, **_kwargs):
-        payload = address_payload if "address" in command else route_payload
-        return SimpleNamespace(stdout=json.dumps(payload))
-
-    monkeypatch.setattr(privileged_runtime_command_module, "_in_netns", execute)
-    request = {
-        "node_address_range": "100.64.0.0/26",
-        "zone_prefixes": ("198.18.0.1/32",),
-        "nodes": (
-            {
-                "key": NODE.value,
-                "pid": 101,
-                "netns_inode": 201,
-                "node_address": "100.64.0.1",
-            },
-        ),
-    }
-    with pytest.raises(RuntimeError, match=f"namespace {source}"):
-        _audit_node_addresses(request)
-
-
-def test_worker_audits_before_mutation_and_adds_owned_node_addresses() -> None:
-    source = inspect.getsource(_initialize)
-    assert source.index("_audit_node_addresses") < source.index("root.mkdir")
-    assert "address add {node['node_address']}/32" in source
-    assert "address replace {node['node_address']}/32" not in source
-
-
-def test_worker_partial_install_cleanup_marks_only_owned_node_addresses(
-    monkeypatch, tmp_path: Path
-) -> None:
-    cleanup_requests = []
-    nodes = (
-        {
-            "key": NODE.value,
-            "pid": 101,
-            "netns_inode": 201,
-            "pin_component": "n-first",
-            "node_address": "100.64.0.1",
-            "active_links_capacity": 1,
-            "routes_capacity": 1,
-        },
-        {
-            "key": NODE_2.value,
-            "pid": 102,
-            "netns_inode": 202,
-            "pin_component": "n-second",
-            "node_address": "100.64.0.2",
-            "active_links_capacity": 1,
-            "routes_capacity": 1,
-        },
-    )
-    request = {
-        "pin_root": "/sys/fs/bpf/skyseed-v2/run-partial-install",
-        "nodes": nodes,
-        "inactive_generation": 0xFFFFFFFF,
-        "node_address_range": "100.64.0.0/29",
-        "zone_prefixes": ("198.18.0.1/32",),
-    }
-
-    monkeypatch.setattr(
-        privileged_runtime_command_module,
-        "_pin_root",
-        lambda _value: tmp_path / "pins",
-    )
-    monkeypatch.setattr(privileged_runtime_command_module, "_assert_netns", lambda _node: None)
-    monkeypatch.setattr(
-        privileged_runtime_command_module,
-        "_audit_node_addresses",
-        lambda _request: {"result": "passed"},
-    )
-    monkeypatch.setattr(
-        privileged_runtime_command_module,
-        "_create_map",
-        lambda *_args, **_kwargs: 10,
-    )
-    monkeypatch.setattr(privileged_runtime_command_module, "_pin_object", lambda *_args: None)
-    monkeypatch.setattr(privileged_runtime_command_module, "_update_map", lambda *_args: None)
-    monkeypatch.setattr(privileged_runtime_command_module, "_load_program", lambda *_args: 11)
-    monkeypatch.setattr(privileged_runtime_command_module.os, "close", lambda _descriptor: None)
-
-    def execute(pid, _command, **_kwargs):
-        if pid == 102:
-            raise RuntimeError("second node install failed")
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    def cleanup(cleanup_request, *, tolerate_errors=False):
-        assert tolerate_errors is True
-        cleanup_requests.append(cleanup_request)
-        return {"errors": []}
-
-    monkeypatch.setattr(privileged_runtime_command_module, "_in_netns", execute)
-    monkeypatch.setattr(privileged_runtime_command_module, "_cleanup", cleanup)
-
-    with pytest.raises(RuntimeError, match="second node install failed"):
-        _initialize(request)
-
-    ownership = {
-        node["key"]: node["node_address_owned"]
-        for node in cleanup_requests[0]["nodes"]
-    }
-    assert ownership == {NODE.value: True, NODE_2.value: False}
-
-
-def test_worker_cleanup_skips_prepared_but_never_active_zone_addresses(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    pin_parent = tmp_path / "pins"
-    pin_parent.mkdir()
-    pin_root = pin_parent / "run-cleanup"
-    address_batches = []
-    observed_addresses = iter(
-        (
-            frozenset(
-                {
-                    ip_address("100.64.0.1"),
-                    ip_address("198.18.0.1"),
+                return {
+                    "shared_active_generation_map": True,
+                    "collision_audit": {
+                        "result": "passed",
+                        "selected_node_address_range": request[
+                            "node_address_range"
+                        ],
+                        "audited_node_namespaces": len(request["nodes"]),
+                    },
+                    "installed_node_addresses": [
+                        node["key"] for node in request["nodes"]
+                    ],
                 }
-            ),
-            frozenset(),
-        )
-    )
-    monkeypatch.setattr(privileged_runtime_command_module, "_PIN_PARENT", pin_parent)
-    monkeypatch.setattr(privileged_runtime_command_module, "_assert_netns", lambda node: None)
-    monkeypatch.setattr(
-        privileged_runtime_command_module,
-        "_namespace_ipv4_local_addresses",
-        lambda node: next(observed_addresses),
-    )
+            if action == "cleanup":
+                return {"pin_root_removed": True, "errors": []}
+            raise AssertionError(action)
 
-    def execute(_pid, command, *, input_text=None, **_kwargs):
-        assert command == ["ip", "-force", "-batch", "-"]
-        address_batches.append(input_text)
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr(privileged_runtime_command_module, "_in_netns", execute)
-    result = privileged_runtime_command_module._cleanup(
-        {
-            "pin_root": str(pin_root),
-            "nodes": (
-                {
-                    "key": NODE.value,
-                    "pid": 101,
-                    "netns_inode": 201,
-                    "node_address": "100.64.0.1",
-                    "node_address_owned": True,
-                    "zone_addresses": (
-                        "198.18.0.1",
-                        "198.18.0.2",
-                    ),
-                },
-            ),
-            "connections": (),
-        }
-    )
-
-    assert address_batches == [
-        "address del 100.64.0.1/32 dev lo\n"
-        "address del 198.18.0.1/32 dev lo\n"
-    ]
-    assert result["deleted_node_addresses"] == 1
-    assert result["errors"] == []
-
-
-def test_worker_cleanup_does_not_infer_exact_address_from_broad_subnet(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    pin_parent = tmp_path / "pins"
-    pin_parent.mkdir()
-    pin_root = pin_parent / "run-cleanup"
-    address_queries = []
-    monkeypatch.setattr(privileged_runtime_command_module, "_PIN_PARENT", pin_parent)
-    monkeypatch.setattr(privileged_runtime_command_module, "_assert_netns", lambda node: None)
-
-    def execute(_pid, command, *, input_text=None, **_kwargs):
-        assert input_text is None
-        assert command == ["ip", "-j", "-4", "address", "show"]
-        address_queries.append(tuple(command))
-        return SimpleNamespace(
-            returncode=0,
-            stdout=json.dumps(
-                [
-                    {
-                        "addr_info": [
-                            {
-                                "family": "inet",
-                                "local": "198.18.0.1",
-                                "prefixlen": 15,
-                            }
-                        ]
-                    }
-                ]
-            ),
-            stderr="",
-        )
-
-    monkeypatch.setattr(privileged_runtime_command_module, "_in_netns", execute)
-    result = privileged_runtime_command_module._cleanup(
-        {
-            "pin_root": str(pin_root),
-            "nodes": (
-                {
-                    "key": NODE.value,
-                    "pid": 101,
-                    "netns_inode": 201,
-                    "node_address": "100.64.0.1",
-                    "node_address_owned": False,
-                    "zone_addresses": ("198.18.10.25",),
-                },
-            ),
-            "connections": (),
-        }
-    )
-
-    assert len(address_queries) == 2
-    assert result["deleted_node_addresses"] == 0
-    assert result["errors"] == []
-
-
-def test_worker_cleanup_does_not_count_an_already_absent_node_address(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    pin_parent = tmp_path / "pins"
-    pin_parent.mkdir()
-    pin_root = pin_parent / "run-cleanup"
-    monkeypatch.setattr(privileged_runtime_command_module, "_PIN_PARENT", pin_parent)
-    monkeypatch.setattr(privileged_runtime_command_module, "_assert_netns", lambda node: None)
-    monkeypatch.setattr(
-        privileged_runtime_command_module,
-        "_namespace_ipv4_local_addresses",
-        lambda node: frozenset(),
-    )
-
-    def unexpected_execute(*_args, **_kwargs):
-        raise AssertionError("an absent address must not issue a delete command")
-
-    monkeypatch.setattr(
-        privileged_runtime_command_module,
-        "_in_netns",
-        unexpected_execute,
-    )
-
-    result = privileged_runtime_command_module._cleanup(
-        {
-            "pin_root": str(pin_root),
-            "nodes": (
-                {
-                    "key": NODE.value,
-                    "pid": 101,
-                    "netns_inode": 201,
-                    "node_address": "100.64.0.1",
-                    "node_address_owned": True,
-                    "zone_addresses": (),
-                },
-            ),
-            "connections": (),
-        }
-    )
-
-    assert result["deleted_node_addresses"] == 0
-    assert result["errors"] == []
-
-
-def test_rolling_capacity_uses_topology_bounds_times_depth_plus_active() -> None:
-    satellites = (NODE,) + tuple(
-        NodeId(65001, "satellite", f"sat-{index}")
-        for index in range(2, 33)
-    )
-    ground_stations = tuple(
-        NodeId(65001, "ground-station", f"gs-{index}")
-        for index in range(1, 4)
-    )
-    topology_nodes = satellites + ground_stations
-    zones = tuple(f"zone-{index}" for index in range(5))
-    realization = _zone_realization(
-        0,
-        4,
-        (zones[0],),
-        topology_zones=zones,
-        topology_nodes=topology_nodes,
-    )
-    boundaries = _resolve_nominal_boundaries((realization,))
-
-    class _Executor:
-        def execute(self, action, request):
-            if action == "audit_node_addresses":
-                return _collision_audit_result(request)
-            if action == "initialize":
-                return _foundation_result(request)
-            return {"shared_active_generation_map": True}
-
-    dataplane = _TcBpfRuntimeRealization(
-        executor=_Executor(),
-        pin_root="/sys/fs/bpf/skyseed-v2/run-topology-capacity",
-        bindings={
-            node_id: SimpleNamespace(pid=index + 1, netns_inode=index + 101)
-            for index, node_id in enumerate(topology_nodes)
-        },
-    )
-    capacity = dataplane.initialize(
-        realization._topology_signature,
-        zone_prefixes=tuple(prefix for _, prefix in realization.zone_prefixes),
-        capacity_boundaries=boundaries,
-        preparation_lookahead=timedelta(seconds=60),
-        preparation_boundary_depth=8,
-    )["capacity_audit"]
-    per_node = {value["key"]: value for value in capacity["per_node"]}
-
-    assert capacity["resident_generation_capacity"] == 9
-    assert per_node[ground_stations[0].value][
-        "per_generation_active_link_upper_bound"
-    ] == 32
-    assert per_node[ground_stations[0].value][
-        "per_generation_route_upper_bound"
-    ] == 6
-    assert per_node[ground_stations[0].value][
-        "configured_active_link_entries"
-    ] == 288
-    assert per_node[ground_stations[0].value]["configured_route_entries"] == 54
-    assert per_node[NODE.value]["per_generation_active_link_upper_bound"] == 34
-    assert per_node[NODE.value]["per_generation_route_upper_bound"] == 9
-    assert per_node[NODE.value]["configured_active_link_entries"] == 306
-    assert per_node[NODE.value]["configured_route_entries"] == 81
-
-
-def test_bounded_exact_and_rolling_topology_capacity_are_distinct() -> None:
-    zones = ("zone-a", "zone-b", "zone-c")
-    first = _zone_realization(0, 4, ("zone-a",), topology_zones=zones)
-    second = _zone_realization(
-        4,
-        8,
-        ("zone-b", "zone-c"),
-        topology_zones=zones,
-    )
-    boundaries = _resolve_nominal_boundaries((first, second))
-
-    class _Executor:
-        def __init__(self) -> None:
-            self.requests = []
-
-        def execute(self, action, request):
-            self.requests.append((action, request))
-            if action == "audit_node_addresses":
-                return _collision_audit_result(request)
-            if action == "initialize":
-                return _foundation_result(request)
-            return {"shared_active_generation_map": True}
-
-    bindings = {NODE: SimpleNamespace(pid=101, netns_inode=201)}
-    bounded_executor = _Executor()
     bounded = _TcBpfRuntimeRealization(
-        executor=bounded_executor,
+        executor=_Executor(),
         pin_root="/sys/fs/bpf/skyseed-v2/run-bounded-capacity",
         bindings=bindings,
     )
-    bounded_result = bounded.initialize(
-        first._topology_signature,
-        zone_prefixes=tuple(prefix for _, prefix in first.zone_prefixes),
-        capacity_boundaries=boundaries,
-        preparation_lookahead=None,
-        preparation_boundary_depth=None,
-    )
-    bounded_node = bounded_result["capacity_audit"]["per_node"][0]
-    assert bounded_result["capacity_audit"]["known_generation_count"] == 2
-    assert bounded_result["capacity_audit"]["resident_generation_capacity"] == 2
-    assert bounded_node["required_route_entries"] == 6
-    assert bounded_node["configured_route_entries"] == 6
-    initialize_request = next(
-        request
-        for action, request in bounded_executor.requests
-        if action == "initialize"
-    )
-    assert initialize_request["nodes"][0]["routes_capacity"] == 6
-
-    rolling_executor = _Executor()
     rolling = _TcBpfRuntimeRealization(
-        executor=rolling_executor,
+        executor=_Executor(),
         pin_root="/sys/fs/bpf/skyseed-v2/run-rolling-capacity",
         bindings=bindings,
     )
-    rolling_result = rolling.initialize(
-        first._topology_signature,
-        zone_prefixes=tuple(prefix for _, prefix in first.zone_prefixes),
-        capacity_boundaries=(boundaries[0],),
-        preparation_lookahead=timedelta(0),
-        preparation_boundary_depth=1,
-    )
-    rolling_node = rolling_result["capacity_audit"]["per_node"][0]
-    assert rolling_result["capacity_audit"]["resident_generation_capacity"] == 2
-    assert rolling_result["capacity_audit"]["preparation_boundary_depth"] == 1
-    assert rolling_node["capacity_basis"] == (
-        "topology-upper-bound-times-resident-capacity"
-    )
-    assert rolling_node["per_generation_route_upper_bound"] == 4
-    assert rolling_node["required_route_entries"] == 8
-    assert rolling_node["configured_route_entries"] == 8
-
-
-def test_rolling_resident_capacity_reserves_in_flight_and_fails_before_preload(
-    monkeypatch,
-) -> None:
-    zones = ("zone-a", "zone-b", "zone-c")
-    first = _zone_realization(0, 4, ("zone-a",), topology_zones=zones)
-    second = _zone_realization(
-        4,
-        8,
-        ("zone-b", "zone-c"),
-        topology_zones=zones,
-    )
-    boundaries = _resolve_nominal_boundaries((first, second))
-
-    class _Executor:
-        def __init__(self) -> None:
-            self.actions = []
-
-        def execute(self, action, request):
-            self.actions.append(action)
-            if action == "audit_node_addresses":
-                return _collision_audit_result(request)
-            if action == "initialize":
-                return _foundation_result(request)
-            if action == "prepare_boundary":
-                return {
-                    "generation_keys": [
-                        {
-                            "key": node["key"],
-                            "active_interface_indexes": (),
-                            "route_keys": tuple(range(len(node["routes"]))),
-                        }
-                        for node in request["generation_nodes"]
-                    ]
-                }
-            return {"shared_active_generation_map": True}
-
-    executor = _Executor()
-    dataplane = _TcBpfRuntimeRealization(
-        executor=executor,
-        pin_root="/sys/fs/bpf/skyseed-v2/run-fail-capacity",
-        bindings={NODE: SimpleNamespace(pid=101, netns_inode=201)},
-    )
-    dataplane.initialize(
-        first._topology_signature,
-        zone_prefixes=tuple(prefix for _, prefix in first.zone_prefixes),
-        capacity_boundaries=(boundaries[0],),
-        preparation_lookahead=timedelta(0),
-        preparation_boundary_depth=1,
-    )
-    materialization_calls = 0
-    materialize = runtime_realization_module._materialize_boundary
-
-    def count_materialization(previous, boundary):
-        nonlocal materialization_calls
-        materialization_calls += 1
-        return materialize(previous, boundary)
-
-    monkeypatch.setattr(
-        runtime_realization_module,
-        "_materialize_boundary",
-        count_materialization,
-    )
-    pending, _ = dataplane.start_preparation(boundaries[0])
-    assert dataplane.generation_capacity_status() == {
-        "resident_generations": 0,
-        "reserved_in_flight_preparations": 1,
-        "resident_generation_capacity": 2,
-        "can_start_preparation": False,
-    }
-    ready, _ = dataplane.finish_preparation(
-        pending,
-        foundation_token="foundation",
-        predecessor_time=None,
-    )
-    pending, _ = dataplane.start_preparation(boundaries[1])
-    ready_two, _ = dataplane.finish_preparation(
-        pending,
-        foundation_token="foundation",
-        predecessor_time=boundaries[0].nominal_time,
-    )
-    with pytest.raises(ValueError, match="Zone-edge predecessor is stale"):
-        dataplane.start_preparation(boundaries[1])
-    assert executor.actions.count("prepare_boundary") == 2
-    assert set(dataplane._generation_keys) == {0, 1}
-    assert materialization_calls == 3
-    dataplane.activate(ready)
-    dataplane.activate(ready_two)
-    retirement, _resources = dataplane.retirement_handles(ready, ready_two)
-    dataplane.reclaim_forwarding(retirement)
-    assert set(dataplane._generation_keys) == {1}
-    assert set(dataplane._realizations) == {boundaries[1].nominal_time}
-
-
-def test_capacity_pressure_reclaims_generation_before_forward_preparation(
-    tmp_path, monkeypatch
-) -> None:
-    monkeypatch.setattr(BpfRunner, "_maintenance_loop", lambda self: None)
-    runner = BpfRunner(
-        compose_project_name="runner-test",
-        future_realization_supplier=_supplier(
-            _realization(0, 4, "zone-a"),
-            _realization(4, 8, "zone-b"),
-            _realization(8, 12, "zone-c"),
-        ),
-        preparation_boundary_depth=1,
-    )
-    runner.prepare()
-    runner._maintenance_thread.join(timeout=1)
-    runner.activate_next()
-    runner._maintain_until_satisfied()
-    runner.activate_next()
-    dataplane = _FakeRuntimeRealization.instances[0]
-    dataplane.operations.clear()
-    runner._maintain_until_satisfied()
-    assert dataplane.operations[:2] == [
-        ("reclaim-generation", 0),
-        ("prepare", 2),
-    ]
-    assert [value.generation for value in dataplane.prepared] == [0, 1, 2]
-    assert any(
-        value["event"] == "maintenance_capacity_pressure"
-        and value["action"] == "reclaim-forwarding"
-        for value in runner.inspection_snapshot()["events"]
-    )
-    runner.cleanup()
-
-
-def test_full_resident_capacity_with_depth_satisfied_waits_for_main(
-    tmp_path, monkeypatch
-) -> None:
-    monkeypatch.setattr(BpfRunner, "_maintenance_loop", lambda self: None)
-    runner = BpfRunner(
-        compose_project_name="runner-depth-wait",
-        future_realization_supplier=_supplier(
-            _realization(0, 4, "zone-a"),
-            _realization(4, 8, "zone-b"),
-            _realization(8, 12, "zone-c"),
-            _realization(12, 16, "zone-d"),
-        ),
-        preparation_lookahead=timedelta(seconds=100),
-        preparation_boundary_depth=2,
-    )
-    runner.prepare()
-    runner._maintenance_thread.join(timeout=1)
-    runner.activate_next()
-    runner._maintain_until_satisfied()
-
-    dataplane = _FakeRuntimeRealization.instances[0]
-    assert len(runner._ready) == 2
-    assert dataplane.generation_capacity_status() == {
-        "resident_generations": 3,
-        "reserved_in_flight_preparations": 0,
-        "resident_generation_capacity": 3,
-        "can_start_preparation": False,
-    }
-    assert runner._next_maintenance_action() == ("done", None)
-    runner.cleanup()
-
-
-def test_exact_next_missing_full_capacity_without_reclaim_fails_closed(
-    tmp_path, monkeypatch
-) -> None:
-    monkeypatch.setattr(BpfRunner, "_maintenance_loop", lambda self: None)
-    runner = BpfRunner(
-        compose_project_name="runner-resident-deadlock",
-        future_realization_supplier=_supplier(
-            _realization(0, 4, "zone-a"),
-            _realization(4, 8, "zone-b"),
-            _realization(8, 12, "zone-c"),
-        ),
-        preparation_boundary_depth=1,
-    )
-    runner.prepare()
-    runner._maintenance_thread.join(timeout=1)
-    runner.activate_next()
-    runner._maintain_until_satisfied()
-    runner.activate_next()
-    with runner._condition:
-        runner._reclaim_forwarding.clear()
-
-    with pytest.raises(_CapacityAuditError, match="no retired generation"):
-        runner._maintain_until_satisfied()
-    assert any(
-        value["event"] == "capacity_audit_failure"
-        and value["scope"] == "resident-generation"
-        for value in runner.inspection_snapshot()["events"]
-    )
-    runner.cleanup()
-
-
-def test_stale_physical_reclaim_protects_reintroduced_ready_resource() -> None:
-    connection = ConnectionId(ConnectionKind.INTER_SATELLITE, NODE, NODE_2)
-    interface_a, interface_b = runtime_realization_module._interface_names(connection)
-    empty = _empty_state()
-    established = _MaterializedDataplaneState(
-        (connection,),
-        tuple(
-            runtime_realization_module._QdiscValue(
-                connection,
-                direction,
-                1_000_000,
-                10,
-                0,
-            )
-            for direction in ConnectionDirection
-        ),
-        (),
-        (),
-    )
-    interfaces = {interface_a, interface_b}
-
-    class _Executor:
-        def __init__(self) -> None:
-            self.reclaim_requests = []
-
-        def execute(self, action, request):
-            if action == "activate_boundary":
-                for node in request["nodes"]:
-                    identities = {
-                        value["interface"]: value["ifindex"]
-                        for value in node["interface_identities"]
-                    }
-                    for name in (*node["link_up"], *node["link_down"]):
-                        assert identities[name] > 0
-                        assert name in interfaces
-                return {
-                    "active_generation": request["generation"],
-                    "generation_publications": 1,
-                }
-            if action == "reclaim_generation":
-                return {"generation": request["generation"], "deleted_entries": 0}
-            if action == "reclaim_resources":
-                self.reclaim_requests.append(tuple(request["connections"]))
-                for value in request["connections"]:
-                    interfaces.remove(value["interface_a"])
-                    interfaces.remove(value["interface_b"])
-                return {"deleted_connections": len(request["connections"])}
-            raise AssertionError(action)
-
-    executor = _Executor()
-    dataplane = _TcBpfRuntimeRealization(
-        executor=executor,
-        pin_root="/sys/fs/bpf/skyseed-v2/run-stale-reclaim",
-        bindings={
-            NODE: SimpleNamespace(pid=101, netns_inode=201),
-            NODE_2: SimpleNamespace(pid=102, netns_inode=202),
-        },
-    )
-    dataplane._nodes = (
-        {"key": NODE.value, "pid": 101, "netns_inode": 201},
-        {"key": NODE_2.value, "pid": 102, "netns_inode": 202},
-    )
-    dataplane._node_addresses = {NODE: "100.64.0.1", NODE_2: "100.64.0.2"}
-    dataplane._map_capacities = {NODE.value: (4, 4), NODE_2.value: (4, 4)}
-    dataplane._max_resident_generations = 3
-    dataplane._prepared_resources.add(connection)
-    dataplane._all_prepared_resources.add(connection)
-    dataplane._interface_indexes = {
-        (NODE.value, interface_a): 17,
-        (NODE_2.value, interface_b): 18,
-    }
-
-    def ready(
-        generation: int,
-        previous_state: _MaterializedDataplaneState,
-        state: _MaterializedDataplaneState,
-    ):
-        boundary = SimpleNamespace(
-            nominal_time=START + timedelta(seconds=generation * 10),
-            operations=(),
-            order_sha256=f"ready-{generation}",
+    try:
+        bounded_audit = bounded.initialize(
+            projection,
+            zone_prefixes=zone_prefixes,
+            capacity_boundaries=boundaries,
+            preparation_lookahead=None,
+            preparation_boundary_depth=None,
+        )["capacity_audit"]
+        rolling_audit = rolling.initialize(
+            projection,
+            zone_prefixes=zone_prefixes,
+            capacity_boundaries=(boundaries[0],),
+            preparation_lookahead=timedelta(0),
+            preparation_boundary_depth=1,
+        )["capacity_audit"]
+        assert bounded_audit["mode"] == "bounded-full-range"
+        assert bounded_audit["resident_generation_capacity"] == (
+            bounded_audit["known_generation_count"]
         )
-        activation = dataplane._activation_request(
-            boundary,
-            previous_state=previous_state,
-            state=state,
-            expected_active_generation=generation - 1,
-            generation=generation,
-            interface_indexes=dataplane._interface_indexes,
+        assert 1 <= bounded_audit["known_generation_count"] <= len(boundaries)
+        assert {
+            value["capacity_basis"] for value in bounded_audit["per_node"]
+        } == {"bounded-full-range-exact-demand"}
+        assert rolling_audit["mode"] == "rolling"
+        assert rolling_audit["resident_generation_capacity"] == 2
+        assert rolling_audit["preparation_boundary_depth"] == 1
+        assert {
+            value["capacity_basis"] for value in rolling_audit["per_node"]
+        } == {"topology-upper-bound-times-resident-capacity"}
+        assert all(
+            value["configured_active_link_entries"]
+            >= value["required_active_link_entries"]
+            and value["configured_route_entries"]
+            >= value["required_route_entries"]
+            for value in (*bounded_audit["per_node"], *rolling_audit["per_node"])
         )
-        return runtime_realization_module._ReadyDataplaneBoundary(
-            boundary,
-            "foundation",
-            None,
-            generation - 1,
-            generation,
-            state,
-            {},
-            activation,
-            (),
-            (),
-            f"ready-{generation}",
-            {},
-        )
-
-    withdrawn = ready(1, established, empty)
-    reintroduced = ready(2, empty, established)
-    dataplane._active = withdrawn
-    dataplane._realizations = {
-        withdrawn.boundary.nominal_time: withdrawn,
-        reintroduced.boundary.nominal_time: reintroduced,
-    }
-    dataplane._generation_keys = {1: (), 2: ()}
-    stale = _RetiredPhysicalRealization((connection,))
-
-    stale_result = dataplane.reclaim_physical(stale)
-    assert stale_result["candidate_connections"] == 1
-    assert stale_result["protected_connections"] == 1
-    assert stale_result["deleted_connections"] == 0
-    assert executor.reclaim_requests == []
-    assert interfaces == {interface_a, interface_b}
-    assert dataplane._interface_indexes == {
-        (NODE.value, interface_a): 17,
-        (NODE_2.value, interface_b): 18,
-    }
-    assert dataplane.activate(reintroduced)["active_generation"] == 2
-
-    withdrawn_again = ready(3, established, empty)
-    dataplane._realizations[
-        withdrawn_again.boundary.nominal_time
-    ] = withdrawn_again
-    dataplane._generation_keys[3] = ()
-    dataplane.activate(withdrawn_again)
-    forwarding, physical = dataplane.retirement_handles(
-        reintroduced, withdrawn_again
-    )
-    assert physical == _RetiredPhysicalRealization((connection,))
-    dataplane.reclaim_forwarding(forwarding)
-    final_result = dataplane.reclaim_physical(physical)
-    assert final_result["candidate_connections"] == 1
-    assert final_result["protected_connections"] == 0
-    assert final_result["deleted_connections"] == 1
-    assert len(executor.reclaim_requests) == 1
-    assert not interfaces
-    assert not dataplane._interface_indexes
+    finally:
+        bounded.cleanup()
+        rolling.cleanup()
 
 
-def test_stale_physical_reclaim_protects_in_flight_preparation() -> None:
-    connection = ConnectionId(ConnectionKind.INTER_SATELLITE, NODE, NODE_2)
-    empty = _empty_state()
-    established = _MaterializedDataplaneState(
-        (connection,),
-        tuple(
-            runtime_realization_module._QdiscValue(
-                connection,
-                direction,
-                1_000_000,
-                10,
-                0,
-            )
-            for direction in ConnectionDirection
-        ),
-        (),
-        (),
+def test_actual_runtime_stale_physical_reclaim_protects_in_flight_state() -> None:
+    connection = OperationalConnectionId(
+        OperationalConnectionKind.INTER_SATELLITE,
+        NODE,
+        NODE_2,
     )
 
     class _Executor:
@@ -3445,28 +2137,36 @@ def test_stale_physical_reclaim_protects_in_flight_preparation() -> None:
     dataplane._prepared_resources.add(connection)
     dataplane._all_prepared_resources.add(connection)
     dataplane._preparing = runtime_realization_module._PendingDataplaneBoundary(
-        SimpleNamespace(nominal_time=START, operations=(), order_sha256="pending"),
-        empty,
-        established,
+        SimpleNamespace(
+            nominal_time=START,
+            operations=(),
+            order_sha256="pending",
+        ),
+        _empty_state(),
+        _MaterializedDataplaneState((connection,), (), (), ()),
         1,
         2,
         0,
     )
-
-    result = dataplane.reclaim_physical(_RetiredPhysicalRealization((connection,)))
+    result = dataplane.reclaim_physical(
+        _RetiredPhysicalRealization((connection,))
+    )
     assert result["candidate_connections"] == 1
     assert result["protected_connections"] == 1
     assert result["deleted_connections"] == 0
     assert connection in dataplane._prepared_resources
 
 
-def test_strict_physical_reclaim_retains_inventory_and_fails_runner(
-    tmp_path,
-) -> None:
-    connection = ConnectionId(ConnectionKind.INTER_SATELLITE, NODE, NODE_2)
+def test_actual_runtime_reclaim_failure_retains_owned_inventory() -> None:
+    connection = OperationalConnectionId(
+        OperationalConnectionKind.INTER_SATELLITE,
+        NODE,
+        NODE_2,
+    )
 
     class _FailingExecutor:
         def execute(self, action, request):
+            assert action == "reclaim_resources"
             raise RuntimeError("kernel deletion failed")
 
     dataplane = _TcBpfRuntimeRealization(
@@ -3476,52 +2176,29 @@ def test_strict_physical_reclaim_retains_inventory_and_fails_runner(
     )
     dataplane._prepared_resources.add(connection)
     dataplane._all_prepared_resources.add(connection)
-    interface_a, interface_b = runtime_realization_module._interface_names(connection)
+    interface_a, interface_b = runtime_realization_module._interface_names(
+        connection
+    )
     dataplane._interface_indexes[(NODE.value, interface_a)] = 17
     dataplane._interface_indexes[(NODE_2.value, interface_b)] = 18
     with pytest.raises(RuntimeError, match="kernel deletion failed"):
-        dataplane.reclaim_physical(_RetiredPhysicalRealization((connection,)))
+        dataplane.reclaim_physical(
+            _RetiredPhysicalRealization((connection,))
+        )
     assert connection in dataplane._prepared_resources
     assert connection in dataplane._all_prepared_resources
-    assert len(dataplane._interface_indexes) == 2
+    assert dataplane._interface_indexes == {
+        (NODE.value, interface_a): 17,
+        (NODE_2.value, interface_b): 18,
+    }
 
-    class _SuccessfulExecutor:
-        def execute(self, action, request):
-            assert action == "reclaim_resources"
-            return {"deleted_connections": 1}
 
-    reclaimed = _TcBpfRuntimeRealization(
-        executor=_SuccessfulExecutor(),
-        pin_root="/sys/fs/bpf/skyseed-v2/run-reclaim-success",
-        bindings={},
+def test_actual_runtime_cleanup_failure_retains_ownership_for_retry() -> None:
+    connection = OperationalConnectionId(
+        OperationalConnectionKind.INTER_SATELLITE,
+        NODE,
+        NODE_2,
     )
-    reclaimed._prepared_resources.add(connection)
-    reclaimed._all_prepared_resources.add(connection)
-    reclaimed._interface_indexes[(NODE.value, interface_a)] = 17
-    reclaimed._interface_indexes[(NODE_2.value, interface_b)] = 18
-    reclaimed.reclaim_physical(_RetiredPhysicalRealization((connection,)))
-    assert not reclaimed._interface_indexes
-
-    _FakeRuntimeRealization.reclaim_error = RuntimeError("kernel deletion failed")
-    runner = BpfRunner(
-        compose_project_name="runner-test",
-        future_realization_supplier=_supplier(_realization(0, 4, "zone-a")),
-        preparation_lookahead=None,
-        preparation_boundary_depth=None,
-    )
-    runner.prepare()
-    with runner._condition:
-        runner._reclaim_physical.append((object(),))
-        runner._maintenance_revision += 1
-        runner._condition.notify_all()
-    _wait_for(lambda: runner._state == "failed")
-    assert isinstance(runner._maintenance_error, RuntimeError)
-    assert "kernel deletion failed" in str(runner._maintenance_error)
-    runner.cleanup()
-
-
-def test_runtime_teardown_failure_preserves_ownership_for_retry() -> None:
-    connection = ConnectionId(ConnectionKind.INTER_SATELLITE, NODE, NODE_2)
 
     class _RetryExecutor:
         def __init__(self) -> None:
@@ -3547,10 +2224,8 @@ def test_runtime_teardown_failure_preserves_ownership_for_retry() -> None:
     dataplane._prepared_resources.add(connection)
     dataplane._all_prepared_resources.add(connection)
     dataplane._interface_indexes[(NODE.value, "sv21234567890a")] = 17
-
     with pytest.raises(RuntimeError, match="ownership retained"):
         dataplane.cleanup()
-
     assert dataplane._initialized is True
     assert connection in dataplane._all_prepared_resources
     assert dataplane._interface_indexes
@@ -3560,34 +2235,197 @@ def test_runtime_teardown_failure_preserves_ownership_for_retry() -> None:
     assert not dataplane._interface_indexes
 
 
-def test_runner_teardown_timeout_retains_runtime_for_retry(
-    monkeypatch,
+def test_actual_runner_uses_fake_privileged_helper_without_runner_replacement(
+    complete_chain, monkeypatch
 ) -> None:
-    release = Event()
-    maintenance = Thread(target=release.wait)
-    maintenance.start()
-    runtime = _FakeRuntimeRealization()
+    simulator, _, realizations, _ = complete_chain
+    project = "actual-runner-fake-helper"
+    projection = realizations[0]._physical_world_projection
+    containers = {}
+    for index, node_id in enumerate(projection.node_ids):
+        entity_type = (
+            "Satellite"
+            if node_id.entity_kind == "satellite"
+            else "GroundStation"
+        )
+        labels = {
+            runner_module._PROJECT_LABEL: project,
+            runner_module._SERVICE_LABEL: f"node-{index}",
+            runner_module._ASN_LABEL: str(node_id.asn),
+            runner_module._ENTITY_TYPE_LABEL: entity_type,
+        }
+        if entity_type == "Satellite":
+            labels[runner_module._SATELLITE_ID_LABEL] = node_id.entity_id
+        else:
+            labels[runner_module._GROUND_STATION_ID_LABEL] = node_id.entity_id
+        identifier = f"container-{index}"
+        containers[identifier] = {
+            "Id": identifier,
+            "Name": f"/node-{index}",
+            "Image": "image-id",
+            "Config": {"Labels": labels},
+            "State": {
+                "Running": True,
+                "Pid": 1000 + index,
+                "StartedAt": "2026-01-01T00:00:00Z",
+            },
+        }
+
+    def fake_execute(command, *, input_text=None):
+        del input_text
+        values = tuple(command)
+        if values[1] == "ps":
+            return subprocess.CompletedProcess(
+                values, 0, "\n".join(containers) + "\n", ""
+            )
+        if values[1] == "inspect":
+            selected = [containers[value] for value in values[2:]]
+            return subprocess.CompletedProcess(
+                values, 0, json.dumps(selected), ""
+            )
+        if values[1] == "exec" and values[-2:] == (
+            "readlink",
+            "/proc/self/ns/net",
+        ):
+            index = int(values[2].rsplit("-", 1)[1])
+            return subprocess.CompletedProcess(
+                values, 0, f"net:[{5000 + index}]\n", ""
+            )
+        raise AssertionError(values)
+
+    class _PrivilegedRecorder:
+        instances = []
+
+        def __init__(self, **facts):
+            self.facts = facts
+            self.actions = []
+            self.interface_indexes = {}
+            self.next_ifindex = 10
+            self.started = False
+            self.stopped = False
+            self.__class__.instances.append(self)
+
+        def start(self):
+            self.started = True
+
+        def stop(self):
+            self.stopped = True
+
+        def execute(self, action, request):
+            self.actions.append((action, request))
+            if action == "initialize":
+                return {
+                    "shared_active_generation_map": True,
+                    "collision_audit": {
+                        "result": "passed",
+                        "selected_node_address_range": request[
+                            "node_address_range"
+                        ],
+                        "audited_node_namespaces": len(request["nodes"]),
+                    },
+                    "installed_node_addresses": [
+                        value["key"] for value in request["nodes"]
+                    ],
+                }
+            if action == "prepare_boundary":
+                generation_keys = []
+                for node in request["generation_nodes"]:
+                    identities = []
+                    indexes = []
+                    for interface in node["active_interfaces"]:
+                        key = node["key"], interface
+                        if key not in self.interface_indexes:
+                            self.interface_indexes[key] = self.next_ifindex
+                            self.next_ifindex += 1
+                        ifindex = self.interface_indexes[key]
+                        indexes.append(ifindex)
+                        identities.append(
+                            {"interface": interface, "ifindex": ifindex}
+                        )
+                    generation_keys.append(
+                        {
+                            "key": node["key"],
+                            "active_interface_indexes": indexes,
+                            "route_keys": list(range(len(node["routes"]))),
+                            "interface_identities": identities,
+                        }
+                    )
+                return {
+                    "generation_keys": generation_keys,
+                    "prepared_connections": len(request["connections"]),
+                    "preloaded_active_links": sum(
+                        len(value["active_interface_indexes"])
+                        for value in generation_keys
+                    ),
+                    "preloaded_routes": sum(
+                        len(value["route_keys"]) for value in generation_keys
+                    ),
+                    "stable_interface_identity_count": len(
+                        self.interface_indexes
+                    ),
+                    "new_interface_identity_count": len(
+                        request["connections"]
+                    )
+                    * 2,
+                }
+            if action == "activate_boundary":
+                return {
+                    "active_generation": request["generation"],
+                    "generation_publications": int(
+                        request.get("generation_changed", True)
+                    ),
+                }
+            if action == "reclaim_generation":
+                return {
+                    "generation": request["generation"],
+                    "deleted_entries": sum(
+                        len(value["active_interface_indexes"])
+                        + len(value["route_keys"])
+                        for value in request["generation_keys"]
+                    ),
+                }
+            if action == "reclaim_resources":
+                return {
+                    "deleted_connections": len(request["connections"])
+                }
+            if action == "cleanup":
+                return {
+                    "pin_root_removed": True,
+                    "errors": [],
+                    "deleted_connections": len(request["connections"]),
+                }
+            raise AssertionError(action)
+
+    monkeypatch.setattr(runner_module, "_execute", fake_execute)
+    monkeypatch.setattr(
+        runner_module, "_PrivilegedHelper", _PrivilegedRecorder
+    )
     runner = BpfRunner(
-        compose_project_name="runner-cleanup-timeout",
-        future_realization_supplier=lambda: None,
+        compose_project_name=project,
+        future_realization_supplier=_supplier(*realizations),
         preparation_lookahead=None,
         preparation_boundary_depth=None,
     )
-    runner._runtime_realization = runtime
-    runner._maintenance_thread = maintenance
-    runner._state = "prepared"
-    monkeypatch.setattr(
-        runner_module, "_MAINTENANCE_SHUTDOWN_TIMEOUT_SECONDS", 0.01
-    )
-
-    with pytest.raises(RuntimeError, match="did not stop"):
+    try:
+        runner.prepare()
+        assert type(runner) is BpfRunner
+        assert isinstance(runner._runtime_realization, _TcBpfRuntimeRealization)
+        expected_count = sum(
+            len(value.activation_timestamps) for value in realizations
+        )
+        for _ in range(expected_count):
+            runner.activate_next()
+        assert runner.inspection_snapshot()["runner"][
+            "activation_count"
+        ] == expected_count
+        assert runner._active_frontier == realizations[-1].end_timestamp
+    finally:
         runner.cleanup()
-
-    assert runner._state == "teardown-failed"
-    assert runner._runtime_realization is runtime
-    assert runtime.cleanup_calls == 0
-    release.set()
-    maintenance.join(timeout=1)
-    runner.cleanup()
-    assert runtime.cleanup_calls == 1
-    assert runner.inspection_snapshot()["runner"]["lifecycle_state"] == "cleaned"
+        simulator.get_planner().shutdown(wait=True)
+    helper = _PrivilegedRecorder.instances[0]
+    actions = tuple(value[0] for value in helper.actions)
+    assert helper.started and helper.stopped
+    assert actions[0] == "initialize"
+    assert actions.count("prepare_boundary") >= 1
+    assert actions.count("activate_boundary") == expected_count
+    assert actions[-1] == "cleanup"

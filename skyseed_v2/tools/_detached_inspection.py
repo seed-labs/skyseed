@@ -25,7 +25,7 @@ from typing import Any
 
 _HANDOFF_FORMAT_VERSION = 1
 _SNAPSHOT_ENCODING = "gzip-pickle-v5"
-_SUPPORTED_TASKS = frozenset({"slice", "planner", "compiler", "observation"})
+_SUPPORTED_TASKS = frozenset({"planner", "compiler", "observation"})
 
 
 class _DetachedInspectionExecutor:
@@ -303,60 +303,81 @@ def _worker_entry(
 
 
 def _detach_live_source(task: str, source: Mapping[str, object]) -> dict[str, Any]:
-    if task == "slice":
-        if "slice_history_path" in source:
-            from tools.slice.reader import read_durable_slice_differences
-
-            return read_durable_slice_differences(
-                Path(str(source["slice_history_path"])),
-                Path(str(source["planner_history_path"])),
-                topology=source["topology"],
-                timeline=source["timeline"],
-                model_context=_mapping_or_none(source.get("model_context")),
-            ).snapshot
-        from tools.slice.reader import read_slice_differences
-
-        return read_slice_differences(
-            source["slicer"],
-            model_context=_mapping_or_none(source.get("model_context")),
-        ).snapshot
     if task == "planner":
         if "planner_history_path" in source:
-            from tools.planner.reader import (
-                read_durable_plan_sequence,
-                read_durable_planner_inspection,
+            return {
+                "planner_history_path": str(source["planner_history_path"]),
+                "physical_frames_path": source.get("physical_frames_path"),
+                "physical_link_inspection_path": source.get(
+                    "physical_link_inspection_path"
+                ),
+                "model_descriptors": dict(
+                    source.get("model_descriptors", {})
+                ),
+                "streaming_projection": True,
+            }
+        from skyseed_v2.simulator.planning import (
+            published_planning_evidence_to_data,
+        )
+        from tools._history import read_sealed_physical_frames
+
+        evidence = tuple(source["evidence"])
+        return {
+            "evidence": tuple(
+                published_planning_evidence_to_data(value)
+                for value in evidence
+            ),
+            "physical_frames": (
+                ()
+                if "physical_frames_path" not in source
+                else read_sealed_physical_frames(
+                    Path(str(source["physical_frames_path"]))
+                )
+            ),
+            "physical_link_inspection_path": source.get(
+                "physical_link_inspection_path"
+            ),
+            "model_descriptors": dict(source.get("model_descriptors", {})),
+        }
+    if task == "compiler":
+        if "compiler_history_path" in source:
+            from tools.bpf_compiler.inspection import (
+                _compiler_observation_timing,
+            )
+            from tools.bpf_compiler.reader import (
+                read_compact_bpf_compiler_evidence,
             )
 
-            return read_durable_planner_inspection(
-                Path(str(source["slice_history_path"])),
-                Path(str(source["planner_history_path"])),
-                read_durable_plan_sequence(
-                    Path(str(source["planner_history_path"]))
+            return {
+                "compact_history": read_compact_bpf_compiler_evidence(
+                    Path(str(source["compiler_history_path"])),
+                    (
+                        None
+                        if "realization_manifest" not in source
+                        else Path(str(source["realization_manifest"]))
+                    ),
                 ),
-                _mapping(source["configuration"], "configuration"),
-                topology=source["topology"],
-                timeline=source["timeline"],
-            ).snapshot
-        from tools.planner.reader import read_planner_inspection
-
-        return read_planner_inspection(
-            source["slicer"],
-            tuple(source["plans"]),
-            tuple(source["differences"]),
-            tuple(source["decisions"]),
-            _mapping(source["configuration"], "configuration"),
-        ).snapshot
-    if task == "compiler":
+                "observation_timing": (
+                    None
+                    if "observation_path" not in source
+                    else _compiler_observation_timing(
+                        Path(str(source["observation_path"]))
+                    )
+                ),
+            }
         if "realization_manifest" in source:
             from skyseed_v2.experiment._realization_handoff import (
                 _read_persisted_realization_sequence,
             )
             from tools.bpf_compiler.reader import read_bpf_compiler_inspection
-            from tools.planner.reader import read_durable_plan_sequence
+            from tools.planner.reader import read_planner_history
 
             snapshot = read_bpf_compiler_inspection(
-                read_durable_plan_sequence(
-                    Path(str(source["planner_history_path"]))
+                tuple(
+                    value.plan
+                    for value in read_planner_history(
+                        Path(str(source["planner_history_path"]))
+                    )
                 ),
                 _read_persisted_realization_sequence(
                     Path(str(source["realization_manifest"]))
@@ -365,6 +386,16 @@ def _detach_live_source(task: str, source: Mapping[str, object]) -> dict[str, An
             snapshot["compile_evidence"] = tuple(
                 source.get("compile_evidence", ())
             )
+            if "observation_path" in source:
+                from tools.bpf_compiler.inspection import (
+                    _compiler_observation_timing,
+                )
+
+                snapshot["observation_timing"] = (
+                    _compiler_observation_timing(
+                        Path(str(source["observation_path"]))
+                    )
+                )
             return snapshot
         from tools.bpf_compiler.reader import read_bpf_compiler_inspection
 
@@ -379,35 +410,74 @@ def _detach_live_source(task: str, source: Mapping[str, object]) -> dict[str, An
 def _build_from_snapshot(
     task: str, snapshot: dict[str, Any], directory: Path
 ) -> dict[str, object]:
-    if task == "slice":
-        from tools.slice.artifact_writer import write_slice_difference_artifacts
-        from tools.slice.projection import project_slice_difference_data
-        from tools.slice.reader import SliceDifferenceRead
-        from tools.slice.renderer import render_slice_difference_page
-
-        data = project_slice_difference_data(SliceDifferenceRead(snapshot))
-        return write_slice_difference_artifacts(
-            data, render_slice_difference_page(data), directory
-        )
     if task == "planner":
+        if snapshot.get("streaming_projection") is True:
+            from tools.planner.inspection import write_planner_history_tool
+
+            return write_planner_history_tool(
+                Path(str(snapshot["planner_history_path"])),
+                directory,
+                physical_frames_path=(
+                    None
+                    if snapshot.get("physical_frames_path") is None
+                    else Path(str(snapshot["physical_frames_path"]))
+                ),
+                physical_link_inspection_path=(
+                    None
+                    if snapshot.get("physical_link_inspection_path") is None
+                    else Path(
+                        str(snapshot["physical_link_inspection_path"])
+                    )
+                ),
+                model_descriptors=dict(
+                    snapshot.get("model_descriptors", {})
+                ),
+            )
+        from skyseed_v2.simulator.planning import (
+            published_planning_evidence_from_data,
+        )
         from tools.planner.artifact_writer import write_planner_artifacts
         from tools.planner.projection import project_planner_data
-        from tools.planner.reader import PlannerInspectionRead
+        from tools.planner.reader import read_planner_inspection
         from tools.planner.renderer import render_planner_page
 
-        data = project_planner_data(PlannerInspectionRead(snapshot))
+        evidence = tuple(
+            published_planning_evidence_from_data(value)
+            for value in snapshot["evidence"]
+        )
+        data = project_planner_data(
+            read_planner_inspection(evidence),
+            physical_frames=tuple(snapshot.get("physical_frames", ())),
+            physical_link_inspection_path=(
+                None
+                if snapshot.get("physical_link_inspection_path") is None
+                else Path(str(snapshot["physical_link_inspection_path"]))
+            ),
+            model_descriptors=dict(snapshot.get("model_descriptors", {})),
+        )
         return write_planner_artifacts(data, render_planner_page(data), directory)
     if task == "compiler":
         from tools.bpf_compiler.artifact_writer import write_bpf_compiler_artifacts
-        from tools.bpf_compiler.projection import project_bpf_compiler_data
+        from tools.bpf_compiler.projection import (
+            project_bpf_compiler_data,
+            project_compact_bpf_compiler_data,
+        )
         from tools.bpf_compiler.reader import BpfCompilerInspectionRead
         from tools.bpf_compiler.renderer import render_bpf_compiler_page
 
-        compile_evidence = tuple(snapshot.pop("compile_evidence", ()))
-        data = project_bpf_compiler_data(
-            BpfCompilerInspectionRead(snapshot),
-            compile_evidence=compile_evidence,
-        )
+        observation_timing = snapshot.pop("observation_timing", None)
+        if "compact_history" in snapshot:
+            data = project_compact_bpf_compiler_data(
+                snapshot["compact_history"],
+                observation_timing=observation_timing,
+            )
+        else:
+            compile_evidence = tuple(snapshot.pop("compile_evidence", ()))
+            data = project_bpf_compiler_data(
+                BpfCompilerInspectionRead(snapshot),
+                compile_evidence=compile_evidence,
+                observation_timing=observation_timing,
+            )
         return write_bpf_compiler_artifacts(
             data, render_bpf_compiler_page(data), directory
         )
@@ -496,7 +566,7 @@ def _handoff_source_description(
                 Path(str(source["observation_path"])).resolve().parent,
             ),
         }
-    durable = "slice_history_path" in source or "realization_manifest" in source
+    durable = "planner_history_path" in source or "realization_manifest" in source
     return {
         "kind": (
             "durable-domain-evidence"
@@ -619,18 +689,6 @@ def _public_task_record(value: Mapping[str, object]) -> dict[str, object]:
         for key, item in value.items()
         if key not in excluded
     }
-
-
-def _mapping(value: object, name: str) -> Mapping[str, object]:
-    if not isinstance(value, Mapping):
-        raise TypeError(f"{name} must be a mapping")
-    return value
-
-
-def _mapping_or_none(value: object) -> Mapping[str, object] | None:
-    if value is None:
-        return None
-    return _mapping(value, "model_context")
 
 
 def _sha256_file(path: Path) -> str:

@@ -48,51 +48,27 @@ PUBLIC_MODULES = (
 )
 DYNAMIC_TYPES = (
     "AccumulatedDeadbandParameterPlanningModel",
-    "AllAvailablePlanningWindowPolicy",
     "CircularOrbitPositionModel",
-    "Connection",
-    "ConnectionDirection",
-    "ConnectionId",
-    "ConnectionKind",
-    "ConnectionModel",
-    "ConnectionPlanningModel",
-    "ConnectionSlice",
-    "ConnectionTransition",
-    "ConnectionTransitionOperation",
     "CoordinationPolicy",
     "DefaultCoordinationPolicy",
-    "DependencyAwareForwardingPlanningModel",
-    "DirectionalConnectionParameters",
-    "DirectionalConnectionParametersPatch",
-    "DifferenceOperation",
     "EarthFixedPosition",
-    "ForwardingPlanningModel",
-    "ForwardingTransition",
-    "ForwardingTransitionPrecedence",
-    "GeometricConnectionModel",
-    "GroundStationRouteTarget",
-    "HopCountRouteModel",
-    "MidpointConnectionPlanningModel",
+    "GatewayHopCountRoutePlanningModel",
+    "GeometricPhysicalLinkModel",
+    "OperationalConnection",
     "ParameterPlanningModel",
-    "ParameterTransition",
     "PhysicalFrame",
+    "PhysicalLinkObservation",
+    "PhysicalWorld",
     "Plan",
+    "PlanTransition",
+    "PlannedOperationalState",
     "Planner",
-    "PlanningDecision",
     "PlanningWindowPolicy",
     "PositionModel",
-    "RouteKey",
-    "RouteModel",
-    "RoutePatch",
-    "RouteSlice",
-    "RouteTarget",
-    "Slicer",
-    "SampleBoundaryConnectionPlanningModel",
+    "PublishedPlanningEvidence",
+    "RoutePlanningModel",
     "SphericalCap",
-    "TopologyDifference",
-    "TopologySlice",
-    "ZoneRouteTarget",
-    "ZoneServiceAssignmentPatch",
+    "TimeHorizonPlanningWindowPolicy",
 )
 
 
@@ -112,6 +88,10 @@ def test_formal_public_classes_declare_layer_boundary_and_public_reason() -> Non
             assert "Layer:" in docstring, class_type
             assert re.search(r"\bnot\b", docstring), class_type
             assert "public" in docstring.lower(), class_type
+            if module in (simulator_planning, bpf):
+                assert re.search(
+                    r"\bpublic\s+because\b", docstring, re.IGNORECASE
+                ), class_type
 
 
 def test_document_identity_is_explicit_in_paths() -> None:
@@ -161,7 +141,12 @@ def test_bpf_package_layout_and_private_residue_are_exact() -> None:
     )
     assert {
         path.name for path in experiment.iterdir() if path.suffix == ".py"
-    } == {"__init__.py", "execution.py", "_realization_handoff.py"}
+    } == {
+        "__init__.py",
+        "execution.py",
+        "_realization_handoff.py",
+        "_realization_producer.py",
+    }
     assert {
         path.name
         for path in BPF_PACKAGE_ROOT.iterdir()
@@ -216,11 +201,20 @@ def test_bpf_package_layout_and_private_residue_are_exact() -> None:
         assert retired not in source
 
     generated_source = GENERATED_BPF_EXECUTION.read_text(encoding="utf-8")
+    producer_source = (
+        experiment / "_realization_producer.py"
+    ).read_text(encoding="utf-8")
     for required in (
-        "class _RollingRealizationSupplier:",
-        ".create_next_slice()",
-        ".synchronize()",
+        "class _IncrementalRealizationProducer:",
+        ".frame_at(",
+        ".compute_observation(",
+        ".observe(",
         "compile_bpf(",
+        "_compile_bpf_observed(",
+    ):
+        assert required in producer_source
+    for required in (
+        "_PersistedRealizationSupplier(",
         "BpfRunner(",
         "runner.prepare()",
         "runner.run()",
@@ -237,28 +231,52 @@ def test_bpf_package_layout_and_private_residue_are_exact() -> None:
     assert "experiment" not in skyseed_v2.__all__
 
 
-def test_simulator_history_codec_and_jsonl_mechanics_have_distinct_owners() -> None:
-    codec = (
-        PROJECT_ROOT / "src/skyseed_v2/simulator/_history_codec.py"
+def test_plan_is_the_only_planner_to_compiler_semantic_handoff() -> None:
+    source_root = PROJECT_ROOT / "src/skyseed_v2"
+    planner_source = (
+        source_root / "simulator/planning/planner.py"
     ).read_text(encoding="utf-8")
-    planner = (
-        PROJECT_ROOT / "src/skyseed_v2/simulator/planning/planner.py"
+    producer_source = (
+        source_root / "experiment/_realization_producer.py"
     ).read_text(encoding="utf-8")
+    compiler_source = (
+        source_root / "backend/bpf/compiler.py"
+    ).read_text(encoding="utf-8")
+    boundary_source = planner_source + producer_source + compiler_source
 
-    assert "shared._durable_evidence" not in codec
-    for generic_helper in (
-        "_append_jsonl",
-        "_iter_jsonl",
-        "_reset_jsonl",
-        "_semantic_value",
+    for forbidden in (
+        "_published_output_states",
+        "_get_published_output_state",
+        "_latest_plan_output_state",
+        "_compile_bpf_published",
+        "authoritative_output_state",
     ):
-        assert generic_helper not in codec
-        assert generic_helper in planner
-    assert "from skyseed_v2.shared._durable_evidence import" in planner
-    assert "from .._history_codec import" in planner
+        assert forbidden not in boundary_source
+    assert "_create_plan_with_output_state(" in planner_source
+    assert "self._last_published_state = published_state" in planner_source
+    assert "output_state = apply_plan(" in compiler_source
+    assert "self._previous_realization" in producer_source
+
+
+def test_simulator_history_codec_and_jsonl_mechanics_have_distinct_owners() -> None:
+    assert not (
+        PROJECT_ROOT / "src/skyseed_v2/simulator/_history_codec.py"
+    ).exists()
     assert not (
         PROJECT_ROOT / "src/skyseed_v2/simulator/_durable_history.py"
     ).exists()
+    producer = (
+        PROJECT_ROOT / "src/skyseed_v2/experiment/_realization_producer.py"
+    ).read_text(encoding="utf-8")
+    planning_evidence = (
+        PROJECT_ROOT / "src/skyseed_v2/simulator/planning/evidence.py"
+    ).read_text(encoding="utf-8")
+    assert "shared._durable_evidence" in producer
+    assert "published_planning_evidence_to_data" in producer
+    assert "plan_to_data" in planning_evidence
+    for retired in ("Difference", "Slice", "_history_codec"):
+        assert retired not in producer
+        assert retired not in planning_evidence
 
 
 def test_accepted_anchor_and_current_have_distinct_roles() -> None:
@@ -266,46 +284,25 @@ def test_accepted_anchor_and_current_have_distinct_roles() -> None:
     current = CURRENT.read_text(encoding="utf-8")
 
     for required in (
-        "SimulatorStaticInput",
-        "create_simulator_static_input",
-        "Topology / PhysicalFrame → Network Planner",
-        "second authoritative computation path",
+        "PhysicalWorld",
+        "PhysicalFrame",
+        "PhysicalLinkObservation",
+        "Planner",
+        "PlannedOperationalState",
+        "Plan",
+        "Compiler",
     ):
         assert required in accepted
-    assert "Slice / Difference semantics: **implemented and accepted**" in current
     for implemented in (
-        "Runner milestone: **implemented, runtime-validated, and manually accepted**",
-        "→ legacy Slicer → current Planner → BPF Compiler →",
-        "Preparation binds",
-        "Main alone",
-        "Maintenance prepares",
-        "runtime/execution.json",
-        "append-only JSONL",
-        "60-second preparation lookahead",
-        "eight-boundary future depth",
-        "K = boundary depth + 1",
-        "64 Slices / 64 Differences",
-        "16 Plans / 16",
-        "75 nominal boundaries / 75 Main",
-        "Final canonical Mini runtime: **PASS**",
-        "repository-local read-only Inspection set now contains nine Tools",
-        "three maintained runnable examples",
-        "S4 Planner and BPF Compiler scale milestone: **implemented, qualified, and",
-        "Round 2 is implemented and qualified",
+        "50-second",
+        "20-second",
+        "self-contained",
+        "incremental producer",
+        "persisted",
         "720 Satellites",
-        "1,003 Up / 73 Created",
-        "61 Slices/Differences",
-        "61 READY",
-        "Traffic completed 17/17",
         "`starlink_gen1_satellite_internet`",
-        "S1–S5 choices",
-        "10 minutes at a 10-second interval",
-        "Equivalent BPF state",
-        "full-width validated through R20",
-        "Round-1 Traffic",
-        "Traffic / Path Replay",
-        "traffic-telemetry.jsonl",
-        "Normal generated `run.sh` neither reads nor starts that",
+        "121",
+        "30 Plans",
     ):
         assert implemented in current
     for deferred in (
@@ -317,7 +314,7 @@ def test_accepted_anchor_and_current_have_distinct_roles() -> None:
     assert "EmulatorStaticInput" not in PUBLIC_IMPORTS.read_text(
         encoding="utf-8"
     )
-    assert "`compile_bpf(...)` is a one-shot, stateless lowering" in current
+    assert "compile_bpf" in current
     assert "`skyseed_v2.backend.bpf`" in PUBLIC_IMPORTS.read_text(
         encoding="utf-8"
     )

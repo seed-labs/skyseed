@@ -1,63 +1,49 @@
-# System Observation Tool
+# Observation Tool
 
-This repository-local Tool answers three diagnostic questions about an actual
-execution: what work ran, how much work ran, and what that work cost. It reads
-only detached JSONL records written after domain work completed. It
-never executes or re-executes a Slicer, Planner, Compiler, Runner, or Model.
+The Observation Tool parses completed generic JSONL records and never executes
+the observed work. It preserves invocation owner, component, stage, scope,
+duration role, work fields, resource fields, Tool wall/RSS/input/output
+accounting, and raw records.
 
-The record format is intentionally small and generic: run metadata, component,
-stage, bootstrap/steady/idle phase, logical scope, monotonic duration, named
-numeric work measurements, and optional resource measurements. Metric names
-belong to the emitting component; they are not fields on `TopologySlice`,
-`TopologyDifference`, `Plan`, or another semantic value.
-Each duration is labeled as an exclusive stage, overlapping operation rollup,
-or resource sample so summaries do not silently add parent and child timing.
+Current grouping covers physical projection, physical-link observation, ISL
+selection, acquisition/lifecycle, GroundStation selection/ranking, validation,
+evidence projection and the non-additive planning rollup, Zone planning,
+parameter planning, Route planning, semantic transition/application,
+coordination/precedence, Plan publication, Compiler, realization producer,
+realization handoff writer, Runner, and Traffic.
 
-```text
-private execution observer → execution-observations.jsonl
-                           → reader → aggregation → renderer → artifacts
-```
+Generation writes the base stream. For a generated runtime invocation, the
+private execution wrapper emits actual one-shot `runner-total` and
+`traffic-total` rollups and merges them with the generation records into that
+invocation's `observation/execution-observations.jsonl`. This Tool only parses
+the combined stream; it does not synthesize runtime completion or expose a new
+public runtime-state object.
 
-Current emitters are Slicer, Planner, and the BPF Compiler. Slicer records coarse Position,
-Connection, Route, validation, publication, complete-Slice, and Difference
-stages. Planner records Difference acquisition, window selection, route
-context, three planning domains, coordination, precedence, state advancement,
-validation, publication, and total synchronization. Compiler records its
-exclusive lowering/validation/freeze stages and overlapping total-compile
-rollup. The accepted dynamic S4 qualification also records its
-already-available RSS/peak-RSS/host-memory samples as resource observations.
-Future Runner support extends the same component/stage/work/resource vocabulary
-without changing formal domain schemas.
+Rollups overlap their leaf stages and are not summed with them. Zero-duration
+resource samples remain visible. The output bundle contains raw JSONL, external
+browser records, summary, HTML, inventory, and checksums.
 
-`write_observation_tool(records_path, output_directory)` writes the canonical
-JSONL, aggregate JSON, compact external browser record script, standalone HTML,
-summary, inventory, and checksums. Bootstrap per-series run durations remain
-separate from steady p50/p95/max; p95 uses nearest rank. Leaf stages and
-overlapping rollups are independent series, resource samples have no duration
-aggregate, and the Tool infers no component or pipeline total. Slicer
-`complete-slice` and `difference` are separate top-level series; Planner
-`total-synchronize` is its top-level rollup. Time-per-work views use only
-positive work recorded on leaf-stage records.
+The primary view is a hierarchical monotonic wall-time timeline. It starts with
+large component spans on one shared axis and expands a selected component into
+its recorded child stages. Geometry comes only from actual run-relative
+`start_seconds`/`end_seconds` intervals; sequence order plus duration is never
+used to invent placement. The primary interval sweep reports busy union, wall
+with at least two distinct components active, cross-component overlap ratio,
+maximum simultaneously active distinct components, component active wall, and
+recorded pipeline gaps. It deduplicates nested spans within a component before
+concurrency accounting. Raw span overlap, including nested rollups, remains an
+advanced diagnostic. The timeline supports cursor-centred horizontal zoom,
+drag pan, full-run reset, selected-span focus, and exact scope/work/resource
+detail.
 
-The unified page has two complementary views. Stage progression positions
-Slicer points by Slice ID/timestamp and Planner points by publication coverage,
-so components referring to the same simulation region share an actual
-simulation-time axis rather than a record-sequence axis. Its default duration
-axis is shared by Slicer and Planner, uses automatically selected numeric
-ticks, and derives the formal Slice-interval reference from record metadata or
-Slice timestamps; `Fit selection` changes only the view scale.
+Tool rendering is detached side work. A rendering failure is reported for that
+Tool but does not replace a successful generated runtime outcome.
 
-Per-Slice / Plan breakdown selects either one Slicer Slice (`S1` …) or one
-Planner publication (`P0` …) through a horizontal visual scrubber, with the
-dropdown retained as secondary navigation. A bounded stage×unit heatmap keeps
-missing records distinct from exact measured zero and places overlapping
-rollups in a separate lower band. The selected unit shows every attached
-observation, the primary rollup, its exclusive leaf subtotal, and an exact
-non-negative unattributed gap when the measurements support one. Rollup
-envelopes, zero-duration samples, and Slicer Difference work remain visually
-separate; the independent Difference and overlapping rollups are never added
-to leaf time.
-Chart-point selection creates a persistent annotation with unit, coverage,
-duration, phase, and work evidence until another point is selected or the
-label is cleared. Future components can reuse the same convention once they
-emit a natural logical-unit scope.
+The maintained Starlink example may also provide
+`inspection/orchestration-timing.js`. Observation includes its monotonic outer
+spans in the primary timeline vocabulary alongside, but not summed into,
+nested component records. The separate collapsed orchestration section is a
+non-navigating audit overview. Only measured spans have timeline geometry;
+aggregate totals are labelled as such and have none. This separates semantic
+production, inspection capture, persistence, detached Tool work, and remaining
+orchestration without process polling.

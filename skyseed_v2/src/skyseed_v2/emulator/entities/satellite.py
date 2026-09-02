@@ -19,7 +19,8 @@ class Satellite(ExtensionNode):
     `Orbit.create_satellite` creates it; its Orbit/AS, SEED lifecycle, Simulator
     input generation and the standard SEED compiler use it. It is not a Config,
     container or runtime topology state. It is root public because it is an
-    approved user-visible entity.
+    approved user-visible entity. Its optional simultaneous-ISL maximum is a
+    copied static capability scalar, not terminal direction or policy state.
     """
 
     def __init__(
@@ -33,6 +34,7 @@ class Satellite(ExtensionNode):
         asn: int,
         payload: Mapping[str, str] | None = None,
         max_simultaneous_ground_station_accesses: int | None = None,
+        maximum_simultaneous_inter_satellite_links: int | None = None,
     ) -> None:
         self._initialize_static_state(
             satellite_id=satellite_id,
@@ -43,6 +45,9 @@ class Satellite(ExtensionNode):
             payload=payload or {},
             max_simultaneous_ground_station_accesses=(
                 max_simultaneous_ground_station_accesses
+            ),
+            maximum_simultaneous_inter_satellite_links=(
+                maximum_simultaneous_inter_satellite_links
             ),
         )
         self._initialize_seed_node(asn)
@@ -58,6 +63,7 @@ class Satellite(ExtensionNode):
         mean_anomaly_deg: float,
         payload: Mapping[str, str],
         max_simultaneous_ground_station_accesses: int | None,
+        maximum_simultaneous_inter_satellite_links: int | None,
     ) -> None:
         self._satellite_id = validate_identifier(satellite_id, "satellite_id")
         self._shell_id = validate_identifier(shell_id, "shell_id")
@@ -87,6 +93,18 @@ class Satellite(ExtensionNode):
             )
         self._max_simultaneous_ground_station_accesses = (
             max_simultaneous_ground_station_accesses
+        )
+        if maximum_simultaneous_inter_satellite_links is not None and (
+            not isinstance(maximum_simultaneous_inter_satellite_links, int)
+            or isinstance(maximum_simultaneous_inter_satellite_links, bool)
+            or maximum_simultaneous_inter_satellite_links <= 0
+        ):
+            raise ValueError(
+                "maximum_simultaneous_inter_satellite_links must be a "
+                "positive integer"
+            )
+        self._maximum_simultaneous_inter_satellite_links = (
+            maximum_simultaneous_inter_satellite_links
         )
 
     def _initialize_seed_node(self, asn: int) -> None:
@@ -128,3 +146,7 @@ class Satellite(ExtensionNode):
     @property
     def max_simultaneous_ground_station_accesses(self) -> int | None:
         return self._max_simultaneous_ground_station_accesses
+
+    @property
+    def maximum_simultaneous_inter_satellite_links(self) -> int | None:
+        return self._maximum_simultaneous_inter_satellite_links

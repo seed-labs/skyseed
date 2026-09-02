@@ -1,87 +1,56 @@
 # Invariants and failure semantics
 
-## Authority
+Each owner validates at its input boundary. Contract errors fail closed; no
+consumer invents fallback state.
 
-Normative detail under `../accepted-design.md`. Implementation state is
-recorded only in [`CURRENT.md`](../CURRENT.md); detailed object contracts
-remain in their owning reference files.
-
-## Scope
-
-Validation, physical-frame projection, atomicity, identities, lookup behavior,
-and external project launch.
-
-## Owners and consumers
-
-Each owner validates at its boundary. Consumers must not repair invalid output
-or guess an alternative identity.
-
-## Contract
-
-| Boundary | Required behavior | Failure |
+| Boundary | Required invariant | Typical failure |
 |---|---|---|
-| Emulator configuration/YAML | immutable validated declarations; schema/unknown-field checks | `StaticEmulatorConfigLoadError` |
-| Simulator Zone-layout YAML | immutable validated Zone definitions; unknown-field/geometry checks | `ZoneLayoutDefinitionLoadError` |
-| entity creation | owner-local uniqueness; no partial batch publication | `KeyError` / `ValueError` |
-| Emulator→Simulator | complete scalar copy; unique `NodeId`; no SEED reference | `TypeError` / `ValueError` |
-| Simulator lifecycle | Topology once with one explicit PositionModel, temporary legacy Slicer once, then Planner at most once | `RuntimeError` |
-| Topology lookup | exact owner/facade identity | `KeyError` |
-| Topology physical projection | sole ownership/call of PositionModel; aware requested timestamp; exact immutable Satellite/GroundStation Positions; no progression or operational state | `TypeError` / `ValueError` |
-| Zone membership | owned distinct matches; owned winner | `LookupError` / `ValueError` |
-| temporary Slicer Model chain | consume one PhysicalFrame; complete typed Connection/Route output; atomic legacy publication | `TypeError` / `ValueError` |
-| path/Difference | retained lineage, valid chain, adjacent IDs | `KeyError` / `LookupError` / `ValueError` |
-| Planner | planning/publication windows selected before Models, exact input prefixes, continuous `(start, end]` coverage, planned-state continuity, active-lifetime parameters, supported forwarding and valid same-time precedences | `TypeError` / `ValueError` / `RuntimeError` |
-| Compose launcher | exact project/file/services/digest/final states | `ComposeMaterializationError` |
-| BPF Runner | exact-next plus gap-free dual-bound rolling READY coverage; exact frozen Compose/container/PID/netns incarnation; real Preparation before READY; Main-only active transition; owned-resource cleanup | `TypeError` / `ValueError` / `RuntimeError`; invalid bound combinations fail at construction, stale evidence fails before mutation, resident-capacity deadlock fails before preload, and partial activation failure stops progression without claiming rollback |
-| Tools | current-run artifact or conspicuous failure artifact | no stale/fallback success |
+| configuration/YAML | immutable known schema and validated values | typed load error |
+| Emulator entity construction | owner-local uniqueness; no partial batch publication | `KeyError` / `ValueError` |
+| Emulator-to-Simulator projection | complete immutable scalar copy; unique NodeId; no upstream object reference | `TypeError` / `ValueError` |
+| Simulator lifecycle | one PhysicalWorld, then one Planner with distinct injected roles | `RuntimeError` / `ValueError` |
+| PhysicalWorld projection | aware timestamp; exact complete immutable positions from owned PositionModel | `TypeError` / `ValueError` |
+| physical-link observation | exact world/frame/request; sparse feasible candidates; deterministic work counts | `TypeError` / `ValueError` |
+| Planner input | strictly ordered matching formal frame/observation pairs | `ValueError` |
+| Planner Models | requested authoritative candidates, capability compliance, complete valid operational outputs | `TypeError` / `ValueError` |
+| Planner publication | replay-complete transition, continuous frontiers/lineage, exact fingerprint | `ValueError` / `RuntimeError` |
+| Compiler | exact world, predecessor, input state, replay, and backend feasibility | `TypeError` / `ValueError` |
+| persisted handoff | version/schema/checksum/sequence/reference integrity | `ValueError` / `RuntimeError` |
+| BpfRunner | exact-next gap-free activation and owner-local resource cleanup | `TypeError` / `ValueError` / `RuntimeError` |
+| Tools | current-invocation detached records or conspicuous failure | explicit read/write failure |
 
-## Invariants
+## Global invariants
 
-- `NodeId` is a pure value with no lookup capability;
-- owner lookup uses stable identity, never display/container/service names;
-- UTC-aware time is normalized at input boundaries;
-- immutable public values defensively snapshot iterables/mappings;
-- deterministic ordering is part of published tuples and patch output;
-- each PositionModel has one exact Topology owner/caller;
-- a PhysicalFrame timestamp is its identity and its Position keys are exactly
-  that Topology's Satellites and GroundStations;
-- Topology owns no Timeline cursor, next/current frame, or operational state;
-- a failed operation never publishes partial owner state;
-- a failed Slice candidate consumes neither its ID nor pending Timeline
-  timestamp;
-- generated Slice progress is independent of retained storage;
-- failed built-in Planner synchronization preserves the published Plan,
-  consumed-Difference progress, and Planner-owned incremental state.
+- `NodeId` is a pure structural value and never performs lookup.
+- Public datetime inputs are UTC-aware and normalized.
+- Immutable values defensively snapshot iterables and mappings.
+- Published collections have canonical deterministic order.
+- PhysicalWorld is the only PositionModel owner/caller.
+- PhysicalFrame contains positions only and owns no progression.
+- Candidate feasibility, operational selection, compiled intent, and realized
+  state have separate owners.
+- Planner creates one transition for every formal timestamp, including no-op.
+- Planned state changes only through the common transition apply function.
+- Coordination adds precedence only over transition-derived event references.
+- Every active Route demand has a reachable outcome or explicit unreachable
+  reason.
+- Plan and realization world/state lineage is continuous.
+- Compiler does not rerun physical or planning algorithms.
+- Every transition remains an activation boundary for Runner.
+- Heavy semantic work never runs synchronously in Runner maintenance.
+- A Tool cannot invalidate a valid compute or runtime handoff.
 
-## Failure semantics
+## Atomicity and cleanup
 
-Fail closed at the first owning boundary. Do not catch a contract error to
-invent a successful fallback. External subprocess failure includes bounded
-context but does not trigger legacy Compose or another output path.
+Physical projection failure publishes no frame. Planner snapshots owner state
+around each advance and restores lifecycle, parameter memory, Route state,
+frontiers, and publication buffers when an injected role or validation fails.
+The contract cannot roll back private mutation inside an arbitrary third-party
+Model.
 
-Physical projection failure returns no frame and changes no progression,
-because Topology has none. A temporary legacy Slicer candidate failure retains
-the same pending Timeline timestamp and publishes no partial Slice.
+Producer failure closes Planner and its Route workers before propagating the
+exception. Compiler failure publishes no realization and cannot mutate the
+previous realization. Persisted-reader failure supplies nothing to Runner.
 
-Planner's built-in/reference algorithms are stateless and its own candidate
-state is committed only after validation. The existing replaceable Protocols
-cannot undo private mutations made by an arbitrary third-party stateful
-strategy before it raises; no transactional rollback promise or public
-prepare/commit/discard API is implied.
-
-## Prohibited behavior
-
-No silent coercion of booleans as numeric IDs, stale artifact reuse, string
-identity guessing, partial mutation, exception-to-empty-result conversion,
-slicing PositionModel alias/call, operational state in PhysicalFrame, or
-compatibility alias.
-
-## Extension points
-
-Extensions must return values satisfying the same owner validation. Extension
-errors propagate and cannot broaden accepted output.
-
-## Maintenance
-
-Update this matrix when a public failure type or atomicity rule changes; add a
-negative test at the real owner boundary.
+External subprocess failure includes bounded diagnostic context but does not
+trigger a second execution path.

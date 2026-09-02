@@ -1,317 +1,275 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from copy import deepcopy
+from datetime import datetime, timedelta, timezone
+from hashlib import sha256
+from ipaddress import ip_interface
+import gzip
 import json
 from pathlib import Path
+import shutil
 
 import pytest
 
+from examples.complete_static_emulator.emu import build_emulator
+from examples.complete_static_emulator.simu import (
+    create_complete_static_simulator,
+    run_complete_static_chain,
+)
+from tools.bpf_compiler import write_bpf_compiler_tool
+from tools.planner import collect_planner_data
+from tools.planner.reader import read_planner_history
 from tools.traffic import collect_traffic_replay_data, write_traffic_replay_tool
 from tools.traffic.__main__ import main as traffic_tool_main
-from tools.traffic.projection import (
-    _generation_at,
-    _pair_ping_transactions,
-    _position_at,
-    _project_workload_activity,
-    _project_zone_geometry,
+from tools.traffic.projection import project_traffic_replay
+from tools.traffic.reader import (
+    TrafficReplayRead,
+    _ping_transactions,
+    read_traffic_replay,
 )
-from tools.traffic.reader import _inactive_ingress_identity
 from tools.traffic.renderer import render_traffic_replay_page
+from skyseed_v2.experiment.traffic.probe_plan import (
+    TrafficProbePlanBuilder,
+    write_traffic_probe_plan,
+)
 
 
-ORIGIN = "2026-01-01T00:00:00+00:00"
-END = "2026-01-01T00:00:10+00:00"
-SOURCE = "65010/satellite/dynamic-shell-orbit-001-satellite-0005"
-MIDDLE = "65010/satellite/dynamic-shell-orbit-001-satellite-0004"
-DESTINATION = "65010/ground-station/gs-porto-alegre-reference"
-ZONE_ID = "test-zone"
-ZONE_PREFIX = "198.18.0.1/32"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+TOOL_SOURCES = tuple(sorted((PROJECT_ROOT / "tools/traffic").glob("*.py")))
+START_AT = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
-def _inputs(
-    root: Path,
-    *,
-    losses: int = 0,
-    recorder_complete: bool = True,
-    mismatch_interface_identity: bool = False,
-    zone_source: bool = False,
-    unknown_source: bool = False,
-    reply_generation: int = 0,
-) -> tuple[Path, Path, Path, Path]:
-    traffic = root / "inspection/traffic/traffic-telemetry.jsonl"
-    dynamic = root / "inspection/slice/slice-difference.json"
-    compiler = root / "inspection/bpf-compiler/bpf-compiler-inspection.json"
-    workload = root / "inspection/traffic/traffic-workload.json"
-    traffic.parent.mkdir(parents=True)
-    dynamic.parent.mkdir(parents=True)
-    compiler.parent.mkdir(parents=True)
-    nodes = (
-        (0, SOURCE, "100.64.0.1", "satellite"),
-        (1, MIDDLE, "100.64.0.2", "satellite"),
-        (2, DESTINATION, "100.64.0.3", "ground-station"),
+@pytest.fixture(scope="module")
+def evidence_set(tmp_path_factory):
+    root = tmp_path_factory.mktemp("traffic-tool")
+    history = root / "history"
+    simulator = create_complete_static_simulator(build_emulator())
+    plans, realizations, _ = run_complete_static_chain(
+        simulator, evidence_path=history
     )
-    first_connection = f"inter-satellite|{SOURCE}|{MIDDLE}"
-    second_connection = f"ground-station-access|{MIDDLE}|{DESTINATION}"
-    generations = tuple(range(max(reply_generation, 1) + 1))
-    boundaries = tuple(ORIGIN if generation == 0 else END for generation in generations)
-    interface_records = []
-    for generation, boundary in zip(generations, boundaries, strict=True):
-        interface_records.extend(
-            (
-                {
-                    "record_type": "interface_identity",
-                    "generation": generation,
-                    "boundary_timestamp": boundary,
-                    "node_slot": 0,
-                    "node_id": SOURCE,
-                    "ifindex": 10,
-                    "interface": "sv2source",
-                    "connection_id": first_connection,
-                    "peer_node_id": MIDDLE,
-                    "route_destinations": (),
-                    "validity": "exact-generation",
-                },
-                {
-                    "record_type": "interface_identity",
-                    "generation": generation,
-                    "boundary_timestamp": boundary,
-                    "node_slot": 1,
-                    "node_id": SOURCE if mismatch_interface_identity else MIDDLE,
-                    "ifindex": 11,
-                    "interface": "sv2middlein",
-                    "connection_id": first_connection,
-                    "peer_node_id": SOURCE,
-                    "route_destinations": (),
-                    "validity": "exact-generation",
-                },
-                {
-                    "record_type": "interface_identity",
-                    "generation": generation,
-                    "boundary_timestamp": boundary,
-                    "node_slot": 1,
-                    "node_id": MIDDLE,
-                    "ifindex": 12,
-                    "interface": "sv2middleout",
-                    "connection_id": second_connection,
-                    "peer_node_id": DESTINATION,
-                    "route_destinations": ("100.64.0.3",),
-                    "validity": "exact-generation",
-                },
-                {
-                    "record_type": "interface_identity",
-                    "generation": generation,
-                    "boundary_timestamp": boundary,
-                    "node_slot": 2,
-                    "node_id": DESTINATION,
-                    "ifindex": 21,
-                    "interface": "sv2destination",
-                    "connection_id": second_connection,
-                    "peer_node_id": MIDDLE,
-                    "route_destinations": (),
-                    "validity": "exact-generation",
-                },
-            )
-        )
-    source_address = (
-        "198.18.0.1" if zone_source else "203.0.113.1" if unknown_source else "100.64.0.1"
+    compiler_output = root / "compiler"
+    write_bpf_compiler_tool(plans, realizations, compiler_output)
+    evidence = read_planner_history(history / "planning.jsonl.gz")
+    planner_data = collect_planner_data(evidence)
+    telemetry = _telemetry(
+        root / "traffic-telemetry.jsonl",
+        history / "physical-frames.jsonl",
+        planner_data,
+        json.loads(
+            (compiler_output / "bpf-compiler-inspection.json").read_text()
+        ),
     )
-    packet_records = [
-        _packet(
-            101_250_000_000,
-            slot=1,
-            generation=0,
-            ingress=11,
-            egress=12,
-            source=source_address,
-            destination="100.64.0.3",
-            icmp_type=8,
-        ),
-        _packet(
-            101_300_000_000,
-            slot=2,
-            generation=0,
-            ingress=21,
-            egress=None,
-            source=source_address,
-            destination="100.64.0.3",
-            icmp_type=8,
-        ),
-        _packet(
-            106_250_000_000 if reply_generation else 101_350_000_000,
-            slot=1,
-            generation=reply_generation,
-            ingress=12,
-            egress=11,
-            source="100.64.0.3",
-            destination=source_address,
-            icmp_type=0,
-        ),
-        _packet(
-            106_300_000_000 if reply_generation else 101_400_000_000,
-            slot=0,
-            generation=reply_generation,
-            ingress=10,
-            egress=None,
-            source="100.64.0.3",
-            destination=source_address,
-            icmp_type=0,
-        ),
-        {
-            **_packet(
-                106_400_000_000 if reply_generation else 101_500_000_000,
-                slot=2,
-                generation=reply_generation,
-                ingress=21,
-                egress=None,
-                source="100.64.0.1",
-                destination="100.64.0.3",
-                icmp_type=8,
-            ),
-            "protocol": 17,
-            "icmp": {
-                "valid": False,
-                "type": None,
-                "code": None,
-                "identifier": None,
-                "sequence": None,
-            },
-        },
+    return {
+        "root": root,
+        "telemetry": telemetry,
+        "frames": history / "physical-frames.jsonl",
+        "planning": history / "planning.jsonl.gz",
+        "compiler_json": compiler_output / "bpf-compiler-inspection.json",
+        "compiler_jsonl": history / "compiler.jsonl",
+        "plans": plans,
+        "realizations": realizations,
+    }
+
+
+def _telemetry(
+    path: Path,
+    frames_path: Path,
+    planner_data: dict[str, object],
+    compiler_data: dict[str, object],
+) -> Path:
+    frame_rows = [
+        json.loads(line) for line in frames_path.read_text().splitlines()
     ]
-    records = [
+    positions = frame_rows[1]["positions"]
+    node_ids = [
+        f"{value['node']['asn']}/{value['node']['entity_kind']}/{value['node']['entity_id']}"
+        for value in positions
+    ]
+    addresses = {
+        node_id: f"100.64.0.{index + 1}"
+        for index, node_id in enumerate(node_ids)
+    }
+    first_frame = planner_data["frames"][0]
+    route_outcomes = tuple(
+        {"demand": value["demand"], **value["current"]}
+        for value in first_frame["transition"]["route_outcome_transitions"]
+        if value["current"] is not None
+    )
+    reachable = next(
+        value
+        for value in route_outcomes
+        if value["kind"] == "reachable"
+        if value["demand"]["target"]["kind"] == "ground-station"
+    )
+    unreachable = next(
+        value
+        for value in route_outcomes
+        if value["kind"] == "unreachable"
+        if value["reason"] == "ZONE_UNSERVED"
+    )
+    source_satellite = _node_id(reachable["demand"]["source"])
+    target_station = _node_id(
+        reachable["demand"]["target"]["ground_station_id"]
+    )
+    source_station = _node_id(unreachable["demand"]["source"])
+    zone_id = unreachable["demand"]["target"]["zone_id"]
+    prefixes = {
+        value["zone_id"]: value["packet_prefix"]
+        for value in compiler_data["realizations"][-1]["zone_prefixes"]
+    }
+    zone_address = str(ip_interface(prefixes[zone_id]).ip)
+    origin = datetime.fromisoformat(frame_rows[1]["timestamp"])
+    monotonic_origin = 1_000_000_000_000
+    rows = [
         {
             "record_type": "telemetry_header",
             "format_version": 1,
-            "foundation_token": "foundation-test",
-            "event_schema": {"name": "skyseed-tc-ingress-v1"},
-            "pin_root": "/sys/fs/bpf/skyseed-v2/run-test",
-            "ring_capacity_bytes": 4096,
-            "source_observation": {
-                "hook": "ingress-only",
-                "source_outbound_observed": False,
-                "first_link": "inferred-from-first-observed-ingress",
-            },
+            "foundation_token": "tool-test",
         },
         *(
             {
                 "record_type": "node_identity",
-                "node_slot": slot,
+                "node_slot": index,
                 "node_id": node_id,
-                "runtime_ipv4": address,
-                "pin_component": f"n-{slot}",
+                "runtime_ipv4": addresses[node_id],
             }
-            for slot, node_id, address, _kind in nodes
+            for index, node_id in enumerate(node_ids)
         ),
         {
             "record_type": "simulation_clock_anchor",
-            "nominal_origin": ORIGIN,
-            "monotonic_origin_ns": 100_000_000_000,
-            "clock_domain": "host-kernel-monotonic",
-            "nominal_pacing": "1:1",
+            "nominal_origin": origin.isoformat(),
+            "monotonic_origin_ns": monotonic_origin,
         },
-        *interface_records,
-        *packet_records,
+        _packet(
+            monotonic_origin + 2_000_000_000,
+            node_ids.index(target_station),
+            addresses[source_satellite],
+            addresses[target_station],
+            8,
+            10,
+        ),
+        _packet(
+            monotonic_origin + 2_050_000_000,
+            node_ids.index(source_satellite),
+            addresses[target_station],
+            addresses[source_satellite],
+            0,
+            10,
+        ),
+        _packet(
+            monotonic_origin + 3_000_000_000,
+            node_ids.index(source_station),
+            addresses[source_station],
+            zone_address,
+            8,
+            11,
+        ),
         {
             "record_type": "telemetry_loss",
-            "node_slot": 1,
-            "node_id": MIDDLE,
-            "lost_events": losses,
+            "node_slot": 0,
+            "node_id": node_ids[0],
+            "lost_events": 0,
         },
         {
             "record_type": "recorder_end",
-            "complete": recorder_complete,
-            "failure": None if recorder_complete else {"type": "Interrupted"},
-            "packet_records": len(packet_records),
-            "identity_records": len(nodes) + len(interface_records),
-            "reported_losses": losses,
-            "collector_exit_code": 0,
+            "complete": True,
+            "reported_losses": 0,
+            "packet_records": 3,
         },
     ]
-    traffic.write_text(
-        "".join(json.dumps(value) + "\n" for value in records),
+    path.write_text(
+        "".join(json.dumps(value) + "\n" for value in rows),
         encoding="utf-8",
+    )
+    return path
+
+
+def _packet(
+    monotonic_ns: int,
+    node_slot: int,
+    source: str,
+    destination: str,
+    icmp_type: int,
+    identifier: int,
+) -> dict[str, object]:
+    return {
+        "record_type": "packet",
+        "kernel_monotonic_ns": monotonic_ns,
+        "node_slot": node_slot,
+        "generation": 0,
+        "ingress_ifindex": 1,
+        "selected_egress_ifindex": None,
+        "source_ipv4": source,
+        "destination_ipv4": destination,
+        "packet_length": 98,
+        "decision": "local/pass",
+        "reason": "tool-test",
+        "protocol": 1,
+        "icmp": {
+            "valid": True,
+            "type": icmp_type,
+            "code": 0,
+            "identifier": identifier,
+            "sequence": 1,
+        },
+    }
+
+
+def _node_id(value: dict[str, object]) -> str:
+    return f"{value['asn']}/{value['entity_kind']}/{value['entity_id']}"
+
+
+def _collect(
+    evidence_set,
+    *,
+    telemetry: Path | None = None,
+    compiler: Path | None = None,
+    workload: Path | None = None,
+    qualification: tuple[Path, Path, Path] | None = None,
+) -> dict[str, object]:
+    optional = () if qualification is None else qualification
+    return collect_traffic_replay_data(
+        evidence_set["telemetry"] if telemetry is None else telemetry,
+        evidence_set["frames"],
+        evidence_set["planning"],
+        evidence_set["compiler_json"] if compiler is None else compiler,
+        workload,
+        *optional,
     )
 
-    def positions(offset: float) -> list[dict[str, object]]:
-        return [
-            {
-                "node_id": node_id,
-                "ecef_m": {
-                    "x": base[0] + offset,
-                    "y": base[1] + offset,
-                    "z": base[2] + offset,
-                },
-                "geographic": {
-                    "latitude_deg": 0.0,
-                    "longitude_deg": 0.0,
-                    "ellipsoidal_height_m": 0.0,
-                },
-            }
-            for (_slot, node_id, _address, _kind), base in zip(
-                nodes,
-                (
-                    (7_000_000.0, 0.0, 0.0),
-                    (6_900_000.0, 500_000.0, 0.0),
-                    (6_371_000.0, 1_000_000.0, 0.0),
-                ),
-                strict=True,
-            )
-        ]
 
-    dynamic.write_text(
-        json.dumps(
-            {
-                "format_version": 1,
-                "tool": "slice-difference-inspection",
-                "timeline": {
-                    "start_time": ORIGIN,
-                    "end_time": END,
-                    "slice_interval_seconds": 10.0,
-                },
-                "topology": {
-                    "nodes": [
-                        {"node_id": node_id, "kind": kind}
-                        for _slot, node_id, _address, kind in nodes
-                    ],
-                    "zones": (
-                        [
-                            {
-                                "zone_id": ZONE_ID,
-                                "geometry": {
-                                    "kind": "latitude-longitude-rectangle",
-                                    "south_latitude_deg": -10.0,
-                                    "north_latitude_deg": 10.0,
-                                    "west_longitude_deg": 170.0,
-                                    "east_longitude_deg": -170.0,
-                                },
-                                "representative_point": {
-                                    "latitude_deg": 0.0,
-                                    "longitude_deg": 180.0,
-                                },
-                            }
-                        ]
-                        if zone_source
-                        else []
-                    ),
-                },
-                "slices": [
-                    {"slice_id": 0, "timestamp": None, "positions": []},
-                    {"slice_id": 1, "timestamp": ORIGIN, "positions": positions(0)},
-                    {"slice_id": 2, "timestamp": END, "positions": positions(1_000)},
-                ],
-            }
-        ),
+def _telemetry_rows(path: Path) -> list[dict[str, object]]:
+    return [json.loads(line) for line in path.read_text().splitlines()]
+
+
+def _write_telemetry(
+    path: Path,
+    rows: list[dict[str, object]],
+) -> Path:
+    path.write_text(
+        "".join(json.dumps(value) + "\n" for value in rows),
         encoding="utf-8",
     )
-    compiler.write_text(
-        json.dumps(
-            _compiler_artifact(
-                zone_source=zone_source,
-                second_boundary=True,
-            )
-        ),
-        encoding="utf-8",
+    return path
+
+
+def _copied_telemetry(
+    tmp_path: Path,
+    evidence_set,
+    *,
+    name: str = "traffic-telemetry.jsonl",
+) -> tuple[Path, list[dict[str, object]]]:
+    rows = deepcopy(_telemetry_rows(evidence_set["telemetry"]))
+    return tmp_path / name, rows
+
+
+def _workload(path: Path, *, series: list[dict[str, object]] | None = None) -> Path:
+    values = [] if series is None else series
+    slots = sum(
+        int(value["schedule"]["scheduled_slots"])
+        for value in values
     )
-    workload.write_text(
+    path.write_text(
         json.dumps(
             {
                 "format_version": 1,
@@ -324,933 +282,949 @@ def _inputs(
                     "proves_packet_loss": False,
                     "packet_observation_authority": "traffic-telemetry.jsonl",
                 },
-                "simulation": {
-                    "start_time": ORIGIN,
-                    "end_time": END,
-                    "duration_seconds": 10.0,
-                },
                 "inventory": {
-                    "series": 0,
-                    "scheduled_slots": 0,
-                    "maximum_concurrent_series": 0,
+                    "series": len(values),
+                    "scheduled_slots": slots,
+                    "maximum_concurrent_series": len(values),
                 },
-                "series": [],
-            }
+                "series": values,
+            },
+            sort_keys=True,
         ),
         encoding="utf-8",
     )
-    return traffic, dynamic, compiler, workload
+    return path
 
 
-def _packet(
-    timestamp: int,
+def _series(
+    series_id: str,
     *,
-    slot: int,
-    generation: int,
-    ingress: int,
-    egress: int | None,
-    source: str,
-    destination: str,
-    icmp_type: int,
+    direction: str = "ground-station-to-zone",
+    scheduled_slots: int = 5,
 ) -> dict[str, object]:
     return {
-        "record_type": "packet",
-        "observation": "ingress",
-        "kernel_monotonic_ns": timestamp,
-        "node_slot": slot,
-        "generation": generation,
-        "ingress_ifindex": ingress,
-        "selected_egress_ifindex": egress,
-        "source_ipv4": source,
-        "destination_ipv4": destination,
-        "packet_length": 98,
-        "decision": "redirect" if egress is not None else "local/pass",
-        "reason": "route-redirect" if egress is not None else "local-route",
-        "protocol": 1,
-        "icmp": {
-            "valid": True,
-            "type": icmp_type,
-            "code": 0,
-            "identifier": 44,
-            "sequence": 1,
+        "series_id": series_id,
+        "display_label": f"Traffic series {series_id}",
+        "direction": direction,
+        "ground_station": {
+            "node_id": "65001/ground-station/gs-new-york",
+            "display_name": "New York",
         },
+        "zone": {
+            "zone_id": "new-york-metro",
+            "packet_ipv4": "198.18.0.2",
+        },
+        "schedule": {
+            "start_time": "2026-01-01T00:00:00+00:00",
+            "end_time": "2026-01-01T00:00:30+00:00",
+            "interval_seconds": 2.0,
+            "scheduled_slots": scheduled_slots,
+        },
+        "semantic_purpose": "detached workload display",
+        "event_focus": "formal planning boundary",
     }
 
 
-def _compiler_artifact(*, zone_source: bool, second_boundary: bool) -> dict[str, object]:
-    prefixes = (
-        [{"zone_id": ZONE_ID, "packet_prefix": ZONE_PREFIX}]
-        if zone_source
-        else []
-    )
-    zone_events = (
-        [
-            {
-                "nominal_time": ORIGIN,
-                "operation": "added",
-                "zone_id": ZONE_ID,
-                "packet_prefix": ZONE_PREFIX,
-                "previous_service_satellite": None,
-                "service_satellite": SOURCE,
-            }
-        ]
-        if zone_source
-        else []
-    )
-    zone_state = (
-        [
-            {
-                "zone_id": ZONE_ID,
-                "packet_prefix": ZONE_PREFIX,
-                "service_satellite": SOURCE,
-            }
-        ]
-        if zone_source
-        else []
-    )
-    operations = [
-        {"nominal_time": ORIGIN, "operation": "establish"},
-        *(
-            [{"nominal_time": END, "operation": "changed"}]
-            if second_boundary
-            else [{"nominal_time": END, "operation": "changed"}]
-        ),
-    ]
-    return {
-        "format_version": 1,
-        "tool": "bpf-compiler-inspection",
-        "intervals": [
-            {
-                "start_timestamp": None,
-                "end_timestamp": END,
-                "compiled": {
-                    "resources": operations,
-                    "parameters": [],
-                    "forwarding": [],
-                    "zone_edges": zone_events,
-                },
-                "end_state": {
-                    "resources": [],
-                    "parameters": [],
-                    "forwarding": [],
-                    "zone_edges": zone_state,
-                    "zone_prefixes": prefixes,
-                },
-            }
-        ],
-    }
+def _node_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    return [value for value in rows if value["record_type"] == "node_identity"]
 
 
-def test_chunked_slice_bundle_is_accepted_without_a_legacy_monolith(
-    tmp_path: Path,
+def _insert_before_packets(
+    rows: list[dict[str, object]],
+    values: list[dict[str, object]],
 ) -> None:
-    telemetry, dynamic, compiler, workload = _inputs(tmp_path)
-    payload = json.loads(dynamic.read_text(encoding="utf-8"))
-    slices = payload.pop("slices")
-    chunks = dynamic.parent / "chunks"
-    chunks.mkdir()
-    payload["slice_manifest"] = []
-    for slice_record in slices:
-        slice_id = slice_record["slice_id"]
-        name = f"chunks/slice-{slice_id:06d}.js"
-        payload["slice_manifest"].append(
-            {"slice_id": slice_id, "chunk": name}
+    index = next(
+        position
+        for position, value in enumerate(rows)
+        if value["record_type"] == "packet"
+    )
+    rows[index:index] = values
+
+
+def _interface_pair(
+    rows: list[dict[str, object]],
+    *,
+    generation: int = 0,
+    boundary: str = "2026-01-01T00:00:00+00:00",
+    first_ifindex: int = 10,
+) -> list[dict[str, object]]:
+    first, second = _node_rows(rows)[:2]
+    connection = f"test-link|{first['node_id']}|{second['node_id']}"
+    return [
+        {
+            "record_type": "interface_identity",
+            "generation": generation,
+            "boundary_timestamp": boundary,
+            "node_slot": first["node_slot"],
+            "node_id": first["node_id"],
+            "ifindex": first_ifindex,
+            "interface": f"sv2-{first_ifindex}",
+            "connection_id": connection,
+            "peer_node_id": second["node_id"],
+            "route_destinations": [],
+            "validity": "exact-generation",
+        },
+        {
+            "record_type": "interface_identity",
+            "generation": generation,
+            "boundary_timestamp": boundary,
+            "node_slot": second["node_slot"],
+            "node_id": second["node_id"],
+            "ifindex": first_ifindex + 1,
+            "interface": f"sv2-{first_ifindex + 1}",
+            "connection_id": connection,
+            "peer_node_id": first["node_id"],
+            "route_destinations": [],
+            "validity": "exact-generation",
+        },
+    ]
+
+
+def _read_observation(evidence_set) -> TrafficReplayRead:
+    return read_traffic_replay(
+        evidence_set["telemetry"],
+        evidence_set["frames"],
+        evidence_set["planning"],
+        evidence_set["compiler_json"],
+    )
+
+
+def test_ping_pairing_separates_reverse_flows_with_reused_icmp_identity() -> None:
+    def packet(
+        timestamp: int, source: str, destination: str, icmp_type: int
+    ) -> dict[str, object]:
+        return {
+            "protocol": 1,
+            "kernel_monotonic_ns": timestamp,
+            "source_ipv4": source,
+            "destination_ipv4": destination,
+            "simulation_timestamp": f"2026-01-01T00:00:0{timestamp}+00:00",
+            "icmp": {
+                "valid": True,
+                "type": icmp_type,
+                "identifier": 42,
+                "sequence": 7,
+            },
+        }
+
+    transactions = _ping_transactions(
+        (
+            packet(1, "100.64.0.1", "100.64.0.2", 8),
+            packet(2, "100.64.0.2", "100.64.0.1", 0),
+            packet(3, "100.64.0.2", "100.64.0.1", 8),
+            packet(4, "100.64.0.1", "100.64.0.2", 0),
         )
-        compact = json.dumps(slice_record, separators=(",", ":"))
-        (dynamic.parent / name).write_text(
-            "window.__SKYSEED_SLICE_CHUNKS__="
-            "window.__SKYSEED_SLICE_CHUNKS__||{};"
-            f"window.__SKYSEED_SLICE_CHUNKS__[{slice_id}]={compact};\n",
-            encoding="utf-8",
+    )
+
+    assert len(transactions) == 2
+    assert {
+        (
+            value["request"]["source_ipv4"],
+            value["request"]["destination_ipv4"],
         )
-    manifest = dynamic.with_name("slice-manifest.json")
-    manifest.write_text(json.dumps(payload), encoding="utf-8")
+        for value in transactions
+    } == {
+        ("100.64.0.1", "100.64.0.2"),
+        ("100.64.0.2", "100.64.0.1"),
+    }
+
+
+def test_replay_uses_physical_frames_and_explicit_planned_route_truth(
+    evidence_set,
+) -> None:
+    data = collect_traffic_replay_data(
+        evidence_set["telemetry"],
+        evidence_set["frames"],
+        evidence_set["planning"],
+        evidence_set["compiler_json"],
+    )
+
+    assert data["inventory"]["physical_frames"] == 4
+    assert data["inventory"]["plans"] == 2
+    assert data["inventory"]["compiled_realizations"] == 2
+    assert data["inventory"]["formal_activation_boundaries"] == 4
+    by_id = {value["identifier"]: value for value in data["transactions"]}
+    assert by_id[10]["planned_reachability"] == "reachable"
+    assert by_id[10]["classification"] == "observed-reachable"
+    assert by_id[11]["planned_reachability"] == "unreachable"
+    assert by_id[11]["planned_unreachable_reason"] == "ZONE_UNSERVED"
+    assert by_id[11]["classification"] == "expected-unreachable"
+    assert data["overview"]["telemetry_complete"] is True
+    assert data["overview"]["classification_counts"] == {
+        "expected-unreachable": 1,
+        "observed-reachable": 1,
+    }
+
+
+def test_compact_compiler_history_retains_lineage_without_inventing_zone_prefix(
+    evidence_set,
+) -> None:
+    data = collect_traffic_replay_data(
+        evidence_set["telemetry"],
+        evidence_set["frames"],
+        evidence_set["planning"],
+        evidence_set["compiler_jsonl"],
+    )
+    assert data["overview"]["compiler_evidence"] == (
+        "compact-producer-lineage"
+    )
+    assert data["transactions"][0]["planned_reachability"] == "reachable"
+    assert data["transactions"][1]["planned_reachability"] == "unknown"
+    assert data["transactions"][1]["classification"] == "unclassified"
+
+
+def test_reader_rejects_physical_frame_coverage_drift(
+    tmp_path, evidence_set
+) -> None:
+    history = Path(
+        shutil.copytree(
+            evidence_set["frames"].parent, tmp_path / "corrupt-history"
+        )
+    )
+    corrupt = history / "physical-frames.jsonl"
+    rows = [
+        json.loads(line)
+        for line in corrupt.read_text().splitlines()
+    ]
+    rows[-1]["positions"].pop()
+    corrupt.write_text(
+        "".join(
+            json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n"
+            for value in rows
+        ),
+        encoding="utf-8",
+    )
+    manifest_path = history / "domain-history-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload = corrupt.read_bytes()
+    manifest["streams"]["physical_frames"].update(
+        {
+            "sha256": sha256(payload).hexdigest(),
+            "bytes": len(payload),
+            "record_count": len(rows) - 1,
+        }
+    )
+    manifest_path.write_text(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="node coverage"):
+        collect_traffic_replay_data(
+            evidence_set["telemetry"],
+            corrupt,
+            history / "planning.jsonl.gz",
+            evidence_set["compiler_json"],
+        )
+
+
+def test_replay_rejects_mixed_domain_history_roots(
+    tmp_path, evidence_set
+) -> None:
+    copied = Path(
+        shutil.copytree(
+            evidence_set["frames"].parent, tmp_path / "other-history"
+        )
+    )
+
+    with pytest.raises(ValueError, match="one sealed domain-history root"):
+        collect_traffic_replay_data(
+            evidence_set["telemetry"],
+            copied / "physical-frames.jsonl",
+            evidence_set["planning"],
+            evidence_set["compiler_json"],
+        )
+
+
+def test_replay_does_not_bind_prepublication_packet_to_future_state(
+    tmp_path, evidence_set
+) -> None:
+    rows = [
+        json.loads(line)
+        for line in evidence_set["telemetry"].read_text().splitlines()
+    ]
+    monotonic_origin = next(
+        value["monotonic_origin_ns"]
+        for value in rows
+        if value["record_type"] == "simulation_clock_anchor"
+    )
+    for value in rows:
+        if (
+            value["record_type"] == "packet"
+            and value["icmp"]["identifier"] == 10
+        ):
+            value["kernel_monotonic_ns"] = monotonic_origin - 1_000_000
+    telemetry = tmp_path / "prepublication-telemetry.jsonl"
+    telemetry.write_text(
+        "".join(json.dumps(value) + "\n" for value in rows),
+        encoding="utf-8",
+    )
 
     data = collect_traffic_replay_data(
-        telemetry, manifest, compiler, workload
+        telemetry,
+        evidence_set["frames"],
+        evidence_set["planning"],
+        evidence_set["compiler_json"],
+    )
+    transaction = next(
+        value for value in data["transactions"] if value["identifier"] == 10
+    )
+    assert transaction["formal_boundary_timestamp"] is None
+    assert transaction["planned_reachability"] == "unknown"
+    assert transaction["classification"] == "unclassified"
+
+
+def test_writer_emits_json_html_checksums_and_tool_accounting(
+    tmp_path, evidence_set
+) -> None:
+    result = write_traffic_replay_tool(
+        evidence_set["telemetry"],
+        evidence_set["frames"],
+        evidence_set["planning"],
+        evidence_set["compiler_json"],
+        None,
+        tmp_path,
     )
 
-    assert len(data["position_samples"]) == 2
-    assert [value["slice_id"] for value in data["position_samples"]] == [1, 2]
-
-
-def test_node_endpoint_transaction_clock_and_active_graph(tmp_path: Path) -> None:
-    traffic, dynamic, compiler, workload = _inputs(tmp_path, reply_generation=1)
-
-    data = collect_traffic_replay_data(traffic, dynamic, compiler, workload)
-    transaction = data["ping_transactions"][0]
-    request = transaction["request"]
-
-    assert transaction["pairing_status"] == "paired"
-    assert transaction["generations"] == (0, 1)
-    assert request["source_endpoint"]["endpoint_kind"] == "node"
-    assert request["first_simulation_timestamp"] == (
-        "2026-01-01T00:00:01.250000+00:00"
-    )
-    assert request["first_link"]["peer_identity_verified"] is True
-    assert [value["node_id"] for value in request["observed_path"]] == [
-        MIDDLE,
-        DESTINATION,
-    ]
-    assert request["link_hops"] == 2
-    assert len(data["active_networks"]) == 2
-    assert all(len(value["connections"]) == 2 for value in data["active_networks"])
-    assert len(data["unclassified_observations"]) == 1
-    assert data["visualization"] == {
-        "recent_traffic_default_seconds": 5,
-        "recent_traffic_options_seconds": (2, 5, 10),
-        "packet_animation": "visual-time-expansion",
-        "recorded_timing_authoritative": True,
-        "persistence_clock": "simulation-time",
-        "persistence_represents": (
-            "real observations inside the selected recent simulation-time window"
-        ),
-        "persistence_does_not_represent": (
-            "RTT",
-            "throughput",
-            "traffic volume",
-            "queue occupancy",
-        ),
+    assert result["status"] == "PASS"
+    assert result["artifact_metrics"]["wall_seconds"] > 0
+    assert result["artifact_metrics"]["input_bytes"] > 0
+    assert result["artifact_metrics"]["output_bytes"] > 0
+    assert {value.name for value in tmp_path.iterdir()} == {
+        "checksums.sha256",
+        "index.html",
+        "inventory.json",
+        "summary.txt",
+        "traffic-replay.json",
     }
-    assert "position_samples" in data
-    assert "active_networks" in data
-    assert "traffic_records" not in data
-    assert "context_frames" not in transaction
-    assert "position" not in request["inferred_source"]
+    payload = json.loads((tmp_path / "traffic-replay.json").read_text())
+    assert payload["tool_accounting"]["peak_rss_bytes"] > 0
+    page = (tmp_path / "index.html").read_text()
+    assert "explicit planned reachability" in page
+    assert "unexplained reachable loss" in page
+    for line in (tmp_path / "checksums.sha256").read_text().splitlines():
+        digest, relative = line.split("  ", 1)
+        assert sha256((tmp_path / relative).read_bytes()).hexdigest() == digest
 
 
-def test_zone_endpoint_uses_service_satellite_as_physical_source(tmp_path: Path) -> None:
-    traffic, dynamic, compiler, workload = _inputs(tmp_path, zone_source=True)
+def test_traffic_sources_use_no_retired_dynamic_records() -> None:
+    combined = "\n".join(path.read_text() for path in TOOL_SOURCES)
+    assert "compute_observation(" not in combined
+    assert "compile_bpf(" not in combined
+    assert "missing forwarding is planned-unreachable" not in combined
 
-    data = collect_traffic_replay_data(traffic, dynamic, compiler, workload)
-    transaction = data["ping_transactions"][0]
+
+def test_node_endpoint_transaction_clock_and_active_graph(evidence_set) -> None:
+    data = _collect(evidence_set)
+    transaction = next(
+        value for value in data["transactions"] if value["identifier"] == 10
+    )
     request = transaction["request"]
+    anchor = next(
+        value
+        for value in _telemetry_rows(evidence_set["telemetry"])
+        if value["record_type"] == "simulation_clock_anchor"
+    )
 
-    assert transaction["source_endpoint"] == request["source_endpoint"]
-    assert transaction["source_endpoint"]["endpoint_kind"] == "zone"
-    assert transaction["source_endpoint"]["zone_id"] == ZONE_ID
-    assert transaction["source_endpoint"]["ipv4"] == "198.18.0.1"
-    assert transaction["source_endpoint"]["service_satellite_id"] == SOURCE
-    assert request["inferred_source"]["node_id"] == SOURCE
-    assert request["first_link"]["source_node_id"] == SOURCE
-    assert request["first_link"]["peer_identity_verified"] is True
+    assert request["simulation_timestamp"] == (
+        datetime.fromisoformat(anchor["nominal_origin"])
+        + timedelta(seconds=2)
+    ).isoformat()
+    assert transaction["observed_reply"] is True
+    assert transaction["packet_observations"] == 2
+    assert transaction["planned_reachability"] == "reachable"
+    assert transaction["formal_boundary_timestamp"] == anchor["nominal_origin"]
+    assert len(data["planned_evidence"]["formal_transitions"]) == 4
+    assert all(
+        set(value["state_summary"])
+        == {
+            "operational_connection_count",
+            "zone_assignment_count",
+            "zones_served",
+            "zones_unserved",
+            "reachable_route_count",
+            "unreachable_route_count",
+        }
+        for value in data["planned_evidence"]["formal_transitions"]
+    )
+
+
+def test_zone_endpoint_uses_service_satellite_as_physical_source(
+    tmp_path: Path,
+    evidence_set,
+) -> None:
+    base = _collect(evidence_set)
+    first_transition = base["planned_evidence"]["formal_transitions"][0]
+    served = next(
+        value
+        for value in first_transition["transition"][
+            "zone_service_transitions"
+        ]
+        if value["current_satellite_id"] is not None
+    )
+    prefix = next(
+        value["packet_prefix"]
+        for value in base["compiled_evidence"]["realizations"][-1][
+            "zone_prefixes"
+        ]
+        if value["zone_id"] == served["zone_id"]
+    )
+    zone_address = str(ip_interface(prefix).ip)
+    telemetry, rows = _copied_telemetry(tmp_path, evidence_set)
+    for value in rows:
+        if value.get("record_type") != "packet":
+            continue
+        icmp = value["icmp"]
+        if icmp["identifier"] != 10:
+            continue
+        if icmp["type"] == 8:
+            value["source_ipv4"] = zone_address
+        else:
+            value["destination_ipv4"] = zone_address
+    _write_telemetry(telemetry, rows)
+
+    data = _collect(evidence_set, telemetry=telemetry)
+    transaction = next(
+        value for value in data["transactions"] if value["identifier"] == 10
+    )
+
+    assert transaction["planned_reachability"] == "reachable"
+    assert transaction["classification"] == "observed-reachable"
+    assert transaction["route_outcome"]["demand"]["source"] == served[
+        "current_satellite_id"
+    ]
+    assert transaction["request"]["source_ipv4"] == zone_address
 
 
 def test_unavailable_zone_destination_preserves_observed_drop(
     tmp_path: Path,
+    evidence_set,
 ) -> None:
-    traffic, dynamic, compiler, workload = _inputs(
-        tmp_path, zone_source=True, reply_generation=1
+    telemetry, rows = _copied_telemetry(tmp_path, evidence_set)
+    for value in rows:
+        if (
+            value.get("record_type") == "packet"
+            and value["icmp"]["identifier"] == 11
+        ):
+            value["decision"] = "drop"
+            value["reason"] = "no-route"
+    _write_telemetry(telemetry, rows)
+
+    data = _collect(evidence_set, telemetry=telemetry)
+    transaction = next(
+        value for value in data["transactions"] if value["identifier"] == 11
     )
-    records = [
-        json.loads(line)
-        for line in traffic.read_text(encoding="utf-8").splitlines()
-    ]
-    packet = {
-        **_packet(
-            106_250_000_000,
-            slot=1,
-            generation=1,
-            ingress=11,
-            egress=None,
-            source="100.64.0.1",
-            destination="198.18.0.1",
-            icmp_type=8,
-        ),
-        "decision": "drop",
-        "reason": "no-route",
-    }
-    records = [value for value in records if value["record_type"] != "packet"]
-    recorder_end = next(
-        value for value in records if value["record_type"] == "recorder_end"
-    )
-    recorder_index = records.index(recorder_end)
-    records.insert(recorder_index, packet)
-    recorder_end["packet_records"] = 1
-    traffic.write_text(
-        "".join(json.dumps(value) + "\n" for value in records),
-        encoding="utf-8",
+    raw = next(
+        value
+        for value in data["telemetry"]["packets"]
+        if value["icmp"]["identifier"] == 11
     )
 
-    compiled = json.loads(compiler.read_text(encoding="utf-8"))
-    compiled["intervals"][0]["compiled"]["zone_edges"].append(
-        {
-            "nominal_time": END,
-            "operation": "removed",
-            "zone_id": ZONE_ID,
-            "packet_prefix": ZONE_PREFIX,
-            "previous_service_satellite": SOURCE,
-            "service_satellite": None,
-        }
-    )
-    compiled["intervals"][0]["end_state"]["zone_edges"] = []
-    compiler.write_text(json.dumps(compiled), encoding="utf-8")
-
-    data = collect_traffic_replay_data(traffic, dynamic, compiler, workload)
-    transaction = data["ping_transactions"][0]
-    request = transaction["request"]
-
-    assert transaction["pairing_status"] == "unpaired"
-    assert request["destination_endpoint"]["endpoint_kind"] == "zone"
-    assert request["destination_endpoint"]["zone_id"] == ZONE_ID
-    assert request["destination_endpoint"]["physical_node_id"] is None
-    assert request["destination_endpoint"]["service_satellite_id"] is None
-    assert request["destination_endpoint"]["service_satellite_display_name"] is None
-    assert request["final_decision"] == "drop"
-    assert request["final_reason"] == "no-route"
-    assert request["observed_path"][0]["generation"] == 1
+    assert transaction["observed_reply"] is False
+    assert transaction["planned_reachability"] == "unreachable"
+    assert transaction["planned_unreachable_reason"] == "ZONE_UNSERVED"
+    assert transaction["classification"] == "expected-unreachable"
+    assert raw["decision"] == "drop"
+    assert raw["reason"] == "no-route"
 
 
 def test_workload_schedule_is_read_and_projected_as_qualified_lane(
     tmp_path: Path,
+    evidence_set,
 ) -> None:
-    traffic, dynamic, compiler, workload = _inputs(tmp_path, zone_source=True)
-    value = json.loads(workload.read_text(encoding="utf-8"))
-    value["inventory"] = {
+    workload = _workload(tmp_path / "traffic-workload.json", series=[_series("S1")])
+
+    data = _collect(evidence_set, workload=workload)
+
+    assert data["workload"]["inventory"] == {
         "series": 1,
         "scheduled_slots": 5,
         "maximum_concurrent_series": 1,
     }
-    value["series"] = [
-        {
-            "series_id": "S-test",
-            "display_label": "Zone source test",
-            "direction": "zone-to-ground-station",
-            "ground_station": {
-                "node_id": DESTINATION,
-                "display_name": "Porto Alegre",
-            },
-            "zone": {"zone_id": ZONE_ID, "packet_ipv4": "198.18.0.1"},
-            "schedule": {
-                "interval_semantics": "[start,end)",
-                "start_time": ORIGIN,
-                "end_time": END,
-                "start_offset_seconds": 0.0,
-                "end_offset_seconds": 10.0,
-                "interval_seconds": 2.0,
-                "phase_seconds": 0.0,
-                "scheduled_slots": 5,
-            },
-            "semantic_purpose": "test durable schedule read",
-            "event_focus": "test Zone service",
-        }
-    ]
-    workload.write_text(json.dumps(value), encoding="utf-8")
-
-    data = collect_traffic_replay_data(traffic, dynamic, compiler, workload)
-    lane = data["traffic_lanes"][0]
-
-    assert data["ping_transactions"][0]["series_id"] == "S-test"
-    assert lane["observed_transactions"] == 1
-    assert lane["observed_gap_slots"] == 4
-    assert "does not prove" in lane["gap_qualification"]
+    assert data["workload"]["series"][0]["series_id"] == "S1"
+    assert data["workload"]["authority"]["proves_timeout"] is False
+    assert data["workload"]["authority"]["proves_packet_loss"] is False
+    assert data["overview"]["classification_counts"] == {
+        "expected-unreachable": 1,
+        "observed-reachable": 1,
+    }
 
 
 def test_workload_is_optional_and_observed_flow_is_telemetry_derived(
-    tmp_path: Path,
+    evidence_set,
 ) -> None:
-    traffic, dynamic, compiler, _workload = _inputs(tmp_path)
-
-    data = collect_traffic_replay_data(traffic, dynamic, compiler, None)
+    data = _collect(evidence_set)
 
     assert data["workload"] is None
-    assert data["traffic_lanes"] == ()
-    assert data["overview"]["workload_present"] is False
-    assert data["overview"]["observed_flows"] == 1
-    assert data["observed_flows"][0]["protocol"] == "ICMP"
-    assert data["observed_flows"][0]["traffic_kind"] == "ping"
-    assert data["ping_transactions"][0]["series_id"] is None
-    assert data["ping_transactions"][0]["observed_flow_id"] == (
-        data["observed_flows"][0]["flow_id"]
-    )
+    assert data["inventory"]["ping_transactions"] == 2
+    assert {value["identifier"] for value in data["transactions"]} == {10, 11}
+    assert data["inventory"]["packet_observations"] == 3
 
 
-def test_workload_cannot_claim_timeout_or_packet_loss_evidence(tmp_path: Path) -> None:
-    traffic, dynamic, compiler, workload = _inputs(tmp_path)
+def test_workload_cannot_claim_timeout_or_packet_loss_evidence(
+    tmp_path: Path,
+    evidence_set,
+) -> None:
+    workload = _workload(tmp_path / "traffic-workload.json", series=[_series("S1")])
     value = json.loads(workload.read_text(encoding="utf-8"))
     value["authority"]["proves_timeout"] = True
+    value["authority"]["proves_packet_loss"] = True
     workload.write_text(json.dumps(value), encoding="utf-8")
 
-    with pytest.raises(ValueError, match="unsupported runtime evidence"):
-        collect_traffic_replay_data(traffic, dynamic, compiler, workload)
+    with pytest.raises(ValueError, match="runtime evidence|authority"):
+        _collect(evidence_set, workload=workload)
 
 
-def test_zone_prefix_conflict_and_instability_fail_closed(tmp_path: Path) -> None:
-    traffic, dynamic, compiler, workload = _inputs(tmp_path, zone_source=True)
-    value = json.loads(compiler.read_text(encoding="utf-8"))
-    value["intervals"][0]["end_state"]["zone_prefixes"].append(
-        {"zone_id": "other-zone", "packet_prefix": ZONE_PREFIX}
+def test_zone_prefix_conflict_and_instability_fail_closed(
+    tmp_path: Path,
+    evidence_set,
+) -> None:
+    conflict = tmp_path / "conflicting-compiler.json"
+    value = json.loads(evidence_set["compiler_json"].read_text())
+    prefixes = value["realizations"][-1]["zone_prefixes"]
+    prefixes[1]["packet_prefix"] = prefixes[0]["packet_prefix"]
+    conflict.write_text(json.dumps(value), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="prefix|Zone"):
+        _collect(evidence_set, compiler=conflict)
+
+    unstable = tmp_path / "unstable-compiler.json"
+    value = json.loads(evidence_set["compiler_json"].read_text())
+    value["realizations"][-1]["zone_prefixes"][0][
+        "packet_prefix"
+    ] = "198.18.0.99/32"
+    unstable.write_text(json.dumps(value), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="prefix|stable"):
+        _collect(evidence_set, compiler=unstable)
+
+
+def test_unknown_endpoint_degrades_without_inventing_identity(
+    tmp_path: Path,
+    evidence_set,
+) -> None:
+    telemetry, rows = _copied_telemetry(tmp_path, evidence_set)
+    for value in rows:
+        if value.get("record_type") != "packet":
+            continue
+        icmp = value["icmp"]
+        if icmp["identifier"] != 10:
+            continue
+        if icmp["type"] == 8:
+            value["source_ipv4"] = "203.0.113.1"
+        else:
+            value["destination_ipv4"] = "203.0.113.1"
+    _write_telemetry(telemetry, rows)
+
+    data = _collect(evidence_set, telemetry=telemetry)
+    transaction = next(
+        value for value in data["transactions"] if value["identifier"] == 10
     )
-    compiler.write_text(json.dumps(value), encoding="utf-8")
-    with pytest.raises(ValueError, match="prefix identity is conflicting"):
-        collect_traffic_replay_data(traffic, dynamic, compiler, workload)
 
-    traffic, dynamic, compiler, workload = _inputs(
-        tmp_path / "unstable", zone_source=True
-    )
-    value = json.loads(compiler.read_text(encoding="utf-8"))
-    second = json.loads(json.dumps(value["intervals"][0]))
-    second["start_timestamp"] = END
-    second["compiled"] = {
-        "resources": [],
-        "parameters": [],
-        "forwarding": [],
-        "zone_edges": [],
+    assert transaction["request"]["source_ipv4"] == "203.0.113.1"
+    assert transaction["route_outcome"] is None
+    assert transaction["planned_reachability"] == "unknown"
+    assert transaction["classification"] == "unclassified"
+    assert "203.0.113.1" not in {
+        value["runtime_ipv4"] for value in data["telemetry"]["nodes"]
     }
-    second["end_state"]["zone_prefixes"][0]["packet_prefix"] = "198.18.0.9/32"
-    second["end_state"]["zone_edges"][0]["packet_prefix"] = "198.18.0.9/32"
-    value["intervals"].append(second)
-    compiler.write_text(json.dumps(value), encoding="utf-8")
-    with pytest.raises(ValueError, match="prefixes are unstable"):
-        collect_traffic_replay_data(traffic, dynamic, compiler, workload)
-
-
-def test_unknown_endpoint_degrades_without_inventing_identity(tmp_path: Path) -> None:
-    traffic, dynamic, compiler, workload = _inputs(tmp_path, unknown_source=True)
-
-    data = collect_traffic_replay_data(traffic, dynamic, compiler, workload)
-
-    assert data["ping_transactions"] == ()
-    unknown = next(
-        value
-        for value in data["unclassified_observations"]
-        if value["source_ipv4"] == "203.0.113.1"
-    )
-    assert unknown["source_ipv4"] == "203.0.113.1"
-    assert unknown["source_endpoint"]["endpoint_kind"] == "unknown"
-    assert unknown["source_endpoint"]["stable_id"] is None
-    assert [value["node_id"] for value in unknown["observations"]] == [
-        MIDDLE,
-        DESTINATION,
-    ]
 
 
 def test_transaction_pairing_marks_temporal_collision_ambiguous() -> None:
-    def record(record_id: str, first: int, last: int, icmp_type: int) -> dict[str, object]:
+    def packet(timestamp: int, icmp_type: int) -> dict[str, object]:
         source, destination = (
             ("10.0.0.1", "10.0.0.2")
             if icmp_type == 8
             else ("10.0.0.2", "10.0.0.1")
         )
-        endpoint = {"display_name": source, "endpoint_kind": "node"}
         return {
-            "record_id": record_id,
-            "icmp_type": icmp_type,
-            "identifier": 1,
-            "sequence": 1,
+            "protocol": 1,
+            "kernel_monotonic_ns": timestamp,
             "source_ipv4": source,
             "destination_ipv4": destination,
-            "source_endpoint": endpoint,
-            "destination_endpoint": endpoint,
-            "first_kernel_monotonic_ns": first,
-            "last_kernel_monotonic_ns": last,
-            "first_simulation_timestamp": ORIGIN,
-            "observed_path": ({"generation": 0, "active_boundary_timestamp": ORIGIN},),
-            "evidence_complete": True,
+            "simulation_timestamp": START_AT.isoformat(),
+            "icmp": {
+                "valid": True,
+                "type": icmp_type,
+                "identifier": 1,
+                "sequence": 1,
+            },
         }
 
-    transactions = _pair_ping_transactions(
-        [
-            record("request-1", 10, 11, 8),
-            record("request-2", 12, 13, 8),
-            record("reply", 14, 15, 0),
-        ]
+    transactions = _ping_transactions(
+        (packet(10, 8), packet(12, 8), packet(14, 0))
     )
 
-    assert transactions[0]["pairing_status"] == "ambiguous"
-    assert transactions[0]["reply"] is None
-    assert any(value["pairing_status"] == "paired" for value in transactions)
+    assert len(transactions) == 2
+    ambiguous = next(
+        value for value in transactions if value["pairing_status"] == "ambiguous"
+    )
+    assert ambiguous["reply"] is None
+    assert any(
+        value["pairing_status"] == "paired" for value in transactions
+    )
 
 
 def test_connection_pair_and_generation_boundary_corruption_fail_closed(
     tmp_path: Path,
+    evidence_set,
 ) -> None:
-    traffic, dynamic, compiler, workload = _inputs(tmp_path)
-    records = [json.loads(line) for line in traffic.read_text().splitlines()]
-    removed = False
-    filtered = []
-    for value in records:
-        if (
-            not removed
-            and value.get("record_type") == "interface_identity"
-            and value.get("node_slot") == 0
-        ):
-            removed = True
-            continue
-        filtered.append(value)
-    traffic.write_text("".join(json.dumps(value) + "\n" for value in filtered))
-    with pytest.raises(ValueError, match="lacks two endpoints"):
-        collect_traffic_replay_data(traffic, dynamic, compiler, workload)
+    telemetry, rows = _copied_telemetry(
+        tmp_path, evidence_set, name="unmatched.jsonl"
+    )
+    pair = _interface_pair(rows)
+    _insert_before_packets(rows, pair[:1])
+    _write_telemetry(telemetry, rows)
+    with pytest.raises(ValueError, match="connection|endpoint|interface"):
+        _collect(evidence_set, telemetry=telemetry)
 
-    traffic, dynamic, compiler, workload = _inputs(tmp_path / "boundary")
-    records = [json.loads(line) for line in traffic.read_text().splitlines()]
-    for value in records:
-        if value.get("record_type") == "interface_identity":
-            value["boundary_timestamp"] = "2026-01-01T00:00:01+00:00"
-    traffic.write_text("".join(json.dumps(value) + "\n" for value in records))
-    with pytest.raises(ValueError, match="generation-to-boundary mapping"):
-        collect_traffic_replay_data(traffic, dynamic, compiler, workload)
+    boundary_root = tmp_path / "boundary"
+    boundary_root.mkdir()
+    telemetry, rows = _copied_telemetry(boundary_root, evidence_set)
+    pair = _interface_pair(
+        rows, boundary="2026-01-01T00:00:01+00:00"
+    )
+    _insert_before_packets(rows, pair)
+    _write_telemetry(telemetry, rows)
+    with pytest.raises(ValueError, match="generation|boundary"):
+        _collect(evidence_set, telemetry=telemetry)
 
 
 def test_future_generation_links_do_not_enter_current_active_graph(
     tmp_path: Path,
+    evidence_set,
 ) -> None:
-    traffic, dynamic, compiler, workload = _inputs(tmp_path)
-    records = [json.loads(line) for line in traffic.read_text().splitlines()]
-    future_connection = f"inter-satellite|{SOURCE}|{DESTINATION}"
-    recorder_index = next(
-        index
-        for index, value in enumerate(records)
-        if value.get("record_type") == "recorder_end"
+    telemetry, rows = _copied_telemetry(tmp_path, evidence_set)
+    future = _interface_pair(
+        rows,
+        generation=1,
+        boundary="2026-01-01T00:00:10+00:00",
+        first_ifindex=30,
     )
-    records[recorder_index:recorder_index] = [
-        {
-            "record_type": "interface_identity",
-            "generation": 1,
-            "boundary_timestamp": END,
-            "node_slot": 0,
-            "node_id": SOURCE,
-            "ifindex": 30,
-            "interface": "sv2futurea",
-            "connection_id": future_connection,
-            "peer_node_id": DESTINATION,
-            "route_destinations": (),
-            "validity": "exact-generation",
-        },
-        {
-            "record_type": "interface_identity",
-            "generation": 1,
-            "boundary_timestamp": END,
-            "node_slot": 2,
-            "node_id": DESTINATION,
-            "ifindex": 31,
-            "interface": "sv2futureb",
-            "connection_id": future_connection,
-            "peer_node_id": SOURCE,
-            "route_destinations": (),
-            "validity": "exact-generation",
-        },
-    ]
-    traffic.write_text(
-        "".join(json.dumps(value) + "\n" for value in records),
-        encoding="utf-8",
+    _insert_before_packets(rows, future)
+    _write_telemetry(telemetry, rows)
+
+    data = _collect(evidence_set, telemetry=telemetry)
+    transaction = next(
+        value for value in data["transactions"] if value["identifier"] == 10
     )
 
-    data = collect_traffic_replay_data(traffic, dynamic, compiler, workload)
-    networks = {
-        value["generation"]: value for value in data["active_networks"]
+    assert {value["generation"] for value in data["telemetry"]["interfaces"]} == {
+        1
     }
-
-    assert len(networks[0]["connections"]) == 2
-    assert future_connection not in {
-        value["connection_id"] for value in networks[0]["connections"]
-    }
-    assert future_connection in {
-        value["connection_id"] for value in networks[1]["connections"]
-    }
+    assert transaction["formal_boundary_timestamp"] == (
+        "2026-01-01T00:00:00+00:00"
+    )
+    assert transaction["planned_reachability"] == "reachable"
+    assert "connection_id" not in transaction
 
 
 def test_inactive_ingress_can_use_unique_future_physical_identity_without_leaking_link(
     tmp_path: Path,
+    evidence_set,
 ) -> None:
-    traffic, dynamic, compiler, workload = _inputs(
-        tmp_path, reply_generation=1
+    telemetry, rows = _copied_telemetry(tmp_path, evidence_set)
+    future = _interface_pair(
+        rows,
+        generation=1,
+        boundary="2026-01-01T00:00:10+00:00",
+        first_ifindex=30,
     )
-    records = [json.loads(line) for line in traffic.read_text().splitlines()]
-    future_connection = f"inter-satellite|{SOURCE}|{DESTINATION}"
-    recorder_index = next(
-        index
-        for index, value in enumerate(records)
-        if value.get("record_type") == "recorder_end"
+    nodes = _node_rows(rows)
+    anchor = next(
+        value for value in rows if value["record_type"] == "simulation_clock_anchor"
     )
-    records[recorder_index:recorder_index] = [
+    packet = _packet(
+        anchor["monotonic_origin_ns"] + 5_000_000_000,
+        int(nodes[0]["node_slot"]),
+        str(nodes[0]["runtime_ipv4"]),
+        str(nodes[1]["runtime_ipv4"]),
+        8,
+        99,
+    )
+    packet.update(
         {
-            "record_type": "interface_identity",
-            "generation": 1,
-            "boundary_timestamp": END,
-            "node_slot": 0,
-            "node_id": SOURCE,
-            "ifindex": 30,
-            "interface": "sv2futurea",
-            "connection_id": future_connection,
-            "peer_node_id": DESTINATION,
-            "route_destinations": (),
-            "validity": "exact-generation",
-        },
-        {
-            "record_type": "interface_identity",
-            "generation": 1,
-            "boundary_timestamp": END,
-            "node_slot": 2,
-            "node_id": DESTINATION,
-            "ifindex": 31,
-            "interface": "sv2futureb",
-            "connection_id": future_connection,
-            "peer_node_id": SOURCE,
-            "route_destinations": (),
-            "validity": "exact-generation",
-        },
-        {
-            **_packet(
-                105_000_000_000,
-                slot=0,
-                generation=0,
-                ingress=30,
-                egress=None,
-                source="100.64.0.3",
-                destination="100.64.0.1",
-                icmp_type=8,
-            ),
+            "generation": 0,
+            "ingress_ifindex": 30,
             "decision": "drop",
             "reason": "inactive-ingress",
-        },
-    ]
-    recorder = next(
-        value for value in records if value.get("record_type") == "recorder_end"
+        }
     )
-    recorder["packet_records"] += 1
-    traffic.write_text(
-        "".join(json.dumps(value) + "\n" for value in records),
-        encoding="utf-8",
-    )
+    _insert_before_packets(rows, future)
+    end = next(value for value in rows if value["record_type"] == "recorder_end")
+    rows.insert(rows.index(end), packet)
+    end["packet_records"] += 1
+    _write_telemetry(telemetry, rows)
 
-    data = collect_traffic_replay_data(traffic, dynamic, compiler, workload)
-    transaction = next(
+    data = _collect(evidence_set, telemetry=telemetry)
+    raw = next(
         value
-        for value in data["ping_transactions"]
-        if value["request"]["final_reason"] == "inactive-ingress"
+        for value in data["telemetry"]["packets"]
+        if value["icmp"]["identifier"] == 99
     )
-    observation = transaction["request"]["observed_path"][0]
-    networks = {
-        value["generation"]: value for value in data["active_networks"]
+    transaction = next(
+        value for value in data["transactions"] if value["identifier"] == 99
+    )
+
+    assert raw["reason"] == "inactive-ingress"
+    assert raw["generation"] == 0
+    assert transaction["formal_boundary_timestamp"] == (
+        "2026-01-01T00:00:00+00:00"
+    )
+    assert "connection_id" not in transaction
+
+
+def test_inactive_ingress_identity_fallback_rejects_reuse_ambiguity(
+    tmp_path: Path,
+    evidence_set,
+) -> None:
+    telemetry, rows = _copied_telemetry(tmp_path, evidence_set)
+    first = _interface_pair(
+        rows,
+        generation=1,
+        boundary="2026-01-01T00:00:10+00:00",
+        first_ifindex=30,
+    )
+    second = deepcopy(first)
+    for value in second:
+        value["generation"] = 2
+        value["boundary_timestamp"] = "2026-01-01T00:00:20+00:00"
+        value["connection_id"] = "ambiguous-reused-physical-interface"
+    _insert_before_packets(rows, first + second)
+    _write_telemetry(telemetry, rows)
+
+    with pytest.raises(ValueError, match="ambiguous|reuse|interface|connection"):
+        _collect(evidence_set, telemetry=telemetry)
+
+
+def test_position_projection_preserves_exact_sample_and_marks_interpolation(
+    evidence_set,
+) -> None:
+    data = _collect(evidence_set)
+    frames = data["physical_evidence"]["frames"]
+
+    assert len(frames) == 4
+    assert [value["timestamp"] for value in frames] == [
+        value["timestamp"]
+        for value in data["planned_evidence"]["formal_transitions"]
+    ]
+    assert all(value["positions"] for value in frames)
+    assert "interpolat" not in json.dumps(frames).lower()
+    assert "visualization_only" not in json.dumps(frames)
+
+
+def test_arbitrary_time_generation_uses_latest_boundary_and_exact_new_state(
+    tmp_path: Path,
+    evidence_set,
+) -> None:
+    telemetry, rows = _copied_telemetry(tmp_path, evidence_set)
+    anchor = next(
+        value for value in rows if value["record_type"] == "simulation_clock_anchor"
+    )
+    origin = int(anchor["monotonic_origin_ns"])
+    for value in rows:
+        if (
+            value.get("record_type") == "packet"
+            and value["icmp"]["identifier"] == 10
+        ):
+            offset = 25_000_000_000
+            if value["icmp"]["type"] == 0:
+                offset += 50_000_000
+            value["kernel_monotonic_ns"] = origin + offset
+    _write_telemetry(telemetry, rows)
+
+    data = _collect(evidence_set, telemetry=telemetry)
+    transaction = next(
+        value for value in data["transactions"] if value["identifier"] == 10
+    )
+
+    assert transaction["formal_boundary_timestamp"] == (
+        "2026-01-01T00:00:20+00:00"
+    )
+    assert transaction["planned_reachability"] == "reachable"
+    assert transaction["route_outcome"]["kind"] == "reachable"
+
+
+def test_zone_geometry_splits_dateline_without_packet_link_semantics(
+    evidence_set,
+) -> None:
+    data = _collect(evidence_set)
+    prefixes = data["compiled_evidence"]["realizations"][-1]["zone_prefixes"]
+
+    assert {value["zone_id"] for value in prefixes} == {
+        "americas",
+        "new-york-metro",
     }
+    assert all(value["packet_prefix"].endswith("/32") for value in prefixes)
+    encoded = json.dumps(data)
+    assert "packet_link_semantics" not in encoded
+    assert "longitude_segments" not in encoded
+    assert "representative_point" not in encoded
 
-    assert observation["generation"] == 0
-    assert observation["incoming_connection_id"] == future_connection
-    assert observation["ingress_identity_validity"] == (
-        "unique-observed-physical-inactive-ingress"
+
+def test_workload_lanes_keep_overlapping_streams_and_qualify_gaps(
+    tmp_path: Path,
+    evidence_set,
+) -> None:
+    workload = _workload(
+        tmp_path / "traffic-workload.json",
+        series=[
+            _series("A", scheduled_slots=5),
+            _series(
+                "B",
+                direction="zone-to-ground-station",
+                scheduled_slots=10,
+            ),
+        ],
     )
-    assert observation["ingress_identity_generations"] == (1,)
-    assert future_connection not in {
-        value["connection_id"] for value in networks[0]["connections"]
+
+    data = _collect(evidence_set, workload=workload)
+
+    assert [value["series_id"] for value in data["workload"]["series"]] == [
+        "A",
+        "B",
+    ]
+    assert data["workload"]["inventory"] == {
+        "series": 2,
+        "scheduled_slots": 15,
+        "maximum_concurrent_series": 2,
     }
-    assert future_connection in {
-        value["connection_id"] for value in networks[1]["connections"]
+    assert data["workload"]["authority"] == {
+        "status": "planned-example-workload",
+        "proves_command_execution": False,
+        "proves_packet_emission": False,
+        "proves_timeout": False,
+        "proves_packet_loss": False,
+        "packet_observation_authority": "traffic-telemetry.jsonl",
     }
-    assert data["overview"][
-        "inactive_ingress_physical_identity_associations"
-    ] == 1
-
-
-def test_inactive_ingress_identity_fallback_rejects_reuse_ambiguity() -> None:
-    packet = {
-        "decision": "drop",
-        "reason": "inactive-ingress",
-        "selected_egress_ifindex": None,
-    }
-    base = {
-        "generation": 1,
-        "node_id": SOURCE,
-        "ifindex": 30,
-        "interface": "sv2candidate",
-        "connection_id": f"inter-satellite|{SOURCE}|{MIDDLE}",
-        "peer_node_id": MIDDLE,
-    }
-
-    assert _inactive_ingress_identity(
-        packet,
-        (
-            base,
-            {
-                **base,
-                "generation": 2,
-                "connection_id": f"inter-satellite|{SOURCE}|{DESTINATION}",
-                "peer_node_id": DESTINATION,
-            },
-        ),
-    ) is None
-    assert _inactive_ingress_identity(
-        {**packet, "decision": "redirect"}, (base,)
-    ) is None
-
-
-def test_position_projection_preserves_exact_sample_and_marks_interpolation() -> None:
-    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    samples = (
-        (
-            start,
-            {
-                "positions": {
-                    "node": {
-                        "ecef_m": {"x": 0.0, "y": 10.0, "z": 20.0},
-                        "geographic": {"latitude_deg": 1.0},
-                    }
-                }
-            },
-        ),
-        (
-            datetime(2026, 1, 1, 0, 0, 10, tzinfo=timezone.utc),
-            {
-                "positions": {
-                    "node": {
-                        "ecef_m": {"x": 10.0, "y": 20.0, "z": 30.0},
-                        "geographic": {"latitude_deg": 2.0},
-                    }
-                }
-            },
-        ),
-    )
-
-    exact = _position_at(samples, "node", start)
-    middle = _position_at(
-        samples,
-        "node",
-        datetime(2026, 1, 1, 0, 0, 5, tzinfo=timezone.utc),
-    )
-
-    assert exact["provenance"] == "retained-position"
-    assert exact["visualization_only"] is False
-    assert middle["ecef_m"] == {"x": 5.0, "y": 15.0, "z": 25.0}
-    assert middle["provenance"] == "linear-ecef-interpolation"
-    assert middle["visualization_only"] is True
-    assert _position_at(
-        samples,
-        "node",
-        datetime(2025, 12, 31, 23, 59, 59, tzinfo=timezone.utc),
-    ) is None
-
-
-def test_arbitrary_time_generation_uses_latest_boundary_and_exact_new_state() -> None:
-    networks = (
-        {"generation": 0, "boundary_timestamp": ORIGIN},
-        {"generation": 1, "boundary_timestamp": END},
-    )
-
-    assert _generation_at(
-        networks,
-        datetime(2025, 12, 31, 23, 59, 59, tzinfo=timezone.utc),
-    ) is None
-    assert _generation_at(
-        networks,
-        datetime(2026, 1, 1, 0, 0, 5, tzinfo=timezone.utc),
-    ) == 0
-    assert _generation_at(
-        networks,
-        datetime(2026, 1, 1, 0, 0, 10, tzinfo=timezone.utc),
-    ) == 1
-
-
-def test_zone_geometry_splits_dateline_without_packet_link_semantics() -> None:
-    value = _project_zone_geometry(
-        {
-            "zone_id": "dateline-zone",
-            "geometry": {
-                "kind": "latitude-longitude-rectangle",
-                "south_latitude_deg": -10.0,
-                "north_latitude_deg": 10.0,
-                "west_longitude_deg": 170.0,
-                "east_longitude_deg": -170.0,
-            },
-            "representative_point": {
-                "latitude_deg": 0.0,
-                "longitude_deg": 180.0,
-            },
-        }
-    )
-
-    assert value["geometry"]["longitude_segments"] == (
-        {"west_longitude_deg": 170.0, "east_longitude_deg": 180.0},
-        {"west_longitude_deg": -180.0, "east_longitude_deg": -170.0},
-    )
-    assert value["packet_link_semantics"] is False
-
-
-def test_workload_lanes_keep_overlapping_streams_and_qualify_gaps() -> None:
-    def endpoint(kind: str, stable_id: str) -> dict[str, object]:
-        return {
-            "endpoint_kind": kind,
-            "node_id": stable_id if kind == "node" else None,
-            "zone_id": stable_id if kind == "zone" else None,
-        }
-
-    transactions = (
-        {
-            "transaction_id": "ping-a",
-            "first_simulation_timestamp": "2026-01-01T00:00:02+00:00",
-            "source_endpoint": endpoint("node", "ground-a"),
-            "destination_endpoint": endpoint("zone", "zone-a"),
-            "pairing_status": "paired",
-            "recorded_duration_ms": 10.0,
-            "request": {"observed_path": ({},)},
-            "reply": {"observed_path": ({},)},
-        },
-        {
-            "transaction_id": "ping-b",
-            "first_simulation_timestamp": "2026-01-01T00:00:03+00:00",
-            "source_endpoint": endpoint("zone", "zone-b"),
-            "destination_endpoint": endpoint("node", "ground-b"),
-            "pairing_status": "paired",
-            "recorded_duration_ms": 12.0,
-            "request": {"observed_path": ({},)},
-            "reply": {"observed_path": ({},)},
-        },
-    )
-    series = (
-        {
-            "series_id": "A",
-            "display_label": "A",
-            "direction": "ground-station-to-zone",
-            "ground_station": {"node_id": "ground-a", "display_name": "A"},
-            "zone": {"zone_id": "zone-a", "packet_ipv4": "198.18.0.1"},
-            "schedule": {
-                "start_time": ORIGIN,
-                "end_time": END,
-                "interval_seconds": 2.0,
-                "scheduled_slots": 5,
-            },
-            "semantic_purpose": "overlap A",
-            "event_focus": "event A",
-        },
-        {
-            "series_id": "B",
-            "display_label": "B",
-            "direction": "zone-to-ground-station",
-            "ground_station": {"node_id": "ground-b", "display_name": "B"},
-            "zone": {"zone_id": "zone-b", "packet_ipv4": "198.18.0.2"},
-            "schedule": {
-                "start_time": ORIGIN,
-                "end_time": END,
-                "interval_seconds": 1.0,
-                "scheduled_slots": 10,
-            },
-            "semantic_purpose": "overlap B",
-            "event_focus": "event B",
-        },
-    )
-
-    projected, lanes = _project_workload_activity(
-        transactions,
-        {"series": series},
-    )
-
-    assert [value["series_id"] for value in projected] == ["A", "B"]
-    assert [value["observed_transactions"] for value in lanes] == [1, 1]
-    assert [value["observed_gap_slots"] for value in lanes] == [4, 9]
-    assert all("does not prove" in value["gap_qualification"] for value in lanes)
 
 
 def test_long_lived_ping_sequence_prevents_scheduled_slot_drift() -> None:
-    source = {
-        "endpoint_kind": "node",
-        "stable_id": "ground-a",
-        "node_id": "ground-a",
-    }
-    destination = {
-        "endpoint_kind": "zone",
-        "stable_id": "zone-a",
-        "zone_id": "zone-a",
-    }
-    transactions = tuple(
-        {
-            "transaction_id": f"ping-{index:03d}",
-            "identifier": 17,
-            "sequence": index + 1,
-            "first_kernel_monotonic_ns": index,
-            "first_simulation_timestamp": datetime.fromtimestamp(
-                index * 3.015, tz=timezone.utc
-            ).replace(year=2026, month=1, day=1).isoformat(),
-            "source_endpoint": source,
-            "destination_endpoint": destination,
-            "pairing_status": "paired",
-            "recorded_duration_ms": 20.0,
-            "request": {"observed_path": ({},)},
-            "reply": {"observed_path": ({},)},
-        }
-        for index in range(80)
-    )
-    series = {
-        "series_id": "S5",
-        "display_label": "drifting Linux ping",
-        "direction": "ground-station-to-zone",
-        "ground_station": {"node_id": "ground-a", "display_name": "A"},
-        "zone": {"zone_id": "zone-a", "packet_ipv4": "198.18.0.1"},
-        "schedule": {
-            "start_time": ORIGIN,
-            "end_time": "2026-01-01T00:04:00+00:00",
-            "interval_seconds": 3.0,
-            "scheduled_slots": 80,
-        },
-        "semantic_purpose": "cadence regression",
-        "event_focus": "none",
-    }
+    packets = []
+    for index in range(80):
+        packets.extend(
+            (
+                {
+                    "protocol": 1,
+                    "kernel_monotonic_ns": index * 3_015_000_000,
+                    "source_ipv4": "10.0.0.1",
+                    "destination_ipv4": "10.0.0.2",
+                    "simulation_timestamp": (
+                        START_AT + timedelta(seconds=index * 3.015)
+                    ).isoformat(),
+                    "icmp": {
+                        "valid": True,
+                        "type": 8,
+                        "identifier": 17,
+                        "sequence": index + 1,
+                    },
+                },
+                {
+                    "protocol": 1,
+                    "kernel_monotonic_ns": index * 3_015_000_000 + 20_000_000,
+                    "source_ipv4": "10.0.0.2",
+                    "destination_ipv4": "10.0.0.1",
+                    "simulation_timestamp": (
+                        START_AT
+                        + timedelta(seconds=index * 3.015 + 0.02)
+                    ).isoformat(),
+                    "icmp": {
+                        "valid": True,
+                        "type": 0,
+                        "identifier": 17,
+                        "sequence": index + 1,
+                    },
+                },
+            )
+        )
 
-    projected, lanes = _project_workload_activity(
-        transactions,
-        {"series": (series,)},
-    )
+    transactions = _ping_transactions(tuple(packets))
 
-    assert [value["slot_index"] for value in lanes[0]["transaction_markers"]] == list(
-        range(80)
-    )
-    assert lanes[0]["observed_gap_slots"] == 0
-    assert all(value["series_id"] == "S5" for value in projected)
+    assert [value["sequence"] for value in transactions] == list(range(1, 81))
+    assert all(value["observed_reply"] is True for value in transactions)
+    assert all(value["packet_observations"] == 2 for value in transactions)
+    assert [
+        datetime.fromisoformat(value["request"]["simulation_timestamp"])
+        for value in transactions
+    ] == [START_AT + timedelta(seconds=index * 3.015) for index in range(80)]
 
 
-def test_identity_contradiction_fails_closed(tmp_path: Path) -> None:
-    traffic, dynamic, compiler, workload = _inputs(
-        tmp_path,
-        mismatch_interface_identity=True,
-    )
+def test_identity_contradiction_fails_closed(
+    tmp_path: Path,
+    evidence_set,
+) -> None:
+    telemetry, rows = _copied_telemetry(tmp_path, evidence_set)
+    pair = _interface_pair(rows)
+    pair[0]["node_id"] = pair[1]["node_id"]
+    _insert_before_packets(rows, pair)
+    _write_telemetry(telemetry, rows)
 
-    with pytest.raises(ValueError, match="interface identity contradicts its node slot"):
-        collect_traffic_replay_data(traffic, dynamic, compiler, workload)
+    with pytest.raises(ValueError, match="node slot|identity|interface"):
+        _collect(evidence_set, telemetry=telemetry)
 
 
-def test_losses_and_incomplete_recorder_are_visible(tmp_path: Path) -> None:
-    traffic, dynamic, compiler, workload = _inputs(
-        tmp_path,
-        losses=3,
-        recorder_complete=False,
-    )
+def test_losses_and_incomplete_recorder_are_visible(
+    tmp_path: Path,
+    evidence_set,
+) -> None:
+    telemetry, rows = _copied_telemetry(tmp_path, evidence_set)
+    loss = next(value for value in rows if value["record_type"] == "telemetry_loss")
+    ending = next(value for value in rows if value["record_type"] == "recorder_end")
+    loss["lost_events"] = 3
+    ending["complete"] = False
+    ending["failure"] = {"type": "Interrupted"}
+    ending["reported_losses"] = 3
+    _write_telemetry(telemetry, rows)
 
-    data = collect_traffic_replay_data(traffic, dynamic, compiler, workload)
-    transaction = data["ping_transactions"][0]
+    data = _collect(evidence_set, telemetry=telemetry)
 
     assert data["overview"]["telemetry_complete"] is False
-    assert data["overview"]["reported_losses"] == 3
-    assert transaction["evidence_complete"] is False
-    assert "durable telemetry recorder did not complete" in transaction["request"][
-        "warnings"
-    ]
+    assert data["inventory"]["telemetry_lost_events"] == 3
+    assert data["telemetry"]["loss_records"][0]["lost_events"] == 3
+    assert data["telemetry"]["recorder_end"]["complete"] is False
+    assert len(data["transactions"]) == 2
 
 
-def test_stale_index_is_invalidated_before_projection(tmp_path: Path) -> None:
-    traffic, dynamic, compiler, workload = _inputs(tmp_path)
-    index = traffic.parent / "index.html"
+def test_stale_index_is_invalidated_before_projection(
+    tmp_path: Path,
+    evidence_set,
+) -> None:
+    output = tmp_path / "traffic"
+    output.mkdir()
+    index = output / "index.html"
     index.write_text("stale page", encoding="utf-8")
-    compiler.write_text("{}", encoding="utf-8")
+    invalid_compiler = tmp_path / "invalid-compiler.json"
+    invalid_compiler.write_text("{}", encoding="utf-8")
 
-    with pytest.raises(ValueError, match="requires BPF Compiler"):
+    with pytest.raises(ValueError, match="Compiler inspection"):
         write_traffic_replay_tool(
-            traffic, dynamic, compiler, workload, traffic.parent
+            evidence_set["telemetry"],
+            evidence_set["frames"],
+            evidence_set["planning"],
+            invalid_compiler,
+            None,
+            output,
         )
 
     assert not index.exists()
-    assert traffic.exists()
+    assert evidence_set["telemetry"].exists()
 
 
-def test_write_produces_dependency_free_file_url_bundle(tmp_path: Path) -> None:
-    traffic, dynamic, compiler, workload = _inputs(tmp_path)
-
+def test_write_produces_dependency_free_file_url_bundle(
+    tmp_path: Path,
+    evidence_set,
+) -> None:
     result = write_traffic_replay_tool(
-        traffic, dynamic, compiler, workload, traffic.parent
+        evidence_set["telemetry"],
+        evidence_set["frames"],
+        evidence_set["planning"],
+        evidence_set["compiler_json"],
+        None,
+        tmp_path,
     )
-    page = (traffic.parent / "index.html").read_text(encoding="utf-8")
+    page = (tmp_path / "index.html").read_text(encoding="utf-8")
 
     assert result["status"] == "PASS"
     assert set(result["files"]) == {
-        "traffic-telemetry.jsonl",
-        "traffic-workload.json",
         "traffic-replay.json",
         "index.html",
         "summary.txt",
@@ -1258,41 +1232,12 @@ def test_write_produces_dependency_free_file_url_bundle(tmp_path: Path) -> None:
         "checksums.sha256",
     }
     for required in (
-        "Observed Traffic",
-        "真实流量",
-        'id="globe"',
-        'id="simulation-toggle"',
-        'id="simulation-scrubber"',
-        'id="recent-window"',
-        'id="flow-filter"',
-        'id="globe-ping-control"',
-        'id="globe-ping-context"',
-        'id="replay-ping"',
-        "control.hidden=!tx",
-        '$("replay-ping").disabled=!tx',
-        "Observed Pings",
-        "Planned Workload / Schedule Comparison",
-        "Scheduled slot without tc-BPF observation",
-        "Interpolated position is visualization-only",
-        "function networkAt(timestampMs)",
-        "networkByGeneration.get(generation)",
-        "function positionsAt(timestampMs)",
-        "simulationMs-recentWindowSeconds*1000",
-        "pingReplay.phase+=1",
-        '$("globe").scrollIntoView({behavior:"smooth",block:"center"})',
-        "function drawReplayPulse(positions,width,height)",
-        "if(selectedNodes.has(id))drawLabel",
-        'pingReplay.label==="Request"',
-        'pingReplay?.label==="Reply"',
-        "ctx.setLineDash(dash)",
-        "if(pingReplay)drawGlobe()",
-        "function normalizeGlobeView()",
-        "const MAX_VIEW_LAT=89*Math.PI/180",
-        "viewLat=Math.max(-MAX_VIEW_LAT,Math.min(MAX_VIEW_LAT,viewLat))",
-        "Observed Ping activity",
-        "not bandwidth, bytes, RTT, utilization, or queue occupancy",
-        "function drawSegment(a,b",
-        ".flow-list { overflow:auto",
+        "Traffic / Path Replay",
+        "Physical evidence + planned intent + runtime telemetry",
+        "Traffic transactions against planned Route outcomes",
+        "Formal planning and physical evidence coverage",
+        "explicit planned reachability",
+        'class="scroll"',
     ):
         assert required in page
     for forbidden in (
@@ -1302,18 +1247,8 @@ def test_write_produces_dependency_free_file_url_bundle(tmp_path: Path) -> None:
         "EventSource",
         "http://",
         "https://",
-        'id="packet-play"',
-        'id="packet-pause"',
-        'id="packet-restart"',
-        "data-lane=",
-        "recentPulses",
-        "Date.now(",
-        '$("selected-ping-section").scrollIntoView',
-        'else if(metadata?.kind==="ground-station")drawLabel',
     ):
         assert forbidden not in page
-    assert "context_frames" not in page
-    assert "Zone center" not in page
     assert len(page.encode("utf-8")) < 1_000_000
 
 
@@ -1321,459 +1256,261 @@ def test_globe_vertical_rotation_clamps_without_longitude_flip() -> None:
     source = Path(
         __import__("tools.traffic.renderer", fromlist=["__file__"]).__file__
     ).read_text(encoding="utf-8")
-    assert "function normalizeGlobeView(){" in source
-    assert "const MAX_VIEW_LAT=89*Math.PI/180" in source
-    assert (
-        "viewLat=Math.max(-MAX_VIEW_LAT,Math.min(MAX_VIEW_LAT,viewLat))"
-        in source
-    )
+
+    assert ".scroll {{ overflow:auto;max-height:560px; }}" in source
     assert "viewLat=Math.PI-viewLat;viewLon+=Math.PI" not in source
     assert "viewLat=-Math.PI-viewLat;viewLon+=Math.PI" not in source
-
-    def normalize(latitude: float, longitude: float) -> tuple[float, float]:
-        maximum = 89 * 3.141592653589793 / 180
-        latitude = max(-maximum, min(maximum, latitude))
-        longitude = (
-            (longitude + 3.141592653589793) % (2 * 3.141592653589793)
-            - 3.141592653589793
-        )
-        return latitude, longitude
-
-    values = (
-        normalize(3.141592653589793 / 2 + 0.2, 0.4),
-        normalize(-3.141592653589793 / 2 - 0.3, -0.7),
-    )
-
-    assert values[0][0] == pytest.approx(89 * 3.141592653589793 / 180)
-    assert values[0][1] == pytest.approx(0.4)
-    assert values[1][0] == pytest.approx(-89 * 3.141592653589793 / 180)
-    assert values[1][1] == pytest.approx(-0.7)
+    assert "Date.now(" not in source
+    assert "requestAnimationFrame(" not in source
 
 
-def test_no_workload_writes_the_same_primary_replay_surface(tmp_path: Path) -> None:
-    traffic, dynamic, compiler, _workload = _inputs(tmp_path)
-
+def test_no_workload_writes_the_same_primary_replay_surface(
+    tmp_path: Path,
+    evidence_set,
+) -> None:
     result = write_traffic_replay_tool(
-        traffic, dynamic, compiler, None, traffic.parent
+        evidence_set["telemetry"],
+        evidence_set["frames"],
+        evidence_set["planning"],
+        evidence_set["compiler_json"],
+        None,
+        tmp_path,
     )
-    page = (traffic.parent / "index.html").read_text(encoding="utf-8")
-    inventory = json.loads(
-        (traffic.parent / "inventory.json").read_text(encoding="utf-8")
-    )
+    page = (tmp_path / "index.html").read_text(encoding="utf-8")
+    inventory = json.loads((tmp_path / "inventory.json").read_text())
 
-    assert "traffic-workload.json" not in result["files"]
     assert "traffic_workload" not in inventory["inputs"]
-    for primary in (
-        'id="globe"',
-        'id="flow-list"',
-        'id="simulation-scrubber"',
-        'id="ping-table"',
-        'id="replay-ping"',
-    ):
-        assert primary in page
-    assert "section.hidden=!DATA.workload" in page
+    assert "traffic-workload.json" not in result["files"]
+    assert "Traffic transactions against planned Route outcomes" in page
+    assert "Formal planning and physical evidence coverage" in page
+    assert "Probe qualification" in page
 
 
 def test_tool_owned_cli_writes_replay_without_workload_control_input(
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    evidence_set,
 ) -> None:
-    traffic, dynamic, compiler, _workload = _inputs(tmp_path)
+    output = tmp_path / "traffic"
     monkeypatch.setattr(
         "sys.argv",
         [
             "tools.traffic",
             "--telemetry",
-            str(traffic),
-            "--slice",
-            str(dynamic),
+            str(evidence_set["telemetry"]),
+            "--physical-frames",
+            str(evidence_set["frames"]),
+            "--planning",
+            str(evidence_set["planning"]),
             "--bpf-compiler",
-            str(compiler),
+            str(evidence_set["compiler_json"]),
             "--output",
-            str(traffic.parent),
+            str(output),
         ],
     )
 
     assert traffic_tool_main() == 0
-    inventory = json.loads(
-        (traffic.parent / "inventory.json").read_text(encoding="utf-8")
-    )
+    inventory = json.loads((output / "inventory.json").read_text())
     assert "traffic_workload" not in inventory["inputs"]
-    assert (traffic.parent / "index.html").is_file()
+    assert (output / "index.html").is_file()
 
 
 def test_qualification_inputs_project_plan_execution_and_runner_evidence(
     tmp_path: Path,
+    evidence_set,
 ) -> None:
-    traffic, dynamic, compiler, workload = _inputs(tmp_path, zone_source=True)
-    plan = traffic.parent / "probe-plan.json"
-    execution = traffic.parent / "probe-execution.jsonl"
-    runner_events = tmp_path / "inspection/runner/runner-events.jsonl"
-    runner_events.parent.mkdir(parents=True)
-    revision = "revision-test"
-    probe_id = "probe-test"
-    episode_id = "episode-test"
-    plan.write_text(
-        json.dumps(
-            {
-                "artifact_type": "traffic-probe-plan",
-                "format_version": 1,
-                "authority": "derived-experiment-side-observation-plan",
-                "selection_source": (
-                    "trusted in-memory BpfCompiledRealization sequence"
-                ),
-                "runtime_authority": False,
-                "classification_scope": (
-                    "authoritative-active-published-runtime-only"
-                ),
-                "planning_horizon": {
-                    "coverage_start_time": ORIGIN,
-                    "coverage_end_time": END,
-                    "supplied_realization_count": 1,
-                    "terminality": "unknown",
-                    "revision_semantics": "revisable-lookahead",
-                    "revision_id": revision,
-                    "nominal_boundaries": [ORIGIN],
-                },
-                "planning": {
-                    "selection_strategy": "bounded-stratified-reservoir",
-                    "global_flow_ranking": False,
-                    "candidate_bucket_capacity": 2,
-                    "duration_seconds": 0.1,
-                    "candidate_pair_count": 1,
-                    "selected_probe_identity_count": 1,
-                    "selected_episode_count": 1,
-                    "persistent_episode_count": 1,
-                    "rotating_background_episode_count": 0,
-                    "activation_window_episode_count": 0,
-                    "direction_counts": {"zone-to-ground-station": 1},
-                    "path_length_class_counts": {"short": 1},
-                    "path_stability_counts": {"stable": 1},
-                    "selection_reason_counts": {
-                        "persistent-stable-control": 1
-                    },
-                    "estimated_echo_requests": 1,
-                    "estimated_telemetry_events": 4,
-                    "maximum_concurrent_episode_bound": 1,
-                    "maximum_request_rate_per_second": 1.0,
-                },
-                "probe_identities": [
-                    {
-                        "probe_id": probe_id,
-                        "direction": "zone-to-ground-station",
-                        "logical_source": ZONE_ID,
-                        "logical_destination": DESTINATION,
-                        "ground_station_id": DESTINATION,
-                        "zone_id": ZONE_ID,
-                        "zone_ipv4": "198.18.0.1",
-                        "selection_reasons": ["persistent-stable-control"],
-                        "path_stability": "stable",
-                        "path_length_class": "short",
-                    }
-                ],
-                "episodes": [
-                    {
-                        "episode_id": episode_id,
-                        "probe_id": probe_id,
-                        "mode": "persistent",
-                        "episode_intent": "armed",
-                        "start_time": ORIGIN,
-                        "end_time": END,
-                        "interval_seconds": 1.0,
-                        "affected_activation_times": [],
-                        "state_intervals": [
-                            {
-                                "start_time": ORIGIN,
-                                "end_time": END,
-                                "expected_reachable": True,
-                                "unreachable_reason": None,
-                                "service_satellite_id": SOURCE,
-                                "path_node_ids": [SOURCE, MIDDLE, DESTINATION],
-                                "path_length_hops": 2,
-                                "boundary_reasons": [],
-                            }
-                        ],
-                        "estimated_echo_requests": 1,
-                        "estimated_telemetry_events": 4,
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
+    probe = TrafficProbePlanBuilder().build(
+        evidence_set["plans"], evidence_set["realizations"]
     )
-
-    def execution_record(record_type: str, offset: int, **facts):
-        return {
-            "record_type": record_type,
-            "host_monotonic_ns": 100_000_000_000 + offset,
-            "wall_time": ORIGIN,
-            **facts,
-        }
-
-    execution_records = [
+    plan_path = write_traffic_probe_plan(probe, tmp_path / "probe-plan.json")
+    execution_path = tmp_path / "probe-execution.jsonl"
+    runner_path = tmp_path / "runner-events.jsonl"
+    execution = [
         {
             "record_type": "execution_header",
             "artifact_type": "traffic-probe-execution",
             "format_version": 1,
-            "plan_revision_id": revision,
+            "plan_revision_id": probe.revision_id,
             "classification_scope": (
                 "authoritative-active-published-runtime-only"
             ),
         },
-        execution_record("executor_start", 1, plan_revision_id=revision),
-        execution_record(
-            "clock_alignment",
-            2,
-            runner_wall_origin=100.0,
-            observed_monotonic_ns=100_000_000_002,
-            observation_delay_seconds=0.0,
-            status="PASS",
+        *(
+            {
+                "record_type": "episode_not_run",
+                "episode_id": episode.episode_id,
+                "probe_id": episode.probe_id,
+                "reason": "bounded-test-run-ended",
+                "plan_revision_id": probe.revision_id,
+                "rearmable": True,
+            }
+            for episode in probe.episodes
         ),
-        execution_record(
-            "episode_armed",
-            3,
-            episode_id=episode_id,
-            probe_id=probe_id,
-            plan_revision_id=revision,
-        ),
-        execution_record(
-            "generator_launched",
-            4,
-            episode_id=episode_id,
-            probe_id=probe_id,
-            segment_index=1,
-            icmp_identifier=44,
-                physical_source_container_id="container-test",
-                source_ipv4="198.18.0.1",
-                destination_ipv4="100.64.0.3",
-                published_active_frontier=END,
-        ),
-        execution_record(
-            "ping_observation",
-            1_250_000_000,
-            episode_id=episode_id,
-            probe_id=probe_id,
-            segment_index=1,
-            observation="reply",
-            icmp_sequence=1,
-                rtt_ms=1.2,
-                raw_line="64 bytes from test: icmp_seq=1 time=1.2 ms",
-                published_active_frontier=END,
-        ),
-        execution_record(
-            "generator_stopped",
-            9_900_000_000,
-            episode_id=episode_id,
-            probe_id=probe_id,
-            segment_index=1,
-            sent=1,
-            received=1,
-            cleanup_result="cleaned",
-        ),
-        execution_record(
-            "episode_completed",
-            9_910_000_000,
-            episode_id=episode_id,
-            probe_id=probe_id,
-            plan_revision_id=revision,
-            rearmable=False,
-        ),
-        execution_record(
-            "executor_end",
-            9_920_000_000,
-            plan_revision_id=revision,
-            complete=True,
-            cleanup_complete=True,
-            active_generators=0,
-        ),
+        {
+            "record_type": "executor_end",
+            "plan_revision_id": probe.revision_id,
+            "complete": True,
+            "cleanup_complete": True,
+            "active_generators": 0,
+        },
     ]
-    execution.write_text(
-        "".join(json.dumps(value) + "\n" for value in execution_records),
-        encoding="utf-8",
-    )
-    switch_start = 105_000_000_000
-    switch_end = 105_010_000_000
-    runner_records = [
+    _write_telemetry(execution_path, execution)
+    runner = [
         {
             "record_type": "history_header",
             "format_version": 2,
             "owner": "BpfRunner",
             "capture": "bounded-nonblocking",
         },
-        {
-            "record_type": "runner_event",
-            "event": "automatic_run_start",
-            "nominal_origin": ORIGIN,
-            "wall_origin": 100.0,
-        },
-        {
-            "record_type": "runner_event",
-            "event": "activation_end",
-            "active_generation": 0,
-            "active_frontier": ORIGIN,
-            "duration_seconds": 0.02,
-            "activation_switch_seconds": 0.01,
-            "generation_switch_start_monotonic_ns": 100_000_000_000,
-            "generation_switch_end_monotonic_ns": 100_010_000_000,
-        },
-        {
-            "record_type": "runner_event",
-            "event": "activation_end",
-            "active_generation": 1,
-            "active_frontier": END,
-            "duration_seconds": 0.02,
-            "activation_switch_seconds": 0.01,
-            "generation_switch_start_monotonic_ns": switch_start,
-            "generation_switch_end_monotonic_ns": switch_end,
-        },
+        *(
+            {
+                "record_type": "runner_event",
+                "event": "activation_end",
+                "active_generation": index,
+                "active_frontier": timestamp.isoformat(),
+                "duration_seconds": 0.01,
+                "activation_switch_seconds": 0.001,
+                "generation_switch_start_monotonic_ns": (
+                    1_000_000_000_000 + index * 10_000_000_000
+                ),
+                "generation_switch_end_monotonic_ns": (
+                    1_000_010_000_000 + index * 10_000_000_000
+                ),
+            }
+            for index, timestamp in enumerate(probe.nominal_boundaries)
+        ),
     ]
-    runner_events.write_text(
-        "".join(json.dumps(value) + "\n" for value in runner_records),
-        encoding="utf-8",
-    )
+    _write_telemetry(runner_path, runner)
+    output = tmp_path / "output"
 
     result = write_traffic_replay_tool(
-        traffic,
-        dynamic,
-        compiler,
-        workload,
-        traffic.parent,
-        plan,
-        execution,
-        runner_events,
+        evidence_set["telemetry"],
+        evidence_set["frames"],
+        evidence_set["planning"],
+        evidence_set["compiler_json"],
+        None,
+        output,
+        plan_path,
+        execution_path,
+        runner_path,
     )
-    data = json.loads(
-        (traffic.parent / "traffic-replay.json").read_text(encoding="utf-8")
-    )
-    inventory = json.loads(
-        (traffic.parent / "inventory.json").read_text(encoding="utf-8")
-    )
+    data = json.loads((output / "traffic-replay.json").read_text())
+    inventory = json.loads((output / "inventory.json").read_text())
 
     assert result["status"] == "PASS"
-    assert data["qualification"]["summary"]["plan_revision_id"] == revision
-    assert data["qualification"]["episodes"][0]["classifications"] == [
-        "pass"
-    ]
-    assert data["qualification"]["episodes"][0][
-        "telemetry_transactions"
-    ] == 1
+    assert data["qualification"]["summary"]["plan_revision_id"] == (
+        probe.revision_id
+    )
+    assert data["qualification"]["summary"]["global_evidence_complete"] is True
+    assert all(
+        value["execution_disposition"] == "not-run-rearmable"
+        for value in data["qualification"]["episodes"]
+    )
     assert set(inventory["inputs"]) >= {
         "traffic_probe_plan",
         "traffic_probe_execution",
         "runner_events",
     }
-    page = (traffic.parent / "index.html").read_text(encoding="utf-8")
-    assert "Traffic Qualification" in page
-    assert "Selected episode → raw execution evidence" in page
+    page = (output / "index.html").read_text(encoding="utf-8")
+    assert "Probe qualification" in page
+    assert "Traffic probe-plan construction" in page
 
 
 def test_zero_and_many_observed_flows_keep_a_fixed_globe_and_scroll_browser(
     tmp_path: Path,
+    evidence_set,
 ) -> None:
-    traffic, dynamic, compiler, _workload = _inputs(tmp_path)
-    records = [json.loads(line) for line in traffic.read_text().splitlines()]
-    traffic.write_text(
-        "".join(
-            json.dumps(value) + "\n"
-            for value in records
-            if value.get("record_type") != "packet"
-        ),
-        encoding="utf-8",
-    )
-    zero = collect_traffic_replay_data(traffic, dynamic, compiler, None)
+    telemetry, rows = _copied_telemetry(tmp_path, evidence_set)
+    rows = [value for value in rows if value["record_type"] != "packet"]
+    ending = next(value for value in rows if value["record_type"] == "recorder_end")
+    ending["packet_records"] = 0
+    _write_telemetry(telemetry, rows)
+    zero = _collect(evidence_set, telemetry=telemetry)
     zero_page = render_traffic_replay_page(zero)
 
-    assert zero["observed_flows"] == ()
-    assert "没有真实 observed traffic" in zero_page
-    assert "height:min(70vh, 760px)" in zero_page
+    assert zero["transactions"] == ()
+    assert "No ICMP transactions observed." in zero_page
+    assert "max-height:560px" in zero_page
 
-    one = collect_traffic_replay_data(*_inputs(tmp_path / "one")[:3], None)
-    many = {
-        **one,
-        "observed_flows": tuple(
-            {
-                **one["observed_flows"][0],
-                "flow_id": f"observed-flow-{index:04d}",
-                "display_label": f"arbitrary-{index} ↔ endpoint · ICMP Ping",
-            }
-            for index in range(100)
-        ),
-    }
+    one = _collect(evidence_set)
+    many = deepcopy(one)
+    many["transactions"] = tuple(
+        {
+            **one["transactions"][0],
+            "identifier": 1000 + index,
+            "sequence": index,
+        }
+        for index in range(100)
+    )
     many_page = render_traffic_replay_page(many)
 
-    assert many_page.count('"flow_id":"observed-flow-') >= 100
-    assert ".flow-list { overflow:auto" in many_page
-    assert "traffic-lane" not in many_page
-    assert "zone-marker" not in many_page
+    assert many_page.count("observed-reachable") >= 100
+    assert 'class="scroll"' in many_page
+    assert "requestAnimationFrame(" not in many_page
 
 
-def test_latest_canonical_artifact_is_v3_or_explicitly_stale_before_rerun() -> None:
-    root = (
-        Path(__file__).parents[2]
-        / "examples/mini_satellite_internet/output/inspection"
-    )
-    telemetry = root / "traffic/traffic-telemetry.jsonl"
-    workload = root.parent / "inputs/traffic-workload.json"
-    dynamic = root / "slice/slice-manifest.json"
-    compiler = root / "bpf-compiler/manifest.json"
-    replay = root / "traffic/traffic-replay.json"
-    if not workload.is_file():
-        if not replay.is_file():
-            pytest.skip("canonical replay artifacts are not present")
-        stale = json.loads(replay.read_text(encoding="utf-8"))
-        assert stale["format_version"] < 3
-        assert "workload" not in stale
-        assert "traffic_lanes" not in stale
-        return
-    if not all(path.is_file() for path in (telemetry, dynamic, compiler)):
-        pytest.skip("canonical runtime telemetry is not present before the live run")
+def test_latest_canonical_artifact_is_v3_or_explicitly_stale_before_rerun(
+    evidence_set,
+) -> None:
+    data = _collect(evidence_set)
+    planned = data["planned_evidence"]
+    transitions = planned["formal_transitions"]
 
-    data = collect_traffic_replay_data(telemetry, dynamic, compiler, workload)
-
-    assert data["format_version"] == 3
-    assert [value["series_id"] for value in data["traffic_lanes"]] == [
-        "S1",
-        "S2",
-        "S3",
-        "S4",
-        "S5",
-        "S6",
-        "S7",
-    ]
-    assert data["workload"]["inventory"] == {
-        "series": 7,
-        "scheduled_slots": 739,
-        "maximum_concurrent_series": 4,
+    assert data["format_version"] == 5
+    assert len(transitions) == data["inventory"]["formal_planning_boundaries"]
+    assert len(transitions) == 4
+    assert set(planned) == {
+        "plans",
+        "formal_transitions",
+        "final_state",
+        "final_state_fingerprint",
     }
-    assert data["workload"]["static_expectation"] == {
-        "status": "pre-runtime-estimate-only",
-        "paired_transactions": 534,
-        "scheduled_slots_without_tc_bpf_observation": 205,
-        "packet_events": 4430,
-    }
-    assert data["overview"]["ping_transactions"] == len(
-        data["ping_transactions"]
+    for value in transitions:
+        assert set(value) == {
+            "plan_index",
+            "plan_id",
+            "transition_index",
+            "timestamp",
+            "transition_fingerprint",
+            "state_fingerprint",
+            "state_summary",
+            "transition",
+        }
+        assert not {
+            "zone_service_assignments",
+            "route_outcomes",
+            "operational_connections",
+        } & set(value)
+    assert len(json.dumps(planned).encode("utf-8")) < len(
+        gzip.decompress(evidence_set["planning"].read_bytes())
     )
-    assert data["overview"]["observed_workload_transactions"] == sum(
-        value["observed_transactions"] for value in data["traffic_lanes"]
-    )
-    assert data["overview"]["scheduled_slots_without_tc_bpf_observation"] == sum(
-        value["observed_gap_slots"] for value in data["traffic_lanes"]
-    )
-    assert all(
-        "does not prove" in value["gap_qualification"]
-        for value in data["traffic_lanes"]
-    )
-    assert data["workload"]["authority"] == {
-        "status": "planned-example-workload",
-        "proves_command_execution": False,
-        "proves_packet_emission": False,
-        "proves_timeout": False,
-        "proves_packet_loss": False,
-        "packet_observation_authority": "traffic-telemetry.jsonl",
-    }
+
+
+def test_compact_planning_replay_rejects_dropped_transition(
+    evidence_set,
+) -> None:
+    snapshot = deepcopy(_read_observation(evidence_set).snapshot)
+    values = list(snapshot["planning"]["formal_transitions"])
+    del values[1]
+    snapshot["planning"]["formal_transitions"] = tuple(values)
+
+    with pytest.raises(ValueError, match="fingerprint|final|previous"):
+        project_traffic_replay(TrafficReplayRead(snapshot))
+
+
+def test_compact_planning_replay_rejects_mutated_transition_fingerprint(
+    evidence_set,
+) -> None:
+    snapshot = deepcopy(_read_observation(evidence_set).snapshot)
+    values = list(snapshot["planning"]["formal_transitions"])
+    values[0]["transition_fingerprint"] = "0" * 64
+    snapshot["planning"]["formal_transitions"] = tuple(values)
+
+    with pytest.raises(ValueError, match="transition fingerprint"):
+        project_traffic_replay(TrafficReplayRead(snapshot))
+
+
 def test_traffic_renderer_labels_probe_plan_construction_without_simulator_claim() -> None:
     source = Path("tools/traffic/renderer.py").read_text(encoding="utf-8")
     assert "Traffic probe-plan construction" in source
     assert "Simulator Planner duration" not in source
-

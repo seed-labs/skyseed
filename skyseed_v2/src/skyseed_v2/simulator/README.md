@@ -1,99 +1,104 @@
 # Simulator composition root
 
-This README owns only `SimulationDefinition`, `SimulationTimeline`, and
-`Simulator`. Topology, physical projection, input, geometry, temporary legacy
-slicing, planning, and built-in Model members are maintained in their
-respective package README files.
+This package owns `SimulationDefinition`, `SimulationTimeline`, `Simulator`,
+and the public facade for physical and planning contracts.
 
 ## Local assembly / ownership map
 
-Legend: `*--` is exact ownership/composition. The labels distinguish values
-supplied in the definition from objects created by the Simulator lifecycle.
+Legend: `*--` is lifecycle composition. PhysicalWorld and Planner are sibling
+owners created once by Simulator; no edge transfers their semantic authority.
 
 ```mermaid
 classDiagram
-    class SimulatorStaticInput
-    class SimulationTimeline
-    class SimulationDefinition
-    class Simulator
-    class Topology
-    class PositionModel
-    class Slicer
+    class SimulationDefinition {
+        +static_input
+        +timeline
+    }
+    class SimulationTimeline {
+        +start_time
+        +end_time
+        +observation_interval
+        +is_bounded
+        +iter_timestamps()
+    }
+    class Simulator {
+        +get_definition()
+        +get_timeline()
+        +create_physical_world()
+        +get_physical_world()
+        +create_planner()
+        +get_physical_link_model()
+        +get_planner()
+    }
+    class PhysicalWorld
     class Planner
 
-    SimulationDefinition "1" *-- "1" SimulatorStaticInput : static input
-    SimulationDefinition "1" *-- "1" SimulationTimeline : timeline
-    Simulator "1" *-- "1" SimulationDefinition : exact definition
-    Simulator "1" *-- "1" Topology : creates and owns
-    Topology "1" *-- "1" PositionModel : sole owner and caller
-    Simulator "1" *-- "1" Slicer : temporary legacy owner after Topology
-    Simulator "1" *-- "0..1" Planner : creates and owns after Slicer
+    SimulationDefinition "1" *-- "1" SimulationTimeline
+    Simulator "1" *-- "1" SimulationDefinition
+    Simulator "1" *-- "1" PhysicalWorld
+    Simulator "1" *-- "1" Planner
 ```
 
-Topology creates `PhysicalFrame` values on request without retaining them; the
-temporary Slicer consumes each exact value before its remaining operational
-Connection/Route work. Those handoffs are dependencies, not composition.
+`create_physical_world` binds one PositionModel and optional Zone layout.
+`create_planner` requires the physical-link Model plus all planning
+Models/policies and creates exactly one public Planner. Every role is a distinct
+injected instance. Access before creation or duplicate creation fails.
+
+PhysicalWorld projects exact requested frames. Planner accepts externally
+computed matching physical-link observations and publishes timestamped Plans.
+The private experiment producer owns progression and Compiler calls; Simulator
+does not own backend execution.
+
+Local owners:
+
+- `input/`: immutable receiver-owned DTOs;
+- `geometry/`: Earth-fixed values and calculations;
+- `physical/`: PhysicalWorld, frames, capabilities, candidates, Zones;
+- `models/`: built-in Position and physical-link Models;
+- `planning/`: public Planner, Plan, operational Models/values/replay/evidence.
+
+Tests: Timeline, one-owner lifecycle, public imports, architecture boundaries,
+physical contracts, planning contracts, and maintained example integration.
 
 ## Detailed public class/member diagrams
 
-Legend: `A *-- B` means A owns or is composed of the exact B value/object.
+These blocks and the exact table below are the maintenance source for every
+class owned by this public package. Re-exporting facades do not duplicate the
+owner detail.
+
+Legend: `<<...>>` states each public class role and `+` lists its
+complete direct public member contract. No connector means no ownership
+relationship is asserted by this inventory block.
 
 ```mermaid
 classDiagram
-    direction LR
     class SimulationDefinition {
         <<immutable simulation definition>>
         +static_input
         +timeline
     }
     class SimulationTimeline {
-        <<immutable timestamp authority>>
-        +start_time
+        <<immutable formal timestamp authority>>
         +end_time
-        +slice_interval
         +is_bounded
         +iter_timestamps()
+        +observation_interval
+        +start_time
     }
     class Simulator {
-        <<Simulator composition root>>
-        +get_definition()
-        +get_timeline()
-        +create_topology()
-        +get_topology()
-        +create_slicer()
-        +get_slicer()
+        <<composition root>>
+        +create_physical_world()
         +create_planner()
+        +get_definition()
+        +get_physical_link_model()
+        +get_physical_world()
         +get_planner()
+        +get_timeline()
     }
 ```
 
 | Diagram class | Public contract | Required public members |
 |---|---|---|
 | `SimulationDefinition` | `skyseed_v2.simulator.SimulationDefinition` | `static_input`, `timeline` |
-| `SimulationTimeline` | `skyseed_v2.simulator.SimulationTimeline` | `start_time`, `end_time`, `slice_interval`, `is_bounded`, `iter_timestamps()` |
-| `Simulator` | `skyseed_v2.simulator.Simulator` | `get_definition()`, `get_timeline()`, `create_topology()`, `get_topology()`, `create_slicer()`, `get_slicer()`, `create_planner()`, `get_planner()` |
-
-## Entry points
-
-Code entries are `definition.py`, `timeline.py`, and `simulator.py`.
-
-## Dependencies
-
-The definition consumes `input/`; `Simulator` consumes Simulator Zone
-configuration, creates `topology/`, and binds the required PositionModel there.
-Topology projects an exact timestamp into a physical-only `PhysicalFrame`.
-The current Round-1 implementation then binds temporary `slicing/` to the exact
-Topology/Timeline and supplied Connection/Route Model Protocol roles, and binds
-`planning/` to that exact sibling Slicer and supplied planning algorithm roles.
-
-## Examples and tests
-
-Assembly is shown in `examples/mini_satellite_internet/simu.py`. Simulator
-lifecycle, Timeline, Topology, dynamic main-chain, Difference, and Zone tests
-cover the composition root.
-
-## Maintenance checklist
-
-When this lifecycle changes, update the local maps, global object model,
-ownership/lifecycle contracts, public imports, assembly examples, and focused
-tests.
+| `SimulationTimeline` | `skyseed_v2.simulator.SimulationTimeline` | `end_time`, `is_bounded`, `iter_timestamps()`, `observation_interval`, `start_time` |
+| `Simulator` | `skyseed_v2.simulator.Simulator` | `create_physical_world()`, `create_planner()`, `get_definition()`, `get_physical_link_model()`, `get_physical_world()`, `get_planner()`, `get_timeline()` |

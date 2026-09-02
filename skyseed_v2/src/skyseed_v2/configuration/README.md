@@ -2,7 +2,7 @@
 
 This package is the public namespace boundary between immutable Emulator
 declarations and immutable Simulator Zone declarations. It owns no runtime
-Emulator, Topology, or Slice object.
+Emulator, PhysicalWorld, or operational runtime object.
 
 ## Local assembly / ownership map
 

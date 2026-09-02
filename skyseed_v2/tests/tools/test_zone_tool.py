@@ -15,7 +15,7 @@ from skyseed_v2.simulator import (
     SimulationDefinition,
     SimulationTimeline,
     Simulator,
-    Topology,
+    PhysicalWorld,
 )
 from skyseed_v2.simulator.input import (
     GroundStationSimulationInput,
@@ -70,11 +70,11 @@ def simulation_definition(
     )
 
 
-def topology_with_zones(
+def physical_world_with_zones(
     *zones: ZoneDefinition,
     static_input: SimulatorStaticInput | None = None,
-) -> Topology:
-    return Simulator(simulation_definition(static_input)).create_topology(
+) -> PhysicalWorld:
+    return Simulator(simulation_definition(static_input)).create_physical_world(
         position_model=CircularOrbitPositionModel(),
         zone_layout_definition=ZoneLayoutDefinition(
             zones=zones,
@@ -83,14 +83,14 @@ def topology_with_zones(
     )
 
 
-def topology_without_zone_layout() -> Topology:
-    return Simulator(simulation_definition()).create_topology(
+def physical_world_without_zone_layout() -> PhysicalWorld:
+    return Simulator(simulation_definition()).create_physical_world(
         position_model=CircularOrbitPositionModel()
     )
 
 
 def test_collector_reads_only_owned_static_zone_layout() -> None:
-    topology = topology_with_zones(
+    physical_world = physical_world_with_zones(
         definition("outer", -20, 20, -30, 30, priority=1),
         definition("inner", -10, 10, -10, 10, priority=2),
         static_input=SimulatorStaticInput(
@@ -98,7 +98,7 @@ def test_collector_reads_only_owned_static_zone_layout() -> None:
         ),
     )
 
-    data = collect_zone_data(topology)
+    data = collect_zone_data(physical_world)
 
     assert set(data) == {
         "format_version",
@@ -130,23 +130,23 @@ def test_collector_reads_only_owned_static_zone_layout() -> None:
 
 
 def test_collector_does_not_execute_membership_queries(monkeypatch) -> None:
-    topology = topology_with_zones(
+    physical_world = physical_world_with_zones(
         definition("one", -10, 10, -20, 20)
     )
 
     def unexpected_call(*_args, **_kwargs):
         raise AssertionError("Zone Tool must not execute membership queries")
 
-    monkeypatch.setattr(Topology, "find_zones", unexpected_call)
-    monkeypatch.setattr(Topology, "resolve_zone", unexpected_call)
+    monkeypatch.setattr(PhysicalWorld, "find_zones", unexpected_call)
+    monkeypatch.setattr(PhysicalWorld, "resolve_zone", unexpected_call)
 
-    assert collect_zone_data(topology)["counts"] == {"zones": 1}
+    assert collect_zone_data(physical_world)["counts"] == {"zones": 1}
 
 
 def test_collector_handles_no_layout_and_is_definition_order_independent(
     tmp_path: Path,
 ) -> None:
-    no_layout = collect_zone_data(topology_without_zone_layout())
+    no_layout = collect_zone_data(physical_world_without_zone_layout())
     assert no_layout["zone_layout_configured"] is False
     assert no_layout["zones"] == []
     assert no_layout["counts"] == {"zones": 0}
@@ -156,11 +156,11 @@ def test_collector_handles_no_layout_and_is_definition_order_independent(
         definition("alpha", -10, 10, -20, 20),
         definition("bravo", 5, 25, 10, 30),
     )
-    forward = collect_zone_data(topology_with_zones(*values))
-    reverse = collect_zone_data(topology_with_zones(*reversed(values)))
+    forward = collect_zone_data(physical_world_with_zones(*values))
+    reverse = collect_zone_data(physical_world_with_zones(*reversed(values)))
     assert forward == reverse
 
-    write_zone_tool(topology_without_zone_layout(), tmp_path)
+    write_zone_tool(physical_world_without_zone_layout(), tmp_path)
     assert json.loads(
         (tmp_path / "zones.json").read_text(encoding="utf-8")
     )["zone_layout_configured"] is False
@@ -169,7 +169,7 @@ def test_collector_handles_no_layout_and_is_definition_order_independent(
 def test_wrapped_display_boundary_follows_eastward_arc_from_formal_bounds(
 ) -> None:
     data = collect_zone_data(
-        topology_with_zones(definition("wrapped", -10, 10, 170, -170))
+        physical_world_with_zones(definition("wrapped", -10, 10, 170, -170))
     )
     zone_record = data["zones"][0]
     boundary = zone_record["display_boundary"]
@@ -196,14 +196,14 @@ def test_wrapped_display_boundary_follows_eastward_arc_from_formal_bounds(
 def test_renderer_writes_probe_free_offline_direct_selection_artifacts(
     tmp_path: Path,
 ) -> None:
-    topology = topology_with_zones(
+    physical_world = physical_world_with_zones(
         definition("wrapped", -20, 20, 170, -170, priority=4),
         definition("middle", -10, 10, -30, 30, priority=2),
         static_input=SimulatorStaticInput(
             ground_stations=(ground_station_input(),)
         ),
     )
-    result = write_zone_tool(topology, tmp_path)
+    result = write_zone_tool(physical_world, tmp_path)
     html = (tmp_path / "index.html").read_text(encoding="utf-8")
     payload = json.loads((tmp_path / "zones.json").read_text(encoding="utf-8"))
     summary = (tmp_path / "summary.txt").read_text(encoding="utf-8")

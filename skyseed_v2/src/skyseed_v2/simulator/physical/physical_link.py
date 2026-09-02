@@ -1,0 +1,421 @@
+"""Define immutable physical-link requests, facts, and their Model boundary."""
+
+from __future__ import annotations
+
+from collections.abc import Iterable
+from dataclasses import dataclass
+from datetime import datetime
+from math import isfinite
+from typing import Protocol, runtime_checkable
+
+from skyseed_v2.shared import NodeId
+from skyseed_v2.shared.identifier import validate_identifier
+from skyseed_v2.shared.time import normalize_utc_datetime
+
+from .physical_frame import PhysicalFrame
+from .world import PhysicalWorld
+
+
+_NodePair = tuple[NodeId, NodeId]
+
+
+@dataclass(frozen=True, slots=True)
+class PhysicalLinkRequest:
+    """Bound the physical relationships evaluated for one PhysicalFrame.
+
+    Layer: immutable physical query value. Network Planner composition creates
+    it and a ``PhysicalLinkModel`` consumes it; an injected ISL role supplies
+    only the bounded inter-satellite pair scope. It is not a hardware envelope,
+    Connection selection, acquisition state, Route demand, or runtime state.
+    It is public from ``skyseed_v2.simulator.physical`` so planners can bound
+    physical work without owning geometry.
+    """
+
+    inter_satellite_pairs: tuple[_NodePair, ...] = ()
+    include_ground_station_access: bool = True
+    include_zone_service: bool = True
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.include_ground_station_access, bool):
+            raise TypeError("include_ground_station_access must be a bool")
+        if not isinstance(self.include_zone_service, bool):
+            raise TypeError("include_zone_service must be a bool")
+        try:
+            raw_pairs = tuple(self.inter_satellite_pairs)
+        except TypeError as error:
+            raise TypeError(
+                "inter_satellite_pairs must be an iterable of NodeId pairs"
+            ) from error
+
+        pairs: set[_NodePair] = set()
+        for pair in raw_pairs:
+            if not isinstance(pair, tuple) or len(pair) != 2:
+                raise TypeError(
+                    "inter_satellite_pairs must contain two-item tuples"
+                )
+            first, second = pair
+            _require_node_kind(first, "satellite", "ISL endpoint")
+            _require_node_kind(second, "satellite", "ISL endpoint")
+            if first == second:
+                raise ValueError("ISL request endpoints must be distinct")
+            pairs.add(_canonical_pair(first, second))
+        object.__setattr__(
+            self,
+            "inter_satellite_pairs",
+            tuple(
+                sorted(
+                    pairs,
+                    key=lambda value: (
+                        _node_key(value[0]),
+                        _node_key(value[1]),
+                    ),
+                )
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class InterSatelliteLinkCandidate:
+    """Record one requested ISL relationship that is physically feasible.
+
+    Layer: immutable physical fact. ``PhysicalLinkModel`` creates it and the
+    Network Planner reads it. It is not selected/acquiring/operational state,
+    a terminal identity, Route evidence, or a hardware-policy claim and is
+    public from ``skyseed_v2.simulator.physical``.
+    """
+
+    endpoint_a: NodeId
+    endpoint_b: NodeId
+    same_plane: bool
+    cyclic_plane_separation: int
+    distance_m: float
+    propagation_delay_us: int
+
+    def __post_init__(self) -> None:
+        _require_node_kind(self.endpoint_a, "satellite", "endpoint_a")
+        _require_node_kind(self.endpoint_b, "satellite", "endpoint_b")
+        if self.endpoint_a == self.endpoint_b:
+            raise ValueError("ISL candidate endpoints must be distinct")
+        first, second = _canonical_pair(self.endpoint_a, self.endpoint_b)
+        object.__setattr__(self, "endpoint_a", first)
+        object.__setattr__(self, "endpoint_b", second)
+        if not isinstance(self.same_plane, bool):
+            raise TypeError("same_plane must be a bool")
+        if (
+            isinstance(self.cyclic_plane_separation, bool)
+            or not isinstance(self.cyclic_plane_separation, int)
+            or self.cyclic_plane_separation < 0
+        ):
+            raise ValueError(
+                "cyclic_plane_separation must be a non-negative integer"
+            )
+        if self.same_plane != (self.cyclic_plane_separation == 0):
+            raise ValueError(
+                "same_plane must be true exactly for plane separation zero"
+            )
+        object.__setattr__(
+            self,
+            "distance_m",
+            _non_negative_float(self.distance_m, "distance_m"),
+        )
+        _validate_delay(self.propagation_delay_us)
+
+
+@dataclass(frozen=True, slots=True)
+class GroundStationAccessCandidate:
+    """Record one physically feasible GroundStation/Satellite relationship.
+
+    Layer: immutable physical fact. ``PhysicalLinkModel`` creates it and the
+    Network Planner reads it. It is not an allocated access Connection,
+    serving winner, acquisition state, or effective parameter and is public
+    from ``skyseed_v2.simulator.physical``.
+    """
+
+    ground_station_id: NodeId
+    satellite_id: NodeId
+    distance_m: float
+    elevation_deg: float
+    propagation_delay_us: int
+
+    def __post_init__(self) -> None:
+        _require_node_kind(
+            self.ground_station_id,
+            "ground-station",
+            "ground_station_id",
+        )
+        _require_node_kind(self.satellite_id, "satellite", "satellite_id")
+        object.__setattr__(
+            self, "distance_m", _positive_float(self.distance_m, "distance_m")
+        )
+        object.__setattr__(
+            self,
+            "elevation_deg",
+            _elevation(self.elevation_deg, "elevation_deg"),
+        )
+        _validate_delay(self.propagation_delay_us)
+
+
+@dataclass(frozen=True, slots=True)
+class ZoneServiceCandidate:
+    """Record one physically feasible Zone/Satellite relationship.
+
+    Layer: immutable physical fact. ``PhysicalLinkModel`` creates it and the
+    Network Planner reads it. It is not a selected service assignment, Route,
+    Connection, or forwarding decision and is public from
+    ``skyseed_v2.simulator.physical``.
+    """
+
+    zone_id: str
+    satellite_id: NodeId
+    distance_m: float
+    elevation_deg: float
+    propagation_delay_us: int
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "zone_id", validate_identifier(self.zone_id, "zone_id")
+        )
+        _require_node_kind(self.satellite_id, "satellite", "satellite_id")
+        object.__setattr__(
+            self, "distance_m", _positive_float(self.distance_m, "distance_m")
+        )
+        object.__setattr__(
+            self,
+            "elevation_deg",
+            _elevation(self.elevation_deg, "elevation_deg"),
+        )
+        _validate_delay(self.propagation_delay_us)
+
+
+@dataclass(frozen=True, slots=True)
+class PhysicalLinkWorkCounts:
+    """Describe bounded physical candidate work for one observation.
+
+    Layer: immutable physical evidence. ``PhysicalLinkModel`` creates it and
+    inspection/performance consumers read it. It is not selection evidence,
+    lifecycle state, durable history, or planner policy and is public from
+    ``skyseed_v2.simulator.physical``.
+    """
+
+    inter_satellite_pairs_requested: int = 0
+    inter_satellite_pairs_evaluated: int = 0
+    inter_satellite_pairs_feasible: int = 0
+    ground_station_pairs_requested: int = 0
+    ground_station_pairs_evaluated: int = 0
+    ground_station_pairs_feasible: int = 0
+    zone_service_pairs_requested: int = 0
+    zone_service_pairs_evaluated: int = 0
+    zone_service_pairs_feasible: int = 0
+
+    def __post_init__(self) -> None:
+        for prefix in (
+            "inter_satellite_pairs",
+            "ground_station_pairs",
+            "zone_service_pairs",
+        ):
+            requested = getattr(self, f"{prefix}_requested")
+            evaluated = getattr(self, f"{prefix}_evaluated")
+            feasible = getattr(self, f"{prefix}_feasible")
+            for field_name, value in (
+                (f"{prefix}_requested", requested),
+                (f"{prefix}_evaluated", evaluated),
+                (f"{prefix}_feasible", feasible),
+            ):
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, int)
+                    or value < 0
+                ):
+                    raise ValueError(
+                        f"{field_name} must be a non-negative integer"
+                    )
+            if feasible > evaluated or evaluated > requested:
+                raise ValueError(
+                    f"{prefix} counts must satisfy feasible <= evaluated "
+                    "<= requested"
+                )
+
+
+@dataclass(frozen=True, slots=True)
+class PhysicalLinkObservation:
+    """Hold sparse physical-link facts for one exact PhysicalFrame timestamp.
+
+    Layer: immutable physical-domain observation. A ``PhysicalLinkModel``
+    creates it from one caller-supplied ``PhysicalFrame`` and the Network
+    Planner consumes it. It is not selected/operational Connection state,
+    acquisition state, a serving winner, effective parameters, Route, or
+    forwarding state. It is public from ``skyseed_v2.simulator.physical`` as
+    the exact physical-fact boundary consumed by planning.
+    """
+
+    timestamp: datetime
+    inter_satellite_candidates: tuple[InterSatelliteLinkCandidate, ...] = ()
+    ground_station_access_candidates: tuple[
+        GroundStationAccessCandidate, ...
+    ] = ()
+    zone_service_candidates: tuple[ZoneServiceCandidate, ...] = ()
+    work_counts: PhysicalLinkWorkCounts = PhysicalLinkWorkCounts()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "timestamp",
+            normalize_utc_datetime(self.timestamp, "timestamp"),
+        )
+        inter_satellite = _validated_candidates(
+            self.inter_satellite_candidates,
+            InterSatelliteLinkCandidate,
+            "inter_satellite_candidates",
+            lambda value: (
+                _node_key(value.endpoint_a),
+                _node_key(value.endpoint_b),
+            ),
+        )
+        ground_station = _validated_candidates(
+            self.ground_station_access_candidates,
+            GroundStationAccessCandidate,
+            "ground_station_access_candidates",
+            lambda value: (
+                _node_key(value.ground_station_id),
+                _node_key(value.satellite_id),
+            ),
+        )
+        zone = _validated_candidates(
+            self.zone_service_candidates,
+            ZoneServiceCandidate,
+            "zone_service_candidates",
+            lambda value: (value.zone_id, _node_key(value.satellite_id)),
+        )
+        if not isinstance(self.work_counts, PhysicalLinkWorkCounts):
+            raise TypeError("work_counts must be a PhysicalLinkWorkCounts")
+        if (
+            len(inter_satellite)
+            != self.work_counts.inter_satellite_pairs_feasible
+            or len(ground_station)
+            != self.work_counts.ground_station_pairs_feasible
+            or len(zone) != self.work_counts.zone_service_pairs_feasible
+        ):
+            raise ValueError(
+                "candidate cardinalities must match feasible work counts"
+            )
+        object.__setattr__(self, "inter_satellite_candidates", inter_satellite)
+        object.__setattr__(
+            self, "ground_station_access_candidates", ground_station
+        )
+        object.__setattr__(self, "zone_service_candidates", zone)
+
+
+@runtime_checkable
+class PhysicalLinkModel(Protocol):
+    """Define physical feasibility evaluation for one bounded frame request.
+
+    Layer: replaceable physical algorithm Protocol. A planning owner invokes
+    it with one PhysicalWorld/frame/request and consumes its immutable observation.
+    It is not a candidate-enumeration policy, Connection selector, lifecycle
+    owner, planning service, or Position source and is public from
+    ``skyseed_v2.simulator.physical``.
+    """
+
+    def compute_observation(
+        self,
+        physical_world: PhysicalWorld,
+        physical_frame: PhysicalFrame,
+        request: PhysicalLinkRequest,
+    ) -> PhysicalLinkObservation:
+        """Return sparse facts whose timestamp equals ``physical_frame``."""
+
+
+def _validated_candidates(
+    values: Iterable[object],
+    expected_type: type,
+    field_name: str,
+    key,
+) -> tuple:
+    try:
+        copied = tuple(values)
+    except TypeError as error:
+        raise TypeError(f"{field_name} must be iterable") from error
+    if any(not isinstance(value, expected_type) for value in copied):
+        raise TypeError(f"{field_name} contains an invalid value")
+    ordered = tuple(sorted(copied, key=key))
+    identities = tuple(key(value) for value in ordered)
+    if len(set(identities)) != len(identities):
+        raise ValueError(f"{field_name} contains a duplicate relationship")
+    return ordered
+
+
+def _canonical_pair(first: NodeId, second: NodeId) -> _NodePair:
+    return (first, second) if _node_key(first) < _node_key(second) else (second, first)
+
+
+def _node_key(node_id: NodeId) -> tuple[int, str, str]:
+    return node_id.asn, node_id.entity_kind, node_id.entity_id
+
+
+def _require_node_kind(
+    node_id: NodeId, expected_kind: str, field_name: str
+) -> None:
+    if not isinstance(node_id, NodeId):
+        raise TypeError(f"{field_name} must be a NodeId")
+    if node_id.entity_kind != expected_kind:
+        raise ValueError(f"{field_name} must identify a {expected_kind}")
+
+
+def _positive_float(value: float, field_name: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name} must be a positive finite number")
+    try:
+        converted = float(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            f"{field_name} must be a positive finite number"
+        ) from error
+    if not isfinite(converted) or converted <= 0.0:
+        raise ValueError(f"{field_name} must be a positive finite number")
+    return converted
+
+
+def _non_negative_float(value: float, field_name: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(
+            f"{field_name} must be a non-negative finite number"
+        )
+    try:
+        converted = float(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            f"{field_name} must be a non-negative finite number"
+        ) from error
+    if not isfinite(converted) or converted < 0.0:
+        raise ValueError(
+            f"{field_name} must be a non-negative finite number"
+        )
+    return converted
+
+
+def _elevation(value: float, field_name: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name} must be between -90 and 90")
+    try:
+        converted = float(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{field_name} must be between -90 and 90") from error
+    if not isfinite(converted) or not -90.0 <= converted <= 90.0:
+        raise ValueError(f"{field_name} must be between -90 and 90")
+    return converted
+
+
+def _validate_delay(value: int) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError("propagation_delay_us must be a non-negative integer")
+
+
+__all__ = [
+    "GroundStationAccessCandidate",
+    "InterSatelliteLinkCandidate",
+    "PhysicalLinkModel",
+    "PhysicalLinkObservation",
+    "PhysicalLinkRequest",
+    "PhysicalLinkWorkCounts",
+    "ZoneServiceCandidate",
+]

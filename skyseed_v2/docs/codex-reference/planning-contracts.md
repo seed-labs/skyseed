@@ -1,206 +1,169 @@
-# Simulator Planner contracts
+# Planner and Plan contracts
 
-## Authority
+`skyseed_v2.simulator.planning.Planner` is the sole authoritative operational
+planner. It is a real state owner, not a forwarding facade.
 
-Normative detail under `../accepted-design.md`. Implementation state is
-recorded only in [`CURRENT.md`](../CURRENT.md).
+## Construction
 
-## Scope
+The public constructor receives keyword-only roles equivalent to:
 
-Simulator-owned semantic planning in which `Planner.synchronize()` requests
-new adjacent `TopologyDifference` values from its exact sibling `Slicer`, then
-consumes them to publish one immutable backend-independent `Plan`.
-
-This is the source-true Round-1 implementation, not the accepted destination.
-Its `Slicer` / `TopologySlice` / `TopologyDifference` inputs are an explicit
-temporary legacy operational seam. They are scheduled for deletion or
-replacement when the Network Planner owns Connection, effective Parameter,
-Route, and Coordination planning. The contracts below preserve the current
-Planner behavior until that migration occurs.
-
-## Ownership and lifecycle
-
-```text
-Simulator → create_topology(position_model)
-→ create_slicer(connection_model, route_model)
-→ optionally create_planner(algorithms)
-→ create Slice state and synchronize Planner as facts become available
+```python
+Planner(
+    *,
+    physical_world,
+    observation_interval,
+    inter_satellite_model,
+    ground_station_model,
+    zone_service_model,
+    parameter_model,
+    route_model,
+    coordination_policy,
+    route_demands=(),
+    planning_window_policy=TimeHorizonPlanningWindowPolicy(),
+    execution_observer=None,
+)
 ```
 
-Simulator owns at most one Planner and binds it to its own exact sibling
-Slicer. Topology, Slicer, and Planner are peer-level components inside the
-Simulator domain. Planner does not advance Slicer, generate Slice values,
-compare Slice values independently, call RouteModel, or orchestrate continuous
-execution; during synchronization it asks Slicer to create each newly available
-adjacent Difference from retained Slice values.
-Planner retains the five injected Policy/Model role references, owns its
-private continuous planning state and current published Plan, and references
-the sibling Slicer. Plan owns coverage, three transition tuples, Forwarding
-precedences and its temporal index; Model inputs do not become owner objects.
+`Simulator.create_planner(...)` is the composition-root path. It also retains
+the exact `PhysicalLinkModel` used by the external realization producer. Each
+Model/policy role must be a distinct instance.
 
-Planner creation requires the exact sibling Slicer but no real Slice or
-Difference. Creation and later `synchronize()` discover available Differences
-by calling that Slicer over retained Slice `0..N`.
-PlanningWindowPolicy first selects the planning window, then a non-empty
-publication window from its prefix. Models and Coordination see the full
-planning window; the Plan contains only its publication window. Later
-`synchronize()` extends or consumes the not-yet-published suffix without
-replaying settled history. A Planner may exist before Slice 1; `get_plan()`
-then fails until a Difference is available.
+## Lifecycle
 
-## Plan and transition contract
+The Planner exposes these semantic operations:
 
-Plan records `start_slice_id`, `start_timestamp`, `end_slice_id`, and
-`end_timestamp`, three independent typed immutable transition tuples, minimal
-Forwarding precedences, and one immutable temporal index. Index and precedence
-entries reference exact transition objects in those tuples. The index provides
-deterministic inspection at exact nominal timestamps and never creates fake
-offsets. Tuple position does not establish backend/runtime ordering.
+- `required_prehistory`: bounded warm-input duration;
+- `create_physical_link_request()`: candidate scope for the next frame;
+- `prime(frame, observation, formal_start=...)`: warm lifecycle state without
+  publishing a formal transition;
+- `observe(frame, observation)`: accept one ordered formal pair and return zero
+  or more newly publishable Plans;
+- `finish(end_timestamp=...)`: flush the final contiguous prefix exactly once;
+- `get_state()`, `get_frontiers()`, and bounded inspection/evidence access;
+- `release_published_through(plan_id)`: discard releasable publication data;
+- Route-demand replacement at the defined boundary;
+- `shutdown(wait=True)`: terminate owned Route workers deterministically.
 
-Plans use continuous non-overlapping `(start, end]` coverage. A transition on a
-shared boundary belongs to the earlier Plan exactly once. A
-`ForwardingTransitionPrecedence(predecessor, successor)` is the only explicit
-Planner statement that one otherwise same-time Forwarding transition must
-precede another. Plan owns the relation, the Forwarding Model produces it
-through Planner, and future approved consumers such as Compiler may consume it.
-It is neither an execution schedule nor a general dependency framework;
-unrelated same-time transitions remain unconstrained.
-For a direct new-path dependency, downstream readiness precedes upstream
-activation/use. For direct old-path teardown, the upstream REMOVE or path
-switch precedes removal of the downstream state it formerly used. Mixed
-changes combine only those justified relations and must remain acyclic.
+The external producer owns time progression. Planner never advances the
+PhysicalWorld by itself.
 
-Connection transitions are ESTABLISH or WITHDRAW. ESTABLISH carries the
-complete formal Connection and its initial directional parameters; no duplicate
-ParameterTransition is emitted for those initial values. WITHDRAW carries the
-Connection identity and no Connection payload.
+## Operational planning order
 
-ParameterTransition is a sparse directional target on a planned active
-Connection. ForwardingTransition preserves RoutePatch identity, operation and
-next hop while adding nominal semantic time; it does not carry a route choice,
-full path or backend operation.
+For each formal frame the Planner:
 
-Nominal time may be any UTC simulation timestamp inside the source Difference
-interval. It is semantic planning time, not runtime completion time.
+1. validates matching frame and physical-link observation provenance;
+2. selects deterministic ISL candidates under PhysicalWorld capability;
+3. advances selected/acquiring/operational ISL lifecycle;
+4. selects GroundStation accesses independently;
+5. assigns or unassigns Zone service;
+6. computes effective parameters with accumulated deadband memory;
+7. recomputes Route outcomes only when the operational graph, service targets,
+   or Route demands change;
+8. derives one replay-complete `PlanTransition`;
+9. obtains precedence only from CoordinationPolicy;
+10. applies the common transition function and advances frontiers;
+11. publishes when the window policy permits.
 
-## Replaceable algorithms
+Candidates and acquisition evidence remain bounded inspection facts. Only
+operational outputs enter `PlannedOperationalState` and transitions.
 
-| Role | First implementation | Boundary |
-|---|---|---|
-| `PlanningWindowPolicy` | `AllAvailablePlanningWindowPolicy` | select one exact planning-window prefix from available Differences and one non-empty publication-window prefix |
-| `ConnectionPlanningModel` | sample-boundary and midpoint models | receive planning-window/affected ranges and reusable transitions; retain exact add/remove evolution, estimate time, mark matched short lifetimes as candidates |
-| `ParameterPlanningModel` | accumulated absolute deadband | receive planning-window/affected ranges, reusable transitions, and immutable observed/planned baselines; compare observed values with last planned target |
-| `ForwardingPlanningModel` | dependency-aware formal-path planning | receive planning-window/affected ranges, reusable transitions, and narrow immutable formal path identities; produce transitions plus required same-time precedences; never receive Slicer or invoke RouteModel |
-| `CoordinationPolicy` | `DefaultCoordinationPolicy` | receive all three Model results and narrow route facts; return coherent transition collections and decisions without replacing fixed validity |
+The reference GroundStation Model consumes only sparse feasible candidates from
+`PhysicalLinkObservation`; it never reconstructs the GroundStation×Satellite
+universe or geometry. Immutable capacity lookups are prepared once per exact
+PhysicalWorld. Quality-ranked allocation solves one global sparse capacitated
+assignment. Its indexed residual representation retains the accepted aggregate
+rank, Satellite-order, and successive-shortest-path tie identity.
+Planner observation separates selection/ranking, fail-closed candidate
+validation, and evidence projection costs.
 
-Minimum dwell only identifies a candidate. Planner gives CoordinationPolicy
-matched public transition pairs, all three typed Model results, and immutable
-formal route/path mappings. The policy—not private hard-coded Planner logic—may
-retain them or jointly suppress the lifetime, related parameters, and transient
-forwarding states. Planner validates the returned result.
+## Public values
 
-The public Model contracts deliberately expose `differences`, the complete
-formal Difference sequence in the planning window;
-`affected_differences`, the newly added or otherwise affected suffix requiring
-incremental algorithm work; and `previous_transitions`, previously planned but
-still-unpublished work available for reuse or local adjustment. The latter two
-are incremental-call information, not new domain objects, owners or another
-Plan. This permits cross-Difference reasoning while allowing normal tail
-extensions to append without settled-history replay.
+`PlannedOperationalState` is one immutable complete output at an exact
+timestamp. It contains operational Connections with effective parameters,
+Zone service assignments including unserved state, and complete reachable or
+explicitly unreachable Route outcomes.
 
-Parameter Models additionally receive immutable observed and planned
-directional mappings. Observed is the latest formal Simulator/Slicer parameter
-state; planned is the latest target Planner actually decided should be
-realized. Accumulated deadband requires that distinction across publication
-boundaries. Forwarding Models receive Planner-derived, narrow read-only
-per-Slice RouteKey-to-Connection-ID path facts so they never receive Slicer,
-RouteModel authority or permission to recompute Simulator state. These inputs
-use existing domain values; there is no public planning-context, path-context
-or candidate DTO.
+`PlanTransition` is the only semantic change payload and contains:
 
-## Incremental state
+- `timestamp`;
+- `established_connections`;
+- `withdrawn_connection_ids`;
+- `parameter_updated_connections`;
+- `zone_service_transitions`;
+- `route_outcome_transitions`.
 
-Planner privately retains consumed Differences, the unpublished
-planning-window overlap, active planned Connections, observed parameters,
-last-planned targets, compact
-pending deadband ranges, current planned Forwarding state, per-Slice formal
-route/path evidence, and decisions. It also retains the corresponding planned
-baseline at the last published boundary. None of that state is public Plan
-payload.
+An empty transition is valid and preserves a formal activation timestamp.
 
-On a tail extension, Models receive only the affected new suffix alongside
-reusable unpublished coordinated transitions and state at the end of the prior
-planning window. Coordination may revise that still-unpublished overlap. After
-fixed validation, Planner publishes only the publication window, advances its
-private published baseline from planned transitions, and retains any later
-planning-window portion.
-It may rebuild outer immutable collections/index for the new Plan, but does not
-replay already-settled Differences or reset to the raw Slice at a Plan boundary.
+`Plan` contains:
 
-Consequently accumulated deadband continues against the last planned target,
-and a transient Connection previously suppressed across a boundary is not
-resurrected merely because the boundary Slice contains it. Published Plan
-objects are immutable history and later future input cannot revise their
-coverage or content.
+```text
+plan_id
+previous_plan_id
+physical_world_fingerprint
+input_state_fingerprint
+output_state_fingerprint
+observation_interval
+start_timestamp
+end_timestamp
+transitions
+semantic_event_precedences
+```
 
-## Fixed invariants
+The first Plan has no predecessor or input fingerprint and bootstraps from the
+explicit empty state at formal start. Every adjacent transition is separated by
+exactly the positive, versioned `observation_interval`. Later Plans form an
+immediate predecessor chain, consume the preceding output fingerprint, and
+start exactly one observation interval after the preceding Plan ends.
 
-- planning-window and publication-window Differences are exact available
-  identity prefixes;
-- published coverage begins at the prior Plan end and is non-overlapping;
-- planned Connection evolution is non-contradictory and never exceeds the
-  coverage-end formal Connection identities;
-- ParameterTransition occurs only while its Connection is planned active;
-- ParameterTransition time lies in its source Difference interval and every
-  target value equals formal Simulator-provided parameter state;
-- every published ForwardingTransition retains formal path evidence;
-- its resulting path dependencies are active at nominal time;
-- no forwarding state still depends on a Connection when it is withdrawn;
-- every retained planned forwarding state came from formal Route state;
-- every precedence references two same-time Forwarding transitions in its Plan;
-- built-in/reference processing failure publishes neither a new Plan nor
-  consumed-Difference progress or changed Planner-owned incremental state.
+`semantic_event_references(transition)` derives event identity from the payload.
+`SemanticEventPrecedence` refers to those immutable identities. Independent
+event payload storage is not part of the contract.
 
-## Coalescing and provenance
+## Replay and fingerprints
 
-Planner may suppress a short Connection lifetime only when CoordinationPolicy
-accepts and the final formal route state does not depend on it. Parameter
-intents inside that lifetime are removed. The default policy accepts only when
-each affected route returns to the same formal next hop and complete path, and
-actual transient ForwardingTransitions can be removed directly. Otherwise it
-conservatively retains the complete formal evolution. It never creates a replacement
-ForwardingTransition. When a next hop is unchanged but its complete formal path
-changes, Planner refreshes that dependency as private state rather than
-publishing synthetic forwarding work.
+`apply_plan_transition` performs the authoritative one-boundary semantic
+operation. `apply_plan` replays a complete Plan and verifies its interval and
+lineage. Planner publication, Compiler validation, detached Tools, and
+qualification use this same defined contract.
 
-`PlanningDecision` is concise inspection evidence retained by Planner, not
-Plan payload. It identifies source Difference current Slice IDs, retained /
-merged / suppressed classification, deciding algorithm and a human-readable
-reason. Parameter observations below threshold are represented by one compact
-pending source range; only an actual multi-Difference merge emits a decision,
-so no per-sample string record is accumulated.
+`create_plan(...)` rejects invalid world/predecessor fingerprints, invalid
+bootstrap lineage, non-positive cadence, non-UTC-normalizable timestamps,
+empty or cadence-gapped transitions, precedence endpoints outside the derived
+event set, duplicate precedences, and cyclic precedence graphs before it
+publishes a canonical content-derived Plan identifier.
 
-## Failure semantics
+`planned_operational_state_fingerprint` and
+`plan_transition_fingerprint` are versioned deterministic semantic hashes.
+Canonical construction normalizes ordering and rejects duplicate identities.
 
-Wrong algorithm/value types fail with `TypeError`. Invalid coverage,
-algorithm output or semantic consistency fails with `ValueError`. Duplicate
-or missing lifecycle creation and Plan access before the first Difference fail
-with `RuntimeError`. Planner and the stateless built-in/reference algorithms
-are failure-atomic at the published and Planner-owned state boundary. The
-current Protocols cannot roll back private mutations performed inside an
-arbitrary third-party stateful strategy before it raises; they intentionally
-do not claim that external transactional guarantee and add no public
-prepare/commit/discard protocol.
+## Window semantics
 
-## Prohibited behavior
+`TimeHorizonPlanningWindowPolicy` defaults to:
 
-No backend/resource fields, heterogeneous canonical transition store, fake
-time offsets, route recomputation, Slicer advancement, settled-history model
-replay, public planning-window/baseline/checkpoint DTO, generic dependency
-graph, implicit fallback, or root-package Planner export.
+- `planning_horizon = 50 seconds`;
+- `publication_horizon = 20 seconds`;
+- `maximum_prehistory = 20 seconds`.
 
-## Maintenance
+Normal publication first plans up to the 50-second lookahead and then publishes
+the earliest contiguous prefix of at most 20 seconds. Physical-observation,
+planning, and publication frontiers have distinct meanings. The final short
+window is flushed once. Exact 5-second event timestamps remain unchanged.
 
-Update the planning owner README, Simulator lifecycle, public imports, object
-and Simulator-chain diagrams, repository import map, canonical example,
-focused tests and `CURRENT.md` together.
+Canonical 10-minute S3 has 121 disjoint formal transitions across 30 Plans.
+
+## Evidence
+
+`PublishedPlanningEvidence` binds one Plan to transition fingerprints, physical
+work counts, bounded candidate quality/count/reason histograms, exact selected
+ISL/GS/Zone facts, compact inspection summaries, and frontiers. It deliberately
+does not retain every feasible or rejected candidate identity. Versioned codecs
+in `planning.evidence` serialize only semantic values. They do not persist live
+Models, workers, or publication buffers.
+
+## Failure and boundedness
+
+Out-of-order timestamps, frame/observation mismatch, candidate spoofing,
+capability violation, malformed Model output, invalid precedence, broken
+lineage, or replay mismatch fails atomically. Unpublished transitions,
+inspection evidence, candidate state, and Plan queues remain bounded. Route
+workers are reused and shut down after success or failure.

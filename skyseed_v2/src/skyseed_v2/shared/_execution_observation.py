@@ -7,12 +7,18 @@ from copy import deepcopy
 import json
 from math import isfinite
 from pathlib import Path
+from time import perf_counter
 
 
 class _ExecutionObserver:
     """Retain coarse numeric observations without owning execution semantics."""
 
-    __slots__ = ("_metadata", "_records", "_recording_failure")
+    __slots__ = (
+        "_metadata",
+        "_records",
+        "_recording_failure",
+        "_run_origin_monotonic",
+    )
 
     def __init__(self, metadata: Mapping[str, object] | None = None) -> None:
         if metadata is not None and not isinstance(metadata, Mapping):
@@ -22,6 +28,7 @@ class _ExecutionObserver:
         self._metadata = copied
         self._records: list[dict[str, object]] = []
         self._recording_failure: Exception | None = None
+        self._run_origin_monotonic = perf_counter()
 
     def record(
         self,
@@ -34,6 +41,8 @@ class _ExecutionObserver:
         scope: Mapping[str, object] | None = None,
         work: Mapping[str, int | float] | None = None,
         resources: Mapping[str, int | float] | None = None,
+        started_monotonic: float | None = None,
+        ended_monotonic: float | None = None,
     ) -> None:
         """Append one already-completed stage observation."""
 
@@ -57,6 +66,28 @@ class _ExecutionObserver:
             _require_json_value(copied_scope, "scope")
             copied_work = _numeric_mapping(work, "work")
             copied_resources = _numeric_mapping(resources, "resources")
+            ended = (
+                perf_counter()
+                if ended_monotonic is None
+                else _require_number(ended_monotonic, "ended_monotonic")
+            )
+            started = (
+                float(ended) - float(duration)
+                if started_monotonic is None
+                else _require_number(
+                    started_monotonic, "started_monotonic"
+                )
+            )
+            if float(started) > float(ended):
+                raise ValueError(
+                    "started_monotonic must not exceed ended_monotonic"
+                )
+            relative_start = max(
+                0.0, float(started) - self._run_origin_monotonic
+            )
+            relative_end = max(
+                relative_start, float(ended) - self._run_origin_monotonic
+            )
             self._records.append(
                 {
                     "record_type": "execution_observation",
@@ -65,6 +96,13 @@ class _ExecutionObserver:
                     "stage": stage,
                     "phase": phase,
                     "duration_seconds": duration,
+                    "run_relative_start_seconds": relative_start,
+                    "run_relative_end_seconds": relative_end,
+                    "span_source": (
+                        "measured-monotonic"
+                        if started_monotonic is not None
+                        else "completion-timestamp-and-measured-duration"
+                    ),
                     "duration_role": duration_role,
                     "scope": copied_scope,
                     "work": copied_work,
@@ -93,7 +131,7 @@ class _ExecutionObserver:
         return {
             "header": {
                 "record_type": "execution_observation_header",
-                "format_version": 1,
+                "format_version": 2,
                 "metadata": deepcopy(self._metadata),
             },
             "records": tuple(deepcopy(self._records)),

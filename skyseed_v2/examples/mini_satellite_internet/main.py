@@ -1,9 +1,8 @@
-"""Build the mini satellite Internet reference and all inspection views."""
+"""Build the Mini reference through the sole Planner/Compiler producer."""
 
 from __future__ import annotations
 
 import argparse
-from datetime import timedelta
 from pathlib import Path
 import re
 from shlex import quote
@@ -21,9 +20,10 @@ DEFAULT_ZONES = EXAMPLE_ROOT / "zones.yaml"
 DEFAULT_OUTPUT = EXAMPLE_ROOT / "output"
 COMPOSE_PROJECT_PREFIX = "skyseed_v2_mini_satellite_internet"
 _PROJECT_NAME_FILE = "runtime/compose-project-name"
-_SIMULATION_GENERATION_LOOKAHEAD = timedelta(seconds=300)
-_RUNNER_PREPARATION_LOOKAHEAD = timedelta(seconds=60)
-_RUNNER_PREPARATION_BOUNDARY_DEPTH = 8
+_REALIZATION_PRODUCER_IDENTITY = (
+    "skyseed-v2-common-incremental-realization-producer-v1"
+)
+_RUNNER_PREPARATION_BOUNDARY_DEPTH = None
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -32,109 +32,39 @@ from examples.mini_satellite_internet.emu import (
     build_mini_satellite_internet_emulator,
 )
 from examples.mini_satellite_internet.simu import (
-    REAL_SLICE_COUNT,
-    create_mini_satellite_internet_progression,
-    prepare_mini_satellite_internet_planning,
+    create_mini_satellite_internet_producer,
 )
 from examples.mini_satellite_internet.traffic_workload import (
     planned_zone_service_segments,
     write_canonical_traffic_workload,
 )
 from seedemu.compiler import Docker
-from skyseed_v2.backend.bpf import BpfCompiledRealization, compile_bpf
 from skyseed_v2.compose.launcher import (
     _prepare_generated_output,
     _write_compose_project_scripts,
+)
+from skyseed_v2.experiment._realization_handoff import (
+    _write_realization_handoff,
 )
 from skyseed_v2.experiment.execution import _write_execution_definition
 from skyseed_v2.experiment.traffic.probe_plan import (
     TrafficProbePlanBuilder,
     write_traffic_probe_plan,
 )
-from skyseed_v2.simulator import (
-    Plan,
-    Planner,
-    Slicer,
-)
-from tools.slice import write_slice_difference_tool
+from tools._html import write_aggregate_index
 from tools.bpf_compiler import write_bpf_compiler_tool
 from tools.observation import write_observation_tool
+from tools.physical_world import write_physical_world_tool
 from tools.planner import write_planner_tool
-from tools.topology import write_topology_tool
+from tools.planner.reader import read_planner_history
 from tools.zone import write_zone_tool
-
-
-def _compile_bpf_realizations(
-    slicer: Slicer,
-    plans: tuple[Plan, ...],
-) -> tuple[BpfCompiledRealization, ...]:
-    """Compile the continuous Mini Plan chain for the inspection view."""
-
-    compiled = []
-    previous = None
-    for plan in plans:
-        result = compile_bpf(plan, slicer=slicer, previous=previous)
-        compiled.append(result)
-        previous = result
-    return tuple(compiled)
-
-
-def write_planner_inspection(
-    slicer: Slicer,
-    planner: Planner,
-    plans: tuple[Plan, ...],
-    configuration: dict[str, object],
-    output: Path,
-) -> dict[str, object]:
-    """Write a Tool view from already-prepared Planner results."""
-
-    return write_planner_tool(
-        slicer,
-        plans,
-        planner.get_consumed_differences(),
-        planner.get_planning_decisions(),
-        configuration,
-        output,
-    )
-
-
-def _with_planning_windows(
-    configuration: dict[str, object], observer
-) -> dict[str, object]:
-    """Attach compact exact Planner synchronization coverage for the Tool."""
-
-    return {
-        **configuration,
-        "planning_windows": tuple(
-            {
-                "publication_index": record["scope"]["publication_index"],
-                "planning_start_slice_id": record["scope"][
-                    "planning_start_slice_id"
-                ],
-                "planning_end_slice_id": record["scope"][
-                    "planning_end_slice_id"
-                ],
-                "publication_start_slice_id": record["scope"][
-                    "publication_start_slice_id"
-                ],
-                "publication_end_slice_id": record["scope"][
-                    "publication_end_slice_id"
-                ],
-                "start_timestamp": record["scope"].get("start_timestamp"),
-                "end_timestamp": record["scope"].get("end_timestamp"),
-            }
-            for record in observer.snapshot()["records"]
-            if record["component"] == "planner"
-            and record["stage"] == "total-synchronize"
-        ),
-    }
 
 
 def _capture_input_files(
     scenario_path: Path,
     zones_path: Path,
 ) -> dict[Path, bytes]:
-    """Read the exact external Mini inputs before replacing any output."""
+    """Read exact external Mini inputs before replacing any output."""
 
     scenario = Path(scenario_path).resolve()
     zones = Path(zones_path).resolve()
@@ -156,7 +86,9 @@ def _capture_input_files(
     }
     autonomous_systems = payload.get("skyseed_autonomous_systems", [])
     if not isinstance(autonomous_systems, list):
-        raise RuntimeError("Mini scenario skyseed_autonomous_systems must be a list")
+        raise RuntimeError(
+            "Mini scenario skyseed_autonomous_systems must be a list"
+        )
     for index, value in enumerate(autonomous_systems):
         if not isinstance(value, dict) or "ground_stations_file" not in value:
             continue
@@ -187,7 +119,8 @@ def _capture_input_files(
             snapshots[reference] = source.read_bytes()
         except OSError as error:
             raise RuntimeError(
-                f"cannot snapshot ground_stations_file for autonomous system {index}"
+                "cannot snapshot ground_stations_file for autonomous system "
+                f"{index}"
             ) from error
     return snapshots
 
@@ -201,18 +134,17 @@ def _guard_existing_output(output: Path, *, override: bool) -> None:
         raise FileExistsError(f"example output already exists: {output}")
     project_file = output / _PROJECT_NAME_FILE
     if not project_file.is_file():
-        legacy_project_file = output / ".compose-project-name"
-        if legacy_project_file.is_file():
-            project_file = legacy_project_file
+        legacy = output / ".compose-project-name"
+        if legacy.is_file():
+            project_file = legacy
     if not project_file.is_file():
-        raise RuntimeError(
-            "existing generated output uses an unsupported older layout; "
-            "clean/remove its deployment and output before regenerating"
-        )
-    try:
-        project_name = project_file.read_text(encoding="utf-8").strip()
-    except OSError as error:
-        raise RuntimeError("cannot read existing output generation identity") from error
+        if (output / "runtime/docker-compose.yml").is_file():
+            raise RuntimeError(
+                "existing generated output has no verifiable Compose identity; "
+                "remove it explicitly before regenerating"
+            )
+        return
+    project_name = project_file.read_text(encoding="utf-8").strip()
     if re.fullmatch(r"[a-z0-9][a-z0-9_-]*", project_name) is None:
         raise RuntimeError("existing output generation identity is invalid")
     try:
@@ -231,21 +163,22 @@ def _guard_existing_output(output: Path, *, override: bool) -> None:
         )
     except OSError as error:
         raise RuntimeError(
-            "cannot verify whether the existing generated deployment is still present"
+            "cannot verify whether the existing deployment is still present"
         ) from error
     if result.returncode != 0:
         raise RuntimeError(
-            "cannot verify whether the existing generated deployment is still present; "
-            f"docker ps failed: {result.stderr.strip()}"
+            "cannot verify the existing deployment: " + result.stderr.strip()
         )
-    if any(value.strip() for value in result.stdout.splitlines()):
+    if result.stdout.strip():
         raise RuntimeError(
-            "the existing generated deployment still has containers; "
-            f"run {output / 'cleanup.sh'} before regenerating"
+            "the existing deployment still has containers; run "
+            f"{output / 'cleanup.sh'} before regenerating"
         )
 
 
-def _write_input_snapshots(output: Path, snapshots: dict[Path, bytes]) -> None:
+def _write_input_snapshots(
+    output: Path, snapshots: dict[Path, bytes]
+) -> None:
     inputs = output / "inputs"
     for relative_path, content in snapshots.items():
         destination = inputs / relative_path
@@ -254,7 +187,7 @@ def _write_input_snapshots(output: Path, snapshots: dict[Path, bytes]) -> None:
 
 
 def _write_execution_scripts(output: Path) -> None:
-    """Publish standard generated BPF execution controls."""
+    """Publish persisted-only Mini BPF execution controls."""
 
     python = quote(sys.executable)
     _write_executable(
@@ -270,6 +203,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${{BASH_SOURCE[0]}}")" && pwd)"
 for required in \\
     "$SCRIPT_DIR/{_PROJECT_NAME_FILE}" \\
     "$SCRIPT_DIR/runtime/execution.json" \\
+    "$SCRIPT_DIR/runtime/realizations/manifest.json" \\
     "$SCRIPT_DIR/inputs/scenario.yaml" \\
     "$SCRIPT_DIR/inputs/zones.yaml" \\
     "$SCRIPT_DIR/runtime/docker-compose.yml"; do
@@ -293,21 +227,34 @@ runner_tool_status=0
 traffic_tool_status=0
 {python} -m tools.traffic \\
     --telemetry "$SCRIPT_DIR/inspection/traffic/traffic-telemetry.jsonl" \\
-    --slice "$SCRIPT_DIR/inspection/slice/slice-manifest.json" \\
-    --bpf-compiler "$SCRIPT_DIR/inspection/bpf-compiler/manifest.json" \\
+    --physical-frames "$SCRIPT_DIR/domain-history/physical-frames.jsonl" \\
+    --planning "$SCRIPT_DIR/domain-history/planning.jsonl.gz" \\
+    --bpf-compiler "$SCRIPT_DIR/inspection/bpf-compiler/bpf-compiler-inspection.json" \\
+    --workload "$SCRIPT_DIR/inputs/traffic-workload.json" \\
     --probe-plan "$SCRIPT_DIR/inspection/traffic/probe-plan.json" \\
     --probe-execution "$SCRIPT_DIR/inspection/traffic/probe-execution.jsonl" \\
     --runner-events "$SCRIPT_DIR/inspection/runner/runner-events.jsonl" \\
     --output "$SCRIPT_DIR/inspection/traffic" \\
     || traffic_tool_status=$?
 
+observation_tool_status=0
+{python} -c 'import sys; from pathlib import Path; from tools.observation import write_observation_tool; write_observation_tool(Path(sys.argv[1]), Path(sys.argv[2]))' \\
+    "$SCRIPT_DIR/inspection/observation/execution-observations.jsonl" \\
+    "$SCRIPT_DIR/inspection/observation" \\
+    || observation_tool_status=$?
+
+aggregate_status=0
+{python} -c 'import importlib,sys; from pathlib import Path; importlib.import_module("tools._html").finalize_runtime_aggregate_index(Path(sys.argv[1]))' \\
+    "$SCRIPT_DIR/inspection" \\
+    || aggregate_status=$?
+
 if (( execution_status != 0 )); then
     exit "$execution_status"
 fi
-if (( runner_tool_status != 0 )); then
-    exit "$runner_tool_status"
+if (( runner_tool_status != 0 || traffic_tool_status != 0 || observation_tool_status != 0 || aggregate_status != 0 )); then
+    echo "runtime completed; one or more detached inspection Tools failed" >&2
 fi
-exit "$traffic_tool_status"
+exit 0
 """,
     )
     _write_executable(
@@ -331,7 +278,72 @@ def _write_executable(path: Path, content: str) -> None:
     path.chmod(0o755)
 
 
-def main() -> int:
+def _write_inspection_tools(
+    output: Path,
+    *,
+    simulator,
+    plans,
+    realizations,
+    physical_frame,
+    physical_link_observation,
+) -> tuple[dict[str, dict[str, object]], dict[str, str]]:
+    """Run detached observers without controlling runtime handoff validity."""
+
+    inspection = output / "inspection"
+    results: dict[str, dict[str, object]] = {}
+    failures: dict[str, str] = {}
+    calls = {
+        "physical-world": lambda: write_physical_world_tool(
+            simulator.get_physical_world(),
+            inspection / "physical-world",
+            physical_frames_path=(
+                output / "domain-history/physical-frames.jsonl"
+            ),
+            physical_frame=physical_frame,
+            physical_link_observation=physical_link_observation,
+            physical_link_model=simulator.get_physical_link_model(),
+        ),
+        "zone": lambda: write_zone_tool(
+            simulator.get_physical_world(), inspection / "zone"
+        ),
+        "planner": lambda: write_planner_tool(
+            read_planner_history(output / "domain-history/planning.jsonl.gz"),
+            inspection / "planner",
+            physical_frames_path=(
+                output / "domain-history/physical-frames.jsonl"
+            ),
+        ),
+        "observation": lambda: write_observation_tool(
+            inspection / "observation/execution-observations.jsonl",
+            inspection / "observation",
+        ),
+        "bpf-compiler": lambda: write_bpf_compiler_tool(
+            plans,
+            realizations,
+            inspection / "bpf-compiler",
+            observation_path=(
+                inspection / "observation/execution-observations.jsonl"
+            ),
+        ),
+    }
+    for name, call in calls.items():
+        try:
+            results[name] = dict(call())
+        except Exception as error:
+            failures[name] = f"{type(error).__name__}: {error}"
+            results[name] = {
+                "status": "FAILED",
+                "message": failures[name],
+            }
+    counts = dict(results.get("physical-world", {}).get("counts", {}))
+    try:
+        write_aggregate_index(inspection, results, counts)
+    except Exception as error:
+        failures["aggregate"] = f"{type(error).__name__}: {error}"
+    return results, failures
+
+
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scenario", type=Path, default=DEFAULT_SCENARIO)
     parser.add_argument("--zones", type=Path, default=DEFAULT_ZONES)
@@ -340,38 +352,22 @@ def main() -> int:
         "--override",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="replace the existing scenario output (default: enabled)",
+        help="replace existing inactive generated output (default: enabled)",
     )
     parser.add_argument(
         "--no-internet-map",
         action="store_true",
         help="disable InternetMap for fault isolation only",
     )
-    arguments = parser.parse_args()
+    arguments = parser.parse_args(argv)
 
     snapshots = _capture_input_files(arguments.scenario, arguments.zones)
     _guard_existing_output(arguments.output, override=arguments.override)
-    runtime_output = _prepare_generated_output(
-        arguments.output,
-        replace=True,
-    )
-    compose_project_name = (
-        f"{COMPOSE_PROJECT_PREFIX}-{uuid4().hex[:16]}"
-    )
+    runtime_output = _prepare_generated_output(arguments.output, replace=True)
     _write_input_snapshots(arguments.output, snapshots)
     snapshot_scenario = arguments.output / "inputs/scenario.yaml"
-    snapshot_zones = arguments.output / "inputs/zones.yaml"
 
     emulator = build_mini_satellite_internet_emulator(snapshot_scenario)
-    topology_output = arguments.output / "inspection/topology"
-    zone_output = arguments.output / "inspection/zone"
-    slice_output = arguments.output / "inspection/slice"
-    planner_output = arguments.output / "inspection/planner"
-    observation_output = arguments.output / "inspection/observation"
-    bpf_compiler_output = arguments.output / "inspection/bpf-compiler"
-    traffic_output = arguments.output / "inspection/traffic"
-    traffic_workload_input = arguments.output / "inputs"
-
     emulator.render()
     emulator.compile(
         Docker(
@@ -380,123 +376,132 @@ def main() -> int:
         ),
         str(runtime_output),
     )
+    compose_project_name = f"{COMPOSE_PROJECT_PREFIX}-{uuid4().hex[:16]}"
     project_file = arguments.output / _PROJECT_NAME_FILE
     project_file.parent.mkdir(parents=True, exist_ok=True)
     project_file.write_text(f"{compose_project_name}\n", encoding="utf-8")
-    simulator, planner = create_mini_satellite_internet_progression(
+
+    simulator, producer = create_mini_satellite_internet_producer(
         arguments.output / "inputs",
         emulator=emulator,
+        evidence_path=arguments.output / "domain-history",
     )
-    slicer = simulator.get_slicer()
-    observation_records = observation_output / "execution-observations.jsonl"
-    observer = simulator._enable_execution_observation(
-        observation_records,
+    observation_path = (
+        arguments.output
+        / "inspection/observation/execution-observations.jsonl"
+    )
+    simulator._enable_execution_observation(
+        observation_path,
         metadata={
             "scenario_identity": "mini_satellite_internet",
-            "timeline_start": slicer.get_timeline().start_time.isoformat(),
-            "slice_interval_seconds": (
-                slicer.get_timeline().slice_interval.total_seconds()
+            "timeline_start": simulator.get_timeline().start_time.isoformat(),
+            "timeline_end": simulator.get_timeline().end_time.isoformat(),
+            "observation_interval_seconds": (
+                simulator.get_timeline().observation_interval.total_seconds()
             ),
-            "real_slice_count": REAL_SLICE_COUNT,
+            "progression": "physical-world-planner-plan-compiler",
         },
     )
-    created_slices = slicer.create_all_slices()
-    if len(created_slices) != REAL_SLICE_COUNT:
-        raise AssertionError("bounded reference Timeline produced wrong count")
-    planner, plans, planning_configuration = (
-        prepare_mini_satellite_internet_planning(simulator, planner)
+    plans = []
+    realizations = []
+    try:
+        while True:
+            realization = producer.produce_next_realization()
+            if realization is None:
+                break
+            plans.append(producer.latest_plan)
+            realizations.append(realization)
+        producer_snapshot = producer.snapshot()
+        physical_frame, physical_link_observation = (
+            producer.first_formal_input()
+        )
+    finally:
+        producer.close()
+    plan_values = tuple(plans)
+    realization_values = tuple(realizations)
+    if not plan_values or len(plan_values) != len(realization_values):
+        raise RuntimeError("Mini producer did not emit a complete Plan lineage")
+
+    handoff_manifest = _write_realization_handoff(
+        realization_values,
+        arguments.output / "runtime/realizations",
+        execution_observer=simulator.get_planner()._get_execution_observer(),
     )
-    planning_configuration = _with_planning_windows(
-        planning_configuration, observer
-    )
-    simulator._write_execution_observations()
-    observation_result = write_observation_tool(
-        observation_records,
-        observation_output,
-    )
-    compiled_realizations = _compile_bpf_realizations(slicer, plans)
+    traffic_output = arguments.output / "inspection/traffic"
     write_traffic_probe_plan(
-        TrafficProbePlanBuilder().build(compiled_realizations),
+        TrafficProbePlanBuilder().build(plan_values, realization_values),
         traffic_output / "probe-plan.json",
     )
-    topology = slicer.get_topology()
-    topology_result = write_topology_tool(topology, topology_output)
-    zone_result = write_zone_tool(topology, zone_output)
-    slice_result = write_slice_difference_tool(slicer, slice_output)
-    planner_result = write_planner_inspection(
-        slicer,
-        planner,
-        plans,
-        planning_configuration,
-        planner_output,
-    )
-    bpf_compiler_result = write_bpf_compiler_tool(
-        plans,
-        compiled_realizations,
-        bpf_compiler_output,
-    )
+    timeline = simulator.get_timeline()
     write_canonical_traffic_workload(
-        traffic_workload_input,
-        simulation_start=slicer.get_timeline().start_time,
-        simulation_end=slicer.get_timeline().end_time,
-        zone_prefixes=dict(compiled_realizations[-1].zone_prefixes),
+        arguments.output / "inputs",
+        simulation_start=timeline.start_time,
+        simulation_end=timeline.end_time,
+        zone_prefixes=dict(realization_values[-1].zone_prefixes),
         zone_service_segments=planned_zone_service_segments(
-            compiled_realizations,
-            simulation_start=slicer.get_timeline().start_time,
-            simulation_end=slicer.get_timeline().end_time,
+            plan_values,
+            realization_values,
+            simulation_start=timeline.start_time,
+            simulation_end=timeline.end_time,
         ),
     )
-
-    results = (
-        topology_result,
-        zone_result,
-        slice_result,
-        planner_result,
-        observation_result,
-        bpf_compiler_result,
-    )
-    if not all(result["status"] == "PASS" for result in results):
-        return 1
+    assert timeline.end_time is not None
     _write_execution_definition(
         arguments.output,
-        builder_module="examples.mini_satellite_internet.simu",
-        builder_callable="create_mini_satellite_internet_progression",
         generated_output_identity=compose_project_name,
-        generation_lookahead=_SIMULATION_GENERATION_LOOKAHEAD,
-        preparation_lookahead=_RUNNER_PREPARATION_LOOKAHEAD,
+        preparation_lookahead=None,
         preparation_boundary_depth=_RUNNER_PREPARATION_BOUNDARY_DEPTH,
-        timeline_start=slicer.get_timeline().start_time,
-        timeline_end=slicer.get_timeline().end_time,
-        slice_interval=slicer.get_timeline().slice_interval,
+        timeline_start=timeline.start_time,
+        timeline_end=timeline.end_time,
+        observation_interval=timeline.observation_interval,
         project_root=PROJECT_ROOT,
         example_root=EXAMPLE_ROOT,
+        realization_handoff=str(
+            handoff_manifest.relative_to(arguments.output).as_posix()
+        ),
+        realization_producer=_REALIZATION_PRODUCER_IDENTITY,
     )
-    _write_compose_project_scripts(
-        arguments.output,
-        compose_project_name,
-    )
+    _write_compose_project_scripts(arguments.output, compose_project_name)
     _write_execution_scripts(arguments.output)
+    observation_failure = None
+    try:
+        simulator._write_execution_observations()
+    except Exception as error:
+        observation_failure = f"{type(error).__name__}: {error}"
+    try:
+        _, tool_failures = _write_inspection_tools(
+            arguments.output,
+            simulator=simulator,
+            plans=plan_values,
+            realizations=realization_values,
+            physical_frame=physical_frame,
+            physical_link_observation=physical_link_observation,
+        )
+    except Exception as error:
+        tool_failures = {
+            "inspection-batch": f"{type(error).__name__}: {error}"
+        }
+    if observation_failure is not None:
+        tool_failures["observation-evidence"] = observation_failure
 
     print(f"runtime directory: {runtime_output}")
+    print(
+        "producer: "
+        f"{producer_snapshot['plan_count']} Plans / "
+        f"{producer_snapshot['transition_count']} formal transitions"
+    )
+    print(f"runtime handoff: {handoff_manifest}")
     print(f"start: {arguments.output / 'start.sh'}")
     print(f"run: {arguments.output / 'run.sh'}")
     print(f"launch: {arguments.output / 'launch.sh'}")
     print(f"cleanup: {arguments.output / 'cleanup.sh'}")
-    print(f"Topology Tool entry: {topology_output / 'index.html'}")
-    print(f"Zone Tool entry: {zone_output / 'index.html'}")
-    print(f"Slice / Difference Tool entry: {slice_output / 'index.html'}")
-    print(f"Planner Tool entry: {planner_output / 'index.html'}")
-    print(f"Observation Tool entry: {observation_output / 'index.html'}")
-    print(
-        f"BPF Compiler Tool entry: {bpf_compiler_output / 'index.html'}"
-    )
-    print(
-        "Traffic workload schedule: "
-        f"{traffic_workload_input / 'traffic-workload.json'}"
-    )
-    print(
-        "boundary: static containers are not updated from Simulator Slices"
-    )
+    print(f"Inspection index: {arguments.output / 'inspection/index.html'}")
+    if tool_failures:
+        print(
+            "Inspection side-work failures did not invalidate runtime handoff: "
+            + ", ".join(sorted(tool_failures)),
+            file=sys.stderr,
+        )
     return 0
 
 

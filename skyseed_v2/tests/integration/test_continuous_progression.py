@@ -1,357 +1,467 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from datetime import timedelta
+from hashlib import sha256
+import json
+from types import SimpleNamespace
 
 import pytest
 
-from examples.mini_satellite_internet import main as reference_main
-from examples.mini_satellite_internet.emu import (
-    build_mini_satellite_internet_emulator,
+from examples.complete_static_emulator.emu import build_emulator
+from examples.complete_static_emulator.simu import (
+    DEFAULT_START_TIME,
+    ZONE_LAYOUT_FILE,
+    create_complete_static_planner,
+    create_complete_static_simulator,
+    run_complete_static_chain,
 )
-from examples.mini_satellite_internet.simu import (
-    create_mini_satellite_internet_progression,
-    create_mini_satellite_internet_simulator,
-    prepare_mini_satellite_internet_planning,
+from skyseed_v2.configuration.simulator import load_zone_layout_definition
+from skyseed_v2.experiment._realization_producer import (
+    _IncrementalRealizationProducer,
 )
-from skyseed_v2.experiment.execution import _RollingRealizationSupplier
-from skyseed_v2.backend.bpf.runner import _resolve_nominal_boundaries
-from skyseed_v2.shared import NodeId
-from skyseed_v2.shared._durable_evidence import _semantic_value
 from skyseed_v2.simulator import (
-    AccumulatedDeadbandParameterPlanningModel,
-    ConnectionSlice,
-    DefaultCoordinationPolicy,
-    DependencyAwareForwardingPlanningModel,
-    EarthFixedPosition,
-    MidpointConnectionPlanningModel,
-    RouteSlice,
+    CircularOrbitPositionModel,
     SimulationDefinition,
     SimulationTimeline,
     Simulator,
+    apply_plan,
 )
-from skyseed_v2.simulator.input import (
-    SatelliteSimulationInput,
-    SimulatorStaticInput,
-)
-from skyseed_v2.simulator._history_codec import _difference_data
-from tools.bpf_compiler.reader import read_bpf_compiler_history
-from tools.slice.reader import read_durable_slice_differences, read_slice_history
-from tools.planner.reader import (
-    read_durable_plan_sequence,
-    read_durable_planner_inspection,
-    read_planner_history,
-)
-from tools.planner.projection import project_planner_data
+from tools.bpf_compiler import read_bpf_compiler_history
+from tools.planner import collect_planner_data, read_planner_history
 
 
-START = datetime(2026, 1, 1, tzinfo=timezone.utc)
-INPUTS = Path("examples/mini_satellite_internet/output/inputs")
-
-
-def _canonical_full_chain():
-    simulator = create_mini_satellite_internet_simulator(
-        build_mini_satellite_internet_emulator()
+def _bounded_complete_simulator(duration: timedelta) -> Simulator:
+    source = create_complete_static_simulator(build_emulator())
+    timeline = SimulationTimeline(
+        DEFAULT_START_TIME,
+        DEFAULT_START_TIME + duration,
+        timedelta(seconds=10),
     )
-    slicer = simulator.get_slicer()
-    slicer.create_all_slices()
-    planner, plans, _ = prepare_mini_satellite_internet_planning(simulator)
-    realizations = reference_main._compile_bpf_realizations(slicer, plans)
-    return planner, plans, realizations
-
-
-def _rolling_supplier(slicer, planner, directory, *, lookahead):
-    slicer._enable_durable_history(directory / "slice-history.jsonl.gz")
-    planner._enable_durable_history(directory / "planning-history.jsonl.gz")
-    return _RollingRealizationSupplier(
-        slicer,
-        planner,
-        generation_lookahead=lookahead,
-        compiled_history_path=directory / "compiled-history.jsonl.gz",
+    simulator = Simulator(
+        SimulationDefinition(source.get_definition().static_input, timeline)
     )
-
-
-def _canonical_rolling_chain(directory: Path):
-    simulator, planner = create_mini_satellite_internet_progression(INPUTS)
-    slicer = simulator.get_slicer()
-    supplier = _rolling_supplier(
-        slicer,
-        planner,
-        directory,
-        lookahead=timedelta(seconds=300),
+    simulator.create_physical_world(
+        position_model=CircularOrbitPositionModel(),
+        zone_layout_definition=load_zone_layout_definition(ZONE_LAYOUT_FILE),
     )
-    realizations = []
-    peaks = _owner_working_set(slicer, planner)
-    while (value := supplier()) is not None:
-        realizations.append(value)
-        current = _owner_working_set(slicer, planner)
-        peaks = {
-            key: max(peaks[key], current[key]) for key in peaks
-        }
-    history = read_planner_history(directory / "planning-history.jsonl.gz")
-    return planner, tuple(realizations), supplier, history, peaks
-
-
-def _owner_working_set(slicer, planner) -> dict[str, int]:
-    return {
-        "slices": len(slicer.get_retained_slice_ids()),
-        "timestamp_index": len(slicer._slices_by_timestamp),
-        "differences": len(planner._differences),
-        "route_contexts": len(
-            set(planner._route_next_hops)
-            | set(planner._route_path_connection_ids)
-        ),
-        "decisions": len(planner._decisions),
-    }
-
-
-def test_simulator_builder_does_not_advance_bounded_timeline() -> None:
-    simulator, planner = create_mini_satellite_internet_progression(INPUTS)
-    slicer = simulator.get_slicer()
-
-    assert slicer.get_latest_slice_id() == 0
-    assert planner._processed_through_slice_id == 0
-    assert len(slicer.create_all_slices()) == reference_main.REAL_SLICE_COUNT
+    return simulator
 
 
 @pytest.fixture(scope="module")
-def canonical_comparison(tmp_path_factory):
-    directory = tmp_path_factory.mktemp("canonical-rolling-history")
-    return _canonical_full_chain(), _canonical_rolling_chain(directory), directory
-
-
-def test_rolling_300_seconds_preserves_complete_canonical_semantics(
-    canonical_comparison,
-) -> None:
-    (full_planner, full_plans, full), (
-        rolling_planner,
-        rolling,
-        _supplier,
-        history,
-        _peaks,
-    ), directory = canonical_comparison
-
-    rolling_plan_semantics = tuple(value["semantic"] for value in history["plans"])
-    dynamic = read_slice_history(directory / "slice-history.jsonl.gz")
-    compiled = read_bpf_compiler_history(directory / "compiled-history.jsonl.gz")
-    full_slicer = full_planner._slicer
-
-    assert rolling_plan_semantics == tuple(
-        _semantic_value(value) for value in full_plans
-    )
-    assert tuple(
-        (value["slice_id"], value["timestamp"], value["positions"])
-        for value in dynamic["slices"]
-    ) == tuple(
-        (
-            slice_id,
-            None
-            if (item := full_slicer.get_slice(slice_id)).timestamp is None
-            else item.timestamp.isoformat(),
-            {
-                node_id.value: [
-                    float(position.x_m),
-                    float(position.y_m),
-                    float(position.z_m),
-                ]
-                for node_id, position in item.positions.items()
-            },
-        )
-        for slice_id in full_slicer.get_retained_slice_ids()
-    )
-    assert dynamic["differences"] == ()
-    assert tuple(value["semantic"] for value in history["differences"]) == tuple(
-        _difference_data(full_slicer.create_difference(slice_id - 1, slice_id))
-        for slice_id in range(1, full_slicer.get_latest_slice_id() + 1)
-    )
-    assert len(rolling) == len(full) == 16
-    assert all(
-        current.start_slice_id == previous.end_slice_id
-        and current.start_timestamp == previous.end_timestamp
-        for previous, current in zip(rolling, rolling[1:])
-    )
-    assert rolling_planner.get_planning_decisions() == (
-        full_planner.get_planning_decisions()
-    )
-    assert rolling_planner.get_consumed_differences() == (
-        full_planner.get_consumed_differences()
-    )
-    assert rolling == full
-    assert tuple(value["semantic"] for value in compiled["realizations"]) == tuple(
-        _semantic_value(value) for value in full
-    )
-    assert _resolve_nominal_boundaries(rolling) == _resolve_nominal_boundaries(full)
-    assert tuple(
-        intent
-        for realization in rolling
-        for intent in realization.zone_edge_realizations
-    ) == tuple(
-        intent
-        for realization in full
-        for intent in realization.zone_edge_realizations
-    )
-
-
-def test_canonical_supplier_is_lazy_bounded_and_exhausts_once(
-    canonical_comparison,
-) -> None:
-    _full, (
+def bounded_300_chain(tmp_path_factory):
+    simulator = _bounded_complete_simulator(timedelta(seconds=300))
+    planner = create_complete_static_planner(simulator)
+    history = tmp_path_factory.mktemp("bounded-300") / "domain-history"
+    producer = _IncrementalRealizationProducer(
+        simulator.get_timeline(),
+        simulator.get_physical_world(),
+        simulator.get_physical_link_model(),
         planner,
-        rolling,
-        supplier,
-        history,
-        peaks,
-    ), directory = canonical_comparison
-    slicer = planner._slicer
-    dynamic = read_slice_history(directory / "slice-history.jsonl.gz")
-    compiled = read_bpf_compiler_history(directory / "compiled-history.jsonl.gz")
+        evidence_path=history,
+    )
+    initial = producer.snapshot()
+    plans = []
+    realizations = []
+    first_pull = None
+    peaks = {
+        "buffered_plans": 0,
+        "unpublished": 0,
+        "published_evidence": 0,
+    }
+    try:
+        while True:
+            realization = producer.produce_next_realization()
+            snapshot = producer.snapshot()
+            peaks["buffered_plans"] = max(
+                peaks["buffered_plans"],
+                snapshot["buffered_plan_count"],
+            )
+            peaks["unpublished"] = max(
+                peaks["unpublished"], len(planner._unpublished)
+            )
+            peaks["published_evidence"] = max(
+                peaks["published_evidence"],
+                len(planner._published_evidence),
+            )
+            if realization is None:
+                terminal = snapshot
+                break
+            plans.append(producer.latest_plan)
+            realizations.append(realization)
+            if first_pull is None:
+                first_pull = snapshot
+        manifest = history / "domain-history-manifest.json"
+        sealed_bytes = manifest.read_bytes()
+        assert producer.produce_next_realization() is None
+        assert producer.produce_next_realization() is None
+        repeated_terminal = producer.snapshot()
+        assert manifest.read_bytes() == sealed_bytes
+        previous_realization = producer._previous_realization
+    finally:
+        producer.close()
+    return SimpleNamespace(
+        simulator=simulator,
+        planner=planner,
+        producer=producer,
+        history=history,
+        initial=initial,
+        first_pull=first_pull,
+        terminal=terminal,
+        repeated_terminal=repeated_terminal,
+        plans=tuple(plans),
+        realizations=tuple(realizations),
+        previous_realization=previous_realization,
+        peaks=peaks,
+        manifest_sha256=sha256(sealed_bytes).hexdigest(),
+    )
 
-    assert len(rolling) == 16
-    assert slicer.get_latest_slice_id() == 64
-    assert supplier._realization_count == 16
-    assert supplier._input_exhausted is True
-    assert len(slicer.get_retained_slice_ids()) == 1
-    assert len(slicer._slices_by_timestamp) == 1
-    assert len(planner._differences) == 0
-    assert not planner._route_next_hops
-    assert not planner._route_path_connection_ids
-    assert supplier._previous_realization is rolling[-1]
-    # Slice 0 plus the 300-second generation window are simultaneously live
-    # immediately before the first compiled frontier is released.
-    assert peaks["slices"] <= 32
-    assert len(dynamic["slices"]) == 65
-    assert dynamic["differences"] == ()
-    assert len(history["differences"]) == 64
-    assert len(compiled["realizations"]) == 16
-    assert supplier() is None
-    assert supplier() is None
 
-
-def test_released_histories_feed_tools_without_domain_reexecution(
-    canonical_comparison,
+def test_one_producer_preserves_every_formal_boundary_and_lineage(
+    tmp_path,
 ) -> None:
-    (full_planner, full_plans, _full), (
-        rolling_planner,
-        _rolling,
-        _supplier,
-        _history,
-        _peaks,
-    ), directory = canonical_comparison
-    persisted_plans = read_durable_plan_sequence(
-        directory / "planning-history.jsonl.gz"
-    )
-    slicer = rolling_planner._slicer
-    slice_read = read_durable_slice_differences(
-        directory / "slice-history.jsonl.gz",
-        directory / "planning-history.jsonl.gz",
-        topology=slicer.get_topology(),
-        timeline=slicer.get_timeline(),
-    )
-    planner_read = read_durable_planner_inspection(
-        directory / "slice-history.jsonl.gz",
-        directory / "planning-history.jsonl.gz",
-        persisted_plans,
-        {"planning_windows": ()},
-        topology=slicer.get_topology(),
-        timeline=slicer.get_timeline(),
+    simulator = create_complete_static_simulator(build_emulator())
+    timeline = simulator.get_timeline()
+    world_fingerprint = simulator.get_physical_world().semantic_fingerprint()
+    history = tmp_path / "domain-history"
+
+    plans, realizations, snapshot = run_complete_static_chain(
+        simulator,
+        evidence_path=history,
     )
 
-    assert len(slice_read.snapshot["slices"]) == 65
-    assert len(planner_read.snapshot["plans"]) == len(full_plans) == 16
-    projected = project_planner_data(planner_read)
-    assert projected["inventory"]["plans"] == 16
-    assert projected["inventory"]["differences"] == 64
-    assert persisted_plans == full_plans
-    assert full_planner.get_plan() == full_plans[-1]
+    expected_timestamps = tuple(timeline.iter_timestamps())
+    transition_timestamps = tuple(
+        transition.timestamp
+        for plan in plans
+        for transition in plan.transitions
+    )
+    activation_timestamps = tuple(
+        timestamp
+        for realization in realizations
+        for timestamp in realization.activation_timestamps
+    )
+    assert transition_timestamps == expected_timestamps
+    assert activation_timestamps == expected_timestamps
+    assert snapshot["formal_frame_count"] == len(expected_timestamps)
+    assert snapshot["physical_link_observation_count"] == len(
+        expected_timestamps
+    )
+    assert snapshot["transition_count"] == len(expected_timestamps)
+    assert snapshot["plan_count"] == len(plans) == 2
+    assert snapshot["realization_count"] == len(realizations) == 2
+    assert snapshot["domain_history_sealed"] is True
+
+    state = None
+    previous_plan = None
+    for plan, realization in zip(plans, realizations, strict=True):
+        if previous_plan is not None:
+            assert (
+                plan.start_timestamp
+                == previous_plan.end_timestamp + timeline.observation_interval
+            )
+        state = apply_plan(
+            state,
+            plan,
+            physical_world_fingerprint=world_fingerprint,
+        )
+        assert state == realization.output_planned_state
+        assert plan.plan_id == realization.source_plan_id
+        assert (
+            plan.output_state_fingerprint
+            == realization.output_state_fingerprint
+        )
+        previous_plan = plan
+
+    detached = read_planner_history(history / "planning.jsonl.gz")
+    compiler = read_bpf_compiler_history(history / "compiler.jsonl")
+    assert tuple(value.plan for value in detached) == plans
+    assert len(compiler["realizations"]) == len(realizations)
+
+    manifest = json.loads(
+        (history / "domain-history-manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert manifest["terminal"] is True
+    assert manifest["through"] == "compiler"
+    assert manifest["counts"] == {
+        "expected_prehistory_frames": 0,
+        "expected_formal_frames": 4,
+        "prehistory_frames": 0,
+        "formal_frames": 4,
+        "plans": 2,
+        "transitions": 4,
+        "realizations": 2,
+    }
+    assert manifest["timeline"]["observation_interval"] == {
+        "days": 0,
+        "seconds": int(timedelta(seconds=10).total_seconds()),
+        "microseconds": 0,
+    }
 
 
-class _FixedPositionModel:
-    def __init__(self, node_id: NodeId) -> None:
-        self._node_id = node_id
+def test_bounded_300_seconds_preserves_exact_plan_and_compiler_semantics(
+    bounded_300_chain,
+) -> None:
+    chain = bounded_300_chain
+    timeline = chain.simulator.get_timeline()
+    timestamps = tuple(timeline.iter_timestamps())
+    transition_timestamps = tuple(
+        transition.timestamp
+        for plan in chain.plans
+        for transition in plan.transitions
+    )
+    activation_timestamps = tuple(
+        timestamp
+        for realization in chain.realizations
+        for timestamp in realization.activation_timestamps
+    )
 
-    def compute_positions(self, topology, timestamp):
-        return {self._node_id: EarthFixedPosition(7_000_000.0, 0.0, 0.0)}
+    assert len(timestamps) == 31
+    assert transition_timestamps == timestamps
+    assert activation_timestamps == timestamps
+    assert len(chain.plans) == len(chain.realizations) == 15
+    assert [len(plan.transitions) for plan in chain.plans] == [3] + [2] * 14
 
-
-class _EmptyConnectionModel:
-    def compute_connection_slice(
-        self, topology, timestamp, positions, previous_connection_slice
+    state = None
+    previous = None
+    world_fingerprint = (
+        chain.simulator.get_physical_world().semantic_fingerprint()
+    )
+    for plan, realization in zip(
+        chain.plans, chain.realizations, strict=True
     ):
-        return ConnectionSlice()
+        if previous is None:
+            assert plan.previous_plan_id is None
+            assert plan.input_state_fingerprint is None
+        else:
+            assert plan.previous_plan_id == previous.plan_id
+            assert plan.input_state_fingerprint == previous.output_state_fingerprint
+            assert (
+                plan.start_timestamp
+                == previous.end_timestamp + timeline.observation_interval
+            )
+        state = apply_plan(
+            state,
+            plan,
+            physical_world_fingerprint=world_fingerprint,
+        )
+        assert realization.source_plan_id == plan.plan_id
+        assert realization.output_planned_state == state
+        assert (
+            realization.output_state_fingerprint
+            == plan.output_state_fingerprint
+        )
+        previous = plan
+
+    detached = read_planner_history(chain.history / "planning.jsonl.gz")
+    compiled = read_bpf_compiler_history(chain.history / "compiler.jsonl")
+    assert tuple(value.plan for value in detached) == chain.plans
+    assert tuple(
+        value["source_plan_id"] for value in compiled["realizations"]
+    ) == tuple(plan.plan_id for plan in chain.plans)
+    manifest = json.loads(
+        (chain.history / "domain-history-manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert manifest["terminal"] is True
+    assert manifest["through"] == "compiler"
+    assert manifest["counts"] == {
+        "expected_prehistory_frames": 0,
+        "expected_formal_frames": 31,
+        "prehistory_frames": 0,
+        "formal_frames": 31,
+        "plans": 15,
+        "transitions": 31,
+        "realizations": 15,
+    }
 
 
-class _EmptyRouteModel:
-    def compute_route_slice(
-        self, topology, timestamp, connection_slice, previous_route_slice
-    ):
-        return RouteSlice()
-
-
-def _unbounded_progression():
-    node_id = NodeId(65001, "satellite", "unbounded-satellite")
-    static_input = SimulatorStaticInput(
-        satellites=(
-            SatelliteSimulationInput(
-                node_id=node_id,
-                satellite_id="unbounded-satellite",
-                shell_id="shell-1",
-                orbit_id="orbit-1",
-                orbit_index=0,
-                altitude_km=550.0,
-                inclination_deg=53.0,
-                right_ascension_deg=0.0,
-                mean_anomaly_deg=0.0,
-                epoch_utc=START,
+def test_common_producer_is_lazy_bounded_and_terminal_is_idempotent(
+    bounded_300_chain,
+) -> None:
+    chain = bounded_300_chain
+    assert chain.initial == {
+        "formal_frame_count": 0,
+        "prehistory_frame_count": 0,
+        "physical_link_observation_count": 0,
+        "total_physical_link_observation_count": 0,
+        "plan_count": 0,
+        "transition_count": 0,
+        "realization_count": 0,
+        "buffered_plan_count": 0,
+        "pull_mode": None,
+        "formal_input_exhausted": False,
+        "planner_finished": False,
+        "domain_history_sealed": False,
+        "closed": False,
+        "latest_plan_id": None,
+        "first_formal_input_available": False,
+        "formal_observation_sink_failure_count": 0,
+        "formal_observation_sink_failure": None,
+        "formal_observation_sink_seconds": 0.0,
+        "domain_evidence_persistence_seconds": 0.0,
+        "frontiers": {
+            "physical_observation": None,
+            "planning": None,
+            "publication": None,
+        },
+        "evidence": {
+            "root": str(chain.history.resolve()),
+            "physical_frames": str(
+                (chain.history / "physical-frames.jsonl").resolve()
             ),
-        )
-    )
-    simulator = Simulator(
-        SimulationDefinition(
-            static_input,
-            SimulationTimeline(START, None, timedelta(seconds=10)),
-        )
-    )
-    position_model = _FixedPositionModel(node_id)
-    simulator.create_topology(position_model=position_model)
-    slicer = simulator.create_slicer(
-        connection_model=_EmptyConnectionModel(),
-        route_model=_EmptyRouteModel(),
-    )
-    planner = simulator.create_planner(
-        connection_model=MidpointConnectionPlanningModel(),
-        parameter_model=AccumulatedDeadbandParameterPlanningModel(),
-        forwarding_model=DependencyAwareForwardingPlanningModel(),
-        coordination_policy=DefaultCoordinationPolicy(),
-    )
-    return slicer, planner
+            "planning": str((chain.history / "planning.jsonl.gz").resolve()),
+            "compiler": str((chain.history / "compiler.jsonl").resolve()),
+            "manifest": None,
+        },
+    }
+    assert chain.first_pull["formal_frame_count"] == 4
+    assert chain.first_pull["plan_count"] == 1
+    assert chain.first_pull["realization_count"] == 1
+    assert chain.first_pull["formal_input_exhausted"] is False
+    assert chain.first_pull["planner_finished"] is False
+    assert chain.first_pull["frontiers"] == {
+        "physical_observation": "2026-01-01T00:00:30+00:00",
+        "planning": "2026-01-01T00:00:30+00:00",
+        "publication": "2026-01-01T00:00:20+00:00",
+    }
+    assert chain.terminal["formal_frame_count"] == 31
+    assert chain.terminal["formal_input_exhausted"] is True
+    assert chain.terminal["planner_finished"] is True
+    assert chain.terminal["domain_history_sealed"] is True
+    assert chain.terminal["buffered_plan_count"] == 0
+    assert chain.repeated_terminal == chain.terminal
+    assert chain.previous_realization is chain.realizations[-1]
+    assert chain.peaks == {
+        "buffered_plans": 0,
+        "unpublished": 1,
+        "published_evidence": 0,
+    }
+    assert chain.manifest_sha256 == sha256(
+        (chain.history / "domain-history-manifest.json").read_bytes()
+    ).hexdigest()
 
 
-def test_open_ended_1000_step_working_sets_remain_bounded(tmp_path) -> None:
-    slicer, planner = _unbounded_progression()
-    supplier = _rolling_supplier(
-        slicer,
+def test_released_durable_history_feeds_tools_without_domain_reexecution(
+    bounded_300_chain,
+    monkeypatch,
+) -> None:
+    chain = bounded_300_chain
+
+    def _forbidden(*_args, **_kwargs):
+        pytest.fail("detached Tool attempted domain reexecution")
+
+    monkeypatch.setattr(
+        type(chain.simulator.get_physical_world()),
+        "frame_at",
+        _forbidden,
+    )
+    monkeypatch.setattr(
+        type(chain.simulator.get_physical_link_model()),
+        "compute_observation",
+        _forbidden,
+    )
+    monkeypatch.setattr(type(chain.planner), "observe", _forbidden)
+    before = {
+        path.name: sha256(path.read_bytes()).hexdigest()
+        for path in chain.history.iterdir()
+    }
+
+    detached = read_planner_history(chain.history / "planning.jsonl.gz")
+    compiled = read_bpf_compiler_history(chain.history / "compiler.jsonl")
+    projected = collect_planner_data(detached)
+
+    assert tuple(value.plan for value in detached) == chain.plans
+    assert len(compiled["realizations"]) == len(chain.realizations)
+    assert projected["inventory"]["plans"] == 15
+    assert projected["inventory"]["formal_transitions"] == 31
+    assert before == {
+        path.name: sha256(path.read_bytes()).hexdigest()
+        for path in chain.history.iterdir()
+    }
+
+
+def test_1000_step_common_producer_working_set_remains_bounded() -> None:
+    simulator = _bounded_complete_simulator(timedelta(seconds=9_990))
+    planner = create_complete_static_planner(simulator)
+    producer = _IncrementalRealizationProducer(
+        simulator.get_timeline(),
+        simulator.get_physical_world(),
+        simulator.get_physical_link_model(),
         planner,
-        tmp_path,
-        lookahead=timedelta(seconds=20),
     )
+    realization_count = 0
+    transition_count = 0
+    peaks = {
+        "buffered_plans": 0,
+        "unpublished": 0,
+        "published_evidence": 0,
+        "lifecycle_pairs": 0,
+        "parameter_memory": 0,
+        "route_demands": 0,
+        "operational_connections": 0,
+        "route_outcomes": 0,
+    }
+    try:
+        while True:
+            realization = producer.produce_next_realization()
+            snapshot = producer.snapshot()
+            peaks["buffered_plans"] = max(
+                peaks["buffered_plans"],
+                snapshot["buffered_plan_count"],
+            )
+            peaks["unpublished"] = max(
+                peaks["unpublished"], len(planner._unpublished)
+            )
+            peaks["published_evidence"] = max(
+                peaks["published_evidence"],
+                len(planner._published_evidence),
+            )
+            peaks["lifecycle_pairs"] = max(
+                peaks["lifecycle_pairs"], len(planner._lifecycle_by_pair)
+            )
+            peaks["parameter_memory"] = max(
+                peaks["parameter_memory"], len(planner._parameter_memory)
+            )
+            peaks["route_demands"] = max(
+                peaks["route_demands"], len(planner._route_demands)
+            )
+            if snapshot["formal_frame_count"]:
+                state = planner.get_state()
+                peaks["operational_connections"] = max(
+                    peaks["operational_connections"],
+                    len(state.operational_connections),
+                )
+                peaks["route_outcomes"] = max(
+                    peaks["route_outcomes"], len(state.route_outcomes)
+                )
+            if realization is None:
+                break
+            realization_count += 1
+            transition_count += len(producer.latest_plan.transitions)
 
-    peaks = _owner_working_set(slicer, planner)
-    while slicer.get_latest_slice_id() < 1_005:
-        assert supplier() is not None
-        current = _owner_working_set(slicer, planner)
-        peaks = {key: max(peaks[key], current[key]) for key in peaks}
-
-    assert slicer.get_latest_slice_id() >= 1_005
-    assert planner._processed_through_slice_id >= 1_005
-    assert supplier._realization_count >= 500
-    assert len(slicer.get_retained_slice_ids()) == 1
-    assert len(slicer._slices_by_timestamp) == 1
-    assert not planner._differences
-    assert not planner._route_next_hops
-    assert not planner._route_path_connection_ids
-    assert not planner._decisions
-    assert supplier._previous_realization is not None
-    # The previous frontier plus three generated observations can coexist at
-    # the compile handoff; the count remains independent of total progress.
-    assert peaks["slices"] <= 4
-    assert peaks["differences"] <= 3
+        assert realization_count == 500
+        assert transition_count == 1_000
+        assert snapshot["formal_frame_count"] == 1_000
+        assert snapshot["plan_count"] == 500
+        assert snapshot["realization_count"] == 500
+        assert snapshot["formal_input_exhausted"] is True
+        assert snapshot["planner_finished"] is True
+        assert len(producer._plans) == 0
+        assert producer._previous_realization is not None
+        assert len(planner._unpublished) == 0
+        assert len(planner._published_evidence) == 0
+        assert peaks == {
+            "buffered_plans": 0,
+            "unpublished": 1,
+            "published_evidence": 0,
+            "lifecycle_pairs": 1,
+            "parameter_memory": 2,
+            "route_demands": 0,
+            "operational_connections": 2,
+            "route_outcomes": 3,
+        }
+    finally:
+        producer.close()

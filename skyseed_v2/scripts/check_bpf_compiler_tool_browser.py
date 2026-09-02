@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 
 try:
-    from scripts.check_slice_tool_browser import (
+    from scripts._webdriver import (
         _available_port,
         _capture_screenshot,
         _execute,
@@ -18,7 +18,7 @@ try:
         _wait_for_driver,
     )
 except ModuleNotFoundError:
-    from check_slice_tool_browser import (  # type: ignore[no-redef]
+    from _webdriver import (  # type: ignore[no-redef]
         _available_port,
         _capture_screenshot,
         _execute,
@@ -35,7 +35,7 @@ def run_bpf_compiler_browser_smoke(
     timeout: float = 30.0,
     screenshot_directory: Path | None = None,
 ) -> dict[str, object]:
-    """Exercise lazy Plan selection and primary views in real Firefox."""
+    """Exercise the detached Plan/realization report in real Firefox."""
 
     resolved_page = page.resolve()
     if not resolved_page.is_file():
@@ -89,79 +89,44 @@ def run_bpf_compiler_browser_smoke(
                 """
 const failures=[];
 window.addEventListener("error",event=>failures.push(event.message));
-const chineseTitle=document.title;
-const chineseProse=document.querySelector("section.card")?.textContent||"";
-document.querySelector('[data-language="en"]')?.click();
-const englishTitle=document.title;
-const tabs=[...document.querySelectorAll(".tab")];
-const viewCounts={};
-for(const tab of tabs){
-  tab.click();
-  const view=document.getElementById(`view-${tab.dataset.view}`);
-  viewCounts[tab.dataset.view]=view.textContent.trim().length;
-}
-const selector=document.getElementById("plan-select");
-selector.value=String(selector.options.length-1);
-selector.dispatchEvent(new Event("change",{bubbles:true}));
-const selectedLast=Number(selector.value);
-document.querySelector('[data-view="overview"]').click();
-document.getElementById("plan-scrubber").scrollIntoView({block:"start"});
-const bucketRows=[...document.querySelectorAll("#chart-input [data-bucket]")];
-const bucketCount=bucketRows.length;
-const lastBucket=bucketRows.at(-1);
-lastBucket?.click();
-const bucketPlans=[...document.querySelectorAll("[data-bucket-plan]")];
-const drillPlan=Number(bucketPlans[0]?.dataset.bucketPlan);
-bucketPlans[0]?.click();
+const firstCard=document.querySelector("section.card")?.textContent||"";
+const select=document.getElementById("realization"),boundary=document.getElementById("global-boundary");
+if(select.options.length>1){select.value="1";select.dispatchEvent(new Event("change",{bubbles:true}));}
+if(Number(boundary.max)>0){boundary.value=String(boundary.max);boundary.dispatchEvent(new Event("input",{bubbles:true}));}
 return {
-  chineseTitle,
-  chineseProse,
-  englishTitle,
-  plans:selector.options.length,
-  timelineButtons:document.querySelectorAll(".plan-button").length,
-  selected:Number(selector.value),
-  selectedLast,
-  activePlanButtons:document.querySelectorAll(".plan-button.active").length,
-  transformMetrics:document.querySelectorAll("#selected-transform .metric").length,
-  diagnosticCharts:document.querySelectorAll(".diagnostic-chart").length,
-  chartRows:document.querySelectorAll(".diagnostic-chart .chart-row").length,
-  bucketCount,
-  maximumBucketCount:Math.max(...["chart-input","chart-baseline","chart-churn"].map(id=>document.querySelectorAll(`#${id} [data-bucket]`).length)),
-  bucketPlanCount:bucketPlans.length,
-  drillPlan,
-  selectedAfterDrill:Number(selector.value),
-  manifestPlans:window.__SKYSEED_BPF_COMPILER_MANIFEST__?.plans?.length??0,
-  initialPayloadEmbedded:document.documentElement.innerHTML.includes('"same_next_hop_changed":true'),
-  viewCounts,
+  title:document.title,
+  firstCard,
+  statCount:document.querySelectorAll(".stat").length,
+  realizations:select.options.length,
+  charts:document.querySelectorAll(".chart canvas").length,
+  boundaries:Number(boundary.max)+1,
+  timestamp:document.getElementById("compiler-timestamp").textContent,
+  realizationDetail:document.getElementById("realization-detail").textContent.length,
+  boundaryDetail:document.getElementById("boundary-workload").textContent.length,
+  secondaryBoundary:!!document.getElementById("compiler-boundary"),
+  synchronized:select.dataset.globalBoundary===document.getElementById("boundary-workload").dataset.globalBoundary,
+  focusedCharts:[...document.querySelectorAll(".chart canvas")].every(value=>value.dataset.focusedRealization===select.value),
+  retention:[...document.querySelectorAll("section.card")].at(-1)?.textContent||"",
   failures
 };
 """,
             )
             if (
-                observed["chineseTitle"] != "Skyseed v2 BPF Compiler 检查"
-                or "Compiler 是一次性确定性转换器" not in observed["chineseProse"]
-                or "完整不可变 realization baseline" not in observed["chineseProse"]
-                or observed["englishTitle"]
-                != "Skyseed v2 BPF Compiler Inspection"
-                or observed["plans"] < 1
-                or observed["timelineButtons"] != observed["plans"]
-                or observed["selectedLast"] != observed["plans"] - 1
-                or observed["activePlanButtons"] != 1
-                or observed["transformMetrics"] < 10
-                or observed["diagnosticCharts"] != 4
-                or observed["bucketCount"] < 1
-                or observed["maximumBucketCount"] > 12
-                or (
-                    observed["plans"] > 12
-                    and observed["bucketCount"] >= observed["plans"]
-                )
-                or observed["bucketPlanCount"] < 1
-                or observed["selectedAfterDrill"] != observed["drillPlan"]
-                or observed["manifestPlans"] != observed["plans"]
-                or observed["initialPayloadEmbedded"]
-                or any(
-                    count < 1 for count in observed["viewCounts"].values()
-                )
+                observed["title"]
+                not in {"BPF Compiler Inspection", "BPF 编译器检查"}
+                or "does not invoke Compiler" not in observed["firstCard"]
+                or "bpf-compiler-inspection.json"
+                not in observed["retention"]
+                or observed["statCount"] < 1
+                or observed["realizations"] < 1
+                or observed["charts"] != 4
+                or observed["boundaries"] < 1
+                or not observed["timestamp"]
+                or observed["realizationDetail"] < 20
+                or observed["boundaryDetail"] < 20
+                or observed["secondaryBoundary"]
+                or not observed["synchronized"]
+                or not observed["focusedCharts"]
                 or observed["failures"]
             ):
                 raise AssertionError(
@@ -175,7 +140,7 @@ return {
             )
             return {
                 "status": "PASS",
-                "plans": observed["plans"],
+                "plans": observed["realizations"],
                 "browser": session["capabilities"]["browserName"],
                 "browser_version": session["capabilities"][
                     "browserVersion"

@@ -1,8 +1,8 @@
-"""Top-level Simulator composition root and explicit Topology lifecycle."""
+"""Top-level composition root for time, physical, and planning owners."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 from skyseed_v2.configuration.simulator import ZoneLayoutDefinition
@@ -10,23 +10,30 @@ from skyseed_v2.shared._execution_observation import _ExecutionObserver
 
 from .definition import SimulationDefinition
 from .planning import (
-    ConnectionPlanningModel,
     CoordinationPolicy,
-    ForwardingPlanningModel,
+    GroundStationAccessPlanningModel,
+    InterSatelliteConnectionPlanningModel,
     ParameterPlanningModel,
     Planner,
     PlanningWindowPolicy,
+    RouteDemand,
+    RoutePlanningModel,
+    ZoneServicePlanningModel,
 )
-from .slicing import ConnectionModel, RouteModel, Slicer
 from .timeline import SimulationTimeline
-from .topology import PositionModel, Topology, ZoneMembershipModel
+from .physical import (
+    PhysicalLinkModel,
+    PositionModel,
+    PhysicalWorld,
+    ZoneMembershipModel,
+)
 
 
 class Simulator:
     """Own one definition and coordinate explicit subsystem construction.
 
     Layer: top-level Simulator composition root and facade. Users create it from
-    one ``SimulationDefinition`` and explicitly request Topology construction.
+    one ``SimulationDefinition`` and explicitly request PhysicalWorld construction.
     It is not an Emulator wrapper, planner, compiler, runner or runtime-resource
     locator. It is public from ``skyseed_v2.simulator`` as the canonical Simu
     entry point.
@@ -34,8 +41,8 @@ class Simulator:
 
     __slots__ = (
         "_definition",
-        "_topology",
-        "_slicer",
+        "_physical_world",
+        "_physical_link_model",
         "_planner",
         "_execution_observer",
         "_execution_observation_path",
@@ -45,8 +52,8 @@ class Simulator:
         if not isinstance(definition, SimulationDefinition):
             raise TypeError("definition must be a SimulationDefinition")
         self._definition = definition
-        self._topology: Topology | None = None
-        self._slicer: Slicer | None = None
+        self._physical_world: PhysicalWorld | None = None
+        self._physical_link_model: PhysicalLinkModel | None = None
         self._planner: Planner | None = None
         self._execution_observer: _ExecutionObserver | None = None
         self._execution_observation_path: Path | None = None
@@ -64,10 +71,8 @@ class Simulator:
         observer = _ExecutionObserver(metadata)
         self._execution_observer = observer
         self._execution_observation_path = Path(path)
-        if self._topology is not None:
-            self._topology._set_execution_observer(observer)
-        if self._slicer is not None:
-            self._slicer._set_execution_observer(observer)
+        if self._physical_world is not None:
+            self._physical_world._set_execution_observer(observer)
         if self._planner is not None:
             self._planner._set_execution_observer(observer)
         return observer
@@ -90,89 +95,95 @@ class Simulator:
     def get_timeline(self) -> SimulationTimeline:
         return self._definition.timeline
 
-    def create_topology(
+    def create_physical_world(
         self,
         *,
         position_model: PositionModel,
         zone_layout_definition: ZoneLayoutDefinition | None = None,
         zone_membership_model: ZoneMembershipModel | None = None,
-    ) -> Topology:
-        if self._topology is not None:
-            raise RuntimeError("Topology has already been created")
+    ) -> PhysicalWorld:
+        if self._physical_world is not None:
+            raise RuntimeError("PhysicalWorld has already been created")
         if zone_layout_definition is None and zone_membership_model is not None:
             raise ValueError(
                 "zone_membership_model requires zone_layout_definition"
             )
-        topology = Topology._materialize(
+        physical_world = PhysicalWorld._materialize(
             self._definition.static_input,
             position_model=position_model,
             zone_layout_definition=zone_layout_definition,
             zone_membership_model=zone_membership_model,
             execution_observer=self._execution_observer,
         )
-        self._topology = topology
-        return topology
+        self._physical_world = physical_world
+        return physical_world
 
-    def get_topology(self) -> Topology:
-        if self._topology is None:
-            raise RuntimeError("Topology has not been created")
-        return self._topology
-
-    def create_slicer(
-        self,
-        *,
-        connection_model: ConnectionModel,
-        route_model: RouteModel,
-    ) -> Slicer:
-        if self._slicer is not None:
-            raise RuntimeError("Slicer has already been created")
-        topology = self.get_topology()
-        if len(
-            {
-                id(topology.get_position_model()),
-                id(connection_model),
-                id(route_model),
-            }
-        ) != 3:
-            raise ValueError("each Model role requires a distinct instance")
-        slicer = Slicer._create(
-            topology=topology,
-            timeline=self.get_timeline(),
-            connection_model=connection_model,
-            route_model=route_model,
-            execution_observer=self._execution_observer,
-        )
-        self._slicer = slicer
-        return slicer
-
-    def get_slicer(self) -> Slicer:
-        if self._slicer is None:
-            raise RuntimeError("Slicer has not been created")
-        return self._slicer
+    def get_physical_world(self) -> PhysicalWorld:
+        if self._physical_world is None:
+            raise RuntimeError("PhysicalWorld has not been created")
+        return self._physical_world
 
     def create_planner(
         self,
         *,
-        connection_model: ConnectionPlanningModel,
+        physical_link_model: PhysicalLinkModel,
+        inter_satellite_model: InterSatelliteConnectionPlanningModel,
+        ground_station_model: GroundStationAccessPlanningModel,
+        zone_service_model: ZoneServicePlanningModel,
         parameter_model: ParameterPlanningModel,
-        forwarding_model: ForwardingPlanningModel,
+        route_model: RoutePlanningModel,
         coordination_policy: CoordinationPolicy,
         planning_window_policy: PlanningWindowPolicy | None = None,
+        route_demands: Iterable[RouteDemand] = (),
     ) -> Planner:
+        """Create the sole Planner and retain its physical observation Model."""
+
         if self._planner is not None:
             raise RuntimeError("Planner has already been created")
-        slicer = self.get_slicer()
-        planner = Planner._create(
-            slicer=slicer,
-            planning_window_policy=planning_window_policy,
-            connection_model=connection_model,
-            parameter_model=parameter_model,
-            forwarding_model=forwarding_model,
-            coordination_policy=coordination_policy,
-            execution_observer=self._execution_observer,
+        physical_world = self.get_physical_world()
+        if not isinstance(physical_link_model, PhysicalLinkModel):
+            raise TypeError(
+                "physical_link_model must implement PhysicalLinkModel"
+            )
+        model_roles = (
+            physical_world.get_position_model(),
+            physical_link_model,
+            inter_satellite_model,
+            ground_station_model,
+            zone_service_model,
+            parameter_model,
+            route_model,
+            coordination_policy,
         )
+        if len({id(value) for value in model_roles}) != len(model_roles):
+            raise ValueError("each Model/policy role requires a distinct instance")
+        planner_arguments: dict[str, object] = {
+            "physical_world": physical_world,
+            "observation_interval": (
+                self._definition.timeline.observation_interval
+            ),
+            "inter_satellite_model": inter_satellite_model,
+            "ground_station_model": ground_station_model,
+            "zone_service_model": zone_service_model,
+            "parameter_model": parameter_model,
+            "route_model": route_model,
+            "coordination_policy": coordination_policy,
+            "route_demands": route_demands,
+            "execution_observer": self._execution_observer,
+        }
+        if planning_window_policy is not None:
+            planner_arguments["planning_window_policy"] = planning_window_policy
+        planner = Planner(**planner_arguments)
+        self._physical_link_model = physical_link_model
         self._planner = planner
         return planner
+
+    def get_physical_link_model(self) -> PhysicalLinkModel:
+        """Return the exact Model injected with the sole Planner."""
+
+        if self._physical_link_model is None:
+            raise RuntimeError("Planner has not been created")
+        return self._physical_link_model
 
     def get_planner(self) -> Planner:
         if self._planner is None:

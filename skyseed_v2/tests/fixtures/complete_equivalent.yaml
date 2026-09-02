@@ -13,9 +13,11 @@ skyseed_autonomous_systems:
               - satellite_id: satellite-0
                 index_in_orbit: 0
                 mean_anomaly_deg: 126.0
+                maximum_simultaneous_inter_satellite_links: 4
               - satellite_id: satellite-1
                 index_in_orbit: 1
                 mean_anomaly_deg: 146.0
+                maximum_simultaneous_inter_satellite_links: 4
     ground_stations:
       - ground_station_id: gs-new-york
         display_name: New York Ground Station

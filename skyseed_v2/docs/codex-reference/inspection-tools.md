@@ -1,239 +1,133 @@
-# Inspection Tools contract
+# Detached inspection Tools
 
-## Authority
+Tools are read-only observers of completed semantic or runtime records. They do
+not advance the Timeline, call Models, publish Plans, compile realizations, or
+change Runner state.
 
-Normative detail under `../accepted-design.md`. Implementation state is
-recorded only in [`CURRENT.md`](../CURRENT.md).
+## Maintained surfaces
 
-## Scope
+| Tool | Input authority | Primary output |
+|---|---|---|
+| Physical World | exact PhysicalWorld, sealed PhysicalFrame history, exact Tool-owned candidate stream, and construction descriptors | chunked map-first `inspection/physical-world/` |
+| Zone | static Zone layout | `inspection/zone/` |
+| Planner | `PublishedPlanningEvidence`, aligned sealed PhysicalFrames, exact candidate stream, and descriptors | compact root index, per-frame/per-route chunks, and persistent staged 3D/2D HTML |
+| BPF Compiler | Plan/realization values plus optional Observation records | compact chart/dashboard and drill-down JSON plus HTML |
+| Runner | Runner events and snapshots | Runner inspection bundle |
+| Observation | generic raw component/stage/duration/work/resource records | Observation bundle |
+| Traffic | telemetry plus physical, planning, and Compiler evidence | `traffic-replay.json` plus HTML |
 
-Repository-local Topology, Zone, Physical Frame, temporary legacy Slice /
-Difference, Planner, System Observation, BPF Compiler, post-run BPF Runner,
-and post-run Traffic / Path Replay inspection pipelines.
-Tools are read-only consumers and are not installed `skyseed_v2` product API.
+All output roots are invocation-owned. Readers validate schema and provenance;
+renderers consume detached projection values only. The separate
+`inspection-evidence/physical-link-observations.jsonl.gz` is a deterministic,
+checksum-verified stream of facts already produced by the authoritative
+execution. The producer's optional sink is called only after Planner consumes
+the observation. It has no semantic ownership and is not a second pipeline.
 
-The accepted destination keeps physical inspection separate from future
-planned-operational inspection. The current Slice Tool is only a consumer of
-the Round-1 legacy mixed-state seam and is scheduled for removal with Slicer;
-it is not the accepted successor to the Physical Frame Tool.
+## Meaning separation
 
-## Owners and consumers
-
-Each Tool preserves this responsibility boundary:
+Planner inspection must visibly distinguish:
 
 ```text
-reader → projection → display_analysis → renderer → artifact_writer
+PHYSICAL CANDIDATE
+→ SELECTED / ACQUIRING
+→ OPERATIONAL CONNECTION
+→ ROUTED / UNREACHABLE
+→ COMPILED
+→ REALIZED
 ```
 
-The Topology and Zone formal readers consume one exact `Topology`. The
-Physical Frame reader consumes that exact `Topology` together with one exact,
-already-created `PhysicalFrame` supplied by its caller. It reads the frame's
-timestamp and Position mapping plus static Topology interpretation; it never
-calls `Topology.frame_at()`, invokes the Topology-owned `PositionModel`, or
-requests another timestamp. The temporary Slice reader consumes one exact
-legacy `Slicer`; the Planner reader additionally consumes consecutive
-immutable `Plan` publications, exact consumed `TopologyDifference` values,
-and retained `PlanningDecision` values supplied by scenario assembly.
-Projection and later responsibilities consume only Tool-owned detached
-values. A small Tool may colocate adjacent responsibilities when the boundary
-remains explicit; file count and filenames are not part of the contract.
-Examples call the Tool facades; browser smoke consumes emitted HTML from the
-validation side.
+Candidate counts and rejection/underfill summaries are evidence, not planned
+state. Acquisition start, remaining time, and reference duration remain
+Planner lifecycle evidence. Operational parameters, Zone assignment, Route
+outcomes, transitions, semantic events, precedence, Plan lineage, and
+fingerprints come from canonical planning records.
 
-The BPF Compiler reader instead consumes consecutive immutable Plans and the
-aligned `BpfCompiledRealization` values already produced by an explicit
-backend-side caller. Its facade never invokes `compile_bpf`, queries Simulator
-facts, or binds runtime/kernel resources.
+The Physical World Tool links a 3D ECEF Earth view and a Tool-private 2D
+subpoint map across the sealed formal timeline. Position, Physical Link, and
+Zone perspectives share one focus. Candidate overlays are loaded per timestamp
+and only the focused adjacency is drawn, always as dashed physical input.
+Exact frame inspection stays inside PhysicalWorld. It copies authoritative
+distance, elevation, delay, feasibility, and work counts from
+`PhysicalLinkObservation`; it does not recalculate geometry. Zone focus changes
+the map itself, highlighting geometry, feasible Satellites, and relations.
+Static Zone inspection shows geography, while operational service appears in
+Planner inspection.
 
-The Runner Tool needs no formal-object reader: private generated execution
-supplies the plain detached result of `BpfRunner.inspection_snapshot()` plus
-its plain invocation-outcome mapping after cleanup. Projection owns event
-classification, stable monotonic-time ordering, timing derivation, the frozen
-runtime-binding view, and the current-default-dataplane recorded-evidence view.
-The two evidence domains remain separate. The Tool never retains a live
-Runner, invokes lifecycle methods, or performs fresh Docker/kernel reads.
+Planner renders one persistent world with a compact selector for the accepted
+processing order. A stage changes overlays and one detail drawer; it does not
+materialize ten payload cards. Frame data is stored in deterministic
+timestamp-indexed JS chunks. Route histories are addressed by a stable SHA-256
+key in fixed shards and loaded only after a `RouteDemand` is selected. The root
+HTML/JSON retains compact inventory, frame indexes, publications, descriptors,
+and route indexes rather than all frames, all Routes, or replayed state.
+Concrete descriptors are derived from maintained example construction values,
+not arbitrary private Model caches.
+The renderer shares Tool-local drag/zoom/focus policy across PhysicalWorld and
+Planner. Focused ISL and GroundStation candidates are individually selectable;
+same-plane and cyclic cross-plane Δ1/Δ2/Δ3 remain explicit. Stage changes keep
+the accumulated operational network faint where relevant and clear stale
+candidate relationship focus.
 
-Traffic Replay instead reads three required already-written artifacts:
-Runner-owned traffic JSONL, the Slice / Difference manifest plus offline Slice
-chunks, and the BPF Compiler manifest plus exact evidence chunks. An
-example-owned planned workload is optional context. Legacy monolithic Compiler
-JSON remains a reader compatibility case, not the generated canonical layout.
-Its reader validates timeline, NodeId, Zone prefix, nominal boundary, and
-generation identity; it reconstructs exact ACTIVE-generation physical network
-context only from reciprocal telemetry interface identities. Projection pairs
-only unambiguous supported ICMP request/reply records, maps kernel monotonic
-time through the persisted simulation clock anchor, and uses retained ECEF
-Position samples. It derives observed ICMP flows directly from telemetry; a
-workload never supplies the primary traffic identity. A Zone remains a stable logical endpoint and its current
-service satellite is the physical path endpoint. Linear ECEF interpolation is
-explicitly display-only; the Tool never invokes a Compiler or calls/copies a
-PositionModel. Scheduled slots without tc-BPF observation remain qualified
-gaps, not claimed timeouts or packet loss.
+With full detached Plan/realization values, the Compiler Tool projects compact
+per-realization trends, operation breakdowns, semantic-precedence folding,
+per-boundary workload, intended-state cardinalities, and lineage. When supplied,
+Observation provides Compiler total and stage timing without conflating
+rollups. Four canvas trends make workload, deltas, folding modes, and Compiler
+timing primary; one shared boundary cursor derives all structured detail, and
+the realization selector is only a synchronized jump shortcut. The Tool retains the small lineage/activation/Zone-prefix contract
+needed by Traffic but does not duplicate every raw intent and intended-state
+object. The realization handoff remains semantic payload owner. It never
+recompiles.
 
-## Contract
+Traffic accepts `--physical-frames` and `--planning` alongside Compiler
+evidence. It uses explicit planned Route outcomes to classify success, planned
+unreachable, activation-time transience, and unexplained reachable loss.
 
-- the formal-reader responsibility performs every Topology/PhysicalFrame/
-  temporary-Slicer read and returns a Tool-owned read snapshot with no retained
-  formal object;
-- the projection responsibility converts only that snapshot into private
-  serializable view data and never imports or invokes a formal domain object;
-- display analysis adds explicitly non-authoritative display values,
-  including orbit-plane fitting/eigendecomposition, rectangle-boundary
-  sampling, focus visibility, guides, and classifications;
-- rendering accepts final view data and returns standalone display text;
-- artifact writing writes supplied data/page bytes and owns no rendering or
-  formal reads;
-- the Tool facade composes the responsibilities and preserves its Tool-facing
-  function.
+## Observation taxonomy
 
-The Physical Frame Tool reads one caller-supplied `Topology + PhysicalFrame`
-pair. Its detached snapshot contains the one timestamp, exact formal
-`EarthFixedPosition` ECEF coordinates, formal WGS84 geodetic views, and only
-static node/orbit identity and configured access-capability facts needed to
-interpret those positions. Tool-private counts, map placement, and display
-notes are non-authoritative. The Tool has no history and no Slice/frame ID,
-Connection, Route, Zone-serving assignment, effective resource allocation,
-Difference, Planner decision, Plan, or realized-runtime field. In particular,
-the facade performs no physical projection call: the caller, not the Tool,
-decides whether and when to call `Topology.frame_at()`.
+Current semantic groups are physical projection, physical-link observation,
+ISL selection, acquisition/lifecycle, GroundStation selection/ranking,
+validation, evidence projection and planning rollup, Zone planning,
+parameter planning, Route planning, transition/application,
+coordination/precedence, Plan publication, Compiler, realization producer,
+realization handoff writer, Runner, and Traffic.
 
-The old Slice Tool is a temporary legacy mixed-state consumer. It reads
-retained legacy `TopologySlice` next-hop, Position, Connection, Route,
-Zone-serving, and adjacent Difference facts only because existing
-Planner/Compiler consumers have not yet migrated. It is scheduled for removal
-with Slicer and the old Slice/Difference path. Until then, it does not eagerly
-resolve every route. It writes one small manifest plus one offline script
-chunk per retained Slice so normal page load materializes only the selected
-Slice. Slice, Planner, and Compiler exact chunks use deterministic
-`gzip-base64-json` envelopes with uncompressed byte-count/SHA-256 metadata;
-their browsers decode only selected chunks and retain direct `file://`
-operation. Its renderer may preserve selected object identities, visualize
-contextual Zone service and Difference facts, and restore one explicitly
-selected path for display, but does not acquire routing authority.
-The generation facade may receive a detached scenario/model-context mapping
-for compact human explanation. Display analysis combines that mapping with
-read Topology/Slice facts to produce current counts and physical summaries;
-derived envelope/separation values remain Tool-private and are labeled as
-such. No Tool-context field enters a formal Simulator value or public schema.
-Planner inspection may adapt the same compact read facts for its existing
-focused view and reads actual Plan transitions, temporal indexes, precedence
-edges, and retained decisions. It uses an external bootstrap manifest plus
-hierarchical lazy catalog/data chunks, never calls `create_difference()`,
-never eagerly restores all paths, and never reconstructs rejected candidates
-or an expected Plan. Zone inspection reads
-only the formal static layout/geometry. Its browser hit testing is
-display-only navigation and is not a membership result.
+Observation records preserve invocation, component, stage, scope, duration
+role, real run-relative monotonic start/end, work/resource counts, Tool wall
+time, RSS, and input/output accounting. Its primary projection unions exact
+intervals, measures wall time with at least two distinct components active,
+and supports zoom/pan plus component-to-stage drill-down. Raw overlap including
+nested parent/child spans is advanced diagnostic evidence. It never
+reconstructs time from sequence order.
+They are diagnostic and do not add semantic authority.
 
-System Observation is a detached-evidence pipeline. A private optional
-recorder buffers component/stage/scope/duration/work/resource records while
-real execution occurs and persists them afterward. The Tool imports no domain
-execution package and performs only parse, validate, aggregate, and render.
-Bootstrap records are excluded from steady percentiles. Current component
-vocabulary covers Slicer and Planner; future Compiler/Runner emitters extend
-records rather than domain values or public Simulator APIs. Leaf stages,
-overlapping rollups, and zero-duration resource samples remain separate
-aggregation roles; no component or pipeline duration is inferred by summing
-them, and time-per-work uses positive work on leaf-stage records only.
+The maintained Starlink orchestration additionally emits a Tool/example-owned
+coarse timing artifact. Independent outer phases use monotonic wall time;
+explicit category totals distinguish core semantic production, persistence,
+detached inspection side-work, and other orchestration. Non-additive nested
+records are labelled so Planner/Compiler and their leaf stages are not summed
+twice. Interleaved aggregate counters retain their numeric totals but carry no
+timeline geometry; only measured monotonic spans are drawn.
 
-Topology, Zone, and Physical Frame rendering may embed the frozen Tool-private
-Natural Earth 1:110m coastline coordinate asset for offline orientation. The
-asset never enters a reader snapshot, formal geometry, membership, or public
-data contract. Topology orbit rings and legacy Slice Satellite positions share
-a Tool-private spherical display projection using unit Earth and the IUGG mean
-Earth radius. The Physical Frame map instead displays each formal WGS84
-geodetic view while keeping the exact ECEF and geodetic values visible. These
-rendering choices do not change formal altitude/Position facts; marker
-offsets, marker sizes, and hit-test radii remain non-authoritative.
+Generation writes its completed Observation stream under
+`inspection/observation/`. For each generated runtime invocation, the private
+runtime wrapper emits real one-shot `runner-total` and `traffic-total` rollups,
+then merges them with those generation records into
+`inspection/runtime-runs/<invocation-id>/observation/execution-observations.jsonl`.
+The Observation Tool reads that combined, invocation-owned stream; it does not
+synthesize Runner or Traffic completion from detached projections. This
+diagnostic merge does not introduce a public runtime-state contract.
 
-Planner display aliases, lifetime/state lanes, and spatial selection are
-Tool-owned projections. Its spatial panel uses exact retained ECEF positions
-from the formal Before/After Slice around a nominal transition; it does not
-interpolate sub-slice geometry.
+## Failure isolation
 
-Normal stage-bounded Starlink Gen1 execution may run the reader/projection/render/write
-pipeline in a bounded independent worker after the relevant immutable domain
-boundary. The worker persists a deterministic detached snapshot under the
-short-lived generated `.inspection-control/` directory before projection and
-builds to a same-parent staging directory; checksum audit precedes atomic
-publication. Tool work is side work and cannot delay a later domain stage;
-when no worker slot is available, its submission is deferred until domain
-completion. The final join gates artifact completeness only and deletes the
-temporary control directory. The private gzip/pickle snapshot is runtime
-bookkeeping, not durable evidence or a public serialization contract.
-
-## Invariants
-
-- Tools never mutate formal values, synchronize Planner, or invoke Models;
-- the Observation Tool never executes a component and observation fields never
-  enter formal semantic values;
-- the BPF Compiler Tool never invokes the Compiler or accepts responsibility
-  for producing compiled realizations;
-- the Runner Tool receives only detached summary/frozen-binding scalars/events
-  and never invokes `prepare()`, `run()`, `activate_next()`, or `cleanup()`;
-- Runner lifecycle/control-plane inspection, fresh kernel/dataplane
-  inspection, traffic telemetry, and active validation remain separate
-  evidence domains;
-- Traffic Replay does not collect packets or inspect live state; inferred
-  source/first-link facts remain visibly distinct from tc-ingress observations;
-- Traffic Replay excludes future-prepared links from ACTIVE context and never
-  renders a logical Zone as a geographic packet hop;
-- Traffic Replay keeps shared Position/network/Zone facts global, uses one
-  simulation timeline, and confines visualization-expanded packet playback to
-  a selected-Ping drill-down;
-- only readers import or access formal Topology/PhysicalFrame/temporary-Slicer
-  APIs;
-- read snapshots contain detached Tool-owned primitives/values, not Topology,
-  PhysicalFrame, Slicer, Slice, Difference, or entity instances;
-- projection, display analysis, renderer, and writer cannot become a second
-  authoritative computation path;
-- renderer receives final view data only;
-- writer performs filesystem output only;
-- browser smoke remains outside the pipeline.
-- detached Tool workers never record inside domain Observation rollups, and
-  scheduling or worker failure cannot rewrite an already completed domain
-  status;
-
-## Failure semantics
-
-Wrong formal input, missing retained data, foreign identity, or formal lookup
-failure propagates conspicuously; readers do not invent empty/fallback data.
-Projection/analysis/render validation failures stop artifact success. The
-writer creates output only from values supplied for that invocation and does
-not reuse stale success artifacts.
-
-## Prohibited behavior
-
-No Model execution, `Topology.frame_at()` or other position propagation,
-authoritative connection/routing/membership/Difference computation, formal
-object retained past the reader, formal API call outside a reader, browser
-driver inside a Tool, generic registry/plugin framework, renderer-side read,
-writer-side render, stale artifact fallback, production-to-Tools dependency,
-live Runner control, packet injection, or fresh kernel reconstruction in the
-Runner Tool.
-Traffic Replay additionally prohibits live collection, packet injection,
-Compiler or PositionModel execution, hidden packet identity guesses, and
-treating visual animation duration as recorded network time.
-
-## Extension points
-
-A Tool may add private snapshot fields, display analysis, rendering, or
-artifacts while preserving the responsibility boundary. It may merge
-low-complexity adjacent implementation files when the snapshot/formal-read,
-final-view/render, and file-only-write boundaries remain testable. A new
-formal read belongs in the formal-reader responsibility and requires a
-boundary test. Shared abstractions require a concrete repeated contract and
-cannot introduce a registry or authority.
-
-Runner Tool v1 is a post-run view. It obtains current/last-known scalar facts
-and the bounded recent window from `inspection_snapshot()`, while standard
-generated execution supplies the complete append-only `runner-events.jsonl`
-directly to its reader. Large-history indexing/streaming presentation remains
-future Tool work; the Runner does not materialize full durable history merely
-for this Tool.
-
-## Maintenance
-
-Update the affected Tool package, its local README, Tool/user guide,
-traceability map, boundary and focused Tool tests, browser smoke when UI
-changes, and this contract. A formal domain change also updates its owning
-Simulator contract first.
+A Tool reads only existing records and writes only its own output. Tool failure
+must not invalidate a generated runtime handoff or cause semantic computation
+to rerun. Generated `run.sh` preserves a successful runtime outcome when any
+detached Runner, Traffic, Observation, or aggregate-index Tool fails, reports a
+warning, and exits with the domain execution status. Missing, stale, malformed,
+mixed-invocation, or incomplete records fail explicitly within the affected
+Tool.
+The synchronous candidate-evidence sink follows authoritative Planner
+consumption. Its elapsed time is attributed to inspection capture, and an
+exception is retained as a distinct sink failure before the sink is disabled;
+the already-valid Planner result is not rolled back.

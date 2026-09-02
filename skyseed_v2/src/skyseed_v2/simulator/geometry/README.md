@@ -1,43 +1,17 @@
 # Simulator geometry
 
-This package owns the Earth-fixed Position value and deterministic
-geodetic/ECEF, distance, elevation, and line-of-sight capability. It owns no
-Topology, `PhysicalFrame`, time progression, Connection selection, or second
-coordinate state.
+This package owns immutable `EarthFixedPosition` and deterministic
+geodetic/ECEF conversion, distance, elevation, and Earth line-of-sight
+calculations.
 
 ## Local assembly / ownership map
 
-Legend: `-->` is value conversion or a calculation supplied by this package.
-The two conversion arrows express inverse coordinate representations, not
-ownership.
-
-```mermaid
-flowchart LR
-    POSITION["EarthFixedPosition"] --> CONVERSION["coordinate conversion functions"]
-    CONVERSION --> POSITION
-    CONVERSION --> CALCULATIONS["distance / elevation / LOS calculations"]
-```
-
-Legend: `-->` means the named consumer uses geometry capability. Geometry owns
-none of these consumers and does not own a Slice.
-
-```mermaid
-flowchart LR
-    GEOMETRY["EarthFixedPosition + geometry functions"] --> POSITION["PositionModel implementations"]
-    GEOMETRY --> FRAME["Topology PhysicalFrame publication"]
-    GEOMETRY --> CONNECTION["ConnectionModel implementations"]
-    GEOMETRY --> DISPLAY["Inspection display analysis"]
-```
-
-## Detailed public class/member diagrams
-
-Legend: the class block is the complete local public value/property contract;
-no relationship is implied.
+Legend: the class block is the geometry-owned immutable value; public
+calculation functions remain standalone helpers rather than fictional owners.
 
 ```mermaid
 classDiagram
     class EarthFixedPosition {
-        <<immutable authoritative Position value>>
         +x_m
         +y_m
         +z_m
@@ -48,32 +22,45 @@ classDiagram
     }
 ```
 
-Public functions: `geodetic_to_ecef`, `ecef_to_geodetic`,
+Public functions are `geodetic_to_ecef`, `ecef_to_geodetic`,
 `ecef_distance_m`, `elevation_deg`, and `has_earth_line_of_sight`.
+
+`_elevation.py` contains the single authoritative elevation primitive used by
+the public helper and optimized physical-link calculation. It handles degree
+units, clamping, coincident-position failure, and precomputed local-up inputs.
+
+Geometry owns no PhysicalWorld, PhysicalFrame progression, candidate selection,
+operational state, or Tool artifact. PhysicalWorld inspection copies elevation
+from authoritative physical-link observations rather than recalculating it.
+
+Focused tests cover conversion, antimeridian and horizon cases, non-zero
+observer altitude, numerical clamping, coincidence, and optimized/public
+equivalence.
+
+## Detailed public class/member diagrams
+
+These blocks and the exact table below are the maintenance source for every
+class owned by this public package. Re-exporting facades do not duplicate the
+owner detail.
+
+Legend: `<<...>>` states each public class role and `+` lists its
+complete direct public member contract. No connector means no ownership
+relationship is asserted by this inventory block.
+
+```mermaid
+classDiagram
+    class EarthFixedPosition {
+        <<immutable Earth-fixed value>>
+        +ellipsoidal_height_m
+        +geographic
+        +latitude_deg
+        +longitude_deg
+        +x_m
+        +y_m
+        +z_m
+    }
+```
 
 | Diagram class | Public contract | Required public members |
 |---|---|---|
-| `EarthFixedPosition` | `skyseed_v2.simulator.geometry.EarthFixedPosition` | `x_m`, `y_m`, `z_m`, `latitude_deg`, `longitude_deg`, `ellipsoidal_height_m`, `geographic` |
-
-## Entry points
-
-`position.py` owns `EarthFixedPosition` and `ecef_to_geodetic`;
-`coordinates.py` owns the remaining public conversions and calculations.
-
-## Dependencies
-
-Geometry uses neutral numeric/time primitives. Position Model implementations,
-Topology's immutable `PhysicalFrame`, temporary legacy Connection Model
-implementations, and non-authoritative Inspection display analysis consume it;
-geometry owns no Topology, PhysicalFrame, Slice, or Tool artifact.
-
-## Examples and tests
-
-Physical projection, temporary dynamic slicing, and Inspection examples
-exercise these values. Coordinate, main-chain Model, Zone, Tool-boundary, and
-SCC tests cover the package.
-
-## Maintenance checklist
-
-Update the local map and detailed diagram, Position/Connection contracts,
-public imports, and geometry tests when the public value/capability changes.
+| `EarthFixedPosition` | `skyseed_v2.simulator.geometry.EarthFixedPosition` | `ellipsoidal_height_m`, `geographic`, `latitude_deg`, `longitude_deg`, `x_m`, `y_m`, `z_m` |

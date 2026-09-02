@@ -20,7 +20,8 @@ class SatelliteSimulationInput:
     generation adapter creates it and Simulator construction reads it. It is not
     an Emulator entity, SEED Node or runtime position. It is public from the
     Simulator static-input package because it is the explicit static Satellite
-    input contract.
+    input contract. Its optional simultaneous-ISL maximum is an unavailable or
+    positive finite capability fact; absence never means unlimited hardware.
     """
 
     node_id: NodeId
@@ -34,6 +35,7 @@ class SatelliteSimulationInput:
     mean_anomaly_deg: float
     epoch_utc: datetime
     max_simultaneous_ground_station_accesses: int | None = None
+    maximum_simultaneous_inter_satellite_links: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.node_id, NodeId):
@@ -57,5 +59,15 @@ class SatelliteSimulationInput:
         ):
             raise ValueError(
                 "max_simultaneous_ground_station_accesses must be a "
+                "positive integer"
+            )
+        isl_capability = self.maximum_simultaneous_inter_satellite_links
+        if isl_capability is not None and (
+            not isinstance(isl_capability, int)
+            or isinstance(isl_capability, bool)
+            or isl_capability <= 0
+        ):
+            raise ValueError(
+                "maximum_simultaneous_inter_satellite_links must be a "
                 "positive integer"
             )

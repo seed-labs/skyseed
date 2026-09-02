@@ -1,76 +1,56 @@
 from __future__ import annotations
 
-from examples.mini_satellite_internet.emu import (
-    build_mini_satellite_internet_emulator,
+from pathlib import Path
+
+from examples.complete_static_emulator.emu import build_emulator
+from examples.complete_static_emulator.simu import (
+    create_complete_static_simulator,
+    run_complete_static_chain,
 )
 from examples.mini_satellite_internet.simu import (
-    create_mini_satellite_internet_simulator,
-    prepare_mini_satellite_internet_planning,
+    create_mini_satellite_internet_producer,
+    drain_mini_satellite_internet,
 )
 from skyseed_v2.backend.bpf import compile_bpf
-from skyseed_v2.simulator import (
-    ConnectionTransitionOperation,
-    DifferenceOperation,
-)
+from skyseed_v2.backend.bpf.compiled_realization import _ZoneEdgePhase
+from skyseed_v2.simulator.planning import plan_from_data, plan_to_data
 
 
-def test_canonical_emulator_simulator_planner_compiles_consecutive_bpf_chain():
-    emulator = build_mini_satellite_internet_emulator()
-    simulator = create_mini_satellite_internet_simulator(emulator)
-    slicer = simulator.get_slicer()
-    slicer.create_all_slices()
-    _, plans, _ = prepare_mini_satellite_internet_planning(simulator)
+def test_complete_chain_compiles_detached_self_contained_plans() -> None:
+    simulator = create_complete_static_simulator(build_emulator())
+    plans, realizations, snapshot = run_complete_static_chain(simulator)
+    world = simulator.get_physical_world()
 
-    compiled = []
+    detached_plans = tuple(plan_from_data(plan_to_data(value)) for value in plans)
+    detached_realizations = []
     previous = None
-    for plan in plans:
-        result = compile_bpf(plan, slicer=slicer, previous=previous)
-        compiled.append(result)
-        previous = result
+    for plan in detached_plans:
+        previous = compile_bpf(plan, world, previous)
+        detached_realizations.append(previous)
 
-    assert [(value.start_slice_id, value.end_slice_id) for value in plans] == [
-        (start, start + 4) for start in range(0, 64, 4)
-    ]
-    assert {
-        value.operation
-        for result in compiled
-        for value in result.resource_realizations
-    } == set(ConnectionTransitionOperation)
-    assert {
-        value.operation
-        for result in compiled
-        for value in result.forwarding_realizations
-    } == set(DifferenceOperation)
-    assert any(result.parameter_realizations for result in compiled)
-    assert any(result.zone_edge_realizations for result in compiled)
-
-    prefix_sets = {result.zone_prefixes for result in compiled}
-    assert len(prefix_sets) == 1
-    prefixes = dict(compiled[-1].zone_prefixes)
-    assert len(prefixes) == 5
-    assert len(set(prefixes.values())) == len(prefixes)
+    assert tuple(detached_realizations) == realizations
+    assert snapshot["formal_frame_count"] == 4
+    assert sum(len(value.transitions) for value in plans) == 4
+    assert sum(len(value.activation_timestamps) for value in realizations) == 4
     assert all(
-        value.startswith("198.18.") and value.endswith("/32")
-        for value in prefixes.values()
+        realization.physical_world_fingerprint == world.semantic_fingerprint()
+        for realization in realizations
     )
-    end_slice = slicer.get_slice(plans[-1].end_slice_id)
-    assert {
-        value.zone_id: value.service_satellite_id
-        for value in compiled[-1].intended_zone_edges
-    } == dict(end_slice.connection_slice.zone_service_assignments)
 
-    plan_precedence_count = sum(
-        len(plan.forwarding_precedences) for plan in plans
+
+def test_mini_chain_splits_zone_handover_around_route_publication() -> None:
+    simulator, producer = create_mini_satellite_internet_producer(
+        Path("examples/mini_satellite_internet")
     )
-    compiled_precedence_count = sum(
-        constraint.reason == "plan-forwarding-precedence"
-        for result in compiled
-        for constraint in result.constraints
+    plans, realizations, snapshot = drain_mini_satellite_internet(
+        simulator, producer
     )
-    assert plan_precedence_count > 0
-    assert compiled_precedence_count == plan_precedence_count
-    assert any(
-        constraint.reason == "forwarding-ready-before-zone-activation"
-        for result in compiled
-        for constraint in result.constraints
+    zone_intents = tuple(
+        value
+        for realization in realizations
+        for value in realization.zone_edge_realizations
     )
+    assert len(plans) == len(realizations) == 32
+    assert snapshot["formal_frame_count"] == 64
+    assert any(value.phase is _ZoneEdgePhase.READINESS for value in zone_intents)
+    assert any(value.phase is _ZoneEdgePhase.RETIREMENT for value in zone_intents)

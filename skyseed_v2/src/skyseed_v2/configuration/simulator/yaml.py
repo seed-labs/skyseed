@@ -24,7 +24,7 @@ class ZoneLayoutDefinitionLoadError(ValueError):
 
     Layer: Simulator configuration-read error. The Zone-layout YAML loader
     creates it and its file-input callers catch it. It is not an Emulator
-    configuration error, runtime Zone lookup failure or Slice state
+    configuration error, runtime Zone lookup failure, or planning state
     and is public from ``skyseed_v2.configuration.simulator``.
     """
 

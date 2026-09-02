@@ -15,6 +15,7 @@ from typing import Iterable, Mapping
 from uuid import uuid4
 
 from skyseed_v2.backend.bpf import BpfCompiledRealization, BpfRunner
+from skyseed_v2.simulator import Plan, plan_transition_fingerprint
 
 _GROUND_STATIONS = {
     "Marsala": "65010/ground-station/gs-marsala-reference",
@@ -151,6 +152,7 @@ _STATIC_EXPECTATION = {
 
 
 def planned_zone_service_segments(
+    plans: Iterable[Plan],
     realizations: Iterable[BpfCompiledRealization],
     *,
     simulation_start: datetime,
@@ -159,22 +161,35 @@ def planned_zone_service_segments(
     """Project compiled nominal Zone service into workload-owned segments."""
 
     events = []
-    for realization in realizations:
+    plan_values = tuple(plans)
+    realization_values = tuple(realizations)
+    if len(plan_values) != len(realization_values):
+        raise ValueError("Plans and realizations must be aligned")
+    for plan, realization in zip(plan_values, realization_values):
         if not isinstance(realization, BpfCompiledRealization):
             raise TypeError("realizations must contain BpfCompiledRealization")
-        for intent in realization.zone_edge_realizations:
-            events.append(
-                (
-                    intent.nominal_time,
-                    intent.zone_id,
-                    None
-                    if intent.previous_service_satellite_id is None
-                    else intent.previous_service_satellite_id.value,
-                    None
-                    if intent.service_satellite_id is None
-                    else intent.service_satellite_id.value,
+        if plan.plan_id != realization.source_plan_id:
+            raise ValueError("Plan and realization lineage differs")
+        for transition, boundary in zip(
+            plan.transitions, realization.compiled_activation_boundaries
+        ):
+            if plan_transition_fingerprint(transition) != (
+                boundary.transition_fingerprint
+            ):
+                raise ValueError("Plan transition provenance differs")
+            for change in transition.zone_service_transitions:
+                events.append(
+                    (
+                        transition.timestamp,
+                        change.zone_id,
+                        None
+                        if change.previous_satellite_id is None
+                        else change.previous_satellite_id.value,
+                        None
+                        if change.current_satellite_id is None
+                        else change.current_satellite_id.value,
+                    )
                 )
-            )
     events.sort(key=lambda value: (value[0], value[1]))
     active: dict[str, tuple[str, datetime]] = {}
     segments = []

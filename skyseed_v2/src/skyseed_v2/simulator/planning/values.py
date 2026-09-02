@@ -1,622 +1,1612 @@
-"""Define immutable backend-independent Planner values."""
+"""Define the authoritative public planning, Plan, and evidence values."""
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from enum import Enum
-from types import MappingProxyType
+from hashlib import sha256
+import json
 
 from skyseed_v2.shared import NodeId
+from skyseed_v2.shared.identifier import validate_identifier
 from skyseed_v2.shared.time import normalize_utc_datetime
 
-from ..slicing import (
-    Connection,
-    ConnectionDirection,
-    ConnectionId,
-    DifferenceOperation,
-    RouteKey,
-)
 
+class OperationalConnectionKind(Enum):
+    """Classify one planned operational Connection.
 
-class ConnectionTransitionOperation(Enum):
-    """Classify one planned logical Connection transition.
-
-    Layer: immutable Simulator Planner semantic operation. A
-    ConnectionTransition uses it for establishment or withdrawal. It is not a
-    sampled Difference operation or backend command and is public from
-    ``skyseed_v2.simulator``.
+    Layer: public immutable Simulator planning identity component. It is
+    public because Models, Plans, and Compiler consumers share the canonical
+    Connection classification. It is not a physical-candidate category,
+    terminal identity, or backend link type.
     """
 
-    ESTABLISH = "establish"
-    WITHDRAW = "withdraw"
+    INTER_SATELLITE = "inter-satellite"
+    GROUND_STATION_ACCESS = "ground-station-access"
 
 
 @dataclass(frozen=True, slots=True)
-class ConnectionTransition:
-    """Describe one planned logical Connection lifetime boundary.
+class OperationalConnectionId:
+    """Identify one planned undirected operational Connection.
 
-    Layer: immutable Simulator Planner transition. Planner publishes it in a
-    Plan and semantic consumers read it. It is not physical visibility
-    evidence, a sampled ConnectionSlice value or backend operation and is
-    public from ``skyseed_v2.simulator``.
+    Layer: public immutable Simulator planning identity. It is public because
+    operational values, Plan transitions, and downstream compilation need one
+    stable Connection identity. It is not a physical candidate, realized
+    resource identity, or timestamp.
     """
 
-    nominal_time: datetime
-    operation: ConnectionTransitionOperation
-    connection_id: ConnectionId
-    connection: Connection | None = None
+    kind: OperationalConnectionKind
+    endpoint_a: NodeId
+    endpoint_b: NodeId
 
     def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
-            "nominal_time",
-            normalize_utc_datetime(self.nominal_time, "nominal_time"),
-        )
-        if not isinstance(self.operation, ConnectionTransitionOperation):
-            raise TypeError(
-                "operation must be a ConnectionTransitionOperation"
-            )
-        if not isinstance(self.connection_id, ConnectionId):
-            raise TypeError("connection_id must be a ConnectionId")
-        if self.operation is ConnectionTransitionOperation.ESTABLISH:
-            if not isinstance(self.connection, Connection):
-                raise TypeError("ESTABLISH requires a complete Connection")
-            if self.connection.connection_id != self.connection_id:
-                raise ValueError(
-                    "ESTABLISH Connection must match connection_id"
-                )
-        elif self.connection is not None:
-            raise ValueError("WITHDRAW must not retain a Connection")
-
-
-@dataclass(frozen=True, slots=True)
-class ParameterTransition:
-    """Carry one sparse planned directional Connection parameter target.
-
-    Layer: immutable Simulator Planner transition. Planner publishes it only
-    inside a planned active Connection lifetime. It is not an initial
-    Connection parameter set, sampled patch or backend traffic-control action
-    and is public from ``skyseed_v2.simulator``.
-    """
-
-    nominal_time: datetime
-    connection_id: ConnectionId
-    direction: ConnectionDirection
-    bandwidth_bps: int | None = None
-    delay_us: int | None = None
-    packet_loss_ppm: int | None = None
-
-    def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
-            "nominal_time",
-            normalize_utc_datetime(self.nominal_time, "nominal_time"),
-        )
-        if not isinstance(self.connection_id, ConnectionId):
-            raise TypeError("connection_id must be a ConnectionId")
-        if not isinstance(self.direction, ConnectionDirection):
-            raise TypeError("direction must be a ConnectionDirection")
-        _validate_sparse_parameters(
-            self.bandwidth_bps,
-            self.delay_us,
-            self.packet_loss_ppm,
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class ForwardingTransition:
-    """Describe one planned forwarding transition from formal Route state.
-
-    Layer: immutable Simulator Planner transition. ForwardingPlanningModel
-    derives it from a RoutePatch and Planner publishes it. It is not a route
-    selection, full path, constraint graph or backend route command and is
-    public from ``skyseed_v2.simulator``.
-    """
-
-    nominal_time: datetime
-    route_key: RouteKey
-    operation: DifferenceOperation
-    next_hop: NodeId | None
-
-    def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
-            "nominal_time",
-            normalize_utc_datetime(self.nominal_time, "nominal_time"),
-        )
-        if not isinstance(self.route_key, RouteKey):
-            raise TypeError("route_key must be a RouteKey")
-        if not isinstance(self.operation, DifferenceOperation):
-            raise TypeError("operation must be a DifferenceOperation")
-        if self.operation is DifferenceOperation.REMOVED:
-            if self.next_hop is not None:
-                raise ValueError(
-                    "removed Forwarding transition must not retain a next hop"
-                )
-        elif not isinstance(self.next_hop, NodeId):
-            raise TypeError(
-                "added or changed Forwarding transition requires a NodeId"
-            )
-
-
-@dataclass(frozen=True, slots=True)
-class ForwardingTransitionPrecedence:
-    """Require one same-time Forwarding transition to precede another.
-
-    Layer: immutable semantic ordering relation owned by Plan. A
-    ForwardingPlanningModel produces it from formal path facts and future Plan
-    consumers may use it as a network constraint. It is not tuple order, a
-    temporal offset, execution schedule or general dependency graph and is
-    public from ``skyseed_v2.simulator``.
-    """
-
-    predecessor: ForwardingTransition
-    successor: ForwardingTransition
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.predecessor, ForwardingTransition):
-            raise TypeError("predecessor must be a ForwardingTransition")
-        if not isinstance(self.successor, ForwardingTransition):
-            raise TypeError("successor must be a ForwardingTransition")
-        if self.predecessor is self.successor:
-            raise ValueError("precedence endpoints must be distinct")
-        if self.predecessor.nominal_time != self.successor.nominal_time:
-            raise ValueError("precedence endpoints must have equal nominal time")
-
-
-@dataclass(frozen=True, slots=True)
-class PlanningDecision:
-    """Preserve one concise explanation of a Planner optimization decision.
-
-    Layer: immutable Simulator Planner inspection evidence. Planner creates
-    and retains it separately from Plan payload so callers can explain merged
-    or suppressed sampled evolution. It is not semantic network state,
-    exhaustive tracing or a backend log and is public from
-    ``skyseed_v2.simulator``.
-    """
-
-    source_difference_ids: tuple[int, ...]
-    decision: str
-    decided_by: str
-    reason: str
-
-    def __post_init__(self) -> None:
-        ids = tuple(self.source_difference_ids)
-        if not ids or any(
-            isinstance(value, bool)
-            or not isinstance(value, int)
-            or value <= 0
-            for value in ids
-        ):
+        if not isinstance(self.kind, OperationalConnectionKind):
+            raise TypeError("kind must be an OperationalConnectionKind")
+        _require_node_id(self.endpoint_a, "endpoint_a")
+        _require_node_id(self.endpoint_b, "endpoint_b")
+        if self.endpoint_a == self.endpoint_b:
+            raise ValueError("Connection endpoints must be distinct")
+        kinds = {self.endpoint_a.entity_kind, self.endpoint_b.entity_kind}
+        if self.kind is OperationalConnectionKind.INTER_SATELLITE:
+            if kinds != {"satellite"}:
+                raise ValueError("an ISL must connect two Satellites")
+        elif kinds != {"satellite", "ground-station"}:
             raise ValueError(
-                "source_difference_ids must contain positive Slice IDs"
+                "a GroundStation access must connect one GroundStation and "
+                "one Satellite"
             )
-        if tuple(sorted(set(ids))) != ids:
-            raise ValueError(
-                "source_difference_ids must be unique and increasing"
-            )
-        if self.decision not in {"retained", "merged", "suppressed"}:
-            raise ValueError(
-                "decision must be retained, merged or suppressed"
-            )
-        for field_name in ("decided_by", "reason"):
-            value = getattr(self, field_name)
-            if not isinstance(value, str):
-                raise TypeError(f"{field_name} must be a string")
-            if not value.strip():
-                raise ValueError(f"{field_name} must not be empty")
-            object.__setattr__(self, field_name, value.strip())
-        object.__setattr__(self, "source_difference_ids", ids)
+        if _node_key(self.endpoint_b) < _node_key(self.endpoint_a):
+            first, second = self.endpoint_b, self.endpoint_a
+            object.__setattr__(self, "endpoint_a", first)
+            object.__setattr__(self, "endpoint_b", second)
 
 
-@dataclass(frozen=True, slots=True, init=False)
-class Plan:
-    """Publish one immutable semantic plan for `(start, end]` coverage.
+@dataclass(frozen=True, slots=True)
+class EffectiveConnectionParameters:
+    """Hold one direction's complete planned effective parameters.
 
-    Layer: immutable Simulator Planner snapshot. Planner creates it from a
-    contiguous publication prefix and callers or future approved semantic
-    consumers read it. Successive Plans are continuous and non-overlapping. It
-    is not a Slice, complete Topology, executable schedule or backend operation
-    list and is public from ``skyseed_v2.simulator``.
+    Layer: public immutable Simulator planning value. It is public because
+    Parameter Models, OperationalConnections, Plans, and Compiler consumers
+    share the complete effective decision. It is not physical feasibility,
+    allocation evidence, or a backend qdisc command.
     """
 
-    start_slice_id: int
-    start_timestamp: datetime | None
-    end_slice_id: int
-    end_timestamp: datetime
-    connection_transitions: tuple[ConnectionTransition, ...]
-    parameter_transitions: tuple[ParameterTransition, ...]
-    forwarding_transitions: tuple[ForwardingTransition, ...]
-    forwarding_precedences: tuple[ForwardingTransitionPrecedence, ...]
-    temporal_index: Mapping[
-        datetime,
-        tuple[
-            ConnectionTransition | ParameterTransition | ForwardingTransition,
-            ...,
-        ],
-    ] = field(repr=False, compare=True, hash=False)
+    bandwidth_bps: int
+    delay_us: int
+    packet_loss_ppm: int
 
-    def __init__(
-        self,
-        *,
-        start_slice_id: int,
-        start_timestamp: datetime | None,
-        end_slice_id: int,
-        end_timestamp: datetime,
-        connection_transitions: Iterable[ConnectionTransition] = (),
-        parameter_transitions: Iterable[ParameterTransition] = (),
-        forwarding_transitions: Iterable[ForwardingTransition] = (),
-        forwarding_precedences: Iterable[
-            ForwardingTransitionPrecedence
-        ] = (),
-    ) -> None:
-        _validate_coverage_id(start_slice_id, "start_slice_id")
-        _validate_coverage_id(end_slice_id, "end_slice_id")
-        if end_slice_id <= start_slice_id:
-            raise ValueError("Plan coverage must contain a Difference")
-        if start_slice_id == 0:
-            if start_timestamp is not None:
-                raise ValueError("synthetic Slice 0 timestamp must be None")
-            normalized_start = None
-        else:
-            if start_timestamp is None:
-                raise ValueError(
-                    "start real Slice timestamp must be a datetime"
-                )
-            normalized_start = normalize_utc_datetime(
-                start_timestamp, "start_timestamp"
-            )
-        normalized_end = normalize_utc_datetime(
-            end_timestamp, "end_timestamp"
-        )
+    def __post_init__(self) -> None:
         if (
-            normalized_start is not None
-            and normalized_end <= normalized_start
+            isinstance(self.bandwidth_bps, bool)
+            or not isinstance(self.bandwidth_bps, int)
+            or self.bandwidth_bps <= 0
         ):
-            raise ValueError(
-                "end_timestamp must be later than start_timestamp"
+            raise ValueError("bandwidth_bps must be a positive integer")
+        if (
+            isinstance(self.delay_us, bool)
+            or not isinstance(self.delay_us, int)
+            or self.delay_us < 0
+        ):
+            raise ValueError("delay_us must be a non-negative integer")
+        if (
+            isinstance(self.packet_loss_ppm, bool)
+            or not isinstance(self.packet_loss_ppm, int)
+            or not 0 <= self.packet_loss_ppm <= 1_000_000
+        ):
+            raise ValueError("packet_loss_ppm must be between 0 and 1000000")
+
+
+@dataclass(frozen=True, slots=True)
+class OperationalConnection:
+    """Represent one established Connection with complete effective state.
+
+    Layer: public immutable Simulator planned-operational value. It is public
+    because Planner output, Plan transitions, and Compiler replay share its
+    complete effective state. It is not a physical candidate, acquiring
+    selection, or realized resource.
+    """
+
+    connection_id: OperationalConnectionId
+    endpoint_a_to_b: EffectiveConnectionParameters
+    endpoint_b_to_a: EffectiveConnectionParameters
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.connection_id, OperationalConnectionId):
+            raise TypeError("connection_id must be an OperationalConnectionId")
+        if not isinstance(
+            self.endpoint_a_to_b, EffectiveConnectionParameters
+        ):
+            raise TypeError(
+                "endpoint_a_to_b must be EffectiveConnectionParameters"
+            )
+        if not isinstance(
+            self.endpoint_b_to_a, EffectiveConnectionParameters
+        ):
+            raise TypeError(
+                "endpoint_b_to_a must be EffectiveConnectionParameters"
             )
 
-        connections = _typed_tuple(
-            connection_transitions,
-            ConnectionTransition,
-            "connection_transitions",
+
+@dataclass(frozen=True, slots=True)
+class ZoneServiceAssignment:
+    """Represent one Zone as explicitly served or explicitly unserved.
+
+    Layer: public immutable Simulator planned-operational value. It is public
+    because Zone Models, PlannedOperationalState, and Route planning share the
+    explicit served/unserved decision. It is not physical Zone visibility, a
+    candidate, Route, or backend address.
+    """
+
+    zone_id: str
+    satellite_id: NodeId | None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "zone_id", validate_identifier(self.zone_id, "zone_id")
         )
-        parameters = _typed_tuple(
-            parameter_transitions,
-            ParameterTransition,
-            "parameter_transitions",
-        )
-        forwarding = _typed_tuple(
-            forwarding_transitions,
-            ForwardingTransition,
-            "forwarding_transitions",
-        )
-        connections = _sort_if_needed(
-            connections, _connection_transition_key
-        )
-        parameters = _sort_if_needed(parameters, _parameter_transition_key)
-        forwarding = _sort_if_needed(
-            forwarding, lambda value: value.nominal_time
-        )
-        precedences = _typed_tuple(
-            forwarding_precedences,
-            ForwardingTransitionPrecedence,
-            "forwarding_precedences",
-        )
-        _validate_transition_times(
-            normalized_start,
-            normalized_end,
-            connections,
-            parameters,
-            forwarding,
-        )
-        precedences = _validate_forwarding_precedences(
-            forwarding, precedences
-        )
-        temporal_index = _build_temporal_index(
-            connections, parameters, forwarding
+        if self.satellite_id is not None:
+            _require_node_kind(
+                self.satellite_id, "satellite", "satellite_id"
+            )
+
+    @property
+    def is_served(self) -> bool:
+        return self.satellite_id is not None
+
+
+@dataclass(frozen=True, slots=True)
+class GroundStationRouteDemandTarget:
+    """Identify one planned GroundStation Route demand destination.
+
+    Layer: public immutable Simulator Route-planning value. It is public
+    because callers and Route Models need a stable typed demand target. It is
+    not a service assignment, selected path, or backend label.
+    """
+
+    ground_station_id: NodeId
+
+    def __post_init__(self) -> None:
+        _require_node_kind(
+            self.ground_station_id,
+            "ground-station",
+            "ground_station_id",
         )
 
-        object.__setattr__(self, "start_slice_id", start_slice_id)
-        object.__setattr__(self, "start_timestamp", normalized_start)
-        object.__setattr__(self, "end_slice_id", end_slice_id)
-        object.__setattr__(self, "end_timestamp", normalized_end)
-        object.__setattr__(self, "connection_transitions", connections)
-        object.__setattr__(self, "parameter_transitions", parameters)
-        object.__setattr__(self, "forwarding_transitions", forwarding)
-        object.__setattr__(self, "forwarding_precedences", precedences)
+
+@dataclass(frozen=True, slots=True)
+class ZoneRouteDemandTarget:
+    """Identify one planned Zone Route demand destination.
+
+    Layer: public immutable Simulator Route-planning value. It is public
+    because callers and Route Models need a stable typed Zone demand target.
+    It is not a serving Satellite, physical candidate, path, or backend label.
+    """
+
+    zone_id: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "zone_id", validate_identifier(self.zone_id, "zone_id")
+        )
+
+
+RouteDemandTarget = GroundStationRouteDemandTarget | ZoneRouteDemandTarget
+
+
+@dataclass(frozen=True, slots=True)
+class RouteDemand:
+    """Identify one active source-to-target planning demand.
+
+    Layer: public immutable Simulator Route-planning value. It is public
+    because composition roots, Route Models, outcomes, and Plan transitions
+    share the bounded demand identity. It is not a complete demand matrix,
+    selected path, or backend forwarding key.
+    """
+
+    source: NodeId
+    target: RouteDemandTarget
+
+    def __post_init__(self) -> None:
+        _require_node_id(self.source, "source")
+        if not isinstance(
+            self.target,
+            (GroundStationRouteDemandTarget, ZoneRouteDemandTarget),
+        ):
+            raise TypeError("target must be a supported Route demand target")
+
+
+class RouteUnreachableReason(Enum):
+    """Explain one explicitly planned unreachable Route demand.
+
+    Layer: public immutable Simulator Route-planning classification. It is
+    public because Planner, Plan, Compiler, and Traffic must preserve explicit
+    planned unreachability. It is not an exception, missing-map inference,
+    backend failure, or physical visibility fact.
+    """
+
+    NO_OPERATIONAL_PATH = "NO_OPERATIONAL_PATH"
+    ZONE_UNSERVED = "ZONE_UNSERVED"
+
+
+@dataclass(frozen=True, slots=True)
+class ReachableRouteOutcome:
+    """Carry a reachable demand's deterministic next hop and backing path.
+
+    Layer: public immutable Simulator planned-operational value. It is public
+    because Planner state, Plans, Compiler, and Traffic share the explicit
+    reachable outcome. It is not a candidate alternate, traffic allocation,
+    or backend forwarding command.
+    """
+
+    demand: RouteDemand
+    next_hop: NodeId
+    path: tuple[NodeId, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.demand, RouteDemand):
+            raise TypeError("demand must be a RouteDemand")
+        _require_node_id(self.next_hop, "next_hop")
+        path = tuple(self.path)
+        if len(path) < 2 or path[0] != self.demand.source:
+            raise ValueError("reachable path must begin at its source")
+        if path[1] != self.next_hop:
+            raise ValueError("next_hop must be the second path node")
+        if len(set(path)) != len(path):
+            raise ValueError("reachable path must be loop-free")
+        if any(not isinstance(value, NodeId) for value in path):
+            raise TypeError("path must contain NodeId values")
+        object.__setattr__(self, "path", path)
+
+
+@dataclass(frozen=True, slots=True)
+class UnreachableRouteOutcome:
+    """Carry one active demand's explicit planned unreachability.
+
+    Layer: public immutable Simulator planned-operational value. It is public
+    because Planner state, Plans, Compiler, and Traffic share explicit planned
+    unreachability. It is not map omission, an exception, physical visibility,
+    or a realized backend failure.
+    """
+
+    demand: RouteDemand
+    reason: RouteUnreachableReason
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.demand, RouteDemand):
+            raise TypeError("demand must be a RouteDemand")
+        if not isinstance(self.reason, RouteUnreachableReason):
+            raise TypeError("reason must be a RouteUnreachableReason")
+
+
+RouteOutcome = ReachableRouteOutcome | UnreachableRouteOutcome
+
+
+@dataclass(frozen=True, slots=True)
+class PlannedOperationalState:
+    """One immutable public-shaped semantic state for an exact timestamp.
+
+    Layer: public immutable Simulator semantic state. It is public because
+    Planner inspection, Plan replay, Compiler provenance, and qualification
+    share one authoritative operational-state contract. It is not a Plan,
+    PhysicalFrame, candidate collection, acquisition store, Model cache,
+    publication buffer, Tool schema, or realized runtime state.
+
+    It contains only complete operational outputs. PhysicalFrame, physical
+    candidates, selected/acquiring records, caches, buffers and evidence are
+    intentionally absent.
+    """
+
+    timestamp: datetime
+    operational_connections: tuple[OperationalConnection, ...] = ()
+    zone_service_assignments: tuple[ZoneServiceAssignment, ...] = ()
+    route_outcomes: tuple[RouteOutcome, ...] = ()
+
+    def __post_init__(self) -> None:
         object.__setattr__(
             self,
-            "temporal_index",
-            MappingProxyType(temporal_index),
+            "timestamp",
+            normalize_utc_datetime(self.timestamp, "timestamp"),
         )
+        connections = _ordered_unique(
+            self.operational_connections,
+            OperationalConnection,
+            lambda value: _connection_key(value.connection_id),
+            "operational_connections",
+        )
+        assignments = _ordered_unique(
+            self.zone_service_assignments,
+            ZoneServiceAssignment,
+            lambda value: value.zone_id,
+            "zone_service_assignments",
+        )
+        outcomes = _ordered_unique(
+            self.route_outcomes,
+            (ReachableRouteOutcome, UnreachableRouteOutcome),
+            lambda value: _route_demand_key(value.demand),
+            "route_outcomes",
+        )
+        object.__setattr__(self, "operational_connections", connections)
+        object.__setattr__(self, "zone_service_assignments", assignments)
+        object.__setattr__(self, "route_outcomes", outcomes)
+
+
+@dataclass(frozen=True, slots=True)
+class ZoneServiceTransition:
+    """Carry one replay-complete Zone service assignment change.
+
+    Layer: public immutable Simulator Plan-transition value. It is public
+    because Zone Models, Plan replay, and Compiler lowering share the exact
+    previous/current assignment. It is not a physical Zone candidate, complete
+    Zone state, or backend edge mutation.
+    """
+
+    zone_id: str
+    previous_satellite_id: NodeId | None
+    current_satellite_id: NodeId | None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "zone_id", validate_identifier(self.zone_id, "zone_id")
+        )
+        for field_name in (
+            "previous_satellite_id",
+            "current_satellite_id",
+        ):
+            value = getattr(self, field_name)
+            if value is not None and (
+                not isinstance(value, NodeId)
+                or value.entity_kind != "satellite"
+            ):
+                raise TypeError(
+                    f"{field_name} must identify a Satellite or be None"
+                )
+
+
+@dataclass(frozen=True, slots=True)
+class RouteOutcomeTransition:
+    """Carry one replay-complete Route outcome change.
+
+    Layer: public immutable Simulator Plan-transition value. It is public
+    because Route Models, Plan replay, Compiler, and Traffic share the exact
+    previous/current outcome. It is not a Route recomputation request,
+    forwarding command, or complete Route table.
+    """
+
+    demand: RouteDemand
+    previous: RouteOutcome | None
+    current: RouteOutcome | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.demand, RouteDemand):
+            raise TypeError("demand must be a RouteDemand")
+        for field_name in ("previous", "current"):
+            value = getattr(self, field_name)
+            if value is not None and not isinstance(
+                value, (ReachableRouteOutcome, UnreachableRouteOutcome)
+            ):
+                raise TypeError(
+                    f"{field_name} must be a Route outcome or None"
+                )
+            if value is not None and value.demand != self.demand:
+                raise ValueError(f"{field_name} must belong to demand")
+        if self.previous is None and self.current is None:
+            raise ValueError(
+                "Route transition must have a previous or current outcome"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class PlanTransition:
+    """Represent exactly one formal replayable simulation boundary.
+
+    Layer: public immutable Simulator Plan payload. It is public because
+    Planner publication, replay, Compiler, Runner scheduling, and detached
+    evidence share the same timestamped semantic delta. It is not a complete
+    state snapshot, physical frame, backend operation list, or synthetic ID.
+    """
+
+    timestamp: datetime
+    established_connections: tuple[OperationalConnection, ...] = ()
+    withdrawn_connection_ids: tuple[OperationalConnectionId, ...] = ()
+    parameter_updated_connections: tuple[OperationalConnection, ...] = ()
+    zone_service_transitions: tuple[ZoneServiceTransition, ...] = ()
+    route_outcome_transitions: tuple[RouteOutcomeTransition, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "timestamp",
+            normalize_utc_datetime(self.timestamp, "timestamp"),
+        )
+        established = _ordered_unique(
+            self.established_connections,
+            OperationalConnection,
+            lambda value: _connection_key(value.connection_id),
+            "established_connections",
+        )
+        withdrawn = _ordered_unique(
+            self.withdrawn_connection_ids,
+            OperationalConnectionId,
+            _connection_key,
+            "withdrawn_connection_ids",
+        )
+        updated = _ordered_unique(
+            self.parameter_updated_connections,
+            OperationalConnection,
+            lambda value: _connection_key(value.connection_id),
+            "parameter_updated_connections",
+        )
+        zones = _ordered_unique(
+            self.zone_service_transitions,
+            ZoneServiceTransition,
+            lambda value: value.zone_id,
+            "zone_service_transitions",
+        )
+        routes = _ordered_unique(
+            self.route_outcome_transitions,
+            RouteOutcomeTransition,
+            lambda value: _route_demand_key(value.demand),
+            "route_outcome_transitions",
+        )
+        established_ids = {value.connection_id for value in established}
+        withdrawn_ids = set(withdrawn)
+        updated_ids = {value.connection_id for value in updated}
+        if (
+            established_ids & withdrawn_ids
+            or established_ids & updated_ids
+            or withdrawn_ids & updated_ids
+        ):
+            raise ValueError(
+                "a Connection identity may occur in only one transition "
+                "category"
+            )
+        object.__setattr__(self, "established_connections", established)
+        object.__setattr__(self, "withdrawn_connection_ids", withdrawn)
+        object.__setattr__(self, "parameter_updated_connections", updated)
+        object.__setattr__(self, "zone_service_transitions", zones)
+        object.__setattr__(self, "route_outcome_transitions", routes)
+
+    @property
+    def route_relevant(self) -> bool:
+        return bool(
+            self.established_connections
+            or self.withdrawn_connection_ids
+            or self.zone_service_transitions
+        )
+
+    def with_route_outcome_transitions(
+        self,
+        route_outcome_transitions: tuple[RouteOutcomeTransition, ...],
+    ) -> PlanTransition:
+        return PlanTransition(
+            timestamp=self.timestamp,
+            established_connections=self.established_connections,
+            withdrawn_connection_ids=self.withdrawn_connection_ids,
+            parameter_updated_connections=self.parameter_updated_connections,
+            zone_service_transitions=self.zone_service_transitions,
+            route_outcome_transitions=route_outcome_transitions,
+        )
+
+
+class SemanticEventKind(Enum):
+    """Classify a canonical event derived from one PlanTransition.
+
+    Layer: public immutable Simulator planning coordination value. It is public
+    because CoordinationPolicy, Plan precedence, Compiler, and detached
+    inspection share stable event kinds. It is not an independently editable
+    event payload, backend phase, or runtime event class.
+    """
+
+    CONNECTION_ESTABLISH = "connection-establish"
+    PARAMETER_READY = "parameter-ready"
+    PARAMETER_UPDATE = "parameter-update"
+    ZONE_SERVICE_ASSIGN = "zone-service-assign"
+    ZONE_SERVICE_CHANGE = "zone-service-change"
+    ZONE_SERVICE_UNASSIGN = "zone-service-unassign"
+    ROUTE_REACHABLE = "route-reachable"
+    ROUTE_CHANGE = "route-change"
+    ROUTE_WITHDRAW = "route-withdraw"
+    ROUTE_UNREACHABLE = "route-unreachable"
+    CONNECTION_WITHDRAW = "connection-withdraw"
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticEventReference:
+    """Identify one transition-derived event by immutable semantic value.
+
+    Layer: public immutable Simulator planning coordination value. It is public
+    because CoordinationPolicy, Plan serialization, and Compiler lowering need
+    references that survive process boundaries. It is not Python object
+    identity, an independent event payload, or a backend-intent reference.
+    """
+
+    timestamp: datetime
+    kind: SemanticEventKind
+    connection_id: OperationalConnectionId | None = None
+    zone_id: str | None = None
+    route_demand: RouteDemand | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "timestamp",
+            normalize_utc_datetime(self.timestamp, "timestamp"),
+        )
+        if not isinstance(self.kind, SemanticEventKind):
+            raise TypeError("kind must be a SemanticEventKind")
+        if self.connection_id is not None and not isinstance(
+            self.connection_id, OperationalConnectionId
+        ):
+            raise TypeError(
+                "connection_id must be an OperationalConnectionId or None"
+            )
+        if self.zone_id is not None:
+            object.__setattr__(
+                self, "zone_id", validate_identifier(self.zone_id, "zone_id")
+            )
+        if self.route_demand is not None and not isinstance(
+            self.route_demand, RouteDemand
+        ):
+            raise TypeError("route_demand must be a RouteDemand or None")
+        connection_kinds = {
+            SemanticEventKind.CONNECTION_ESTABLISH,
+            SemanticEventKind.PARAMETER_READY,
+            SemanticEventKind.PARAMETER_UPDATE,
+            SemanticEventKind.CONNECTION_WITHDRAW,
+        }
+        zone_kinds = {
+            SemanticEventKind.ZONE_SERVICE_ASSIGN,
+            SemanticEventKind.ZONE_SERVICE_CHANGE,
+            SemanticEventKind.ZONE_SERVICE_UNASSIGN,
+        }
+        route_kinds = {
+            SemanticEventKind.ROUTE_REACHABLE,
+            SemanticEventKind.ROUTE_CHANGE,
+            SemanticEventKind.ROUTE_WITHDRAW,
+            SemanticEventKind.ROUTE_UNREACHABLE,
+        }
+        subjects = (
+            self.connection_id is not None,
+            self.zone_id is not None,
+            self.route_demand is not None,
+        )
+        if sum(subjects) != 1:
+            raise ValueError("an event reference must carry exactly one subject")
+        if self.kind in connection_kinds and self.connection_id is None:
+            raise ValueError("Connection event requires connection_id")
+        if self.kind in zone_kinds and self.zone_id is None:
+            raise ValueError("Zone event requires zone_id")
+        if self.kind in route_kinds and self.route_demand is None:
+            raise ValueError("Route event requires route_demand")
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticEventPrecedence:
+    """Order two canonical semantic event references at one timestamp.
+
+    Layer: public immutable Simulator Plan-coordination value. It is public
+    because CoordinationPolicy produces it and Plan/Compiler consumers validate
+    the same ordering contract. It is not an event payload, backend-only
+    constraint, or cross-timestamp scheduler edge.
+    """
+
+    predecessor: SemanticEventReference
+    successor: SemanticEventReference
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.predecessor, SemanticEventReference):
+            raise TypeError("predecessor must be a SemanticEventReference")
+        if not isinstance(self.successor, SemanticEventReference):
+            raise TypeError("successor must be a SemanticEventReference")
+        if self.predecessor == self.successor:
+            raise ValueError("precedence endpoints must be distinct")
+        if self.predecessor.timestamp != self.successor.timestamp:
+            raise ValueError("precedence endpoints must have equal timestamps")
+
+
+def semantic_event_references(
+    transition: PlanTransition,
+) -> tuple[SemanticEventReference, ...]:
+    """Derive the sole canonical event-reference set for one transition."""
+
+    if not isinstance(transition, PlanTransition):
+        raise TypeError("transition must be a PlanTransition")
+    timestamp = transition.timestamp
+    references: list[SemanticEventReference] = []
+    for connection in transition.established_connections:
+        identifier = connection.connection_id
+        references.extend(
+            (
+                SemanticEventReference(
+                    timestamp,
+                    SemanticEventKind.CONNECTION_ESTABLISH,
+                    connection_id=identifier,
+                ),
+                SemanticEventReference(
+                    timestamp,
+                    SemanticEventKind.PARAMETER_READY,
+                    connection_id=identifier,
+                ),
+            )
+        )
+    for connection in transition.parameter_updated_connections:
+        references.append(
+            SemanticEventReference(
+                timestamp,
+                SemanticEventKind.PARAMETER_UPDATE,
+                connection_id=connection.connection_id,
+            )
+        )
+    for change in transition.zone_service_transitions:
+        if change.current_satellite_id is not None:
+            references.append(
+                SemanticEventReference(
+                    timestamp,
+                    (
+                        SemanticEventKind.ZONE_SERVICE_ASSIGN
+                        if change.previous_satellite_id is None
+                        else SemanticEventKind.ZONE_SERVICE_CHANGE
+                    ),
+                    zone_id=change.zone_id,
+                )
+            )
+        if change.previous_satellite_id is not None:
+            references.append(
+                SemanticEventReference(
+                    timestamp,
+                    SemanticEventKind.ZONE_SERVICE_UNASSIGN,
+                    zone_id=change.zone_id,
+                )
+            )
+    for change in transition.route_outcome_transitions:
+        old_reachable = isinstance(change.previous, ReachableRouteOutcome)
+        new_reachable = isinstance(change.current, ReachableRouteOutcome)
+        if new_reachable:
+            references.append(
+                SemanticEventReference(
+                    timestamp,
+                    (
+                        SemanticEventKind.ROUTE_CHANGE
+                        if old_reachable
+                        else SemanticEventKind.ROUTE_REACHABLE
+                    ),
+                    route_demand=change.demand,
+                )
+            )
+        if old_reachable:
+            references.append(
+                SemanticEventReference(
+                    timestamp,
+                    SemanticEventKind.ROUTE_WITHDRAW,
+                    route_demand=change.demand,
+                )
+            )
+        if isinstance(change.current, UnreachableRouteOutcome):
+            references.append(
+                SemanticEventReference(
+                    timestamp,
+                    SemanticEventKind.ROUTE_UNREACHABLE,
+                    route_demand=change.demand,
+                )
+            )
+    for identifier in transition.withdrawn_connection_ids:
+        references.append(
+            SemanticEventReference(
+                timestamp,
+                SemanticEventKind.CONNECTION_WITHDRAW,
+                connection_id=identifier,
+            )
+        )
+    ordered = tuple(sorted(references, key=_semantic_event_order_key))
+    keys = tuple(_semantic_event_key(value) for value in ordered)
+    if len(keys) != len(set(keys)):
+        raise ValueError(
+            "canonical semantic event references contain a duplicate key/kind"
+        )
+    return ordered
+
+
+@dataclass(frozen=True, slots=True)
+class Plan:
+    """Carry one self-contained semantic delta over contiguous timestamps.
+
+    Layer: public immutable Simulator-to-Compiler handoff. It is public because
+    Planner publishes it and Compiler, evidence, Tools, and qualification replay
+    consume it without Planner access. It is not a state snapshot, physical
+    frame collection, backend operation list, or hidden compilation context.
+    """
+
+    plan_id: str
+    previous_plan_id: str | None
+    physical_world_fingerprint: str
+    input_state_fingerprint: str | None
+    output_state_fingerprint: str
+    observation_interval: timedelta
+    start_timestamp: datetime
+    end_timestamp: datetime
+    transitions: tuple[PlanTransition, ...]
+    semantic_event_precedences: tuple[SemanticEventPrecedence, ...] = ()
+
+    def __post_init__(self) -> None:
+        _require_fingerprint(self.plan_id, "plan_id")
+        _require_fingerprint(
+            self.physical_world_fingerprint,
+            "physical_world_fingerprint",
+        )
+        if self.input_state_fingerprint is not None:
+            _require_fingerprint(
+                self.input_state_fingerprint,
+                "input_state_fingerprint",
+            )
+        _require_fingerprint(
+            self.output_state_fingerprint,
+            "output_state_fingerprint",
+        )
+        interval, start, end, transitions, ordered_precedences = (
+            _canonical_plan_parts(
+                previous_plan_id=self.previous_plan_id,
+                input_state_fingerprint=self.input_state_fingerprint,
+                observation_interval=self.observation_interval,
+                start_timestamp=self.start_timestamp,
+                end_timestamp=self.end_timestamp,
+                transitions=self.transitions,
+                semantic_event_precedences=self.semantic_event_precedences,
+            )
+        )
+        object.__setattr__(self, "start_timestamp", start)
+        object.__setattr__(self, "end_timestamp", end)
+        object.__setattr__(self, "observation_interval", interval)
+        object.__setattr__(self, "transitions", transitions)
+        object.__setattr__(
+            self, "semantic_event_precedences", ordered_precedences
+        )
+        expected_plan_id = _plan_identifier(
+            previous_plan_id=self.previous_plan_id,
+            physical_world_fingerprint=self.physical_world_fingerprint,
+            input_state_fingerprint=self.input_state_fingerprint,
+            output_state_fingerprint=self.output_state_fingerprint,
+            observation_interval=interval,
+            start_timestamp=start,
+            end_timestamp=end,
+            transitions=transitions,
+            semantic_event_precedences=ordered_precedences,
+        )
+        if self.plan_id != expected_plan_id:
+            raise ValueError("plan_id does not match canonical Plan content")
 
     @classmethod
-    def _from_validated(
+    def _create_validated(
         cls,
         *,
-        start_slice_id: int,
-        start_timestamp: datetime | None,
-        end_slice_id: int,
+        plan_id: str,
+        previous_plan_id: str | None,
+        physical_world_fingerprint: str,
+        input_state_fingerprint: str | None,
+        output_state_fingerprint: str,
+        observation_interval: timedelta,
+        start_timestamp: datetime,
         end_timestamp: datetime,
-        connection_transitions: tuple[ConnectionTransition, ...],
-        parameter_transitions: tuple[ParameterTransition, ...],
-        forwarding_transitions: tuple[ForwardingTransition, ...],
-        forwarding_precedences: tuple[
-            ForwardingTransitionPrecedence, ...
-        ],
-    ) -> "Plan":
-        """Build Planner-owned output after its complete trust-boundary proof.
-
-        This private path does not weaken arbitrary public ``Plan(...)``
-        construction. Planner has already validated exact transition types and
-        precedence endpoints/duplicates/cycles, and has already put precedence
-        values in canonical transition order. This path retains a lightweight
-        final coverage/time integrity check, then performs only representation
-        sorting, temporal indexing, and immutable snapshots.
-        """
-
-        _validate_coverage_id(start_slice_id, "start_slice_id")
-        _validate_coverage_id(end_slice_id, "end_slice_id")
-        if end_slice_id <= start_slice_id:
-            raise ValueError("Plan coverage must contain a Difference")
-        if start_slice_id == 0:
-            if start_timestamp is not None:
-                raise ValueError("synthetic Slice 0 timestamp must be None")
-            normalized_start = None
-        else:
-            if start_timestamp is None:
-                raise ValueError(
-                    "start real Slice timestamp must be a datetime"
-                )
-            normalized_start = normalize_utc_datetime(
-                start_timestamp, "start_timestamp"
-            )
-        normalized_end = normalize_utc_datetime(
-            end_timestamp, "end_timestamp"
-        )
-        if (
-            normalized_start is not None
-            and normalized_end <= normalized_start
-        ):
-            raise ValueError(
-                "end_timestamp must be later than start_timestamp"
-            )
-
-        connections = _sort_if_needed(
-            connection_transitions, _connection_transition_key
-        )
-        parameters = _sort_if_needed(
-            parameter_transitions, _parameter_transition_key
-        )
-        forwarding = _sort_if_needed(
-            forwarding_transitions, lambda value: value.nominal_time
-        )
-        _validate_transition_times(
-            normalized_start,
-            normalized_end,
-            connections,
-            parameters,
-            forwarding,
-        )
-        temporal_index = _build_temporal_index(
-            connections, parameters, forwarding
-        )
+        transitions: tuple[PlanTransition, ...],
+        semantic_event_precedences: tuple[SemanticEventPrecedence, ...],
+    ) -> Plan:
+        """Create from parts already validated by the Planner publication path."""
 
         instance = object.__new__(cls)
-        object.__setattr__(instance, "start_slice_id", start_slice_id)
-        object.__setattr__(instance, "start_timestamp", normalized_start)
-        object.__setattr__(instance, "end_slice_id", end_slice_id)
-        object.__setattr__(instance, "end_timestamp", normalized_end)
-        object.__setattr__(instance, "connection_transitions", connections)
-        object.__setattr__(instance, "parameter_transitions", parameters)
-        object.__setattr__(instance, "forwarding_transitions", forwarding)
-        object.__setattr__(
-            instance,
-            "forwarding_precedences",
-            forwarding_precedences,
-        )
-        object.__setattr__(
-            instance,
-            "temporal_index",
-            MappingProxyType(temporal_index),
-        )
+        for name, value in (
+            ("plan_id", plan_id),
+            ("previous_plan_id", previous_plan_id),
+            ("physical_world_fingerprint", physical_world_fingerprint),
+            ("input_state_fingerprint", input_state_fingerprint),
+            ("output_state_fingerprint", output_state_fingerprint),
+            ("observation_interval", observation_interval),
+            ("start_timestamp", start_timestamp),
+            ("end_timestamp", end_timestamp),
+            ("transitions", transitions),
+            ("semantic_event_precedences", semantic_event_precedences),
+        ):
+            object.__setattr__(instance, name, value)
         return instance
 
 
-def _build_temporal_index(
-    connections: tuple[ConnectionTransition, ...],
-    parameters: tuple[ParameterTransition, ...],
-    forwarding: tuple[ForwardingTransition, ...],
-) -> dict[
+def _canonical_plan_parts(
+    *,
+    previous_plan_id: str | None,
+    input_state_fingerprint: str | None,
+    observation_interval: timedelta,
+    start_timestamp: datetime,
+    end_timestamp: datetime,
+    transitions: tuple[PlanTransition, ...],
+    semantic_event_precedences: tuple[SemanticEventPrecedence, ...],
+) -> tuple[
+    timedelta,
     datetime,
-    tuple[ConnectionTransition | ParameterTransition | ForwardingTransition, ...],
+    datetime,
+    tuple[PlanTransition, ...],
+    tuple[SemanticEventPrecedence, ...],
 ]:
-    grouped: dict[datetime, list[object]] = {}
-    for transitions in (
-        connections,
-        forwarding,
-        parameters,
+    if previous_plan_id is not None:
+        _require_fingerprint(previous_plan_id, "previous_plan_id")
+    interval = _require_observation_interval(observation_interval)
+    start = normalize_utc_datetime(start_timestamp, "start_timestamp")
+    end = normalize_utc_datetime(end_timestamp, "end_timestamp")
+    if end < start:
+        raise ValueError("end_timestamp cannot precede start_timestamp")
+    transition_values = tuple(transitions)
+    if not transition_values:
+        raise ValueError("transitions must not be empty")
+    if any(
+        not isinstance(value, PlanTransition) for value in transition_values
     ):
-        for transition in transitions:
-            grouped.setdefault(transition.nominal_time, []).append(transition)
+        raise TypeError("transitions must contain PlanTransition values")
+    timestamps = tuple(value.timestamp for value in transition_values)
+    if any(
+        current - previous != interval
+        for previous, current in zip(timestamps, timestamps[1:])
+    ):
+        raise ValueError(
+            "adjacent Plan transitions must match observation_interval"
+        )
+    if timestamps[0] != start:
+        raise ValueError("Plan start must equal its first transition timestamp")
+    if previous_plan_id is None:
+        if input_state_fingerprint is not None:
+            raise ValueError("bootstrap Plan cannot have an input fingerprint")
+    elif input_state_fingerprint is None:
+        raise ValueError("non-bootstrap Plan requires input fingerprint")
+    if timestamps[-1] != end:
+        raise ValueError("Plan end must equal its last transition timestamp")
+    precedences = tuple(semantic_event_precedences)
+    if any(
+        not isinstance(value, SemanticEventPrecedence) for value in precedences
+    ):
+        raise TypeError(
+            "semantic_event_precedences must contain SemanticEventPrecedence values"
+        )
+    derived = {
+        reference
+        for transition in transition_values
+        for reference in semantic_event_references(transition)
+    }
+    if any(
+        value.predecessor not in derived or value.successor not in derived
+        for value in precedences
+    ):
+        raise ValueError(
+            "precedence endpoints must be transition-derived references"
+        )
+    ordered_precedences = tuple(sorted(precedences, key=_precedence_key))
+    if len(ordered_precedences) != len(set(ordered_precedences)):
+        raise ValueError("semantic_event_precedences contains a duplicate")
+    _validate_acyclic(
+        tuple(sorted(derived, key=_semantic_event_order_key)),
+        ordered_precedences,
+    )
+    return interval, start, end, transition_values, ordered_precedences
+
+
+def create_plan(
+    previous_state: PlannedOperationalState | None,
+    *,
+    previous_plan_id: str | None,
+    physical_world_fingerprint: str,
+    observation_interval: timedelta,
+    start_timestamp: datetime,
+    transitions: tuple[PlanTransition, ...],
+    semantic_event_precedences: tuple[SemanticEventPrecedence, ...] = (),
+) -> Plan:
+    """Construct and fully replay-validate one canonical Plan."""
+
+    plan, _ = _create_plan_with_output_state(
+        previous_state,
+        previous_plan_id=previous_plan_id,
+        physical_world_fingerprint=physical_world_fingerprint,
+        observation_interval=observation_interval,
+        start_timestamp=start_timestamp,
+        transitions=transitions,
+        semantic_event_precedences=semantic_event_precedences,
+    )
+    return plan
+
+
+def _create_plan_with_output_state(
+    previous_state: PlannedOperationalState | None,
+    *,
+    previous_plan_id: str | None,
+    physical_world_fingerprint: str,
+    observation_interval: timedelta,
+    start_timestamp: datetime,
+    transitions: tuple[PlanTransition, ...],
+    semantic_event_precedences: tuple[SemanticEventPrecedence, ...] = (),
+) -> tuple[Plan, PlannedOperationalState]:
+    """Create one canonical Plan and return its already replayed output state."""
+
+    if previous_state is not None and not isinstance(
+        previous_state, PlannedOperationalState
+    ):
+        raise TypeError(
+            "previous_state must be PlannedOperationalState or None"
+        )
+    if previous_plan_id is None and previous_state is not None:
+        raise ValueError("bootstrap Plan cannot have previous_state")
+    if previous_plan_id is not None and previous_state is None:
+        raise ValueError("non-bootstrap Plan requires previous_state")
+    _require_fingerprint(
+        physical_world_fingerprint, "physical_world_fingerprint"
+    )
+    interval = _require_observation_interval(observation_interval)
+    start = normalize_utc_datetime(start_timestamp, "start_timestamp")
+    if (
+        previous_state is not None
+        and start != previous_state.timestamp + interval
+    ):
+        raise ValueError(
+            "non-bootstrap Plan must start one observation_interval "
+            "after previous state"
+        )
+    transition_values = tuple(transitions)
+    state = previous_state
+    for transition in transition_values:
+        state = apply_plan_transition(state, transition)
+    if state is None:  # pragma: no cover - empty tuples fail in Plan validation
+        raise ValueError("transitions must not be empty")
+    input_fingerprint = (
+        None
+        if previous_state is None
+        else planned_operational_state_fingerprint(previous_state)
+    )
+    output_fingerprint = planned_operational_state_fingerprint(state)
+    end = state.timestamp
+    (
+        interval,
+        start,
+        end,
+        transition_values,
+        precedence_values,
+    ) = _canonical_plan_parts(
+        previous_plan_id=previous_plan_id,
+        input_state_fingerprint=input_fingerprint,
+        observation_interval=interval,
+        start_timestamp=start,
+        end_timestamp=end,
+        transitions=transition_values,
+        semantic_event_precedences=semantic_event_precedences,
+    )
+    plan_id = _plan_identifier(
+        previous_plan_id=previous_plan_id,
+        physical_world_fingerprint=physical_world_fingerprint,
+        input_state_fingerprint=input_fingerprint,
+        output_state_fingerprint=output_fingerprint,
+        observation_interval=interval,
+        start_timestamp=start,
+        end_timestamp=end,
+        transitions=transition_values,
+        semantic_event_precedences=precedence_values,
+    )
+    plan = Plan._create_validated(
+        plan_id=plan_id,
+        previous_plan_id=previous_plan_id,
+        physical_world_fingerprint=physical_world_fingerprint,
+        input_state_fingerprint=input_fingerprint,
+        output_state_fingerprint=output_fingerprint,
+        observation_interval=interval,
+        start_timestamp=start,
+        end_timestamp=end,
+        transitions=transition_values,
+        semantic_event_precedences=precedence_values,
+    )
+    return plan, state
+
+
+def apply_plan_transition(
+    previous_state: PlannedOperationalState | None,
+    transition: PlanTransition,
+) -> PlannedOperationalState:
+    """Purely replay one validated transition into its complete next state."""
+
+    if previous_state is not None and not isinstance(
+        previous_state, PlannedOperationalState
+    ):
+        raise TypeError("previous_state must be PlannedOperationalState or None")
+    if not isinstance(transition, PlanTransition):
+        raise TypeError("transition must be a PlanTransition")
+    if (
+        previous_state is not None
+        and transition.timestamp <= previous_state.timestamp
+    ):
+        raise ValueError("transition timestamp must follow previous state")
+
+    connections = {
+        value.connection_id: value
+        for value in (
+            ()
+            if previous_state is None
+            else previous_state.operational_connections
+        )
+    }
+    for connection in transition.established_connections:
+        identifier = connection.connection_id
+        if identifier in connections:
+            raise ValueError("transition establishes an existing Connection")
+        connections[identifier] = connection
+    for connection in transition.parameter_updated_connections:
+        identifier = connection.connection_id
+        previous = connections.get(identifier)
+        if previous is None:
+            raise ValueError("transition updates a missing Connection")
+        if previous == connection:
+            raise ValueError("transition contains a no-op parameter update")
+        connections[identifier] = connection
+    for identifier in transition.withdrawn_connection_ids:
+        if identifier not in connections:
+            raise ValueError("transition withdraws a missing Connection")
+        del connections[identifier]
+
+    assignments = {
+        value.zone_id: value
+        for value in (
+            ()
+            if previous_state is None
+            else previous_state.zone_service_assignments
+        )
+    }
+    for change in transition.zone_service_transitions:
+        prior = assignments.get(change.zone_id)
+        if prior is None:
+            if change.previous_satellite_id is not None:
+                raise ValueError(
+                    "new Zone assignment has a foreign previous value"
+                )
+        else:
+            if prior.satellite_id != change.previous_satellite_id:
+                raise ValueError(
+                    "Zone transition previous value is inconsistent"
+                )
+            if prior.satellite_id == change.current_satellite_id:
+                raise ValueError("transition contains a no-op Zone change")
+        assignments[change.zone_id] = ZoneServiceAssignment(
+            change.zone_id, change.current_satellite_id
+        )
+
+    outcomes = {
+        value.demand: value
+        for value in (
+            () if previous_state is None else previous_state.route_outcomes
+        )
+    }
+    for change in transition.route_outcome_transitions:
+        previous = outcomes.get(change.demand)
+        if previous != change.previous:
+            raise ValueError(
+                "Route transition previous outcome is inconsistent"
+            )
+        if previous == change.current:
+            raise ValueError("transition contains a no-op Route change")
+        if change.current is None:
+            if previous is None:
+                raise ValueError(
+                    "transition withdraws a missing Route outcome"
+                )
+            del outcomes[change.demand]
+        else:
+            outcomes[change.demand] = change.current
+
+    return PlannedOperationalState(
+        transition.timestamp,
+        tuple(connections.values()),
+        tuple(assignments.values()),
+        tuple(outcomes.values()),
+    )
+
+
+def apply_plan(
+    previous_state: PlannedOperationalState | None,
+    plan: Plan,
+    *,
+    physical_world_fingerprint: str,
+) -> PlannedOperationalState:
+    """Replay and validate one Plan against state and PhysicalWorld lineage."""
+
+    if not isinstance(plan, Plan):
+        raise TypeError("plan must be a Plan")
+    _require_fingerprint(
+        physical_world_fingerprint, "physical_world_fingerprint"
+    )
+    if plan.physical_world_fingerprint != physical_world_fingerprint:
+        raise ValueError("Plan belongs to a different PhysicalWorld")
+    if previous_state is None:
+        if plan.previous_plan_id is not None:
+            raise ValueError("non-bootstrap Plan requires previous state")
+        if plan.input_state_fingerprint is not None:
+            raise ValueError("bootstrap Plan cannot have input fingerprint")
+    else:
+        if not isinstance(previous_state, PlannedOperationalState):
+            raise TypeError(
+                "previous_state must be PlannedOperationalState or None"
+            )
+        if (
+            plan.start_timestamp
+            != previous_state.timestamp + plan.observation_interval
+        ):
+            raise ValueError(
+                "Plan start must be one observation_interval after "
+                "previous state"
+            )
+        if (
+            planned_operational_state_fingerprint(previous_state)
+            != plan.input_state_fingerprint
+        ):
+            raise ValueError("Plan input state fingerprint mismatch")
+    state = previous_state
+    for transition in plan.transitions:
+        state = apply_plan_transition(state, transition)
+    assert state is not None
+    if planned_operational_state_fingerprint(state) != plan.output_state_fingerprint:
+        raise ValueError("Plan output state fingerprint mismatch")
+    return state
+
+
+def planned_operational_state_fingerprint(
+    state: PlannedOperationalState,
+) -> str:
+    """Return the versioned deterministic semantic-state fingerprint."""
+
+    if not isinstance(state, PlannedOperationalState):
+        raise TypeError("state must be a PlannedOperationalState")
+    return _json_fingerprint(_planned_operational_state_material(state))
+
+
+def plan_transition_fingerprint(transition: PlanTransition) -> str:
+    """Return the versioned deterministic transition fingerprint."""
+
+    if not isinstance(transition, PlanTransition):
+        raise TypeError("transition must be a PlanTransition")
+    return _json_fingerprint(_plan_transition_material(transition))
+
+
+def _plan_identifier(
+    *,
+    previous_plan_id: str | None,
+    physical_world_fingerprint: str,
+    input_state_fingerprint: str | None,
+    output_state_fingerprint: str,
+    observation_interval: timedelta,
+    start_timestamp: datetime,
+    end_timestamp: datetime,
+    transitions: tuple[PlanTransition, ...],
+    semantic_event_precedences: tuple[SemanticEventPrecedence, ...],
+) -> str:
+    return _json_fingerprint(
+        {
+            "schema": "skyseed-v2-plan-v1",
+            "previous_plan_id": previous_plan_id,
+            "physical_world_fingerprint": physical_world_fingerprint,
+            "input_state_fingerprint": input_state_fingerprint,
+            "output_state_fingerprint": output_state_fingerprint,
+            "observation_interval": _timedelta_material(
+                observation_interval
+            ),
+            "start_timestamp": start_timestamp.isoformat(),
+            "end_timestamp": end_timestamp.isoformat(),
+            "transitions": [
+                _plan_transition_material(value) for value in transitions
+            ],
+            "semantic_event_precedences": [
+                {
+                    "predecessor": _semantic_event_material(
+                        value.predecessor
+                    ),
+                    "successor": _semantic_event_material(value.successor),
+                }
+                for value in semantic_event_precedences
+            ],
+        }
+    )
+
+
+def _planned_operational_state_material(
+    state: PlannedOperationalState,
+) -> dict[str, object]:
     return {
-        timestamp: tuple(grouped[timestamp]) for timestamp in sorted(grouped)
+        "schema": "skyseed-v2-planned-operational-state-v1",
+        "timestamp": state.timestamp.isoformat(),
+        "operational_connections": [
+            _connection_material(value) for value in state.operational_connections
+        ],
+        "zone_service_assignments": [
+            {
+                "zone_id": value.zone_id,
+                "satellite_id": _optional_node_material(value.satellite_id),
+            }
+            for value in state.zone_service_assignments
+        ],
+        "route_outcomes": [
+            _route_outcome_material(value) for value in state.route_outcomes
+        ],
     }
 
 
-def _sort_if_needed(values: tuple, key) -> tuple:
-    if all(
-        key(previous) <= key(current)
-        for previous, current in zip(values, values[1:])
+def _plan_transition_material(transition: PlanTransition) -> dict[str, object]:
+    return {
+        "schema": "skyseed-v2-plan-transition-v1",
+        "timestamp": transition.timestamp.isoformat(),
+        "established_connections": [
+            _connection_material(value)
+            for value in transition.established_connections
+        ],
+        "withdrawn_connection_ids": [
+            _connection_id_material(value)
+            for value in transition.withdrawn_connection_ids
+        ],
+        "parameter_updated_connections": [
+            _connection_material(value)
+            for value in transition.parameter_updated_connections
+        ],
+        "zone_service_transitions": [
+            {
+                "zone_id": value.zone_id,
+                "previous_satellite_id": _optional_node_material(
+                    value.previous_satellite_id
+                ),
+                "current_satellite_id": _optional_node_material(
+                    value.current_satellite_id
+                ),
+            }
+            for value in transition.zone_service_transitions
+        ],
+        "route_outcome_transitions": [
+            {
+                "demand": _route_demand_material(value.demand),
+                "previous": _optional_route_outcome_material(value.previous),
+                "current": _optional_route_outcome_material(value.current),
+            }
+            for value in transition.route_outcome_transitions
+        ],
+    }
+
+
+def _semantic_event_material(
+    event: SemanticEventReference,
+) -> dict[str, object]:
+    return {
+        "timestamp": event.timestamp.isoformat(),
+        "kind": event.kind.value,
+        "connection_id": (
+            None
+            if event.connection_id is None
+            else _connection_id_material(event.connection_id)
+        ),
+        "zone_id": event.zone_id,
+        "route_demand": (
+            None
+            if event.route_demand is None
+            else _route_demand_material(event.route_demand)
+        ),
+    }
+
+
+def _connection_material(
+    connection: OperationalConnection,
+) -> dict[str, object]:
+    return {
+        "connection_id": _connection_id_material(connection.connection_id),
+        "endpoint_a_to_b": _parameter_material(connection.endpoint_a_to_b),
+        "endpoint_b_to_a": _parameter_material(connection.endpoint_b_to_a),
+    }
+
+
+def _connection_id_material(
+    identifier: OperationalConnectionId,
+) -> dict[str, object]:
+    return {
+        "kind": identifier.kind.value,
+        "endpoint_a": _node_material(identifier.endpoint_a),
+        "endpoint_b": _node_material(identifier.endpoint_b),
+    }
+
+
+def _parameter_material(
+    value: EffectiveConnectionParameters,
+) -> dict[str, int]:
+    return {
+        "bandwidth_bps": value.bandwidth_bps,
+        "delay_us": value.delay_us,
+        "packet_loss_ppm": value.packet_loss_ppm,
+    }
+
+
+def _route_demand_material(demand: RouteDemand) -> dict[str, object]:
+    target = demand.target
+    return {
+        "source": _node_material(demand.source),
+        "target": (
+            {
+                "kind": "ground-station",
+                "ground_station_id": _node_material(
+                    target.ground_station_id
+                ),
+            }
+            if isinstance(target, GroundStationRouteDemandTarget)
+            else {"kind": "zone", "zone_id": target.zone_id}
+        ),
+    }
+
+
+def _route_outcome_material(outcome: RouteOutcome) -> dict[str, object]:
+    common = {"demand": _route_demand_material(outcome.demand)}
+    if isinstance(outcome, ReachableRouteOutcome):
+        return {
+            **common,
+            "kind": "reachable",
+            "next_hop": _node_material(outcome.next_hop),
+            "path": [_node_material(value) for value in outcome.path],
+        }
+    return {
+        **common,
+        "kind": "unreachable",
+        "reason": outcome.reason.value,
+    }
+
+
+def _optional_route_outcome_material(
+    outcome: RouteOutcome | None,
+) -> dict[str, object] | None:
+    return None if outcome is None else _route_outcome_material(outcome)
+
+
+def _optional_node_material(node_id: NodeId | None) -> dict[str, object] | None:
+    return None if node_id is None else _node_material(node_id)
+
+
+def _node_material(node_id: NodeId) -> dict[str, object]:
+    return {
+        "asn": node_id.asn,
+        "entity_kind": node_id.entity_kind,
+        "entity_id": node_id.entity_id,
+    }
+
+
+def _json_fingerprint(value: object) -> str:
+    payload = json.dumps(
+        value,
+        ensure_ascii=True,
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return sha256(payload).hexdigest()
+
+
+def _require_fingerprint(value: object, field_name: str) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or value != value.lower()
+        or any(character not in "0123456789abcdef" for character in value)
     ):
-        return values
-    return tuple(sorted(values, key=key))
+        raise ValueError(
+            f"{field_name} must be a lowercase 64-character SHA-256 value"
+        )
+    return value
 
 
-def _connection_transition_key(
-    value: ConnectionTransition,
-) -> tuple[datetime, int, str]:
-    return (
-        value.nominal_time,
-        0
-        if value.operation is ConnectionTransitionOperation.ESTABLISH
-        else 1,
-        repr(value.connection_id),
-    )
+class CandidateDecisionKind(Enum):
+    """Classify compact ISL selection and underfill inspection evidence.
+
+    Layer: public immutable Simulator planning-inspection classification. It is
+    public because injected Models and detached Planner evidence share the
+    selection explanation vocabulary. It is not Connection lifecycle state,
+    a Plan event kind, or backend result.
+    """
+
+    RETAINED = "retained"
+    SELECTED = "selected"
+    REJECTED = "rejected"
+    UNDERFILLED = "underfilled"
 
 
-def _parameter_transition_key(
-    value: ParameterTransition,
-) -> tuple[datetime, str, str]:
-    return value.nominal_time, repr(value.connection_id), value.direction.value
+@dataclass(frozen=True, slots=True)
+class CandidateDecision:
+    """Explain one compact ISL selection, rejection, or underfill decision.
+
+    Layer: public immutable Simulator planning-inspection value. It is public
+    because replaceable ISL Models return it and Planner derives bounded reason
+    histograms from it. It is not durable per-candidate history, an operational
+    Connection, physical candidate authority, or Plan transition payload.
+    """
+
+    decision: CandidateDecisionKind
+    reason: str
+    endpoint_a: NodeId | None = None
+    endpoint_b: NodeId | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.decision, CandidateDecisionKind):
+            raise TypeError("decision must be a CandidateDecisionKind")
+        if not isinstance(self.reason, str) or not self.reason.strip():
+            raise ValueError("reason must be a non-empty string")
+        object.__setattr__(self, "reason", self.reason.strip())
+        if (self.endpoint_a is None) != (self.endpoint_b is None):
+            raise ValueError("candidate decision endpoints are all-or-none")
+        if self.endpoint_a is not None:
+            _require_node_id(self.endpoint_a, "endpoint_a")
+            _require_node_id(self.endpoint_b, "endpoint_b")
 
 
-def _validate_sparse_parameters(
-    bandwidth_bps: int | None,
-    delay_us: int | None,
-    packet_loss_ppm: int | None,
-) -> None:
-    if bandwidth_bps is None and delay_us is None and packet_loss_ppm is None:
-        raise ValueError("ParameterTransition must contain a target value")
-    if bandwidth_bps is not None and (
-        isinstance(bandwidth_bps, bool)
-        or not isinstance(bandwidth_bps, int)
-        or bandwidth_bps <= 0
-    ):
-        raise ValueError("bandwidth_bps must be a positive integer")
-    if delay_us is not None and (
-        isinstance(delay_us, bool)
-        or not isinstance(delay_us, int)
-        or delay_us < 0
-    ):
-        raise ValueError("delay_us must be a non-negative integer")
-    if packet_loss_ppm is not None and (
-        isinstance(packet_loss_ppm, bool)
-        or not isinstance(packet_loss_ppm, int)
-        or not 0 <= packet_loss_ppm <= 1_000_000
-    ):
-        raise ValueError("packet_loss_ppm must be between 0 and 1000000")
+@dataclass(frozen=True, slots=True)
+class PlanningInspection:
+    """Summarize bounded planning work and lifecycle outcomes at one boundary.
+
+    Layer: public immutable Simulator planning-inspection value. It is public
+    because detached evidence and Tools need a stable compact summary without
+    executing Models. It is not authoritative PlannedOperationalState, a full
+    candidate history, or a backend/runtime snapshot.
+    """
+
+    timestamp: datetime
+    feasible_isl_candidates: int
+    selected_isls: int
+    acquiring_isls: int
+    operational_isls: int
+    rejected_isls: int
+    underfilled_isl_slots: int
+    ground_station_accesses: int
+    zones_served: int
+    zones_unserved: int
+    routes_reachable: int
+    routes_unreachable: int
+    route_recomputed: bool
+    acquisition_started: int = 0
+    acquisition_completed: int = 0
+    acquisition_reset: int = 0
+    stages: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "timestamp",
+            normalize_utc_datetime(self.timestamp, "timestamp"),
+        )
+        for field_name in (
+            "feasible_isl_candidates",
+            "selected_isls",
+            "acquiring_isls",
+            "operational_isls",
+            "rejected_isls",
+            "underfilled_isl_slots",
+            "ground_station_accesses",
+            "zones_served",
+            "zones_unserved",
+            "routes_reachable",
+            "routes_unreachable",
+            "acquisition_started",
+            "acquisition_completed",
+            "acquisition_reset",
+        ):
+            value = getattr(self, field_name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{field_name} must be a non-negative integer")
+        if not isinstance(self.route_recomputed, bool):
+            raise TypeError("route_recomputed must be a bool")
+        stages = tuple(self.stages)
+        if any(not isinstance(value, str) or not value for value in stages):
+            raise ValueError("stages must contain non-empty strings")
+        object.__setattr__(self, "stages", stages)
 
 
-def _validate_coverage_id(value: int, field_name: str) -> None:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise ValueError(f"{field_name} must be a non-negative integer")
-
-
-def _typed_tuple(
-    values: Iterable[object],
-    expected_type: type,
-    field_name: str,
-) -> tuple:
+def _ordered_unique(values, expected_type, key, field_name: str) -> tuple:
     try:
-        result = tuple(values)
+        copied = tuple(values)
     except TypeError as error:
         raise TypeError(f"{field_name} must be iterable") from error
-    if any(not isinstance(value, expected_type) for value in result):
-        raise TypeError(
-            f"{field_name} must contain {expected_type.__name__} values"
-        )
-    return result
+    if any(not isinstance(value, expected_type) for value in copied):
+        raise TypeError(f"{field_name} contains an invalid value")
+    ordered = tuple(sorted(copied, key=key))
+    keys = tuple(key(value) for value in ordered)
+    if len(keys) != len(set(keys)):
+        raise ValueError(f"{field_name} contains a duplicate identity")
+    return ordered
 
 
-def _validate_transition_times(
-    start_timestamp: datetime | None,
-    end_timestamp: datetime,
-    *transition_groups: tuple,
+def _validate_acyclic(
+    events: tuple[SemanticEventReference, ...],
+    precedences: tuple[SemanticEventPrecedence, ...],
 ) -> None:
-    for transitions in transition_groups:
-        for transition in transitions:
-            if transition.nominal_time > end_timestamp:
-                raise ValueError("transition falls after Plan coverage")
-            if (
-                start_timestamp is not None
-                and transition.nominal_time <= start_timestamp
-            ):
-                raise ValueError(
-                    "transition falls before or on the Plan-owned start boundary"
-                )
-
-
-def _validate_forwarding_precedences(
-    forwarding: tuple[ForwardingTransition, ...],
-    precedences: tuple[ForwardingTransitionPrecedence, ...],
-) -> tuple[ForwardingTransitionPrecedence, ...]:
-    positions = {id(value): index for index, value in enumerate(forwarding)}
-    seen: set[tuple[int, int]] = set()
-    for precedence in precedences:
-        key = (id(precedence.predecessor), id(precedence.successor))
-        if key[0] not in positions or key[1] not in positions:
+    successors: dict[SemanticEventReference, set[SemanticEventReference]] = {
+        value: set() for value in events
+    }
+    indegree = {value: 0 for value in events}
+    for value in precedences:
+        first = value.predecessor
+        second = value.successor
+        if first not in successors or second not in successors:
             raise ValueError(
-                "precedence endpoints must reference transitions in this Plan"
+                "precedence endpoints must be canonical event references"
             )
-        if key in seen:
-            raise ValueError("duplicate Forwarding transition precedence")
-        seen.add(key)
-    if _precedence_has_cycle(seen):
-        raise ValueError("Forwarding transition precedence must be acyclic")
-    return _order_forwarding_precedences(
-        forwarding, precedences, positions=positions
+        if second not in successors[first]:
+            successors[first].add(second)
+            indegree[second] += 1
+    pending = [identity for identity, count in indegree.items() if count == 0]
+    visited = 0
+    while pending:
+        current = pending.pop()
+        visited += 1
+        for successor in successors[current]:
+            indegree[successor] -= 1
+            if indegree[successor] == 0:
+                pending.append(successor)
+    if visited != len(events):
+        raise ValueError("semantic event precedence must be acyclic")
+
+
+def _route_demand_key(demand: RouteDemand) -> tuple:
+    source = _node_key(demand.source)
+    if isinstance(demand.target, GroundStationRouteDemandTarget):
+        return source, "G", _node_key(demand.target.ground_station_id)
+    return source, "Z", demand.target.zone_id
+
+
+def _semantic_event_key(event: SemanticEventReference) -> tuple:
+    if event.connection_id is not None:
+        identity = ("C", _connection_key(event.connection_id))
+    elif event.zone_id is not None:
+        identity = ("Z", event.zone_id)
+    else:
+        identity = ("R", _route_demand_key(event.route_demand))
+    return event.kind.value, identity
+
+
+def _semantic_event_order_key(event: SemanticEventReference) -> tuple:
+    order = {
+        kind: index for index, kind in enumerate(SemanticEventKind)
+    }
+    return event.timestamp, order[event.kind], _semantic_event_key(event)[1]
+
+
+def _precedence_key(value: SemanticEventPrecedence) -> tuple:
+    return (
+        _semantic_event_order_key(value.predecessor),
+        _semantic_event_order_key(value.successor),
     )
 
 
-def _order_forwarding_precedences(
-    forwarding: tuple[ForwardingTransition, ...],
-    precedences: tuple[ForwardingTransitionPrecedence, ...],
-    *,
-    positions: dict[int, int] | None = None,
-) -> tuple[ForwardingTransitionPrecedence, ...]:
-    if positions is None:
-        positions = {id(value): index for index, value in enumerate(forwarding)}
-    keyed = [
-        (
-            (
-                positions[id(precedence.predecessor)],
-                positions[id(precedence.successor)],
-            ),
-            precedence,
-        )
-        for precedence in precedences
-    ]
-    if all(
-        previous[0] <= current[0]
-        for previous, current in zip(keyed, keyed[1:])
-    ):
-        ordered = keyed
-    else:
-        ordered = sorted(keyed, key=lambda item: item[0])
-    return tuple(value for _, value in ordered)
+def _connection_key(identifier: OperationalConnectionId) -> tuple:
+    return (
+        identifier.kind.value,
+        _node_key(identifier.endpoint_a),
+        _node_key(identifier.endpoint_b),
+    )
 
 
-def _precedence_has_cycle(edges) -> bool:
-    successors: dict[int, set[int]] = {}
-    indegrees: dict[int, int] = {}
-    for predecessor, successor in edges:
-        successors.setdefault(predecessor, set()).add(successor)
-        successors.setdefault(successor, set())
-        indegrees.setdefault(predecessor, 0)
-        indegrees[successor] = indegrees.get(successor, 0) + 1
-    ready = [node for node, degree in indegrees.items() if degree == 0]
-    visited = 0
-    while ready:
-        node = ready.pop()
-        visited += 1
-        for successor in successors.get(node, ()):
-            indegrees[successor] -= 1
-            if indegrees[successor] == 0:
-                ready.append(successor)
-    return visited != len(indegrees)
+def _require_node_id(node_id: NodeId, field_name: str) -> None:
+    if not isinstance(node_id, NodeId):
+        raise TypeError(f"{field_name} must be a NodeId")
 
 
-__all__ = [
-    "ConnectionTransition",
-    "ConnectionTransitionOperation",
-    "ForwardingTransition",
-    "ForwardingTransitionPrecedence",
-    "ParameterTransition",
-    "Plan",
-    "PlanningDecision",
-]
+def _require_observation_interval(value: timedelta) -> timedelta:
+    if not isinstance(value, timedelta):
+        raise TypeError("observation_interval must be a timedelta")
+    if value <= timedelta(0):
+        raise ValueError("observation_interval must be positive")
+    return value
+
+
+def _timedelta_material(value: timedelta) -> dict[str, int]:
+    interval = _require_observation_interval(value)
+    return {
+        "days": interval.days,
+        "seconds": interval.seconds,
+        "microseconds": interval.microseconds,
+    }
+
+
+def _require_node_kind(
+    node_id: NodeId, expected: str, field_name: str
+) -> None:
+    _require_node_id(node_id, field_name)
+    if node_id.entity_kind != expected:
+        raise ValueError(f"{field_name} must identify a {expected}")
+
+
+def _node_key(node_id: NodeId) -> tuple[int, str, str]:
+    return node_id.asn, node_id.entity_kind, node_id.entity_id

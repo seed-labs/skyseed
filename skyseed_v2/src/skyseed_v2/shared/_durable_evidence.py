@@ -7,6 +7,7 @@ from dataclasses import fields, is_dataclass
 from datetime import datetime
 from enum import Enum
 import gzip
+from io import TextIOWrapper
 import json
 from pathlib import Path
 from typing import Any
@@ -56,7 +57,22 @@ def _iter_jsonl(path: Path):
 
 def _open_jsonl(path: Path, mode: str):
     if path.suffix == ".gz":
-        return gzip.open(path, mode, encoding="utf-8", compresslevel=1)
+        operation = mode.removesuffix("t")
+        raw_mode = {
+            "r": "rb",
+            "w": "wb",
+            "a": "ab",
+        }[operation]
+        raw = path.open(raw_mode)
+        gzip_mode = "rb" if operation == "r" else "wb"
+        compressed = gzip.GzipFile(
+            filename="",
+            mode=gzip_mode,
+            fileobj=raw,
+            compresslevel=1,
+            **({} if operation == "r" else {"mtime": 0}),
+        )
+        return TextIOWrapper(compressed, encoding="utf-8")
     return path.open(mode.removesuffix("t"), encoding="utf-8")
 
 

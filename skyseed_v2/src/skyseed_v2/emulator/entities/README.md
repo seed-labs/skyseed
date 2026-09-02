@@ -74,6 +74,7 @@ classDiagram
         +mean_anomaly_deg
         +payload
         +max_simultaneous_ground_station_accesses
+        +maximum_simultaneous_inter_satellite_links
     }
     class GroundStation {
         <<Emulator and SEED router>>
@@ -120,7 +121,7 @@ classDiagram
 |---|---|---|
 | `Shell` | `skyseed_v2.emulator.entities.Shell` | `shell_id`, `orbits`, `create_orbit()`, `get_orbit()`, `iter_satellites()` |
 | `Orbit` | `skyseed_v2.emulator.entities.Orbit` | `orbit_id`, `shell_id`, `parameters`, `satellites`, `get_satellite()`, `create_satellite()`, `create_satellites()` |
-| `Satellite` | `skyseed_v2.emulator.entities.Satellite` | `satellite_id`, `shell_id`, `orbit_id`, `orbit_index`, `mean_anomaly_deg`, `payload`, `max_simultaneous_ground_station_accesses` |
+| `Satellite` | `skyseed_v2.emulator.entities.Satellite` | `satellite_id`, `shell_id`, `orbit_id`, `orbit_index`, `mean_anomaly_deg`, `payload`, `max_simultaneous_ground_station_accesses`, `maximum_simultaneous_inter_satellite_links` |
 | `GroundStation` | `skyseed_v2.emulator.entities.GroundStation` | `ground_station_id`, `location`, `station_type`, `operator`, `max_simultaneous_satellite_accesses`, `service_config` |
 | `GroundStationLocation` | `skyseed_v2.emulator.entities.GroundStationLocation` | `latitude_deg`, `longitude_deg`, `elevation_m` |
 | `OrbitParameters` | `skyseed_v2.emulator.entities.OrbitParameters` | `altitude_km`, `inclination_deg`, `right_ascension_deg`, `epoch_utc` |
@@ -141,6 +142,14 @@ simulation capability; it does not record or infer antenna count.
 Satellite `max_simultaneous_ground_station_accesses` is an optional
 positive-integer cap on simultaneous GroundStation-access Connections. It is
 not total Satellite degree, an ISL limit, a UT-beam limit, or antenna count.
+
+Satellite `maximum_simultaneous_inter_satellite_links` is the optional
+positive-integer upstream scalar copied into Simulator static input and then
+materialized as the PhysicalWorld Satellite's immutable
+`InterSatelliteLinkCapability`. It is a simultaneous physical maximum, not a
+terminal inventory/direction, same-/cross-plane split, candidate-search scope,
+or operational selection. Canonical S3's value `4` is a scenario assumption;
+the injected Network Planner's reference `2 + 2` split remains separate policy.
 
 ## Entry points
 

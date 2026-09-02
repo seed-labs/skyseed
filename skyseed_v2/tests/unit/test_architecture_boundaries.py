@@ -240,7 +240,7 @@ def test_removed_and_undesignated_future_boundary_apis_are_not_exported() -> Non
         "SimulationDefinition",
         "SimulationTimeline",
         "Simulator",
-        "Topology",
+        "PhysicalWorld",
     ):
         assert hasattr(simulator, implemented_name)
         assert not hasattr(skyseed_v2, implemented_name)
@@ -278,7 +278,7 @@ def test_removed_and_undesignated_future_boundary_apis_are_not_exported() -> Non
         for path in project_package.rglob("*.py")
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
     )
-    assert importlib.util.find_spec("skyseed_v2.simulator.slicing.difference") is not None
+    assert importlib.util.find_spec("skyseed_v2.simulator.slicing") is None
     assert importlib.util.find_spec("skyseed_v2.simulator.planning") is not None
     assert (
         importlib.util.find_spec("skyseed_v2.simulator.input.identity")
@@ -318,42 +318,44 @@ def test_simulator_static_input_is_public_without_entity_back_dependency() -> No
 def test_simulator_core_has_no_emulator_seed_or_generation_dependency() -> None:
     from skyseed_v2.simulator import definition, simulator, timeline
     from skyseed_v2.simulator.geometry import coordinates
-    from skyseed_v2.simulator.slicing import (
-        connection,
-        difference,
-        route,
-        slice,
-        slicer,
+    from skyseed_v2.simulator.planning import (
+        coordination,
+        evidence,
+        models as planning_models,
+        planner,
+        values,
     )
-    from skyseed_v2.simulator.topology import (
+    from skyseed_v2.simulator.physical import (
+        capability,
         physical_frame,
+        physical_link,
         position,
-        topology,
+        world,
         zone,
     )
     from skyseed_v2.simulator.models import (
         circular_orbit,
-        geometric_connection,
-        hop_count_route,
+        geometric_physical_link,
     )
 
     for module in (
-        connection,
+        capability,
+        coordination,
         coordinates,
         definition,
-        difference,
+        evidence,
+        geometric_physical_link,
         physical_frame,
+        physical_link,
+        planner,
+        planning_models,
         position,
-        route,
         simulator,
-        slice,
-        slicer,
         timeline,
-        topology,
+        values,
+        world,
         zone,
         circular_orbit,
-        geometric_connection,
-        hop_count_route,
     ):
         imports = imported_modules(module)
         for forbidden_prefix in (
@@ -686,8 +688,13 @@ def test_one_shot_migration_has_no_old_modules_or_forwarders() -> None:
         "skyseed_v2.simulator.route",
         "skyseed_v2.simulator.slice",
         "skyseed_v2.simulator.slicer",
+        "skyseed_v2.simulator.slicing",
         "skyseed_v2.simulator.static_input",
         "skyseed_v2.simulator.zone",
+        "skyseed_v2.simulator._history_codec",
+        "skyseed_v2.simulator.models.gateway_hop_count_route",
+        "skyseed_v2.simulator.models.geometric_connection",
+        "skyseed_v2.simulator.models.hop_count_route",
     )
     for module_name in removed_modules:
         try:
@@ -741,26 +748,26 @@ def test_geometry_module_cycle_is_eliminated() -> None:
     assert ".coordinates" not in position_imports
 
 
-def test_position_model_has_only_a_type_checking_topology_dependency() -> None:
+def test_position_model_has_only_a_type_checking_physical_world_dependency() -> None:
     from collections.abc import Mapping
     from datetime import datetime
     from typing import get_args, get_origin, get_type_hints
 
     from skyseed_v2.shared import NodeId
-    from skyseed_v2.simulator import EarthFixedPosition, PositionModel, Topology
-    from skyseed_v2.simulator.topology import position as position_contract
+    from skyseed_v2.simulator import EarthFixedPosition, PositionModel, PhysicalWorld
+    from skyseed_v2.simulator.physical import position as position_contract
 
-    assert ".topology" in imported_modules(position_contract)
-    assert not hasattr(position_contract, "Topology")
+    assert ".world" in imported_modules(position_contract)
+    assert not hasattr(position_contract, "PhysicalWorld")
 
     namespace = dict(vars(position_contract))
-    namespace["Topology"] = Topology
+    namespace["PhysicalWorld"] = PhysicalWorld
     hints = get_type_hints(
         PositionModel.compute_positions,
         globalns=namespace,
     )
 
-    assert hints["topology"] is Topology
+    assert hints["physical_world"] is PhysicalWorld
     assert hints["timestamp"] is datetime
     assert get_origin(hints["return"]) is Mapping
     assert get_args(hints["return"]) == (NodeId, EarthFixedPosition)

@@ -69,7 +69,7 @@
 - 正式执行路径；
 - 新运行模式或 fallback；
 - 类图中的主体类或重要关系；
-- Emulator、Simulator、Topology、Planner、`SkyseedDockerCompiler`、BPF Compiler、
+- Emulator、Simulator、PhysicalWorld、Planner、`SkyseedDockerCompiler`、BPF Compiler、
   `BpfRunner`、`ComposeProjectLauncher` 或任何新 backend、dataplane、公共
   plugin、lifecycle authority 之间的职责。
 

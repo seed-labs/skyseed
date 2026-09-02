@@ -281,24 +281,14 @@ def write_aggregate_index(
     cards = []
     for key, title, description in (
         (
-            "topology",
-            "Topology Tool",
+            "physical-world",
+            "Physical World Tool",
             "Inspect selectable static orbit planes, GroundStations, and consistency.",
         ),
         (
             "zone",
             "Zone Tool",
             "Inspect and select static Zone boundaries and geometry.",
-        ),
-        (
-            "physical-frame",
-            "Physical Frame Tool",
-            "Inspect one exact timestamped physical projection without operational state.",
-        ),
-        (
-            "slice",
-            "Legacy Slice / Difference Tool",
-            "Inspect the temporary mixed operational state and Difference evolution by Slice.",
         ),
         (
             "observation",
@@ -308,12 +298,12 @@ def write_aggregate_index(
         (
             "planner",
             "Planner Tool",
-            "Compare sampled formal evidence with published planned state.",
+            "Inspect physical candidates, lifecycle, operational state, Routes, Plans, and lineage.",
         ),
         (
-            "compiler",
+            "bpf-compiler",
             "BPF Compiler Tool",
-            "Trace Plan deltas into interval operations and complete baselines.",
+            "Trace self-contained Plan transitions into intended BPF state.",
         ),
         (
             "runner",
@@ -326,7 +316,7 @@ def write_aggregate_index(
             "Inspect real Ping and tc-BPF observations against active runtime evolution.",
         ),
     ):
-        if key not in ("topology", "zone") and key not in tool_results:
+        if key not in ("physical-world", "zone") and key not in tool_results:
             continue
         result = tool_results.get(
             key, {"status": "FAILED", "message": "Not executed"}
@@ -368,7 +358,7 @@ def write_aggregate_index(
   <span class="status {overall}">{overall}</span>
   <h2>Tool snapshot</h2>
   {issue}
-  <p>Read static structure and an exact PhysicalFrame first, then the temporary legacy Slice evidence, Planner publications, and Compiler realizations. Use System Observation for measured execution cost. Every Tool is detached and read-only; a visual selection never creates a domain fact.</p>
+  <p>Read static structure and exact PhysicalFrame facts first, then Planner publications and Compiler realizations. Use System Observation for measured execution cost. Every Tool is detached and read-only; a visual selection never creates a domain fact.</p>
 </section>
 <section><h2>Core object inventory</h2><div class="grid stats">{stats}</div></section>
 <section><h2>Inspection entries</h2><div class="grid two">{''.join(cards)}</div></section>
@@ -384,10 +374,8 @@ def write_aggregate_index(
                 "Tool snapshot": "本次工具快照",
                 "Core object inventory": "核心对象数量",
                 "Inspection entries": "检查入口",
-                "Topology Tool": "Topology 工具",
+                "Physical World Tool": "物理世界工具",
                 "Zone Tool": "Zone 工具",
-                "Physical Frame Tool": "Physical Frame 工具",
-                "Legacy Slice / Difference Tool": "旧版 Slice / Difference 工具",
                 "System Observation Tool": "系统 Observation 工具",
                 "Planner Tool": "Planner 工具",
                 "BPF Compiler Tool": "BPF Compiler 工具",
@@ -395,15 +383,13 @@ def write_aggregate_index(
                 "Traffic / Path Replay Tool": "Traffic / Path Replay 工具",
                 "Inspect selectable static orbit planes, GroundStations, and consistency.": "查看可选择的静态轨道平面、地面站与一致性。",
                 "Inspect and select static Zone boundaries and geometry.": "查看并直接选择静态 Zone 边界与几何信息。",
-                "Inspect one exact timestamped physical projection without operational state.": "检查一个精确时间戳的物理投影，不包含运行决策状态。",
-                "Inspect the temporary mixed operational state and Difference evolution by Slice.": "逐 Slice 检查临时旧版混合运行状态和 Difference 演化。",
                 "Inspect measured execution stages, rollups, work, and resources.": "检查已测量的执行 stage、rollup、工作量与资源。",
-                "Compare sampled formal evidence with published planned state.": "比较采样的正式 evidence 与已发布的 planned state。",
-                "Trace Plan deltas into interval operations and complete baselines.": "追踪 Plan delta 如何转换为区间操作和完整 baseline。",
+                "Inspect physical candidates, lifecycle, operational state, Routes, Plans, and lineage.": "检查物理候选、生命周期、运行状态、Route、Plan 与血缘。",
+                "Trace self-contained Plan transitions into intended BPF state.": "追踪自包含 Plan transition 如何转换为预期 BPF 状态。",
                 "Inspect detached lifecycle, timing, readiness, and cleanup evidence.": "检查分离保存的生命周期、时序、就绪与清理 evidence。",
                 "Inspect real Ping and tc-BPF observations against active runtime evolution.": "对照 ACTIVE runtime 演化检查真实 Ping 与 tc-BPF observation。",
                 "All available Tools completed; each entry contains its exact evidence and audit links.": "所有可用 Tool 均已完成；每个入口都包含精确 evidence 和审计链接。",
-                "Read static structure and an exact PhysicalFrame first, then the temporary legacy Slice evidence, Planner publications, and Compiler realizations. Use System Observation for measured execution cost. Every Tool is detached and read-only; a visual selection never creates a domain fact.": "先阅读静态结构和一个精确 PhysicalFrame，再查看临时旧版 Slice evidence、Planner 发布和 Compiler realization。使用 System Observation 检查已测量的执行成本。所有 Tool 均分离且只读；可视化选择不会创建领域事实。",
+                "Read static structure and exact PhysicalFrame facts first, then Planner publications and Compiler realizations. Use System Observation for measured execution cost. Every Tool is detached and read-only; a visual selection never creates a domain fact.": "先阅读静态结构和精确 PhysicalFrame 事实，再查看 Planner 发布和 Compiler realization。使用 System Observation 检查已测量的执行成本。所有 Tool 均分离且只读；可视化选择不会创建领域事实。",
             },
         ),
     )
@@ -413,29 +399,29 @@ def finalize_runtime_aggregate_index(directory: Path) -> None:
     """Add post-run Runner and Traffic results to one generated run index."""
 
     root = Path(directory)
-    topology_path = root / "topology/topology.json"
+    physical_world_path = root / "physical-world/physical-world.json"
     try:
-        topology = json.loads(topology_path.read_text(encoding="utf-8"))
+        physical_world = json.loads(
+            physical_world_path.read_text(encoding="utf-8")
+        )
     except (OSError, json.JSONDecodeError) as error:
-        raise ValueError("generated Topology result is unavailable") from error
-    if not isinstance(topology, dict) or not isinstance(
-        topology.get("counts"), dict
+        raise ValueError("generated PhysicalWorld result is unavailable") from error
+    if not isinstance(physical_world, dict) or not isinstance(
+        physical_world.get("counts"), dict
     ):
-        raise ValueError("generated Topology result is incomplete")
+        raise ValueError("generated PhysicalWorld result is incomplete")
     counts = {
         str(key): int(value)
-        for key, value in topology["counts"].items()
+        for key, value in physical_world["counts"].items()
         if isinstance(value, int) and not isinstance(value, bool)
     }
     results: dict[str, dict[str, object]] = {}
     for key, title in (
-        ("topology", "Topology Tool"),
+        ("physical-world", "Physical World Tool"),
         ("zone", "Zone Tool"),
-        ("physical-frame", "Physical Frame Tool"),
-        ("slice", "Legacy Slice / Difference Tool"),
         ("observation", "System Observation Tool"),
         ("planner", "Planner Tool"),
-        ("compiler", "BPF Compiler Tool"),
+        ("bpf-compiler", "BPF Compiler Tool"),
         ("runner", "BPF Runner Tool"),
         ("traffic", "Traffic / Path Replay Tool"),
     ):

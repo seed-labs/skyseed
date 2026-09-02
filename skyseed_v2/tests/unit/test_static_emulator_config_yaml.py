@@ -31,6 +31,7 @@ def valid_payload() -> dict:
                             "orbit_count": 2,
                             "satellites_per_orbit": 3,
                             "max_simultaneous_ground_station_accesses": 2,
+                            "maximum_simultaneous_inter_satellite_links": 4,
                             "raan": {"start_deg": 0.0, "step_deg": 180.0},
                             "phase": {
                                 "start_deg": 0.0,
@@ -113,6 +114,11 @@ def test_valid_yaml_loads_only_immutable_static_config(
     assert (
         shell.generated_orbit_layout.max_simultaneous_ground_station_accesses
         == 2
+    )
+    assert (
+        shell.generated_orbit_layout
+        .maximum_simultaneous_inter_satellite_links
+        == 4
     )
     assert shell.epoch_utc.isoformat() == "2026-01-01T00:00:00+00:00"
     assert result.skyseed_autonomous_systems[0].ground_stations[0].operator == (
@@ -294,6 +300,24 @@ def test_satellite_access_capability_is_validated_from_yaml(
     ):
         load_static_emulator_config(
             write_payload(tmp_path, payload, "invalid-satellite-capability.yaml")
+        )
+
+
+@pytest.mark.parametrize("capability", (0, -1, True))
+def test_inter_satellite_link_capability_is_validated_from_yaml(
+    tmp_path: Path,
+    capability: int,
+) -> None:
+    payload = valid_payload()
+    payload["skyseed_autonomous_systems"][0]["shells"][0]["generation"][
+        "maximum_simultaneous_inter_satellite_links"
+    ] = capability
+    with pytest.raises(
+        StaticEmulatorConfigLoadError,
+        match="maximum_simultaneous_inter_satellite_links",
+    ):
+        load_static_emulator_config(
+            write_payload(tmp_path, payload, "invalid-isl-capability.yaml")
         )
 
 

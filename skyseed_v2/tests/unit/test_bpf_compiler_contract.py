@@ -1,793 +1,339 @@
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError, replace
 from datetime import datetime, timedelta, timezone
+import inspect
 
 import pytest
 
-from skyseed_v2.backend import bpf
-from skyseed_v2.backend.bpf import BpfCompiledRealization, compile_bpf
-from skyseed_v2.backend.bpf.compiler import (
-    _IntentReference,
-    _OrderingConstraint,
-    _constraint_key,
+from examples.complete_static_emulator.emu import build_emulator
+from examples.complete_static_emulator.simu import (
+    create_complete_static_simulator,
+    run_complete_static_chain,
 )
-from skyseed_v2.configuration.simulator import (
-    LatitudeLongitudeRectangleDefinition,
-    ZoneDefinition,
-    ZoneLayoutDefinition,
+from skyseed_v2.backend.bpf import (
+    BpfCompiledActivationBoundary,
+    BpfCompiledRealization,
+    compile_bpf,
 )
+from skyseed_v2.backend.bpf.compiled_realization import _ZoneEdgePhase
+from skyseed_v2.backend.bpf.compiler import _compile_bpf_observed
+from skyseed_v2.shared._execution_observation import _ExecutionObserver
 from skyseed_v2.shared import NodeId
 from skyseed_v2.simulator import (
-    AccumulatedDeadbandParameterPlanningModel,
-    Connection,
-    ConnectionDirection,
-    ConnectionId,
-    ConnectionKind,
-    ConnectionSlice,
-    ConnectionTransition,
-    ConnectionTransitionOperation,
-    DefaultCoordinationPolicy,
-    DependencyAwareForwardingPlanningModel,
-    DifferenceOperation,
-    DirectionalConnectionParameters,
-    EarthFixedPosition,
-    ForwardingTransition,
-    ForwardingTransitionPrecedence,
-    GroundStationRouteTarget,
-    MidpointConnectionPlanningModel,
-    Plan,
-    RouteKey,
-    RouteSlice,
-    SimulationDefinition,
-    SimulationTimeline,
-    Simulator,
-    ZoneRouteTarget,
+    PlanTransition,
+    ReachableRouteOutcome,
+    RouteDemand,
+    RouteOutcomeTransition,
+    RouteUnreachableReason,
+    UnreachableRouteOutcome,
+    ZoneRouteDemandTarget,
+    apply_plan,
+    plan_transition_fingerprint,
 )
-from skyseed_v2.simulator.input import (
-    GroundStationSimulationInput,
-    SatelliteSimulationInput,
-    SimulatorStaticInput,
-)
-
-
-START = datetime(2026, 1, 1, tzinfo=timezone.utc)
-SATELLITE = NodeId(65001, "satellite", "sat-1")
-SATELLITE_2 = NodeId(65001, "satellite", "sat-2")
-GROUND_STATION = NodeId(65001, "ground-station", "gs-1")
-CONNECTION_ID = ConnectionId(
-    ConnectionKind.GROUND_STATION_ACCESS,
-    SATELLITE,
-    GROUND_STATION,
-)
-TRANSIENT_CONNECTION_ID = ConnectionId(
-    ConnectionKind.INTER_SATELLITE,
-    SATELLITE,
-    SATELLITE_2,
-)
-ROUTE_KEY = RouteKey(
-    SATELLITE,
-    GroundStationRouteTarget(GROUND_STATION),
-)
-TRANSIENT_ROUTE_KEY = RouteKey(
-    SATELLITE_2,
-    GroundStationRouteTarget(GROUND_STATION),
-)
-
-
-class _PositionModel:
-    def compute_positions(self, topology, timestamp):
-        return {
-            SATELLITE: EarthFixedPosition(7_000_000.0, 0.0, 0.0),
-            SATELLITE_2: EarthFixedPosition(7_000_000.0, 10.0, 0.0),
-            GROUND_STATION: EarthFixedPosition(6_378_137.0, 0.0, 0.0),
-        }
-
-
-class _SequenceConnectionModel:
-    def __init__(self, values):
-        self._values = iter(values)
-
-    def compute_connection_slice(
-        self, topology, timestamp, positions, previous_connection_slice
-    ):
-        return next(self._values)
-
-
-class _SequenceRouteModel:
-    def __init__(self, values):
-        self._values = iter(values)
-
-    def compute_route_slice(
-        self, topology, timestamp, connection_slice, previous_route_slice
-    ):
-        return next(self._values)
-
-
-class _OneDifferenceAtATime:
-    def select_planning_differences(self, available_differences):
-        return tuple(available_differences)
-
-    def select_publication_differences(self, planning_differences):
-        return tuple(planning_differences[:1])
-
-
-class _PublishAllDifferences:
-    def select_planning_differences(self, available_differences):
-        return tuple(available_differences)
-
-    def select_publication_differences(self, planning_differences):
-        return tuple(planning_differences)
+from skyseed_v2.simulator.planning import create_plan
 
 
 @pytest.fixture(scope="module")
-def compiled_chain():
-    first_parameters = DirectionalConnectionParameters(1_000_000, 10, 20)
-    second_parameters = DirectionalConnectionParameters(1_000_000, 15, 20)
-    transient_parameters = DirectionalConnectionParameters(
-        2_000_000, 5, 10
-    )
-    first_connection = Connection(
-        CONNECTION_ID, first_parameters, first_parameters
-    )
-    second_connection = Connection(
-        CONNECTION_ID, second_parameters, second_parameters
-    )
-    transient_connection = Connection(
-        TRANSIENT_CONNECTION_ID,
-        transient_parameters,
-        transient_parameters,
-    )
-    connection_slices = (
-        ConnectionSlice((first_connection,)),
-        ConnectionSlice((first_connection, transient_connection)),
-        ConnectionSlice((first_connection,)),
-        ConnectionSlice((second_connection,)),
-        ConnectionSlice(),
-    )
-    route_slices = (
-        RouteSlice(((ROUTE_KEY, GROUND_STATION),)),
-        RouteSlice(
-            (
-                (ROUTE_KEY, GROUND_STATION),
-                (TRANSIENT_ROUTE_KEY, SATELLITE),
-            )
-        ),
-        RouteSlice(((ROUTE_KEY, GROUND_STATION),)),
-        RouteSlice(((ROUTE_KEY, GROUND_STATION),)),
-        RouteSlice(),
-    )
-    static_input = SimulatorStaticInput(
-        satellites=(
-            SatelliteSimulationInput(
-                SATELLITE,
-                "sat-1",
-                "shell-1",
-                "orbit-1",
-                0,
-                550.0,
-                53.0,
-                0.0,
-                0.0,
-                START,
-            ),
-            SatelliteSimulationInput(
-                SATELLITE_2,
-                "sat-2",
-                "shell-1",
-                "orbit-1",
-                1,
-                550.0,
-                53.0,
-                0.0,
-                10.0,
-                START,
-            ),
-        ),
-        ground_stations=(
-            GroundStationSimulationInput(
-                GROUND_STATION,
-                "gs-1",
-                0.0,
-                0.0,
-                0.0,
-                "gateway",
-                "Skyseed",
-            ),
-        ),
-    )
-    simulator = Simulator(
-        SimulationDefinition(
-            static_input,
-            SimulationTimeline(
-                START,
-                START + timedelta(seconds=40),
-                timedelta(seconds=10),
-            ),
-        )
-    )
-    simulator.create_topology(position_model=_PositionModel())
-    slicer = simulator.create_slicer(
-        connection_model=_SequenceConnectionModel(connection_slices),
-        route_model=_SequenceRouteModel(route_slices),
-    )
-    slicer.create_all_slices()
-    planner = simulator.create_planner(
-        planning_window_policy=_OneDifferenceAtATime(),
-        connection_model=MidpointConnectionPlanningModel(
-            minimum_dwell=timedelta(seconds=20)
-        ),
-        parameter_model=AccumulatedDeadbandParameterPlanningModel(),
-        forwarding_model=DependencyAwareForwardingPlanningModel(),
-        coordination_policy=DefaultCoordinationPolicy(),
-    )
-    plans = [planner.get_plan()]
-    plans.extend(planner.synchronize() for _ in range(4))
-    results = [compile_bpf(plans[0], slicer=slicer)]
-    for plan in plans[1:]:
-        results.append(
-            compile_bpf(plan, slicer=slicer, previous=results[-1])
-        )
-    return slicer, tuple(plans), tuple(results)
+def complete_chain():
+    simulator = create_complete_static_simulator(build_emulator())
+    plans, realizations, snapshot = run_complete_static_chain(simulator)
+    return simulator, plans, realizations, snapshot
 
 
-def test_compiler_surface_and_separate_runner_owner_are_exact() -> None:
-    assert bpf.__all__ == [
-        "BpfCompiledRealization",
-        "BpfRunner",
-        "compile_bpf",
-    ]
-    assert bpf.compile_bpf is compile_bpf
-    assert bpf.BpfCompiledRealization is BpfCompiledRealization
-    with pytest.raises(TypeError, match="created by compile_bpf"):
-        BpfCompiledRealization()
-
-
-def test_bootstrap_and_consecutive_baseline_fold_all_domains(
-    compiled_chain,
-) -> None:
-    slicer, plans, results = compiled_chain
-    first, materialized_add, materialized_remove, parameter, withdraw = results
-
-    assert (first.start_slice_id, first.end_slice_id) == (0, 1)
-    assert first.resource_realizations[0].operation is (
-        ConnectionTransitionOperation.ESTABLISH
+def test_compile_bpf_has_the_only_round_b_signature() -> None:
+    parameters = inspect.signature(compile_bpf).parameters
+    assert tuple(parameters) == (
+        "plan",
+        "physical_world",
+        "previous_realization",
     )
-    assert len(first.resource_realizations[0].attachments) == 2
-    assert {value.reason for value in first.parameter_realizations} == {
-        "connection-establish"
-    }
-    assert first.forwarding_realizations[0].operation is DifferenceOperation.ADDED
-    assert first.forwarding_realizations[0].current.connection_id == CONNECTION_ID
-    expected_direction = (
-        ConnectionDirection.ENDPOINT_A_TO_B
-        if CONNECTION_ID.endpoint_a == SATELLITE
-        else ConnectionDirection.ENDPOINT_B_TO_A
-    )
-    assert first.forwarding_realizations[0].current.direction is expected_direction
-
-    assert (materialized_add.start_slice_id, materialized_add.end_slice_id) == (
-        1,
-        2,
-    )
-    assert materialized_add.resource_realizations[0].operation is (
-        ConnectionTransitionOperation.ESTABLISH
-    )
-    assert materialized_add.forwarding_realizations[0].operation is (
-        DifferenceOperation.ADDED
-    )
-    assert len(materialized_add.intended_resources) == 2
-    assert len(slicer.get_slice(2).connection_slice.connections) == 2
-    assert materialized_remove.resource_realizations[0].operation is (
-        ConnectionTransitionOperation.WITHDRAW
-    )
-    assert materialized_remove.forwarding_realizations[0].operation is (
-        DifferenceOperation.REMOVED
-    )
-    assert len(materialized_remove.intended_resources) == 1
-
-    sparse = parameter.parameter_realizations
-    assert len(sparse) == 2
-    assert {value.delay_us for value in sparse} == {15}
-    assert all(value.bandwidth_bps is None for value in sparse)
-    assert all(value.packet_loss_ppm is None for value in sparse)
-
-    assert withdraw.resource_realizations[0].operation is (
-        ConnectionTransitionOperation.WITHDRAW
-    )
-    assert withdraw.forwarding_realizations[0].operation is (
-        DifferenceOperation.REMOVED
-    )
-    assert (
-        withdraw.forwarding_realizations[0].previous.connection_id
-        == CONNECTION_ID
-    )
-    assert withdraw.forwarding_realizations[0].current is None
-    assert withdraw.intended_resources == ()
-    assert withdraw.intended_parameters == ()
-    assert withdraw.intended_forwarding == ()
     assert all(
-        previous.end_slice_id == current.start_slice_id
-        for previous, current in zip(plans, plans[1:])
+        value.default is inspect.Parameter.empty
+        for value in parameters.values()
     )
 
 
-def test_compilation_is_deterministic_and_deeply_immutable(compiled_chain) -> None:
-    slicer, plans, results = compiled_chain
-    repeated = compile_bpf(plans[0], slicer=slicer)
-
-    assert repeated == results[0]
-    with pytest.raises(FrozenInstanceError):
-        repeated.end_slice_id = 99
-    with pytest.raises(FrozenInstanceError):
-        repeated.resource_realizations[0].nominal_time = START
-
-
-def test_invalid_lineage_and_plan_contradiction_fail_closed(compiled_chain) -> None:
-    slicer, plans, results = compiled_chain
-    with pytest.raises(ValueError, match="must not have previous"):
-        compile_bpf(plans[0], slicer=slicer, previous=results[0])
-    with pytest.raises(ValueError, match="requires previous"):
-        compile_bpf(plans[1], slicer=slicer)
-    with pytest.raises(ValueError, match="not continuous"):
-        compile_bpf(plans[-1], slicer=slicer, previous=results[0])
-
-    original = plans[0].forwarding_transitions[0]
-    contradictory = replace(
-        original,
-        next_hop=SATELLITE_2,
-    )
-    invalid_plan = Plan(
-        start_slice_id=plans[0].start_slice_id,
-        start_timestamp=plans[0].start_timestamp,
-        end_slice_id=plans[0].end_slice_id,
-        end_timestamp=plans[0].end_timestamp,
-        connection_transitions=plans[0].connection_transitions,
-        parameter_transitions=plans[0].parameter_transitions,
-        forwarding_transitions=(contradictory,),
-        forwarding_precedences=(),
-    )
-    with pytest.raises(ValueError, match="contradicts Slice facts"):
-        compile_bpf(invalid_plan, slicer=slicer)
-
-    missing_resource = Plan(
-        start_slice_id=plans[0].start_slice_id,
-        start_timestamp=plans[0].start_timestamp,
-        end_slice_id=plans[0].end_slice_id,
-        end_timestamp=plans[0].end_timestamp,
-        forwarding_transitions=plans[0].forwarding_transitions,
-    )
-    with pytest.raises(ValueError, match="inactive planned Connection"):
-        compile_bpf(missing_resource, slicer=slicer)
-
-
-def test_same_next_hop_changed_is_lowered_with_formal_precedence(
-    compiled_chain,
+def test_observed_compile_records_real_stage_and_total_durations(
+    complete_chain,
 ) -> None:
-    slicer, _, results = compiled_chain
-    current_slice = slicer.get_slice(2)
-    transient_connection = current_slice.connection_slice.get_connection(
-        TRANSIENT_CONNECTION_ID
-    )
-    nominal_time = current_slice.timestamp
-    assert nominal_time is not None
-    assert (
-        slicer.get_slice(1).route_slice.get_next_hop(
-            ROUTE_KEY.source, ROUTE_KEY.target
-        )
-        == current_slice.route_slice.get_next_hop(
-            ROUTE_KEY.source, ROUTE_KEY.target
-        )
-        == GROUND_STATION
-    )
-    same_next_hop = ForwardingTransition(
-        nominal_time,
-        ROUTE_KEY,
-        DifferenceOperation.CHANGED,
-        GROUND_STATION,
-    )
-    upstream_add = ForwardingTransition(
-        nominal_time,
-        TRANSIENT_ROUTE_KEY,
-        DifferenceOperation.ADDED,
-        SATELLITE,
-    )
-    precedence = ForwardingTransitionPrecedence(
-        same_next_hop,
-        upstream_add,
-    )
-    plan = Plan(
-        start_slice_id=1,
-        start_timestamp=slicer.get_slice(1).timestamp,
-        end_slice_id=2,
-        end_timestamp=nominal_time,
-        connection_transitions=(
-            ConnectionTransition(
-                START + timedelta(seconds=5),
-                ConnectionTransitionOperation.ESTABLISH,
-                TRANSIENT_CONNECTION_ID,
-                transient_connection,
-            ),
-        ),
-        forwarding_transitions=(same_next_hop, upstream_add),
-        forwarding_precedences=(precedence,),
+    simulator, plans, realizations, _ = complete_chain
+    observer = _ExecutionObserver()
+
+    actual = _compile_bpf_observed(
+        plans[0],
+        simulator.get_physical_world(),
+        None,
+        execution_observer=observer,
+        compile_index=7,
     )
 
-    result = compile_bpf(plan, slicer=slicer, previous=results[0])
-
-    assert [
-        value.operation for value in result.forwarding_realizations
-    ] == [DifferenceOperation.CHANGED, DifferenceOperation.ADDED]
-    changed = result.forwarding_realizations[0]
-    assert changed.previous is not None
-    assert changed.current is not None
-    assert changed.previous.next_hop == changed.current.next_hop
-    assert changed.route_key == ROUTE_KEY
-    plan_constraints = [
-        value
-        for value in result.constraints
-        if value.reason == "plan-forwarding-precedence"
-    ]
-    assert len(plan_constraints) == 1
-    assert plan_constraints[0].predecessor.domain == "forwarding"
-    assert plan_constraints[0].predecessor.index == 0
-    assert plan_constraints[0].successor.domain == "forwarding"
-    assert plan_constraints[0].successor.index == 1
+    assert actual == realizations[0]
+    records = observer.snapshot()["records"]
+    assert tuple(value["stage"] for value in records) == (
+        "plan-lineage-and-replay",
+        "event-and-world-indexing",
+        "transition-lowering",
+        "constraint-folding-and-materialization",
+        "backend-state-validation-and-freeze",
+        "semantic-to-bpf-lowering",
+        "compile-total",
+    )
+    assert all(value["duration_seconds"] > 0 for value in records)
+    assert records[0]["work"]["replayed_transitions"] == len(
+        plans[0].transitions
+    )
+    assert records[-1]["duration_role"] == "rollup"
+    assert all(value["scope"]["compile_index"] == 7 for value in records)
 
 
-def test_zone_terminal_change_materializes_required_transient_state() -> None:
-    access_2_id = ConnectionId(
-        ConnectionKind.GROUND_STATION_ACCESS,
-        SATELLITE_2,
-        GROUND_STATION,
-    )
-    parameters = DirectionalConnectionParameters(1_000_000, 10, 20)
-    access_1 = Connection(CONNECTION_ID, parameters, parameters)
-    access_2 = Connection(access_2_id, parameters, parameters)
-    zone_target = ZoneRouteTarget("zone-a")
-    zone_route_key = RouteKey(GROUND_STATION, zone_target)
-    ground_target = GroundStationRouteTarget(GROUND_STATION)
-    connection_slices = (
-        ConnectionSlice((access_1,), {"zone-a": SATELLITE}),
-        ConnectionSlice(
-            (access_1, access_2), {"zone-a": SATELLITE_2}
-        ),
-        ConnectionSlice((access_1,), {"zone-a": SATELLITE}),
-    )
-    route_slices = (
-        RouteSlice(
-            (
-                (RouteKey(SATELLITE, ground_target), GROUND_STATION),
-                (zone_route_key, SATELLITE),
-            )
-        ),
-        RouteSlice(
-            (
-                (RouteKey(SATELLITE, ground_target), GROUND_STATION),
-                (RouteKey(SATELLITE_2, ground_target), GROUND_STATION),
-                (zone_route_key, SATELLITE_2),
-            )
-        ),
-        RouteSlice(
-            (
-                (RouteKey(SATELLITE, ground_target), GROUND_STATION),
-                (zone_route_key, SATELLITE),
-            )
-        ),
-    )
-    static_input = SimulatorStaticInput(
-        satellites=(
-            SatelliteSimulationInput(
-                SATELLITE,
-                "sat-1",
-                "shell-1",
-                "orbit-1",
-                0,
-                550.0,
-                53.0,
-                0.0,
-                0.0,
-                START,
-            ),
-            SatelliteSimulationInput(
-                SATELLITE_2,
-                "sat-2",
-                "shell-1",
-                "orbit-1",
-                1,
-                550.0,
-                53.0,
-                0.0,
-                10.0,
-                START,
-            ),
-        ),
-        ground_stations=(
-            GroundStationSimulationInput(
-                GROUND_STATION,
-                "gs-1",
-                0.0,
-                0.0,
-                0.0,
-                "gateway",
-                "Skyseed",
-            ),
-        ),
-    )
-    simulator = Simulator(
-        SimulationDefinition(
-            static_input,
-            SimulationTimeline(
-                START,
-                START + timedelta(seconds=20),
-                timedelta(seconds=10),
-            ),
-        )
-    )
-    simulator.create_topology(
-        position_model=_PositionModel(),
-        zone_layout_definition=ZoneLayoutDefinition(
-            zones=(
-                ZoneDefinition(
-                    zone_id="zone-a",
-                    geometry=LatitudeLongitudeRectangleDefinition(
-                        -10.0, 10.0, -20.0, 20.0
-                    ),
-                ),
-            ),
-            allow_overlap=True,
-        )
-    )
-    slicer = simulator.create_slicer(
-        connection_model=_SequenceConnectionModel(connection_slices),
-        route_model=_SequenceRouteModel(route_slices),
-    )
-    slicer.create_all_slices()
-    planner = simulator.create_planner(
-        planning_window_policy=_PublishAllDifferences(),
-        connection_model=MidpointConnectionPlanningModel(
-            minimum_dwell=timedelta(seconds=20)
-        ),
-        parameter_model=AccumulatedDeadbandParameterPlanningModel(),
-        forwarding_model=DependencyAwareForwardingPlanningModel(),
-        coordination_policy=DefaultCoordinationPolicy(),
-    )
-    plan = planner.get_plan()
-
-    assert [
-        dict(slicer.get_slice(slice_id).connection_slice.zone_service_assignments)[
-            "zone-a"
-        ]
-        for slice_id in (1, 2, 3)
-    ] == [SATELLITE, SATELLITE_2, SATELLITE]
-    assert tuple(
-        value.operation
-        for value in plan.connection_transitions
-        if value.connection_id == access_2_id
-    ) == (
-        ConnectionTransitionOperation.ESTABLISH,
-        ConnectionTransitionOperation.WITHDRAW,
-    )
-    zone_transitions = [
-        value
-        for value in plan.forwarding_transitions
-        if value.route_key == zone_route_key
-    ]
-    assert tuple(value.operation for value in zone_transitions) == (
-        DifferenceOperation.ADDED,
-        DifferenceOperation.CHANGED,
-        DifferenceOperation.CHANGED,
-    )
-    assert tuple(value.next_hop for value in zone_transitions) == (
-        SATELLITE,
-        SATELLITE_2,
-        SATELLITE,
-    )
-    assert not any(
-        value.decision == "suppressed"
-        for value in planner.get_planning_decisions()
-    )
-
-    result = compile_bpf(plan, slicer=slicer)
-
-    assert [
-        value.service_satellite_id for value in result.zone_edge_realizations
-    ] == [SATELLITE, SATELLITE_2, SATELLITE]
-    assert result.intended_zone_edges[0].service_satellite_id == SATELLITE
-    assert result.intended_forwarding[0].route_key == zone_route_key
-    assert result.intended_forwarding[0].next_hop == SATELLITE
-
-
-def test_backend_technical_constraints_cover_ready_and_retire_edges(
-    compiled_chain,
+def test_compiler_lowers_plan_lineage_and_complete_semantic_output(
+    complete_chain,
 ) -> None:
-    _, _, results = compiled_chain
-    reasons = {
-        constraint.reason
-        for result in results
-        for constraint in result.constraints
-    }
-    assert {
-        "resource-ready-before-qdisc",
-        "resource-ready-before-forwarding",
-        "qdisc-ready-before-forwarding",
-        "stop-use-before-resource-retirement",
-    } <= reasons
+    simulator, plans, realizations, _ = complete_chain
+    world = simulator.get_physical_world()
+    assert len(plans) == len(realizations) == 2
 
-
-def test_indexed_constraint_compilation_matches_ordered_nested_oracle(
-    compiled_chain,
-) -> None:
-    slicer, plans, results = compiled_chain
     previous = None
-    for plan, result in zip(plans, results, strict=True):
-        assert result.constraints == _constraint_oracle(
-            slicer,
-            plan,
-            result,
-            previous,
+    previous_state = None
+    for plan, realization in zip(plans, realizations):
+        assert isinstance(realization, BpfCompiledRealization)
+        assert realization.source_plan_id == plan.plan_id
+        assert realization.source_previous_plan_id == plan.previous_plan_id
+        assert (
+            realization.physical_world_fingerprint
+            == world.semantic_fingerprint()
         )
-        previous = result
-
-
-def _constraint_oracle(slicer, plan, result, previous):
-    resources = result.resource_realizations
-    qdiscs = result.parameter_realizations
-    forwarding = result.forwarding_realizations
-    zone_edges = result.zone_edge_realizations
-    baseline_forwarding = (
-        {}
-        if previous is None
-        else {value.route_key: value for value in previous.intended_forwarding}
-    )
-    constraints = set()
-    forwarding_positions = {
-        id(value): index
-        for index, value in enumerate(plan.forwarding_transitions)
-    }
-    for precedence in plan.forwarding_precedences:
-        constraints.add(
-            _OrderingConstraint(
-                _IntentReference(
-                    "forwarding",
-                    forwarding_positions[id(precedence.predecessor)],
-                ),
-                _IntentReference(
-                    "forwarding",
-                    forwarding_positions[id(precedence.successor)],
-                ),
-                "plan-forwarding-precedence",
-            )
-        )
-    for resource_index, resource in enumerate(resources):
-        if resource.operation is not ConnectionTransitionOperation.ESTABLISH:
-            continue
-        for qdisc_index, qdisc in enumerate(qdiscs):
-            if (
-                qdisc.connection_id == resource.connection_id
-                and qdisc.nominal_time == resource.nominal_time
-                and qdisc.reason == "connection-establish"
-            ):
-                constraints.add(
-                    _OrderingConstraint(
-                        _IntentReference("resource", resource_index),
-                        _IntentReference("parameter", qdisc_index),
-                        "resource-ready-before-qdisc",
-                    )
-                )
-    for forwarding_index, intent in enumerate(forwarding):
-        if intent.current is None:
-            continue
-        establishments = [
-            (index, value)
-            for index, value in enumerate(resources)
-            if value.connection_id == intent.current.connection_id
-            and value.operation is ConnectionTransitionOperation.ESTABLISH
-            and value.nominal_time <= intent.nominal_time
-        ]
-        if establishments:
-            index, _ = max(
-                establishments,
-                key=lambda value: (value[1].nominal_time, value[0]),
-            )
-            constraints.add(
-                _OrderingConstraint(
-                    _IntentReference("resource", index),
-                    _IntentReference("forwarding", forwarding_index),
-                    "resource-ready-before-forwarding",
-                )
-            )
-        parameters = [
-            (index, value)
-            for index, value in enumerate(qdiscs)
-            if value.connection_id == intent.current.connection_id
-            and value.direction is intent.current.direction
-            and value.nominal_time <= intent.nominal_time
-        ]
-        if parameters:
-            index, _ = max(
-                parameters,
-                key=lambda value: (value[1].nominal_time, value[0]),
-            )
-            constraints.add(
-                _OrderingConstraint(
-                    _IntentReference("parameter", index),
-                    _IntentReference("forwarding", forwarding_index),
-                    "qdisc-ready-before-forwarding",
-                )
-            )
-    for resource_index, resource in enumerate(resources):
-        if resource.operation is not ConnectionTransitionOperation.WITHDRAW:
-            continue
-        projected = dict(baseline_forwarding)
-        for intent in forwarding:
-            if intent.nominal_time > resource.nominal_time:
-                break
-            if intent.current is None:
-                projected.pop(intent.route_key, None)
-            else:
-                projected[intent.route_key] = intent.current
+        assert realization.input_state_fingerprint == plan.input_state_fingerprint
+        assert realization.output_state_fingerprint == plan.output_state_fingerprint
+        assert realization.observation_interval == plan.observation_interval
+        assert sum(
+            count for _, count in realization.semantic_precedence_folding
+        ) == len(plan.semantic_event_precedences)
         assert all(
-            value.connection_id != resource.connection_id
-            for value in projected.values()
+            value.reason != "plan-semantic-precedence"
+            for value in realization.constraints
         )
-        for forwarding_index, intent in enumerate(forwarding):
-            if (
-                intent.previous is not None
-                and intent.previous.connection_id == resource.connection_id
-                and (
-                    intent.current is None
-                    or intent.current.connection_id != resource.connection_id
-                )
-                and intent.nominal_time <= resource.nominal_time
-            ):
-                constraints.add(
-                    _OrderingConstraint(
-                        _IntentReference("forwarding", forwarding_index),
-                        _IntentReference("resource", resource_index),
-                        "stop-use-before-resource-retirement",
-                    )
-                )
-    for zone_index, zone_edge in enumerate(zone_edges):
-        for forwarding_index, intent in enumerate(forwarding):
-            target = intent.route_key.target
-            if not isinstance(target, ZoneRouteTarget):
-                continue
-            source_slice = next(
-                slicer.get_slice(slice_id)
-                for slice_id in range(
-                    plan.start_slice_id + 1,
-                    plan.end_slice_id + 1,
-                )
-                if (
-                    (
-                        slicer.get_slice(slice_id - 1).timestamp is None
-                        and intent.nominal_time
-                        == slicer.get_slice(slice_id).timestamp
-                    )
-                    or (
-                        slicer.get_slice(slice_id - 1).timestamp is not None
-                        and slicer.get_slice(slice_id - 1).timestamp
-                        < intent.nominal_time
-                        <= slicer.get_slice(slice_id).timestamp
-                    )
-                )
+        assert realization.output_planned_state == apply_plan(
+            previous_state,
+            plan,
+            physical_world_fingerprint=world.semantic_fingerprint(),
+        )
+        assert realization.start_timestamp == plan.start_timestamp
+        assert realization.end_timestamp == plan.end_timestamp
+        if previous is not None:
+            assert (
+                realization.start_timestamp
+                == previous.end_timestamp + realization.observation_interval
             )
-            if (
-                target.zone_id != zone_edge.zone_id
-                or source_slice.timestamp != zone_edge.nominal_time
-            ):
-                continue
-            reason = (
-                "forwarding-stopped-before-zone-retirement"
-                if zone_edge.operation is DifferenceOperation.REMOVED
-                else "forwarding-ready-before-zone-activation"
-            )
-            constraints.add(
-                _OrderingConstraint(
-                    _IntentReference("forwarding", forwarding_index),
-                    _IntentReference("zone-edge", zone_index),
-                    reason,
-                )
-            )
-    return tuple(sorted(constraints, key=_constraint_key))
+        previous = realization
+        previous_state = realization.output_planned_state
+
+
+def test_every_formal_transition_is_an_explicit_activation_boundary(
+    complete_chain,
+) -> None:
+    _, plans, realizations, _ = complete_chain
+    for plan, realization in zip(plans, realizations):
+        assert realization.activation_timestamps == tuple(
+            value.timestamp for value in plan.transitions
+        )
+        assert tuple(
+            value.transition_fingerprint
+            for value in realization.compiled_activation_boundaries
+        ) == tuple(
+            plan_transition_fingerprint(value) for value in plan.transitions
+        )
+
+
+def test_empty_transition_remains_a_boundary_without_backend_work(
+    complete_chain,
+) -> None:
+    simulator, _, realizations, _ = complete_chain
+    world = simulator.get_physical_world()
+    previous = realizations[-1]
+    timestamp = previous.end_timestamp + previous.observation_interval
+    transition = PlanTransition(timestamp)
+    plan = create_plan(
+        previous.output_planned_state,
+        previous_plan_id=previous.source_plan_id,
+        physical_world_fingerprint=world.semantic_fingerprint(),
+        observation_interval=simulator.get_timeline().observation_interval,
+        start_timestamp=timestamp,
+        transitions=(transition,),
+    )
+
+    realization = compile_bpf(plan, world, previous)
+
+    assert realization.activation_timestamps == (timestamp,)
+    assert realization.compiled_activation_boundaries[0].transition_fingerprint == (
+        plan_transition_fingerprint(transition)
+    )
+    assert realization.resource_realizations == ()
+    assert realization.parameter_realizations == ()
+    assert realization.forwarding_realizations == ()
+    assert realization.zone_edge_realizations == ()
+
+
+def test_bootstrap_plan_must_explicitly_cover_every_zone(complete_chain) -> None:
+    simulator, _, _, _ = complete_chain
+    world = simulator.get_physical_world()
+    timestamp = datetime(2027, 1, 1, tzinfo=timezone.utc)
+    plan = create_plan(
+        None,
+        previous_plan_id=None,
+        physical_world_fingerprint=world.semantic_fingerprint(),
+        observation_interval=simulator.get_timeline().observation_interval,
+        start_timestamp=timestamp,
+        transitions=(PlanTransition(timestamp),),
+    )
+
+    with pytest.raises(ValueError, match="explicitly assign every"):
+        compile_bpf(plan, world, None)
+
+
+def test_unreachable_route_demand_must_belong_to_physical_world(
+    complete_chain,
+) -> None:
+    simulator, _, realizations, _ = complete_chain
+    world = simulator.get_physical_world()
+    previous = realizations[-1]
+    timestamp = previous.end_timestamp + previous.observation_interval
+    demand = RouteDemand(
+        NodeId(99999, "satellite", "foreign-source"),
+        ZoneRouteDemandTarget("foreign-zone"),
+    )
+    outcome = UnreachableRouteOutcome(
+        demand,
+        RouteUnreachableReason.NO_OPERATIONAL_PATH,
+    )
+    transition = PlanTransition(
+        timestamp,
+        route_outcome_transitions=(
+            RouteOutcomeTransition(demand, None, outcome),
+        ),
+    )
+    plan = create_plan(
+        previous.output_planned_state,
+        previous_plan_id=previous.source_plan_id,
+        physical_world_fingerprint=world.semantic_fingerprint(),
+        observation_interval=previous.observation_interval,
+        start_timestamp=timestamp,
+        transitions=(transition,),
+    )
+
+    with pytest.raises(ValueError, match="outside the PhysicalWorld"):
+        compile_bpf(plan, world, previous)
+
+
+@pytest.mark.parametrize("case", ("unserved-as-path", "served-as-unserved"))
+def test_unreachable_reason_must_match_explicit_zone_service(
+    complete_chain, case
+) -> None:
+    simulator, _, realizations, _ = complete_chain
+    world = simulator.get_physical_world()
+    previous = realizations[-1]
+    assignments = {
+        value.zone_id: value.satellite_id
+        for value in previous.output_planned_state.zone_service_assignments
+    }
+    if case == "unserved-as-path":
+        prior = next(
+            value
+            for value in previous.output_planned_state.route_outcomes
+            if isinstance(value, UnreachableRouteOutcome)
+            and isinstance(value.demand.target, ZoneRouteDemandTarget)
+            and assignments[value.demand.target.zone_id] is None
+        )
+        reason = RouteUnreachableReason.NO_OPERATIONAL_PATH
+    else:
+        prior = next(
+            value
+            for value in previous.output_planned_state.route_outcomes
+            if isinstance(value, ReachableRouteOutcome)
+            and isinstance(value.demand.target, ZoneRouteDemandTarget)
+            and assignments[value.demand.target.zone_id] is not None
+        )
+        reason = RouteUnreachableReason.ZONE_UNSERVED
+    current = UnreachableRouteOutcome(prior.demand, reason)
+    timestamp = previous.end_timestamp + previous.observation_interval
+    transition = PlanTransition(
+        timestamp,
+        route_outcome_transitions=(
+            RouteOutcomeTransition(prior.demand, prior, current),
+        ),
+    )
+    plan = create_plan(
+        previous.output_planned_state,
+        previous_plan_id=previous.source_plan_id,
+        physical_world_fingerprint=world.semantic_fingerprint(),
+        observation_interval=previous.observation_interval,
+        start_timestamp=timestamp,
+        transitions=(transition,),
+    )
+
+    with pytest.raises(ValueError, match="reason contradicts"):
+        compile_bpf(plan, world, previous)
+
+
+def test_activation_boundary_requires_timestamp_and_provenance_fingerprint(
+    complete_chain,
+) -> None:
+    _, plans, _, _ = complete_chain
+    with pytest.raises(ValueError, match="timezone-aware"):
+        BpfCompiledActivationBoundary(
+            plans[0].transitions[0].timestamp.replace(tzinfo=None), "corrupt"
+        )
+    with pytest.raises(ValueError, match="non-empty"):
+        BpfCompiledActivationBoundary(
+            plans[0].transitions[0].timestamp, ""
+        )
+
+
+def test_zone_readiness_precedes_forwarding(
+    complete_chain,
+) -> None:
+    _, _, realizations, _ = complete_chain
+    first = realizations[0]
+    readiness_indexes = {
+        index
+        for index, value in enumerate(first.zone_edge_realizations)
+        if value.phase is _ZoneEdgePhase.READINESS
+    }
+    assert readiness_indexes
+    assert any(
+        constraint.predecessor.domain == "zone-edge"
+        and constraint.predecessor.index in readiness_indexes
+        and constraint.successor.domain == "forwarding"
+        for constraint in first.constraints
+    )
+
+
+def test_compiler_is_deterministic_and_checks_previous_lineage(
+    complete_chain,
+) -> None:
+    simulator, plans, realizations, _ = complete_chain
+    world = simulator.get_physical_world()
+    assert compile_bpf(plans[0], world, None) == realizations[0]
+    assert compile_bpf(plans[1], world, realizations[0]) == realizations[1]
+    with pytest.raises(ValueError, match="previous"):
+        compile_bpf(plans[1], world, None)
+    with pytest.raises(ValueError, match="bootstrap"):
+        compile_bpf(plans[0], world, realizations[0])
+
+
+def test_compiler_rejects_changed_observation_cadence(complete_chain) -> None:
+    simulator, plans, realizations, _ = complete_chain
+    previous = realizations[0]
+    interval = plans[1].observation_interval + timedelta(seconds=1)
+    timestamp = previous.end_timestamp + interval
+    plan = create_plan(
+        previous.output_planned_state,
+        previous_plan_id=previous.source_plan_id,
+        physical_world_fingerprint=previous.physical_world_fingerprint,
+        observation_interval=interval,
+        start_timestamp=timestamp,
+        transitions=(PlanTransition(timestamp),),
+    )
+
+    with pytest.raises(ValueError, match="observation_interval"):
+        compile_bpf(plan, simulator.get_physical_world(), previous)

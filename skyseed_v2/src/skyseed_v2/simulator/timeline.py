@@ -15,19 +15,20 @@ class SimulationTimeline:
 
     Layer: immutable Simulator domain value. Users create it and
     ``SimulationDefinition`` retains it. It is not a clock, timestamp cache,
-    pacing service or Slice store. It is public from ``skyseed_v2.simulator``
+    pacing service or operational-history store. It is public from
+    ``skyseed_v2.simulator``
     because every Simulator definition requires explicit time rules.
     """
 
     start_time: datetime
     end_time: datetime | None
-    slice_interval: timedelta
+    observation_interval: timedelta
 
     def __post_init__(self) -> None:
-        if not isinstance(self.slice_interval, timedelta):
-            raise TypeError("slice_interval must be a timedelta")
-        if self.slice_interval <= timedelta(0):
-            raise ValueError("slice_interval must be greater than zero")
+        if not isinstance(self.observation_interval, timedelta):
+            raise TypeError("observation_interval must be a timedelta")
+        if self.observation_interval <= timedelta(0):
+            raise ValueError("observation_interval must be greater than zero")
 
         start = normalize_utc_datetime(self.start_time, "start_time")
         end = (
@@ -36,7 +37,9 @@ class SimulationTimeline:
             else normalize_utc_datetime(self.end_time, "end_time")
         )
         if end is not None and end < start:
-            raise ValueError("end_time must be greater than or equal to start_time")
+            raise ValueError(
+                "end_time must be greater than or equal to start_time"
+            )
         object.__setattr__(self, "start_time", start)
         object.__setattr__(self, "end_time", end)
 
@@ -50,5 +53,7 @@ class SimulationTimeline:
         timestamp = self.start_time
         while self.end_time is None or timestamp <= self.end_time:
             yield timestamp
-            timestamp += self.slice_interval
+            timestamp += self.observation_interval
+
+
 __all__ = ["SimulationTimeline"]

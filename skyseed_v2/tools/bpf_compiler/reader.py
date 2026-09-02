@@ -1,18 +1,29 @@
-"""Detach Plan and compiled realization values into Tool-owned primitives."""
+"""Detach self-contained Plans and compiled realization values."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
+import gzip
+from hashlib import sha256
+import json
 from pathlib import Path
 from typing import Any
 
 from skyseed_v2.backend.bpf import BpfCompiledRealization
-from skyseed_v2.simulator import (
-    GroundStationRouteTarget,
-    Plan,
-    ZoneRouteTarget,
+from skyseed_v2.shared._domain_history import (
+    _iter_verified_domain_history_stream,
+    _read_domain_history_manifest,
 )
-from tools._history import read_jsonl_records
+from skyseed_v2.simulator import Plan
+from skyseed_v2.simulator.planning import (
+    plan_to_data,
+    plan_transition_to_data,
+    planned_operational_state_to_data,
+)
+from skyseed_v2.experiment._realization_handoff import (
+    _read_persisted_realization_manifest_snapshot,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,31 +34,421 @@ class BpfCompilerInspectionRead:
 
 
 def read_bpf_compiler_history(path: Path) -> dict[str, Any]:
-    """Read complete one-shot Compiler handoffs from durable JSONL."""
+    """Read one terminal compiler-through domain-history lineage stream."""
 
-    records = read_jsonl_records(path)
-    headers = tuple(
-        value for value in records if value.get("record_type") == "history_header"
+    manifest = _read_domain_history_manifest(
+        Path(path), minimum_through="compiler"
     )
-    if len(headers) != 1 or headers[0].get("owner") != "BPF Compiler handoff":
-        raise ValueError("durable BPF Compiler history header is invalid")
-    realizations = tuple(
-        value
-        for value in records
-        if value.get("record_type") == "compiled_realization"
-    )
-    if tuple(value.get("realization_index") for value in realizations) != tuple(
-        range(len(realizations))
+    rows = _iter_verified_domain_history_stream(manifest, "compiler")
+    try:
+        header = next(rows)
+    except StopIteration as error:
+        raise ValueError("Compiler evidence stream is empty") from error
+    legacy_header = {
+        "record_type": "compiled_realization_history_header",
+        "format_version": 1,
+        "semantic_payload_owner": "canonical realization handoff",
+    }
+    compact_header = {
+        "record_type": "compiled_realization_history_header",
+        "format_version": 2,
+        "semantic_payload_owner": "canonical realization handoff",
+        "projection": "compact-exact-compiler-inspection-v1",
+    }
+    if header not in (legacy_header, compact_header):
+        raise ValueError("Compiler evidence header is invalid")
+    realizations = tuple(rows)
+    if not realizations:
+        raise ValueError("Compiler evidence contains no realization")
+    previous = None
+    world_fingerprint = None
+    for index, row in enumerate(realizations):
+        _validate_history_record(
+            row, index, compact=header["format_version"] == 2
+        )
+        if index == 0:
+            if (
+                row["source_previous_plan_id"] is not None
+                or row["input_state_fingerprint"] is not None
+            ):
+                raise ValueError("first Compiler evidence must be bootstrap")
+            world_fingerprint = row["physical_world_fingerprint"]
+        else:
+            assert previous is not None
+            if row["source_previous_plan_id"] != previous["source_plan_id"]:
+                raise ValueError("Compiler evidence Plan lineage is not continuous")
+            if (
+                row["input_state_fingerprint"]
+                != previous["output_state_fingerprint"]
+            ):
+                raise ValueError(
+                    "Compiler input_state_fingerprint differs from previous output"
+                )
+            if row["physical_world_fingerprint"] != world_fingerprint:
+                raise ValueError("Compiler evidence mixes PhysicalWorld provenance")
+            if _history_timestamp(row["start_timestamp"]) <= _history_timestamp(
+                previous["end_timestamp"]
+            ):
+                raise ValueError("Compiler evidence timestamp coverage overlaps")
+        previous = row
+    return {"header": header, "realizations": realizations}
+
+
+_HISTORY_FIELDS = {
+    "record_type",
+    "realization_index",
+    "source_plan_id",
+    "source_previous_plan_id",
+    "physical_world_fingerprint",
+    "input_state_fingerprint",
+    "output_state_fingerprint",
+    "start_timestamp",
+    "end_timestamp",
+    "activation_timestamps",
+    "intent_counts",
+    "semantic_precedence_folding",
+}
+_COMPACT_HISTORY_FIELDS = {
+    "compact_summary",
+    "operation_counts",
+    "boundary_workloads",
+    "intended_state_timestamp",
+    "zone_prefixes",
+}
+_INTENT_COUNT_FIELDS = {
+    "resource",
+    "parameter",
+    "forwarding",
+    "zone_edge",
+    "constraints",
+}
+
+
+def _validate_history_record(
+    row: dict[str, Any], index: int, *, compact: bool = False
+) -> None:
+    expected = _HISTORY_FIELDS | (_COMPACT_HISTORY_FIELDS if compact else set())
+    if set(row) != expected:
+        raise ValueError("Compiler evidence row has unknown fields")
+    if (
+        row["record_type"] != "compiled_realization"
+        or row["realization_index"] != index
     ):
-        raise ValueError("durable compiled realization history is not continuous")
-    return {"header": headers[0], "realizations": realizations}
+        raise ValueError("Compiler evidence lineage is not continuous")
+    for name in (
+        "source_plan_id",
+        "physical_world_fingerprint",
+        "output_state_fingerprint",
+    ):
+        _history_string(row[name], name)
+    for name in ("source_previous_plan_id", "input_state_fingerprint"):
+        value = row[name]
+        if value is not None:
+            _history_string(value, name)
+    if (row["source_previous_plan_id"] is None) != (
+        row["input_state_fingerprint"] is None
+    ):
+        raise ValueError(
+            "Compiler evidence previous Plan and input state are all-or-none"
+        )
+    start = _history_timestamp(row["start_timestamp"])
+    end = _history_timestamp(row["end_timestamp"])
+    if end < start:
+        raise ValueError("Compiler evidence end precedes start")
+    activation_values = row["activation_timestamps"]
+    if not isinstance(activation_values, list) or not activation_values:
+        raise ValueError("Compiler evidence requires activation timestamps")
+    activations = tuple(_history_timestamp(value) for value in activation_values)
+    if activations != tuple(sorted(set(activations))):
+        raise ValueError("Compiler activation timestamps are not ordered and unique")
+    if activations[0] != start or activations[-1] != end:
+        raise ValueError("Compiler activation timestamps differ from coverage")
+    intent_counts = row["intent_counts"]
+    if not isinstance(intent_counts, dict) or set(intent_counts) != _INTENT_COUNT_FIELDS:
+        raise ValueError("Compiler evidence intent counts are malformed")
+    if any(
+        isinstance(value, bool) or not isinstance(value, int) or value < 0
+        for value in intent_counts.values()
+    ):
+        raise ValueError("Compiler evidence intent counts must be non-negative")
+    folding = row["semantic_precedence_folding"]
+    if not isinstance(folding, dict) or any(
+        not isinstance(name, str)
+        or not name
+        or isinstance(count, bool)
+        or not isinstance(count, int)
+        or count < 0
+        for name, count in folding.items()
+    ):
+        raise ValueError("Compiler semantic precedence folding is malformed")
+    if compact:
+        _validate_compact_history_record(row)
+
+
+def _validate_compact_history_record(row: dict[str, Any]) -> None:
+    summary = row["compact_summary"]
+    if not isinstance(summary, dict) or any(
+        isinstance(value, bool) or not isinstance(value, int) or value < 0
+        for value in summary.values()
+    ):
+        raise ValueError("Compiler compact summary is malformed")
+    operations = row["operation_counts"]
+    if not isinstance(operations, dict) or any(
+        not isinstance(counts, dict)
+        or any(
+            not isinstance(name, str)
+            or not name
+            or isinstance(count, bool)
+            or not isinstance(count, int)
+            or count < 0
+            for name, count in counts.items()
+        )
+        for counts in operations.values()
+    ):
+        raise ValueError("Compiler compact operation counts are malformed")
+    boundaries = row["boundary_workloads"]
+    if not isinstance(boundaries, list) or len(boundaries) != len(
+        row["activation_timestamps"]
+    ):
+        raise ValueError("Compiler compact boundary workloads are malformed")
+    if [value.get("timestamp") for value in boundaries] != row[
+        "activation_timestamps"
+    ]:
+        raise ValueError("Compiler compact boundary timestamps differ")
+    _history_timestamp(row["intended_state_timestamp"])
+    prefixes = row["zone_prefixes"]
+    if not isinstance(prefixes, list) or any(
+        not isinstance(value, dict)
+        or set(value) != {"zone_id", "packet_prefix"}
+        or not all(isinstance(item, str) and item for item in value.values())
+        for value in prefixes
+    ):
+        raise ValueError("Compiler compact Zone prefixes are malformed")
+
+
+def read_compact_bpf_compiler_evidence(
+    compiler_history_path: Path,
+    realization_manifest_path: Path | None = None,
+) -> dict[str, Any]:
+    """Read compact Tool evidence, with a bounded legacy-v1 bridge.
+
+    New producer histories already contain the complete compact projection and
+    never touch handoff payloads here. A retained format-v1 history can be
+    upgraded for inspection by validating and scanning one persisted JSON
+    payload at a time; no Plan or realization object sequence is materialized.
+    """
+
+    history = read_bpf_compiler_history(compiler_history_path)
+    if history["header"]["format_version"] == 2:
+        return history
+    if realization_manifest_path is None:
+        raise ValueError(
+            "legacy Compiler evidence requires its persisted realization manifest"
+        )
+    manifest = _read_persisted_realization_manifest_snapshot(
+        Path(realization_manifest_path)
+    )
+    entries = manifest["entries"]
+    rows = history["realizations"]
+    if len(entries) != len(rows):
+        raise ValueError("Compiler history and realization manifest count differ")
+    root = Path(str(manifest["manifest"])).parent
+    compact_rows = []
+    for index, (entry, row) in enumerate(zip(entries, rows, strict=True)):
+        path = root / str(entry["path"])
+        compressed = path.read_bytes()
+        if (
+            len(compressed) != entry["compressed_bytes"]
+            or sha256(compressed).hexdigest() != entry["sha256"]
+        ):
+            raise ValueError("persisted Compiler payload checksum differs")
+        try:
+            raw = gzip.decompress(compressed)
+        except OSError as error:
+            raise ValueError("persisted Compiler payload compression is invalid") from error
+        if (
+            len(raw) != entry["uncompressed_bytes"]
+            or sha256(raw).hexdigest() != entry["uncompressed_sha256"]
+        ):
+            raise ValueError("persisted Compiler payload checksum differs")
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError as error:
+            raise ValueError("persisted Compiler payload JSON is invalid") from error
+        if not isinstance(value, dict):
+            raise ValueError("persisted Compiler payload must be an object")
+        compact_rows.append(
+            {**row, **_compact_handoff_projection(value, row, index=index)}
+        )
+    return {
+        "header": {
+            "record_type": "compiled_realization_history_header",
+            "format_version": 2,
+            "semantic_payload_owner": "canonical realization handoff",
+            "projection": "compact-exact-compiler-inspection-v1",
+            "compatibility_source": "validated-format-v1-history-and-v3-handoff",
+        },
+        "realizations": tuple(compact_rows),
+    }
+
+
+def _compact_handoff_projection(
+    value: dict[str, Any], row: dict[str, Any], *, index: int
+) -> dict[str, object]:
+    aligned = {
+        "source_plan_id": value.get("source_plan_id"),
+        "source_previous_plan_id": value.get("source_previous_plan_id"),
+        "physical_world_fingerprint": value.get("physical_world_fingerprint"),
+        "input_state_fingerprint": value.get("input_state_fingerprint"),
+        "output_state_fingerprint": value.get("output_state_fingerprint"),
+        "start_timestamp": value.get("start_timestamp"),
+        "end_timestamp": value.get("end_timestamp"),
+    }
+    if any(row[name] != item for name, item in aligned.items()):
+        raise ValueError("Compiler history and handoff lineage differ")
+    boundaries = value.get("compiled_activation_boundaries")
+    if not isinstance(boundaries, list) or [
+        item.get("timestamp") for item in boundaries if isinstance(item, dict)
+    ] != row["activation_timestamps"]:
+        raise ValueError("Compiler history and handoff boundaries differ")
+    families = {
+        "resources": value.get("resource_realizations"),
+        "parameters": value.get("parameter_realizations"),
+        "forwarding": value.get("forwarding_realizations"),
+        "zone_edges": value.get("zone_edge_realizations"),
+        "constraints": value.get("constraints"),
+    }
+    if any(not isinstance(values, list) for values in families.values()):
+        raise ValueError("Compiler handoff intent families are malformed")
+    expected_counts = {
+        "resource": len(families["resources"]),
+        "parameter": len(families["parameters"]),
+        "forwarding": len(families["forwarding"]),
+        "zone_edge": len(families["zone_edges"]),
+        "constraints": len(families["constraints"]),
+    }
+    if expected_counts != row["intent_counts"]:
+        raise ValueError("Compiler history and handoff intent counts differ")
+    operations: dict[str, dict[str, int]] = {}
+    by_time: dict[str, dict[str, dict[str, int]]] = {}
+    for family in ("resources", "forwarding", "zone_edges"):
+        counts: dict[str, int] = {}
+        for item in families[family]:
+            if not isinstance(item, dict):
+                raise ValueError("Compiler handoff intent is malformed")
+            operation = str(item.get("operation"))
+            counts[operation] = counts.get(operation, 0) + 1
+            timestamp = str(item.get("nominal_time"))
+            per_family = by_time.setdefault(timestamp, {}).setdefault(family, {})
+            per_family[operation] = per_family.get(operation, 0) + 1
+        operations[family] = dict(sorted(counts.items()))
+    operations["parameters"] = {"update": len(families["parameters"])}
+    for item in families["parameters"]:
+        timestamp = str(item.get("nominal_time"))
+        counts = by_time.setdefault(timestamp, {}).setdefault("parameters", {})
+        counts["update"] = counts.get("update", 0) + 1
+    operations["constraints"] = {"precedence": len(families["constraints"])}
+    workloads = []
+    for boundary in boundaries:
+        timestamp = boundary["timestamp"]
+        boundary_operations = {
+            family: dict(sorted(counts.items()))
+            for family, counts in sorted(by_time.get(timestamp, {}).items())
+        }
+        workloads.append(
+            {
+                "timestamp": timestamp,
+                "transition_fingerprint": boundary["transition_fingerprint"],
+                "operations": boundary_operations,
+                "delta_counts": _legacy_delta_counts(boundary_operations),
+                "operation_count": sum(
+                    sum(counts.values())
+                    for counts in boundary_operations.values()
+                ),
+            }
+        )
+    state = value.get("output_planned_state")
+    if not isinstance(state, dict):
+        raise ValueError("Compiler handoff planned state is malformed")
+    connections = state.get("operational_connections")
+    routes = state.get("route_outcomes")
+    zones = state.get("zone_service_assignments")
+    forwarding = value.get("intended_forwarding")
+    prefixes = value.get("zone_prefixes")
+    if any(
+        not isinstance(items, list)
+        for items in (connections, routes, zones, forwarding, prefixes)
+    ):
+        raise ValueError("Compiler handoff intended state is malformed")
+    reachable = sum(item.get("kind") == "reachable" for item in routes)
+    return {
+        "compact_summary": {
+            "activation_boundaries": len(boundaries),
+            "plan_transition_changes": 0,
+            "semantic_precedences": 0,
+            "resource_intents": len(families["resources"]),
+            "parameter_intents": len(families["parameters"]),
+            "forwarding_intents": len(families["forwarding"]),
+            "zone_edge_intents": len(families["zone_edges"]),
+            "constraints": len(families["constraints"]),
+            "intended_connections": len(connections),
+            "intended_resources": len(connections),
+            "intended_parameters": len(connections) * 2,
+            "intended_forwarding": len(forwarding),
+            "intended_zone_edges": sum(
+                item.get("satellite_id") is not None for item in zones
+            ),
+            "intended_zones": len(zones),
+            "planned_routes_reachable": reachable,
+            "planned_routes_unreachable": len(routes) - reachable,
+        },
+        "operation_counts": operations,
+        "boundary_workloads": workloads,
+        "intended_state_timestamp": state.get("timestamp"),
+        "zone_prefixes": prefixes,
+        "legacy_missing_plan_projection": (
+            "plan transition-change and semantic-precedence totals are unavailable"
+        ),
+    }
+
+
+def _legacy_delta_counts(
+    operations: dict[str, dict[str, int]],
+) -> dict[str, int]:
+    result = {"add": 0, "update": 0, "remove": 0}
+    for counts in operations.values():
+        for operation, count in counts.items():
+            if operation in {"add", "establish"}:
+                result["add"] += count
+            elif operation in {"change", "update"}:
+                result["update"] += count
+            elif operation in {"remove", "withdraw"}:
+                result["remove"] += count
+    return result
+
+
+def _history_timestamp(value: object) -> datetime:
+    text = _history_string(value, "timestamp")
+    try:
+        timestamp = datetime.fromisoformat(text)
+    except ValueError as error:
+        raise ValueError("Compiler evidence timestamp is invalid") from error
+    if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+        raise ValueError("Compiler evidence timestamp must be timezone-aware")
+    return timestamp
+
+
+def _history_string(value: object, name: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"Compiler evidence {name} must be a non-empty string")
+    return value
 
 
 def read_bpf_compiler_inspection(
     plans: tuple[Plan, ...],
     realizations: tuple[BpfCompiledRealization, ...],
 ) -> BpfCompilerInspectionRead:
-    """Read an aligned continuous Plan/compiled sequence without compiling."""
+    """Read an aligned continuous Plan/realization sequence without compiling."""
 
     plan_values = tuple(plans)
     realization_values = tuple(realizations)
@@ -60,325 +461,141 @@ def read_bpf_compiler_inspection(
         raise TypeError(
             "realizations must contain one BpfCompiledRealization per Plan"
         )
-    _require_aligned_continuous_sequence(plan_values, realization_values)
+    _require_aligned_sequence(plan_values, realization_values)
     return BpfCompilerInspectionRead(
         {
-            "format_version": 1,
+            "format_version": 2,
             "tool": "bpf-compiler-inspection",
             "authority": {
                 "status": "non-authoritative-view",
-                "plans": "immutable public Plan publications",
+                "plans": "immutable self-contained Plan publications",
                 "compiled": "already-produced BpfCompiledRealization values",
                 "compiler": "not invoked by this Tool",
-                "simulator": "not queried or advanced by this Tool",
-                "runtime": "not bound or inferred by this Tool",
+                "planned_state": (
+                    "intended semantic state, not realized runtime state"
+                ),
             },
-            "intervals": tuple(
-                _read_interval(index, plan, realization)
+            "realizations": tuple(
+                _read_realization(index, plan, realization)
                 for index, (plan, realization) in enumerate(
                     zip(plan_values, realization_values, strict=True)
                 )
             ),
-            "inspection_limits": {
-                "zone_origin": (
-                    "Zone edges are compiled mechanical output; no exact Plan "
-                    "transition provenance is claimed"
-                ),
-                "runtime": (
-                    "Concrete runtime and kernel binding facts are outside "
-                    "this symbolic result"
-                ),
-                "order": (
-                    "Only explicit constraints express order; tuple position "
-                    "is deterministic representation"
-                ),
-            },
         }
     )
 
 
-def _read_interval(
-    index: int,
-    plan: Plan,
-    realization: BpfCompiledRealization,
-) -> dict[str, object]:
-    plan_connections = tuple(
-        {
-            "transition_id": f"p{index}-plan-connection-{position}",
-            "nominal_time": value.nominal_time.isoformat(),
-            "operation": value.operation.value,
-            "connection_ref": _connection_ref(value.connection_id),
-            "connection_id": _connection_id(value.connection_id),
-        }
-        for position, value in enumerate(plan.connection_transitions)
-    )
-    plan_parameters = tuple(
-        {
-            "transition_id": f"p{index}-plan-parameter-{position}",
-            "nominal_time": value.nominal_time.isoformat(),
-            "connection_ref": _connection_ref(value.connection_id),
-            "connection_id": _connection_id(value.connection_id),
-            "direction": value.direction.value,
-            "targets": _sparse_parameters(value),
-        }
-        for position, value in enumerate(plan.parameter_transitions)
-    )
-    plan_forwarding = tuple(
-        {
-            "transition_id": f"p{index}-plan-forwarding-{position}",
-            "nominal_time": value.nominal_time.isoformat(),
-            "operation": value.operation.value,
-            "route_ref": _route_ref(value.route_key),
-            "route_key": _route_key(value.route_key),
-            "next_hop": (
-                None if value.next_hop is None else value.next_hop.value
-            ),
-        }
-        for position, value in enumerate(plan.forwarding_transitions)
-    )
-    forwarding_positions = {
-        id(value): position
-        for position, value in enumerate(plan.forwarding_transitions)
-    }
-    plan_precedences = tuple(
-        {
-            "precedence_id": f"p{index}-plan-precedence-{position}",
-            "predecessor_transition_id": (
-                f"p{index}-plan-forwarding-"
-                f"{forwarding_positions[id(value.predecessor)]}"
-            ),
-            "successor_transition_id": (
-                f"p{index}-plan-forwarding-"
-                f"{forwarding_positions[id(value.successor)]}"
-            ),
-            "predecessor_index": forwarding_positions[id(value.predecessor)],
-            "successor_index": forwarding_positions[id(value.successor)],
-        }
-        for position, value in enumerate(plan.forwarding_precedences)
-    )
-    precedence_origins = {
-        (value["predecessor_index"], value["successor_index"]): value[
-            "precedence_id"
-        ]
-        for value in plan_precedences
-    }
-    connection_origins = {
-        (value["nominal_time"], value["operation"], value["connection_ref"]): (
-            value["transition_id"]
-        )
-        for value in plan_connections
-    }
-    parameter_origins = {
-        (value["nominal_time"], value["connection_ref"], value["direction"]): (
-            value["transition_id"]
-        )
-        for value in plan_parameters
-    }
-    forwarding_origins = {
-        (value["nominal_time"], value["operation"], value["route_ref"]): (
-            value["transition_id"]
-        )
-        for value in plan_forwarding
-    }
-
-    resources = tuple(
-        {
-            "intent_id": f"p{index}-resource-{position}",
-            "origin_transition_id": connection_origins.get(
-                (
-                    value.nominal_time.isoformat(),
-                    value.operation.value,
-                    _connection_ref(value.connection_id),
-                )
-            ),
-            "nominal_time": value.nominal_time.isoformat(),
-            "operation": value.operation.value,
-            "connection_ref": _connection_ref(value.connection_id),
-            "connection_id": _connection_id(value.connection_id),
-            "attachments": tuple(
-                {
-                    "direction": attachment.direction.value,
-                    "source": attachment.source.value,
-                    "target": attachment.target.value,
-                }
-                for attachment in value.attachments
-            ),
-        }
-        for position, value in enumerate(realization.resource_realizations)
-    )
-    parameters = tuple(
-        {
-            "intent_id": f"p{index}-parameter-{position}",
-            "origin_transition_id": (
-                connection_origins.get(
-                    (
-                        value.nominal_time.isoformat(),
-                        "establish",
-                        _connection_ref(value.connection_id),
-                    )
-                )
-                if value.reason == "connection-establish"
-                else parameter_origins.get(
-                    (
-                        value.nominal_time.isoformat(),
-                        _connection_ref(value.connection_id),
-                        value.direction.value,
-                    )
-                )
-            ),
-            "nominal_time": value.nominal_time.isoformat(),
-            "connection_ref": _connection_ref(value.connection_id),
-            "connection_id": _connection_id(value.connection_id),
-            "direction": value.direction.value,
-            "source": value.source.value,
-            "target": value.target.value,
-            "reason": value.reason,
-            "targets": {
-                "bandwidth_bps": value.bandwidth_bps,
-                "delay_us": value.delay_us,
-                "packet_loss_ppm": value.packet_loss_ppm,
-            },
-        }
-        for position, value in enumerate(realization.parameter_realizations)
-    )
-    forwarding = tuple(
-        {
-            "intent_id": f"p{index}-forwarding-{position}",
-            "origin_transition_id": forwarding_origins.get(
-                (
-                    value.nominal_time.isoformat(),
-                    value.operation.value,
-                    _route_ref(value.route_key),
-                )
-            ),
-            "nominal_time": value.nominal_time.isoformat(),
-            "operation": value.operation.value,
-            "route_ref": _route_ref(value.route_key),
-            "route_key": _route_key(value.route_key),
-            "previous": _binding(value.previous),
-            "current": _binding(value.current),
-            "same_next_hop_changed": bool(
-                value.operation.value == "changed"
-                and value.previous is not None
-                and value.current is not None
-                and value.previous.next_hop == value.current.next_hop
-            ),
-        }
-        for position, value in enumerate(realization.forwarding_realizations)
-    )
-    zone_edges = tuple(
-        {
-            "intent_id": f"p{index}-zone-edge-{position}",
-            "nominal_time": value.nominal_time.isoformat(),
-            "operation": value.operation.value,
-            "zone_id": value.zone_id,
-            "packet_prefix": value.packet_prefix,
-            "previous_service_satellite": (
-                None
-                if value.previous_service_satellite_id is None
-                else value.previous_service_satellite_id.value
-            ),
-            "service_satellite": (
-                None
-                if value.service_satellite_id is None
-                else value.service_satellite_id.value
-            ),
-            "origin": "compiled-mechanical-zone-edge",
-        }
-        for position, value in enumerate(realization.zone_edge_realizations)
-    )
-    constraints = tuple(
-        {
-            "constraint_id": f"p{index}-constraint-{position}",
-            "category": (
-                "plan-forwarding-precedence"
-                if value.reason == "plan-forwarding-precedence"
-                else "backend-technical"
-            ),
-            "origin_precedence_id": (
-                precedence_origins.get(
-                    (value.predecessor.index, value.successor.index)
-                )
-                if value.reason == "plan-forwarding-precedence"
-                and value.predecessor.domain == "forwarding"
-                and value.successor.domain == "forwarding"
-                else None
-            ),
-            "reason": value.reason,
-            "predecessor": {
-                "domain": value.predecessor.domain,
-                "index": value.predecessor.index,
-                "intent_id": _intent_id(
-                    index,
-                    value.predecessor.domain,
-                    value.predecessor.index,
-                ),
-            },
-            "successor": {
-                "domain": value.successor.domain,
-                "index": value.successor.index,
-                "intent_id": _intent_id(
-                    index,
-                    value.successor.domain,
-                    value.successor.index,
-                ),
-            },
-        }
-        for position, value in enumerate(realization.constraints)
-    )
-    compiled_by_origin: dict[str, list[str]] = {}
-    for values in (resources, parameters, forwarding):
-        for value in values:
-            origin = value["origin_transition_id"]
-            if origin is not None:
-                compiled_by_origin.setdefault(origin, []).append(
-                    value["intent_id"]
-                )
-    for values in (plan_connections, plan_parameters, plan_forwarding):
-        for value in values:
-            value["compiled_intent_refs"] = tuple(
-                compiled_by_origin.get(value["transition_id"], ())
+def _require_aligned_sequence(
+    plans: tuple[Plan, ...],
+    realizations: tuple[BpfCompiledRealization, ...],
+) -> None:
+    world = plans[0].physical_world_fingerprint
+    for index, (plan, realization) in enumerate(
+        zip(plans, realizations, strict=True)
+    ):
+        if plan.physical_world_fingerprint != world:
+            raise ValueError("Plan sequence mixes PhysicalWorld provenance")
+        if realization.source_plan_id != plan.plan_id:
+            raise ValueError("realization source Plan does not match")
+        for field_name in (
+            "source_previous_plan_id",
+            "physical_world_fingerprint",
+            "input_state_fingerprint",
+            "output_state_fingerprint",
+            "start_timestamp",
+            "end_timestamp",
+        ):
+            plan_name = (
+                "previous_plan_id"
+                if field_name == "source_previous_plan_id"
+                else field_name
             )
+            if getattr(realization, field_name) != getattr(plan, plan_name):
+                raise ValueError(
+                    f"realization {field_name} differs from source Plan"
+                )
+        if tuple(realization.activation_timestamps) != tuple(
+            value.timestamp for value in plan.transitions
+        ):
+            raise ValueError("compiled activation boundaries differ from Plan")
+        if index == 0:
+            if plan.previous_plan_id is not None:
+                raise ValueError("first Plan/realization must be bootstrap")
+        else:
+            previous_plan = plans[index - 1]
+            previous_realization = realizations[index - 1]
+            if plan.previous_plan_id != previous_plan.plan_id:
+                raise ValueError("Plan lineage is not continuous")
+            if plan.input_state_fingerprint != previous_realization.output_state_fingerprint:
+                raise ValueError("realization semantic-state lineage is not continuous")
+
+
+def _read_realization(
+    index: int, plan: Plan, realization: BpfCompiledRealization
+) -> dict[str, object]:
     return {
-        "plan_index": index,
-        "label": f"Plan {index + 1}",
-        "coverage": f"({plan.start_slice_id},{plan.end_slice_id}]",
-        "start_slice_id": plan.start_slice_id,
-        "start_timestamp": (
-            None
-            if plan.start_timestamp is None
-            else plan.start_timestamp.isoformat()
+        "realization_index": index,
+        "source_plan": plan_to_data(plan),
+        "lineage": {
+            "source_plan_id": realization.source_plan_id,
+            "source_previous_plan_id": realization.source_previous_plan_id,
+            "physical_world_fingerprint": realization.physical_world_fingerprint,
+            "input_state_fingerprint": realization.input_state_fingerprint,
+            "output_state_fingerprint": realization.output_state_fingerprint,
+            "start_timestamp": realization.start_timestamp.isoformat(),
+            "end_timestamp": realization.end_timestamp.isoformat(),
+        },
+        "activation_boundaries": tuple(
+            {
+                "timestamp": boundary.timestamp.isoformat(),
+                "transition_fingerprint": boundary.transition_fingerprint,
+                "transition": plan_transition_to_data(transition),
+            }
+            for transition, boundary in zip(
+                plan.transitions,
+                realization.compiled_activation_boundaries,
+                strict=True,
+            )
         ),
-        "end_slice_id": plan.end_slice_id,
-        "end_timestamp": plan.end_timestamp.isoformat(),
-        "plan": {
-            "connection_transitions": plan_connections,
-            "parameter_transitions": plan_parameters,
-            "forwarding_transitions": plan_forwarding,
-            "forwarding_precedences": plan_precedences,
-            "forwarding_precedence_count": len(plan_precedences),
-        },
-        "compiled": {
-            "resources": resources,
-            "parameters": parameters,
-            "forwarding": forwarding,
-            "zone_edges": zone_edges,
-            "constraints": constraints,
-        },
-        "end_state": {
+        "compiled_intents": {
             "resources": tuple(
-                {
-                    "connection_ref": _connection_ref(value.connection.connection_id),
-                    "connection_id": _connection_id(value.connection.connection_id),
-                }
+                _resource_intent(value)
+                for value in realization.resource_realizations
+            ),
+            "parameters": tuple(
+                _parameter_intent(value)
+                for value in realization.parameter_realizations
+            ),
+            "forwarding": tuple(
+                _forwarding_intent(value)
+                for value in realization.forwarding_realizations
+            ),
+            "zone_edges": tuple(
+                _zone_edge_intent(value)
+                for value in realization.zone_edge_realizations
+            ),
+            "constraints": tuple(
+                _constraint(value) for value in realization.constraints
+            ),
+            "semantic_precedence_folding": tuple(
+                {"mode": mode, "count": count}
+                for mode, count in realization.semantic_precedence_folding
+            ),
+        },
+        "intended_state": {
+            "semantic": planned_operational_state_to_data(
+                realization.output_planned_state
+            ),
+            "resources": tuple(
+                {"connection": _connection(value.connection)}
                 for value in realization.intended_resources
             ),
             "parameters": tuple(
                 {
-                    "connection_ref": _connection_ref(value.connection_id),
                     "connection_id": _connection_id(value.connection_id),
-                    "direction": value.direction.value,
-                    "targets": _full_parameters(value.parameters),
+                    "source": _node(value.source),
+                    "target": _node(value.target),
+                    "parameters": _parameters(value.parameters),
                 }
                 for value in realization.intended_parameters
             ),
@@ -389,87 +606,131 @@ def _read_interval(
                 {
                     "zone_id": value.zone_id,
                     "packet_prefix": value.packet_prefix,
-                    "service_satellite": value.service_satellite_id.value,
+                    "service_satellite_id": _node(value.service_satellite_id),
                 }
                 for value in realization.intended_zone_edges
             ),
             "zone_prefixes": tuple(
-                {"zone_id": zone_id, "packet_prefix": prefix}
-                for zone_id, prefix in realization.zone_prefixes
+                {"zone_id": zone_id, "packet_prefix": packet_prefix}
+                for zone_id, packet_prefix in realization.zone_prefixes
             ),
         },
     }
 
 
-def _intent_id(plan_index: int, domain: str, index: int) -> str:
-    return f"p{plan_index}-{domain}-{index}"
-
-
-def _connection_ref(value: object) -> str:
-    return "|".join(
-        (
-            value.kind.value,
-            value.endpoint_a.value,
-            value.endpoint_b.value,
-        )
-    )
-
-
-def _connection_id(value: object) -> dict[str, str]:
+def _resource_intent(value: object) -> dict[str, object]:
     return {
-        "kind": value.kind.value,
-        "endpoint_a": value.endpoint_a.value,
-        "endpoint_b": value.endpoint_b.value,
+        "nominal_time": value.nominal_time.isoformat(),
+        "operation": value.operation.value,
+        "connection_id": _connection_id(value.connection_id),
+        "attachments": tuple(
+            {
+                "source": _node(item.source),
+                "target": _node(item.target),
+            }
+            for item in value.attachments
+        ),
     }
 
 
-def _route_ref(value: object) -> str:
-    target = value.target
-    suffix = (
-        f"G|{target.ground_station_id.value}"
-        if isinstance(target, GroundStationRouteTarget)
-        else f"Z|{target.zone_id}"
-    )
-    return f"{value.source.value}|{suffix}"
-
-
-def _route_key(value: object) -> dict[str, object]:
-    target = value.target
-    if isinstance(target, GroundStationRouteTarget):
-        target_data = {
-            "kind": "ground-station",
-            "ground_station_id": target.ground_station_id.value,
-        }
-    elif isinstance(target, ZoneRouteTarget):
-        target_data = {"kind": "zone", "zone_id": target.zone_id}
-    else:  # pragma: no cover - RouteKey enforces this
-        raise TypeError("unsupported RouteTarget")
-    return {"source": value.source.value, "target": target_data}
-
-
-def _binding(value: object | None) -> dict[str, object] | None:
-    if value is None:
-        return None
+def _parameter_intent(value: object) -> dict[str, object]:
     return {
-        "route_ref": _route_ref(value.route_key),
-        "route_key": _route_key(value.route_key),
-        "next_hop": value.next_hop.value,
-        "connection_ref": _connection_ref(value.connection_id),
+        "nominal_time": value.nominal_time.isoformat(),
         "connection_id": _connection_id(value.connection_id),
-        "direction": value.direction.value,
+        "source": _node(value.source),
+        "target": _node(value.target),
+        "reason": value.reason,
+        "parameters": {
+            "bandwidth_bps": value.bandwidth_bps,
+            "delay_us": value.delay_us,
+            "packet_loss_ppm": value.packet_loss_ppm,
+        },
+    }
+
+
+def _forwarding_intent(value: object) -> dict[str, object]:
+    return {
+        "nominal_time": value.nominal_time.isoformat(),
+        "operation": value.operation.value,
+        "route_key": _forwarding_key(value.route_key),
+        "previous": None if value.previous is None else _binding(value.previous),
+        "current": None if value.current is None else _binding(value.current),
+    }
+
+
+def _zone_edge_intent(value: object) -> dict[str, object]:
+    return {
+        "nominal_time": value.nominal_time.isoformat(),
+        "operation": value.operation.value,
+        "phase": value.phase.value,
+        "zone_id": value.zone_id,
+        "packet_prefix": value.packet_prefix,
+        "previous_service_satellite_id": (
+            None
+            if value.previous_service_satellite_id is None
+            else _node(value.previous_service_satellite_id)
+        ),
+        "service_satellite_id": (
+            None
+            if value.service_satellite_id is None
+            else _node(value.service_satellite_id)
+        ),
+    }
+
+
+def _constraint(value: object) -> dict[str, object]:
+    return {
+        "predecessor": {
+            "domain": value.predecessor.domain,
+            "index": value.predecessor.index,
+        },
+        "successor": {
+            "domain": value.successor.domain,
+            "index": value.successor.index,
+        },
+        "reason": value.reason,
+    }
+
+
+def _binding(value: object) -> dict[str, object]:
+    return {
+        "route_key": _forwarding_key(value.route_key),
+        "next_hop": _node(value.next_hop),
+        "connection_id": _connection_id(value.connection_id),
         "packet_prefix": value.packet_prefix,
     }
 
 
-def _sparse_parameters(value: object) -> dict[str, int]:
+def _forwarding_key(value: object) -> dict[str, object]:
+    return {"source": _node(value.source), "target": _route_target(value.target)}
+
+
+def _route_target(value: object) -> dict[str, object]:
+    if hasattr(value, "ground_station_id"):
+        return {
+            "kind": "ground-station",
+            "ground_station_id": _node(value.ground_station_id),
+        }
+    return {"kind": "zone", "zone_id": value.zone_id}
+
+
+def _connection(value: object) -> dict[str, object]:
     return {
-        field: target
-        for field in ("bandwidth_bps", "delay_us", "packet_loss_ppm")
-        if (target := getattr(value, field)) is not None
+        "connection_id": _connection_id(value.connection_id),
+        "endpoint_a_to_b": _parameters(value.endpoint_a_to_b),
+        "endpoint_b_to_a": _parameters(value.endpoint_b_to_a),
     }
 
 
-def _full_parameters(value: object) -> dict[str, int]:
+def _connection_id(value: object) -> dict[str, object]:
+    return {
+        "kind": value.kind.value,
+        "endpoint_a": _node(value.endpoint_a),
+        "endpoint_b": _node(value.endpoint_b),
+    }
+
+
+def _parameters(value: object) -> dict[str, int]:
     return {
         "bandwidth_bps": value.bandwidth_bps,
         "delay_us": value.delay_us,
@@ -477,28 +738,17 @@ def _full_parameters(value: object) -> dict[str, int]:
     }
 
 
-def _require_aligned_continuous_sequence(
-    plans: tuple[Plan, ...],
-    realizations: tuple[BpfCompiledRealization, ...],
-) -> None:
-    for plan, realization in zip(plans, realizations, strict=True):
-        if (
-            plan.start_slice_id != realization.start_slice_id
-            or plan.start_timestamp != realization.start_timestamp
-            or plan.end_slice_id != realization.end_slice_id
-            or plan.end_timestamp != realization.end_timestamp
-        ):
-            raise ValueError("compiled realization coverage does not match Plan")
-    for previous, current in zip(realizations, realizations[1:]):
-        if (
-            previous.end_slice_id != current.start_slice_id
-            or previous.end_timestamp != current.start_timestamp
-        ):
-            raise ValueError("compiled realizations must have continuous coverage")
+def _node(value: object) -> dict[str, object]:
+    return {
+        "asn": value.asn,
+        "entity_kind": value.entity_kind,
+        "entity_id": value.entity_id,
+    }
 
 
 __all__ = [
     "BpfCompilerInspectionRead",
+    "read_compact_bpf_compiler_evidence",
     "read_bpf_compiler_history",
     "read_bpf_compiler_inspection",
 ]

@@ -25,7 +25,7 @@ explicit SkyseedAutonomousSystem values
     GroundStationSimulationInput...
   )
 → SimulationDefinition.static_input
-→ Topology materialization
+→ PhysicalWorld materialization
 ```
 
 The two one-entity functions copy the same approved scalar values. `NodeId`
@@ -37,12 +37,12 @@ not know the operator. No layer invents a string sentinel.
 
 GroundStation `max_simultaneous_satellite_accesses` is likewise copied from
 Config through the site-level Emulator entity and
-`GroundStationSimulationInput` into Topology. `None` means no per-site cap fact
+`GroundStationSimulationInput` into PhysicalWorld. `None` means no per-site cap fact
 is specified; a positive integer is a hard simulation capability. It is not
 derived from physical antenna count.
 
 Satellite `max_simultaneous_ground_station_accesses` is copied through the
-same configuration → Emulator entity → `SatelliteSimulationInput` → Topology
+same configuration → Emulator entity → `SatelliteSimulationInput` → PhysicalWorld
 chain. `None` means no explicit Satellite-side Gateway-access cap; a positive
 integer limits only simultaneous GroundStation-access Connections, not ISLs,
 UT service, or total degree.

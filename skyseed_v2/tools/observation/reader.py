@@ -43,7 +43,8 @@ def read_execution_observations(path: Path) -> ObservationRead:
     header = values[0]
     if header.get("record_type") != "execution_observation_header":
         raise ValueError("first observation row must be the header")
-    if header.get("format_version") != 1:
+    format_version = header.get("format_version")
+    if format_version not in {1, 2}:
         raise ValueError("unsupported execution observation format version")
     metadata = header.get("metadata")
     if not isinstance(metadata, dict):
@@ -51,12 +52,14 @@ def read_execution_observations(path: Path) -> ObservationRead:
 
     records = []
     for sequence, record in enumerate(values[1:]):
-        _validate_record(record, sequence)
+        _validate_record(record, sequence, format_version=format_version)
         records.append(record)
     return ObservationRead(deepcopy(header), tuple(deepcopy(records)))
 
 
-def _validate_record(record: dict[str, Any], sequence: int) -> None:
+def _validate_record(
+    record: dict[str, Any], sequence: int, *, format_version: int
+) -> None:
     if record.get("record_type") != "execution_observation":
         raise ValueError("non-header rows must be execution observations")
     if record.get("sequence") != sequence:
@@ -81,6 +84,21 @@ def _validate_record(record: dict[str, Any], sequence: int) -> None:
     duration = record.get("duration_seconds")
     if not _is_number(duration) or float(duration) < 0.0:
         raise ValueError("duration_seconds must be finite and non-negative")
+    if format_version >= 2:
+        start = record.get("run_relative_start_seconds")
+        end = record.get("run_relative_end_seconds")
+        if (
+            not _is_number(start)
+            or not _is_number(end)
+            or float(start) < 0.0
+            or float(end) < float(start)
+        ):
+            raise ValueError("observation monotonic span is invalid")
+        if record.get("span_source") not in {
+            "measured-monotonic",
+            "completion-timestamp-and-measured-duration",
+        }:
+            raise ValueError("observation span_source is invalid")
     if not isinstance(record.get("scope"), dict):
         raise TypeError("observation scope must be an object")
     for field_name in ("work", "resources"):

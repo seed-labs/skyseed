@@ -16,15 +16,28 @@ from pathlib import Path
 import tempfile
 from typing import Any
 
-from skyseed_v2.backend.bpf.compiled_realization import BpfCompiledRealization
+from skyseed_v2.backend.bpf.compiled_realization import (
+    BpfCompiledRealization,
+    _ForwardingBinding,
+    _ForwardingIntent,
+    _ForwardingKey,
+    _MutationOperation,
+)
 from skyseed_v2.shared import NodeId
 from skyseed_v2.simulator import (
-    ConnectionKind,
-    ConnectionTransitionOperation,
-    DifferenceOperation,
-    GroundStationRouteTarget,
-    RouteKey,
-    ZoneRouteTarget,
+    GroundStationRouteDemandTarget,
+    OperationalConnectionId,
+    OperationalConnectionKind,
+    Plan,
+    PlannedOperationalState,
+    ReachableRouteOutcome,
+    RouteDemand,
+    RouteOutcomeTransition,
+    UnreachableRouteOutcome,
+    ZoneServiceTransition,
+    ZoneRouteDemandTarget,
+    apply_plan_transition,
+    plan_transition_fingerprint,
 )
 
 
@@ -300,13 +313,29 @@ class TrafficProbePlan:
 @dataclass(slots=True)
 class _BoundaryProjection:
     nominal_time: datetime
-    forwarding: dict[RouteKey, object]
+    route_outcomes: dict[
+        RouteDemand, ReachableRouteOutcome | UnreachableRouteOutcome
+    ]
+    forwarding: dict[_ForwardingKey, _ForwardingBinding]
     zone_edges: dict[str, tuple[str, NodeId]]
-    resources: set[object]
-    forwarding_changed: list[RouteKey]
+    resources: set[OperationalConnectionId]
+    route_outcomes_changed: list[RouteDemand]
     changed_access_ground_stations: list[NodeId]
     changed_zones: list[str]
     prior_zone_edges: dict[str, tuple[str, NodeId]]
+
+
+@dataclass(frozen=True, slots=True)
+class _TrafficBoundaryDelta:
+    """Retain only Traffic-relevant facts while rich values are still live."""
+
+    nominal_time: datetime
+    route_transitions: tuple[RouteOutcomeTransition, ...]
+    forwarding_intents: tuple[_ForwardingIntent, ...]
+    established_connection_ids: tuple[OperationalConnectionId, ...]
+    withdrawn_connection_ids: tuple[OperationalConnectionId, ...]
+    zone_transitions: tuple[ZoneServiceTransition, ...]
+    changed_access_ground_stations: tuple[NodeId, ...]
 
 
 @dataclass(slots=True)
@@ -322,6 +351,10 @@ class _PairSeed:
 
 
 _EpisodeRequest = tuple[_PairSeed, str, datetime, datetime, datetime]
+
+
+class _MissingPlannedRouteOutcome(ValueError):
+    """Signal that one candidate cannot support its requested probe horizon."""
 
 
 class TrafficProbePlanBuilder:
@@ -355,13 +388,16 @@ class TrafficProbePlanBuilder:
         self._activation_interval = float(activation_interval_seconds)
 
     def build(
-        self, realizations: Sequence[BpfCompiledRealization]
+        self,
+        plans: Sequence[Plan],
+        realizations: Sequence[BpfCompiledRealization],
     ) -> TrafficProbePlan:
         from time import monotonic
 
         started = monotonic()
+        plan_values = tuple(plans)
         values = tuple(realizations)
-        _validate_realization_sequence(values)
+        _validate_realization_sequence(plan_values, values)
         nominal_boundaries = _nominal_boundaries(values)
         if len(nominal_boundaries) < 2:
             raise ValueError("Traffic probe planning requires at least two boundaries")
@@ -370,7 +406,7 @@ class TrafficProbePlanBuilder:
         if coverage_end <= coverage_start:
             raise ValueError("Traffic probe planning requires a positive time range")
         prefixes = _zone_ipv4(values)
-        seeds = _candidate_pairs(values, nominal_boundaries)
+        seeds = _candidate_pairs(plan_values, values, nominal_boundaries)
         episode_requests = _select_episode_requests(
             seeds,
             maximum_background=self._maximum_persistent,
@@ -381,6 +417,7 @@ class TrafficProbePlanBuilder:
         )
         selected_seeds = {value[0].key: value[0] for value in episode_requests}
         intervals_by_key, affected_by_key = _reconstruct_selected_paths(
+            plan_values,
             values,
             tuple(selected_seeds[key] for key in sorted(selected_seeds)),
             episode_requests=episode_requests,
@@ -454,6 +491,318 @@ class TrafficProbePlanBuilder:
         )
 
 
+class IncrementalTrafficProbePlanBuilder:
+    """Build the same bounded probe plan without rereading rich histories.
+
+    The Starlink production loop supplies each aligned Plan/realization pair
+    while both values are already live.  This object retains only Route,
+    forwarding, resource, Zone and access deltas required by Traffic.  Runner's
+    persisted handoff remains unchanged and is not a dependency of this
+    detached experiment-side derivation.
+    """
+
+    def __init__(
+        self,
+        *,
+        maximum_persistent_probes: int = 12,
+        maximum_activation_window_probes: int = 8,
+        persistent_interval_seconds: float = 1.0,
+        activation_interval_seconds: float = 0.5,
+    ) -> None:
+        validated = TrafficProbePlanBuilder(
+            maximum_persistent_probes=maximum_persistent_probes,
+            maximum_activation_window_probes=maximum_activation_window_probes,
+            persistent_interval_seconds=persistent_interval_seconds,
+            activation_interval_seconds=activation_interval_seconds,
+        )
+        self._maximum_persistent = validated._maximum_persistent
+        self._maximum_windowed = validated._maximum_windowed
+        self._persistent_interval = validated._persistent_interval
+        self._activation_interval = validated._activation_interval
+        self._deltas: list[_TrafficBoundaryDelta] = []
+        self._zone_prefixes: tuple[tuple[str, str], ...] | None = None
+        self._physical_projection: object | None = None
+        self._previous_lineage: tuple[str, str, datetime, str] | None = None
+        self._coverage_start: datetime | None = None
+        self._coverage_end: datetime | None = None
+        self._realization_count = 0
+        self._finalized = False
+        self._work_seconds = 0.0
+
+    def append(self, plan: Plan, realization: BpfCompiledRealization) -> None:
+        """Retain one exact Traffic-only delta sequence from a live pair."""
+
+        from time import monotonic
+
+        started = monotonic()
+
+        if self._finalized:
+            raise RuntimeError("incremental Traffic probe builder is finalized")
+        if not isinstance(plan, Plan):
+            raise TypeError("incremental Traffic probe builder requires a Plan")
+        if not isinstance(realization, BpfCompiledRealization):
+            raise TypeError(
+                "incremental Traffic probe builder requires a "
+                "BpfCompiledRealization"
+            )
+        if (
+            plan.plan_id != realization.source_plan_id
+            or plan.previous_plan_id != realization.source_previous_plan_id
+            or plan.physical_world_fingerprint
+            != realization.physical_world_fingerprint
+            or plan.input_state_fingerprint
+            != realization.input_state_fingerprint
+            or plan.output_state_fingerprint
+            != realization.output_state_fingerprint
+            or plan.observation_interval != realization.observation_interval
+            or plan.start_timestamp != realization.start_timestamp
+            or plan.end_timestamp != realization.end_timestamp
+            or tuple(value.timestamp for value in plan.transitions)
+            != realization.activation_timestamps
+        ):
+            raise ValueError(
+                "incremental Traffic Plan/realization lineage is misaligned"
+            )
+        previous = self._previous_lineage
+        if previous is None:
+            if (
+                realization.source_previous_plan_id is not None
+                or realization.input_state_fingerprint is not None
+            ):
+                raise ValueError(
+                    "incremental Traffic sequence requires a bootstrap pair"
+                )
+            projection = realization._physical_world_projection
+            if not any(
+                value.entity_kind == "ground-station"
+                for value in projection.node_ids
+            ):
+                raise ValueError("Traffic probe PhysicalWorld has no GroundStation")
+            if not any(
+                value.entity_kind == "satellite" for value in projection.node_ids
+            ):
+                raise ValueError("Traffic probe PhysicalWorld has no Satellite")
+            if not projection.zone_ids:
+                raise ValueError("Traffic probe PhysicalWorld has no Zone")
+            self._physical_projection = projection
+            self._coverage_start = realization.start_timestamp
+        else:
+            previous_plan_id, previous_output, previous_end, world = previous
+            if (
+                realization.source_previous_plan_id != previous_plan_id
+                or realization.input_state_fingerprint != previous_output
+                or realization.physical_world_fingerprint != world
+                or realization._physical_world_projection
+                != self._physical_projection
+                or realization.start_timestamp <= previous_end
+            ):
+                raise ValueError(
+                    "incremental Traffic realization lineage is not continuous"
+                )
+        if self._zone_prefixes is None:
+            self._zone_prefixes = realization.zone_prefixes
+        elif realization.zone_prefixes != self._zone_prefixes:
+            raise ValueError("incremental Traffic Zone prefixes changed")
+
+        forwarding_by_time: dict[datetime, list[_ForwardingIntent]] = defaultdict(
+            list
+        )
+        for intent in realization.forwarding_realizations:
+            forwarding_by_time[intent.nominal_time].append(intent)
+        boundary_times = set(realization.activation_timestamps)
+        if set(forwarding_by_time) - boundary_times:
+            raise ValueError(
+                "incremental Traffic forwarding lies outside activation coverage"
+            )
+        for transition, boundary in zip(
+            plan.transitions,
+            realization.compiled_activation_boundaries,
+            strict=True,
+        ):
+            if plan_transition_fingerprint(transition) != boundary.transition_fingerprint:
+                raise ValueError(
+                    "incremental Traffic transition differs from Compiler provenance"
+                )
+            changed_access: list[NodeId] = []
+            changed_access_seen: set[NodeId] = set()
+            connection_ids = tuple(
+                value.connection_id for value in transition.established_connections
+            ) + transition.withdrawn_connection_ids
+            for connection_id in connection_ids:
+                if (
+                    connection_id.kind
+                    is OperationalConnectionKind.GROUND_STATION_ACCESS
+                ):
+                    for node_id in (
+                        connection_id.endpoint_a,
+                        connection_id.endpoint_b,
+                    ):
+                        if (
+                            node_id.entity_kind == "ground-station"
+                            and node_id not in changed_access_seen
+                        ):
+                            changed_access.append(node_id)
+                            changed_access_seen.add(node_id)
+            self._deltas.append(
+                _TrafficBoundaryDelta(
+                    boundary.timestamp,
+                    transition.route_outcome_transitions,
+                    tuple(forwarding_by_time.get(boundary.timestamp, ())),
+                    tuple(
+                        value.connection_id
+                        for value in transition.established_connections
+                    ),
+                    transition.withdrawn_connection_ids,
+                    transition.zone_service_transitions,
+                    tuple(changed_access),
+                )
+            )
+        self._previous_lineage = (
+            realization.source_plan_id,
+            realization.output_state_fingerprint,
+            realization.end_timestamp,
+            realization.physical_world_fingerprint,
+        )
+        self._coverage_end = realization.end_timestamp
+        self._realization_count += 1
+        self._work_seconds += monotonic() - started
+
+    def finalize(self) -> TrafficProbePlan:
+        """Select and reconstruct the exact bounded probe workload."""
+
+        from time import monotonic
+
+        started = monotonic()
+
+        if self._finalized:
+            raise RuntimeError("incremental Traffic probe builder is finalized")
+        self._finalized = True
+        deltas = tuple(self._deltas)
+        self._deltas.clear()
+        if (
+            not deltas
+            or self._coverage_start is None
+            or self._coverage_end is None
+            or self._zone_prefixes is None
+            or self._physical_projection is None
+        ):
+            raise ValueError("incremental Traffic probe planning requires input")
+        nominal_boundaries = tuple(value.nominal_time for value in deltas)
+        if len(nominal_boundaries) < 2:
+            raise ValueError("Traffic probe planning requires at least two boundaries")
+        coverage_start = self._coverage_start
+        coverage_end = self._coverage_end
+        if coverage_end <= coverage_start:
+            raise ValueError("Traffic probe planning requires a positive time range")
+        zone_ids = self._physical_projection.zone_ids
+        prefixes = _zone_ipv4_from(self._zone_prefixes, zone_ids)
+        seeds = _candidate_pairs_from_deltas(
+            deltas, self._zone_prefixes, nominal_boundaries
+        )
+        episode_requests = _select_episode_requests(
+            seeds,
+            maximum_background=self._maximum_persistent,
+            maximum_events=self._maximum_windowed,
+            nominal_boundaries=nominal_boundaries,
+            coverage_start=coverage_start,
+            coverage_end=coverage_end,
+        )
+        selected_seeds = {value[0].key: value[0] for value in episode_requests}
+        intervals_by_key, affected_by_key = (
+            _reconstruct_selected_paths_from_deltas(
+                deltas,
+                self._zone_prefixes,
+                tuple(selected_seeds[key] for key in sorted(selected_seeds)),
+                episode_requests=episode_requests,
+                nominal_boundaries=nominal_boundaries,
+                coverage_end=coverage_end,
+            )
+        )
+        if not any(intervals_by_key.values()):
+            raise ValueError(
+                "compiled evolution contains no supportable GS/Zone probes"
+            )
+        viable_episode_requests = tuple(
+            request
+            for request in episode_requests
+            if any(
+                interval.expected_reachable
+                for interval in intervals_by_key[request[0].key]
+                if interval.end_time > request[3]
+                and interval.start_time < request[4]
+            )
+        )
+        if not viable_episode_requests:
+            raise ValueError("Traffic probe planning selected no reachable probes")
+        viable_keys = {request[0].key for request in viable_episode_requests}
+        identities = {
+            key: _make_identity(
+                selected_seeds[key],
+                intervals_by_key[key],
+                zone_ipv4=prefixes[selected_seeds[key].zone_id],
+            )
+            for key in sorted(viable_keys)
+        }
+        episodes = []
+        for seed, mode, anchor, start, end in viable_episode_requests:
+            episodes.append(
+                _make_episode(
+                    seed,
+                    intervals_by_key[seed.key],
+                    identity=identities[seed.key],
+                    mode=mode,
+                    start=start,
+                    end=end,
+                    interval_seconds=(
+                        self._activation_interval
+                        if mode == _ACTIVATION_WINDOW
+                        else self._persistent_interval
+                    ),
+                    episode_anchor=anchor,
+                    affected_times=(
+                        tuple(sorted(affected_by_key[seed.key]))
+                        if mode == _PERSISTENT
+                        else (anchor,)
+                    ),
+                )
+            )
+        if not episodes:
+            raise ValueError("Traffic probe planning selected no probes")
+        ordered_identities = tuple(
+            identities[key] for key in sorted(identities)
+        )
+        ordered_episodes = tuple(episodes)
+        return TrafficProbePlan(
+            coverage_start,
+            coverage_end,
+            ordered_identities,
+            ordered_episodes,
+            nominal_boundaries,
+            self._realization_count,
+            _traffic_plan_revision_id(
+                coverage_start,
+                coverage_end,
+                nominal_boundaries,
+                ordered_identities,
+                ordered_episodes,
+            ),
+            len(seeds),
+            self._work_seconds + monotonic() - started,
+        )
+
+    def snapshot(self) -> dict[str, int | bool]:
+        """Report bounded retained work for timing/review evidence."""
+
+        return {
+            "realization_count": self._realization_count,
+            "boundary_delta_count": len(self._deltas),
+            "forwarding_delta_count": sum(
+                len(value.forwarding_intents) for value in self._deltas
+            ),
+            "finalized": self._finalized,
+        }
+
+
 def write_traffic_probe_plan(plan: TrafficProbePlan, path: Path) -> Path:
     if not isinstance(plan, TrafficProbePlan):
         raise TypeError("plan must be a TrafficProbePlan")
@@ -485,158 +834,195 @@ def read_traffic_probe_plan(path: Path) -> TrafficProbePlan:
 
 
 def _validate_realization_sequence(
+    plans: tuple[Plan, ...],
     values: tuple[BpfCompiledRealization, ...],
 ) -> None:
     if not values:
         raise ValueError("Traffic probe planning requires compiled realizations")
+    if len(plans) != len(values) or any(
+        not isinstance(plan, Plan) for plan in plans
+    ):
+        raise ValueError(
+            "Traffic probe planning requires aligned authoritative Plans"
+        )
     previous: BpfCompiledRealization | None = None
-    for realization in values:
+    for plan, realization in zip(plans, values):
         if not isinstance(realization, BpfCompiledRealization):
             raise TypeError("Traffic probe planning requires BpfCompiledRealization values")
-        if previous is not None and (
-            previous.end_slice_id != realization.start_slice_id
-            or previous.end_timestamp != realization.start_timestamp
-            or previous._topology_signature != realization._topology_signature
+        if (
+            plan.plan_id != realization.source_plan_id
+            or plan.previous_plan_id != realization.source_previous_plan_id
+            or plan.physical_world_fingerprint
+            != realization.physical_world_fingerprint
+            or plan.input_state_fingerprint
+            != realization.input_state_fingerprint
+            or plan.output_state_fingerprint
+            != realization.output_state_fingerprint
+            or plan.observation_interval != realization.observation_interval
+            or plan.start_timestamp != realization.start_timestamp
+            or plan.end_timestamp != realization.end_timestamp
+            or tuple(item.timestamp for item in plan.transitions)
+            != realization.activation_timestamps
         ):
-            raise ValueError("Traffic probe realization sequence is not continuous")
+            raise ValueError("Traffic Plan/realization lineage is misaligned")
+        if previous is None:
+            if (
+                realization.source_previous_plan_id is not None
+                or realization.input_state_fingerprint is not None
+            ):
+                raise ValueError(
+                    "Traffic probe planning requires a bootstrap realization"
+                )
+        elif (
+            realization.source_previous_plan_id != previous.source_plan_id
+            or realization.input_state_fingerprint
+            != previous.output_state_fingerprint
+            or realization.physical_world_fingerprint
+            != previous.physical_world_fingerprint
+            or realization._physical_world_projection
+            != previous._physical_world_projection
+            or realization.start_timestamp <= previous.end_timestamp
+        ):
+            raise ValueError("Traffic probe realization lineage is not continuous")
         previous = realization
-    signature = values[0]._topology_signature
-    if not any(value.entity_kind == "ground-station" for value in signature.node_ids):
-        raise ValueError("Traffic probe topology has no GroundStation")
-    if not any(value.entity_kind == "satellite" for value in signature.node_ids):
-        raise ValueError("Traffic probe topology has no Satellite")
-    if not signature.zone_ids:
-        raise ValueError("Traffic probe topology has no Zone")
+    projection = values[0]._physical_world_projection
+    if not any(
+        value.entity_kind == "ground-station" for value in projection.node_ids
+    ):
+        raise ValueError("Traffic probe PhysicalWorld has no GroundStation")
+    if not any(value.entity_kind == "satellite" for value in projection.node_ids):
+        raise ValueError("Traffic probe PhysicalWorld has no Satellite")
+    if not projection.zone_ids:
+        raise ValueError("Traffic probe PhysicalWorld has no Zone")
 
 
 def _nominal_boundaries(
     values: tuple[BpfCompiledRealization, ...],
 ) -> tuple[datetime, ...]:
     return tuple(
-        sorted(
-            {
-                intent.nominal_time
-                for realization in values
-                for attribute in (
-                    "resource_realizations",
-                    "parameter_realizations",
-                    "forwarding_realizations",
-                    "zone_edge_realizations",
-                )
-                for intent in getattr(realization, attribute)
-            }
-        )
+        timestamp
+        for realization in values
+        for timestamp in realization.activation_timestamps
     )
 
 
 def _scan_boundaries(
+    plans: tuple[Plan, ...],
     values: tuple[BpfCompiledRealization, ...],
     visitor: Callable[[_BoundaryProjection], None],
     *,
     validate_end_state: bool,
 ) -> tuple[datetime, ...]:
-    """Replay deltas with one live state rather than retained full snapshots."""
+    """Replay canonical Plan transitions and cross-check backend forwarding."""
 
-    resources: set[object] = set()
-    forwarding: dict[RouteKey, object] = {}
-    zone_edges: dict[str, tuple[str, NodeId]] = {}
-    visited = []
-    for realization in values:
-        by_time: dict[datetime, list[object]] = defaultdict(list)
-        for attribute in (
-            "resource_realizations",
-            "parameter_realizations",
-            "forwarding_realizations",
-            "zone_edge_realizations",
+    semantic_state: PlannedOperationalState | None = None
+    forwarding: dict[_ForwardingKey, _ForwardingBinding] = {}
+    visited: list[datetime] = []
+    for plan, realization in zip(plans, values):
+        prefixes = dict(realization.zone_prefixes)
+        forwarding_by_time: dict[datetime, list[object]] = defaultdict(list)
+        for intent in realization.forwarding_realizations:
+            forwarding_by_time[intent.nominal_time].append(intent)
+        for transition, boundary in zip(
+            plan.transitions, realization.compiled_activation_boundaries
         ):
-            for intent in getattr(realization, attribute):
-                by_time[intent.nominal_time].append(intent)
-        for nominal_time in sorted(by_time):
-            prior_zone_edges = dict(zone_edges)
-            forwarding_changed: list[RouteKey] = []
+            if (
+                plan_transition_fingerprint(transition)
+                != boundary.transition_fingerprint
+            ):
+                raise ValueError(
+                    "Traffic Plan transition differs from Compiler provenance"
+                )
+            nominal_time = boundary.timestamp
+            prior_assignments = (
+                {}
+                if semantic_state is None
+                else {
+                    value.zone_id: value.satellite_id
+                    for value in semantic_state.zone_service_assignments
+                }
+            )
+            prior_zone_edges = {
+                zone_id: (prefixes[zone_id], satellite_id)
+                for zone_id, satellite_id in prior_assignments.items()
+                if satellite_id is not None
+            }
             changed_access: list[NodeId] = []
             changed_access_seen: set[NodeId] = set()
-            changed_zones: list[str] = []
-            changed_zones_seen: set[str] = set()
-            for intent in by_time[nominal_time]:
-                if hasattr(intent, "attachments"):
-                    connection_id = intent.connection_id
-                    if intent.operation is ConnectionTransitionOperation.ESTABLISH:
-                        if connection_id in resources:
-                            raise ValueError("Traffic projection establishes an active resource")
-                        resources.add(connection_id)
-                    else:
-                        if connection_id not in resources:
-                            raise ValueError("Traffic projection withdraws an inactive resource")
-                        resources.remove(connection_id)
-                    if connection_id.kind is ConnectionKind.GROUND_STATION_ACCESS:
-                        for value in (
-                            connection_id.endpoint_a,
-                            connection_id.endpoint_b,
+            connection_ids = tuple(
+                value.connection_id for value in transition.established_connections
+            ) + transition.withdrawn_connection_ids
+            for connection_id in connection_ids:
+                if (
+                    connection_id.kind
+                    is OperationalConnectionKind.GROUND_STATION_ACCESS
+                ):
+                    for value in (
+                        connection_id.endpoint_a,
+                        connection_id.endpoint_b,
+                    ):
+                        if (
+                            value.entity_kind == "ground-station"
+                            and value not in changed_access_seen
                         ):
-                            if (
-                                value.entity_kind == "ground-station"
-                                and value not in changed_access_seen
-                            ):
-                                changed_access.append(value)
-                                changed_access_seen.add(value)
-                elif hasattr(intent, "route_key"):
-                    prior = forwarding.get(intent.route_key)
-                    if prior != intent.previous:
-                        raise ValueError("Traffic projection forwarding predecessor is stale")
-                    if intent.operation is DifferenceOperation.REMOVED:
-                        if prior is None or intent.current is not None:
-                            raise ValueError("Traffic projection forwarding removal is invalid")
-                        del forwarding[intent.route_key]
-                    else:
-                        if intent.current is None:
-                            raise ValueError("Traffic projection forwarding update is incomplete")
-                        forwarding[intent.route_key] = intent.current
-                    forwarding_changed.append(intent.route_key)
-                elif hasattr(intent, "zone_id"):
-                    prior = zone_edges.get(intent.zone_id)
-                    prior_service = None if prior is None else prior[1]
-                    if prior_service != intent.previous_service_satellite_id:
-                        raise ValueError("Traffic projection Zone predecessor is stale")
-                    if intent.operation is DifferenceOperation.REMOVED:
-                        if prior is None or intent.service_satellite_id is not None:
-                            raise ValueError("Traffic projection Zone removal is invalid")
-                        del zone_edges[intent.zone_id]
-                    else:
-                        if intent.service_satellite_id is None:
-                            raise ValueError("Traffic projection Zone update is incomplete")
-                        zone_edges[intent.zone_id] = (
-                            intent.packet_prefix,
-                            intent.service_satellite_id,
+                            changed_access.append(value)
+                            changed_access_seen.add(value)
+
+            semantic_state = apply_plan_transition(semantic_state, transition)
+            resources = {
+                value.connection_id
+                for value in semantic_state.operational_connections
+            }
+            route_outcomes = {
+                value.demand: value for value in semantic_state.route_outcomes
+            }
+            assignments = {
+                value.zone_id: value.satellite_id
+                for value in semantic_state.zone_service_assignments
+            }
+            zone_edges = {
+                zone_id: (prefixes[zone_id], satellite_id)
+                for zone_id, satellite_id in assignments.items()
+                if satellite_id is not None
+            }
+            for intent in forwarding_by_time.get(nominal_time, ()):
+                prior = forwarding.get(intent.route_key)
+                if prior != intent.previous:
+                    raise ValueError(
+                        "Traffic projection forwarding predecessor is stale"
+                    )
+                if intent.operation is _MutationOperation.REMOVE:
+                    if prior is None or intent.current is not None:
+                        raise ValueError(
+                            "Traffic projection forwarding removal is invalid"
                         )
-                    if intent.zone_id not in changed_zones_seen:
-                        changed_zones.append(intent.zone_id)
-                        changed_zones_seen.add(intent.zone_id)
+                    del forwarding[intent.route_key]
                 else:
-                    # Qdisc facts do not change reachability selection.
-                    continue
+                    if intent.current is None:
+                        raise ValueError(
+                            "Traffic projection forwarding update is incomplete"
+                        )
+                    forwarding[intent.route_key] = intent.current
             visitor(
                 _BoundaryProjection(
                     nominal_time,
+                    route_outcomes,
                     forwarding,
                     zone_edges,
                     resources,
-                    forwarding_changed,
+                    [
+                        value.demand
+                        for value in transition.route_outcome_transitions
+                    ],
                     changed_access,
-                    changed_zones,
+                    [value.zone_id for value in transition.zone_service_transitions],
                     prior_zone_edges,
                 )
             )
             visited.append(nominal_time)
         if validate_end_state:
-            expected_resources = {
-                value.connection.connection_id
-                for value in realization.intended_resources
-            }
-            if resources != expected_resources:
-                raise ValueError(
-                    "Traffic projection resource state differs from Compiler"
-                )
+            if semantic_state != realization.output_planned_state:
+                raise ValueError("Traffic semantic replay differs from Compiler")
             expected_forwarding = {
                 value.route_key: value for value in realization.intended_forwarding
             }
@@ -644,27 +1030,116 @@ def _scan_boundaries(
                 raise ValueError(
                     "Traffic projection forwarding state differs from Compiler"
                 )
-            expected_zones = {
-                value.zone_id: value for value in realization.intended_zone_edges
-            }
-            if {
-                key: value
-                for key, value in zone_edges.items()
-            } != {
-                key: (value.packet_prefix, value.service_satellite_id)
-                for key, value in expected_zones.items()
-            }:
-                raise ValueError("Traffic projection Zone state differs from Compiler")
     times = visited
     if len(times) != len(set(times)) or times != sorted(times):
         raise ValueError("Traffic projection boundaries are not strictly ordered")
     return tuple(times)
 
 
+def _scan_boundary_deltas(
+    deltas: tuple[_TrafficBoundaryDelta, ...],
+    zone_prefixes: tuple[tuple[str, str], ...],
+    visitor: Callable[[_BoundaryProjection], None],
+) -> tuple[datetime, ...]:
+    """Replay the compact Traffic-only event log into exact boundary views."""
+
+    prefixes = dict(zone_prefixes)
+    route_outcomes: dict[
+        RouteDemand, ReachableRouteOutcome | UnreachableRouteOutcome
+    ] = {}
+    forwarding: dict[_ForwardingKey, _ForwardingBinding] = {}
+    assignments: dict[str, NodeId | None] = {}
+    resources: set[OperationalConnectionId] = set()
+    visited: list[datetime] = []
+    for delta in deltas:
+        prior_zone_edges = {
+            zone_id: (prefixes[zone_id], satellite_id)
+            for zone_id, satellite_id in assignments.items()
+            if satellite_id is not None
+        }
+        for transition in delta.route_transitions:
+            prior = route_outcomes.get(transition.demand)
+            if prior != transition.previous:
+                raise ValueError(
+                    "Traffic compact Route predecessor is stale"
+                )
+            if transition.current is None:
+                route_outcomes.pop(transition.demand, None)
+            else:
+                route_outcomes[transition.demand] = transition.current
+        for transition in delta.zone_transitions:
+            prior = assignments.get(transition.zone_id)
+            if prior != transition.previous_satellite_id:
+                raise ValueError(
+                    "Traffic compact Zone predecessor is stale"
+                )
+            assignments[transition.zone_id] = transition.current_satellite_id
+        for connection_id in delta.established_connection_ids:
+            if connection_id in resources:
+                raise ValueError("Traffic compact resource is duplicated")
+            resources.add(connection_id)
+        for connection_id in delta.withdrawn_connection_ids:
+            if connection_id not in resources:
+                raise ValueError("Traffic compact resource predecessor is absent")
+            resources.remove(connection_id)
+        for intent in delta.forwarding_intents:
+            prior = forwarding.get(intent.route_key)
+            if prior != intent.previous:
+                raise ValueError(
+                    "Traffic compact forwarding predecessor is stale"
+                )
+            if intent.operation is _MutationOperation.REMOVE:
+                if prior is None or intent.current is not None:
+                    raise ValueError(
+                        "Traffic compact forwarding removal is invalid"
+                    )
+                del forwarding[intent.route_key]
+            else:
+                if intent.current is None:
+                    raise ValueError(
+                        "Traffic compact forwarding update is incomplete"
+                    )
+                forwarding[intent.route_key] = intent.current
+        zone_edges = {
+            zone_id: (prefixes[zone_id], satellite_id)
+            for zone_id, satellite_id in assignments.items()
+            if satellite_id is not None
+        }
+        visitor(
+            _BoundaryProjection(
+                delta.nominal_time,
+                route_outcomes,
+                forwarding,
+                zone_edges,
+                resources,
+                [value.demand for value in delta.route_transitions],
+                list(delta.changed_access_ground_stations),
+                [value.zone_id for value in delta.zone_transitions],
+                prior_zone_edges,
+            )
+        )
+        visited.append(delta.nominal_time)
+    if len(visited) != len(set(visited)) or visited != sorted(visited):
+        raise ValueError("Traffic compact boundaries are not strictly ordered")
+    return tuple(visited)
+
+
 def _zone_ipv4(values: tuple[BpfCompiledRealization, ...]) -> dict[str, str]:
-    prefixes = dict(values[-1].zone_prefixes)
-    if set(prefixes) != set(values[0]._topology_signature.zone_ids):
-        raise ValueError("Traffic probe Zone prefix coverage differs from topology")
+    return _zone_ipv4_from(
+        values[-1].zone_prefixes,
+        values[0]._physical_world_projection.zone_ids,
+    )
+
+
+def _zone_ipv4_from(
+    zone_prefixes: tuple[tuple[str, str], ...],
+    zone_ids: tuple[str, ...],
+) -> dict[str, str]:
+    prefixes = dict(zone_prefixes)
+    if set(prefixes) != set(zone_ids):
+        raise ValueError(
+            "Traffic probe Zone prefix coverage differs from PhysicalWorld"
+        )
     result = {}
     for zone_id, prefix in prefixes.items():
         interface = ip_interface(prefix)
@@ -767,7 +1242,38 @@ def _cyclic_values(
 
 
 def _candidate_pairs(
+    plans: tuple[Plan, ...],
     values: tuple[BpfCompiledRealization, ...],
+    nominal_boundaries: tuple[datetime, ...],
+) -> tuple[_PairSeed, ...]:
+    return _candidate_pairs_from_scan(
+        lambda visitor: _scan_boundaries(
+            plans,
+            values,
+            visitor,
+            validate_end_state=True,
+        ),
+        nominal_boundaries,
+    )
+
+
+def _candidate_pairs_from_deltas(
+    deltas: tuple[_TrafficBoundaryDelta, ...],
+    zone_prefixes: tuple[tuple[str, str], ...],
+    nominal_boundaries: tuple[datetime, ...],
+) -> tuple[_PairSeed, ...]:
+    return _candidate_pairs_from_scan(
+        lambda visitor: _scan_boundary_deltas(
+            deltas, zone_prefixes, visitor
+        ),
+        nominal_boundaries,
+    )
+
+
+def _candidate_pairs_from_scan(
+    scan: Callable[
+        [Callable[[_BoundaryProjection], None]], tuple[datetime, ...]
+    ],
     nominal_boundaries: tuple[datetime, ...],
 ) -> tuple[_PairSeed, ...]:
     reservoir = _StratifiedCandidateReservoir()
@@ -790,23 +1296,25 @@ def _candidate_pairs(
         stratum = min(3, index * 4 // len(nominal_boundaries))
         quota: dict[tuple[str, str], int] = defaultdict(int)
 
-        for route_key in projection.forwarding_changed:
-            target = route_key.target
-            present = route_key in projection.forwarding
-            if route_key.source.entity_kind == "ground-station" and isinstance(
-                target, ZoneRouteTarget
+        for demand in projection.route_outcomes_changed:
+            target = demand.target
+            present = isinstance(
+                projection.route_outcomes.get(demand), ReachableRouteOutcome
+            )
+            if demand.source.entity_kind == "ground-station" and isinstance(
+                target, ZoneRouteDemandTarget
             ):
                 update = (
                     ground_stations_by_zone[target.zone_id].add
                     if present
                     else ground_stations_by_zone[target.zone_id].discard
                 )
-                update(route_key.source)
-            elif isinstance(target, GroundStationRouteTarget):
+                update(demand.source)
+            elif isinstance(target, GroundStationRouteDemandTarget):
                 update = (
-                    ground_targets_by_satellite[route_key.source].add
+                    ground_targets_by_satellite[demand.source].add
                     if present
-                    else ground_targets_by_satellite[route_key.source].discard
+                    else ground_targets_by_satellite[demand.source].discard
                 )
                 update(target.ground_station_id)
         for zone_id in projection.changed_zones:
@@ -892,8 +1400,8 @@ def _candidate_pairs(
                 if full(_DIRECTION_ZONE_TO_GROUND, "background"):
                     break
 
-        for route_key in _cyclic_values(
-            projection.forwarding_changed,
+        for demand in _cyclic_values(
+            projection.route_outcomes_changed,
             index * 31,
             maximum=_BOUNDARY_FACT_INSPECTION_LIMIT,
         ):
@@ -901,21 +1409,21 @@ def _candidate_pairs(
                 _DIRECTION_GROUND_TO_ZONE, "forwarding"
             ) and full(_DIRECTION_ZONE_TO_GROUND, "forwarding"):
                 break
-            target = route_key.target
-            if route_key.source.entity_kind == "ground-station" and isinstance(
-                target, ZoneRouteTarget
+            target = demand.target
+            if demand.source.entity_kind == "ground-station" and isinstance(
+                target, ZoneRouteDemandTarget
             ) and not full(_DIRECTION_GROUND_TO_ZONE, "forwarding"):
                 add(
                     _DIRECTION_GROUND_TO_ZONE,
-                    route_key.source,
+                    demand.source,
                     target.zone_id,
                     "forwarding-next-hop-change",
                     "forwarding",
                 )
-            elif isinstance(target, GroundStationRouteTarget) and not full(
+            elif isinstance(target, GroundStationRouteDemandTarget) and not full(
                 _DIRECTION_ZONE_TO_GROUND, "forwarding"
             ):
-                zones = zones_by_satellite.get(route_key.source, ())
+                zones = zones_by_satellite.get(demand.source, ())
                 for zone_id in sorted(zones)[:2]:
                     add(
                         _DIRECTION_ZONE_TO_GROUND,
@@ -984,11 +1492,7 @@ def _candidate_pairs(
                 if full(_DIRECTION_ZONE_TO_GROUND, "zone"):
                     break
 
-    visited = _scan_boundaries(
-        values,
-        visit,
-        validate_end_state=True,
-    )
+    visited = scan(visit)
     if visited != nominal_boundaries:
         raise ValueError("Traffic candidate scan omitted a nominal boundary")
     return reservoir.values()
@@ -1225,7 +1729,55 @@ def _reconstruction_boundaries(
 
 
 def _reconstruct_selected_paths(
+    plans: tuple[Plan, ...],
     values: tuple[BpfCompiledRealization, ...],
+    seeds: tuple[_PairSeed, ...],
+    *,
+    episode_requests: tuple[_EpisodeRequest, ...],
+    nominal_boundaries: tuple[datetime, ...],
+    coverage_end: datetime,
+) -> tuple[
+    dict[tuple[str, str, str], tuple[_ProbeStateInterval, ...]],
+    dict[tuple[str, str, str], set[datetime]],
+]:
+    return _reconstruct_selected_paths_from_scan(
+        lambda visitor: _scan_boundaries(
+            plans, values, visitor, validate_end_state=False
+        ),
+        seeds,
+        episode_requests=episode_requests,
+        nominal_boundaries=nominal_boundaries,
+        coverage_end=coverage_end,
+    )
+
+
+def _reconstruct_selected_paths_from_deltas(
+    deltas: tuple[_TrafficBoundaryDelta, ...],
+    zone_prefixes: tuple[tuple[str, str], ...],
+    seeds: tuple[_PairSeed, ...],
+    *,
+    episode_requests: tuple[_EpisodeRequest, ...],
+    nominal_boundaries: tuple[datetime, ...],
+    coverage_end: datetime,
+) -> tuple[
+    dict[tuple[str, str, str], tuple[_ProbeStateInterval, ...]],
+    dict[tuple[str, str, str], set[datetime]],
+]:
+    return _reconstruct_selected_paths_from_scan(
+        lambda visitor: _scan_boundary_deltas(
+            deltas, zone_prefixes, visitor
+        ),
+        seeds,
+        episode_requests=episode_requests,
+        nominal_boundaries=nominal_boundaries,
+        coverage_end=coverage_end,
+    )
+
+
+def _reconstruct_selected_paths_from_scan(
+    scan: Callable[
+        [Callable[[_BoundaryProjection], None]], tuple[datetime, ...]
+    ],
     seeds: tuple[_PairSeed, ...],
     *,
     episode_requests: tuple[_EpisodeRequest, ...],
@@ -1252,6 +1804,7 @@ def _reconstruct_selected_paths(
         tuple[str, str, str],
         tuple[tuple[bool, tuple[str, ...], str | None], int],
     ] = {}
+    unsupported_keys: set[tuple[str, str, str]] = set()
     return_seed_by_key = {
         seed.key: _PairSeed(
             (
@@ -1285,12 +1838,30 @@ def _reconstruct_selected_paths(
             return
         for seed in seeds_by_boundary.get(start, ()):
             key = seed.key
-            primary_reachable, path, service, primary_unreachable = _resolve_path(
-                seed, projection
-            )
-            return_reachable, return_path, _unused, return_unreachable = _resolve_path(
-                return_seed_by_key[key], projection
-            )
+            if key in unsupported_keys:
+                continue
+            try:
+                (
+                    primary_reachable,
+                    path,
+                    service,
+                    primary_unreachable,
+                ) = _resolve_path(seed, projection)
+                (
+                    return_reachable,
+                    return_path,
+                    _unused,
+                    return_unreachable,
+                ) = _resolve_path(return_seed_by_key[key], projection)
+            except _MissingPlannedRouteOutcome:
+                # A candidate may cease to be an active RouteDemand during a
+                # requested persistent or windowed horizon. Do not infer an
+                # unreachable state: exclude the unsupported probe identity.
+                unsupported_keys.add(key)
+                interval_by_key[key].clear()
+                affected_by_key[key].clear()
+                prior_by_key.pop(key, None)
+                continue
             reachable = primary_reachable and return_reachable
             unreachable = (
                 primary_unreachable
@@ -1347,7 +1918,7 @@ def _reconstruct_selected_paths(
             )
             prior_by_key[key] = current, current_index
 
-    visited = _scan_boundaries(values, visit, validate_end_state=False)
+    visited = scan(visit)
     if visited != nominal_boundaries:
         raise ValueError("Traffic path scan omitted a nominal boundary")
     return (
@@ -1390,31 +1961,44 @@ def _resolve_path(
     projection: _BoundaryProjection,
 ) -> tuple[bool, tuple[NodeId, ...], NodeId | None, str | None]:
     edge = projection.zone_edges.get(seed.zone_id)
-    if edge is None:
-        return False, (), None, "zone-unserved"
-    service = edge[1]
     if seed.direction == _DIRECTION_GROUND_TO_ZONE:
-        current = seed.ground_station
-        target = ZoneRouteTarget(seed.zone_id)
+        source = seed.ground_station
+        target = ZoneRouteDemandTarget(seed.zone_id)
+        service = None if edge is None else edge[1]
         terminal = service
     else:
-        current = service
-        target = GroundStationRouteTarget(seed.ground_station)
+        if edge is None:
+            return False, (), None, "zone-unserved"
+        service = edge[1]
+        source = service
+        target = GroundStationRouteDemandTarget(seed.ground_station)
         terminal = seed.ground_station
-    path = [current]
-    seen = {current}
-    while current != terminal:
-        binding = projection.forwarding.get(RouteKey(current, target))
-        if binding is None:
-            return False, tuple(path), service, "missing-forwarding"
+    demand = RouteDemand(source, target)
+    outcome = projection.route_outcomes.get(demand)
+    if outcome is None:
+        raise _MissingPlannedRouteOutcome(
+            "Traffic demand has no explicit planned Route outcome"
+        )
+    if isinstance(outcome, UnreachableRouteOutcome):
+        return False, (), service, outcome.reason.value
+    if not isinstance(outcome, ReachableRouteOutcome):  # pragma: no cover
+        raise TypeError("Traffic demand has an unsupported planned Route outcome")
+    if terminal is None:
+        raise ValueError(
+            "planned reachable Zone Route has no service assignment"
+        )
+    path = outcome.path
+    if path[-1] != terminal:
+        raise ValueError("planned Traffic Route terminates at the wrong node")
+    for current, next_hop in zip(path, path[1:]):
+        binding = projection.forwarding.get(_ForwardingKey(current, target))
+        if binding is None or binding.next_hop != next_hop:
+            raise ValueError(
+                "planned reachable Route lacks matching compiled forwarding"
+            )
         if binding.connection_id not in projection.resources:
             raise ValueError("Traffic path uses an inactive compiled resource")
-        current = binding.next_hop
-        if current in seen:
-            raise ValueError("Traffic path contains a forwarding loop")
-        seen.add(current)
-        path.append(current)
-    return True, tuple(path), service, None
+    return True, path, service, None
 
 
 def _make_identity(

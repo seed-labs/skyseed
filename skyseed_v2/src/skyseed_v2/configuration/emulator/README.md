@@ -111,6 +111,7 @@ classDiagram
         +right_ascension_distribution
         +in_orbit_phase_distribution
         +max_simultaneous_ground_station_accesses
+        +maximum_simultaneous_inter_satellite_links
     }
     class OrbitConfig {
         <<immutable explicit Orbit declaration>>
@@ -125,6 +126,7 @@ classDiagram
         +mean_anomaly_deg
         +payload_items
         +max_simultaneous_ground_station_accesses
+        +maximum_simultaneous_inter_satellite_links
     }
     SkyseedAutonomousSystemConfig "1" *-- "*" ShellConfig : shells
     SkyseedAutonomousSystemConfig "1" *-- "*" GroundStationConfig : stations
@@ -212,7 +214,7 @@ classDiagram
 |---|---|---|
 | `EbgpPeeringConfig` | `skyseed_v2.configuration.emulator.EbgpPeeringConfig` | `ix_id`, `peer_routers`, `relationship`, `sort_key` |
 | `EbgpRouterReference` | `skyseed_v2.configuration.emulator.EbgpRouterReference` | `asn`, `router_id` |
-| `GeneratedOrbitLayout` | `skyseed_v2.configuration.emulator.GeneratedOrbitLayout` | `orbit_count`, `satellites_per_orbit`, `right_ascension_distribution`, `in_orbit_phase_distribution`, `max_simultaneous_ground_station_accesses` |
+| `GeneratedOrbitLayout` | `skyseed_v2.configuration.emulator.GeneratedOrbitLayout` | `orbit_count`, `satellites_per_orbit`, `right_ascension_distribution`, `in_orbit_phase_distribution`, `max_simultaneous_ground_station_accesses`, `maximum_simultaneous_inter_satellite_links` |
 | `GroundStationConfig` | `skyseed_v2.configuration.emulator.GroundStationConfig` | `display_name`, `latitude_deg`, `longitude_deg`, `elevation_m`, `operator`, `station_type`, `ground_station_id`, `identity_key`, `ix_attachments`, `max_simultaneous_satellite_accesses` |
 | `InOrbitPhaseDistribution` | `skyseed_v2.configuration.emulator.InOrbitPhaseDistribution` | `start_deg`, `step_deg`, `alternating_orbit_offset_deg`, `orbit_phase_step_deg` |
 | `InternetExchangeAttachment` | `skyseed_v2.configuration.emulator.InternetExchangeAttachment` | `ix_id`, `address` |
@@ -223,7 +225,7 @@ classDiagram
 | `NetworkConfig` | `skyseed_v2.configuration.emulator.NetworkConfig` | `network_id`, `prefix` |
 | `RouterConfig` | `skyseed_v2.configuration.emulator.RouterConfig` | `router_id`, `network_attachments`, `ix_attachments` |
 | `RightAscensionDistribution` | `skyseed_v2.configuration.emulator.RightAscensionDistribution` | `start_deg`, `step_deg` |
-| `SatelliteConfig` | `skyseed_v2.configuration.emulator.SatelliteConfig` | `satellite_id`, `index_in_orbit`, `mean_anomaly_deg`, `payload_items`, `max_simultaneous_ground_station_accesses` |
+| `SatelliteConfig` | `skyseed_v2.configuration.emulator.SatelliteConfig` | `satellite_id`, `index_in_orbit`, `mean_anomaly_deg`, `payload_items`, `max_simultaneous_ground_station_accesses`, `maximum_simultaneous_inter_satellite_links` |
 | `ShellConfig` | `skyseed_v2.configuration.emulator.ShellConfig` | `shell_id`, `altitude_km`, `inclination_deg`, `epoch_utc`, `generated_orbit_layout`, `explicit_orbits` |
 | `SkyseedAutonomousSystemConfig` | `skyseed_v2.configuration.emulator.SkyseedAutonomousSystemConfig` | `asn`, `shells`, `ground_stations` |
 | `StaticEmulatorConfig` | `skyseed_v2.configuration.emulator.StaticEmulatorConfig` | `skyseed_autonomous_systems`, `internet_exchanges`, `ordinary_autonomous_systems`, `ebgp_peerings` |
@@ -244,6 +246,18 @@ Generated layouts apply one value to every generated Satellite; explicit
 Satellite declarations may set it individually. YAML omission or `null` means
 no explicit cap. It is not total degree, ISL capacity, UT capacity, or antenna
 count.
+
+`maximum_simultaneous_inter_satellite_links` is the separate optional positive
+integer copied through each Emulator Satellite and Simulator input into the
+PhysicalWorld-owned `InterSatelliteLinkCapability.maximum_simultaneous_links`.
+Generated layouts apply one value to every generated Satellite; explicit
+Satellite declarations set it individually. YAML omission or `null` means the
+capability is unavailable, never unlimited. This scalar states only a maximum
+simultaneous ISL count: it defines no terminal identities, front/back/left/right
+directions, steering envelope, candidate-search scope, or same/cross-plane
+allocation. Canonical S3 explicitly declares `4` as a scenario assumption,
+not as proven Starlink hardware; the Network Planner's desired `2 + 2` split
+is injected policy outside this configuration value.
 
 ## Entry points
 

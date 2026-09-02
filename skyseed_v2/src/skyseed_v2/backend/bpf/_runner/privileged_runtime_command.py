@@ -1403,6 +1403,28 @@ def _activate_boundary(request: dict[str, Any]) -> dict[str, Any]:
             _parallel_map(request, list(request["nodes"]), qdisc_node)
         )
 
+        def zone_readiness_node(node: dict[str, Any]) -> tuple[int, int]:
+            commands = [
+                f"address replace {value}/32 dev lo"
+                for value in node["zone_address_add"]
+            ]
+            if commands:
+                _in_netns(
+                    int(node["pid"]),
+                    ["ip", "-force", "-batch", "-"],
+                    input_text="\n".join(commands) + "\n",
+                )
+            return len(commands), int(bool(commands))
+
+        zone_readiness_results = _parallel_map(
+            request,
+            list(request["nodes"]),
+            zone_readiness_node,
+        )
+        zone_readiness_updates = sum(
+            value[0] for value in zone_readiness_results
+        )
+
         def route_node(node: dict[str, Any]) -> tuple[int, int]:
             commands = []
             access_updates = 0
@@ -1475,10 +1497,6 @@ def _activate_boundary(request: dict[str, Any]) -> dict[str, Any]:
                 f"address del {value}/32 dev lo"
                 for value in node["zone_address_delete"]
             ]
-            commands.extend(
-                f"address replace {value}/32 dev lo"
-                for value in node["zone_address_add"]
-            )
             zone_count = len(commands)
             commands.extend(
                 f"link set dev {_assert_interface_name(name)} down"
@@ -1497,11 +1515,16 @@ def _activate_boundary(request: dict[str, Any]) -> dict[str, Any]:
             list(request["nodes"]),
             post_switch_node,
         )
-        zone_updates = sum(value[0] for value in post_switch_results)
+        zone_updates = zone_readiness_updates + sum(
+            value[0] for value in post_switch_results
+        )
         link_updates += sum(value[1] for value in post_switch_results)
         namespace_process_families = {
             "link_up": sum(bool(node["link_up"]) for node in request["nodes"]),
             "qdisc": sum(bool(node["qdisc"]) for node in request["nodes"]),
+            "zone_readiness": sum(
+                value[1] for value in zone_readiness_results
+            ),
             "route_neighbour": sum(
                 bool(
                     node["route_delete"]
@@ -1514,7 +1537,7 @@ def _activate_boundary(request: dict[str, Any]) -> dict[str, Any]:
             "post_switch": sum(value[2] for value in post_switch_results),
         }
         separate_post_switch_processes = sum(
-            bool(node["zone_address_delete"] or node["zone_address_add"])
+            bool(node["zone_address_delete"])
             + bool(node["link_down"])
             for node in request["nodes"]
         )

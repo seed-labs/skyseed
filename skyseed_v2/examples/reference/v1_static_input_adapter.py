@@ -293,6 +293,7 @@ class V1StaticInputAdapter:
             generated_orbit_layout=GeneratedOrbitLayout(
                 orbit_count=orbit_count,
                 satellites_per_orbit=satellites_per_plane,
+                maximum_simultaneous_inter_satellite_links=4,
                 right_ascension_distribution=RightAscensionDistribution(
                     start_deg=first_raan % 360.0,
                     step_deg=raan_step,

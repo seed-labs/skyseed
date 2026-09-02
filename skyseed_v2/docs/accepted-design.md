@@ -1,260 +1,267 @@
-# Accepted design anchor
+# Accepted design: physical state to realized runtime
 
-本文件只保存已接受的核心架构。当前实现状态唯一见
-[`CURRENT.md`](CURRENT.md)；详细合同按任务读取
-[`codex-reference/`](codex-reference/)。
-
-## Core principles
-
-- upstream SEED `Emulator` owns the static Emulator composition;
-- Emulator owner tree is Skyseed AS → Shell → Orbit → Satellite, plus Skyseed
-  AS → GroundStation;
-- `Satellite(ExtensionNode)` remains Orbit-owned while the same instance is
-  indexed by its AS for the standard SEED lifecycle; `GroundStation(Router)`
-  remains on the standard rnode/brdnode path;
-- `Simulator` is the Simulator composition root. It creates exactly one
-  `Topology` bound to exactly one physical `PositionModel`; the current
-  Round-1 implementation then creates exactly one temporary legacy `Slicer`
-  and at most one current `Planner`;
-- `SimulatorStaticInput` is immutable receiver-owned boundary data;
-- `SimulationTimeline` defines simulation timestamps but owns no projection;
-  `Topology.frame_at(timestamp)` deterministically invokes its physical
-  `PositionModel` and returns one immutable `PhysicalFrame`;
-- `PhysicalFrame` is physical-domain state only: its timestamp is its domain
-  identity and its immutable Position mapping covers exactly the Topology node
-  set. It has no Slice/frame sequence ID, Connection, Route, Zone serving,
-  Difference, Planner decision, Plan, or realized-runtime state;
-- the accepted destination is `Topology / PhysicalFrame → Network Planner →
-  PlannedOperationalState → Plan → Compiler / Runner →
-  RealizedRuntimeState`; physical, planned-operational, and realized-runtime
-  state remain distinct;
-- Round 1 intentionally retains one visible temporary seam:
-  `Topology / PhysicalFrame → legacy Slicer operational remainder → current
-  Planner`. The legacy Slicer no longer owns, binds, or invokes PositionModel;
-  it requests a PhysicalFrame, consumes its Positions for unchanged Connection
-  and Route computation, retains old `TopologySlice` values, and creates
-  `TopologyDifference` only from retained old slices;
-- the current `Planner` is the persistent Simulator-owned peer of Topology and
-  the temporary legacy Slicer. Its
-  `synchronize()` method requests newly available adjacent Differences from the
-  exact sibling Slicer over already-generated retained Slices, consumes those
-  immutable values, and publishes backend-independent semantic `Plan` intervals
-  without advancing Slicer; published intervals are
-  continuous/non-overlapping while private planned state and the unpublished
-  portion of the planning window continue across their boundaries;
-- the top-level `backend` domain is downstream of Simulator; its BPF Compiler
-  is a one-shot deterministic lowering from `Plan`, approved read-only
-  Simulator facts, and an explicit previous intended baseline into an
-  immutable symbolic realization;
-- BPF compilation owns no Simulator semantics, deployment, runtime/kernel
-  binding, hidden progression, or lifecycle service;
-- `BpfRunner` is the sole live BPF backend lifecycle owner. Callers hand it an
-  already-started Compose project identity and future `BpfCompiledRealization`
-  work. It independently discovers, validates, and freezes its required live
-  runtime foundation, then owns concrete NodeId→container/PID/netns bindings,
-  dynamic physical resources, READY/active frontiers, runtime timing/failure
-  evidence, and scoped cleanup, but not Compose compilation/startup/teardown;
-- generated BPF output records one small execution definition with its
-  backend/runtime bounds, output identity, bounded/unbounded Timeline facts,
-  compact source-scope fingerprints, and generated-input fingerprints.
-  `experiment.execution` is the experiment-side runtime composition. It uses
-  SHA256 only as a deterministic source/output consistency guard: definition
-  drift or stale generated output fails clearly with an instruction to rerun
-  `main.py`. It consumes either the explicitly configured live rolling physical
-  projection → temporary legacy Slicer → current Planner → Compiler
-  progression used by Mini or the persisted canonical
-  `BpfCompiledRealization` sequence produced by the Starlink Gen1 example,
-  then composes that input
-  with the unchanged BpfRunner lifecycle. It is not part of the BPF backend, a
-  security mechanism, or a new public runtime authority;
-- rolling owners retain only facts still needed beyond their successful
-  handoff. The temporary legacy Slicer and current Planner release obsolete
-  owner-local working entries,
-  Runner and its private realization reclaim retired input/boundary/generation
-  state, and complete semantic/runtime history is written sequentially under
-  `output/inspection/` before release. Tools read that evidence but neither
-  control retention nor become authoritative writers;
-- Runner Preparation establishes all preparation-safe runtime state required
-  for READY without prematurely changing current active network semantics. It
-  performs necessary runtime capacity/readiness checks before formal execution;
-  capacity or resource optimization must not alter upstream simulation
-  semantics. Main
-  alone changes current active semantics and advances the active frontier. Main
-  does not create resources, rediscover bindings, compile/attach BPF,
-  bulk-populate forwarding, or use a fallback path;
-- an ACTIVE GroundStation-access Connection includes bidirectional direct-peer
-  reachability between those two endpoints. The current private tc-BPF runtime
-  realization provides the GroundStation-to-Satellite half as Main-owned
-  node-local Linux route/neighbour state; it is not a new backbone target,
-  public Compiler concept, or constellation-wide Satellite routing rule;
-- simulation semantics take priority over control-plane optimization: resource
-  lifetime, parameter, forwarding, Zone-edge, and explicit ordering decisions
-  already made upstream remain observable at their exact nominal boundaries;
-- Runner performance is part of simulation correctness: it must keep pace with
-  the nominal semantic transition schedule required by the target simulation
-  profile. PhysicalFrame request resolution, temporary legacy Slice
-  resolution, current Planner publication cadence, Plan nominal transition
-  timing, and Runner execution cadence are separate;
-- BPF generation identity follows the complete backend-local BPF generation
-  state, not every runtime target field. A boundary whose BPF generation state
-  is equivalent may reuse the resident generation while Main still applies its
-  exact non-BPF runtime work, including qdisc, route/neighbour, Zone-address,
-  and physical-resource changes. The Compiler remains one-shot and does not
-  classify runtime reuse;
-- Preparation/Main/Maintenance are internal Runner capabilities, not separate
-  public authorities. Exact-next readiness is the minimum correctness
-  requirement. In rolling mode Maintenance extends one gap-free READY prefix
-  until either the explicit nominal-time preparation lookahead or the explicit
-  positive future-boundary depth is reached; bounded full-range mode instead
-  uses `None` for both bounds and requires finite input. Maintenance also
-  advances input and reclaims retired state/resources. Main alone validates and
-  activates the exact next READY boundary, publishes the active frontier, and
-  schedules retirement. Manual stepping and relative monotonic-clock execution
-  are mutually exclusive modes of the same Runner incarnation;
-- shared Runner lifecycle is isolated from the private default tc-BPF
-  dataplane mechanism; there is no public dataplane plugin contract. The
-  default fixed-map implementation derives its private maximum resident
-  generations from the public boundary depth and sizes generation-keyed maps
-  from topology-stable per-generation bounds rather than startup occupancy;
-- traffic telemetry is a non-authoritative Runner-private capability of the
-  current default tc-BPF runtime realization, not a fourth Runner phase or
-  public backend subsystem. Existing ingress programs may emit bounded packet
-  evidence to one Runner-owned shared ring; output/loss/collector failure must
-  not change forwarding action or grant scheduling authority. BpfRunner
-  supervises collection and ordinary-user durable recording across Preparation
-  and cleanup/final drain. Offline replay is a current consumer; any future
-  live visualization remains a consumer, and neither is a collection or
-  forwarding authority;
-- Tools are repository-local, read-only, and non-authoritative. BpfRunner hands
-  a detached summary, scalar projections of frozen runtime bindings, and a
-  bounded recent event window to callers. Standard generated execution appends
-  the complete Runner event history to durable JSONL, which the post-run Runner
-  Inspection Tool reads directly; the Tool gains no lifecycle, kernel,
-  dataplane, or traffic-observation authority.
-- the Starlink Gen1 example has one formal physical Topology plus temporary
-  legacy Slicer/current Planner composition and one offline rolling application
-  path. `main.py` advances the legacy operational seam far enough for the
-  accepted planning lookahead, asks the Simulator-owned Planner to publish a
-  continuous prefix, and optionally calls public `compile_bpf(...)` immediately
-  with the explicit previous realization. Stage and Slice-limit controls are
-  early-stop/execution bounds on this path, not alternate Simulator or domain
-  algorithms. This path stops before Runner after producing the canonical
-  runtime package with its persisted `BpfCompiledRealization` sequence; the
-  generated controls later execute the Runner and Traffic lifecycle;
-- heavy generation-time Starlink Gen1 Inspection materialization runs in a small bounded
-  set of independent processes after each required domain evidence boundary is
-  immutable. Physical projection → temporary legacy Slicer → current Planner
-  → Compiler is the Round-1 implementation dependency chain:
-  Tool work never becomes a prerequisite for a later domain stage, and a task
-  is deferred until domain completion when no worker is available. Each worker
-  first persists a deterministic detached snapshot under short-lived generated
-  `.inspection-control/`, then projects and renders in a staging directory,
-  audits its inventory/checksums, and atomically publishes. The final CLI join
-  is an artifact-completion gate, not a domain dependency, and deletes the
-  temporary control state. Tool time is excluded from domain Observation
-  rollups; gzip/pickle snapshots are runtime bookkeeping, not durable output or
-  a public serialization API;
-- candidate and provenance material is non-authoritative and never a default
-  implementation source.
-
-## Formal chains
+This document is the highest repository-local architecture anchor for the
+current Skyseed v2 production chain.
 
 ```text
-Emulator configuration
-→ create_static_emulator()
-→ upstream Emulator + Skyseed entities
-→ create_simulator_static_input()
-→ SimulatorStaticInput
-→ SimulationDefinition
-→ Simulator
-→ creates/owns Topology(PositionModel)
-SimulationTimeline timestamp → Topology.frame_at(timestamp)
-                             → PhysicalFrame(timestamp + Positions)
-
-accepted destination:
-Topology / PhysicalFrame → Network Planner → PlannedOperationalState → Plan
-
-temporary Round-1 implementation seam:
-legacy Slicer → requests Topology.frame_at(timestamp)
-              → consumes PhysicalFrame.positions
-              → calls legacy ConnectionModel → legacy RouteModel
-              → produces/retains legacy TopologySlice
-current Planner.synchronize() → calls Slicer.create_difference()
-                     → consumes on-request TopologyDifference values
-                     → produces Plan
-compile_bpf(Plan + approved read-only Simulator facts exposed through exact
-  Slicer get_slice()/get_topology() access + explicit previous baseline)
+SimulationTimeline
+→ PhysicalWorld.frame_at(timestamp)
+→ PhysicalFrame
+→ PhysicalLinkModel.compute_observation(...)
+→ PhysicalLinkObservation
+→ Planner
+→ PlannedOperationalState
+→ Plan
+→ compile_bpf(plan, physical_world, previous_realization)
 → BpfCompiledRealization
-→ BpfRunner Preparation
-→ READY
-→ BpfRunner Main activation ∥ Maintenance future preparation/reclaim
-→ live kernel forwarding state
+→ BpfRunner
+→ RealizedRuntimeState
 ```
 
-The temporary legacy `Slicer` retains the adjacent `TopologySlice` values
-needed for these calls; it does not retain the immutable
-`TopologyDifference` results. The current Planner is the Difference consumer
-and `Planner.synchronize()` is the Plan producer. The BPF Compiler consumes the
-Plan, not the Difference. Connection operational planning, effective
-parameter/resource planning, Route planning, Coordination,
-`PlannedOperationalState`, acquisition/reacquisition, the common producer, and
-Planner/Compiler source-fact redesign remain for the Network Planner rounds.
-Once those responsibilities move, Slicer and its mixed Slice/Difference seam
-are removed completely; they are not an alternative architecture or a
-compatibility mode.
+There is one executable architecture. The Simulator composes the Timeline,
+PhysicalWorld, physical-link Model, and one public Planner. Cross-domain
+experiment orchestration owns the incremental realization producer. The
+Compiler and Runner remain downstream backend boundaries.
 
-Static deployment is separate:
+## State separation
 
-```text
-Emulator → upstream SEED Docker compiler → Compose project
-→ caller-selected deployment startup → live Compose project
-→ caller hands the live project identity to BpfRunner
-→ BpfRunner independently validates and freezes its runtime foundation
+The system keeps four different truths explicit:
+
+1. physical truth: `PhysicalWorld`, `PhysicalFrame`, and sparse
+   `PhysicalLinkObservation` candidates;
+2. planned truth: `PlannedOperationalState`, including operational
+   Connections, Zone service, effective parameters, and explicit Route
+   outcomes;
+3. compiled intended truth: `BpfCompiledRealization`, including semantic
+   lineage, formal activation boundaries, and backend intentions;
+4. realized truth: `RealizedRuntimeState`, observed and owned by `BpfRunner`.
+
+No object in one layer silently substitutes for another. A physically feasible
+candidate is not an operational Connection. A compiled intention is not proof
+of realized kernel state.
+
+## Physical ownership
+
+`PhysicalWorld` is the authoritative physical aggregate. It owns static
+Satellite, GroundStation, orbit, shell, Zone-layout, capability, and
+PositionModel identity. `frame_at(timestamp)` returns exactly one immutable
+`PhysicalFrame` containing the requested timestamp and immutable positions.
+
+`PhysicalLinkModel` consumes an exact PhysicalWorld, frame, and bounded request.
+It returns sparse feasible facts only: inter-satellite candidates,
+GroundStation access candidates, Zone service candidates, and deterministic
+work counts. It does not select operational links, advance acquisition, assign
+Zone service, plan parameters, compute Routes, or own time progression.
+
+Canonical S3 retains these frozen assumptions:
+
+- 720 Satellites, 355 GroundStations, and 732 Zones;
+- maximum simultaneous ISLs per Satellite: 4;
+- desired policy mix: 2 same-plane plus 2 cross-plane;
+- bounded cross-plane candidate scope: K3;
+- deterministic retain-first selection;
+- configurable ISL acquisition reference: 20 seconds;
+- bounded sampled prehistory for warm initialization;
+- accepted warm-oracle comparison: 714 cross-plane selections and 12
+  underfilled Satellites at its defined boundary.
+
+The value `4` is an explicit scenario capability assumption. The 2+2/K3 rule is
+planning policy, not physical hardware identity.
+
+## Planner ownership
+
+`Planner` is the sole operational state owner. Constructor injection supplies
+the exact PhysicalWorld; ISL, GroundStation access, Zone service, parameter,
+and Route Models; a precedence-only CoordinationPolicy; a
+PlanningWindowPolicy; Route demands; and optional execution observation.
+
+The Planner creates the bounded physical-link request, accepts ordered matching
+frame/observation pairs, advances acquisition and operational state, and
+publishes self-contained Plans. It owns distinct physical-observation,
+planning, and publication frontiers, bounded unpublished transitions, compact
+inspection evidence, and Route worker shutdown.
+
+GroundStation access policy remains separate from ISL acquisition. Zone
+serving is a Planner decision. Routes are planned only over operational
+Connections, and failure is represented explicitly by a reason such as
+`ZONE_UNSERVED` or `NO_OPERATIONAL_PATH`.
+
+## Operational values and Plans
+
+`PlannedOperationalState` contains only timestamped complete operational
+outputs. It contains no physical frame, candidate set, lifecycle timer, Model
+cache, worker pool, publication buffer, or Tool schema.
+
+Every `PlanTransition` represents exactly one formal Timeline timestamp. It may
+be empty and carries replay-complete changes for Connection establishment and
+withdrawal, complete effective-parameter updates, Zone service changes, and
+Route outcome changes.
+
+Canonical semantic event references are derived from transitions. Coordination
+stores precedence between deterministic immutable references; it does not own a
+second editable event payload.
+
+A `Plan` contains `plan_id`, `previous_plan_id`, the physical-world
+fingerprint, input and output state fingerprints, one exact positive
+`observation_interval`, start and end timestamps, ordered transitions, and
+semantic event precedences.
+
+The bootstrap Plan begins at the formal Timeline start, has no previous Plan or
+input fingerprint, and replays from the explicit empty operational state.
+Every later Plan names its immediate predecessor and consumes the previous
+output fingerprint. Adjacent transitions are exactly one observation interval
+apart, and a later Plan begins exactly one interval after the prior Plan ends.
+`apply_plan_transition` and `apply_plan` are the common semantic replay contract
+used by Planner publication, Compiler validation, detached inspection, and
+qualification.
+
+Fingerprints are schema-tagged, deterministic across processes, canonical with
+respect to tuple ordering, and based only on semantic content.
+
+## Window and publication policy
+
+The canonical policy combines a 5-second formal observation interval, a
+50-second planning horizon, and a 20-second publication horizon.
+
+Before normal publication, the Planner plans up to 50 seconds from the current
+publication frontier, then publishes the earliest contiguous prefix of at most
+20 seconds. Event timestamps retain 5-second resolution. Publication does not
+quantize events to a Plan edge.
+
+At Timeline end the window shrinks and the remaining prefix is flushed once.
+No formal timestamp is skipped, duplicated, or shared by two Plans. Canonical
+10-minute S3 therefore has 121 formal transitions, 30 Plans, 30 compiled
+realizations, and 121 compiled activation timestamps.
+
+## One incremental producer
+
+`_IncrementalRealizationProducer` is the sole progression seam. It owns the
+Timeline iterator and cursor, bounded prehistory sampling, frame and physical-
+link requests, Planner prime/observe/finish/release/shutdown, the bounded
+pending Plan queue, incremental Compiler calls, previous-realization lineage,
+and per-invocation evidence.
+
+`produce_next_realization()` advances only as far as needed to publish and
+compile the next result. Precomputed mode drains this exact producer. There is
+no separate batch planning or compilation algorithm.
+
+The Plan is the only Planner semantic value crossing into compilation. Planner
+may retain the output state computed while creating a Plan solely as its own
+next-publication input; Producer neither retrieves nor stores that state, and
+Compiler reconstructs it by replaying the Plan against the previous compiled
+realization.
+
+The maintained runtime is persisted-only. Generation drains the producer into
+a format-version-3 manifest whose entries name checksum-verified
+`deterministic-gzip-json-v1` `.json.gz` records. Before `BpfRunner`
+construction, the persisted realization supplier eagerly verifies,
+decompresses, structurally decodes, and lineage-validates the complete bounded
+sequence. Runner pulls only from the resulting immutable tuple; maintenance
+never performs persistence, decoding, planning, or compilation synchronously.
+
+A later live-rolling stage will add a bounded concurrent coordinator/buffer and
+Runner consumer around this same producer, with explicit backlog and frontier
+evidence. Current documentation does not claim that future qualification.
+
+## Compiler boundary
+
+The sole public Compiler entry is:
+
+```python
+compile_bpf(
+    plan: Plan,
+    physical_world: PhysicalWorld,
+    previous_realization: BpfCompiledRealization | None,
+) -> BpfCompiledRealization
 ```
 
-`ComposeProjectLauncher` remains an optional programmatic deployment utility;
-it is not a Runner prerequisite or dynamic simulation Runner. `BpfRunner` does
-not own `docker compose up` or `docker compose down`.
+The Compiler validates world provenance, Plan lineage, input fingerprints, and
+semantic replay. It then lowers Connection, parameter, Zone, Route, and
+precedence changes into backend intentions. It does not run physical,
+selection, acquisition, Zone, parameter, or Route algorithms.
 
-Static identity is projected by entities/construction through public Node
-labels and geo APIs. A future Skyseed functional Layer may inject shared
-software, files, commands, and daemons, but its name, count, and API are not
-frozen. It will not create entities, register nodes, serialize metadata, or
-dispatch compiler subtypes.
+`BpfCompiledRealization` carries source Plan lineage fingerprints, exact source
+observation cadence, the output `PlannedOperationalState`, a compact activation
+schedule of timestamp plus transition fingerprint, backend intentions,
+constraints, and aggregate semantic-precedence folding evidence. Semantic
+precedence is represented by activation frontiers, Runner phases, or atomic
+forwarding generations when those existing mechanisms are sufficient; exact
+pairwise constraints are retained only as a fail-closed fallback. Zone lowering
+separates readiness, forwarding publication, and retirement. Empty semantic
+transitions still create activation boundaries.
 
-## Prohibited behavior
+The authoritative Plan remains in Planner history rather than being copied into
+every realization. Persisted realization readers verify checksums, schema,
+references, state fingerprints, lineage, equal cadence, and exact next starts;
+they do not reconstruct Plans or repeat Compiler lowering. Full semantic
+qualification and Traffic inspection use the aligned authoritative Plan stream.
 
-- no Simulator core dependency on Emulator or SEED;
-- no Simulator dependency on backend; backend may read approved public
-  Simulator facts/contracts without taking ownership or invoking Models;
-- no SEED integration dependency on Simulator, Tools, Compose launcher, or
-  examples;
-- no compatibility forwarding or two import paths for retired modules;
-- no `PositionModel` alias under `simulator.slicing`, operational state in
-  `PhysicalFrame`, or Slice/frame sequence identity in the physical contract;
-- no new Slicer consumer, facade, fallback, compatibility mode, or hidden
-  producer path;
-- no second authoritative computation path in Tools;
-- no Tool-side Model execution, Position propagation, Connection/Route
-  recomputation, or Slice comparison;
-- no implicit backend fallback, runtime fallback, or global
-  cross-owner lookup;
-- no unapproved Manager, Context, Builder, Catalog, Coordinator, or Result
-  abstraction.
+## Runner and Traffic
 
-## Detailed accepted contracts
+`BpfRunner` consumes compiled realizations and owns live BPF preparation,
+activation, maintenance, cleanup, and `RealizedRuntimeState`. It is unaware of
+Planner internals.
 
-- [public imports](codex-reference/public-imports.md)
-- [ownership and lifecycle](codex-reference/ownership-lifecycle.md)
-- [Emulator–Simulator boundary](codex-reference/emulator-simulator-boundary.md)
-- [Topology, PhysicalFrame, and Zone](codex-reference/topology-zone-contracts.md)
-- [temporary legacy dynamic slicing](codex-reference/dynamic-slicing-contracts.md)
-- [PhysicalFrame, Position, and Connection values](codex-reference/position-connection-values.md)
-- [Model contracts and built-in algorithms](codex-reference/model-contracts.md)
-- [routing and path contracts](codex-reference/routing-path-contracts.md)
-- [Timeline, Slice, retention, and Difference](codex-reference/timeline-slice-difference-contracts.md)
-- [Simulator Planner](codex-reference/planning-contracts.md)
-- [BPF Compiler](codex-reference/bpf-compiler.md)
-- [invariants and failures](codex-reference/invariants-failures.md)
-- [extension points](codex-reference/extension-points.md)
-- [maintenance map](codex-reference/maintenance-map.md)
+Traffic consumes aligned authoritative Plans, explicit compiled planned
+reachability, plus Runner
+frontier/binding facts. It distinguishes planned unreachable, activation-time
+transience, unexplained loss of a planned-reachable path, and successful
+reachability. Missing forwarding state is diagnostic evidence, not an implicit
+replacement for the planned Route outcome.
+
+## Durable evidence and Tools
+
+One producer invocation may write:
+
+- `domain-history/physical-frames.jsonl`: formal timestamps and ECEF positions;
+- `domain-history/planning.jsonl.gz`: streaming compressed canonical published
+  planning evidence with compact precedence endpoint indexes and one RouteDemand
+  copy per Route transition;
+- `domain-history/compiler.jsonl`: compact Plan/realization lineage, world/state
+  fingerprints, activation timestamps, and intent counts;
+- `domain-history/domain-history-manifest.json`: terminal Timeline coverage,
+  counts, frontiers, lineage, and byte/hash seals for all three streams.
+
+The sealed domain-history streams are authoritative for those compact facts.
+They do not by themselves contain a complete compiled realization:
+`compiler.jsonl` explicitly identifies the canonical realization handoff as
+the semantic payload owner. The independent
+`runtime/realizations/manifest.json` and checksum-verified `.json.gz` records
+are authoritative for complete planned output, activation boundaries, backend
+intentions, constraints, and intended state. `runtime/execution.json` anchors
+that handoff's format, encoding, count, sequence hash, and manifest hash.
+Neither authority is inferred from the other.
+
+These artifacts are semantically owned, deterministic, and detached. They
+contain no live objects or pickles. Tools read them; they never run domain
+Models or become a production dependency. The terminal domain-history manifest
+is published atomically only after the producer has been drained through its
+terminal `None`; incomplete, truncated, cadence-gapped, cross-stream-mismatched,
+or coherently relocated histories fail closed.
+
+The private generated-runtime wrapper emits actual `runner-total` and
+`traffic-total` Observation rollups and merges them with generation records in
+the invocation-owned Observation stream. Detached Tool rendering remains side
+work: when domain runtime succeeds, a Runner, Traffic, Observation, or aggregate
+Tool failure produces a warning and does not replace that successful outcome.
+
+The maintained inspection surfaces are Physical World, Zone, Planner, BPF
+Compiler, Runner, Observation, and Traffic. Exact `PhysicalFrame` facts remain
+part of the Physical World inspection; there is no standalone PhysicalFrame
+Tool. Planner inspection
+separates candidate, selected/acquiring, operational, routed/unreachable,
+compiled, and realized meanings.
+
+## Validation and scope
+
+Canonical S3 remains the scale and semantic qualification target. Round B
+requires offline replay and compilation proof before any full-scale runtime
+deployment. The full S3 persisted Runner/Traffic run has not yet been rerun
+after this cutover and must not be inferred from offline compilation.
+
+No full S3 Compose deployment belongs to this implementation round. Small
+runtime integration may validate the Plan-to-Compiler-to-Runner boundary.
+
+Changes to PhysicalFrame fields, S3 inputs, K3/2+2/20-second policy,
+GroundStation acquisition, traffic-aware resource allocation, Runner
+activation semantics, or backend selection require separate approval.

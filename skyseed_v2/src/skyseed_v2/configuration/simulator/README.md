@@ -7,15 +7,15 @@ the Simulator-specific `ZoneLayoutDefinitionLoadError`. It owns no runtime
 ## Local assembly / ownership map
 
 Legend: `-->` is the ordered configuration and creation handoff. Only
-`Simulator.create_topology(position_model=...)` materializes the runtime
-physical `Topology` and its optional `ZoneLayout`.
+`Simulator.create_physical_world(position_model=...)` materializes the runtime
+physical `PhysicalWorld` and its optional `ZoneLayout`.
 
 ```mermaid
 flowchart LR
     SOURCE["YAML / handwritten Zone definitions"] --> DEF["ZoneLayoutDefinition"]
-    DEF --> CREATE["Simulator.create_topology(position_model=...)"]
-    CREATE --> TOPOLOGY["Topology"]
-    TOPOLOGY --> LAYOUT["ZoneLayout"]
+    DEF --> CREATE["Simulator.create_physical_world(position_model=...)"]
+    CREATE --> PHYSICAL_WORLD["PhysicalWorld"]
+    PHYSICAL_WORLD --> LAYOUT["ZoneLayout"]
 ```
 
 Standalone public values expanded below are `ZoneDefinition`,
@@ -70,7 +70,7 @@ classDiagram
 ## Dependencies
 
 This package depends on configuration parsing primitives only. `Simulator`
-consumes its declarations while creating `Topology`; it does not depend on
+consumes its declarations while creating `PhysicalWorld`; it does not depend on
 Emulator configuration.
 
 ## Examples and tests
@@ -81,5 +81,5 @@ YAML, creation, membership, and failure behavior.
 ## Maintenance checklist
 
 When this package changes, update the local map and detailed diagram,
-Topology/Zone and failure contracts, public imports, YAML fixtures, and Zone
+PhysicalWorld/Zone and failure contracts, public imports, YAML fixtures, and Zone
 tests.

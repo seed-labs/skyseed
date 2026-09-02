@@ -43,6 +43,7 @@ def test_orbit_creates_and_queries_satellite() -> None:
         mean_anomaly_deg=45.0,
         payload={"profile": "test"},
         max_simultaneous_ground_station_accesses=2,
+        maximum_simultaneous_inter_satellite_links=4,
     )
 
     assert orbit.get_satellite("satellite-7") is satellite
@@ -54,6 +55,7 @@ def test_orbit_creates_and_queries_satellite() -> None:
     assert not hasattr(satellite, "_orbit_parameters")
     assert satellite.payload == {"profile": "test"}
     assert satellite.max_simultaneous_ground_station_accesses == 2
+    assert satellite.maximum_simultaneous_inter_satellite_links == 4
     assert isinstance(satellite, Satellite)
     assert isinstance(satellite, Node)
     assert satellite.getName() == satellite.satellite_id
@@ -72,6 +74,16 @@ def test_orbit_creates_and_queries_satellite() -> None:
                 mean_anomaly_deg=90.0,
                 max_simultaneous_ground_station_accesses=invalid,
             )
+        with pytest.raises(
+            ValueError,
+            match="maximum_simultaneous_inter_satellite_links",
+        ):
+            orbit.create_satellite(
+                f"invalid-isl-{index}",
+                orbit_index=index,
+                mean_anomaly_deg=90.0,
+                maximum_simultaneous_inter_satellite_links=invalid,
+            )
 
 
 def test_batch_creation_is_deterministic_and_evenly_spaced() -> None:
@@ -79,7 +91,11 @@ def test_batch_creation_is_deterministic_and_evenly_spaced() -> None:
         "orbit-1", parameters=parameters()
     )
 
-    satellites = orbit.create_satellites(2, satellite_id_prefix="satellite")
+    satellites = orbit.create_satellites(
+        2,
+        satellite_id_prefix="satellite",
+        maximum_simultaneous_inter_satellite_links=3,
+    )
 
     assert tuple(satellite.satellite_id for satellite in satellites) == (
         "satellite-0",
@@ -90,6 +106,10 @@ def test_batch_creation_is_deterministic_and_evenly_spaced() -> None:
         0.0,
         180.0,
     )
+    assert {
+        satellite.maximum_simultaneous_inter_satellite_links
+        for satellite in satellites
+    } == {3}
 
 
 def test_satellite_ids_are_unique_across_orbits_of_one_owner() -> None:

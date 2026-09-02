@@ -1,493 +1,216 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from hashlib import sha256
 import json
 from pathlib import Path
 import shutil
-import tempfile
 
 import pytest
 
-from examples.mini_satellite_internet.emu import (
-    build_mini_satellite_internet_emulator,
-)
-from examples.mini_satellite_internet.simu import (
-    create_mini_satellite_internet_simulator,
-    prepare_mini_satellite_internet_planning,
-)
-from skyseed_v2.backend.bpf import compile_bpf
-from skyseed_v2.shared import NodeId
-from skyseed_v2.simulator import (
-    Connection,
-    ConnectionId,
-    ConnectionKind,
-    ConnectionSlice,
-    ConnectionTransition,
-    ConnectionTransitionOperation,
-    DifferenceOperation,
-    DirectionalConnectionParameters,
-    EarthFixedPosition,
-    ForwardingTransition,
-    GroundStationRouteTarget,
-    Plan,
-    RouteKey,
-    RouteSlice,
-    SimulationDefinition,
-    SimulationTimeline,
-    Simulator,
-)
-from skyseed_v2.simulator.input import (
-    GroundStationSimulationInput,
-    SatelliteSimulationInput,
-    SimulatorStaticInput,
+from examples.complete_static_emulator.emu import build_emulator
+from examples.complete_static_emulator.simu import (
+    create_complete_static_simulator,
+    run_complete_static_chain,
 )
 from tools.bpf_compiler import (
     collect_bpf_compiler_data,
+    read_bpf_compiler_history,
     write_bpf_compiler_tool,
 )
-from tools._chunk_encoding import CHUNK_ENCODING, decode_json_chunk
-from tools.traffic.reader import _read_compiler_inspection
 
 
-START = datetime(2026, 1, 1, tzinfo=timezone.utc)
-SATELLITE = NodeId(65001, "satellite", "sat-1")
-GROUND_STATION = NodeId(65001, "ground-station", "gs-1")
-CONNECTION_ID = ConnectionId(
-    ConnectionKind.GROUND_STATION_ACCESS,
-    SATELLITE,
-    GROUND_STATION,
-)
-ROUTE_KEY = RouteKey(
-    SATELLITE,
-    GroundStationRouteTarget(GROUND_STATION),
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+TOOL_SOURCES = tuple(
+    sorted((PROJECT_ROOT / "tools/bpf_compiler").glob("*.py"))
 )
 
 
-class _PositionModel:
-    def compute_positions(self, topology, timestamp):
-        return {
-            SATELLITE: EarthFixedPosition(7_000_000.0, 0.0, 0.0),
-            GROUND_STATION: EarthFixedPosition(6_378_137.0, 0.0, 0.0),
-        }
-
-
-class _SequenceConnectionModel:
-    def __init__(self, values):
-        self._values = iter(values)
-
-    def compute_connection_slice(
-        self, topology, timestamp, positions, previous_connection_slice
-    ):
-        return next(self._values)
-
-
-class _SequenceRouteModel:
-    def __init__(self, values):
-        self._values = iter(values)
-
-    def compute_route_slice(
-        self, topology, timestamp, connection_slice, previous_route_slice
-    ):
-        return next(self._values)
-
-
 @pytest.fixture(scope="module")
-def canonical_compilation():
-    emulator = build_mini_satellite_internet_emulator()
-    simulator = create_mini_satellite_internet_simulator(emulator)
-    simulator.get_slicer().create_all_slices()
-    _, plans, _ = prepare_mini_satellite_internet_planning(simulator)
-    realizations = _compile_sequence(simulator.get_slicer(), plans)
-    return plans, realizations
+def complete_chain(tmp_path_factory):
+    root = tmp_path_factory.mktemp("compiler-tool")
+    simulator = create_complete_static_simulator(build_emulator())
+    plans, realizations, snapshot = run_complete_static_chain(
+        simulator, evidence_path=root / "history"
+    )
+    return root, plans, realizations, snapshot
 
 
-@pytest.fixture(scope="module")
-def generated(tmp_path_factory, canonical_compilation):
-    plans, realizations = canonical_compilation
-    output = tmp_path_factory.mktemp("bpf-compiler-tool")
-    result = write_bpf_compiler_tool(plans, realizations, output)
-    data = collect_bpf_compiler_data(plans, realizations)
-    return output, result, data
-
-
-def test_projection_reads_continuous_compiled_sequence_without_recompiling(
-    generated,
+def test_projection_preserves_lineage_and_compact_compiler_statistics(
+    complete_chain,
 ) -> None:
-    _, result, data = generated
+    _, plans, realizations, snapshot = complete_chain
+    data = collect_bpf_compiler_data(plans, realizations)
+
+    assert data["inventory"]["plans"] == len(plans) == 2
+    assert data["inventory"]["realizations"] == len(realizations)
+    assert data["inventory"]["activation_boundaries"] == snapshot[
+        "formal_frame_count"
+    ] == 4
+    for plan, realization, record in zip(
+        plans, realizations, data["realizations"], strict=True
+    ):
+        assert record["lineage"]["source_plan_id"] == plan.plan_id
+        assert record["lineage"]["output_state_fingerprint"] == (
+            plan.output_state_fingerprint
+        )
+        assert len(record["boundary_workloads"]) == len(plan.transitions)
+        assert record["intended_state_timestamp"] == (
+            realization.end_timestamp.isoformat()
+        )
+        assert record["summary"]["planned_routes_reachable"] == 2
+        assert record["summary"]["planned_routes_unreachable"] == 1
+    assert data["realizations"][0]["summary"]["constraints"] > 0
+    assert data["realizations"][0]["operation_counts"]
+    assert data["format_version"] == 3
+    assert "source_plan" not in data["realizations"][0]
+    assert "compiled_intents" not in data["realizations"][0]
+    assert "intended_state" not in data["realizations"][0]
+    assert data["interpretation"]["realized"].startswith("not claimed")
+
+
+def test_optional_compile_evidence_is_aligned_and_retained(complete_chain) -> None:
+    _, plans, realizations, _ = complete_chain
+    evidence = tuple(
+        {"compile_index": index, "compile_seconds": 0.1 + index}
+        for index in range(len(plans))
+    )
+    data = collect_bpf_compiler_data(
+        plans, realizations, compile_evidence=evidence
+    )
+    assert tuple(
+        value["compile_evidence"] for value in data["realizations"]
+    ) == evidence
+    with pytest.raises(ValueError, match="continuous"):
+        collect_bpf_compiler_data(
+            plans,
+            realizations,
+            compile_evidence=({"compile_index": 1},),
+        )
+
+
+def test_reader_rejects_misaligned_source_plan(complete_chain) -> None:
+    _, plans, realizations, _ = complete_chain
+    with pytest.raises(ValueError, match="source Plan"):
+        collect_bpf_compiler_data(plans, tuple(reversed(realizations)))
+
+
+def test_compact_producer_history_is_continuous(complete_chain) -> None:
+    root, plans, _, _ = complete_chain
+    history = read_bpf_compiler_history(root / "history/compiler.jsonl")
+    assert len(history["realizations"]) == len(plans)
+    assert tuple(
+        value["realization_index"] for value in history["realizations"]
+    ) == tuple(range(len(plans)))
+
+
+def test_compact_history_reader_rejects_state_lineage_drift(
+    tmp_path, complete_chain
+) -> None:
+    root, _, _, _ = complete_chain
+    history = Path(
+        shutil.copytree(root / "history", tmp_path / "state-lineage")
+    )
+    rows = [
+        json.loads(line)
+        for line in (history / "compiler.jsonl").read_text().splitlines()
+    ]
+    rows[2]["input_state_fingerprint"] = "wrong"
+    path = history / "compiler.jsonl"
+    path.write_text(
+        "".join(
+            json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n"
+            for value in rows
+        ),
+        encoding="utf-8",
+    )
+    manifest_path = history / "domain-history-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload = path.read_bytes()
+    manifest["streams"]["compiler"].update(
+        {
+            "sha256": sha256(payload).hexdigest(),
+            "bytes": len(payload),
+            "record_count": len(rows) - 1,
+        }
+    )
+    manifest_path.write_text(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="input_state_fingerprint differs"):
+        read_bpf_compiler_history(path)
+
+
+def test_compiler_reader_requires_compiler_terminal_seal(
+    tmp_path, complete_chain
+) -> None:
+    root, _, _, _ = complete_chain
+    history = Path(shutil.copytree(root / "history", tmp_path / "planner-only"))
+    compiler_path = history / "compiler.jsonl"
+    header = compiler_path.read_text(encoding="utf-8").splitlines()[0]
+    compiler_path.write_text(header + "\n", encoding="utf-8")
+    manifest_path = history / "domain-history-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload = compiler_path.read_bytes()
+    manifest["through"] = "planner"
+    manifest["counts"]["realizations"] = 0
+    manifest["lineage"]["last_realization_plan_id"] = None
+    manifest["lineage"]["last_realization_output_state_fingerprint"] = None
+    manifest["streams"]["compiler"].update(
+        {
+            "sha256": sha256(payload).hexdigest(),
+            "bytes": len(payload),
+            "record_count": 0,
+        }
+    )
+    manifest_path.write_text(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="not sealed through compiler"):
+        read_bpf_compiler_history(compiler_path)
+
+
+def test_writer_emits_exact_json_html_and_accounting(
+    tmp_path, complete_chain
+) -> None:
+    _, plans, realizations, _ = complete_chain
+    result = write_bpf_compiler_tool(plans, realizations, tmp_path)
 
     assert result["status"] == "PASS"
-    assert data["authority"] == {
-        "status": "non-authoritative-view",
-        "plans": "immutable public Plan publications",
-        "compiled": "already-produced BpfCompiledRealization values",
-        "compiler": "not invoked by this Tool",
-        "simulator": "not queried or advanced by this Tool",
-        "runtime": "not bound or inferred by this Tool",
-    }
-    assert [value["coverage"] for value in data["intervals"]] == [
-        f"({start},{start + 4}]" for start in range(0, 64, 4)
-    ]
-    assert data["inventory"]["plans"] == 16
-    assert data["inventory"]["resource_intents"] > 0
-    assert data["inventory"]["parameter_intents"] > 0
-    assert data["inventory"]["forwarding_intents"] > 0
-    assert data["inventory"]["zone_edge_intents"] > 0
-
-
-def test_exact_supported_lowering_relationships_are_exposed(generated) -> None:
-    _, _, data = generated
-    assert any(
-        transition["compiled_intent_refs"]
-        and any(
-            "-resource-" in value
-            for value in transition["compiled_intent_refs"]
-        )
-        and any(
-            "-parameter-" in value
-            for value in transition["compiled_intent_refs"]
-        )
-        for transition in data["intervals"][0]["plan"]["connection_transitions"]
-    )
-    assert any(
-        transition["compiled_intent_refs"]
-        for interval in data["intervals"]
-        for transition in interval["plan"]["parameter_transitions"]
-    )
-    assert all(
-        value["origin"] == "compiled-mechanical-zone-edge"
-        for interval in data["intervals"]
-        for value in interval["compiled"]["zone_edges"]
-    )
-    assert all(
-        constraint["origin_precedence_id"] is not None
-        for interval in data["intervals"]
-        for constraint in interval["compiled"]["constraints"]
-        if constraint["category"] == "plan-forwarding-precedence"
-    )
-
-
-def test_zone_constraints_and_end_state_are_compiled_facts(generated) -> None:
-    _, _, data = generated
-
-    prefixes = {
-        value["packet_prefix"]
-        for interval in data["intervals"]
-        for value in interval["end_state"]["zone_prefixes"]
-    }
-    assert len(prefixes) == 5
-    assert all(value.startswith("198.18.") and value.endswith("/32") for value in prefixes)
-    assert data["observed_behavior"]["plan_forwarding_precedences"] > 0
-    assert data["observed_behavior"]["backend_technical_constraints"] > 0
-    assert data["observed_behavior"]["runtime_bindings_claimed"] is False
-    assert sum(
-        sum(
-            value["category"] == "plan-forwarding-precedence"
-            for value in interval["compiled"]["constraints"]
-        )
-        for interval in data["intervals"]
-    ) == data["observed_behavior"]["plan_forwarding_precedences"]
-    assert any(
-        interval["end_state"]["resources"]
-        and interval["end_state"]["parameters"]
-        and interval["end_state"]["forwarding"]
-        and interval["end_state"]["zone_edges"]
-        for interval in data["intervals"]
-    )
-
-
-def test_same_next_hop_changed_remains_visible_as_formal_change(
-    tmp_path: Path,
-) -> None:
-    plans, realizations = _same_next_hop_compilation()
-    data = collect_bpf_compiler_data(plans, realizations)
-    changed = data["intervals"][1]["compiled"]["forwarding"][0]
-
-    assert changed["operation"] == "changed"
-    assert changed["same_next_hop_changed"] is True
-    assert changed["previous"]["next_hop"] == changed["current"]["next_hop"]
-    write_bpf_compiler_tool(plans, realizations, tmp_path)
-    page = (tmp_path / "index.html").read_text(encoding="utf-8")
-    chunks = "".join(
-        path.read_text(encoding="utf-8")
-        for path in (tmp_path / "chunks").glob("*.js")
-    )
-    assert '"same_next_hop_changed":true' not in page
-    assert CHUNK_ENCODING in chunks
-    forwarding_chunks = [
-        decode_json_chunk(
-            json.loads(
-                path.read_text(encoding="utf-8")
-                .rsplit("]=", 1)[1]
-                .removesuffix(";\n")
-            )
-        )
-        for path in (tmp_path / "chunks").glob("*intents-forwarding*.js")
-    ]
-    assert any(
-        row.get("same_next_hop_changed") is True
-        for chunk in forwarding_chunks
-        for row in chunk["rows"]
-    )
-
-
-def test_page_prioritizes_compiled_backend_operations_and_is_offline(
-    generated,
-) -> None:
-    output, result, _ = generated
-    page = (output / "index.html").read_text(encoding="utf-8")
-
-    for identifier in (
-        "plan-scrubber",
-        "plan-select",
-        "selected-transform",
-        "chart-input",
-        "chart-baseline",
-        "chart-churn",
-        "chart-family",
-        "detail-section",
-        "detail-list",
-        "diff-family",
-        "diff-list",
-    ):
-        assert f'id="{identifier}"' in page
-    assert 'id="chart-compile-time"' not in page
-    assert 'id="chart-density"' not in page
-    assert page.count('class="card diagnostic-chart"') == 4
-    assert "function planBuckets(plans)" in page
-    assert "Math.min(12" in page
-    assert "median baseline records" in page
-    assert "complete baselines are never summed" in page
-    assert 'data-bucket-plan="${plan.plan_index}"' in page
-    assert "What did these Plans turn into?" in page
-    assert "Plan → realization drill-down" in page
-    assert "Ri-1 → Ri exact baseline diff" in page
-    assert "Plan delta input" in page
-    assert "complete interval-end baseline" in page
-    assert "A Zone-edge intent is backend service attachment state" in page
-    assert "window.__SKYSEED_BPF_COMPILER_MANIFEST__=" not in page
-    assert '"format_version":2' not in page
-    assert "bpf-compiler-inspection.json" not in page
-    assert "http://" not in page
-    assert "https://" not in page
-    assert "fetch(" not in page
-    assert "<link " not in page
-    manifest = json.loads((output / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["format_version"] == 2
-    assert manifest["chunk_encoding"] == CHUNK_ENCODING
-    assert manifest["chunk_count"] > 0
-    assert len(manifest["plans"]) == 16
-    assert result["artifact_metrics"]["initial_browser_load_bytes"] == (
-        (output / "index.html").stat().st_size
-        + (output / "manifest.js").stat().st_size
-    )
-    assert len(result["realization_inventory"]) == len(manifest["plans"])
-    assert all(
-        len(record["sha256"]) == 64
-        for record in result["realization_inventory"]
-    )
-    assert [record["sha256"] for record in result["realization_inventory"]] == [
-        record["realization_sha256"] for record in manifest["plans"]
-    ]
-
-
-def test_writer_is_deterministic_and_emits_checksummed_bundle(
-    generated,
-    canonical_compilation,
-    tmp_path: Path,
-) -> None:
-    output, result, _ = generated
-    plans, realizations = canonical_compilation
-    repeated = write_bpf_compiler_tool(plans, realizations, tmp_path)
-
-    assert result["files"] == repeated["files"]
-    assert result["files"][:4] == (
+    assert result["artifact_metrics"]["input_bytes"] > 0
+    assert {value.name for value in tmp_path.iterdir()} == {
+        "bpf-compiler-inspection.json",
+        "checksums.sha256",
         "index.html",
-        "manifest.json",
-        "manifest.js",
+        "inventory.json",
         "summary.txt",
+    }
+    payload = json.loads(
+        (tmp_path / "bpf-compiler-inspection.json").read_text()
     )
-    assert any(value.startswith("chunks/") for value in result["files"])
-    assert result["files"][-2:] == ("inventory.json", "checksums.sha256")
-    for filename in result["files"]:
-        assert (output / filename).read_bytes() == (tmp_path / filename).read_bytes()
-    assert "status=PASS" in (output / "summary.txt").read_text(encoding="utf-8")
+    assert payload["tool"] == "bpf-compiler-inspection"
+    page = (tmp_path / "index.html").read_text()
+    assert "Plan → compiled intended realization" in page
+    assert "Intent workload by realization" in page
+    assert 'id="workload-chart"' in page
+    assert 'id="delta-chart"' in page
+    assert 'id="folding-chart"' in page
+    assert 'id="timing-chart"' in page
+    assert 'id="compiler-boundary"' not in page
+    assert 'aria-label="Jump to realization"' in page
+    assert "select.dataset.globalBoundary" in page
+    assert "workload.dataset.globalBoundary" in page
+    assert "focusedRealization" in page
+    assert "<pre" not in page
+    for line in (tmp_path / "checksums.sha256").read_text().splitlines():
+        digest, relative = line.split("  ", 1)
+        assert sha256((tmp_path / relative).read_bytes()).hexdigest() == digest
 
 
-def test_traffic_reader_consumes_lazy_compiler_manifest(generated) -> None:
-    output, _, data = generated
-
-    reconstructed = _read_compiler_inspection(output / "manifest.json")
-
-    assert len(reconstructed["intervals"]) == len(data["intervals"])
-    for actual, expected in zip(
-        reconstructed["intervals"], data["intervals"], strict=True
-    ):
-        expected_compiled = {
-            family: expected["compiled"][family]
-            for family in ("resources", "parameters", "forwarding", "zone_edges")
-        }
-        expected_end_state = {
-            family: expected["end_state"][family]
-            for family in ("zone_edges", "zone_prefixes")
-        }
-        assert actual["compiled"] == json.loads(json.dumps(expected_compiled))
-        assert actual["end_state"] == json.loads(json.dumps(expected_end_state))
-
-
-def test_tool_sources_never_compile_or_depend_on_execution_details() -> None:
-    root = Path(__file__).resolve().parents[2] / "tools/bpf_compiler"
-    source = "\n".join(
-        path.read_text(encoding="utf-8") for path in root.glob("*.py")
-    )
-
-    assert "compile_bpf(" not in source
-    assert ".create_planner(" not in source
-    assert ".synchronize(" not in source
-    assert "RouteModel" not in source
-    assert "Slicer" not in source
-    for runtime_detail in (
-        "bpftool",
-        "ifindex",
-        "netns",
-        "veth",
-        "preload",
-        "generation",
-    ):
-        assert runtime_detail not in source.lower()
-
-
-@pytest.mark.skipif(
-    shutil.which("geckodriver") is None,
-    reason="geckodriver is required for the real-browser Compiler smoke",
-)
-def test_canonical_bpf_compiler_page_browser_smoke(
-    canonical_compilation,
-) -> None:
-    from scripts.check_bpf_compiler_tool_browser import (
-        run_bpf_compiler_browser_smoke,
-    )
-
-    project_root = Path(__file__).resolve().parents[2]
-    ignored_output = project_root / "examples/mini_satellite_internet/output"
-    ignored_output.mkdir(parents=True, exist_ok=True)
-    browser_root = Path(
-        tempfile.mkdtemp(prefix="bpf-compiler-browser-", dir=ignored_output)
-    )
-    try:
-        plans, realizations = canonical_compilation
-        tool_output = browser_root / "tool"
-        screenshots = browser_root / "screenshots"
-        write_bpf_compiler_tool(plans, realizations, tool_output)
-        result = run_bpf_compiler_browser_smoke(
-            tool_output / "index.html",
-            geckodriver=shutil.which("geckodriver") or "",
-            screenshot_directory=screenshots,
-        )
-
-        assert result["status"] == "PASS"
-        assert result["plans"] == 16
-        assert (screenshots / result["screenshot"]).is_file()
-    finally:
-        shutil.rmtree(browser_root)
-
-
-def _same_next_hop_compilation():
-    parameters = DirectionalConnectionParameters(1_000_000, 10, 20)
-    connection = Connection(CONNECTION_ID, parameters, parameters)
-    simulator = Simulator(
-        SimulationDefinition(
-            SimulatorStaticInput(
-                satellites=(
-                    SatelliteSimulationInput(
-                        SATELLITE,
-                        "sat-1",
-                        "shell-1",
-                        "orbit-1",
-                        0,
-                        550.0,
-                        53.0,
-                        0.0,
-                        0.0,
-                        START,
-                    ),
-                ),
-                ground_stations=(
-                    GroundStationSimulationInput(
-                        GROUND_STATION,
-                        "gs-1",
-                        0.0,
-                        0.0,
-                        0.0,
-                        "gateway",
-                        "Skyseed",
-                    ),
-                ),
-            ),
-            SimulationTimeline(
-                START,
-                START + timedelta(seconds=10),
-                timedelta(seconds=10),
-            ),
-        )
-    )
-    simulator.create_topology(position_model=_PositionModel())
-    slicer = simulator.create_slicer(
-        connection_model=_SequenceConnectionModel(
-            (ConnectionSlice((connection,)), ConnectionSlice((connection,)))
-        ),
-        route_model=_SequenceRouteModel(
-            (
-                RouteSlice(((ROUTE_KEY, GROUND_STATION),)),
-                RouteSlice(((ROUTE_KEY, GROUND_STATION),)),
-            )
-        ),
-    )
-    slicer.create_all_slices()
-    first_forwarding = ForwardingTransition(
-        START,
-        ROUTE_KEY,
-        DifferenceOperation.ADDED,
-        GROUND_STATION,
-    )
-    first = Plan(
-        start_slice_id=0,
-        start_timestamp=None,
-        end_slice_id=1,
-        end_timestamp=START,
-        connection_transitions=(
-            ConnectionTransition(
-                START,
-                ConnectionTransitionOperation.ESTABLISH,
-                CONNECTION_ID,
-                connection,
-            ),
-        ),
-        forwarding_transitions=(first_forwarding,),
-    )
-    second = Plan(
-        start_slice_id=1,
-        start_timestamp=START,
-        end_slice_id=2,
-        end_timestamp=START + timedelta(seconds=10),
-        forwarding_transitions=(
-            ForwardingTransition(
-                START + timedelta(seconds=10),
-                ROUTE_KEY,
-                DifferenceOperation.CHANGED,
-                GROUND_STATION,
-            ),
-        ),
-    )
-    first_result = compile_bpf(first, slicer=slicer)
-    second_result = compile_bpf(second, slicer=slicer, previous=first_result)
-    return (first, second), (first_result, second_result)
-
-
-def _compile_sequence(slicer, plans):
-    compiled = []
-    previous = None
-    for plan in plans:
-        result = compile_bpf(plan, slicer=slicer, previous=previous)
-        compiled.append(result)
-        previous = result
-    return tuple(compiled)
+def test_tool_sources_do_not_compile_or_query_planner() -> None:
+    combined = "\n".join(path.read_text() for path in TOOL_SOURCES)
+    assert "compile_bpf(" not in combined
+    assert ".get_published_evidence(" not in combined
+    assert ".get_state(" not in combined

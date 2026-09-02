@@ -40,11 +40,13 @@ def build_emulator() -> Emulator:
         "satellite-0",
         orbit_index=0,
         mean_anomaly_deg=126.0,
+        maximum_simultaneous_inter_satellite_links=4,
     )
     orbit.create_satellite(
         "satellite-1",
         orbit_index=1,
         mean_anomaly_deg=146.0,
+        maximum_simultaneous_inter_satellite_links=4,
     )
 
     ground_station = skyseed_as.create_ground_station(

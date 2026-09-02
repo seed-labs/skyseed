@@ -1,35 +1,65 @@
-# Production package import map
+# Repository map
 
-Legend: every `A --> B` edge means at least one current Python module in
-package group A directly imports a module in group B. No ownership, creation,
-data flow, or “receives from” meaning is encoded here. Same-group imports are
-collapsed. The gate derives this exact graph from production AST imports.
+```text
+skyseed_v2/
+├── src/skyseed_v2/
+│   ├── configuration/              immutable input declarations
+│   ├── emulator/                   static Emulator construction
+│   ├── simulator/
+│   │   ├── physical/                 PhysicalWorld, PhysicalFrame, physical-link contracts
+│   │   ├── planning/                 Planner, Plan, Models, replay, evidence
+│   │   ├── geometry/                 positions and geometric calculations
+│   │   ├── models/                   built-in physical Models
+│   │   ├── input/                    immutable Simulator inputs
+│   │   ├── simulator.py              composition root
+│   │   └── timeline.py               formal timestamp authority
+│   ├── backend/bpf/               Compiler, compiled realization, Runner
+│   ├── experiment/                producer, persisted handoff, generated execution, Traffic
+│   ├── compose/                   deployment utility
+│   └── shared/                    narrow neutral values and private mechanics
+├── tools/                         detached inspection readers/projectors/renderers
+├── examples/                      maintained human-review and scenario entry points
+├── tests/                         unit, integration, Tool, and architecture contracts
+├── docs/                          accepted design, current status, references, guides
+└── scripts/                       deterministic repository gates
+```
+
+## Planning package
+
+```text
+simulator/planning/
+├── planner.py       authoritative public Planner
+├── values.py        operational state, transitions, Plan, replay, fingerprints
+├── models.py        public Protocols and reference Models
+├── coordination.py  precedence policy and validation
+├── evidence.py      versioned detached codecs
+└── README.md        local contract
+```
+
+## Physical package
+
+```text
+simulator/physical/
+├── world.py           PhysicalWorld and static entities
+├── physical_frame.py  immutable timestamped positions
+├── physical_link.py   request, observation, candidates, Model Protocol
+├── position.py        PositionModel Protocol
+├── capability.py      ISL capability
+├── zone.py            Zone geometry/layout/membership
+└── README.md          local contract
+```
+
+## Exact collapsed production import graph
+
+Legend: `-->` is one direct production import after modules are collapsed to
+their documented owner group. The graph is generated conceptually from parsed
+Python imports; every edge is checked for exact equality by the documentation
+gate.
 
 ```mermaid
 flowchart LR
-    ROOT["skyseed_v2 facade"]
-    EXPERIMENT["private experiment execution + persisted handoff + Traffic support"]
-    SHARED["shared"]
-    CONFIG["configuration facade/shared YAML"]
-    CONFIG_EMU["configuration/emulator"]
-    CONFIG_SIM["configuration/simulator"]
-    EMU["emulator facade/construction"]
-    ENTITIES["emulator/entities"]
-    SEED["emulator/seedemu"]
-    BRIDGE["emulator_to_simulator"]
-    INPUT["simulator/input"]
-    SIM["simulator facade/definition/timeline/root"]
-    GEOMETRY["simulator/geometry"]
-    TOPOLOGY["simulator/topology<br/>Topology + PositionModel + PhysicalFrame + Zone"]
-    SLICING["simulator/slicing<br/>temporary legacy Connection / Route / Slice / Difference"]
-    MODELS["simulator/models"]
-    PLANNING["simulator/planning"]
-    COMPOSE["compose"]
-    BPF["backend/bpf"]
-
-    EXPERIMENT --> BPF
-    EXPERIMENT --> SHARED
-    EXPERIMENT --> SIM
+    BPF --> SHARED
+    BPF --> SIM
     BRIDGE --> ENTITIES
     BRIDGE --> INPUT
     BRIDGE --> SEED
@@ -45,12 +75,22 @@ flowchart LR
     EMU --> ENTITIES
     EMU --> SEED
     ENTITIES --> SHARED
+    EXPERIMENT --> BPF
+    EXPERIMENT --> PLANNING
+    EXPERIMENT --> SHARED
+    EXPERIMENT --> SIM
     GEOMETRY --> SHARED
     INPUT --> SHARED
     MODELS --> GEOMETRY
+    MODELS --> PHYSICAL
     MODELS --> SHARED
-    MODELS --> SLICING
-    MODELS --> TOPOLOGY
+    PHYSICAL --> CONFIG_SIM
+    PHYSICAL --> GEOMETRY
+    PHYSICAL --> INPUT
+    PHYSICAL --> SHARED
+    PLANNING --> PHYSICAL
+    PLANNING --> SHARED
+    PLANNING --> SIM
     ROOT --> EMU
     ROOT --> ENTITIES
     SEED --> ENTITIES
@@ -59,50 +99,16 @@ flowchart LR
     SIM --> GEOMETRY
     SIM --> INPUT
     SIM --> MODELS
+    SIM --> PHYSICAL
     SIM --> PLANNING
     SIM --> SHARED
-    SIM --> SLICING
-    SIM --> TOPOLOGY
-    SLICING --> GEOMETRY
-    SLICING --> SHARED
-    SLICING --> SIM
-    SLICING --> TOPOLOGY
-    PLANNING --> SHARED
-    PLANNING --> SIM
-    PLANNING --> SLICING
-    TOPOLOGY --> CONFIG_SIM
-    TOPOLOGY --> GEOMETRY
-    TOPOLOGY --> INPUT
-    TOPOLOGY --> SHARED
-    BPF --> SHARED
-    BPF --> SIM
 ```
 
-`EXPERIMENT` contains the one private generated-experiment composition, its
-persisted immutable-realization handoff, and the deliberately narrow reusable
-Traffic plan/execution support. It is not a BPF backend package and introduces
-no second runtime authority.
-`COMPOSE` has no outgoing production-package
-dependency. `BPF` consumes public
-Simulator/shared facts and no Compose package object. Simulator and Compose
-have no reverse edge into BPF. External
-stdlib/dependency imports, including upstream SEED, are outside this internal
-graph. Module-level dependency validation remains acyclic even where collapsed
-facade groups show edges in both directions.
+## Inspection outputs
 
-Forbidden reverse dependencies remain Simulator core → Emulator/SEED,
-production → Tools, and SEED integration → Simulator/Tools/Compose/examples.
-Repository-level examples, Tools, tests, and scripts may import production;
-production does not import them.
+Maintained output roots are `inspection/physical-world`, `zone`,
+`planner`, `bpf-compiler`, `runner`, `observation`, and
+`traffic`. Producer-owned durable inputs live under `domain-history`.
 
-For ownership navigation (which the import edges above deliberately do not
-encode), `simulator/topology/` is the accepted physical owner: it owns the
-`PositionModel`, `Topology.frame_at()`, and immutable `PhysicalFrame` values.
-`simulator/slicing/` retains only the current temporary legacy
-Connection/Route/Slice/Difference seam. That seam remains visible for existing
-Planner/Compiler consumers and is scheduled for deletion; it must not be read
-as an alternative to the accepted `Topology / PhysicalFrame → Network
-Planner` destination.
-
-Current implementation state is maintained only in
-[`CURRENT.md`](../CURRENT.md).
+No package directory or output root is retained solely to forward an obsolete
+contract.

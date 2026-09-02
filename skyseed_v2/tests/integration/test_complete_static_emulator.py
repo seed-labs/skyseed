@@ -6,6 +6,10 @@ from yaml.nodes import MappingNode, Node, SequenceNode
 
 from examples.complete_static_emulator.emu import build_emulator
 from examples.complete_static_emulator.main import main
+from examples.complete_static_emulator.simu import (
+    create_complete_static_simulator,
+    run_complete_static_chain,
+)
 from seedemu.compiler import Docker
 from seedemu.layers import Base
 from skyseed_v2.emulator.seedemu import SkyseedAutonomousSystem
@@ -18,6 +22,24 @@ from skyseed_v2.emulator_to_simulator import create_simulator_static_input
 
 
 METADATA_PREFIX = "org.seedsecuritylabs.seedemu.meta."
+
+
+def test_complete_example_uses_the_common_plan_compiler_producer() -> None:
+    simulator = create_complete_static_simulator(build_emulator())
+    plans, realizations, snapshot = run_complete_static_chain(simulator)
+
+    assert len(plans) == len(realizations) == 2
+    assert sum(len(plan.transitions) for plan in plans) == 4
+    assert sum(
+        len(realization.activation_timestamps)
+        for realization in realizations
+    ) == 4
+    assert plans[0].previous_plan_id is None
+    assert plans[1].previous_plan_id == plans[0].plan_id
+    assert realizations[0].source_plan_id == plans[0].plan_id
+    assert realizations[1].source_plan_id == plans[1].plan_id
+    assert snapshot["formal_frame_count"] == 4
+    assert snapshot["physical_link_observation_count"] == 4
 
 
 def entity_services(compose: dict) -> dict[str, dict]:
@@ -167,20 +189,40 @@ def test_complete_example_cli_creates_a_new_output_parent(
         "start.sh",
         "cleanup.sh",
         "inspection/index.html",
-        "inspection/topology/index.html",
-        "inspection/topology/topology.json",
-        "inspection/topology/summary.txt",
+        "inspection/physical-world/index.html",
+        "inspection/physical-world/physical-world.json",
+        "inspection/physical-world/summary.txt",
         "inspection/zone/index.html",
         "inspection/zone/zones.json",
         "inspection/zone/summary.txt",
+        "inspection/planner/index.html",
+        "inspection/bpf-compiler/index.html",
+        "inspection/observation/index.html",
     ):
         assert (output / relative_path).is_file()
     assert {
         path.name for path in output.iterdir()
-    } == {"start.sh", "cleanup.sh", "runtime", "inspection"}
+    } == {
+        "start.sh",
+        "cleanup.sh",
+        "runtime",
+        "inspection",
+        "domain-history",
+    }
+    assert {
+        path.name for path in (output / "domain-history").iterdir()
+    } == {
+        "physical-frames.jsonl",
+        "planning.jsonl.gz",
+        "compiler.jsonl",
+        "domain-history-manifest.json",
+    }
     output_text = capsys.readouterr().out
     assert "compiled complete static Emulator" in output_text
     assert "SimulationInput" not in output_text
-    assert "Topology Tool: PASS" in output_text
+    assert "Physical World Tool: PASS" in output_text
     assert "Zone Tool: PASS" in output_text
+    assert "Planner Tool: PASS" in output_text
+    assert "BPF Compiler Tool: PASS" in output_text
+    assert "System Observation Tool: PASS" in output_text
     assert "Tooling overall: PASS" in output_text

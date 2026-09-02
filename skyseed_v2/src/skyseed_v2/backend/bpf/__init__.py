@@ -2,6 +2,14 @@
 
 from .compiler import compile_bpf
 from .runner import BpfRunner
-from .compiled_realization import BpfCompiledRealization
+from .compiled_realization import (
+    BpfCompiledActivationBoundary,
+    BpfCompiledRealization,
+)
 
-__all__ = ["BpfCompiledRealization", "BpfRunner", "compile_bpf"]
+__all__ = [
+    "BpfCompiledActivationBoundary",
+    "BpfCompiledRealization",
+    "BpfRunner",
+    "compile_bpf",
+]

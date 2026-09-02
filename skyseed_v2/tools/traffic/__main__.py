@@ -11,7 +11,8 @@ from .inspection import write_traffic_replay_tool
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--telemetry", type=Path, required=True)
-    parser.add_argument("--slice", type=Path, required=True)
+    parser.add_argument("--physical-frames", type=Path, required=True)
+    parser.add_argument("--planning", type=Path, required=True)
     parser.add_argument("--bpf-compiler", type=Path, required=True)
     parser.add_argument("--workload", type=Path)
     parser.add_argument("--probe-plan", type=Path)
@@ -21,7 +22,8 @@ def main() -> int:
     arguments = parser.parse_args()
     write_traffic_replay_tool(
         arguments.telemetry,
-        arguments.slice,
+        arguments.physical_frames,
+        arguments.planning,
         arguments.bpf_compiler,
         arguments.workload,
         arguments.output,

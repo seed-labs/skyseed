@@ -1,463 +1,722 @@
-# Simulator semantic planning
+# Network planning
 
-This package owns the Simulator `Planner`, immutable `Plan` snapshots, three
-typed transition families, concise decision evidence, replaceable planning
-algorithm Protocols, one minimal Forwarding semantic-order relation, and their
-first reference implementations. It does not
-own Slice generation, route selection, backend preparation, compilation, or
-runtime execution.
-
-This package documents the current Round-1 Planner, whose exact sibling
-`Slicer` and `TopologySlice` / `TopologyDifference` facts remain an explicit
-temporary legacy operational seam. The behavior below is preserved during
-this round; it is not the accepted final ownership. When the Network Planner
-owns Connection, effective Parameter, Route, and Coordination planning, those
-inputs and the Slicer seam are deleted or replaced.
+`skyseed_v2.simulator.planning` owns the one authoritative operational Network
+Planner. It consumes ordered `PhysicalFrame` and matching
+`PhysicalLinkObservation` values and publishes immutable, replay-complete
+`Plan` values.
 
 ## Local assembly / ownership map
 
-Legend: `*--` is lifecycle ownership.
+Legend: `-->` is a retained read-only reference, `..>` is input/Model
+dependency, and `*--` is owned semantic state or immutable Plan composition.
 
 ```mermaid
 classDiagram
-    class Simulator
+    class PhysicalWorld
+    class PhysicalFrame
+    class PhysicalLinkObservation
     class Planner
-    Simulator "1" *-- "0..1" Planner : creates and owns after Slicer
-```
-
-Legend: `-->` is the exact sibling reference bound by `Simulator`.
-
-```mermaid
-classDiagram
-    class Slicer
-    class Planner
-    Planner "1" --> "1" Slicer : exact Simulator sibling
-```
-
-Legend: `*--` is ownership of the current immutable snapshot.
-
-```mermaid
-classDiagram
-    class Planner
+    class PlannedOperationalState
+    class PlanTransition
+    class SemanticEventPrecedence
     class Plan
-
-    Planner "1" *-- "0..1" Plan : current published snapshot
-```
-
-Legend: `*--` is immutable Plan composition. The temporal index and
-precedences reference the same transition instances and do not duplicate
-payload.
-
-```mermaid
-classDiagram
-    class Plan
-    class ConnectionTransition
-    class ParameterTransition
-    class ForwardingTransition
-    class ForwardingTransitionPrecedence
-
-    Plan "1" *-- "0..*" ConnectionTransition
-    Plan "1" *-- "0..*" ParameterTransition
-    Plan "1" *-- "0..*" ForwardingTransition
-    Plan "1" *-- "0..*" ForwardingTransitionPrecedence
-```
-
-Legend: `-->` is a same-Plan transition reference, not ownership or execution.
-
-```mermaid
-classDiagram
-    class ForwardingTransition
-    class ForwardingTransitionPrecedence
-
-    ForwardingTransitionPrecedence "1" --> "1" ForwardingTransition : predecessor
-    ForwardingTransitionPrecedence "1" --> "1" ForwardingTransition : successor
-```
-
-Legend: `..>` is the retained reference to and invocation of one injected
-replaceable algorithm role; the role does not own Planner.
-
-```mermaid
-classDiagram
-    class Planner
-    class PlanningWindowPolicy
-    class ConnectionPlanningModel
+    class InterSatelliteConnectionPlanningModel
+    class GroundStationAccessPlanningModel
+    class ZoneServicePlanningModel
     class ParameterPlanningModel
-    class ForwardingPlanningModel
+    class RoutePlanningModel
     class CoordinationPolicy
+    class PlanningWindowPolicy
 
-    Planner ..> PlanningWindowPolicy : selects planning and publication windows
-    Planner ..> ConnectionPlanningModel : plans lifetime boundaries
-    Planner ..> ParameterPlanningModel : plans sparse targets
-    Planner ..> ForwardingPlanningModel : plans formal route changes
-    Planner ..> CoordinationPolicy : reconciles transient evolution
+    Planner "1" --> "1" PhysicalWorld : exact provenance authority
+    Planner ..> PhysicalFrame : consumes ordered formal input
+    Planner ..> PhysicalLinkObservation : consumes matching physical facts
+    Planner "1" *-- "1" PlannedOperationalState : current operational truth
+    Plan "1" *-- "1..*" PlanTransition : replay-complete boundaries
+    Plan "1" *-- "0..*" SemanticEventPrecedence : ordering only
+    Planner ..> InterSatelliteConnectionPlanningModel
+    Planner ..> GroundStationAccessPlanningModel
+    Planner ..> ZoneServicePlanningModel
+    Planner ..> ParameterPlanningModel
+    Planner ..> RoutePlanningModel
+    Planner ..> CoordinationPolicy
+    Planner ..> PlanningWindowPolicy
 ```
 
-Planner owns its private continuous planning state and current published Plan;
-neither is owned by a Model. Plan owns coverage, its three transition tuples,
-Forwarding precedences and temporal index. Private state is intentionally not
-promoted into another public Mermaid class.
+## Ownership
 
-Standalone public values and implementations expanded below:
-`ConnectionTransition`, `ConnectionTransitionOperation`,
-`ParameterTransition`, `ForwardingTransition`,
-`ForwardingTransitionPrecedence`, `PlanningDecision`,
-`AllAvailablePlanningWindowPolicy`,
-`TimeHorizonPlanningWindowPolicy`, `ConnectionEpisodeConfiguration`,
-`SampleBoundaryConnectionPlanningModel`,
-`MidpointConnectionPlanningModel`,
-`ParameterFieldConfiguration`, `ParameterPlanningConfiguration`,
-`SampleBoundaryParameterPlanningModel`,
-`AccumulatedDeadbandParameterPlanningModel`,
-`ForwardingStabilityConfiguration`, `StableForwardingPlanningModel`,
-`DependencyAwareForwardingPlanningModel`, and `DefaultCoordinationPolicy`.
+The final dependency direction is:
+
+```text
+PhysicalWorld
+  -> PhysicalFrame
+  -> PhysicalLinkObservation
+  -> Planner
+  -> PlannedOperationalState
+  -> PlanTransition
+  -> Plan
+  -> Compiler
+```
+
+The external incremental producer owns timestamp progression and invokes the
+injected physical-link Model. `Planner` does not advance physical time and does
+not call the physical-link Model.
+
+`Planner` exclusively owns:
+
+- operational planning state;
+- inter-satellite selection and acquisition lifecycle;
+- GroundStation and Zone decisions;
+- effective-parameter memory;
+- Route demands, outcomes, and workers through the injected Route Model;
+- physical-observation, planning, and publication frontiers;
+- bounded unpublished transitions;
+- published state and Plan lineage;
+- bounded detached planning evidence.
+
+## Public lifecycle
+
+```python
+planner = Planner(
+    physical_world=physical_world,
+    observation_interval=timedelta(seconds=5),
+    inter_satellite_model=inter_satellite_model,
+    ground_station_model=ground_station_model,
+    zone_service_model=zone_service_model,
+    parameter_model=parameter_model,
+    route_model=route_model,
+    coordination_policy=coordination_policy,
+    planning_window_policy=TimeHorizonPlanningWindowPolicy(
+        planning_horizon=timedelta(seconds=50),
+        publication_horizon=timedelta(seconds=20),
+        maximum_prehistory=timedelta(seconds=20),
+    ),
+)
+```
+
+The producer uses this sequence:
+
+1. Read `planner.required_prehistory` and, when non-zero, provide ordered
+   pre-formal frames through `prime(frame, observation, formal_start=...)`.
+2. For each formal timestamp, ask `create_physical_link_request()`, compute the
+   matching physical observation externally, and call `observe(frame,
+   observation)`.
+3. Consume every newly returned `Plan`.
+4. Read and durably serialize `get_published_evidence(plan.plan_id)` when
+   inspection is enabled.
+5. After successful handoff, call `release_published_through(plan.plan_id)`.
+6. At the exact Timeline end call `finish(end_timestamp=...)` and consume the
+   flushed tail Plans.
+7. Always call `shutdown(wait=True)` to stop Route workers.
+
+Each prime timestamp must be strictly before one fixed formal start and inside
+the bounded required-prehistory interval. Prime updates only physical and
+selection/acquisition warm state. It never creates a formal transition or a
+Plan.
+
+## Model roles
+
+The replaceable public roles are:
+
+- `InterSatelliteConnectionPlanningModel`;
+- `GroundStationAccessPlanningModel`;
+- `ZoneServicePlanningModel`;
+- `ParameterPlanningModel`;
+- `RoutePlanningModel`;
+- `CoordinationPolicy`;
+- `PlanningWindowPolicy`.
+
+Reference implementations are directly injected:
+
+- `RetainFirstInterSatelliteConnectionPlanningModel`;
+- `QualityFirstGroundStationAccessPlanningModel`;
+- `HighestElevationZoneServicePlanningModel`;
+- `AccumulatedDeadbandParameterPlanningModel`;
+- `GatewayHopCountRoutePlanningModel`;
+- `DefaultCoordinationPolicy`;
+- `TimeHorizonPlanningWindowPolicy`.
+
+There is no registry. Replacing one role does not transfer authority over the
+other roles.
+
+## Operational state and transitions
+
+`PlannedOperationalState` contains only complete operational outputs for one
+timestamp:
+
+- established `OperationalConnection` values with effective parameters;
+- explicit Zone assignments, including unserved assignments;
+- complete reachable or explicitly unreachable Route outcomes.
+
+`PlanTransition` is the sole per-boundary delta truth. It carries complete
+payloads for:
+
+- established Connections;
+- withdrawn Connection IDs;
+- parameter-updated Connections;
+- previous/current Zone service;
+- previous/current Route outcomes.
+
+An empty `PlanTransition` is valid and preserves an exact formal activation
+boundary.
+
+`apply_plan_transition` is the one authoritative transition replay operation.
+`apply_plan` validates the PhysicalWorld fingerprint, input state fingerprint,
+every transition, and output state fingerprint. Qualification tests maintain a
+separately implemented oracle.
+
+## Event references and precedence
+
+`semantic_event_references(transition)` deterministically derives immutable
+`SemanticEventReference` values. The transition remains the payload authority.
+
+`Plan` stores only `SemanticEventPrecedence` edges over references derivable
+from its transitions. It does not store a second editable event list. Reference
+equality is semantic value equality; Python object identity is irrelevant.
+
+## Plan contract
+
+Every `Plan` contains:
+
+- deterministic `plan_id` and immediate `previous_plan_id` lineage;
+- PhysicalWorld, input-state, and output-state fingerprints;
+- one explicit positive `observation_interval` in canonical Plan content;
+- first and last included formal timestamps;
+- strictly ordered, non-overlapping `PlanTransition` values;
+- validated semantic precedence edges.
+
+For every Plan, `start_timestamp` equals its first transition timestamp,
+`end_timestamp` equals its last transition timestamp, and every adjacent
+transition is exactly one `observation_interval` apart. A later Plan begins
+exactly one observation interval after the previous Plan ends; no transition
+appears in two Plans. The observation interval participates in canonical Plan
+identity and is encoded as exact days/seconds/microseconds components.
+
+The bootstrap Plan has no previous Plan or input-state fingerprint and replays
+from explicit empty operational state.
+
+## Window semantics
+
+The canonical policy plans 50 seconds ahead of the publication frontier and
+publishes the earliest prefix of at most 20 seconds.
+
+For a 10-minute Timeline sampled every 5 seconds:
+
+- the first normal publication occurs after planning through `t=50`;
+- Plan 1 contains `t=0,5,10,15,20`;
+- Plan 2 contains `t=25,30,35,40` after planning reaches `t=70`;
+- normal publication reaches `t=560` after planning reaches `t=590`;
+- finish flushes `t=565..580` and `t=585..600`;
+- exactly 121 transitions appear in exactly 30 Plans.
+
+The physical-observation and planning frontiers advance on every accepted
+formal input. The publication frontier advances only when a Plan is created.
+
+## Fingerprints
+
+The current frozen schemas are:
+
+- `skyseed-v2-physical-world-v1`;
+- `skyseed-v2-planned-operational-state-v1`;
+- `skyseed-v2-plan-transition-v1`;
+- `skyseed-v2-plan-v1`.
+
+All fingerprints and Plan IDs are lowercase SHA-256 values over canonical
+JSON semantic material. `PhysicalWorld.semantic_fingerprint()` is the only
+authority for static physical identity and is cached once by the immutable
+aggregate. Planning and downstream consumers query and compare it; they do not
+reimplement it.
+
+## Detached evidence
+
+`PublishedPlanningEvidence` retains one Plan plus bounded per-frame evidence:
+
+- physical work counts and bounded candidate quality/count/reason histograms;
+- selected ISLs, selection time, acquisition duration, remaining acquisition,
+  and operational status;
+- exact selected GroundStation accesses and served Zone candidate facts;
+- compact selection, rejection, underfill, service, and Route counters;
+- transition fingerprints and all three frontiers.
+
+Feasible and rejected candidate tuples are deliberately not retained. Candidate
+summaries use fixed numeric buckets and bounded categorical/reason bins, so
+evidence size is driven by exact selected facts rather than the number of
+physical pairs evaluated.
+
+Operational parameter, Zone, and Route changes remain in the PlanTransitions.
+Offline readers replay them instead of storing a complete state snapshot for
+every frame.
+
+`planning.evidence` supplies strict detached codecs for Plans, transitions,
+states, and published evidence. The codecs reject unknown fields, unsupported
+schemas, malformed values, and fingerprint/Plan-ID mismatches. They return
+only mappings, lists, and scalar JSON values; no live Planner or worker object
+is serialized.
 
 ## Detailed public class/member diagrams
 
-Legend: `*--` is the current immutable Plan owned by the Planner. Decision
-evidence remains separately retained and is not Plan payload.
+These blocks and the exact table below are the maintenance source for every
+class owned by this public package. Re-exporting facades do not duplicate the
+owner detail.
+
+Legend: `<<...>>` states each public class role and `+` lists its
+complete direct public member contract. No connector means no ownership
+relationship is asserted by this inventory block.
 
 ```mermaid
 classDiagram
-    class Planner {
-        <<incremental planning component>>
-        +synchronize()
-        +get_plan()
-        +get_consumed_differences()
-        +get_planning_decisions()
+    class AccumulatedDeadbandParameterPlanningModel {
+        <<reference Model implementation>>
+        +plan_effective_parameters()
     }
-    class Plan {
-        <<immutable semantic plan snapshot>>
-        +start_slice_id
-        +start_timestamp
-        +end_slice_id
-        +end_timestamp
-        +connection_transitions
-        +parameter_transitions
-        +forwarding_transitions
-        +forwarding_precedences
-        +temporal_index
-    }
-    class PlanningDecision {
-        <<immutable planning evidence>>
-        +source_difference_ids
+    class CandidateDecision {
+        <<immutable public value>>
         +decision
-        +decided_by
+        +endpoint_a
+        +endpoint_b
         +reason
     }
-
-    Planner "1" *-- "0..1" Plan : current snapshot
-```
-
-Legend: `*--` is immutable value composition; the operation enum belongs to a
-Connection transition.
-
-```mermaid
-classDiagram
-    class ConnectionTransition {
-        <<logical connection transition>>
-        +nominal_time
-        +operation
-        +connection_id
-        +connection
+    class CandidateDecisionKind {
+        <<public enumeration>>
+        +REJECTED
+        +RETAINED
+        +SELECTED
+        +UNDERFILLED
     }
-    class ConnectionTransitionOperation {
-        <<enumeration>>
-        +ESTABLISH
-        +WITHDRAW
-    }
-    class ParameterTransition {
-        <<sparse parameter target>>
-        +nominal_time
+    class ConnectionParameterObservation {
+        <<immutable public value>>
         +connection_id
-        +direction
+        +physical_delay_us
+    }
+    class CoordinationPolicy {
+        <<replaceable Protocol role>>
+        +coordinate()
+    }
+    class DefaultCoordinationPolicy {
+        <<reference Model implementation>>
+        +coordinate()
+    }
+    class EffectiveConnectionParameters {
+        <<immutable public value>>
         +bandwidth_bps
         +delay_us
         +packet_loss_ppm
     }
-    class ForwardingTransition {
-        <<formal forwarding transition>>
-        +nominal_time
-        +route_key
-        +operation
-        +next_hop
+    class GatewayHopCountRoutePlanningModel {
+        <<reference Model implementation>>
+        +create_route_demands()
+        +plan_route_outcomes()
+        +shutdown()
     }
-    class ForwardingTransitionPrecedence {
-        <<same-time semantic ordering relation>>
+```
+
+Legend: `<<...>>` states each public class role and `+` lists its
+complete direct public member contract. No connector means no ownership
+relationship is asserted by this inventory block.
+
+```mermaid
+classDiagram
+    class GroundStationAccessPlanningModel {
+        <<replaceable Protocol role>>
+        +select_ground_station_accesses()
+    }
+    class GroundStationRouteDemandTarget {
+        <<immutable public value>>
+        +ground_station_id
+    }
+    class HighestElevationZoneServicePlanningModel {
+        <<reference Model implementation>>
+        +assign_zone_service()
+    }
+    class InterSatelliteConnectionPlanningModel {
+        <<replaceable Protocol role>>
+        +create_inter_satellite_candidate_pairs()
+        +select_inter_satellite_links()
+    }
+    class InterSatelliteLifecycleEvidence {
+        <<immutable public value>>
+        +acquisition_duration
+        +candidate
+        +operational
+        +remaining_acquisition
+        +selected_since
+    }
+    class InterSatelliteSelection {
+        <<immutable public value>>
+        +decisions
+        +selected_candidates
+        +underfilled_slots
+    }
+    class OperationalConnection {
+        <<immutable public value>>
+        +connection_id
+        +endpoint_a_to_b
+        +endpoint_b_to_a
+    }
+    class OperationalConnectionId {
+        <<immutable public value>>
+        +endpoint_a
+        +endpoint_b
+        +kind
+    }
+```
+
+Legend: `<<...>>` states each public class role and `+` lists its
+complete direct public member contract. No connector means no ownership
+relationship is asserted by this inventory block.
+
+```mermaid
+classDiagram
+    class OperationalConnectionKind {
+        <<public enumeration>>
+        +GROUND_STATION_ACCESS
+        +INTER_SATELLITE
+    }
+    class ParameterKindConfiguration {
+        <<immutable public value>>
+        +bandwidth_bps
+        +delay_deadband_us
+        +max_staleness
+        +packet_loss_ppm
+        +persistence
+    }
+    class ParameterPlanningMemory {
+        <<immutable public value>>
+        +connection_id
+        +effective
+        +last_update
+        +pending_delay_us
+        +pending_since
+    }
+    class ParameterPlanningModel {
+        <<replaceable Protocol role>>
+        +plan_effective_parameters()
+    }
+    class ParameterPlanningResult {
+        <<immutable public value>>
+        +connections
+        +established_connections
+        +memory
+        +parameter_updated_connections
+        +withdrawn_connection_ids
+    }
+    class Plan {
+        <<immutable replay-complete plan>>
+        +end_timestamp
+        +input_state_fingerprint
+        +observation_interval
+        +output_state_fingerprint
+        +physical_world_fingerprint
+        +plan_id
+        +previous_plan_id
+        +semantic_event_precedences
+        +start_timestamp
+        +transitions
+    }
+    class Planner {
+        <<stateful semantic Planner owner>>
+        +create_physical_link_request()
+        +finish()
+        +get_frontiers()
+        +get_last_transition()
+        +get_last_transition_fingerprint()
+        +get_published_evidence()
+        +get_route_recomputation_count()
+        +get_state()
+        +get_state_fingerprint()
+        +observe()
+        +prime()
+        +release_published_through()
+        +required_prehistory
+        +set_route_demands()
+        +shutdown()
+    }
+    class PlanningCandidateHistogram {
+        <<immutable public value>>
+        +bins
+        +name
+        +sample_count
+    }
+```
+
+Legend: `<<...>>` states each public class role and `+` lists its
+complete direct public member contract. No connector means no ownership
+relationship is asserted by this inventory block.
+
+```mermaid
+classDiagram
+    class PlanningCandidateSummary {
+        <<immutable public value>>
+        +feasible_count
+        +histograms
+    }
+    class PlanningFrontiers {
+        <<immutable public value>>
+        +physical_observation
+        +planning
+        +publication
+    }
+    class PlanningFrameEvidence {
+        <<immutable detached frame evidence>>
+        +ground_station_access_candidate_summary
+        +inspection
+        +inter_satellite_candidate_summary
+        +physical_link_work_counts
+        +selected_ground_station_accesses
+        +selected_inter_satellite_links
+        +selected_zone_service_candidates
+        +timestamp
+        +zone_service_candidate_summary
+    }
+    class PlanningHistogramBin {
+        <<immutable public value>>
+        +count
+        +label
+    }
+    class PlanningInspection {
+        <<immutable planning inspection>>
+        +acquiring_isls
+        +acquisition_completed
+        +acquisition_reset
+        +acquisition_started
+        +feasible_isl_candidates
+        +ground_station_accesses
+        +operational_isls
+        +rejected_isls
+        +route_recomputed
+        +routes_reachable
+        +routes_unreachable
+        +selected_isls
+        +stages
+        +timestamp
+        +underfilled_isl_slots
+        +zones_served
+        +zones_unserved
+    }
+    class PlanningWindowPolicy {
+        <<replaceable Protocol role>>
+        +planning_horizon
+        +publication_horizon
+        +required_prehistory()
+        +validate_observation_interval()
+    }
+    class PlanTransition {
+        <<immutable formal semantic transition>>
+        +established_connections
+        +parameter_updated_connections
+        +route_outcome_transitions
+        +route_relevant
+        +timestamp
+        +with_route_outcome_transitions()
+        +withdrawn_connection_ids
+        +zone_service_transitions
+    }
+    class PlannedOperationalState {
+        <<immutable complete operational state>>
+        +operational_connections
+        +route_outcomes
+        +timestamp
+        +zone_service_assignments
+    }
+```
+
+Legend: `<<...>>` states each public class role and `+` lists its
+complete direct public member contract. No connector means no ownership
+relationship is asserted by this inventory block.
+
+```mermaid
+classDiagram
+    class PublishedPlanningEvidence {
+        <<immutable detached planning evidence>>
+        +frames
+        +frontiers
+        +inspections
+        +plan
+        +transition_fingerprints
+    }
+    class QualityFirstGroundStationAccessPlanningModel {
+        <<reference Model implementation>>
+        +select_ground_station_accesses()
+    }
+    class ReachableRouteOutcome {
+        <<immutable public value>>
+        +demand
+        +next_hop
+        +path
+    }
+    class RetainFirstInterSatelliteConfiguration {
+        <<immutable public value>>
+        +acquisition_duration
+        +desired_cross_plane_links
+        +desired_same_plane_links
+        +maximum_cross_plane_separation
+    }
+    class RetainFirstInterSatelliteConnectionPlanningModel {
+        <<reference Model implementation>>
+        +acquisition_duration
+        +create_inter_satellite_candidate_pairs()
+        +select_inter_satellite_links()
+    }
+    class RouteDemand {
+        <<immutable public value>>
+        +source
+        +target
+    }
+    class RouteOutcomeTransition {
+        <<immutable public value>>
+        +current
+        +demand
+        +previous
+    }
+    class RoutePlanningModel {
+        <<replaceable Protocol role>>
+        +plan_route_outcomes()
+        +shutdown()
+    }
+```
+
+Legend: `<<...>>` states each public class role and `+` lists its
+complete direct public member contract. No connector means no ownership
+relationship is asserted by this inventory block.
+
+```mermaid
+classDiagram
+    class RoutePlanningResult {
+        <<immutable public value>>
+        +outcomes
+        +transitions
+    }
+    class RouteUnreachableReason {
+        <<public enumeration>>
+        +NO_OPERATIONAL_PATH
+        +ZONE_UNSERVED
+    }
+    class SemanticEventKind {
+        <<public enumeration>>
+        +CONNECTION_ESTABLISH
+        +CONNECTION_WITHDRAW
+        +PARAMETER_READY
+        +PARAMETER_UPDATE
+        +ROUTE_CHANGE
+        +ROUTE_REACHABLE
+        +ROUTE_UNREACHABLE
+        +ROUTE_WITHDRAW
+        +ZONE_SERVICE_ASSIGN
+        +ZONE_SERVICE_CHANGE
+        +ZONE_SERVICE_UNASSIGN
+    }
+    class SemanticEventPrecedence {
+        <<immutable public value>>
         +predecessor
         +successor
     }
-
-    ConnectionTransition "1" *-- "1" ConnectionTransitionOperation
-```
-
-Legend: `-->` is an endpoint reference to an exact Forwarding transition in
-the containing Plan.
-
-```mermaid
-classDiagram
-    class ForwardingTransition
-    class ForwardingTransitionPrecedence
-
-    ForwardingTransitionPrecedence "1" --> "1" ForwardingTransition : predecessor
-    ForwardingTransitionPrecedence "1" --> "1" ForwardingTransition : successor
-```
-
-Legend: these are independent Protocol roles; no connector implies no
-ownership or call relationship between the algorithms.
-
-```mermaid
-classDiagram
-    class PlanningWindowPolicy {
-        <<Protocol role>>
-        +select_planning_differences()
-        +select_publication_differences()
-    }
-    class ConnectionPlanningModel {
-        <<Protocol role>>
-        +plan_connection_transitions()
-        +is_suppression_candidate()
-    }
-    class ParameterPlanningModel {
-        <<Protocol role>>
-        +plan_parameter_transitions()
-    }
-    class ForwardingPlanningModel {
-        <<Protocol role>>
-        +plan_forwarding_transitions()
-        +plan_forwarding_precedences()
-    }
-    class CoordinationPolicy {
-        <<Protocol role>>
-        +coordinate_transitions()
-    }
-```
-
-Legend: `..|>` means the public class implements the named Protocol role.
-
-```mermaid
-classDiagram
-    class PlanningWindowPolicy
-    class ConnectionPlanningModel
-    class ParameterPlanningModel
-    class ForwardingPlanningModel
-    class CoordinationPolicy
-    class AllAvailablePlanningWindowPolicy {
-        <<default planning-window algorithm>>
-        +select_planning_differences()
-        +select_publication_differences()
+    class SemanticEventReference {
+        <<immutable public value>>
+        +connection_id
+        +kind
+        +route_demand
+        +timestamp
+        +zone_id
     }
     class TimeHorizonPlanningWindowPolicy {
-        <<time-horizon planning-window algorithm>>
-        +select_planning_differences()
-        +select_publication_differences()
+        <<reference Model implementation>>
+        +maximum_prehistory
+        +planning_horizon
+        +publication_horizon
+        +required_prehistory()
+        +validate_observation_interval()
     }
-    class ConnectionEpisodeConfiguration {
-        <<immutable algorithm configuration>>
-        +omission_candidate_max_duration_by_kind
+    class UnreachableRouteOutcome {
+        <<immutable public value>>
+        +demand
+        +reason
     }
-    class SampleBoundaryConnectionPlanningModel {
-        <<reference connection algorithm>>
-        +plan_connection_transitions()
-        +is_suppression_candidate()
+    class ZoneRouteDemandTarget {
+        <<immutable public value>>
+        +zone_id
     }
-    class MidpointConnectionPlanningModel {
-        <<reference connection algorithm>>
-        +plan_connection_transitions()
-        +is_suppression_candidate()
-    }
-    class AccumulatedDeadbandParameterPlanningModel {
-        <<optimized parameter algorithm>>
-        +plan_parameter_transitions()
-    }
-    class ParameterFieldConfiguration {
-        <<immutable algorithm configuration>>
-        +absolute_deadband
-        +relative_deadband
-        +persistence
-        +max_staleness
-    }
-    class ParameterPlanningConfiguration {
-        <<immutable algorithm configuration>>
-        +bandwidth_bps
-        +delay_us
-        +packet_loss_ppm
-        +bundle_drifted_fields
-    }
-    class SampleBoundaryParameterPlanningModel {
-        <<reference parameter algorithm>>
-        +plan_parameter_transitions()
-    }
-    class DependencyAwareForwardingPlanningModel {
-        <<reference forwarding algorithm>>
-        +plan_forwarding_transitions()
-        +plan_forwarding_precedences()
-    }
-    class ForwardingStabilityConfiguration {
-        <<immutable algorithm configuration>>
-        +minimum_hop_gain
-        +minimum_delay_gain_us
-        +persistence
-        +immediate_hop_gain
-        +immediate_delay_gain_us
-        +maximum_hold
-    }
-    class StableForwardingPlanningModel {
-        <<optimized forwarding algorithm>>
-        +plan_forwarding_transitions()
-        +plan_forwarding_precedences()
-    }
-    class DefaultCoordinationPolicy {
-        <<default coordination strategy>>
-        +coordinate_transitions()
-    }
-
-    PlanningWindowPolicy <|.. AllAvailablePlanningWindowPolicy
-    PlanningWindowPolicy <|.. TimeHorizonPlanningWindowPolicy
-    ConnectionPlanningModel <|.. SampleBoundaryConnectionPlanningModel
-    ConnectionPlanningModel <|.. MidpointConnectionPlanningModel
-    ParameterPlanningModel <|.. SampleBoundaryParameterPlanningModel
-    ParameterPlanningModel <|.. AccumulatedDeadbandParameterPlanningModel
-    ForwardingPlanningModel <|.. DependencyAwareForwardingPlanningModel
-    ForwardingPlanningModel <|.. StableForwardingPlanningModel
-    CoordinationPolicy <|.. DefaultCoordinationPolicy
 ```
 
-| Diagram name | Public contract | Members maintained here |
-|---|---|---|
-| `Planner` | `skyseed_v2.simulator.planning.Planner` | `synchronize()`, `get_plan()`, `get_consumed_differences()`, `get_planning_decisions()` |
-| `Plan` | `skyseed_v2.simulator.planning.Plan` | `start_slice_id`, `start_timestamp`, `end_slice_id`, `end_timestamp`, `connection_transitions`, `parameter_transitions`, `forwarding_transitions`, `forwarding_precedences`, `temporal_index` |
-| `PlanningDecision` | `skyseed_v2.simulator.planning.PlanningDecision` | `source_difference_ids`, `decision`, `decided_by`, `reason` |
-| `ConnectionTransition` | `skyseed_v2.simulator.planning.ConnectionTransition` | `nominal_time`, `operation`, `connection_id`, `connection` |
-| `ConnectionTransitionOperation` | `skyseed_v2.simulator.planning.ConnectionTransitionOperation` | `ESTABLISH`, `WITHDRAW` |
-| `ParameterTransition` | `skyseed_v2.simulator.planning.ParameterTransition` | `nominal_time`, `connection_id`, `direction`, `bandwidth_bps`, `delay_us`, `packet_loss_ppm` |
-| `ForwardingTransition` | `skyseed_v2.simulator.planning.ForwardingTransition` | `nominal_time`, `route_key`, `operation`, `next_hop` |
-| `ForwardingTransitionPrecedence` | `skyseed_v2.simulator.planning.ForwardingTransitionPrecedence` | `predecessor`, `successor` |
-| `PlanningWindowPolicy` | `skyseed_v2.simulator.planning.PlanningWindowPolicy` | `select_planning_differences()`, `select_publication_differences()` |
-| `AllAvailablePlanningWindowPolicy` | `skyseed_v2.simulator.planning.AllAvailablePlanningWindowPolicy` | `select_planning_differences()`, `select_publication_differences()` |
-| `TimeHorizonPlanningWindowPolicy` | `skyseed_v2.simulator.planning.TimeHorizonPlanningWindowPolicy` | `select_planning_differences()`, `select_publication_differences()` |
-| `ConnectionEpisodeConfiguration` | `skyseed_v2.simulator.planning.ConnectionEpisodeConfiguration` | `omission_candidate_max_duration_by_kind` |
-| `ConnectionPlanningModel` | `skyseed_v2.simulator.planning.ConnectionPlanningModel` | `plan_connection_transitions()`, `is_suppression_candidate()` |
-| `SampleBoundaryConnectionPlanningModel` | `skyseed_v2.simulator.planning.SampleBoundaryConnectionPlanningModel` | `plan_connection_transitions()`, `is_suppression_candidate()` |
-| `MidpointConnectionPlanningModel` | `skyseed_v2.simulator.planning.MidpointConnectionPlanningModel` | `plan_connection_transitions()`, `is_suppression_candidate()` |
-| `ParameterPlanningModel` | `skyseed_v2.simulator.planning.ParameterPlanningModel` | `plan_parameter_transitions()` |
-| `ParameterFieldConfiguration` | `skyseed_v2.simulator.planning.ParameterFieldConfiguration` | `absolute_deadband`, `relative_deadband`, `persistence`, `max_staleness` |
-| `ParameterPlanningConfiguration` | `skyseed_v2.simulator.planning.ParameterPlanningConfiguration` | `bandwidth_bps`, `delay_us`, `packet_loss_ppm`, `bundle_drifted_fields` |
-| `SampleBoundaryParameterPlanningModel` | `skyseed_v2.simulator.planning.SampleBoundaryParameterPlanningModel` | `plan_parameter_transitions()` |
-| `AccumulatedDeadbandParameterPlanningModel` | `skyseed_v2.simulator.planning.AccumulatedDeadbandParameterPlanningModel` | `plan_parameter_transitions()` |
-| `ForwardingPlanningModel` | `skyseed_v2.simulator.planning.ForwardingPlanningModel` | `plan_forwarding_transitions()`, `plan_forwarding_precedences()` |
-| `DependencyAwareForwardingPlanningModel` | `skyseed_v2.simulator.planning.DependencyAwareForwardingPlanningModel` | `plan_forwarding_transitions()`, `plan_forwarding_precedences()` |
-| `ForwardingStabilityConfiguration` | `skyseed_v2.simulator.planning.ForwardingStabilityConfiguration` | `minimum_hop_gain`, `minimum_delay_gain_us`, `persistence`, `immediate_hop_gain`, `immediate_delay_gain_us`, `maximum_hold` |
-| `StableForwardingPlanningModel` | `skyseed_v2.simulator.planning.StableForwardingPlanningModel` | `plan_forwarding_transitions()`, `plan_forwarding_precedences()` |
-| `CoordinationPolicy` | `skyseed_v2.simulator.planning.CoordinationPolicy` | `coordinate_transitions()` |
-| `DefaultCoordinationPolicy` | `skyseed_v2.simulator.planning.DefaultCoordinationPolicy` | `coordinate_transitions()` |
-
-## Entry points
-
-Code entries are `planner.py`, `values.py`, and `algorithms.py`. The user-facing
-facade remains `skyseed_v2.simulator`.
-
-## Incremental flow
-
-Legend: `-->` is the one-way processing handoff for one synchronization batch;
-it does not express object ownership.
+Legend: `<<...>>` states each public class role and `+` lists its
+complete direct public member contract. No connector means no ownership
+relationship is asserted by this inventory block.
 
 ```mermaid
-flowchart LR
-    D["available Difference values"] -->|read by| POLICY["PlanningWindowPolicy"]
-    POLICY -->|selects| W["planning window"]
-    W -->|selects non-empty prefix| P["publication window"]
-    W -->|full window supplied to| M["planning Models"]
-    M -->|produce candidate transitions for| C["CoordinationPolicy"]
-    C -->|returns coordinated candidates to| V["fixed Planner validation"]
-    P -->|defines published coverage for| V
-    V -->|produces| S["immutable prefix Plan"]
-    V -->|commits| R["private continuous planned state"]
+classDiagram
+    class ZoneServiceAssignment {
+        <<immutable public value>>
+        +is_served
+        +satellite_id
+        +zone_id
+    }
+    class ZoneServicePlanningModel {
+        <<replaceable Protocol role>>
+        +assign_zone_service()
+    }
+    class ZoneServicePlanningResult {
+        <<immutable public value>>
+        +assignments
+        +transitions
+    }
+    class ZoneServiceTransition {
+        <<immutable public value>>
+        +current_satellite_id
+        +previous_satellite_id
+        +zone_id
+    }
 ```
 
-Planning-window selection occurs before any Model call.
-`select_planning_differences()` chooses the planning window and
-`select_publication_differences()` chooses its non-empty publication window.
-Every Model and Coordination see the complete planning window, including its
-unpublished portion. Settled historical Differences are not
-replayed: reusable unpublished overlap and private planned baselines are
-extended by the affected tail. Publishing trims that prefix and preserves the
-remaining planning window plus planned Connection, parameter, Forwarding and
-deadband state.
-
-Planner alone queries its Slicer. ForwardingPlanningModel receives immutable
-per-Slice mappings from RouteKey to formal path Connection identities, never a
-Slicer or RouteModel capability. CoordinationPolicy receives all three Model
-results plus narrow immutable route facts and returns the complete coordinated
-transition tuples and concise decisions; fixed validity remains in Planner.
-
-## Model input data flow
-
-These public Protocol arguments describe planning data flow; none creates a
-new owner or network domain object.
-
-| Input | Provider / authority | Why the Model receives it | It is not |
-|---|---|---|---|
-| `differences` | Planner passes the complete formal Difference sequence in the planning window | permits cross-Difference reasoning over the complete planning window | settled history replay or Model-owned Slice state |
-| `affected_differences` | Planner identifies the newly added or otherwise affected suffix of that planning window | limits normal incremental algorithm work | a new network object, Plan, or ownership boundary |
-| `previous_transitions` | Planner passes previously planned but still-unpublished transitions | permits reuse or local revision of unpublished planning-window work | a second Plan or another transition owner |
-| `observed_parameters` | Planner projects the latest formal Simulator/Slicer directional parameter state before the affected suffix | supplies the sampled value reached by formal evolution | the target already selected for realization |
-| `planned_parameters` | Planner supplies the latest directional target it actually decided should be realized | preserves accumulated-deadband comparison across Plan boundaries | a raw boundary Slice reset |
-| `route_path_connection_ids` | Planner derives a narrow read-only RouteKey-to-Connection-ID mapping from sibling Slicer facts | supports Forwarding dependency and precedence reasoning without handing over Slicer | RouteModel authority, path recomputation capability, or Model-owned state |
-
-The observed/planned distinction is intentional: observed follows the latest
-formal samples, while planned changes only when Planner accepts a target.
-
-Published Plans form continuous non-overlapping `(start, end]` coverage; a
-transition exactly at a shared boundary belongs to the earlier Plan. The next
-Plan continues from Planner's private planned semantic state at that boundary,
-not from raw Slice state. Already-published Plan objects remain immutable.
-
-`temporal_index` is a deterministic unified inspection view grouped at exact
-nominal timestamps. Forwarding tuple and index order are storage/inspection
-order, not a backend/runtime execution schedule. Only a
-`ForwardingTransitionPrecedence` states that one same-time transition must
-precede another; unrelated transitions remain unconstrained, and a future
-Compiler may satisfy several relations without literal sequential execution.
-The built-in Forwarding Model derives only direct formal-path relations:
-downstream readiness precedes upstream activation/use for new state, while an
-upstream REMOVE or path switch precedes removal of the old directly downstream
-state. A mixed path change may therefore form an acyclic chain such as
-`new downstream ADD → upstream CHANGED → old downstream REMOVE` without
-fabricating intermediate route states.
-
-## Dependencies
-
-Planning depends on `simulator/slicing` and neutral shared values. Slicer does
-not import planning. The Simulator lifecycle facade creates Planner only after
-its exact sibling Slicer exists. Reference algorithms are stateless; Planner
-commits its own state only after validation. The Protocols do not promise
-rollback of private mutations made inside an arbitrary third-party stateful
-strategy.
-
-That `simulator/slicing` dependency is intentionally visible migration debt,
-not a boundary to generalize. No new Slicer facade, producer, or mixed-history
-consumer belongs here before the Network Planner migration removes it.
-
-Plan owns each `ForwardingTransitionPrecedence`; the ForwardingPlanningModel
-produces it through Planner after Coordination has finalized the
-planning-window transition set. Future approved Plan consumers such as a
-Compiler may consume it. No Compiler/Runtime class, operation cost or execution
-mechanism is part of this package.
-
-## Examples and tests
-
-The readable path is `examples/complete_static_emulator/simu.py`. Focused
-value/algorithm tests are under `tests/unit/test_planning_*.py`; ownership,
-incremental synchronization, ordering, suppression and fixed invariants are in
-`tests/integration/test_planner_main_chain.py`.
-
-The repository-local human-review entry is
-`python -m examples.mini_satellite_internet.main`. Its Tool reads
-formal Slicer, Plan, and retained PlanningDecision results without adding a
-Planner API or invoking planning algorithms.
-
-## Maintenance checklist
-
-When this owner changes, update the public facade/import table, Simulator
-lifecycle, planning contract, global owner/import diagrams, canonical example,
-focused tests and architecture-delta audit together.
+| Diagram class | Public contract | Required public members |
+|---|---|---|
+| `AccumulatedDeadbandParameterPlanningModel` | `skyseed_v2.simulator.planning.AccumulatedDeadbandParameterPlanningModel` | `plan_effective_parameters()` |
+| `CandidateDecision` | `skyseed_v2.simulator.planning.CandidateDecision` | `decision`, `endpoint_a`, `endpoint_b`, `reason` |
+| `CandidateDecisionKind` | `skyseed_v2.simulator.planning.CandidateDecisionKind` | `REJECTED`, `RETAINED`, `SELECTED`, `UNDERFILLED` |
+| `ConnectionParameterObservation` | `skyseed_v2.simulator.planning.ConnectionParameterObservation` | `connection_id`, `physical_delay_us` |
+| `CoordinationPolicy` | `skyseed_v2.simulator.planning.CoordinationPolicy` | `coordinate()` |
+| `DefaultCoordinationPolicy` | `skyseed_v2.simulator.planning.DefaultCoordinationPolicy` | `coordinate()` |
+| `EffectiveConnectionParameters` | `skyseed_v2.simulator.planning.EffectiveConnectionParameters` | `bandwidth_bps`, `delay_us`, `packet_loss_ppm` |
+| `GatewayHopCountRoutePlanningModel` | `skyseed_v2.simulator.planning.GatewayHopCountRoutePlanningModel` | `create_route_demands()`, `plan_route_outcomes()`, `shutdown()` |
+| `GroundStationAccessPlanningModel` | `skyseed_v2.simulator.planning.GroundStationAccessPlanningModel` | `select_ground_station_accesses()` |
+| `GroundStationRouteDemandTarget` | `skyseed_v2.simulator.planning.GroundStationRouteDemandTarget` | `ground_station_id` |
+| `HighestElevationZoneServicePlanningModel` | `skyseed_v2.simulator.planning.HighestElevationZoneServicePlanningModel` | `assign_zone_service()` |
+| `InterSatelliteConnectionPlanningModel` | `skyseed_v2.simulator.planning.InterSatelliteConnectionPlanningModel` | `create_inter_satellite_candidate_pairs()`, `select_inter_satellite_links()` |
+| `InterSatelliteLifecycleEvidence` | `skyseed_v2.simulator.planning.InterSatelliteLifecycleEvidence` | `acquisition_duration`, `candidate`, `operational`, `remaining_acquisition`, `selected_since` |
+| `InterSatelliteSelection` | `skyseed_v2.simulator.planning.InterSatelliteSelection` | `decisions`, `selected_candidates`, `underfilled_slots` |
+| `OperationalConnection` | `skyseed_v2.simulator.planning.OperationalConnection` | `connection_id`, `endpoint_a_to_b`, `endpoint_b_to_a` |
+| `OperationalConnectionId` | `skyseed_v2.simulator.planning.OperationalConnectionId` | `endpoint_a`, `endpoint_b`, `kind` |
+| `OperationalConnectionKind` | `skyseed_v2.simulator.planning.OperationalConnectionKind` | `GROUND_STATION_ACCESS`, `INTER_SATELLITE` |
+| `ParameterKindConfiguration` | `skyseed_v2.simulator.planning.ParameterKindConfiguration` | `bandwidth_bps`, `delay_deadband_us`, `max_staleness`, `packet_loss_ppm`, `persistence` |
+| `ParameterPlanningMemory` | `skyseed_v2.simulator.planning.ParameterPlanningMemory` | `connection_id`, `effective`, `last_update`, `pending_delay_us`, `pending_since` |
+| `ParameterPlanningModel` | `skyseed_v2.simulator.planning.ParameterPlanningModel` | `plan_effective_parameters()` |
+| `ParameterPlanningResult` | `skyseed_v2.simulator.planning.ParameterPlanningResult` | `connections`, `established_connections`, `memory`, `parameter_updated_connections`, `withdrawn_connection_ids` |
+| `Plan` | `skyseed_v2.simulator.planning.Plan` | `end_timestamp`, `input_state_fingerprint`, `observation_interval`, `output_state_fingerprint`, `physical_world_fingerprint`, `plan_id`, `previous_plan_id`, `semantic_event_precedences`, `start_timestamp`, `transitions` |
+| `Planner` | `skyseed_v2.simulator.planning.Planner` | `create_physical_link_request()`, `finish()`, `get_frontiers()`, `get_last_transition()`, `get_last_transition_fingerprint()`, `get_published_evidence()`, `get_route_recomputation_count()`, `get_state()`, `get_state_fingerprint()`, `observe()`, `prime()`, `release_published_through()`, `required_prehistory`, `set_route_demands()`, `shutdown()` |
+| `PlanningCandidateHistogram` | `skyseed_v2.simulator.planning.PlanningCandidateHistogram` | `bins`, `name`, `sample_count` |
+| `PlanningCandidateSummary` | `skyseed_v2.simulator.planning.PlanningCandidateSummary` | `feasible_count`, `histograms` |
+| `PlanningFrontiers` | `skyseed_v2.simulator.planning.PlanningFrontiers` | `physical_observation`, `planning`, `publication` |
+| `PlanningFrameEvidence` | `skyseed_v2.simulator.planning.PlanningFrameEvidence` | `ground_station_access_candidate_summary`, `inspection`, `inter_satellite_candidate_summary`, `physical_link_work_counts`, `selected_ground_station_accesses`, `selected_inter_satellite_links`, `selected_zone_service_candidates`, `timestamp`, `zone_service_candidate_summary` |
+| `PlanningHistogramBin` | `skyseed_v2.simulator.planning.PlanningHistogramBin` | `count`, `label` |
+| `PlanningInspection` | `skyseed_v2.simulator.planning.PlanningInspection` | `acquiring_isls`, `acquisition_completed`, `acquisition_reset`, `acquisition_started`, `feasible_isl_candidates`, `ground_station_accesses`, `operational_isls`, `rejected_isls`, `route_recomputed`, `routes_reachable`, `routes_unreachable`, `selected_isls`, `stages`, `timestamp`, `underfilled_isl_slots`, `zones_served`, `zones_unserved` |
+| `PlanningWindowPolicy` | `skyseed_v2.simulator.planning.PlanningWindowPolicy` | `planning_horizon`, `publication_horizon`, `required_prehistory()`, `validate_observation_interval()` |
+| `PlanTransition` | `skyseed_v2.simulator.planning.PlanTransition` | `established_connections`, `parameter_updated_connections`, `route_outcome_transitions`, `route_relevant`, `timestamp`, `with_route_outcome_transitions()`, `withdrawn_connection_ids`, `zone_service_transitions` |
+| `PlannedOperationalState` | `skyseed_v2.simulator.planning.PlannedOperationalState` | `operational_connections`, `route_outcomes`, `timestamp`, `zone_service_assignments` |
+| `PublishedPlanningEvidence` | `skyseed_v2.simulator.planning.PublishedPlanningEvidence` | `frames`, `frontiers`, `inspections`, `plan`, `transition_fingerprints` |
+| `QualityFirstGroundStationAccessPlanningModel` | `skyseed_v2.simulator.planning.QualityFirstGroundStationAccessPlanningModel` | `select_ground_station_accesses()` |
+| `ReachableRouteOutcome` | `skyseed_v2.simulator.planning.ReachableRouteOutcome` | `demand`, `next_hop`, `path` |
+| `RetainFirstInterSatelliteConfiguration` | `skyseed_v2.simulator.planning.RetainFirstInterSatelliteConfiguration` | `acquisition_duration`, `desired_cross_plane_links`, `desired_same_plane_links`, `maximum_cross_plane_separation` |
+| `RetainFirstInterSatelliteConnectionPlanningModel` | `skyseed_v2.simulator.planning.RetainFirstInterSatelliteConnectionPlanningModel` | `acquisition_duration`, `create_inter_satellite_candidate_pairs()`, `select_inter_satellite_links()` |
+| `RouteDemand` | `skyseed_v2.simulator.planning.RouteDemand` | `source`, `target` |
+| `RouteOutcomeTransition` | `skyseed_v2.simulator.planning.RouteOutcomeTransition` | `current`, `demand`, `previous` |
+| `RoutePlanningModel` | `skyseed_v2.simulator.planning.RoutePlanningModel` | `plan_route_outcomes()`, `shutdown()` |
+| `RoutePlanningResult` | `skyseed_v2.simulator.planning.RoutePlanningResult` | `outcomes`, `transitions` |
+| `RouteUnreachableReason` | `skyseed_v2.simulator.planning.RouteUnreachableReason` | `NO_OPERATIONAL_PATH`, `ZONE_UNSERVED` |
+| `SemanticEventKind` | `skyseed_v2.simulator.planning.SemanticEventKind` | `CONNECTION_ESTABLISH`, `CONNECTION_WITHDRAW`, `PARAMETER_READY`, `PARAMETER_UPDATE`, `ROUTE_CHANGE`, `ROUTE_REACHABLE`, `ROUTE_UNREACHABLE`, `ROUTE_WITHDRAW`, `ZONE_SERVICE_ASSIGN`, `ZONE_SERVICE_CHANGE`, `ZONE_SERVICE_UNASSIGN` |
+| `SemanticEventPrecedence` | `skyseed_v2.simulator.planning.SemanticEventPrecedence` | `predecessor`, `successor` |
+| `SemanticEventReference` | `skyseed_v2.simulator.planning.SemanticEventReference` | `connection_id`, `kind`, `route_demand`, `timestamp`, `zone_id` |
+| `TimeHorizonPlanningWindowPolicy` | `skyseed_v2.simulator.planning.TimeHorizonPlanningWindowPolicy` | `maximum_prehistory`, `planning_horizon`, `publication_horizon`, `required_prehistory()`, `validate_observation_interval()` |
+| `UnreachableRouteOutcome` | `skyseed_v2.simulator.planning.UnreachableRouteOutcome` | `demand`, `reason` |
+| `ZoneRouteDemandTarget` | `skyseed_v2.simulator.planning.ZoneRouteDemandTarget` | `zone_id` |
+| `ZoneServiceAssignment` | `skyseed_v2.simulator.planning.ZoneServiceAssignment` | `is_served`, `satellite_id`, `zone_id` |
+| `ZoneServicePlanningModel` | `skyseed_v2.simulator.planning.ZoneServicePlanningModel` | `assign_zone_service()` |
+| `ZoneServicePlanningResult` | `skyseed_v2.simulator.planning.ZoneServicePlanningResult` | `assignments`, `transitions` |
+| `ZoneServiceTransition` | `skyseed_v2.simulator.planning.ZoneServiceTransition` | `current_satellite_id`, `previous_satellite_id`, `zone_id` |

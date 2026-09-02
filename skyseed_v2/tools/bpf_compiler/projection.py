@@ -1,300 +1,363 @@
-"""Project detached Compiler facts into summaries and lazy exact evidence."""
+"""Project compiled realizations into compact trends and focused drill-down."""
 
 from __future__ import annotations
 
+from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping
 from copy import deepcopy
-from hashlib import sha256
-import json
 from typing import Any
 
 from .reader import BpfCompilerInspectionRead
-
-
-_BASELINE_FAMILIES = (
-    "resources",
-    "parameters",
-    "forwarding",
-    "zone_edges",
-    "zone_prefixes",
-)
 
 
 def project_bpf_compiler_data(
     observation: BpfCompilerInspectionRead,
     *,
     compile_evidence: Iterable[Mapping[str, object]] = (),
+    observation_timing: Mapping[str, object] | None = None,
 ) -> dict[str, Any]:
-    """Build compact statistics while retaining one exact payload copy."""
+    """Summarize exact compiled values without retaining a giant raw dump."""
 
     if not isinstance(observation, BpfCompilerInspectionRead):
         raise TypeError("observation must be a BpfCompilerInspectionRead")
-    evidence = tuple(deepcopy(dict(value)) for value in compile_evidence)
-    if any(
-        value.get("compile_index") != index
-        for index, value in enumerate(evidence)
-    ):
+    timings = tuple(deepcopy(dict(value)) for value in compile_evidence)
+    if not timings and observation_timing is not None:
+        samples = observation_timing.get("compile_samples", ())
+        if isinstance(samples, (tuple, list)):
+            timings = tuple(deepcopy(dict(value)) for value in samples)
+    if any(value.get("compile_index") != index for index, value in enumerate(timings)):
         raise ValueError("compile_evidence must be continuous and ordered")
-
     source = observation.snapshot
-    source_intervals = source["intervals"]
-    assert isinstance(source_intervals, tuple)
-    # The detached reader owns these exact primitive payloads.  Projection
-    # adds metadata to shallow interval copies and never mutates the nested
-    # exact evidence, avoiding a run-wide duplicate of every realization.
-    intervals = tuple(dict(value) for value in source_intervals)
-    data = {**source, "intervals": intervals}
-    if evidence and len(evidence) != len(intervals):
-        raise ValueError("compile_evidence must align one-to-one with Plans")
+    raw_realizations = source["realizations"]
+    if timings and len(timings) != len(raw_realizations):
+        raise ValueError("compile_evidence must align one-to-one with realizations")
 
-    adjacent_diffs = []
-    previous: dict[str, Any] | None = None
-    for index, interval in enumerate(intervals):
-        interval["summary"] = _interval_summary(interval)
-        interval["serialized_bytes"] = _serialized_sizes(interval)
-        interval["realization_sha256"] = _json_sha256(
+    compact = []
+    total_reachable = 0
+    total_unreachable = 0
+    for index, realization in enumerate(raw_realizations):
+        source_plan = realization["source_plan"]
+        intents = realization["compiled_intents"]
+        state = realization["intended_state"]
+        semantic = state["semantic"]
+        routes = semantic["route_outcomes"]
+        reachable = sum(value["kind"] == "reachable" for value in routes)
+        unreachable = len(routes) - reachable
+        total_reachable += reachable
+        total_unreachable += unreachable
+        transition_changes = sum(
+            sum(len(transition[name]) for name in _TRANSITION_FIELDS)
+            for transition in source_plan["transitions"]
+        )
+        operation_counts = _operation_counts(intents)
+        delta_counts = _delta_counts(operation_counts)
+        boundary_workloads = _boundary_workloads(
+            realization["activation_boundaries"], intents
+        )
+        summary = {
+            "activation_boundaries": len(realization["activation_boundaries"]),
+            "plan_transition_changes": transition_changes,
+            "semantic_precedences": len(
+                source_plan["semantic_event_precedences"]
+            ),
+            "resource_intents": len(intents["resources"]),
+            "parameter_intents": len(intents["parameters"]),
+            "forwarding_intents": len(intents["forwarding"]),
+            "zone_edge_intents": len(intents["zone_edges"]),
+            "constraints": len(intents["constraints"]),
+            "intended_connections": len(
+                semantic["operational_connections"]
+            ),
+            "intended_resources": len(state["resources"]),
+            "intended_parameters": len(state["parameters"]),
+            "intended_forwarding": len(state["forwarding"]),
+            "intended_zone_edges": len(state["zone_edges"]),
+            "intended_zones": len(semantic["zone_service_assignments"]),
+            "planned_routes_reachable": reachable,
+            "planned_routes_unreachable": unreachable,
+        }
+        compact.append(
             {
-                "compiled": interval["compiled"],
-                "end_state": interval["end_state"],
+                "realization_index": index,
+                "lineage": deepcopy(realization["lineage"]),
+                "activation_timestamps": tuple(
+                    value["timestamp"]
+                    for value in realization["activation_boundaries"]
+                ),
+                "summary": summary,
+                "operation_counts": operation_counts,
+                "delta_counts": delta_counts,
+                "semantic_precedence_folding": deepcopy(
+                    intents["semantic_precedence_folding"]
+                ),
+                "boundary_workloads": boundary_workloads,
+                "intended_state_timestamp": semantic["timestamp"],
+                "zone_prefixes": deepcopy(state["zone_prefixes"]),
+                "compile_evidence": timings[index] if timings else None,
             }
         )
-        interval["compile_evidence"] = evidence[index] if evidence else None
-        diff = _baseline_diff(previous, interval)
-        interval["adjacent_diff_summary"] = diff["summary"]
-        adjacent_diffs.append(diff)
-        previous = interval
 
     inventory = {
-        "plans": len(intervals),
-        "resource_intents": _sum_family(intervals, "resources"),
-        "parameter_intents": _sum_family(intervals, "parameters"),
-        "forwarding_intents": _sum_family(intervals, "forwarding"),
-        "zone_edge_intents": _sum_family(intervals, "zone_edges"),
-        "constraints": _sum_family(intervals, "constraints"),
-        "baseline_records": sum(
-            interval["summary"]["baseline_total"] for interval in intervals
+        "plans": len(compact),
+        "realizations": len(compact),
+        "activation_boundaries": sum(
+            value["summary"]["activation_boundaries"] for value in compact
         ),
+        "resource_intents": _summary_sum(compact, "resource_intents"),
+        "parameter_intents": _summary_sum(compact, "parameter_intents"),
+        "forwarding_intents": _summary_sum(compact, "forwarding_intents"),
+        "zone_edge_intents": _summary_sum(compact, "zone_edge_intents"),
+        "constraints": _summary_sum(compact, "constraints"),
+        "planned_routes_reachable_samples": total_reachable,
+        "planned_routes_unreachable_samples": total_unreachable,
     }
-    data["inventory"] = inventory
-    data["observed_behavior"] = {
-        "same_next_hop_changed": sum(
-            intent["same_next_hop_changed"]
-            for interval in intervals
-            for intent in interval["compiled"]["forwarding"]
-        ),
-        "plan_forwarding_precedences": sum(
-            constraint["category"] == "plan-forwarding-precedence"
-            for interval in intervals
-            for constraint in interval["compiled"]["constraints"]
-        ),
-        "backend_technical_constraints": sum(
-            constraint["category"] == "backend-technical"
-            for interval in intervals
-            for constraint in interval["compiled"]["constraints"]
-        ),
-        "unique_zone_prefixes": len(
+    return {
+        "format_version": 3,
+        "tool": "bpf-compiler-inspection",
+        "authority": deepcopy(source["authority"]),
+        "inventory": inventory,
+        "realizations": tuple(compact),
+        "trend": tuple(
             {
-                value["packet_prefix"]
-                for interval in intervals
-                for value in interval["end_state"]["zone_prefixes"]
+                "realization_index": value["realization_index"],
+                "source_plan_id": value["lineage"]["source_plan_id"],
+                **value["summary"],
+                "operations": value["operation_counts"],
+                "delta_counts": value["delta_counts"],
             }
+            for value in compact
         ),
-        "runtime_bindings_claimed": False,
-    }
-    data["adjacent_diffs"] = tuple(adjacent_diffs)
-    data["run_summary"] = _run_summary(intervals, adjacent_diffs)
-    return data
-
-
-def _sum_family(intervals: tuple[dict[str, Any], ...], family: str) -> int:
-    return sum(len(value["compiled"][family]) for value in intervals)
-
-
-def _interval_summary(interval: dict[str, Any]) -> dict[str, int]:
-    plan = interval["plan"]
-    compiled = interval["compiled"]
-    end_state = interval["end_state"]
-    logical = {
-        "connection": len(plan["connection_transitions"]),
-        "parameter": len(plan["parameter_transitions"]),
-        "forwarding": len(plan["forwarding_transitions"]),
-        "precedence": len(plan["forwarding_precedences"]),
-    }
-    intents = {
-        "resources": len(compiled["resources"]),
-        "parameters": len(compiled["parameters"]),
-        "forwarding": len(compiled["forwarding"]),
-        "zone_edges": len(compiled["zone_edges"]),
-        "constraints": len(compiled["constraints"]),
-    }
-    baseline = {family: len(end_state[family]) for family in _BASELINE_FAMILIES}
-    return {
-        **{f"input_{key}": value for key, value in logical.items()},
-        "input_transition_total": (
-            logical["connection"]
-            + logical["parameter"]
-            + logical["forwarding"]
+        "compiler_timing": (
+            None if observation_timing is None else deepcopy(observation_timing)
         ),
-        **{f"intent_{key}": value for key, value in intents.items()},
-        "interval_output_total": sum(intents.values()),
-        **{f"baseline_{key}": value for key, value in baseline.items()},
-        "baseline_total": sum(
-            baseline[key]
-            for key in ("resources", "parameters", "forwarding", "zone_edges")
-        ),
-    }
-
-
-def _serialized_sizes(interval: dict[str, Any]) -> dict[str, object]:
-    plan = interval["plan"]
-    compiled = interval["compiled"]
-    baseline = interval["end_state"]
-    baseline_families = {
-        family: _json_bytes(baseline[family]) for family in _BASELINE_FAMILIES
-    }
-    return {
-        "logical_input": _json_bytes(plan),
-        "interval_output": _json_bytes(compiled),
-        "baseline_by_family": baseline_families,
-        "baseline_total": sum(baseline_families.values()),
-    }
-
-
-def _json_bytes(value: object) -> int:
-    return len(
-        json.dumps(
-            value,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
-    )
-
-
-def _json_sha256(value: object) -> str:
-    payload = json.dumps(
-        value,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode("utf-8")
-    return sha256(payload).hexdigest()
-
-
-def _baseline_diff(
-    previous: dict[str, Any] | None,
-    current: dict[str, Any],
-) -> dict[str, object]:
-    details: dict[str, object] = {}
-    totals = {name: 0 for name in ("unchanged", "changed", "added", "removed")}
-    for family in _BASELINE_FAMILIES:
-        before_values = () if previous is None else previous["end_state"][family]
-        after_values = current["end_state"][family]
-        before = {
-            _baseline_key(family, value): (index, value)
-            for index, value in enumerate(before_values)
-        }
-        after = {
-            _baseline_key(family, value): (index, value)
-            for index, value in enumerate(after_values)
-        }
-        rows = []
-        counts = {name: 0 for name in totals}
-        for key in sorted(set(before) | set(after)):
-            left = before.get(key)
-            right = after.get(key)
-            if left is None:
-                kind = "added"
-            elif right is None:
-                kind = "removed"
-            elif left[1] == right[1]:
-                kind = "unchanged"
-            else:
-                kind = "changed"
-            counts[kind] += 1
-            totals[kind] += 1
-            if kind != "unchanged":
-                rows.append(
-                    {
-                        "kind": kind,
-                        "key": key,
-                        "previous_index": None if left is None else left[0],
-                        "current_index": None if right is None else right[0],
-                    }
-                )
-        details[family] = tuple(rows)
-        details[f"{family}_summary"] = counts
-    baseline_records = sum(totals.values()) - totals["removed"]
-    changed_records = totals["changed"] + totals["added"] + totals["removed"]
-    return {
-        "plan_index": current["plan_index"],
-        "previous_plan_index": (
-            None if previous is None else previous["plan_index"]
-        ),
-        "summary": {
-            **totals,
-            "baseline_records": baseline_records,
-            "churn_records": changed_records,
-            "churn_ratio": (
-                changed_records / max(1, baseline_records + totals["removed"])
+        "traffic_contract": {
+            "description": (
+                "compact lineage, activation timestamps and stable Zone "
+                "prefixes consumed by the detached Traffic Tool"
             ),
-            "bootstrap_from_empty": previous is None,
-            "by_family": {
-                family: details[f"{family}_summary"]
-                for family in _BASELINE_FAMILIES
-            },
+            "realization_count": len(compact),
         },
-        "details": {
-            family: details[family] for family in _BASELINE_FAMILIES
+        "interpretation": {
+            "plan": "self-contained semantic delta and lineage authority",
+            "compiled": "backend intended operations and activation boundaries",
+            "intended_state": (
+                "cardinalities and stable Zone prefixes; not live runtime state"
+            ),
+            "realized": (
+                "not claimed by this Tool; Runner evidence owns realized facts"
+            ),
+            "raw_detail": (
+                "primary artifacts intentionally retain aggregate operations, "
+                "per-boundary workloads, folding and cardinalities instead of "
+                "duplicating every Plan and intended-state object"
+            ),
         },
     }
 
 
-def _baseline_key(family: str, value: Mapping[str, object]) -> str:
-    if family == "resources":
-        return str(value["connection_ref"])
-    if family == "parameters":
-        return f"{value['connection_ref']}|{value['direction']}"
-    if family == "forwarding":
-        return str(value["route_ref"])
-    if family in {"zone_edges", "zone_prefixes"}:
-        return str(value["zone_id"])
-    raise ValueError(f"unsupported baseline family: {family}")
+def project_compact_bpf_compiler_data(
+    history: Mapping[str, object],
+    *,
+    observation_timing: Mapping[str, object] | None = None,
+) -> dict[str, Any]:
+    """Project producer-owned compact evidence without Plan/handoff objects."""
 
-
-def _run_summary(
-    intervals: tuple[dict[str, Any], ...],
-    diffs: list[dict[str, object]],
-) -> dict[str, object]:
-    compile_seconds = [
-        (
-            None
-            if interval["compile_evidence"] is None
-            else interval["compile_evidence"].get("compile_seconds")
+    raw_rows = history.get("realizations")
+    if not isinstance(raw_rows, (tuple, list)) or not raw_rows:
+        raise ValueError("compact Compiler history has no realizations")
+    samples = {
+        int(value["compile_index"]): deepcopy(dict(value))
+        for value in (
+            ()
+            if observation_timing is None
+            else observation_timing.get("compile_samples", ())
         )
-        for interval in intervals
-    ]
-    baseline_family_bytes = {
-        family: sum(
-            interval["serialized_bytes"]["baseline_by_family"][family]
-            for interval in intervals
+    }
+    compact = []
+    activation_timeline = []
+    for index, raw in enumerate(raw_rows):
+        row = dict(raw)
+        summary = deepcopy(row["compact_summary"])
+        operations = deepcopy(row["operation_counts"])
+        boundary_workloads = deepcopy(row["boundary_workloads"])
+        lineage = {
+            "source_plan_id": row["source_plan_id"],
+            "source_previous_plan_id": row["source_previous_plan_id"],
+            "physical_world_fingerprint": row[
+                "physical_world_fingerprint"
+            ],
+            "input_state_fingerprint": row["input_state_fingerprint"],
+            "output_state_fingerprint": row["output_state_fingerprint"],
+            "start_timestamp": row["start_timestamp"],
+            "end_timestamp": row["end_timestamp"],
+        }
+        compact.append(
+            {
+                "realization_index": index,
+                "lineage": lineage,
+                "activation_timestamps": tuple(row["activation_timestamps"]),
+                "summary": summary,
+                "operation_counts": operations,
+                "delta_counts": _delta_counts(operations),
+                "semantic_precedence_folding": deepcopy(
+                    row["semantic_precedence_folding"]
+                ),
+                "boundary_workloads": boundary_workloads,
+                "intended_state_timestamp": row[
+                    "intended_state_timestamp"
+                ],
+                "zone_prefixes": deepcopy(row["zone_prefixes"]),
+                "compile_evidence": samples.get(index),
+                "projection_note": row.get("legacy_missing_plan_projection"),
+            }
         )
-        for family in _BASELINE_FAMILIES
+        activation_timeline.extend(
+            {
+                "realization_index": index,
+                "boundary_index": boundary_index,
+                **deepcopy(boundary),
+            }
+            for boundary_index, boundary in enumerate(boundary_workloads)
+        )
+    inventory = {
+        "plans": len(compact),
+        "realizations": len(compact),
+        "activation_boundaries": sum(
+            value["summary"]["activation_boundaries"] for value in compact
+        ),
+        "resource_intents": _summary_sum(compact, "resource_intents"),
+        "parameter_intents": _summary_sum(compact, "parameter_intents"),
+        "forwarding_intents": _summary_sum(compact, "forwarding_intents"),
+        "zone_edge_intents": _summary_sum(compact, "zone_edge_intents"),
+        "constraints": _summary_sum(compact, "constraints"),
+        "planned_routes_reachable_samples": _summary_sum(
+            compact, "planned_routes_reachable"
+        ),
+        "planned_routes_unreachable_samples": _summary_sum(
+            compact, "planned_routes_unreachable"
+        ),
     }
     return {
-        "plan_count": len(intervals),
-        "compile_seconds": tuple(compile_seconds),
-        "compile_seconds_total": (
-            sum(float(value) for value in compile_seconds if value is not None)
-            if any(value is not None for value in compile_seconds)
-            else None
+        "format_version": 4,
+        "tool": "bpf-compiler-inspection",
+        "authority": {
+            "status": "non-authoritative-view",
+            "source": "producer-owned compact exact Compiler evidence",
+            "compiler": "not invoked by this Tool",
+            "handoff": (
+                "normal compact-evidence Tool path does not materialize "
+                "the runtime handoff"
+            ),
+            "planned_state": "intended semantic state, not runtime state",
+        },
+        "inventory": inventory,
+        "realizations": tuple(compact),
+        "trend": tuple(
+            {
+                "realization_index": value["realization_index"],
+                "source_plan_id": value["lineage"]["source_plan_id"],
+                **value["summary"],
+                "operations": value["operation_counts"],
+                "delta_counts": value["delta_counts"],
+            }
+            for value in compact
         ),
-        "baseline_family_bytes": baseline_family_bytes,
-        "baseline_bytes_total": sum(baseline_family_bytes.values()),
-        "churn_records_total": sum(
-            int(value["summary"]["churn_records"]) for value in diffs
+        "activation_timeline": tuple(activation_timeline),
+        "compiler_timing": (
+            None if observation_timing is None else deepcopy(observation_timing)
         ),
+        "traffic_contract": {
+            "description": "compact Compiler evidence; no runtime authority",
+            "realization_count": len(compact),
+        },
+        "interpretation": {
+            "plan": "lineage and exact transition-derived aggregate evidence",
+            "compiled": "backend operation counts and activation workloads",
+            "intended_state": "exact cardinalities and stable Zone prefixes",
+            "realized": "Runner evidence alone owns realized facts",
+            "raw_detail": (
+                "The Tool consumes compact producer evidence and does not "
+                "materialize the persisted realization sequence."
+            ),
+        },
     }
 
 
-__all__ = ["project_bpf_compiler_data"]
+_TRANSITION_FIELDS = (
+    "established_connections",
+    "withdrawn_connection_ids",
+    "parameter_updated_connections",
+    "zone_service_transitions",
+    "route_outcome_transitions",
+)
+
+
+def _operation_counts(intents: Mapping[str, Any]) -> dict[str, dict[str, int]]:
+    result: dict[str, dict[str, int]] = {}
+    for family in ("resources", "forwarding", "zone_edges"):
+        counts = Counter(str(value["operation"]) for value in intents[family])
+        result[family] = dict(sorted(counts.items()))
+    result["parameters"] = {"update": len(intents["parameters"])}
+    result["constraints"] = {"precedence": len(intents["constraints"])}
+    return result
+
+
+def _delta_counts(
+    operations: Mapping[str, Mapping[str, int]]
+) -> dict[str, int]:
+    """Normalize exact backend verbs into display add/update/remove buckets."""
+
+    result = {"add": 0, "update": 0, "remove": 0}
+    for counts in operations.values():
+        for operation, count in counts.items():
+            if operation in {"add", "establish"}:
+                result["add"] += count
+            elif operation in {"change", "update"}:
+                result["update"] += count
+            elif operation in {"remove", "withdraw"}:
+                result["remove"] += count
+    return result
+
+
+def _boundary_workloads(
+    boundaries: list[dict[str, Any]], intents: Mapping[str, Any]
+) -> tuple[dict[str, Any], ...]:
+    by_time: dict[str, dict[str, Counter[str]]] = defaultdict(
+        lambda: defaultdict(Counter)
+    )
+    for family in ("resources", "forwarding", "zone_edges"):
+        for value in intents[family]:
+            by_time[value["nominal_time"]][family][
+                str(value["operation"])
+            ] += 1
+    for value in intents["parameters"]:
+        by_time[value["nominal_time"]]["parameters"]["update"] += 1
+    rows = []
+    for boundary in boundaries:
+        timestamp = boundary["timestamp"]
+        operations = {
+            family: dict(sorted(counts.items()))
+            for family, counts in sorted(by_time[timestamp].items())
+        }
+        rows.append(
+            {
+                "timestamp": timestamp,
+                "transition_fingerprint": boundary["transition_fingerprint"],
+                "operations": operations,
+                "delta_counts": _delta_counts(operations),
+                "operation_count": sum(
+                    sum(counts.values()) for counts in by_time[timestamp].values()
+                ),
+            }
+        )
+    return tuple(rows)
+
+
+def _summary_sum(values: list[dict[str, Any]], name: str) -> int:
+    return sum(int(value["summary"][name]) for value in values)
+
+
+__all__ = [
+    "project_bpf_compiler_data",
+    "project_compact_bpf_compiler_data",
+]
