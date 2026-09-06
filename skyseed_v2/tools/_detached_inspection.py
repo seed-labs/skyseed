@@ -351,11 +351,6 @@ def _detach_live_source(task: str, source: Mapping[str, object]) -> dict[str, An
             return {
                 "compact_history": read_compact_bpf_compiler_evidence(
                     Path(str(source["compiler_history_path"])),
-                    (
-                        None
-                        if "realization_manifest" not in source
-                        else Path(str(source["realization_manifest"]))
-                    ),
                 ),
                 "observation_timing": (
                     None
@@ -365,38 +360,6 @@ def _detach_live_source(task: str, source: Mapping[str, object]) -> dict[str, An
                     )
                 ),
             }
-        if "realization_manifest" in source:
-            from skyseed_v2.experiment._realization_handoff import (
-                _read_persisted_realization_sequence,
-            )
-            from tools.bpf_compiler.reader import read_bpf_compiler_inspection
-            from tools.planner.reader import read_planner_history
-
-            snapshot = read_bpf_compiler_inspection(
-                tuple(
-                    value.plan
-                    for value in read_planner_history(
-                        Path(str(source["planner_history_path"]))
-                    )
-                ),
-                _read_persisted_realization_sequence(
-                    Path(str(source["realization_manifest"]))
-                ),
-            ).snapshot
-            snapshot["compile_evidence"] = tuple(
-                source.get("compile_evidence", ())
-            )
-            if "observation_path" in source:
-                from tools.bpf_compiler.inspection import (
-                    _compiler_observation_timing,
-                )
-
-                snapshot["observation_timing"] = (
-                    _compiler_observation_timing(
-                        Path(str(source["observation_path"]))
-                    )
-                )
-            return snapshot
         from tools.bpf_compiler.reader import read_bpf_compiler_inspection
 
         snapshot = read_bpf_compiler_inspection(
@@ -566,7 +529,9 @@ def _handoff_source_description(
                 Path(str(source["observation_path"])).resolve().parent,
             ),
         }
-    durable = "planner_history_path" in source or "realization_manifest" in source
+    durable = (
+        "planner_history_path" in source
+    )
     return {
         "kind": (
             "durable-domain-evidence"

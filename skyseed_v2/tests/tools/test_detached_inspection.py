@@ -11,9 +11,6 @@ from examples.complete_static_emulator.simu import (
     run_complete_static_chain,
 )
 from skyseed_v2.shared._execution_observation import _ExecutionObserver
-from skyseed_v2.experiment._realization_handoff import (
-    _write_realization_handoff,
-)
 from tools._detached_inspection import _DetachedInspectionExecutor
 from tools.planner.reader import read_planner_history
 
@@ -96,7 +93,7 @@ def test_executor_accepts_producer_planning_history_directly(
     )
     records = executor.join()
 
-    assert records[0]["status"] == "COMPLETE"
+    assert records[0]["status"] == "COMPLETE", records[0].get("message")
     assert records[0]["input_evidence"]["status"] == "COMPLETE"
     assert (tmp_path / "planner/checksums.sha256").is_file()
 
@@ -105,25 +102,21 @@ def test_executor_accepts_producer_planning_history_directly(
     "fork" not in multiprocessing.get_all_start_methods(),
     reason="detached worker contract requires fork",
 )
-def test_executor_reads_persisted_plan_and_realization_sequences(
+def test_executor_reads_compact_compiler_history_without_runtime_payload(
     tmp_path, complete_chain
 ) -> None:
-    root, _, realizations, _, _ = complete_chain
-    manifest = _write_realization_handoff(
-        realizations, tmp_path / "realizations"
-    )
+    root, _, _realizations, _, _ = complete_chain
     executor = _DetachedInspectionExecutor(tmp_path / "control", max_workers=1)
     executor.submit(
         "compiler",
         {
-            "planner_history_path": root / "history/planning.jsonl.gz",
-            "realization_manifest": manifest,
+            "compiler_history_path": root / "history/compiler.jsonl",
         },
         tmp_path / "compiler",
     )
     records = executor.join()
 
-    assert records[0]["status"] == "COMPLETE"
+    assert records[0]["status"] == "COMPLETE", records[0].get("message")
     assert (tmp_path / "compiler/bpf-compiler-inspection.json").is_file()
 
 

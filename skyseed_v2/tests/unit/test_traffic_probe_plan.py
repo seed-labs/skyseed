@@ -822,6 +822,105 @@ def test_probe_executor_resolves_bindings_parses_ping_and_cleans_every_process(
     assert records[-1]["record_type"] == "executor_end"
 
 
+def test_slow_runner_frontier_remains_authority_for_due_traffic_actions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    complete_chain,
+) -> None:
+    """Expired ideal deadlines cannot run Traffic against future live state."""
+
+    _, plans, realizations, _ = complete_chain
+    plan = TrafficProbePlanBuilder().build(plans, realizations)
+    executor = TrafficProbeExecutor(
+        docker_executable="docker",
+        plan=plan,
+        runner_snapshot=_runner_snapshot(plan),
+        evidence_path=tmp_path / "slowed-runner.jsonl",
+    )
+    from skyseed_v2.experiment.traffic import probe_execution as execution_module
+
+    monkeypatch.setattr(execution_module, "monotonic", lambda: 10_000.0)
+    executor._await_runner_origin = lambda: 100.0
+    observed_actions = []
+    frontier_waits = []
+
+    def await_frontier(required):
+        frontier_waits.append(required)
+        executor._published_frontier = required
+
+    def start_episode(episode):
+        observed_actions.append(("start", episode, executor._published_frontier))
+        executor._armed_episodes.add(episode.episode_id)
+
+    def complete_episode(episode):
+        observed_actions.append(("complete", episode, executor._published_frontier))
+        executor._completed_episodes.add(episode.episode_id)
+
+    executor._await_published_frontier = await_frontier
+    executor._start_episode = start_episode
+    executor._complete_episode = complete_episode
+    executor._reconcile_episode = lambda episode: None
+    executor._drain_io = lambda timeout: None
+    executor._reap_unexpected = lambda: None
+    executor._cancel_remaining_episodes = lambda: None
+    executor._terminate_all = lambda reason: None
+
+    executor._run()
+
+    starts = [value for value in observed_actions if value[0] == "start"]
+    completions = [value for value in observed_actions if value[0] == "complete"]
+    assert len(starts) == len(plan.episodes)
+    assert len(completions) == len(plan.episodes)
+    assert all(frontier >= episode.start_time for _, episode, frontier in starts)
+    assert all(frontier >= episode.end_time for _, episode, frontier in completions)
+    positions = {
+        (action, episode.episode_id): index
+        for index, (action, episode, _) in enumerate(observed_actions)
+    }
+    assert all(
+        positions[("start", episode.episode_id)]
+        < positions[("complete", episode.episode_id)]
+        for episode in plan.episodes
+    )
+    assert plan.coverage_start in frontier_waits
+    assert plan.coverage_end in frontier_waits
+
+
+def test_traffic_never_observes_failed_target_as_formal_active(
+    tmp_path: Path,
+    complete_chain,
+) -> None:
+    _, plans, realizations, _ = complete_chain
+    plan = TrafficProbePlanBuilder().build(plans, realizations)
+    prior = plan.nominal_boundaries[0]
+    target = plan.nominal_boundaries[1]
+
+    class FailedTargetRunner:
+        def inspection_snapshot(self):
+            return {
+                "runner": {"frontiers": {"last_active": prior.isoformat()}},
+                "events": ({
+                    "event": "failure",
+                    "phase": "activation",
+                    "target_boundary": target.isoformat(),
+                    "last_completed_active_frontier": prior.isoformat(),
+                    "target_transition_complete": False,
+                    "generation_publication_occurred": True,
+                },),
+            }
+
+    executor = TrafficProbeExecutor(
+        docker_executable="docker",
+        plan=plan,
+        runner_snapshot=_runner_snapshot(plan),
+        evidence_path=tmp_path / "failed-target.jsonl",
+    )
+    executor._runner = FailedTargetRunner()
+    observed = executor._observe_published_frontier()
+    assert observed == prior
+    assert observed != target
+
+
 def test_cancelled_episode_can_rearm_under_a_revised_lookahead(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

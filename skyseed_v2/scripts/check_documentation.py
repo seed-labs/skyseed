@@ -283,7 +283,7 @@ def _require_current_architecture_text() -> None:
             "30 Plans",
             "persisted-only",
             "Before `BpfRunner` construction",
-            "canonical realization handoff as the semantic payload owner",
+            "sealed Runner artifact as the semantic payload owner",
             "`runtime/execution.json` anchors",
             "`runner-total`",
             "`traffic-total`",
@@ -293,7 +293,7 @@ def _require_current_architecture_text() -> None:
             "PhysicalLinkObservation",
             "Planner / PlannedOperationalState",
             "BPF Compiler / BpfCompiledRealization",
-            "has not yet been rerun after Round B",
+            "120 formal Main activations",
         ),
         "planning": (
             "apply_plan_transition",
@@ -313,10 +313,10 @@ def _require_current_architecture_text() -> None:
             "physical-frames.jsonl",
             "planning.jsonl",
             "compiler.jsonl",
-            "persisted",
-            "bounded concurrent coordinator",
+            "precomputed",
             "Before `BpfRunner` construction",
-            "bounded tuple lookup",
+            "mmap",
+            "one-shot Preparation",
             "semantic_payload_owner",
             "manifest_sha256",
             "successful runtime outcome",
@@ -920,7 +920,7 @@ def _check_maintenance_mapping() -> None:
         "simulator/physical/",
         "simulator/planning/",
         "backend/bpf/",
-        "realization handoff/execution",
+        "Runner artifact/execution",
         "Traffic",
         "public `__init__.py`",
         "current architecture docs",
@@ -1086,10 +1086,10 @@ def _require_production_traceability() -> None:
         )
 
     execution = _read("src/skyseed_v2/experiment/execution.py")
-    if "_PersistedRealizationSupplier" not in execution:
-        raise AssertionError("generated execution is not persisted-realization based")
-    if ("_Rolling" + "RealizationSupplier") in execution:
-        raise AssertionError("synchronous rolling supplier remains")
+    if "_read_runner_artifact_manifest_snapshot" not in execution:
+        raise AssertionError("generated execution is not Runner-artifact based")
+    if "future_realization_supplier" in execution:
+        raise AssertionError("runtime realization supplier remains")
 
 
 def _check_basic_markdown(markdown_files: tuple[Path, ...]) -> None:

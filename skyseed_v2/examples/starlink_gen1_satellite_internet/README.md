@@ -39,8 +39,9 @@ generated `cleanup.sh` before replacing an output with a live Compose project.
 `physical-world` creates static and first-frame inspection. `planner` drains
 the same incremental producer through its Planner-only pull seam and seals
 planning evidence without invoking Compiler. `compiler` drains that producer's
-realization pull seam, persists realizations, and packages generated runtime
-input. There is no second Timeline cursor or batch planning path.
+complete finite realization sequence, seals the Runner artifact, and packages
+generated runtime input. There is no second Timeline cursor or batch planning
+path, and no producer survives into runtime.
 
 The Planner stage requires exactly 30 Plans and 121 transitions. Compiler stage
 requires 121 formal frames, 30 realizations, and 121 activation boundaries.
@@ -54,7 +55,7 @@ The selected output root contains detached inspection, compact exact
 `inspection-evidence/physical-link-observations.jsonl.gz`,
 `domain-history/{physical-frames,planning,compiler}.jsonl`, the terminal
 `domain-history-manifest.json`, and, in Compiler mode, a checksum-verified
-persisted realization handoff plus runtime package.
+sealed typed packed Runner artifact plus runtime package.
 
 Physical World and Planner provide map-first linked 3D/2D workspaces with
 per-timestamp chunks, exact focused candidate relationships, and concrete Model
@@ -75,12 +76,17 @@ records. Every inspection surface is detached and never reruns its Model.
 Traffic's persisted probe plan is projected incrementally from each live
 Plan/realization pair while Compiler production already owns those values. The
 runtime-packaging phase publishes that compact derived artifact; it does not
-reread the persisted Plan history or eagerly decode the Runner realization
-handoff. Runner remains the sole consumer of that validated handoff.
+reread Plan history or reconstruct rich compiled objects. Runner remains the
+sole consumer of the validated precomputed artifact.
 
 ## Qualification boundary
 
 This entry performs offline semantic and compilation work only. It does not
-start the full S3 Compose deployment. Full persisted Runner/Traffic
-qualification has not yet been rerun after Round B and must be reported only
-after its dedicated stage.
+start the full S3 Compose deployment. Runtime qualification uses generated
+`start.sh`, `run.sh`, and independent `cleanup.sh`, and waits for detached tools.
+Preserve prior qualification directories: regeneration must use a fresh explicit
+`--output`, because replacing the default output recursively removes its children.
+Runner completes B0 in Preparation and all 120 formal transitions through the
+600-second frontier. Physical grouped deletion remains inside Main; fixed-origin
+pacing retains actual lateness. Completion and Traffic qualification are separate
+outcomes, recorded in invocation-owned evidence.

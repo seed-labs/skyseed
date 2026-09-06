@@ -14,7 +14,8 @@ flowchart LR
     PW["exact PhysicalWorld"] --> COMP
     PREV["previous realization"] --> COMP
     COMP --> REAL["BpfCompiledRealization"]
-    REAL --> RUN["BpfRunner"]
+    REAL --> ART["sealed Runner artifact"]
+    ART --> RUN["BpfRunner"]
     RUN --> LIVE["RealizedRuntimeState"]
 ```
 
@@ -42,35 +43,106 @@ Zone backend work orders readiness before forwarding publication and retirement.
 
 ## Persistence
 
-Precomputed generation writes a format-version-3 checksum manifest and
-`deterministic-gzip-json-v1` realization records. Before `BpfRunner`
-construction, the persisted supplier eagerly checks the manifest and every
-compressed/uncompressed hash, structurally decodes the complete bounded
-sequence, and validates intent references, state fingerprints, lineage, and
-exact cadence. It does not reconstruct source Plans or repeat Compiler lowering.
-Runner receives the resulting immutable tuple, so every pull is a bounded
-lookup. No live Planner object or pickle is loaded, and Runner maintenance
-performs no persistence, decoding, planning, or compilation.
+Precomputed generation drains the producer, validates the full finite compiled
+sequence, incrementally seals its exact mechanical runtime-capacity demand, and
+seals deterministic format-v2 typed packed runtime tables. Before
+`BpfRunner` construction, generated execution checks source/input identity,
+manifest and binary hashes, version, bounds, lineage, and cadence. Runner opens
+the binary read-only with `mmap` and decodes indexed boundary records without
+reconstructing rich compiled or planned-state objects. No live Planner, online
+supplier, or pickle is loaded.
 
 The compact `domain-history/compiler.jsonl` is separate: it seals lineage,
 fingerprints, activation timestamps, and intent counts, while naming the
-canonical realization handoff as semantic payload owner. The handoff's manifest
-and `.json.gz` files own the complete intended-state/backend-intent payload;
-`runtime/execution.json` anchors their sequence and manifest hashes.
+sealed Runner artifact as semantic payload owner. Its manifest and packed binary
+own the normalized symbolic runtime payload; `runtime/execution.json` anchors
+their sequence and manifest hashes.
 
 ## Runner
 
-`BpfRunner` owns preparation, exact-next activation, bounded future READY
-coverage, maintenance/reclaim, cleanup, runtime bindings, telemetry, and
-`RealizedRuntimeState`. Compiled intended state is not proof of live state.
+`BpfRunner` owns one-shot Preparation, formal Main, cleanup, and realized-state
+snapshots. Preparation opens and validates the sealed finite artifact, decodes
+all boundaries, materializes and validates the complete finite sequence, and
+builds immutable delta plans and their activation JSON wire representation.
+Artifact-local caches reuse decoded identities/timestamps; Preparation reuses
+previous route/access state, stable names/slots, and route-by-interface indexes.
+It discovers container incarnations once, retains
+namespace descriptors and rtnetlink sockets, initializes maps/programs at the
+sealed cumulative capacity, and prewrites every generation-semantic entry.
+Preparation then physically executes boundary 0, from no network to the initial
+network, before returning. The formal clock begins in `run()`, whose first
+possible activation is boundary 1. A one-boundary experiment has no formal
+network activation.
 
-Runner consumes every explicit activation boundary in order. It remains
-unaware of Planner internals. `inspection_snapshot()` returns detached scalar
-evidence without lifecycle side effects; the Runner Tool owns presentation.
+Main consumes a prepared immutable delta: changed connections, affected nodes,
+and normalized operation nodes. Each veth creation includes both deterministic
+MACs, one RX/TX queue per endpoint, and its exact future retirement cohort.
+Interfaces start down; Main configures qdisc/BPF and readiness, changes
+routes/neighbours and live port bindings, then commits
+`active_generation`, then withdraws obsolete routes/bindings and deletes
+withdrawn UP veths directly. One nonzero-group RTM_DELLINK per namespace cohort
+collects devices into kernel grouped unregister, including their implicit peers.
+Exactly one endpoint per pair carries the nonzero group. Independent namespace
+batches use bounded persistent helper workers initialized in Preparation; one
+worker owns each socket and all batches join before Main completes. Cleanup
+uses the same owned cohorts, retains uncertain ownership, and closes the workers.
+Candidate rollback deletes individual new pairs because their future groups can
+also contain previously live pairs. Generation-semantic maps remain immutable throughout formal
+runtime. Future veths remain absent until their own boundary.
 
-Traffic telemetry and Runner control evidence remain separate. Cleanup detaches
-producers, drains telemetry, closes durable output, and removes owned runtime
-resources in bounded order.
+There is no Maintenance thread, READY producer/wait, deferred generation
+completion, or generation reclaim. All finite semantic entries stay resident
+until cleanup. Capacity or identity failures stop generation/Preparation;
+formal Main handles the return status of actual mutations without full-network
+validation or PID/netns rediscovery.
+
+One privileged command stream is established in Preparation. Its long-lived
+process uses retained namespace rtnetlink sockets and BPF file descriptors.
+Main does not launch Docker, namespace, shell, `ip`, or `tc` subprocesses.
+Namespace operations are grouped by affected namespace within pre-publication,
+active-generation publication, and post-publication barriers. Candidate rollback
+uses the same sockets and syscalls. If a retained resource becomes unusable, its
+operation fails; there is no container-restart recovery.
+
+BPF publication is a forwarding subphase. Formal ACTIVE advances only after the
+whole transition, including withdrawals and veth deletion, succeeds. Failure
+preserves the last completed formal frontier and conservative cleanup ownership.
+Before publication, newly allocated candidates may be removed; any remaining
+partial live state is reported. After publication, selected-generation resources
+are retained for final cleanup. Generation reuse does not invent a publication.
+
+Main records compact boundary/barrier timing and enqueues telemetry template
+references with live binding deltas. A background writer expands and serializes
+identity records; observation never gates the next boundary. Cleanup owns final
+network/BPF teardown, telemetry drain, privileged facility closure, and artifact
+handle closure. Automatic deadlines use one fixed monotonic runtime origin plus
+each nominal offset. Lateness consumes available idle time; an overrun executes
+the next boundary when available and reports actual lag. All transitions remain
+sequential and complete, with no skipped boundaries or reset origin. The helper
+arrival clock is observational. Manual activation uses the same ordered plans.
+
+The private BPF logical port is a non-zero uint32 allocated by the finite
+artifact writer for one node-side connection endpoint. The manifest stores each
+connection and both endpoint IDs explicitly; IDs survive withdrawal/recreation
+across every generation of that artifact. They are not public domain values or
+root exports. Live ifindexes occur only in small per-node binding maps.
+
+| Map | Key | Value |
+|---|---|---|
+| `active_generation` | `0` | generation |
+| per-node `active_links` | `(generation, logical_ingress_port_id)` | `1` |
+| per-node `routes` | `(generation, destination_ipv4_u32)` | logical egress port; `0` for local |
+| per-node `ingress_bindings` | live ifindex | logical port |
+| per-node `egress_bindings` | logical port | live ifindex |
+
+The packet program reads the active generation, translates ingress ifindex,
+checks the generation's active logical ingress, resolves the destination, passes
+local routes, and translates a non-local logical egress before redirecting.
+Missing generation, active link, route, or required live binding drops the
+packet. Prewritten future entries remain invisible until generation publication.
+Binding capacities use the add-before-withdraw interface high-water; semantic
+map capacities use complete finite cumulative demand. No generation is reclaimed
+during formal runtime.
 
 Compiler contracts are documented in
 `docs/codex-reference/bpf-compiler.md`; producer/runtime persistence in

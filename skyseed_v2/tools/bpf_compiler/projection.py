@@ -244,9 +244,9 @@ def project_compact_bpf_compiler_data(
             "status": "non-authoritative-view",
             "source": "producer-owned compact exact Compiler evidence",
             "compiler": "not invoked by this Tool",
-            "handoff": (
+            "runner_artifact": (
                 "normal compact-evidence Tool path does not materialize "
-                "the runtime handoff"
+                "the Runner artifact"
             ),
             "planned_state": "intended semantic state, not runtime state",
         },

@@ -14,8 +14,8 @@ from examples.complete_static_emulator.simu import (
 )
 from skyseed_v2.backend.bpf.compiler import _compile_bpf_observed
 from skyseed_v2.experiment import execution
-from skyseed_v2.experiment._realization_handoff import (
-    _write_realization_handoff,
+from skyseed_v2.backend.bpf._runner_artifact import (
+    _write_runner_artifact,
 )
 from skyseed_v2.experiment.traffic.probe_plan import (
     TrafficProbePlanBuilder,
@@ -145,7 +145,7 @@ def _records(path: Path) -> Path:
         )
     for component, stage in (
         ("realization-producer", "producer-total"),
-        ("realization-handoff-writer", "writer-total"),
+        ("runner-artifact-writer", "writer-total"),
         ("runner", "runner-total"),
         ("traffic", "traffic-total"),
     ):
@@ -209,7 +209,7 @@ def test_projection_uses_actual_pipeline_groups_and_duration_roles(tmp_path) -> 
         "Plan publication",
         "Compiler",
         "realization producer",
-        "realization handoff writer",
+        "Runner artifact writer",
         "Runner",
         "Traffic",
     ):
@@ -453,9 +453,9 @@ def test_real_pipeline_and_runtime_wrapper_emit_owned_observation_evidence(
     )
     plans, realizations, _snapshot = run_complete_static_chain(simulator)
     simulator._write_execution_observations()
-    manifest = _write_realization_handoff(
+    manifest = _write_runner_artifact(
         realizations,
-        output / "runtime/realizations",
+        output / "runtime/runner-artifact",
     )
     write_traffic_probe_plan(
         TrafficProbePlanBuilder().build(plans, realizations),
@@ -464,8 +464,7 @@ def test_real_pipeline_and_runtime_wrapper_emit_owned_observation_evidence(
 
     class _Runner:
         def __init__(self, **facts) -> None:
-            self._supplier = facts["future_realization_supplier"]
-            self._realizations = []
+            self._artifact = facts["runtime_artifact"]
             self._state = "new"
 
         def _enable_event_history(self, _path) -> None:
@@ -475,11 +474,6 @@ def test_real_pipeline_and_runtime_wrapper_emit_owned_observation_evidence(
             pass
 
         def prepare(self) -> None:
-            while True:
-                value = self._supplier()
-                if value is None:
-                    break
-                self._realizations.append(value)
             self._state = "prepared"
 
         def run(self) -> None:
@@ -492,7 +486,7 @@ def test_real_pipeline_and_runtime_wrapper_emit_owned_observation_evidence(
             return {
                 "runner": {
                     "lifecycle_state": self._state,
-                    "realization_count": len(self._realizations),
+                    "artifact": {"boundary_count": 6},
                 }
             }
 
@@ -510,17 +504,14 @@ def test_real_pipeline_and_runtime_wrapper_emit_owned_observation_evidence(
     monkeypatch.setattr(execution, "TrafficProbeExecutor", _Traffic)
     monkeypatch.setattr(
         execution,
-        "_read_and_verify_execution_definition",
-        lambda _output: {
-            "runner": {
-                "preparation_lookahead_seconds": None,
-                "preparation_boundary_depth": None,
-            },
-            "realization_handoff": {
+        "_read_and_verify_execution",
+        lambda _output: ({
+            "runner": {"execution_contract": "sealed-precomputed-only"},
+            "runner_artifact": {
                 "manifest": str(manifest.relative_to(output)),
             },
             "generated_output_identity": "observation-runtime-proof",
-        },
+        }, manifest, {"realization_count": 2, "boundary_count": 6}),
     )
 
     execution._run_generated_bpf_experiment(output)
@@ -599,7 +590,8 @@ def test_real_pipeline_and_runtime_wrapper_emit_owned_observation_evidence(
         )
     )
     assert handoff["runtime_outcome"]["status"] == "completed"
-    assert handoff["runner_snapshot"]["runner"]["realization_count"] == 2
+    assert handoff["runner_snapshot"]["runner"]["lifecycle_state"] == "cleaned"
+    assert handoff["runner_snapshot"]["runner"]["artifact"]["boundary_count"] == 6
 
 
 def test_compiler_observation_is_one_shot_and_semantically_inert() -> None:

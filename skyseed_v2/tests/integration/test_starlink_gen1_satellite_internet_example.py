@@ -46,9 +46,9 @@ from skyseed_v2.configuration.simulator import load_zone_layout_definition
 from skyseed_v2.emulator.entities import GroundStation, GroundStationLocation
 from skyseed_v2.emulator.seedemu import get_skyseed_autonomous_systems
 from skyseed_v2.emulator_to_simulator import create_simulator_static_input
-from skyseed_v2.experiment._realization_handoff import (
-    _RealizationHandoffWriter,
-    _read_persisted_realization_sequence,
+from skyseed_v2.backend.bpf._runner_artifact import (
+    _RunnerArtifactWriter,
+    _open_runner_artifact,
 )
 from skyseed_v2.shared._execution_observation import _ExecutionObserver
 from skyseed_v2.simulator import (
@@ -197,6 +197,13 @@ def starlink_plan_realization(starlink_simulator: Simulator):
         transitions=(initial, unchanged),
     )
     return plan, compile_bpf(plan, physical_world, None)
+
+
+def test_starlink_gen1_runtime_has_no_rolling_availability_policy() -> None:
+    source = (EXAMPLE_ROOT / "main.py").read_text(encoding="utf-8")
+    assert "_RUNNER_PREPARATION_LOOKAHEAD" not in source
+    assert "_RUNNER_PREPARATION_BOUNDARY_DEPTH" not in source
+    assert "future_realization_supplier" not in source
 
 
 def test_starlink_gen1_frozen_inputs_are_deterministic_and_v2_local() -> None:
@@ -1136,7 +1143,7 @@ def test_starlink_gen1_composition_is_explicitly_unadvanced_by_default() -> None
     assert physical_world.frame_at(REFERENCE_EPOCH).timestamp == REFERENCE_EPOCH
 
 
-def test_starlink_gen1_entry_packages_common_producer_and_persisted_handoff() -> None:
+def test_starlink_gen1_entry_packages_common_producer_and_runner_artifact() -> None:
     imported_modules = set()
     for name in ("main.py", "simu.py"):
         tree = ast.parse((EXAMPLE_ROOT / name).read_text(encoding="utf-8"))
@@ -1152,7 +1159,7 @@ def test_starlink_gen1_entry_packages_common_producer_and_persisted_handoff() ->
             for alias in node.names
         )
     assert "skyseed_v2.experiment._realization_producer" in imported_modules
-    assert "skyseed_v2.experiment._realization_handoff" in imported_modules
+    assert "skyseed_v2.backend.bpf._runner_artifact" in imported_modules
     assert "skyseed_v2.experiment.execution" in imported_modules
     assert "skyseed_v2.backend.bpf" not in imported_modules
     assert "tools._detached_inspection" in imported_modules
@@ -1164,7 +1171,7 @@ def test_starlink_gen1_entry_packages_common_producer_and_persisted_handoff() ->
     assert "produce_next_realization()" in main_source
     assert "first_formal_input()" in main_source
     assert "compile_bpf(" not in main_source
-    assert "_RealizationHandoffWriter" in main_source
+    assert "_RunnerArtifactWriter" in main_source
     assert "_write_execution_definition" in main_source
     assert "_write_generated_run_script" in main_source
     assert "SKYSEED_RUNNER_ACTIVATION_LIMIT" not in main_source
@@ -1330,7 +1337,7 @@ def test_starlink_gen1_compiler_handoff_survives_static_tool_failure(
 
     def run_compiler(candidate, destination, **_kwargs):
         assert candidate is simulator
-        staging = destination / ".canonical-realizations"
+        staging = destination / ".runner-artifact"
         staging.mkdir()
         manifest = staging / "manifest.json"
         manifest.write_text("{}\n", encoding="utf-8")
@@ -1345,8 +1352,8 @@ def test_starlink_gen1_compiler_handoff_survives_static_tool_failure(
     def write_runtime(
         destination, *, emulator, simulator, staged_manifest, **_kwargs
     ):
-        assert staged_manifest == destination / ".canonical-realizations/manifest.json"
-        manifest = destination / "runtime/realizations/manifest.json"
+        assert staged_manifest == destination / ".runner-artifact/manifest.json"
+        manifest = destination / "runtime/runner-artifact/manifest.json"
         manifest.parent.mkdir(parents=True)
         manifest.write_text('{"terminal":true}\n', encoding="utf-8")
         events.append("runtime-handoff-ready")
@@ -1363,7 +1370,7 @@ def test_starlink_gen1_compiler_handoff_survives_static_tool_failure(
         assert candidate is simulator
         assert physical_frame is first_frame
         assert physical_link_observation is first_observation
-        assert (output / "runtime/realizations/manifest.json").is_file()
+        assert (output / "runtime/runner-artifact/manifest.json").is_file()
         events.append("static-tool-failed")
         return {
             "physical-world": {
@@ -1394,7 +1401,7 @@ def test_starlink_gen1_compiler_handoff_survives_static_tool_failure(
     assert events.index("compiler-domain-complete") < events.index(
         "runtime-handoff-ready"
     ) < events.index("static-tool-failed")
-    assert (output / "runtime/realizations/manifest.json").is_file()
+    assert (output / "runtime/runner-artifact/manifest.json").is_file()
 
 
 def test_starlink_gen1_planner_boundary_never_pulls_compiler(
@@ -1473,7 +1480,7 @@ def test_starlink_gen1_planner_boundary_never_pulls_compiler(
     assert observation is first_observation
 
 
-def test_starlink_gen1_compiler_stage_drains_thirty_rolling_publications(
+def test_starlink_gen1_compiler_stage_drains_before_artifact_seal(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -1515,7 +1522,7 @@ def test_starlink_gen1_compiler_stage_drains_thirty_rolling_publications(
 
     class FocusedWriter:
         def __init__(self, directory, *, execution_observer=None):
-            assert directory == tmp_path / ".canonical-realizations"
+            assert directory == tmp_path / ".runner-artifact"
             assert execution_observer is None
 
         def append(self, realization):
@@ -1523,7 +1530,7 @@ def test_starlink_gen1_compiler_stage_drains_thirty_rolling_publications(
 
         def finalize(self):
             appended.append("handoff-finalized")
-            return tmp_path / ".canonical-realizations/manifest.json"
+            return tmp_path / ".runner-artifact/manifest.json"
 
     class FocusedEvidenceWriter:
         def __init__(self, *_args):
@@ -1563,7 +1570,7 @@ def test_starlink_gen1_compiler_stage_drains_thirty_rolling_publications(
     )
     monkeypatch.setattr(
         starlink_main,
-        "_RealizationHandoffWriter",
+        "_RunnerArtifactWriter",
         FocusedWriter,
     )
     monkeypatch.setattr(
@@ -1592,7 +1599,7 @@ def test_starlink_gen1_compiler_stage_drains_thirty_rolling_publications(
         for index, realization in enumerate(emitted)
     ]
     assert appended[30:] == ["producer-closed", "handoff-finalized"]
-    assert manifest == tmp_path / ".canonical-realizations/manifest.json"
+    assert manifest == tmp_path / ".runner-artifact/manifest.json"
     assert snapshot["transition_count"] == 121
     assert snapshot["plan_count"] == snapshot["realization_count"] == 30
     assert frame is first_frame
@@ -1674,31 +1681,26 @@ def test_starlink_gen1_public_compiler_emits_plan_aligned_observation(
     assert records[-1]["duration_role"] == "rollup"
 
 
-def test_starlink_gen1_precomputed_handoff_is_data_only_and_replay_complete(
+def test_starlink_gen1_precomputed_artifact_is_packed_and_complete(
     tmp_path: Path,
     starlink_simulator: Simulator,
     starlink_plan_realization,
 ) -> None:
     plan, realization = starlink_plan_realization
-    writer = _RealizationHandoffWriter(tmp_path / "realizations")
+    writer = _RunnerArtifactWriter(tmp_path / "realizations")
     writer.append(realization)
     manifest_path = writer.finalize()
-    restored = _read_persisted_realization_sequence(manifest_path)
+    artifact = _open_runner_artifact(manifest_path)
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert manifest["data_only"] is True
+    assert manifest["encoding"] == "typed-packed-runtime-tables-v3"
     assert manifest["terminal"] is True
     assert manifest["realization_count"] == 1
-    assert manifest["realizations"][0]["source_plan_id"] == plan.plan_id
-    assert manifest["realizations"][0]["activation_count"] == 2
-    assert restored == (realization,)
-    assert restored[0].output_planned_state == apply_plan(
-        None,
-        plan,
-        physical_world_fingerprint=(
-            starlink_simulator.get_physical_world().semantic_fingerprint()
-        ),
-    )
+    assert manifest["lineage"][0]["source_plan_id"] == plan.plan_id
+    assert manifest["binary"]["boundary_count"] == 2
+    assert artifact.boundary_count == 2
+    assert artifact.snapshot()["rich_compiled_realizations_reconstructed"] is False
+    artifact.close()
 
 
 def test_starlink_gen1_plan_and_compiler_boundaries_are_formal_and_adjacent(

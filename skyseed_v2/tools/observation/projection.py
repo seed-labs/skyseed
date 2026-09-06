@@ -16,7 +16,7 @@ _TOP_LEVEL_TIMING_STAGES = {
     "planner": ("planning-total", "publication-total"),
     "compiler": ("compile-total",),
     "realization-producer": ("producer-total",),
-    "realization-handoff-writer": ("writer-total",),
+    "runner-artifact-writer": ("writer-total",),
     "runner": ("runner-total",),
     "traffic": ("traffic-total",),
 }
@@ -73,8 +73,8 @@ _PIPELINE_GROUPS = (
     ),
     ("realization producer", (("realization-producer", "*"),)),
     (
-        "realization handoff writer",
-        (("realization-handoff-writer", "*"),),
+        "Runner artifact writer",
+        (("runner-artifact-writer", "*"),),
     ),
     ("Runner", (("runner", "*"),)),
     ("Traffic", (("traffic", "*"),)),

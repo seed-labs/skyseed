@@ -1,27 +1,31 @@
-"""Execute one privileged tc-BPF command for the private BPF Runner."""
+"""Serve one retained privileged kernel execution channel for BpfRunner."""
 
 from __future__ import annotations
 
 import ctypes
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import errno
 from ipaddress import IPv4Address, IPv4Network, ip_interface, ip_network
 import json
 import os
 from pathlib import Path
 import re
+import resource
 import socket
 import struct
 import subprocess
 import sys
 import traceback
-from threading import Lock
+from threading import Barrier, Lock, local
 from time import monotonic, monotonic_ns
 from typing import Any
 
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
+
+from skyseed_v2.backend.bpf._runner.kernel_netlink import _RouteSocket
+from skyseed_v2.backend.bpf._runner import kernel_netlink as _netlink
 
 from skyseed_v2.backend.bpf._runner.traffic_telemetry_abi import (
     _TELEMETRY_DECISION_DROP,
@@ -38,13 +42,17 @@ from skyseed_v2.backend.bpf._runner.traffic_telemetry_abi import (
     _TELEMETRY_REASON_TRUNCATED_L2,
     _telemetry_event_schema,
 )
+from skyseed_v2.backend.bpf._runner.process_incarnation import (
+    _capture_process_incarnations,
+    _read_process_start_time_ticks,
+)
 
 
 _BPF_MAP_CREATE = 0
 _BPF_MAP_LOOKUP_ELEM = 1
 _BPF_MAP_UPDATE_ELEM = 2
 _BPF_MAP_DELETE_ELEM = 3
-_BPF_MAP_DELETE_BATCH = 27
+_BPF_MAP_UPDATE_BATCH = 26
 _BPF_PROG_LOAD = 5
 _BPF_OBJ_PIN = 6
 _BPF_OBJ_GET = 7
@@ -64,48 +72,31 @@ _TC_ACT_SHOT = 2
 _PIN_PARENT = Path("/sys/fs/bpf/skyseed-v2")
 _INTERFACE_NAME = re.compile(r"sv2[0-9a-f]{10}[ab]")
 _TELEMETRY_RING_CAPACITY = 1 << 20
-_METRICS_LOCK = Lock()
-_ACTIVE_METRICS: dict[str, Any] | None = None
+_BPF_UPDATE_BATCH_SIZE = 1024
 
 
-def _record_metric(name: str, amount: int = 1) -> None:
-    with _METRICS_LOCK:
-        if _ACTIVE_METRICS is not None:
-            _ACTIVE_METRICS[name] = int(_ACTIVE_METRICS.get(name, 0)) + amount
+class _InitializationFailure(RuntimeError):
+    """Retain ownership when failed startup could not finish its own cleanup."""
+
+    def __init__(self, message: str, *, evidence: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.evidence = evidence
 
 
-def _record_batch_size(size: int) -> None:
-    if size <= 0:
-        return
-    with _METRICS_LOCK:
-        if _ACTIVE_METRICS is not None:
-            _ACTIVE_METRICS.setdefault("batch_sizes", []).append(size)
+class _PrePublicationActivationFailure(RuntimeError):
+    """Carry cleanup ownership after a failed pre-publication mutation."""
+
+    def __init__(self, message: str, *, evidence: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.evidence = evidence
 
 
-def _record_worker_limit(workers: int) -> None:
-    with _METRICS_LOCK:
-        if _ACTIVE_METRICS is not None:
-            _ACTIVE_METRICS["worker_limit"] = max(
-                workers, int(_ACTIVE_METRICS.get("worker_limit", 1))
-            )
+class _PostPublicationActivationFailure(RuntimeError):
+    """Report failure after BPF forwarding publication without pseudo-rollback."""
 
-
-def _run_observed_worker(operation, item):
-    with _METRICS_LOCK:
-        if _ACTIVE_METRICS is not None:
-            active = int(_ACTIVE_METRICS.get("active_workers", 0)) + 1
-            _ACTIVE_METRICS["active_workers"] = active
-            _ACTIVE_METRICS["worker_high_water"] = max(
-                active, int(_ACTIVE_METRICS.get("worker_high_water", 0))
-            )
-    try:
-        return operation(item)
-    finally:
-        with _METRICS_LOCK:
-            if _ACTIVE_METRICS is not None:
-                _ACTIVE_METRICS["active_workers"] = max(
-                    0, int(_ACTIVE_METRICS.get("active_workers", 1)) - 1
-                )
+    def __init__(self, message: str, *, evidence: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.evidence = evidence
 
 
 def _worker_count(request: dict[str, Any], item_count: int) -> int:
@@ -118,23 +109,12 @@ def _worker_count(request: dict[str, Any], item_count: int) -> int:
 
 
 def _parallel_map(request: dict[str, Any], items: list[Any], operation) -> list[Any]:
-    """Run deterministic resource-local batches through one bounded executor."""
-
+    """Bound independent startup namespace work; formal Main never calls this."""
     if not items:
         return []
     workers = _worker_count(request, len(items))
-    _record_worker_limit(workers)
-    _record_metric("parallel_phase_count")
-    _record_metric("parallel_task_count", len(items))
-    if workers == 1:
-        return [_run_observed_worker(operation, item) for item in items]
-    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="skyseed-bpf") as pool:
-        return list(
-            pool.map(
-                lambda item: _run_observed_worker(operation, item),
-                items,
-            )
-        )
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="skyseed-bpf-prepare") as pool:
+        return list(pool.map(operation, items))
 
 
 class _BpfMapCreate(ctypes.Structure):
@@ -216,14 +196,16 @@ def _bpf_syscall_number() -> int:
         raise RuntimeError("unsupported architecture for raw BPF syscall") from error
 
 
+_BPF_CALLS = local()
+_JOINED_NETLINK_CALLS = 0
+
+
 def _bpf(command: int, attributes: ctypes.Structure) -> int:
-    _record_metric("bpf_syscalls")
-    if command == _BPF_MAP_UPDATE_ELEM:
-        _record_metric("bpf_map_update_syscalls")
-    elif command in {_BPF_MAP_DELETE_ELEM, _BPF_MAP_DELETE_BATCH}:
-        _record_metric("bpf_map_delete_syscalls")
-        if command == _BPF_MAP_DELETE_BATCH:
-            _record_metric("bpf_map_delete_batch_syscalls")
+    if command in (1, 2, 3, 26):
+        counts = getattr(_BPF_CALLS, "counts", None)
+        if counts is None:
+            counts = _BPF_CALLS.counts = {1: 0, 2: 0, 3: 0, 26: 0}
+        counts[command] += 1
     result = _LIBC.syscall(
         _bpf_syscall_number(),
         command,
@@ -234,6 +216,32 @@ def _bpf(command: int, attributes: ctypes.Structure) -> int:
         error_number = ctypes.get_errno()
         raise OSError(error_number, os.strerror(error_number))
     return int(result)
+
+
+def _kernel_call_counts() -> dict[str, int]:
+    counts = getattr(_BPF_CALLS, "counts", {1: 0, 2: 0, 3: 0, 26: 0})
+    return {"netlink_request_calls": _netlink._request_count() + _JOINED_NETLINK_CALLS,
+            "bpf_lookup_calls": counts[1], "bpf_update_calls": counts[2],
+            "bpf_delete_calls": counts[3], "bpf_update_batch_calls": counts[26]}
+
+
+def _timed_call(timings: dict[str, list[int]] | None, category: str, operation, *args, **kwargs):
+    """Accumulate attempted call wall time, including a failing call; no per-call records."""
+    if timings is None:
+        return operation(*args, **kwargs)
+    started = monotonic_ns()
+    try:
+        return operation(*args, **kwargs)
+    finally:
+        elapsed = monotonic_ns() - started
+        value = timings.setdefault(category, [0, 0])
+        value[0] += elapsed
+        value[1] += 1
+
+
+def _timing_records(timings: dict[str, list[int]]) -> dict[str, dict[str, Any]]:
+    return {name: {"duration_seconds": value[0] / 1e9, "operation_count": value[1]}
+            for name, value in timings.items()}
 
 
 def _create_map(
@@ -288,6 +296,88 @@ def _update_map(
     _bpf(_BPF_MAP_UPDATE_ELEM, attributes)
 
 
+def _update_map_batch(
+    file_descriptor: int,
+    entries: tuple[tuple[int | tuple[int, int], int], ...],
+) -> int:
+    """Update one exact bounded key/value set with one batch syscall."""
+
+    if not entries:
+        return 0
+    if len(entries) > _BPF_UPDATE_BATCH_SIZE:
+        raise ValueError("BPF batch update exceeds the bounded chunk size")
+    normalized_keys = tuple(
+        (key,) if isinstance(key, int) else tuple(key) for key, _ in entries
+    )
+    key_width = len(normalized_keys[0])
+    if key_width not in {1, 2} or any(
+        len(key) != key_width for key in normalized_keys
+    ):
+        raise ValueError("BPF batch-update keys must have one fixed width")
+    key_buffer = ctypes.create_string_buffer(
+        b"".join(
+            struct.pack(f"={key_width}I", *key) for key in normalized_keys
+        )
+    )
+    value_buffer = ctypes.create_string_buffer(
+        b"".join(struct.pack("=I", int(value)) for _, value in entries)
+    )
+    attributes = _BpfMapBatch(
+        keys=ctypes.addressof(key_buffer),
+        values=ctypes.addressof(value_buffer),
+        count=len(entries),
+        map_fd=file_descriptor,
+        elem_flags=_BPF_ANY,
+    )
+    _bpf(_BPF_MAP_UPDATE_BATCH, attributes)
+    updated = int(attributes.count)
+    if updated != len(entries):
+        raise RuntimeError(
+            "BPF batch-update did not process every requested entry: "
+            f"requested={len(entries)}, updated={updated}"
+        )
+    return updated
+
+
+def _update_map_entries(
+    file_descriptor: int,
+    entries: tuple[tuple[int | tuple[int, int], int], ...],
+    *,
+    batch_supported: bool,
+) -> int:
+    """Apply deterministic chunks or the capability-tested baseline path."""
+
+    if not batch_supported:
+        for key, value in entries:
+            _update_map(file_descriptor, key, value)
+        return len(entries)
+    updated = 0
+    for offset in range(0, len(entries), _BPF_UPDATE_BATCH_SIZE):
+        updated += _update_map_batch(
+            file_descriptor,
+            entries[offset : offset + _BPF_UPDATE_BATCH_SIZE],
+        )
+    return updated
+
+
+def _probe_batch_update_support() -> bool:
+    """Test the update-batch command on one disposable unpinned map."""
+
+    file_descriptor = _create_map(
+        "skyseed_batch", key_size=8, max_entries=1
+    )
+    try:
+        try:
+            _update_map_batch(file_descriptor, (((0, 0), 1),))
+        except OSError as error:
+            if error.errno in {errno.EINVAL, errno.ENOSYS, errno.EOPNOTSUPP}:
+                return False
+            raise
+        return True
+    finally:
+        os.close(file_descriptor)
+
+
 def _lookup_map(
     file_descriptor: int, key: int | tuple[int, int]
 ) -> int | None:
@@ -337,43 +427,6 @@ def _delete_map(file_descriptor: int, key: int | tuple[int, int]) -> bool:
             return False
         raise
     return True
-
-
-def _delete_map_batch(
-    file_descriptor: int,
-    keys: tuple[int | tuple[int, int], ...],
-) -> int:
-    """Delete one exact key set with one fail-closed kernel batch syscall."""
-
-    if not keys:
-        return 0
-    normalized = tuple(
-        (key,) if isinstance(key, int) else tuple(key)
-        for key in keys
-    )
-    key_width = len(normalized[0])
-    if key_width not in {1, 2} or any(
-        len(key) != key_width for key in normalized
-    ):
-        raise ValueError("BPF batch-delete keys must have one fixed width")
-    packed = b"".join(
-        struct.pack(f"={key_width}I", *key) for key in normalized
-    )
-    key_buffer = ctypes.create_string_buffer(packed)
-    attributes = _BpfMapBatch(
-        keys=ctypes.addressof(key_buffer),
-        count=len(normalized),
-        map_fd=file_descriptor,
-    )
-    _bpf(_BPF_MAP_DELETE_BATCH, attributes)
-    deleted = int(attributes.count)
-    if deleted != len(normalized):
-        raise RuntimeError(
-            "BPF batch-delete did not process every requested key: "
-            f"requested={len(normalized)}, deleted={deleted}"
-        )
-    _record_metric("bpf_map_delete_operations", deleted)
-    return deleted
 
 
 def _instruction(
@@ -459,6 +512,8 @@ def _tc_program(
     active_generation_map: int,
     active_map: int,
     route_map: int,
+    ingress_binding_map: int,
+    egress_binding_map: int,
     *,
     telemetry_ring_map: int | None = None,
     telemetry_loss_map: int | None = None,
@@ -556,6 +611,14 @@ def _tc_program(
         program.emit(0x63, destination=10, source=9, offset=-36)
 
     program.emit(0x61, destination=4, source=6, offset=40)  # skb->ifindex
+    program.emit(0x63, destination=10, source=4, offset=-76)
+    program.load_map(1, ingress_binding_map)
+    program.emit(0xBF, destination=2, source=10)
+    program.emit(0x07, destination=2, immediate=-76)
+    program.emit(0x85, immediate=_BPF_FUNC_MAP_LOOKUP_ELEM)
+    program.jump(0x15, destination=0, immediate=0, label="inactive_ingress")
+    program.emit(0x61, destination=4, source=0, offset=0)
+    program.jump(0x15, destination=4, immediate=0, label="inactive_ingress")
     program.emit(0x63, destination=10, source=9, offset=-64)
     program.emit(0x63, destination=10, source=4, offset=-60)
     program.load_map(1, active_map)
@@ -574,6 +637,14 @@ def _tc_program(
     program.jump(0x15, destination=0, immediate=0, label="no_route")
     program.emit(0x61, destination=1, source=0, offset=0)
     program.jump(0x15, destination=1, immediate=0, label="local_route")
+    program.emit(0x63, destination=10, source=1, offset=-80)
+    program.load_map(1, egress_binding_map)
+    program.emit(0xBF, destination=2, source=10)
+    program.emit(0x07, destination=2, immediate=-80)
+    program.emit(0x85, immediate=_BPF_FUNC_MAP_LOOKUP_ELEM)
+    program.jump(0x15, destination=0, immediate=0, label="no_route")
+    program.emit(0x61, destination=1, source=0, offset=0)
+    program.jump(0x15, destination=1, immediate=0, label="no_route")
     if telemetry_enabled:
         program.emit(0x63, destination=10, source=1, offset=-28)
         terminal(
@@ -681,6 +752,8 @@ def _load_program(
     active_generation_map: int,
     active_map: int,
     route_map: int,
+    ingress_binding_map: int,
+    egress_binding_map: int,
     *,
     telemetry_ring_map: int | None = None,
     telemetry_loss_map: int | None = None,
@@ -690,6 +763,8 @@ def _load_program(
         active_generation_map,
         active_map,
         route_map,
+        ingress_binding_map,
+        egress_binding_map,
         telemetry_ring_map=telemetry_ring_map,
         telemetry_loss_map=telemetry_loss_map,
         node_slot=node_slot,
@@ -720,11 +795,6 @@ def _run(
     input_text: str | None = None,
     tolerate_failure: bool = False,
 ) -> subprocess.CompletedProcess[str]:
-    _record_metric("external_processes")
-    if command and command[0] == "nsenter":
-        _record_metric("namespace_processes")
-    if input_text is not None and "-batch" in command:
-        _record_batch_size(sum(bool(line.strip()) for line in input_text.splitlines()))
     result = subprocess.run(
         command,
         input=input_text,
@@ -761,6 +831,13 @@ def _pin_root(value: str) -> Path:
 
 def _assert_netns(node: dict[str, Any]) -> None:
     pid = int(node["pid"])
+    expected_start_time = int(node["process_start_time_ticks"])
+    actual_start_time = _read_process_start_time_ticks(pid)
+    if actual_start_time != expected_start_time:
+        raise RuntimeError(
+            f"node process incarnation is stale: pid={pid}, "
+            f"expected={expected_start_time}, actual={actual_start_time}"
+        )
     expected = int(node["netns_inode"])
     try:
         actual = os.stat(f"/proc/{pid}/ns/net").st_ino
@@ -785,44 +862,6 @@ def _in_netns(
         input_text=input_text,
         tolerate_failure=tolerate_failure,
     )
-
-
-def _interface_index(pid: int, interface_name: str) -> int:
-    result = _in_netns(
-        pid,
-        ["ip", "-j", "link", "show", "dev", interface_name],
-    )
-    values = json.loads(result.stdout)
-    if len(values) != 1 or not isinstance(values[0].get("ifindex"), int):
-        raise RuntimeError(f"cannot resolve interface index: {interface_name}")
-    return int(values[0]["ifindex"])
-
-
-def _interface_indexes(pid: int, interface_names: set[str]) -> dict[str, int]:
-    """Resolve any number of Runner interfaces in one namespace query."""
-
-    expected = {_assert_interface_name(value) for value in interface_names}
-    if not expected:
-        return {}
-    _record_metric("interface_identity_queries")
-    values = _json_list(
-        _in_netns(pid, ["ip", "-j", "link", "show"]),
-        context="Runner interface identity query",
-    )
-    resolved = {
-        value["ifname"]: int(value["ifindex"])
-        for value in values
-        if isinstance(value, dict)
-        and value.get("ifname") in expected
-        and isinstance(value.get("ifindex"), int)
-    }
-    if set(resolved) != expected or any(value <= 0 for value in resolved.values()):
-        missing = sorted(expected - set(resolved))
-        raise RuntimeError(
-            "cannot resolve stable Runner interface identities: "
-            f"missing={missing}"
-        )
-    return resolved
 
 
 def _ip_key(address: str) -> int:
@@ -950,12 +989,14 @@ def _audit_node_addresses(request: dict[str, Any]) -> dict[str, Any]:
             if collision is not None:
                 raise RuntimeError(
                     "Runner node address range collides with live namespace "
-                    f"{source} before READY: node={node['key']}, "
+                    f"{source} during Preparation: node={node['key']}, "
                     f"selected={selected_range}, observed={collision}"
                 )
         return len(address_networks), len(route_networks)
 
-    observed = _parallel_map(request, list(nodes), audit_node)
+    observed = _parallel_map(
+        request, list(nodes), audit_node
+    )
     observed_addresses = sum(value[0] for value in observed)
     observed_routes = sum(value[1] for value in observed)
     return {
@@ -974,19 +1015,204 @@ def _audit_node_addresses(request: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+_LIVE_NODES: dict[str, dict[str, Any]] = {}
+_GENERATION_FD = -1
+_OWNED_PIN_ROOT: Path | None = None
+_OWNED_NODE_ADDRESSES: set[str] = set()
+_INITIALIZATION_REQUESTED = False
+_FOUNDATION_OUTCOME = "no-mutation"
+
+
+_RETIREMENT_POOL: ThreadPoolExecutor | None = None
+_RETIREMENT_WORKERS = 0
+_OWNED_RETIREMENTS: dict[tuple[str, int], dict[str, dict[str, Any]]] = {}
+
+
+def _start_retirement_workers(count: int) -> None:
+    global _RETIREMENT_POOL, _RETIREMENT_WORKERS
+    if _RETIREMENT_POOL is not None:
+        raise RuntimeError("retirement workers already initialized")
+    _RETIREMENT_WORKERS = count
+    _RETIREMENT_POOL = ThreadPoolExecutor(max_workers=count, thread_name_prefix="skyseed-bpf-retire")
+    ready = Barrier(count + 1)
+    futures = [_RETIREMENT_POOL.submit(ready.wait) for _ in range(count)]
+    ready.wait()
+    for future in futures:
+        future.result()
+
+
+def _forget_connection(connection):
+    key = (connection["retirement_node"], connection["retirement_group"])
+    owned = _OWNED_RETIREMENTS[key]
+    owned.pop(connection["connection"])
+    if not owned:
+        del _OWNED_RETIREMENTS[key]
+    for side in ("a", "b"):
+        _LIVE_NODES[connection[f"node_{side}"]]["indexes"].pop(connection[f"interface_{side}"], None)
+
+
+def _retire_batches(batches, *, cleanup=False):
+    """Join bounded namespace jobs; each retained socket has one ACK reader."""
+    global _JOINED_NETLINK_CALLS
+    started = monotonic_ns()
+    by_node = {}
+    for batch in batches:
+        key = (batch["key"], batch["group"])
+        owned = _OWNED_RETIREMENTS.get(key, {})
+        if {value["connection"] for value in batch["connections"]} != owned.keys():
+            raise RuntimeError("retirement batch differs from the exact owned cohort")
+        by_node.setdefault(batch["key"], []).append(batch)
+    result = {"retired_pairs": 0, "deletion_requests": 0, "grouped_batches": 0,
+              "task_duration_seconds_sum": 0.0, "errors": [],
+              "workers": min(_RETIREMENT_WORKERS, len(by_node))}
+
+    def retire_node(item):
+        key, values = item
+        task_started = monotonic_ns()
+        calls = _netlink._request_count()
+        confirmed = []
+        errors = []
+        attempted = 0
+        for batch in values:
+            attempted += 1
+            try:
+                _LIVE_NODES[key]["netlink"].delete_group(batch["group"])
+            except OSError as error:
+                if not cleanup or error.errno not in (errno.ENODEV, errno.ENOENT):
+                    errors.append(f"{key} group {batch['group']}: {error}")
+                    continue
+            except Exception as error:
+                errors.append(f"{key} group {batch['group']}: {error}")
+                continue
+            confirmed.append(batch)
+        return confirmed, errors, attempted, _netlink._request_count() - calls, monotonic_ns() - task_started
+
+    pending = set()
+    items = iter(by_node.items())
+    if by_node and _RETIREMENT_POOL is None:
+        raise RuntimeError("retirement workers were not initialized in Preparation")
+    for _ in range(min(_RETIREMENT_WORKERS, len(by_node))):
+        pending.add(_RETIREMENT_POOL.submit(retire_node, next(items)))
+    while pending:
+        done, pending = wait(pending, return_when=FIRST_COMPLETED)
+        for future in done:
+            confirmed, errors, attempted, calls, duration = future.result()
+            _JOINED_NETLINK_CALLS += calls
+            result["deletion_requests"] += attempted
+            result["grouped_batches"] += len(confirmed)
+            result["task_duration_seconds_sum"] += duration / 1e9
+            result["errors"].extend(errors)
+            for batch in confirmed:
+                owned = _OWNED_RETIREMENTS[(batch["key"], batch["group"])]
+                for connection in tuple(owned.values()):
+                    _forget_connection(connection)
+                    result["retired_pairs"] += 1
+            item = next(items, None)
+            if item is not None:
+                pending.add(_RETIREMENT_POOL.submit(retire_node, item))
+    result["wall_seconds"] = (monotonic_ns() - started) / 1e9
+    return result
+
+
+def _setns(fd: int) -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.setns(ctypes.c_int(fd), ctypes.c_int(0x40000000)) != 0:
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code))
+
+
+def _retain_namespaces(nodes: tuple[dict[str, Any], ...]) -> None:
+    if _LIVE_NODES:
+        raise RuntimeError("namespace foundation is already retained")
+    original = os.open("/proc/self/ns/net", os.O_RDONLY | os.O_CLOEXEC)
+    try:
+        for node in nodes:
+            _assert_netns(node)
+            fd = os.open(f"/proc/{int(node['pid'])}/ns/net", os.O_RDONLY | os.O_CLOEXEC)
+            try:
+                if os.fstat(fd).st_ino != int(node["netns_inode"]):
+                    raise RuntimeError("namespace changed during Preparation")
+                _setns(fd)
+                channel = _RouteSocket()
+                _LIVE_NODES[node["key"]] = {
+                    **node, "namespace_fd": fd, "netlink": channel,
+                    "indexes": {}, "maps": {},
+                }
+            except BaseException:
+                os.close(fd)
+                raise
+            finally:
+                _setns(original)
+    except BaseException:
+        _close_foundation()
+        raise
+    finally:
+        os.close(original)
+
+
+def _close_foundation(timings=None) -> None:
+    global _GENERATION_FD, _RETIREMENT_POOL, _RETIREMENT_WORKERS
+    if _RETIREMENT_POOL is not None:
+        _timed_call(timings, "retirement_worker_shutdown", _RETIREMENT_POOL.shutdown, wait=True)
+        _RETIREMENT_POOL = None
+        _RETIREMENT_WORKERS = 0
+    for node in _LIVE_NODES.values():
+        for fd in node["maps"].values():
+            _timed_call(timings, "bpf_descriptor_close", os.close, fd)
+        _timed_call(timings, "retained_socket_close", node["netlink"].close)
+        _timed_call(timings, "retained_namespace_fd_close", os.close, node["namespace_fd"])
+    _LIVE_NODES.clear()
+    if _GENERATION_FD >= 0:
+        _timed_call(timings, "bpf_descriptor_close", os.close, _GENERATION_FD)
+        _GENERATION_FD = -1
+
+
+def _reserve_foundation_descriptors(node_count: int, worker_count: int) -> None:
+    # Per node: namespace FD, route socket, and five retained BPF objects.
+    # Concurrent loaders use at most five transient FDs each. Leave room for
+    # stdio, shared maps, namespace switching, and ordinary file reads.
+    required = 7 * node_count + 5 * worker_count + 64
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if hard != resource.RLIM_INFINITY and required > hard:
+        raise RuntimeError(
+            f"Runner foundation needs {required} file descriptors; hard limit is {hard}"
+        )
+    if soft != resource.RLIM_INFINITY and soft < required:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (required, hard))
+
+
 def _initialize(request: dict[str, Any]) -> dict[str, Any]:
+    global _GENERATION_FD, _OWNED_PIN_ROOT, _INITIALIZATION_REQUESTED, _FOUNDATION_OUTCOME
+    if _INITIALIZATION_REQUESTED:
+        raise RuntimeError("Runner foundation initialization is one-shot")
+    _INITIALIZATION_REQUESTED = True
     root = _pin_root(request["pin_root"])
-    if root.exists():
-        raise RuntimeError(f"Runner pin root already exists: {root}")
     nodes = tuple(request["nodes"])
-    for node in nodes:
-        _assert_netns(node)
-    collision_audit_started = monotonic()
-    collision_audit = _audit_node_addresses(request)
-    collision_audit_seconds = monotonic() - collision_audit_started
-    installed_node_keys: set[str] = set()
+    try:
+        if root.exists():
+            raise RuntimeError(f"Runner pin root already exists: {root}")
+        _reserve_foundation_descriptors(len(nodes), _worker_count(request, len(nodes)))
+        _retain_namespaces(nodes)
+        group_end = request["retirement_group_end"]
+        if type(group_end) is not int or not _netlink._RETIREMENT_GROUP_BASE < group_end <= 0xFFFFFFFF:
+            raise ValueError("invalid finite retirement group range")
+        for live in _LIVE_NODES.values():
+            live["loopback"] = live["netlink"].initial_links(group_end)
+        _start_retirement_workers(_worker_count(request, len(nodes)))
+        batch_update_supported = _probe_batch_update_support()
+        collision_audit_started = monotonic()
+        collision_audit = _audit_node_addresses(request)
+        collision_audit_seconds = monotonic() - collision_audit_started
+        root.mkdir(parents=True)
+    except BaseException as error:
+        _close_foundation()
+        raise _InitializationFailure(str(error), evidence={
+            "initialization_outcome": "no-mutation",
+        }) from error
+    _OWNED_PIN_ROOT = root
+    _FOUNDATION_OUTCOME = "partial"
+    installed_node_keys = _OWNED_NODE_ADDRESSES
     installed_node_keys_lock = Lock()
-    root.mkdir(parents=True)
     active_generation_fd = -1
     telemetry_ring_fd = -1
     telemetry_loss_fd = -1
@@ -1019,16 +1245,14 @@ def _initialize(request: dict[str, Any]) -> dict[str, Any]:
             _pin_object(telemetry_loss_fd, root / "traffic_losses")
         shared_scaffolding_seconds = monotonic() - shared_scaffolding_started
         def initialize_node(node: dict[str, Any]) -> dict[str, Any]:
-            _in_netns(
-                int(node["pid"]),
-                ["ip", "-batch", "-"],
-                input_text=(
-                    "link set dev lo up\n"
-                    f"address add {node['node_address']}/32 dev lo\n"
-                ),
-            )
+            live = _LIVE_NODES[node["key"]]
+            channel = live["netlink"]
+            channel.set_link(live["loopback"], up=True)
             with installed_node_keys_lock:
                 installed_node_keys.add(node["key"])
+            # The collision audit established absence. Retain ownership before
+            # sending the mutation, including a lost or failed ACK.
+            channel.address(live["loopback"], node["node_address"])
             node_root = root / node["pin_component"]
             node_root.mkdir()
             active_path = node_root / "active_links"
@@ -1044,15 +1268,21 @@ def _initialize(request: dict[str, Any]) -> dict[str, Any]:
                 key_size=8,
                 max_entries=int(node["routes_capacity"]),
             )
+            ingress_fd = _create_map("ingress_bind", key_size=4, max_entries=int(node["bindings_capacity"]))
+            egress_fd = _create_map("egress_bind", key_size=4, max_entries=int(node["bindings_capacity"]))
             program_fd = -1
             try:
                 _pin_object(active_fd, active_path)
                 _pin_object(route_fd, route_path)
+                _pin_object(ingress_fd, node_root / "ingress_bindings")
+                _pin_object(egress_fd, node_root / "egress_bindings")
                 if telemetry_enabled:
                     program_fd = _load_program(
                         active_generation_fd,
                         active_fd,
                         route_fd,
+                        ingress_fd,
+                        egress_fd,
                         telemetry_ring_map=telemetry_ring_fd,
                         telemetry_loss_map=telemetry_loss_fd,
                         node_slot=int(node["node_slot"]),
@@ -1062,10 +1292,12 @@ def _initialize(request: dict[str, Any]) -> dict[str, Any]:
                         active_generation_fd,
                         active_fd,
                         route_fd,
+                        ingress_fd,
+                        egress_fd,
                     )
                 _pin_object(program_fd, program_path)
             finally:
-                for file_descriptor in (program_fd, route_fd, active_fd):
+                for file_descriptor in (program_fd, route_fd, active_fd, ingress_fd, egress_fd):
                     if file_descriptor >= 0:
                         os.close(file_descriptor)
             return {
@@ -1075,13 +1307,22 @@ def _initialize(request: dict[str, Any]) -> dict[str, Any]:
             }
 
         node_foundation_started = monotonic()
-        map_capacities = _parallel_map(request, list(nodes), initialize_node)
+        map_capacities = _parallel_map(
+            request,
+            list(nodes),
+            initialize_node,
+        )
         node_foundation_seconds = monotonic() - node_foundation_started
+        _GENERATION_FD = _open_pinned(root / "active_generation")
+        for node in _LIVE_NODES.values():
+            for name in ("active_links", "routes", "ingress_bindings", "egress_bindings", "tc_ingress"):
+                node["maps"][name] = _open_pinned(root / node["pin_component"] / name)
         return {
             "pin_root": str(root),
             "node_count": len(nodes),
             "active_generation": int(request["inactive_generation"]),
             "shared_active_generation_map": True,
+            "bpf_batch_update_supported": batch_update_supported,
             "traffic_telemetry": {
                 "enabled": telemetry_enabled,
                 "shared_ring_buffer": telemetry_enabled,
@@ -1106,22 +1347,29 @@ def _initialize(request: dict[str, Any]) -> dict[str, Any]:
                 ),
             },
         }
-    except BaseException:
-        _cleanup(
-            {
-                **request,
-                "nodes": [
-                    {
-                        **node,
-                        "node_address_owned": node["key"] in installed_node_keys,
-                    }
-                    for node in nodes
-                ],
-                "connections": (),
-            },
-            tolerate_errors=True,
-        )
-        raise
+    except BaseException as error:
+        try:
+            cleanup_result = _cleanup(
+                {
+                    **request,
+                    "nodes": [
+                        {
+                            **node,
+                            "node_address_owned": node["key"] in installed_node_keys,
+                        }
+                        for node in nodes
+                    ],
+                    "connections": (),
+                },
+                tolerate_errors=True,
+            )
+        except BaseException as cleanup_error:
+            cleanup_result = {"errors": [str(cleanup_error)]}
+        raise _InitializationFailure(str(error), evidence={
+            "initialization_outcome": "partial" if cleanup_result.get("errors") else "cleaned",
+            "installed_node_addresses": sorted(installed_node_keys),
+            "cleanup_errors": cleanup_result.get("errors", []),
+        }) from error
     finally:
         for file_descriptor in (
             telemetry_loss_fd,
@@ -1132,790 +1380,361 @@ def _initialize(request: dict[str, Any]) -> dict[str, Any]:
                 os.close(file_descriptor)
 
 
-def _prepare_boundary(request: dict[str, Any]) -> dict[str, Any]:
-    root = _pin_root(request["pin_root"])
-    if not root.is_dir():
-        raise RuntimeError("Runner dataplane foundation is absent")
-    nodes = {node["key"]: node for node in request["nodes"]}
-    for node in nodes.values():
-        _assert_netns(node)
-    created: list[dict[str, Any]] = []
-    try:
-        physical_link_started = monotonic()
-        connections = list(request["connections"])
-        created.extend(connections)
-        if connections:
-            worker_count = _worker_count(request, len(connections))
-            chunk_size = (len(connections) + worker_count - 1) // worker_count
-            connection_chunks = [
-                connections[index : index + chunk_size]
-                for index in range(0, len(connections), chunk_size)
-            ]
+def _capture_incarnations(request: dict[str, Any]) -> dict[str, Any]:
+    """Capture one complete PID set inside the privileged host-PID context."""
 
-            def create_connection_chunk(
-                chunk: list[dict[str, Any]],
-            ) -> int:
-                commands = []
-                for connection in chunk:
-                    interface_a = _assert_interface_name(
-                        connection["interface_a"]
-                    )
-                    interface_b = _assert_interface_name(
-                        connection["interface_b"]
-                    )
-                    commands.append(
-                        f"link add {interface_a} netns "
-                        f"{nodes[connection['node_a']]['pid']} type veth "
-                        f"peer name {interface_b} netns "
-                        f"{nodes[connection['node_b']]['pid']}"
-                    )
-                _run(
-                    ["ip", "-batch", "-"],
-                    input_text="\n".join(commands) + "\n",
-                )
-                return len(chunk)
-
-            if sum(
-                _parallel_map(
-                    request,
-                    connection_chunks,
-                    create_connection_chunk,
-                )
-            ) != len(connections):
-                raise RuntimeError(
-                    "Runner physical resource chunk join is incomplete"
-                )
-        physical_link_seconds = monotonic() - physical_link_started
-        interfaces_by_node: dict[str, list[tuple[str, dict[str, Any]]]] = {
-            key: [] for key in nodes
-        }
-        for connection in request["connections"]:
-            interfaces_by_node[connection["node_a"]].append(
-                (connection["interface_a"], connection["parameters_a"])
-            )
-            interfaces_by_node[connection["node_b"]].append(
-                (connection["interface_b"], connection["parameters_b"])
-            )
-        def prepare_node(item: tuple[str, list[tuple[str, dict[str, Any]]]]) -> None:
-            key, interfaces = item
-            node = nodes[key]
-            ip_commands = [
-                f"link set dev {_assert_interface_name(name)} address {request['common_mac']}"
-                for name, _ in interfaces
-            ]
-            _in_netns(
-                int(node["pid"]), ["ip", "-batch", "-"],
-                input_text="\n".join(ip_commands) + "\n",
-            )
-            tc_commands = []
-            program_path = root / node["pin_component"] / "tc_ingress"
-            for name, parameters in interfaces:
-                name = _assert_interface_name(name)
-                tc_commands.extend(
-                    (
-                        f"qdisc replace dev {name} root handle 1: netem limit 1000 "
-                        f"delay {parameters['delay_us']}us "
-                        f"loss {_loss_percent(parameters['packet_loss_ppm'])} "
-                        f"rate {parameters['bandwidth_bps']}bit",
-                        f"qdisc replace dev {name} clsact",
-                        f"filter replace dev {name} ingress protocol ip priority 1 "
-                        f"bpf direct-action pinned {program_path}",
-                    )
-                )
-            _in_netns(
-                int(node["pid"]), ["tc", "-batch", "-"],
-                input_text="\n".join(tc_commands) + "\n",
-            )
-
-        setup_items = [
-            (key, interfaces)
-            for key, interfaces in sorted(interfaces_by_node.items())
-            if interfaces
-        ]
-        interface_qdisc_started = monotonic()
-        _parallel_map(request, setup_items, prepare_node)
-        interface_qdisc_seconds = monotonic() - interface_qdisc_started
-
-        generation = int(request["generation"])
-        def preload_node(generation_node: dict[str, Any]) -> dict[str, Any]:
-            node = nodes[generation_node["key"]]
-            cached_indexes: dict[str, int] = {}
-            for identity in generation_node.get("interface_identities", ()):
-                name = _assert_interface_name(identity["interface"])
-                ifindex = int(identity["ifindex"])
-                if ifindex <= 0 or name in cached_indexes:
-                    raise RuntimeError("cached Runner interface identity is invalid")
-                cached_indexes[name] = ifindex
-            required_names = {
-                _assert_interface_name(name)
-                for name in generation_node["active_interfaces"]
-            }
-            required_names.update(
-                _assert_interface_name(route["interface"])
-                for route in generation_node["routes"]
-                if route["interface"] is not None
-            )
-            missing_names = required_names - set(cached_indexes)
-            if missing_names:
-                cached_indexes.update(
-                    _interface_indexes(int(node["pid"]), missing_names)
-                )
-            if len(set(cached_indexes.values())) != len(cached_indexes):
-                raise RuntimeError("Runner interface identities are not unique in one namespace")
-            active_fd = _open_pinned(root / node["pin_component"] / "active_links")
-            route_fd = _open_pinned(root / node["pin_component"] / "routes")
-            try:
-                indexes = [
-                    cached_indexes[_assert_interface_name(name)]
-                    for name in generation_node["active_interfaces"]
-                ]
-                for index in indexes:
-                    _update_map(active_fd, (generation, index), 1)
-                route_keys = []
-                for route in generation_node["routes"]:
-                    destination = _ip_key(route["destination"])
-                    interface = route["interface"]
-                    interface_index = (
-                        0
-                        if interface is None
-                        else cached_indexes[_assert_interface_name(interface)]
-                    )
-                    _update_map(route_fd, (generation, destination), interface_index)
-                    route_keys.append(destination)
-            finally:
-                os.close(route_fd)
-                os.close(active_fd)
-            return {
-                "key": generation_node["key"],
-                "active_interface_indexes": indexes,
-                "route_keys": route_keys,
-                "interface_identities": [
-                    {"interface": name, "ifindex": cached_indexes[name]}
-                    for name in sorted(required_names)
-                ],
-                "new_interface_identity_count": len(missing_names),
-            }
-
-        generation_preload_started = monotonic()
-        generation_keys = _parallel_map(
-            request,
-            list(request["generation_nodes"]),
-            preload_node,
-        )
-        generation_preload_seconds = monotonic() - generation_preload_started
-        return {
-            "pin_root": str(root),
-            "boundary_timestamp": request["boundary_timestamp"],
-            "generation": generation,
-            "generation_keys": generation_keys,
-            "prepared_connections": len(created),
-            "prepared_interfaces": len(created) * 2,
-            "prepared_links_admin_down": len(created) * 2,
-            "preloaded_active_links": sum(
-                len(value["active_interface_indexes"])
-                for value in generation_keys
-            ),
-            "preloaded_routes": sum(len(value["route_keys"]) for value in generation_keys),
-            "stable_interface_identity_count": sum(
-                len(value["interface_identities"]) for value in generation_keys
-            ),
-            "new_interface_identity_count": sum(
-                value["new_interface_identity_count"] for value in generation_keys
-            ),
-            "preparation_phases": {
-                "physical_veth_creation_seconds": physical_link_seconds,
-                "interface_qdisc_bpf_setup_seconds": interface_qdisc_seconds,
-                "stable_identity_and_generation_preload_seconds": (
-                    generation_preload_seconds
-                ),
-            },
-        }
-    except BaseException:
-        for connection in reversed(created):
-            node = nodes[connection["node_a"]]
-            _in_netns(
-                int(node["pid"]),
-                ["ip", "link", "del", connection["interface_a"]],
-                tolerate_failure=True,
-            )
-        raise
-
-
-def _activate_boundary(request: dict[str, Any]) -> dict[str, Any]:
-    root = _pin_root(request["pin_root"])
-    generation_fd = _open_pinned(root / "active_generation")
-    try:
-        actual = _lookup_map(generation_fd, 0)
-        expected = int(request["expected_active_generation"])
-        if actual != expected:
-            raise RuntimeError(
-                f"active generation evidence is stale: expected={expected}, actual={actual}"
-            )
-        for node in request["nodes"]:
-            _assert_netns(node)
-            identities = {
-                _assert_interface_name(value["interface"]): int(value["ifindex"])
-                for value in node.get("interface_identities", ())
-            }
-            for field in ("link_up", "link_down"):
-                for interface in node[field]:
-                    name = _assert_interface_name(interface)
-                    if identities.get(name, 0) <= 0:
-                        raise RuntimeError(
-                            "Main activation lacks stable interface identity: " + name
-                        )
-
-        def link_up_node(node: dict[str, Any]) -> int:
-            commands = [
-                f"link set dev {_assert_interface_name(name)} up"
-                for name in node["link_up"]
-            ]
-            if commands:
-                _in_netns(
-                    int(node["pid"]),
-                    ["ip", "-batch", "-"],
-                    input_text="\n".join(commands) + "\n",
-                )
-            return len(commands)
-
-        link_updates = sum(
-            _parallel_map(request, list(request["nodes"]), link_up_node)
-        )
-
-        def qdisc_node(node: dict[str, Any]) -> int:
-            commands = []
-            for value in node["qdisc"]:
-                name = _assert_interface_name(value["interface"])
-                commands.append(
-                    f"qdisc replace dev {name} root handle 1: netem limit 1000 "
-                    f"delay {value['delay_us']}us loss {_loss_percent(value['packet_loss_ppm'])} "
-                    f"rate {value['bandwidth_bps']}bit"
-                )
-            if commands:
-                _in_netns(
-                    int(node["pid"]),
-                    ["tc", "-batch", "-"],
-                    input_text="\n".join(commands) + "\n",
-                )
-            return len(commands)
-
-        qdisc_updates = sum(
-            _parallel_map(request, list(request["nodes"]), qdisc_node)
-        )
-
-        def zone_readiness_node(node: dict[str, Any]) -> tuple[int, int]:
-            commands = [
-                f"address replace {value}/32 dev lo"
-                for value in node["zone_address_add"]
-            ]
-            if commands:
-                _in_netns(
-                    int(node["pid"]),
-                    ["ip", "-force", "-batch", "-"],
-                    input_text="\n".join(commands) + "\n",
-                )
-            return len(commands), int(bool(commands))
-
-        zone_readiness_results = _parallel_map(
-            request,
-            list(request["nodes"]),
-            zone_readiness_node,
-        )
-        zone_readiness_updates = sum(
-            value[0] for value in zone_readiness_results
-        )
-
-        def route_node(node: dict[str, Any]) -> tuple[int, int]:
-            commands = []
-            access_updates = 0
-            for route in node["route_delete"]:
-                destination = route["destination"]
-                interface = _assert_interface_name(route["interface"])
-                commands.extend(
-                    (
-                        f"route del {destination}/32",
-                        f"neigh del {destination} dev {interface}",
-                    )
-                )
-            for route in node["route_replace"]:
-                name = _assert_interface_name(route["interface"])
-                destination = route["destination"]
-                commands.extend(
-                    (
-                        f"route replace {destination}/32 dev {name} scope link",
-                        f"neigh replace {destination} lladdr "
-                        f"{request['common_mac']} nud permanent dev {name}",
-                    )
-                )
-            for route in node.get("access_peer_route_delete", ()):
-                destination = route["destination"]
-                interface = _assert_interface_name(route["interface"])
-                commands.extend(
-                    (
-                        f"route del {destination}/32",
-                        f"neigh del {destination} dev {interface}",
-                    )
-                )
-                access_updates += 2
-            for route in node.get("access_peer_route_replace", ()):
-                name = _assert_interface_name(route["interface"])
-                destination = route["destination"]
-                commands.extend(
-                    (
-                        f"route replace {destination}/32 dev {name} scope link",
-                        f"neigh replace {destination} lladdr "
-                        f"{request['common_mac']} nud permanent dev {name}",
-                    )
-                )
-                access_updates += 2
-            if commands:
-                _in_netns(
-                    int(node["pid"]),
-                    ["ip", "-force", "-batch", "-"],
-                    input_text="\n".join(commands) + "\n",
-                )
-            return len(commands), access_updates
-
-        route_results = _parallel_map(
-            request, list(request["nodes"]), route_node
-        )
-        route_updates = sum(value[0] for value in route_results)
-        access_peer_route_updates = sum(value[1] for value in route_results)
-
-        generation_switch_start_monotonic_ns = monotonic_ns()
-        generation_changed = bool(request.get("generation_changed", True))
-        if generation_changed:
-            _update_map(generation_fd, 0, int(request["generation"]))
-        generation_switch_end_monotonic_ns = monotonic_ns()
-        activation_switch_seconds = (
-            generation_switch_end_monotonic_ns
-            - generation_switch_start_monotonic_ns
-        ) / 1_000_000_000
-
-        def post_switch_node(node: dict[str, Any]) -> tuple[int, int, int]:
-            commands = [
-                f"address del {value}/32 dev lo"
-                for value in node["zone_address_delete"]
-            ]
-            zone_count = len(commands)
-            commands.extend(
-                f"link set dev {_assert_interface_name(name)} down"
-                for name in node["link_down"]
-            )
-            if commands:
-                _in_netns(
-                    int(node["pid"]),
-                    ["ip", "-force", "-batch", "-"],
-                    input_text="\n".join(commands) + "\n",
-                )
-            return zone_count, len(commands) - zone_count, int(bool(commands))
-
-        post_switch_results = _parallel_map(
-            request,
-            list(request["nodes"]),
-            post_switch_node,
-        )
-        zone_updates = zone_readiness_updates + sum(
-            value[0] for value in post_switch_results
-        )
-        link_updates += sum(value[1] for value in post_switch_results)
-        namespace_process_families = {
-            "link_up": sum(bool(node["link_up"]) for node in request["nodes"]),
-            "qdisc": sum(bool(node["qdisc"]) for node in request["nodes"]),
-            "zone_readiness": sum(
-                value[1] for value in zone_readiness_results
-            ),
-            "route_neighbour": sum(
-                bool(
-                    node["route_delete"]
-                    or node["route_replace"]
-                    or node.get("access_peer_route_delete")
-                    or node.get("access_peer_route_replace")
-                )
-                for node in request["nodes"]
-            ),
-            "post_switch": sum(value[2] for value in post_switch_results),
-        }
-        separate_post_switch_processes = sum(
-            bool(node["zone_address_delete"])
-            + bool(node["link_down"])
-            for node in request["nodes"]
-        )
-        return {
-            "pin_root": str(root),
-            "boundary_timestamp": request["boundary_timestamp"],
-            "previous_generation": expected,
-            "active_generation": int(request["generation"]),
-            "generation_publications": int(generation_changed),
-            "generation_reused": not generation_changed,
-            "folded_forwarding_constraints": int(
-                request.get("folded_forwarding_constraints", 0)
-            ),
-            "link_state_updates": link_updates,
-            "qdisc_updates": qdisc_updates,
-            "route_neighbour_commands": route_updates,
-            "access_peer_route_neighbour_commands": access_peer_route_updates,
-            "zone_address_updates": zone_updates,
-            "namespace_process_families": namespace_process_families,
-            "post_switch_namespace_processes_avoided": (
-                separate_post_switch_processes
-                - namespace_process_families["post_switch"]
-            ),
-            "activation_switch_seconds": activation_switch_seconds,
-            "generation_switch_start_monotonic_ns": (
-                generation_switch_start_monotonic_ns
-            ),
-            "generation_switch_end_monotonic_ns": (
-                generation_switch_end_monotonic_ns
-            ),
-            "grouping": request.get("grouping", {}),
-        }
-    finally:
-        os.close(generation_fd)
-
-
-def _validate(request: dict[str, Any]) -> dict[str, Any]:
-    for node in request["nodes"]:
-        _assert_netns(node)
-    return {"validated_nodes": len(request["nodes"])}
-
-
-def _reclaim_generation(request: dict[str, Any]) -> dict[str, Any]:
-    root = _pin_root(request["pin_root"])
-    nodes = {node["key"]: node for node in request["nodes"]}
-    generation = int(request["generation"])
-    def reclaim_node(keys: dict[str, Any]) -> int:
-        node = nodes[keys["key"]]
-        _assert_netns(node)
-        active_fd = _open_pinned(root / node["pin_component"] / "active_links")
-        route_fd = _open_pinned(root / node["pin_component"] / "routes")
-        try:
-            deleted = _delete_map_batch(
-                active_fd,
-                tuple(
-                    (generation, int(value))
-                    for value in keys["active_interface_indexes"]
-                ),
-            )
-            deleted += _delete_map_batch(
-                route_fd,
-                tuple(
-                    (generation, int(value))
-                    for value in keys["route_keys"]
-                ),
-            )
-        finally:
-            os.close(route_fd)
-            os.close(active_fd)
-        return deleted
-
-    deleted = sum(
-        _parallel_map(request, list(request["generation_keys"]), reclaim_node)
-    )
-    return {"generation": generation, "deleted_entries": deleted}
-
-
-def _reclaim_resources(request: dict[str, Any]) -> dict[str, Any]:
-    nodes = {node["key"]: node for node in request["nodes"]}
-    by_node: dict[str, list[dict[str, Any]]] = {}
-    for connection in request["connections"]:
-        by_node.setdefault(connection["node_a"], []).append(connection)
-
-    def reclaim_node(item: tuple[str, list[dict[str, Any]]]) -> int:
-        key, connections = item
-        node = nodes[key]
-        _assert_netns(node)
-        commands = [
-            f"link del {_assert_interface_name(connection['interface_a'])}"
-            for connection in connections
-        ]
-        if commands:
-            _in_netns(
-                int(node["pid"]),
-                ["ip", "-force", "-batch", "-"],
-                input_text="\n".join(commands) + "\n",
-            )
-        return len(commands)
-
-    deleted = sum(
-        _parallel_map(request, sorted(by_node.items()), reclaim_node)
-    )
-    return {"deleted_connections": deleted}
-
-
-def _cleanup(
-    request: dict[str, Any], *, tolerate_errors: bool = False
-) -> dict[str, Any]:
-    root = _pin_root(request["pin_root"])
-    errors: list[str] = []
-    nodes = {node["key"]: node for node in request.get("nodes", ())}
-    interfaces_by_node: dict[str, list[str]] = {key: [] for key in nodes}
-    for connection in request.get("connections", ()):
-        interfaces_by_node[connection["node_a"]].append(
-            _assert_interface_name(connection["interface_a"])
-        )
-        interfaces_by_node[connection["node_b"]].append(
-            _assert_interface_name(connection["interface_b"])
-        )
-
-    def detach_node(item: tuple[str, dict[str, Any]]) -> list[str]:
-        key, node = item
-        node_errors: list[str] = []
-        try:
-            _assert_netns(node)
-        except RuntimeError as error:
-            return [str(error)]
-        tc_commands = []
-        for interface_name in interfaces_by_node[key]:
-            tc_commands.extend(
-                (
-                    f"filter del dev {interface_name} ingress",
-                    f"qdisc del dev {interface_name} clsact",
-                    f"qdisc del dev {interface_name} root",
-                )
-            )
-        if tc_commands:
-            result = _in_netns(
-                int(node["pid"]),
-                ["tc", "-force", "-batch", "-"],
-                input_text="\n".join(tc_commands) + "\n",
-                tolerate_failure=True,
-            )
-            if result.returncode != 0 and result.stderr:
-                node_errors.append(result.stderr.strip())
-        return node_errors
-
-    node_items = sorted(nodes.items())
-    for node_errors in _parallel_map(request, node_items, detach_node):
-        errors.extend(node_errors)
-
-    connections_by_node: dict[str, list[dict[str, Any]]] = {}
-    for connection in request.get("connections", ()):
-        connections_by_node.setdefault(connection["node_a"], []).append(connection)
-
-    def delete_connections(
-        item: tuple[str, list[dict[str, Any]]],
-    ) -> tuple[int, list[str]]:
-        key, connections = item
-        node = nodes[key]
-        try:
-            _assert_netns(node)
-        except RuntimeError as error:
-            return 0, [str(error)]
-        commands = [
-            f"link del {_assert_interface_name(connection['interface_a'])}"
-            for connection in connections
-        ]
-        result = _in_netns(
-            int(node["pid"]),
-            ["ip", "-force", "-batch", "-"],
-            input_text="\n".join(commands) + "\n",
-            tolerate_failure=True,
-        )
-        if result.returncode != 0:
-            return 0, [result.stderr.strip()] if result.stderr else []
-        return len(commands), []
-
-    deleted_connections = 0
-    for deleted, node_errors in _parallel_map(
-        request, sorted(connections_by_node.items()), delete_connections
-    ):
-        deleted_connections += deleted
-        errors.extend(node_errors)
-
-    def clean_node_addresses(
-        item: tuple[str, dict[str, Any]],
-    ) -> tuple[int, list[str]]:
-        _, node = item
-        node_errors: list[str] = []
-        try:
-            _assert_netns(node)
-            current_addresses = _namespace_ipv4_local_addresses(node)
-        except RuntimeError as error:
-            return 0, [str(error)]
-        node_address = IPv4Address(node["node_address"])
-        zone_addresses = tuple(
-            IPv4Address(value) for value in node.get("zone_addresses", ())
-        )
-        address_commands = []
-        node_address_present = (
-            node.get("node_address_owned") is True
-            and node_address in current_addresses
-        )
-        if node_address_present:
-            address_commands.append(
-                f"address del {node['node_address']}/32 dev lo"
-            )
-        address_commands.extend(
-            f"address del {address}/32 dev lo"
-            for address in zone_addresses
-            if address in current_addresses
-        )
-        if address_commands:
-            result = _in_netns(
-                int(node["pid"]),
-                ["ip", "-force", "-batch", "-"],
-                input_text="\n".join(address_commands) + "\n",
-                tolerate_failure=True,
-            )
-            if result.returncode != 0 and result.stderr:
-                node_errors.append(result.stderr.strip())
-        deleted = 0
-        try:
-            remaining = _namespace_ipv4_local_addresses(node)
-            if (
-                node.get("node_address_owned") is True
-                and node_address in remaining
-            ):
-                node_errors.append(
-                    "Runner-owned node address remains after cleanup: "
-                    f"node={node['key']}, address={node_address}"
-                )
-            elif node_address_present:
-                deleted = 1
-            for address in zone_addresses:
-                if address in remaining:
-                    node_errors.append(
-                        "Runner-owned Zone address remains after cleanup: "
-                        f"node={node['key']}, address={address}"
-                    )
-        except RuntimeError as error:
-            node_errors.append(str(error))
-        return deleted, node_errors
-
-    deleted_node_addresses = 0
-    for deleted, node_errors in _parallel_map(
-        request, node_items, clean_node_addresses
-    ):
-        deleted_node_addresses += deleted
-        errors.extend(node_errors)
-
-    if root.exists():
-        for path in sorted(root.rglob("*"), reverse=True):
-            try:
-                if path.is_dir():
-                    path.rmdir()
-                else:
-                    path.unlink()
-            except OSError as error:
-                errors.append(f"cannot remove {path}: {error}")
-        try:
-            root.rmdir()
-        except OSError as error:
-            errors.append(f"cannot remove {root}: {error}")
-    try:
-        _PIN_PARENT.rmdir()
-    except FileNotFoundError:
-        pass
-    except OSError as error:
-        if error.errno not in {errno.ENOTEMPTY, errno.EEXIST}:
-            errors.append(f"cannot remove {_PIN_PARENT}: {error}")
-
-    if errors and not tolerate_errors:
-        raise RuntimeError("Runner cleanup left residue: " + "; ".join(errors))
+    raw_pids = request.get("pids")
+    if not isinstance(raw_pids, list) or not raw_pids:
+        raise ValueError("Runner privileged incarnation request needs a PID list")
+    pids = tuple(raw_pids)
+    values = _capture_process_incarnations(pids)
+    if len(values) != len(pids):
+        raise RuntimeError("Runner privileged incarnation capture is incomplete")
     return {
-        "deleted_connections": deleted_connections,
-        "deleted_node_addresses": deleted_node_addresses,
-        "pin_root_removed": not root.exists(),
-        "errors": errors,
+        "incarnations": values,
+        "requested_pid_count": len(pids),
+        "captured_pid_count": len(values),
+        "capture_mode": "single-privileged-batch",
     }
 
 
+def _prewrite_generation(request: dict[str, Any]) -> dict[str, Any]:
+    if _lookup_map(_GENERATION_FD, 0) != 0xFFFFFFFF:
+        raise RuntimeError("semantic prewrite is allowed only before boundary 0")
+    generation = int(request["generation"])
+    active_count = route_count = 0
+    for record in request["generation_nodes"]:
+        maps = _LIVE_NODES[record["key"]]["maps"]
+        active = [((generation, int(port)), 1) for port in record["active_ports"]]
+        routes = [((generation, _ip_key(route["destination"])), int(route["logical_port_id"]))
+                  for route in record["routes"]]
+        active_count += _update_map_entries(maps["active_links"], active,
+                            batch_supported=bool(request["bpf_batch_update_supported"]))
+        route_count += _update_map_entries(maps["routes"], routes,
+                            batch_supported=bool(request["bpf_batch_update_supported"]))
+    return {"preloaded_active_links": active_count, "preloaded_routes": route_count}
+
+
+def _activate_boundary(request: dict[str, Any]) -> dict[str, Any]:
+    """Execute one prepared delta through retained namespace sockets and BPF FDs."""
+    activation_started_ns = monotonic_ns()
+    generation = int(request["generation"])
+    expected = int(request["expected_active_generation"])
+    changed = request["generation_changed"]
+    connections = request["connections"]
+    batches = request["retirement_batches"]
+    removed = [connection for batch in batches for connection in batch["connections"]]
+    operations = {node["key"]: node for node in request["operation_nodes"]}
+    new_endpoints: dict[str, list[tuple[str, int, dict[str, Any]]]] = {}
+    old_endpoints: dict[str, list[tuple[str, int]]] = {}
+    for connection in connections:
+        for side in ("a", "b"):
+            new_endpoints.setdefault(connection[f"node_{side}"], []).append((
+                connection[f"interface_{side}"], connection[f"logical_port_{side}"],
+                connection[f"parameters_{side}"],
+            ))
+    for connection in removed:
+        for side in ("a", "b"):
+            old_endpoints.setdefault(connection[f"node_{side}"], []).append((
+                connection[f"interface_{side}"], connection[f"logical_port_{side}"],
+            ))
+    created = []
+    deleted = 0
+    identities = []
+    published = False
+    mutation_started = False
+    complete = False
+    phase = "pre-publication"
+    timings = {}
+    switch = {}
+    anchor = monotonic_ns()
+    detail: dict[str, list[int]] = {}
+    retirement = None
+
+    def evidence() -> dict[str, Any]:
+        return {
+            "boundary_timestamp": request["boundary_timestamp"],
+            "last_completed_active_frontier": request.get("last_completed_active_frontier"),
+            "previous_generation": expected, "active_generation": generation if published else expected,
+            "generation_publication_occurred": published, "generation_publications": int(published),
+            "generation_reused": not changed, "target_transition_complete": complete,
+            "live_mutation_started": mutation_started,
+            "created_connections": len(created), "deleted_connections": deleted,
+            "interface_identities": identities,
+            "withdrawn_logical_ports": [port for values in old_endpoints.values() for _, port in values],
+            "activation_anchor_monotonic_ns": anchor,
+            "activation_phases": timings,
+            "detailed_timing_version": 2,
+            "retirement": retirement,
+            "standalone_mac_requests": 0, "standalone_down_requests": 0,
+            "operation_timings": _timing_records(detail),
+            "helper_activation_start_monotonic_ns": activation_started_ns,
+            "helper_activation_evidence_monotonic_ns": monotonic_ns(),
+            **switch,
+        }
+
+    def index(node: dict[str, Any], name: str) -> int:
+        # Only new-interface creation populates this retained binding ledger.
+        # A missing/stale retained resource fails the corresponding operation.
+        return node["indexes"][name]
+
+    def routes(node: dict[str, Any], operation: dict[str, Any], *, withdraw: bool) -> None:
+        prefix = "post" if withdraw else "pre"
+        channel = node["netlink"]
+        values = operation.get("route_withdraw" if withdraw else "route_replace", ())
+        for value in values:
+            destination, name = value[:2]
+            if not withdraw or value[2]:
+                _timed_call(detail, prefix + ("_route_deletion" if withdraw else "_route_replacement"), channel.route, index(node, name), destination, delete=withdraw)
+            _timed_call(detail, prefix + ("_neighbour_deletion" if withdraw else "_neighbour_replacement"), channel.neighbour, index(node, name), destination, request["common_mac"], delete=withdraw)
+
+    try:
+        if _lookup_map(_GENERATION_FD, 0) != expected:
+            raise RuntimeError("active generation predecessor differs")
+        started = monotonic()
+        for connection in connections:
+            node = _LIVE_NODES[connection["node_a"]]
+            peer = _LIVE_NODES[connection["node_b"]]
+            mutation_started = True
+            owner = connection["retirement_node"]
+            group = connection["retirement_group"]
+            _OWNED_RETIREMENTS.setdefault((owner, group), {})[connection["connection"]] = connection
+            _timed_call(detail, "pre_veth_creation", node["netlink"].create_veth,
+                        connection["interface_a"], connection["interface_b"], peer["namespace_fd"],
+                        mac=request["common_mac"], group=group if owner == connection["node_a"] else 0,
+                        peer_group=group if owner == connection["node_b"] else 0)
+            created.append(connection)
+        # Affected namespaces only. A socket is already bound to each namespace;
+        # profiling does not introduce namespace entries or process barriers.
+        for key in sorted(operations.keys() | new_endpoints.keys()):
+            node = _LIVE_NODES[key]
+            channel = node["netlink"]
+            maps = node["maps"]
+            operation = operations.get(key, {})
+            for name, port, parameters in new_endpoints.get(key, ()):
+                mutation_started = True
+                ifindex = _timed_call(detail, "pre_ifindex_resolution", channel.link_index, name)
+                node["indexes"][name] = ifindex
+                _timed_call(detail, "pre_qdisc_creation", channel.netem, ifindex, parameters)
+                _timed_call(detail, "pre_bpf_attachment", channel.attach_bpf, ifindex, maps["tc_ingress"])
+                _timed_call(detail, "pre_ingress_binding_update", _update_map, maps["ingress_bindings"], ifindex, port)
+                _timed_call(detail, "pre_egress_binding_update", _update_map, maps["egress_bindings"], port, ifindex)
+                identities.append({"key": key, "interface": name, "ifindex": ifindex, "logical_port_id": port})
+                _timed_call(detail, "pre_link_up", channel.set_link, ifindex, up=True)
+            for value in operation.get("qdisc", ()):
+                mutation_started = True
+                _timed_call(detail, "pre_existing_qdisc_update", channel.netem, index(node, value["interface"]), value)
+            for address in operation.get("zone_address_add", ()):
+                mutation_started = True
+                _timed_call(detail, "pre_zone_address_addition", channel.address, node["loopback"], address)
+            if operation.get("route_replace"):
+                mutation_started = True
+            routes(node, operation, withdraw=False)
+        timings["pre_publication"] = {"duration_seconds": monotonic() - started}
+        phase = "active-generation-publication"
+        if changed:
+            switch["generation_switch_start_monotonic_ns"] = monotonic_ns()
+            try:
+                _update_map(_GENERATION_FD, 0, generation)
+            except BaseException:
+                detail["active_generation_update"] = [monotonic_ns() - switch["generation_switch_start_monotonic_ns"], 1]
+                raise
+            published = True
+            switch["generation_switch_end_monotonic_ns"] = monotonic_ns()
+            timings["active_generation_publication"] = {"duration_seconds": (
+                switch["generation_switch_end_monotonic_ns"]
+                - switch["generation_switch_start_monotonic_ns"]
+            ) / 1e9}
+            detail["active_generation_update"] = [switch["generation_switch_end_monotonic_ns"] - switch["generation_switch_start_monotonic_ns"], 1]
+        phase = "post-publication"
+        started = monotonic()
+        for key in sorted(operations.keys() | old_endpoints.keys()):
+            node = _LIVE_NODES[key]
+            operation = operations.get(key, {})
+            routes(node, operation, withdraw=True)
+            for address in operation.get("zone_address_delete", ()):
+                _timed_call(detail, "post_zone_address_removal", node["netlink"].address, node["loopback"], address, delete=True)
+            for name, port in old_endpoints.get(key, ()):
+                ifindex = index(node, name)
+                if not _timed_call(detail, "post_ingress_binding_deletion", _delete_map, node["maps"]["ingress_bindings"], ifindex):
+                    raise RuntimeError("withdrawn ingress binding was absent")
+                if not _timed_call(detail, "post_egress_binding_deletion", _delete_map, node["maps"]["egress_bindings"], port):
+                    raise RuntimeError("withdrawn egress binding was absent")
+        timings["withdrawal"] = {"duration_seconds": monotonic() - started}
+        retirement = _retire_batches(batches)
+        timings["physical_deletion"] = {"duration_seconds": retirement["wall_seconds"]}
+        deleted = retirement["retired_pairs"]
+        detail["post_veth_deletion"] = [round(retirement["wall_seconds"] * 1e9), deleted]
+        if retirement["errors"]:
+            raise RuntimeError("physical retirement incomplete: " + "; ".join(retirement["errors"]))
+        timings["post_publication"] = {"duration_seconds": monotonic() - started}
+        complete = True
+        return evidence()
+    except BaseException as error:
+        rollback_errors = []
+        if not published:
+            # Roll back newly allocated physical/binding resources through the
+            # same sockets and syscalls, retaining all uncertain cleanup ownership.
+            for connection in reversed(created):
+                try:
+                    for side in ("a", "b"):
+                        node = _LIVE_NODES[connection[f"node_{side}"]]
+                        name = connection[f"interface_{side}"]
+                        ifindex = node["indexes"].get(name)
+                        if ifindex is not None:
+                            _delete_map(node["maps"]["ingress_bindings"], ifindex)
+                        _delete_map(node["maps"]["egress_bindings"], connection[f"logical_port_{side}"])
+                    node = _LIVE_NODES[connection["node_a"]]
+                    name = connection["interface_a"]
+                    ifindex = node["indexes"].get(name)
+                    if ifindex is None:
+                        ifindex = node["netlink"].link_index(name)
+                    node["netlink"].delete_link(ifindex)
+                    _forget_connection(connection)
+                except BaseException as rollback_error:
+                    rollback_errors.append(str(rollback_error))
+        failure_evidence = {
+            **evidence(), "failure_phase": phase, "failure_type": type(error).__name__,
+            "failure_message": str(error), "live_state_may_be_partial": mutation_started,
+            "cleanup_connections": list(connections) + list(removed),
+            "cleanup_ownership_retained": True,
+            "candidate_rollback_attempted": bool(created) and not published,
+            "candidate_rollback_complete": not rollback_errors if created and not published else None,
+            "rollback_errors": rollback_errors,
+        }
+        failure_type = _PostPublicationActivationFailure if published else _PrePublicationActivationFailure
+        raise failure_type(str(error), evidence=failure_evidence) from error
+
+
+def _cleanup(request: dict[str, Any], *, tolerate_errors: bool = False) -> dict[str, Any]:
+    global _OWNED_PIN_ROOT, _FOUNDATION_OUTCOME
+    detail: dict[str, list[int]] = {}
+    phases = {}
+    root = _pin_root(request["pin_root"])
+    if _OWNED_PIN_ROOT is None:
+        # A rejected startup must never remove a conflicting pre-existing root.
+        _close_foundation(detail)
+        return {"deleted_connections": 0, "pin_root_removed": not root.exists(),
+                "cleanup_confirmed": True, "initialization_outcome": _FOUNDATION_OUTCOME, "errors": [],
+                "detailed_timing_version": 1, "cleanup_operations": _timing_records(detail)}
+    if _OWNED_PIN_ROOT != root:
+        raise RuntimeError("cleanup pin root differs from the owned foundation")
+    errors = []
+    deleted = 0
+    network_started = monotonic_ns()
+    retirement = _retire_batches([
+        {"key": key, "group": group, "connections": tuple(owned.values())}
+        for (key, group), owned in _OWNED_RETIREMENTS.items()
+    ], cleanup=True)
+    deleted = retirement["retired_pairs"]
+    errors.extend(retirement["errors"])
+    detail["remaining_veth_deletion"] = [round(retirement["wall_seconds"] * 1e9), deleted]
+    network_ended = monotonic_ns()
+    phases["remaining_network_seconds"] = (network_ended - network_started) / 1e9
+    for record in request.get("nodes", ()):
+        node = _LIVE_NODES.get(record["key"])
+        if node is None or "loopback" not in node:
+            continue
+        addresses = set(record.get("zone_addresses", ()))
+        if record["key"] in _OWNED_NODE_ADDRESSES:
+            addresses.add(record["node_address"])
+        for address in sorted(addresses):
+            try:
+                _timed_call(detail, "address_removal", node["netlink"].address, node["loopback"], address, delete=True)
+            except OSError as error:
+                if error.errno not in (errno.EADDRNOTAVAIL, errno.ENOENT):
+                    errors.append(str(error))
+    addresses_ended = monotonic_ns()
+    phases["address_removal_seconds"] = (addresses_ended - network_ended) / 1e9
+    if not errors:
+        if root.exists():
+            for path in sorted(root.rglob("*"), reverse=True):
+                try:
+                    _timed_call(detail, "pin_directory_removal", path.rmdir) if path.is_dir() else _timed_call(detail, "bpf_unpin", path.unlink)
+                except OSError as error:
+                    errors.append(str(error))
+            if not errors:
+                _timed_call(detail, "pin_directory_removal", root.rmdir)
+        unpin_ended = monotonic_ns()
+        phases["bpf_unpin_seconds"] = (unpin_ended - addresses_ended) / 1e9
+        if not errors:
+            _close_foundation(detail)
+            phases["retained_descriptor_close_seconds"] = (monotonic_ns() - unpin_ended) / 1e9
+            _OWNED_PIN_ROOT = None
+            _FOUNDATION_OUTCOME = "cleaned"
+            _OWNED_NODE_ADDRESSES.clear()
+    if errors and not tolerate_errors:
+        error = RuntimeError("Runner cleanup left residue: " + "; ".join(errors))
+        error.evidence = {"retirement": retirement, "cleanup_phases": phases, "cleanup_operations": _timing_records(detail)}
+        raise error
+    return {"deleted_connections": deleted, "pin_root_removed": not root.exists(),
+            "cleanup_confirmed": not errors, "initialization_outcome": "partial" if errors else "cleaned",
+            "errors": errors, "detailed_timing_version": 2,
+            "retirement": retirement, "cleanup_phases": phases, "cleanup_operations": _timing_records(detail)}
+
+
+def _dispatch_action(action: str, request: dict[str, Any]) -> dict[str, Any]:
+    actions = {
+        "initialize": _initialize,
+        "prewrite_generation": _prewrite_generation,
+        "activate_boundary": _activate_boundary,
+        "cleanup": _cleanup,
+    }
+    if action not in actions:
+        raise ValueError("unknown private Runner command action")
+    return actions[action](request)
+
+
+def _respond(action: str, request: dict[str, Any], *, request_timing=None) -> dict[str, Any]:
+    # Main/Cleanup add joined worker counters to the dispatch thread counters.
+    # Startup worker counts remain unavailable. These are attempted calls.
+    counters = None if action == "initialize" else _kernel_call_counts()
+    started = monotonic_ns()
+    try:
+        result = _dispatch_action(action, request)
+        ended = monotonic_ns()
+        response = {"status": "ok", "result": result}
+    except BaseException as error:
+        ended = monotonic_ns()
+        response = {"status": "error", "error": str(error), "error_type": type(error).__name__,
+                "evidence": getattr(error, "evidence", None), "traceback": traceback.format_exc()}
+    response["helper_timing"] = {
+        **(request_timing or {}),
+        "dispatch_start_monotonic_ns": started, "dispatch_end_monotonic_ns": ended,
+        "dispatch_seconds": (ended - started) / 1e9,
+        "kernel_calls": None if counters is None else {
+            key: value - counters[key] for key, value in _kernel_call_counts().items()
+        },
+    }
+    return response
+
+
 def main() -> int:
-    global _ACTIVE_METRICS
-    if len(sys.argv) != 2 or sys.argv[1] not in {
-        "audit_node_addresses",
-        "initialize",
-        "prepare_boundary",
-        "activate_boundary",
-        "reclaim_generation",
-        "reclaim_resources",
-        "validate",
-        "cleanup",
-    }:
-        print(
-            json.dumps(
-                {
-                    "error": (
-                        "unknown private Runner command action"
-                    )
-                }
-            )
-        )
+    if len(sys.argv) != 2:
+        return 2
+    if sys.argv[1] == "capture_incarnations":
+        try:
+            result = _capture_incarnations(json.load(sys.stdin))
+            print(json.dumps({"status": "ok", "result": result}), flush=True)
+            return 0
+        except BaseException as error:
+            print(json.dumps({"status": "error", "error": str(error)}), flush=True)
+            return 1
+    if sys.argv[1] != "serve":
         return 2
     try:
-        with _METRICS_LOCK:
-            _ACTIVE_METRICS = {
-                "external_processes": 0,
-                "namespace_processes": 0,
-                "interface_identity_queries": 0,
-                "bpf_syscalls": 0,
-                "bpf_map_update_syscalls": 0,
-                "bpf_map_delete_syscalls": 0,
-                "bpf_map_delete_batch_syscalls": 0,
-                "bpf_map_delete_operations": 0,
-                "worker_limit": 1,
-                "worker_high_water": 0,
-                "active_workers": 0,
-                "parallel_phase_count": 0,
-                "parallel_task_count": 0,
-                "batch_sizes": [],
-            }
-        request = json.load(sys.stdin)
-        if sys.argv[1] == "audit_node_addresses":
-            result = _audit_node_addresses(request)
-        elif sys.argv[1] == "initialize":
-            result = _initialize(request)
-        elif sys.argv[1] == "prepare_boundary":
-            result = _prepare_boundary(request)
-        elif sys.argv[1] == "activate_boundary":
-            result = _activate_boundary(request)
-        elif sys.argv[1] == "reclaim_generation":
-            result = _reclaim_generation(request)
-        elif sys.argv[1] == "reclaim_resources":
-            result = _reclaim_resources(request)
-        elif sys.argv[1] == "validate":
-            result = _validate(request)
-        else:
-            result = _cleanup(request)
-        with _METRICS_LOCK:
-            metrics = dict(_ACTIVE_METRICS or {})
-            _ACTIVE_METRICS = None
-        metrics.pop("active_workers", None)
-        batch_sizes = tuple(int(value) for value in metrics.pop("batch_sizes", ()))
-        metrics["batch_count"] = len(batch_sizes)
-        metrics["batch_operation_count"] = sum(batch_sizes)
-        metrics["batch_size_min"] = min(batch_sizes, default=0)
-        metrics["batch_size_max"] = max(batch_sizes, default=0)
-        metrics["batch_size_distribution"] = {
-            label: sum(lower <= value <= upper for value in batch_sizes)
-            for label, lower, upper in (
-                ("1", 1, 1),
-                ("2-4", 2, 4),
-                ("5-16", 5, 16),
-                ("17-64", 17, 64),
-                ("65-256", 65, 256),
-                ("257+", 257, 2**63 - 1),
-            )
-        }
-        result = {**result, "execution_metrics": metrics}
-    except BaseException as error:
-        with _METRICS_LOCK:
-            metrics = dict(_ACTIVE_METRICS or {})
-            _ACTIVE_METRICS = None
-        metrics.pop("active_workers", None)
-        print(
-            json.dumps(
-                {
-                    "error": str(error),
-                    "error_type": type(error).__name__,
-                    "traceback": traceback.format_exc(),
-                    "execution_metrics": metrics,
-                }
-            )
-        )
-        return 1
-    print(json.dumps({"status": "ok", "result": result}, sort_keys=True))
+        for line in sys.stdin:
+            received = monotonic_ns()
+            envelope = json.loads(line)
+            decoded = monotonic_ns()
+            response = _respond(envelope["action"], envelope["request"], request_timing={
+                "line_received_monotonic_ns": received,
+                "request_decoded_monotonic_ns": decoded,
+                "request_decode_seconds": (decoded - received) / 1e9,
+            })
+            print(json.dumps(response, separators=(",", ":")), flush=True)
+    finally:
+        _close_foundation()
     return 0
 
 

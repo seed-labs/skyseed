@@ -143,7 +143,7 @@ def test_definition_is_immutable_typed_and_retains_exact_inputs() -> None:
     simulator_input = SimulatorStaticInput()
     timeline = SimulationTimeline(
         datetime(2026, 1, 1, tzinfo=timezone.utc),
-        None,
+        datetime(2026, 1, 1, tzinfo=timezone.utc),
         timedelta(seconds=10),
     )
     definition = SimulationDefinition(simulator_input, timeline)

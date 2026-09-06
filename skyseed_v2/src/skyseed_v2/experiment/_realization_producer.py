@@ -46,8 +46,8 @@ from ..backend.bpf.compiler import _compile_bpf_observed, compile_bpf
 class _IncrementalRealizationProducer:
     """Advance one cursor through Planner-only or Compiler production.
 
-    Precomputed callers drain this object. A later rolling coordinator may
-    buffer the same pull seam, but Runner must never synchronously maintain it.
+    Precomputed callers drain this object before constructing a Runner artifact;
+    no producer survives into live execution.
     When ``evidence_path`` is supplied it names a new directory containing
     three semantically owned JSONL streams: formal PhysicalFrames, published
     Planner evidence, and Compiler/realization lineage. A deterministic sibling
@@ -496,12 +496,6 @@ class _IncrementalRealizationProducer:
     def _finish_planner(self) -> None:
         if self._finished:
             return
-        if not self._timeline.is_bounded:
-            raise RuntimeError(
-                "an unbounded producer has no terminal realization; "
-                "continue advancing it through a rolling coordinator"
-            )
-        assert self._timeline.end_time is not None
         self._plans.extend(
             self._planner.finish(end_timestamp=self._timeline.end_time)
         )
@@ -546,7 +540,7 @@ class _IncrementalRealizationProducer:
             {
                 "record_type": "compiled_realization_history_header",
                 "format_version": 2,
-                "semantic_payload_owner": "canonical realization handoff",
+                "semantic_payload_owner": "sealed Runner artifact",
                 "projection": "compact-exact-compiler-inspection-v1",
             },
         )
@@ -708,8 +702,6 @@ class _IncrementalRealizationProducer:
                 "Compiler domain-history has incomplete realization lineage"
             )
         end = self._timeline.end_time
-        if end is None:
-            raise RuntimeError("unbounded domain-history cannot be sealed")
         interval = self._timeline.observation_interval
         span = end - self._timeline.start_time
         if span % interval != timedelta(0):

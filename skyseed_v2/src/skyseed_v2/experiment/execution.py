@@ -21,20 +21,14 @@ from skyseed_v2.shared._durable_evidence import _semantic_value
 from skyseed_v2.shared._execution_observation import _ExecutionObserver
 
 from ..backend.bpf.runner import BpfRunner
-from ._realization_handoff import (
-    _PersistedRealizationSupplier,
-    _read_persisted_realization_manifest_snapshot,
+from ..backend.bpf._runner_artifact import (
+    _read_runner_artifact_manifest_snapshot,
 )
-from ._realization_producer import _read_persisted_plan_sequence
 from .traffic.probe_execution import TrafficProbeExecutor
-from .traffic.probe_plan import (
-    TrafficProbePlanBuilder,
-    read_traffic_probe_plan,
-    write_traffic_probe_plan,
-)
+from .traffic.probe_plan import read_traffic_probe_plan
 
 
-_FORMAT_VERSION = 2
+_FORMAT_VERSION = 3
 _KIND = "skyseed-v2-generated-bpf-execution"
 _PROJECT_NAME_FILE = "runtime/compose-project-name"
 _PROJECT_NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9_-]*")
@@ -44,22 +38,16 @@ def _write_execution_definition(
     output_directory: Path,
     *,
     generated_output_identity: str,
-    preparation_lookahead: timedelta | None,
-    preparation_boundary_depth: int | None,
     timeline_start: datetime,
     timeline_end: datetime,
     observation_interval: timedelta,
     project_root: Path,
     example_root: Path,
-    realization_handoff: str,
+    runner_artifact: str,
     realization_producer: str,
 ) -> Path:
     """Write the persisted-only generated BPF execution definition."""
 
-    _validate_execution_parameters(
-        preparation_lookahead,
-        preparation_boundary_depth,
-    )
     if not isinstance(timeline_end, datetime):
         raise TypeError("timeline_end must be a datetime")
     if not isinstance(observation_interval, timedelta) or (
@@ -69,11 +57,11 @@ def _write_execution_definition(
     if not isinstance(realization_producer, str) or not realization_producer:
         raise ValueError("realization_producer must be a non-empty identity")
     relative_manifest = _safe_relative_path(
-        realization_handoff,
-        "realization handoff manifest",
+        runner_artifact,
+        "Runner artifact manifest",
     )
     manifest_path = Path(output_directory).resolve() / relative_manifest
-    supplier_snapshot = _read_persisted_realization_manifest_snapshot(
+    artifact_snapshot = _read_runner_artifact_manifest_snapshot(
         manifest_path
     )
     manifest_sha256 = sha256(manifest_path.read_bytes()).hexdigest()
@@ -85,15 +73,16 @@ def _write_execution_definition(
         "backend": "bpf",
         "generated_output_identity": generated_output_identity,
         "progression": {
-            "strategy": "persisted-canonical-realization-handoff",
+            "strategy": "sealed-precomputed-runner-artifact",
             "producer": realization_producer,
         },
-        "realization_handoff": {
+        "runner_artifact": {
             "manifest": relative_manifest,
-            "format_version": supplier_snapshot["format_version"],
-            "encoding": supplier_snapshot["encoding"],
-            "realization_count": supplier_snapshot["realization_count"],
-            "sequence_sha256": supplier_snapshot["sequence_sha256"],
+            "format_version": artifact_snapshot["format_version"],
+            "encoding": artifact_snapshot["encoding"],
+            "realization_count": artifact_snapshot["realization_count"],
+            "boundary_count": artifact_snapshot["boundary_count"],
+            "sequence_sha256": artifact_snapshot["sequence_sha256"],
             "manifest_sha256": manifest_sha256,
         },
         "simulation": {
@@ -104,14 +93,7 @@ def _write_execution_definition(
             ),
             "bounded": True,
         },
-        "runner": {
-            "preparation_lookahead_seconds": (
-                None
-                if preparation_lookahead is None
-                else preparation_lookahead.total_seconds()
-            ),
-            "preparation_boundary_depth": preparation_boundary_depth,
-        },
+        "runner": {"execution_contract": "sealed-precomputed-only"},
         "source_fingerprint": fingerprint,
         "generated_inputs": generated_inputs,
         "environment": {
@@ -135,8 +117,15 @@ def _write_generated_run_script(
     python_executable: str,
     compiler_tool_directory: str,
     tool_package_parent: Path,
+    required_input_paths: Sequence[str] = (
+        "inputs/scenario.yaml",
+        "inputs/shells.yaml",
+        "inputs/ground_stations.yaml",
+        "inputs/zones.yaml",
+    ),
+    traffic_workload_path: str | None = None,
 ) -> Path:
-    """Write S4 runtime execution plus its thin start-then-run convenience."""
+    """Write generated runtime execution plus start-then-run convenience."""
 
     output = Path(output_directory)
     compiler_directory = _safe_relative_path(
@@ -144,6 +133,32 @@ def _write_generated_run_script(
         "Compiler Tool directory",
     )
     tool_parent = quote(str(Path(tool_package_parent).resolve()))
+    if isinstance(required_input_paths, (str, bytes)):
+        raise TypeError("required_input_paths must be a sequence of paths")
+    required_inputs = tuple(
+        _safe_relative_path(value, "generated runtime input")
+        for value in required_input_paths
+    )
+    if not required_inputs or len(set(required_inputs)) != len(required_inputs):
+        raise ValueError("generated runtime inputs must be non-empty and unique")
+    required_paths = (
+        "runtime/compose-project-name",
+        "runtime/execution.json",
+        "runtime/runner-artifact/manifest.json",
+        "runtime/runner-artifact/runner-runtime.bin",
+        "runtime/docker-compose.yml",
+        *required_inputs,
+    )
+    required_lines = " \\\n".join(
+        f'    "$SCRIPT_DIR/{value}"' for value in required_paths
+    )
+    workload_argument = ""
+    if traffic_workload_path is not None:
+        workload = _safe_relative_path(
+            traffic_workload_path,
+            "generated Traffic workload",
+        )
+        workload_argument = f'    --workload "$SCRIPT_DIR/{workload}" \\\n'
     script = output / "run.sh"
     script.write_text(
         f"""#!/usr/bin/env bash
@@ -159,22 +174,15 @@ TOOL_PACKAGE_PARENT={tool_parent}
 PROJECT_FILE="$SCRIPT_DIR/runtime/compose-project-name"
 STARTUP_EVIDENCE="$SCRIPT_DIR/runtime/deployment-startup.json"
 for required in \\
-    "$PROJECT_FILE" \\
-    "$SCRIPT_DIR/runtime/execution.json" \\
-    "$SCRIPT_DIR/runtime/realizations/manifest.json" \\
-    "$SCRIPT_DIR/runtime/docker-compose.yml" \\
-    "$SCRIPT_DIR/inputs/scenario.yaml" \\
-    "$SCRIPT_DIR/inputs/shells.yaml" \\
-    "$SCRIPT_DIR/inputs/ground_stations.yaml" \\
-    "$SCRIPT_DIR/inputs/zones.yaml"; do
+{required_lines}; do
     if [[ ! -f "$required" ]]; then
-        echo "generated S4 execution input is missing: $required" >&2
+        echo "generated runtime input is missing: $required" >&2
         exit 1
     fi
 done
 PROJECT_NAME="$(<"$PROJECT_FILE")"
 if [[ ! "$PROJECT_NAME" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
-    echo "generated S4 Compose project identity is invalid" >&2
+    echo "generated Compose project identity is invalid" >&2
     exit 1
 fi
 if [[ ! -f "$TOOL_PACKAGE_PARENT/tools/__init__.py" ]]; then
@@ -209,7 +217,7 @@ PYTHONPATH="$TOOL_PYTHONPATH" $PYTHON -m tools.traffic \\
     --physical-frames "$SCRIPT_DIR/domain-history/physical-frames.jsonl" \\
     --planning "$SCRIPT_DIR/domain-history/planning.jsonl.gz" \\
     --bpf-compiler "$SCRIPT_DIR/inspection/{compiler_directory}/bpf-compiler-inspection.json" \\
-    --probe-plan "$SCRIPT_DIR/inspection/traffic/probe-plan.json" \\
+{workload_argument}    --probe-plan "$SCRIPT_DIR/inspection/traffic/probe-plan.json" \\
     --probe-execution "$INVOCATION_DIR/traffic/probe-execution.jsonl" \\
     --runner-events "$INVOCATION_DIR/runner/runner-events.jsonl" \\
     --output "$SCRIPT_DIR/inspection/traffic" \\
@@ -290,41 +298,17 @@ def _run_generated_bpf_experiment(
                 f"domain execution: {error}",
                 file=sys.stderr,
             )
-    definition = _read_and_verify_execution_definition(output)
-    runner_settings = _mapping(definition["runner"], "runner")
-    handoff = _mapping(
-        definition.get("realization_handoff"), "realization_handoff"
-    )
-    relative_manifest = _safe_relative_path(
-        handoff.get("manifest"), "realization handoff manifest"
-    )
-    manifest_path = output / relative_manifest
-    supplier = _PersistedRealizationSupplier(manifest_path)
+    definition, artifact_path, artifact_snapshot = _read_and_verify_execution(output)
     probe_plan_path = output / "inspection/traffic/probe-plan.json"
     if not probe_plan_path.is_file():
-        plans = _read_persisted_plan_sequence(
-            output / "domain-history/planning.jsonl.gz"
-        )
-        write_traffic_probe_plan(
-            TrafficProbePlanBuilder().build(
-                plans, supplier.validated_sequence()
-            ),
-            probe_plan_path,
+        raise RuntimeError(
+            "generated Traffic probe plan is missing; rerun main.py"
         )
     probe_plan = read_traffic_probe_plan(probe_plan_path)
     project_name = str(definition["generated_output_identity"])
-    raw_lookahead = runner_settings["preparation_lookahead_seconds"]
-    preparation_lookahead = (
-        None
-        if raw_lookahead is None
-        else timedelta(seconds=_number(raw_lookahead, "preparation_lookahead_seconds"))
-    )
-    depth = runner_settings["preparation_boundary_depth"]
     runner = BpfRunner(
         compose_project_name=project_name,
-        future_realization_supplier=supplier,
-        preparation_lookahead=preparation_lookahead,
-        preparation_boundary_depth=(None if depth is None else int(depth)),
+        runtime_artifact=artifact_path,
     )
     runner._enable_event_history(
         runner_evidence / "runner-events.jsonl"
@@ -334,7 +318,8 @@ def _run_generated_bpf_experiment(
         {
             "scope": "generated-runtime",
             "invocation_id": invocation_id,
-            "realization_count": len(supplier.validated_sequence()),
+            "realization_count": artifact_snapshot["realization_count"],
+            "boundary_count": artifact_snapshot["boundary_count"],
         }
     )
 
@@ -409,9 +394,7 @@ def _run_generated_bpf_experiment(
         duration_role="rollup",
         scope={"invocation_id": invocation_id},
         work={
-            "realizations_consumed": int(
-                supplier.snapshot()["consumed_count"]
-            ),
+            "precomputed_boundaries": artifact_snapshot["boundary_count"],
             "completed": int(
                 primary_error is None and cleanup_error is None
             ),
@@ -634,7 +617,9 @@ def _write_json_file_atomic(path: Path, value: Mapping[str, object]) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def _read_and_verify_execution_definition(output: Path) -> dict[str, Any]:
+def _read_and_verify_execution(
+    output: Path,
+) -> tuple[dict[str, Any], Path, dict[str, Any]]:
     path = output / "runtime/execution.json"
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -649,82 +634,55 @@ def _read_and_verify_execution_definition(output: Path) -> dict[str, Any]:
     if value.get("backend") != "bpf":
         raise RuntimeError("generated execution backend is not BPF")
     simulation = _mapping(value.get("simulation"), "simulation")
-    runner = _mapping(value.get("runner"), "runner")
-    raw_preparation_lookahead = runner.get("preparation_lookahead_seconds")
-    preparation_lookahead = (
-        None
-        if raw_preparation_lookahead is None
-        else timedelta(
-            seconds=_number(
-                raw_preparation_lookahead,
-                "preparation_lookahead_seconds",
-            )
-        )
-    )
-    depth = runner.get("preparation_boundary_depth")
-    if depth is not None and (
-        isinstance(depth, bool) or not isinstance(depth, int)
-    ):
-        raise RuntimeError("generated execution boundary depth is invalid")
-    try:
-        _validate_execution_parameters(
-            preparation_lookahead,
-            depth,
-        )
-    except (TypeError, ValueError) as error:
-        raise RuntimeError("generated BPF execution bounds are invalid") from error
     start_time = _aware_datetime(simulation.get("start_time"), "start_time")
-    end_value = simulation.get("end_time")
-    end_time = _aware_datetime(end_value, "end_time")
-    bounded = simulation.get("bounded")
-    if bounded is not True:
-        raise RuntimeError("generated execution must be bounded and persisted")
-    if end_time < start_time:
+    end_time = _aware_datetime(simulation.get("end_time"), "end_time")
+    if simulation.get("bounded") is not True or end_time < start_time:
         raise RuntimeError("generated execution Timeline range is invalid")
-    if (
-        _number(
-            simulation.get("observation_interval_seconds"),
-            "observation_interval_seconds",
-        )
-        <= 0
-    ):
-        raise RuntimeError(
-            "generated execution observation interval is invalid"
-        )
+    if _number(
+        simulation.get("observation_interval_seconds"),
+        "observation_interval_seconds",
+    ) <= 0:
+        raise RuntimeError("generated execution observation interval is invalid")
+    runner = _mapping(value.get("runner"), "runner")
+    if runner != {"execution_contract": "sealed-precomputed-only"}:
+        raise RuntimeError("generated Runner execution contract is unsupported")
     progression = _mapping(value.get("progression"), "progression")
     if (
-        progression.get("strategy")
-        != "persisted-canonical-realization-handoff"
+        progression.get("strategy") != "sealed-precomputed-runner-artifact"
         or not isinstance(progression.get("producer"), str)
         or not progression.get("producer")
     ):
-        raise RuntimeError("generated persisted progression identity is invalid")
-    handoff = _mapping(
-        value.get("realization_handoff"), "realization_handoff"
-    )
+        raise RuntimeError("generated precomputed progression identity is invalid")
+    handoff = _mapping(value.get("runner_artifact"), "runner_artifact")
     relative_manifest = _safe_relative_path(
-        handoff.get("manifest"), "realization handoff manifest"
+        handoff.get("manifest"), "Runner artifact manifest"
     )
     manifest_path = output / relative_manifest
-    supplier_snapshot = _PersistedRealizationSupplier(manifest_path).snapshot()
+    snapshot = _read_runner_artifact_manifest_snapshot(manifest_path)
     if (
-        handoff.get("format_version") != supplier_snapshot["format_version"]
-        or handoff.get("encoding") != supplier_snapshot["encoding"]
-        or handoff.get("realization_count")
-        != supplier_snapshot["realization_count"]
-        or handoff.get("sequence_sha256")
-        != supplier_snapshot["sequence_sha256"]
+        handoff.get("format_version") != snapshot["format_version"]
+        or handoff.get("encoding") != snapshot["encoding"]
+        or handoff.get("realization_count") != snapshot["realization_count"]
+        or handoff.get("boundary_count") != snapshot["boundary_count"]
+        or handoff.get("sequence_sha256") != snapshot["sequence_sha256"]
         or handoff.get("manifest_sha256")
         != sha256(manifest_path.read_bytes()).hexdigest()
     ):
-        raise RuntimeError("generated realization handoff changed; rerun main.py")
+        raise RuntimeError("generated Runner artifact changed; rerun main.py")
+    timeline = snapshot["timeline"]
+    if (
+        timeline.get("start") != start_time.isoformat()
+        or timeline.get("end") != end_time.isoformat()
+    ):
+        raise RuntimeError("generated Runner artifact Timeline differs")
     project_name = _read_compose_project_name(output)
     if value.get("generated_output_identity") != project_name:
         raise RuntimeError("generated output identity does not match Compose controls")
-    _verify_source_fingerprint(_mapping(value.get("source_fingerprint"), "source_fingerprint"))
+    _verify_source_fingerprint(
+        _mapping(value.get("source_fingerprint"), "source_fingerprint")
+    )
     _verify_generated_input_fingerprint(
-        output,
-        _mapping(value.get("generated_inputs"), "generated_inputs"),
+        output, _mapping(value.get("generated_inputs"), "generated_inputs")
     )
     environment = _mapping(value.get("environment"), "environment")
     if environment.get("python_implementation") != platform.python_implementation():
@@ -733,8 +691,14 @@ def _read_and_verify_execution_definition(output: Path) -> dict[str, Any]:
         raise RuntimeError("generated output Python version differs; rerun main.py")
     if environment.get("seedemu_distribution_version") != metadata.version("seedemu"):
         raise RuntimeError("generated output SEED version differs; rerun main.py")
-    return value
+    return value, manifest_path, snapshot
 
+
+def _read_and_verify_execution_definition(output: Path) -> dict[str, Any]:
+    """Verify a generated definition without starting the live Runner."""
+
+    definition, _, _ = _read_and_verify_execution(output)
+    return definition
 
 def _build_source_fingerprint(
     project_root: Path, example_root: Path
@@ -1009,23 +973,6 @@ def _error_fact(error: BaseException | None) -> dict[str, str] | None:
         "message": str(error),
     }
 
-
-def _validate_execution_parameters(
-    preparation_lookahead: timedelta | None,
-    preparation_boundary_depth: int | None,
-) -> None:
-    if preparation_lookahead is None:
-        if preparation_boundary_depth is not None:
-            raise ValueError("full-range execution requires no boundary depth")
-        return
-    if not isinstance(preparation_lookahead, timedelta) or preparation_lookahead < timedelta(0):
-        raise ValueError("preparation_lookahead must be non-negative or None")
-    if (
-        isinstance(preparation_boundary_depth, bool)
-        or not isinstance(preparation_boundary_depth, int)
-        or preparation_boundary_depth <= 0
-    ):
-        raise ValueError("rolling execution requires a positive boundary depth")
 
 def _mapping(value: object, label: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):

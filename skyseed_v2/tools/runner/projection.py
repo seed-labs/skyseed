@@ -2,36 +2,23 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from copy import deepcopy
 from numbers import Real
+from math import isfinite
 from typing import Any, Mapping
 
 
 _PRIMARY_EVENTS = {
     "preparation_start": ("Preparation", "Preparation started"),
     "preparation_end": ("Preparation", "Initial preparation completed"),
-    "input_advanced": ("Input", "Input frontier advanced"),
-    "input_exhausted": ("Input", "Input supply exhausted"),
     "runtime_foundation_ready": ("Preparation", "Runtime foundation ready"),
-    "maintenance_prepare_start": ("Maintenance", "Future boundary preparation started"),
-    "maintenance_prepare_end": ("Maintenance", "Future boundary preparation completed"),
-    "ready_published": ("READY", "READY boundary published"),
     "automatic_run_start": ("Main", "Automatic execution started"),
     "automatic_run_end": ("Main", "Automatic execution completed"),
     "boundary_scheduled": ("Main", "Nominal boundary scheduled"),
-    "activation_start": ("Main", "Main activation started"),
     "activation_end": ("Main", "Main activation completed"),
-    "maintenance_forward_priority": ("Maintenance", "Forward coverage took priority"),
-    "maintenance_capacity_pressure": (
-        "Maintenance",
-        "Generation reclaim enabled forward preparation",
-    ),
-    "generation_reclaimed": ("Reclaim", "Forwarding generation reclaimed"),
-    "resources_reclaimed": ("Reclaim", "Physical resources reclaimed"),
     "capacity_audit_failure": ("Failure", "Capacity audit failed"),
-    "deadline_miss": ("Failure", "Nominal deadline missed"),
     "failure": ("Failure", "Runner failure recorded"),
-    "cleanup_start": ("Cleanup", "Cleanup started"),
     "runtime_cleanup_end": ("Cleanup", "Dataplane cleanup completed"),
     "cleanup_end": ("Cleanup", "Runner cleanup completed"),
 }
@@ -47,7 +34,7 @@ def project_runner_inspection(
 
     snapshot = deepcopy(dict(runner_snapshot))
     outcome = deepcopy(dict(runtime_outcome))
-    if snapshot.get("format_version") != 1:
+    if snapshot.get("format_version") != 2:
         raise ValueError("unsupported Runner inspection snapshot format")
     runner = _mapping(snapshot.get("runner"), "runner")
     runtime_foundation = deepcopy(
@@ -94,12 +81,6 @@ def project_runner_inspection(
         for value in ordered
         if value.get("event") == "capacity_audit_failure"
     )
-    deadline_misses = tuple(
-        _event_details(value)
-        for value in ordered
-        if value.get("event") == "deadline_miss"
-    )
-    last_ready = _latest(ordered, "ready_published")
     runtime_cleanup = _latest(ordered, "runtime_cleanup_end")
     cleanup_end = _latest(ordered, "cleanup_end")
 
@@ -109,19 +90,11 @@ def project_runner_inspection(
         "lifecycle_state": runner.get("lifecycle_state"),
         "execution_mode": runner.get("execution_mode"),
         "frontiers": deepcopy(runner.get("frontiers", {})),
-        "last_ready_published": (
-            None if last_ready is None else last_ready.get("boundary_timestamp")
-        ),
-        "input_exhausted": runner.get("input_exhausted"),
-        "preparation_lookahead": deepcopy(
-            runner.get("preparation_lookahead", {})
-        ),
-        "preparation_boundary_depth": runner.get("preparation_boundary_depth"),
-        "activation_count": runner.get("activation_count"),
-        "ready_count_at_capture": runner.get("ready_count_at_capture"),
-        "ready_depth_at_capture": runner.get("ready_depth_at_capture"),
-        "ready_limiting_reason": runner.get("ready_limiting_reason"),
-        "deadline_misses": len(deadline_misses),
+        "execution_contract": runner.get("execution_contract"),
+        "artifact": deepcopy(runner.get("artifact", {})),
+        "activation_count": sum(value["completed"] for value in timing["activations"]),
+        "completed_boundary_count": runner.get("activation_count"),
+        "prepared_boundary_count": runner.get("prepared_boundary_count"),
         "preparation_duration_seconds": timing["preparation_duration_seconds"],
         "cleanup_status": _mapping(
             outcome.get("cleanup", {}), "runtime cleanup outcome"
@@ -129,24 +102,6 @@ def project_runner_inspection(
         "cleanup_duration_seconds": timing["cleanup_duration_seconds"],
         "primary_error": deepcopy(outcome.get("primary_error")),
     }
-    maintenance_summary = deepcopy(runner.get("maintenance", {}))
-    maintenance_summary.update(
-        {
-            "input_advances": sum(
-                value.get("event") == "input_advanced" for value in ordered
-            ),
-            "ready_publications": sum(
-                value.get("event") == "ready_published" for value in ordered
-            ),
-            "future_preparations": len(timing["maintenance_preparations"]),
-            "forward_priority_events": sum(
-                value.get("event") == "maintenance_forward_priority"
-                for value in ordered
-            ),
-            "generation_reclaims": len(timing["generation_reclaims"]),
-            "physical_reclaims": len(timing["physical_reclaims"]),
-        }
-    )
     scale_safety = _scale_safety(ordered, event_history)
     scale_safety["deployment_startup"] = (
         None if deployment_startup is None else deepcopy(dict(deployment_startup))
@@ -170,7 +125,7 @@ def project_runner_inspection(
         "timeline": timeline,
         "graphical_timeline": _graphical_timeline(timeline),
         "timing": timing,
-        "maintenance": maintenance_summary,
+        "detailed_timing": _detailed_timing(ordered),
         "scale_safety": scale_safety,
         "default_dataplane": _default_dataplane_evidence(ordered),
         "failures_cleanup": {
@@ -178,7 +133,6 @@ def project_runner_inspection(
             "cleanup": deepcopy(outcome.get("cleanup")),
             "runner_failures": failures,
             "capacity_failures": capacity_failures,
-            "deadline_misses": deadline_misses,
             "runtime_cleanup_evidence": (
                 None
                 if runtime_cleanup is None
@@ -210,11 +164,10 @@ def project_runner_inspection(
         "events": len(ordered),
         "timeline_events": len(timeline),
         "activations": len(timing["activations"]),
-        "ready_publications": maintenance_summary["ready_publications"],
         "runner_failures": len(failures),
         "capacity_failures": len(capacity_failures),
-        "deadline_misses": len(deadline_misses),
     }
+    data["detailed_timing"]["cleanup"]["finalization"] = runner.get("cleanup_finalization")
     return data
 
 
@@ -237,6 +190,7 @@ def _scale_safety(
     batch_minimums = []
     batch_maximums = []
     batch_distribution: dict[str, int] = {}
+    observed_counters = set()
     external_processes = 0
     namespace_processes = 0
     bpf_syscalls = 0
@@ -277,15 +231,13 @@ def _scale_safety(
                     batch_distribution[str(label)] = (
                         batch_distribution.get(str(label), 0) + int(count)
                     )
+        observed_counters.update(key for key, value in metrics.items() if isinstance(value, Real))
         external_processes += _integer(metrics.get("external_processes"))
         namespace_processes += _integer(metrics.get("namespace_processes"))
         bpf_syscalls += _integer(metrics.get("bpf_syscalls"))
         if value.get("event") in {
             "preparation_stage",
-            "maintenance_prepare_end",
             "activation_end",
-            "generation_reclaimed",
-            "resources_reclaimed",
             "runtime_cleanup_end",
         }:
             amplification.append(
@@ -314,13 +266,43 @@ def _scale_safety(
             )
     activation_subphases = tuple(
         {
-            "boundary_timestamp": value.get("active_frontier"),
-            "duration_seconds": value.get("duration_seconds"),
-            "readiness_dependency_wait_seconds": value.get(
-                "readiness_dependency_wait_seconds"
+            "boundary_timestamp": value.get("target_boundary")
+            or value.get("active_frontier"),
+            "last_completed_active_frontier": value.get(
+                "last_completed_active_frontier"
             ),
-            "foundation_validation_seconds": value.get(
-                "foundation_validation_seconds"
+            "active_frontier": value.get("active_frontier"),
+            "lifecycle_state": value.get("lifecycle_state"),
+            "main_seconds": value.get("main_seconds"),
+            "semantic_outcome": value.get("semantic_outcome"),
+            "live_mutation_started": value.get("live_mutation_started"),
+            "generation_publication_occurred": value.get(
+                "generation_publication_occurred"
+            ),
+            "target_transition_complete": value.get(
+                "target_transition_complete"
+            ),
+            "live_state_may_be_partial": value.get(
+                "live_state_may_be_partial"
+            ),
+            "failure_phase": value.get("failure_phase"),
+            "failure_type": value.get("failure_type"),
+            "failure_message": value.get("failure_message"),
+            "deleted_connections_complete": value.get(
+                "deleted_connections_complete"
+            ),
+            "candidate_rollback_attempted": value.get(
+                "candidate_rollback_attempted"
+            ),
+            "candidate_rollback_complete": value.get(
+                "candidate_rollback_complete"
+            ),
+            "cleanup_ownership_retained": value.get(
+                "cleanup_ownership_retained"
+            ),
+            "cleanup_required": value.get("cleanup_required"),
+            "cleanup_connections": deepcopy(
+                value.get("cleanup_connections", ())
             ),
             "runtime_apply_seconds": value.get("runtime_apply_seconds"),
             "activation_switch_seconds": value.get(
@@ -338,20 +320,21 @@ def _scale_safety(
                 "observation_capture_seconds"
             ),
             "grouping": deepcopy(value.get("grouping")),
+            "activation_phases": deepcopy(value.get("activation_phases")),
+            "activation_phase_reconciliation": deepcopy(
+                value.get("activation_phase_reconciliation")
+            ),
+            "parent_main_tail": deepcopy(value.get("parent_main_tail")),
+            "parent_helper_envelope": deepcopy(
+                value.get("parent_helper_envelope")
+            ),
         }
         for value in events
-        if value.get("event") == "activation_end"
-    )
-    backlog = tuple(
-        {
-            "event": value.get("event"),
-            "boundary_timestamp": value.get("boundary_timestamp")
-            or value.get("active_frontier"),
-            **deepcopy(dict(value["maintenance"])),
-        }
-        for value in events
-        if value.get("event") in {"ready_published", "activation_end"}
-        and isinstance(value.get("maintenance"), Mapping)
+        if (value.get("event") == "activation_end" and value.get("preparation") is not True)
+        or (
+            value.get("event") == "failure"
+            and value.get("phase") == "activation"
+        )
     )
     history = event_history if isinstance(event_history, Mapping) else {}
     durable = history.get("durable")
@@ -371,9 +354,9 @@ def _scale_safety(
             "batch_size_distribution": batch_distribution,
             "minimum_batch_size": min(batch_minimums, default=None),
             "maximum_batch_size": max(batch_maximums, default=None),
-            "external_processes": external_processes,
-            "namespace_processes": namespace_processes,
-            "bpf_syscalls": bpf_syscalls,
+            "external_processes": external_processes if "external_processes" in observed_counters else None,
+            "namespace_processes": namespace_processes if "namespace_processes" in observed_counters else None,
+            "bpf_syscalls": bpf_syscalls if "bpf_syscalls" in observed_counters else None,
         },
         "workers": {
             "observed_limits": tuple(worker_limits),
@@ -385,12 +368,6 @@ def _scale_safety(
             "parallel_phase_count": parallel_phases,
             "parallel_task_count": parallel_tasks,
         },
-        "maintenance_backlog": backlog,
-        "maintenance_input": tuple(
-            _event_details(value)
-            for value in events
-            if value.get("event") in {"input_advanced", "input_exhausted"}
-        ),
         "resource_health": tuple(
             _event_details(value)
             for value in events
@@ -460,20 +437,19 @@ def _latest(
 
 def _timeline(events: tuple[dict[str, object], ...]) -> tuple[dict[str, object], ...]:
     result = []
-    current_main_boundary = None
     first_monotonic = (
         _monotonic(events[0]) if events and _monotonic(events[0]) != float("inf") else None
     )
     for event in events:
         event_name = str(event.get("event", "unknown"))
-        if event_name == "boundary_scheduled":
-            current_main_boundary = event.get("boundary_timestamp")
         boundary = event.get("boundary_timestamp")
-        if boundary is None and event_name in {"activation_start", "activation_end"}:
-            boundary = current_main_boundary
         if event_name not in _PRIMARY_EVENTS:
             continue
         category, headline = _PRIMARY_EVENTS[event_name]
+        if event.get("preparation") is True:
+            category = "Preparation"
+            if event_name == "activation_end":
+                headline = "Startup boundary activated"
         monotonic_value = _monotonic(event)
         result.append(
             {
@@ -495,8 +471,6 @@ def _timeline(events: tuple[dict[str, object], ...]) -> tuple[dict[str, object],
                 "details": _event_details(event),
             }
         )
-        if event_name == "activation_end":
-            current_main_boundary = None
     return tuple(result)
 
 
@@ -511,9 +485,7 @@ def _graphical_timeline(
         "cleanup_phase": [],
     }
     work: dict[str, list[dict[str, object]]] = {
-        "future_preparation": [],
         "main_activation": [],
-        "reclaim_work": [],
     }
     elapsed_values = [
         float(value["elapsed_seconds"])
@@ -552,116 +524,60 @@ def _graphical_timeline(
 
     automatic_start = _first_timeline_event(timeline, "automatic_run_start")
     automatic_end = _first_timeline_event(timeline, "automatic_run_end")
-    cleanup_start = _first_timeline_event(timeline, "cleanup_start")
-    if automatic_start is not None:
-        lifecycle["automatic_run_phase"].append(
-            _graph_span_item(
-                "automatic_run_phase",
-                automatic_start,
-                automatic_end or cleanup_start or last_event or automatic_start,
-                visual="phase",
-                completed=automatic_end is not None,
-                target_event=automatic_start,
-            )
-        )
-
     cleanup_end = _first_timeline_event(timeline, "cleanup_end")
-    if cleanup_start is not None:
+    if automatic_start is not None:
+        automatic_phase = _graph_span_item(
+            "automatic_run_phase",
+            automatic_start,
+            automatic_end or last_event or automatic_start,
+            visual="phase",
+            completed=automatic_end is not None,
+            target_event=automatic_start,
+        )
+        if automatic_end is None and cleanup_end is not None:
+            cleanup_details = _mapping(
+                cleanup_end.get("details", {}), "cleanup timeline details"
+            )
+            cleanup_duration = cleanup_details.get("duration_seconds")
+            if isinstance(cleanup_duration, Real):
+                automatic_phase["elapsed_end_seconds"] = max(
+                    float(automatic_phase["elapsed_start_seconds"]),
+                    float(cleanup_end["elapsed_seconds"])
+                    - float(cleanup_duration),
+                )
+        lifecycle["automatic_run_phase"].append(automatic_phase)
+
+    if cleanup_end is not None:
+        cleanup_details = _mapping(
+            cleanup_end.get("details", {}), "cleanup timeline details"
+        )
         lifecycle["cleanup_phase"].append(
             _graph_span_item(
                 "cleanup_phase",
-                cleanup_start,
-                cleanup_end or last_event or cleanup_start,
+                None,
+                cleanup_end,
                 visual="phase",
-                completed=cleanup_end is not None,
-                target_event=cleanup_start,
+                fallback_duration=cleanup_details.get("duration_seconds"),
+                completed=True,
+                target_event=cleanup_end,
             )
         )
-
-    maintenance_start = None
-    activation_start = None
-    future_completions: dict[
-        tuple[object, object], dict[str, object]
-    ] = {}
 
     for value in timeline:
         if not isinstance(value.get("elapsed_seconds"), Real):
             continue
         event_name = value.get("event")
         details = _mapping(value.get("details", {}), "timeline details")
-        if event_name == "maintenance_prepare_start":
-            maintenance_start = value
-        elif event_name == "maintenance_prepare_end":
-            prepared = _graph_span_item(
-                "future_preparation",
-                maintenance_start,
-                value,
-                visual="work",
-                fallback_duration=details.get("duration_seconds"),
-            )
-            work["future_preparation"].append(prepared)
-            future_completions[
-                (value.get("boundary_timestamp"), details.get("generation"))
-            ] = prepared
-            maintenance_start = None
-        elif event_name == "ready_published":
-            prepared = future_completions.get(
-                (value.get("boundary_timestamp"), details.get("generation"))
-            )
-            if prepared is not None:
-                prepared["ready_marker"] = _graph_point(
-                    "ready_published", value
-                )
-        elif event_name == "activation_start":
-            activation_start = value
-        elif event_name == "activation_end":
+        if event_name == "activation_end" and details.get("preparation") is not True:
             work["main_activation"].append(
                 _graph_span_item(
                     "main_activation",
-                    activation_start,
-                    value,
-                    visual="work",
-                    fallback_duration=details.get("duration_seconds"),
-                )
-            )
-            activation_start = None
-        elif event_name in {"generation_reclaimed", "resources_reclaimed"}:
-            work["reclaim_work"].append(
-                _graph_span_item(
-                    (
-                        "generation_reclaim_work"
-                        if event_name == "generation_reclaimed"
-                        else "physical_reclaim_work"
-                    ),
                     None,
                     value,
                     visual="work",
-                    fallback_duration=details.get("duration_seconds"),
+                    fallback_duration=details.get("main_seconds"),
                 )
             )
-    if maintenance_start is not None:
-        work["future_preparation"].append(
-            _graph_span_item(
-                "future_preparation",
-                maintenance_start,
-                last_event or maintenance_start,
-                visual="work",
-                completed=False,
-                target_event=maintenance_start,
-            )
-        )
-    if activation_start is not None:
-        work["main_activation"].append(
-            _graph_span_item(
-                "main_activation",
-                activation_start,
-                last_event or activation_start,
-                visual="work",
-                completed=False,
-                target_event=activation_start,
-            )
-        )
-
     groups = (
         ("lifecycle", lifecycle),
         ("work", work),
@@ -753,24 +669,12 @@ def _event_summary(
     event: Mapping[str, object],
     boundary: object,
 ) -> str:
-    if event_name in {"input_advanced", "input_exhausted"}:
-        return f"INPUT {event.get('input_frontier') or 'not yet available'}"
-    if event_name in {"maintenance_prepare_start", "maintenance_prepare_end"}:
-        duration = event.get("duration_seconds")
-        suffix = "" if duration is None else f" in {float(duration):.3f}s"
-        return f"Boundary {boundary or 'unknown'}{suffix}"
-    if event_name == "ready_published":
-        return (
-            f"Boundary {boundary or 'unknown'}; predecessor "
-            f"{event.get('predecessor') or 'bootstrap'}; headroom "
-            f"{_seconds(event.get('preparation_headroom_seconds'))}"
-        )
-    if event_name in {"boundary_scheduled", "activation_start", "activation_end"}:
-        duration = event.get("duration_seconds")
+    if event_name == "boundary_scheduled":
+        return f"Boundary {boundary or 'unknown'}"
+    if event_name == "activation_end":
+        duration = event.get("main_seconds")
         suffix = "" if duration is None else f"; duration {_seconds(duration)}"
         return f"Boundary {boundary or 'unknown'}{suffix}"
-    if event_name == "deadline_miss":
-        return f"Boundary {boundary or 'unknown'} was not READY by its due time"
     if event_name == "failure":
         return (
             f"{event.get('phase') or 'unknown phase'}: "
@@ -778,21 +682,6 @@ def _event_summary(
         )
     if event_name == "capacity_audit_failure":
         return f"{event.get('scope') or 'unknown scope'}: {event.get('reason') or ''}"
-    if event_name == "generation_reclaimed":
-        return (
-            f"Generation {event.get('generation', 'unknown')}; "
-            f"{_seconds(event.get('duration_seconds'))}"
-        )
-    if event_name == "resources_reclaimed":
-        return (
-            f"{event.get('deleted_connections', 0)} connections; "
-            f"{_seconds(event.get('duration_seconds'))}"
-        )
-    if event_name in {
-        "maintenance_forward_priority",
-        "maintenance_capacity_pressure",
-    }:
-        return f"Next action: {event.get('action') or 'unknown'}"
     if event_name in {"preparation_end", "cleanup_end"}:
         return f"Duration {_seconds(event.get('duration_seconds'))}"
     if event_name == "automatic_run_end":
@@ -807,84 +696,49 @@ def _seconds(value: object) -> str:
 def _timing(events: tuple[dict[str, object], ...]) -> dict[str, object]:
     preparation_end = _latest(events, "preparation_end")
     cleanup_end = _latest(events, "cleanup_end")
+    schedules = {
+        value.get("boundary_timestamp"): value
+        for value in events
+        if value.get("event") == "boundary_scheduled" and value.get("preparation") is not True
+    }
     activations = []
-    current = None
+    completed_boundaries = set()
     for event in events:
-        event_name = event.get("event")
-        if event_name == "boundary_scheduled":
-            if current is not None:
-                activations.append(current)
-            current = {
-                "boundary_timestamp": event.get("boundary_timestamp"),
-                "scheduled_wall": event.get("scheduled_wall"),
-                "start_lag_seconds": None,
-                "duration_seconds": None,
-                "completion_lag_seconds": None,
-                "completed": False,
+        if event.get("event") != "activation_end" or event.get("preparation") is True:
+            continue
+        boundary = event.get("boundary_timestamp") or event.get("active_frontier")
+        schedule = schedules.get(boundary, {})
+        completed_boundaries.add(boundary)
+        activations.append(
+            {
+                "boundary_timestamp": boundary,
+                "start_lag_seconds": event.get("ideal_start_lag_seconds"),
+                "duration_seconds": event.get("main_seconds"),
+                "completion_lag_seconds": event.get(
+                    "ideal_completion_lag_seconds"
+                ),
+                "completed": True,
+                "active_frontier": event.get("active_frontier"),
             }
-        elif event_name == "activation_start":
-            if current is None:
-                current = {
-                    "boundary_timestamp": None,
-                    "scheduled_wall": None,
-                    "duration_seconds": None,
-                    "completion_lag_seconds": None,
-                    "completed": False,
-                }
-            current["start_lag_seconds"] = event.get("start_lag_seconds")
-        elif event_name == "activation_end":
-            if current is None:
-                current = {
-                    "boundary_timestamp": event.get("active_frontier"),
-                    "scheduled_wall": None,
-                    "start_lag_seconds": None,
-                }
-            current.update(
-                {
-                    "duration_seconds": event.get("duration_seconds"),
-                    "completion_lag_seconds": event.get(
-                        "completion_lag_seconds"
-                    ),
-                    "active_frontier": event.get("active_frontier"),
-                    "completed": True,
-                }
-            )
-            activations.append(current)
-            current = None
-    if current is not None:
-        activations.append(current)
+        )
+    activations.extend(
+        {
+            "boundary_timestamp": boundary,
+            "start_lag_seconds": None,
+            "duration_seconds": None,
+            "completion_lag_seconds": None,
+            "completed": False,
+            "active_frontier": None,
+        }
+        for boundary, schedule in schedules.items()
+        if boundary not in completed_boundaries
+    )
 
     complete_durations = [
         float(value["duration_seconds"])
         for value in activations
         if isinstance(value.get("duration_seconds"), Real)
     ]
-    maintenance_preparations = tuple(
-        {
-            "boundary_timestamp": value.get("boundary_timestamp"),
-            "runtime_preparation_seconds": value.get("duration_seconds"),
-            "state_materialization_seconds": value.get(
-                "state_materialization_seconds"
-            ),
-            "total_ready_preparation_seconds": _sum_complete_durations(
-                value.get("state_materialization_seconds"),
-                value.get("duration_seconds"),
-            ),
-            "generation": value.get("generation"),
-        }
-        for value in events
-        if value.get("event") == "maintenance_prepare_end"
-    )
-    generation_reclaims = tuple(
-        _event_details(value)
-        for value in events
-        if value.get("event") == "generation_reclaimed"
-    )
-    physical_reclaims = tuple(
-        _event_details(value)
-        for value in events
-        if value.get("event") == "resources_reclaimed"
-    )
     return {
         "preparation_duration_seconds": (
             None if preparation_end is None else preparation_end.get("duration_seconds")
@@ -893,45 +747,210 @@ def _timing(events: tuple[dict[str, object], ...]) -> dict[str, object]:
             None if cleanup_end is None else cleanup_end.get("duration_seconds")
         ),
         "activations": tuple(activations),
+        "startup_activations": tuple(dict(value) for value in events
+                                     if value.get("event") == "activation_end"
+                                     and value.get("preparation") is True),
         "recent_activation_duration_seconds": (
             None if not complete_durations else complete_durations[-1]
         ),
         "max_activation_duration_seconds": (
             None if not complete_durations else max(complete_durations)
         ),
-        "maintenance_preparations": maintenance_preparations,
-        "maintenance_preparation_total_seconds": _duration_total(
-            maintenance_preparations,
-            field="total_ready_preparation_seconds",
-        ),
-        "generation_reclaims": generation_reclaims,
-        "generation_reclaim_total_seconds": _duration_total(generation_reclaims),
-        "physical_reclaims": physical_reclaims,
-        "physical_reclaim_total_seconds": _duration_total(physical_reclaims),
-        "deadline_misses": tuple(
-            _event_details(value)
-            for value in events
-            if value.get("event") == "deadline_miss"
-        ),
+
     }
 
 
-def _sum_complete_durations(*values: object) -> float | None:
-    if any(not isinstance(value, Real) for value in values):
+_OPERATION_CATEGORIES = (
+    "pre_veth_creation", "pre_ifindex_resolution", "pre_mac_link_configuration",
+    "pre_qdisc_creation", "pre_existing_qdisc_update", "pre_bpf_attachment",
+    "pre_ingress_binding_update", "pre_egress_binding_update", "pre_route_replacement",
+    "pre_neighbour_replacement", "pre_zone_address_addition", "pre_link_up",
+    "pre_local_bookkeeping", "active_generation_update", "post_route_deletion",
+    "post_neighbour_deletion", "post_zone_address_removal", "post_ingress_binding_deletion",
+    "post_egress_binding_deletion", "post_interface_down", "post_veth_deletion",
+    "post_local_bookkeeping",
+)
+
+
+def _timing_distribution(values) -> dict[str, Any]:
+    ordered = sorted(float(value) for value in values
+                     if isinstance(value, Real) and not isinstance(value, bool) and isfinite(value))
+    def percentile(fraction):
+        if not ordered:
+            return None
+        position = (len(ordered) - 1) * fraction
+        lower = int(position)
+        upper = min(lower + 1, len(ordered) - 1)
+        return ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower)
+    return {"count": len(ordered), "total": sum(ordered) if ordered else None,
+            "p50": percentile(.5), "p95": percentile(.95),
+            "min": min(ordered) if ordered else None, "max": max(ordered) if ordered else None}
+
+
+def _difference(total, *parts):
+    if any(not isinstance(value, Real) or isinstance(value, bool) or not isfinite(value)
+           for value in (total, *parts)):
         return None
-    return sum(float(value) for value in values)
+    return total - sum(parts)
+
+
+def _span_seconds(end, start):
+    value = _difference(end, start)
+    return None if value is None else value / 1e9
+
+
+def _detailed_timing(events) -> dict[str, Any]:
+    """Offline accounting only: nested timings are never added as exclusive work."""
+    schedules = {v.get("boundary_timestamp"): v for v in events if v.get("event") == "boundary_scheduled"}
+    observations = {v.get("boundary_timestamp"): v for v in events if v.get("event") == "activation_observation_end"}
+    rows = []
+    startup = []
+    previous_anchor_lag = None
+    for event in events:
+        if event.get("event") != "activation_end":
+            continue
+        boundary = event.get("boundary_timestamp") or event.get("active_frontier")
+        schedule = schedules.get(boundary, {})
+        observation = observations.get(boundary, {})
+        command = event.get("command_timing") or {}
+        helper = command.get("helper") or {}
+        parent = event.get("parent_runtime_timing") or {}
+        operations = event.get("operation_timings") or {}
+        phases = event.get("activation_phases") or {}
+        envelope = {name: command.get(name) for name in (
+            "command_seconds", "json_encode_seconds", "channel_write_seconds",
+            "channel_wait_seconds", "response_decode_seconds")}
+        envelope.update({
+            "parent_request_preparation_seconds": parent.get("request_preparation_seconds"),
+            "parent_result_ledger_seconds": parent.get("result_ledger_seconds"),
+            "helper_request_decode_seconds": helper.get("request_decode_seconds"),
+            "helper_dispatch_seconds": helper.get("dispatch_seconds"),
+            "helper_activation_seconds": _span_seconds(event.get("helper_activation_evidence_monotonic_ns"), event.get("helper_activation_start_monotonic_ns")),
+            "helper_pre_dispatch_seconds": _span_seconds(helper.get("dispatch_start_monotonic_ns"), helper.get("request_decoded_monotonic_ns")),
+            **{name: observation.get(name) for name in (
+                "formal_commit_seconds", "identity_enqueue_seconds", "activation_event_record_seconds",
+                "post_main_observation_seconds")},
+        })
+        residuals = {
+            "main_unattributed_seconds": _difference(event.get("main_seconds"),
+                parent.get("request_preparation_seconds"), command.get("command_seconds"), parent.get("result_ledger_seconds")),
+            "command_unattributed_seconds": _difference(command.get("command_seconds"),
+                *[command.get(name) for name in ("json_encode_seconds", "channel_write_seconds", "channel_wait_seconds", "response_decode_seconds")]),
+            "exchange_unattributed_seconds": _difference(
+                _span_seconds(command.get("read_end_monotonic_ns"), command.get("write_start_monotonic_ns")),
+                helper.get("request_decode_seconds"), envelope["helper_pre_dispatch_seconds"], helper.get("dispatch_seconds")),
+            "helper_dispatch_unattributed_seconds": _difference(helper.get("dispatch_seconds"), envelope["helper_activation_seconds"]),
+            "post_main_unattributed_seconds": _difference(observation.get("post_main_observation_seconds"),
+                observation.get("formal_commit_seconds"), observation.get("identity_enqueue_seconds"), observation.get("activation_event_record_seconds")),
+        }
+        for prefix, phase in (("pre", "pre_publication"), ("post", "post_publication")):
+            residuals[prefix + "_barrier_unattributed_seconds"] = (
+                _difference((phases.get(phase) or {}).get("duration_seconds"),
+                            sum(value["duration_seconds"] for name, value in operations.items() if name.startswith(prefix + "_")))
+                if event.get("detailed_timing_version") in (1, 2) else None)
+        residuals["helper_activation_outside_barriers_seconds"] = _difference(
+            envelope["helper_activation_seconds"],
+            (phases.get("pre_publication") or {}).get("duration_seconds"),
+            (phases.get("post_publication") or {}).get("duration_seconds"),
+            (phases.get("active_generation_publication") or {}).get("duration_seconds", 0)
+            if event.get("generation_publication_occurred") is False else
+            (phases.get("active_generation_publication") or {}).get("duration_seconds"))
+        anchor_ns = event.get("helper_pacing_anchor_monotonic_ns")
+        anchor = anchor_ns / 1e9 if isinstance(anchor_ns, int) else None
+        ideal = schedule.get("ideal_activation_monotonic_seconds")
+        paced = schedule.get("paced_not_before_monotonic_seconds")
+        start = event.get("main_start_monotonic_seconds")
+        pacing = {
+            "start_lag_seconds": event.get("ideal_start_lag_seconds"),
+            "completion_lag_seconds": event.get("ideal_completion_lag_seconds"),
+            "pacing_carry_seconds": _difference(paced, ideal),
+            "start_after_deadline_seconds": _difference(start, paced),
+            "parent_to_helper_anchor_seconds": _difference(anchor, start),
+            "anchor_lag_seconds": _difference(anchor, ideal),
+        }
+        pacing["carry_from_previous_anchor_residual_seconds"] = (
+            _difference(pacing["pacing_carry_seconds"], max(0, previous_anchor_lag))
+            if previous_anchor_lag is not None and schedule.get("pacing_mode") != "fixed-origin" else None)
+        row = {"boundary_timestamp": boundary, "main_seconds": event.get("main_seconds"),
+               "instrumented": event.get("detailed_timing_version") in (1, 2),
+               "operations": operations, "barriers": phases, "envelope": envelope,
+               "retirement": event.get("retirement"),
+               "residuals": residuals, "pacing": pacing,
+               "kernel_calls": helper.get("kernel_calls"),
+               "timestamps": {"main_start_seconds": start, "main_end_seconds": event.get("main_end_monotonic_seconds"),
+                              "ideal_deadline_seconds": ideal, "paced_deadline_seconds": paced,
+                              "helper_anchor_ns": anchor_ns,
+                              "publication_start_ns": event.get("generation_switch_start_monotonic_ns"),
+                              "publication_end_ns": event.get("generation_switch_end_monotonic_ns")}}
+        if event.get("preparation") is True:
+            startup.append(row)
+        else:
+            rows.append(row)
+            previous_anchor_lag = pacing["anchor_lag_seconds"]
+    instrumented = [row for row in rows if row["instrumented"]]
+    operation_summary = {}
+    for name in _OPERATION_CATEGORIES:
+        # A versioned aggregate with no category means no calls. Publication
+        # duration is sampled only when a publication was actually attempted.
+        values = [row["operations"].get(name, {"duration_seconds": 0, "operation_count": 0}) for row in instrumented]
+        operation_summary[name] = {
+            "seconds": _timing_distribution(value["duration_seconds"] for value in values
+                                            if name != "active_generation_update" or value["operation_count"]),
+            "operations_per_boundary": _timing_distribution(value["operation_count"] for value in values),
+        }
+    def summarize(group):
+        return {name: _timing_distribution((row[group] or {}).get(name) for row in rows)
+                for name in sorted({key for row in rows for key in (row[group] or {})})}
+    stages = [dict(v) for v in events if v.get("event") == "preparation_stage"]
+    preparation = _latest(events, "preparation_end") or {}
+    cleanup = _latest(events, "cleanup_end") or {}
+    runtime_cleanup = _latest(events, "runtime_cleanup_end") or {}
+    return {
+        "accounting": {
+            "operations": "Attempted operation-family wall time; v2 physical deletion is joined batch critical wall time and pair count, with concurrent task durations reported separately; local bookkeeping counts blocks. Zero-call categories have measured absence; reused publication has no duration sample.",
+            "inclusive": "command includes helper dispatch; dispatch includes activation; barriers include operation families. Do not add nested durations or phase percentiles.",
+            "residuals": "Signed offline differences, including unmeasured local work, transport, scheduling, and instrumentation; no attribution to pure kernel CPU.",
+            "observation": "Post-Main observation ends after activation_end recording; the compact activation_observation_end event and final condition notification are outside that span.",
+            "counters": "Actual helper netlink request/BPF syscall calls, including joined worker counts and failed attempts. External process counts remain unavailable.",
+        },
+        "formal_boundary_count": len(rows), "instrumented_boundary_count": len(instrumented),
+        "main_seconds": _timing_distribution(row["main_seconds"] for row in rows),
+        "main_exceeding_five_seconds": sum(isinstance(row["main_seconds"], Real) and row["main_seconds"] > 5 for row in rows),
+        "operations": operation_summary,
+        "barriers": {name: _timing_distribution((row["barriers"].get(name) or {}).get("duration_seconds") for row in rows)
+                     for name in ("pre_publication", "active_generation_publication", "post_publication", "withdrawal", "physical_deletion")},
+        "envelope": summarize("envelope"), "residuals": summarize("residuals"), "pacing": summarize("pacing"),
+        "retirement": summarize("retirement"),
+        "kernel_calls": summarize("kernel_calls"), "boundaries": rows, "startup": startup,
+        "preparation": {"total_seconds": preparation.get("duration_seconds"), "stages": stages,
+            "unattributed_seconds": _difference(preparation.get("duration_seconds"),
+                sum(v.get("duration_seconds", 0) for v in stages), sum(v["main_seconds"] for v in startup))},
+        "cleanup": {"total_seconds": cleanup.get("duration_seconds"), "owner_phases": cleanup.get("phases"),
+            "runtime": {key: runtime_cleanup.get(key) for key in (
+                "retirement", "cleanup_phases", "cleanup_operations", "parent_cleanup_timing", "command_timing")},
+            "owner_unattributed_seconds": _difference(cleanup.get("duration_seconds"), sum((cleanup.get("phases") or {}).values()))
+                if cleanup.get("phases") else None},
+    }
 
 
 def _duration_total(
     values: tuple[dict[str, object], ...],
     *,
     field: str = "duration_seconds",
-) -> float:
-    return sum(
+) -> float | None:
+    if not values:
+        return 0.0
+    measured = [
         float(value[field])
         for value in values
         if isinstance(value.get(field), Real)
-    )
+    ]
+    return sum(measured) if len(measured) == len(values) else None
+
+
+def _optional_duration_total(values: Iterable[object]) -> float | None:
+    measured = [float(value) for value in values if isinstance(value, Real)]
+    return None if not measured else sum(measured)
 
 
 def _default_dataplane_evidence(
@@ -939,18 +958,7 @@ def _default_dataplane_evidence(
 ) -> dict[str, object]:
     foundation = _latest(events, "runtime_foundation_ready")
     capacity = _latest(events, "capacity_audit_end")
-    ready = _latest(events, "ready_published")
     activation = _latest(events, "activation_end")
-    generation_reclaims = tuple(
-        _event_details(value)
-        for value in events
-        if value.get("event") == "generation_reclaimed"
-    )
-    physical_reclaims = tuple(
-        _event_details(value)
-        for value in events
-        if value.get("event") == "resources_reclaimed"
-    )
     return {
         "kind": "default-tc-bpf",
         "label": "Current default tc-BPF dataplane",
@@ -960,12 +968,9 @@ def _default_dataplane_evidence(
         "latest_capacity_audit": (
             None if capacity is None else _event_details(capacity)
         ),
-        "latest_ready": None if ready is None else _event_details(ready),
         "latest_activation": (
             None if activation is None else _event_details(activation)
         ),
-        "generation_reclaims": generation_reclaims,
-        "physical_reclaims": physical_reclaims,
     }
 
 

@@ -144,7 +144,7 @@ rows and are never drawn as fabricated contiguous spans.
 
 Each Tool owns only its output. Missing, malformed, stale, or mixed-invocation
 records produce a conspicuous failure artifact or exception. A Tool failure
-does not invalidate the persisted realization handoff or rerun computation. If
+does not invalidate the sealed Runner artifact or rerun computation. If
 the generated runtime itself succeeded, `run.sh` warns about detached Tool
 failure and retains that successful exit outcome.
 The exact PhysicalLink candidate sink is attempted only after Planner consumes

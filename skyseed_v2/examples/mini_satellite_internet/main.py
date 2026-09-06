@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import re
-from shlex import quote
 import subprocess
 import sys
 from uuid import uuid4
@@ -23,7 +22,6 @@ _PROJECT_NAME_FILE = "runtime/compose-project-name"
 _REALIZATION_PRODUCER_IDENTITY = (
     "skyseed-v2-common-incremental-realization-producer-v1"
 )
-_RUNNER_PREPARATION_BOUNDARY_DEPTH = None
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -43,10 +41,13 @@ from skyseed_v2.compose.launcher import (
     _prepare_generated_output,
     _write_compose_project_scripts,
 )
-from skyseed_v2.experiment._realization_handoff import (
-    _write_realization_handoff,
+from skyseed_v2.backend.bpf._runner_artifact import (
+    _write_runner_artifact,
 )
-from skyseed_v2.experiment.execution import _write_execution_definition
+from skyseed_v2.experiment.execution import (
+    _write_execution_definition,
+    _write_generated_run_script,
+)
 from skyseed_v2.experiment.traffic.probe_plan import (
     TrafficProbePlanBuilder,
     write_traffic_probe_plan,
@@ -186,98 +187,6 @@ def _write_input_snapshots(
         destination.write_bytes(content)
 
 
-def _write_execution_scripts(output: Path) -> None:
-    """Publish persisted-only Mini BPF execution controls."""
-
-    python = quote(sys.executable)
-    _write_executable(
-        output / "run.sh",
-        f"""#!/usr/bin/env bash
-set -euo pipefail
-
-if (( $# != 0 )); then
-    echo "run.sh does not accept arguments" >&2
-    exit 2
-fi
-SCRIPT_DIR="$(cd -- "$(dirname -- "${{BASH_SOURCE[0]}}")" && pwd)"
-for required in \\
-    "$SCRIPT_DIR/{_PROJECT_NAME_FILE}" \\
-    "$SCRIPT_DIR/runtime/execution.json" \\
-    "$SCRIPT_DIR/runtime/realizations/manifest.json" \\
-    "$SCRIPT_DIR/inputs/scenario.yaml" \\
-    "$SCRIPT_DIR/inputs/zones.yaml" \\
-    "$SCRIPT_DIR/runtime/docker-compose.yml"; do
-    if [[ ! -f "$required" ]]; then
-        echo "generated BPF execution input is missing: $required" >&2
-        exit 1
-    fi
-done
-
-execution_status=0
-{python} -m skyseed_v2.experiment.execution "$SCRIPT_DIR" \\
-    || execution_status=$?
-
-runner_tool_status=0
-{python} -m tools.runner \\
-    --handoff "$SCRIPT_DIR/inspection/runner/runner-invocation.json" \\
-    --events "$SCRIPT_DIR/inspection/runner/runner-events.jsonl" \\
-    --output "$SCRIPT_DIR/inspection/runner" \\
-    || runner_tool_status=$?
-
-traffic_tool_status=0
-{python} -m tools.traffic \\
-    --telemetry "$SCRIPT_DIR/inspection/traffic/traffic-telemetry.jsonl" \\
-    --physical-frames "$SCRIPT_DIR/domain-history/physical-frames.jsonl" \\
-    --planning "$SCRIPT_DIR/domain-history/planning.jsonl.gz" \\
-    --bpf-compiler "$SCRIPT_DIR/inspection/bpf-compiler/bpf-compiler-inspection.json" \\
-    --workload "$SCRIPT_DIR/inputs/traffic-workload.json" \\
-    --probe-plan "$SCRIPT_DIR/inspection/traffic/probe-plan.json" \\
-    --probe-execution "$SCRIPT_DIR/inspection/traffic/probe-execution.jsonl" \\
-    --runner-events "$SCRIPT_DIR/inspection/runner/runner-events.jsonl" \\
-    --output "$SCRIPT_DIR/inspection/traffic" \\
-    || traffic_tool_status=$?
-
-observation_tool_status=0
-{python} -c 'import sys; from pathlib import Path; from tools.observation import write_observation_tool; write_observation_tool(Path(sys.argv[1]), Path(sys.argv[2]))' \\
-    "$SCRIPT_DIR/inspection/observation/execution-observations.jsonl" \\
-    "$SCRIPT_DIR/inspection/observation" \\
-    || observation_tool_status=$?
-
-aggregate_status=0
-{python} -c 'import importlib,sys; from pathlib import Path; importlib.import_module("tools._html").finalize_runtime_aggregate_index(Path(sys.argv[1]))' \\
-    "$SCRIPT_DIR/inspection" \\
-    || aggregate_status=$?
-
-if (( execution_status != 0 )); then
-    exit "$execution_status"
-fi
-if (( runner_tool_status != 0 || traffic_tool_status != 0 || observation_tool_status != 0 || aggregate_status != 0 )); then
-    echo "runtime completed; one or more detached inspection Tools failed" >&2
-fi
-exit 0
-""",
-    )
-    _write_executable(
-        output / "launch.sh",
-        """#!/usr/bin/env bash
-set -euo pipefail
-
-if (( $# != 0 )); then
-    echo "launch.sh does not accept arguments" >&2
-    exit 2
-fi
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-"$SCRIPT_DIR/start.sh"
-exec "$SCRIPT_DIR/run.sh"
-""",
-    )
-
-
-def _write_executable(path: Path, content: str) -> None:
-    path.write_text(content, encoding="utf-8")
-    path.chmod(0o755)
-
-
 def _write_inspection_tools(
     output: Path,
     *,
@@ -287,7 +196,7 @@ def _write_inspection_tools(
     physical_frame,
     physical_link_observation,
 ) -> tuple[dict[str, dict[str, object]], dict[str, str]]:
-    """Run detached observers without controlling runtime handoff validity."""
+    """Run detached observers without controlling Runner artifact validity."""
 
     inspection = output / "inspection"
     results: dict[str, dict[str, object]] = {}
@@ -422,9 +331,9 @@ def main(argv: list[str] | None = None) -> int:
     if not plan_values or len(plan_values) != len(realization_values):
         raise RuntimeError("Mini producer did not emit a complete Plan lineage")
 
-    handoff_manifest = _write_realization_handoff(
+    artifact_manifest = _write_runner_artifact(
         realization_values,
-        arguments.output / "runtime/realizations",
+        arguments.output / "runtime/runner-artifact",
         execution_observer=simulator.get_planner()._get_execution_observer(),
     )
     traffic_output = arguments.output / "inspection/traffic"
@@ -445,24 +354,31 @@ def main(argv: list[str] | None = None) -> int:
             simulation_end=timeline.end_time,
         ),
     )
-    assert timeline.end_time is not None
     _write_execution_definition(
         arguments.output,
         generated_output_identity=compose_project_name,
-        preparation_lookahead=None,
-        preparation_boundary_depth=_RUNNER_PREPARATION_BOUNDARY_DEPTH,
         timeline_start=timeline.start_time,
         timeline_end=timeline.end_time,
         observation_interval=timeline.observation_interval,
         project_root=PROJECT_ROOT,
         example_root=EXAMPLE_ROOT,
-        realization_handoff=str(
-            handoff_manifest.relative_to(arguments.output).as_posix()
+        runner_artifact=str(
+            artifact_manifest.relative_to(arguments.output).as_posix()
         ),
         realization_producer=_REALIZATION_PRODUCER_IDENTITY,
     )
     _write_compose_project_scripts(arguments.output, compose_project_name)
-    _write_execution_scripts(arguments.output)
+    _write_generated_run_script(
+        arguments.output,
+        python_executable=sys.executable,
+        compiler_tool_directory="bpf-compiler",
+        tool_package_parent=PROJECT_ROOT,
+        required_input_paths=(
+            "inputs/scenario.yaml",
+            "inputs/zones.yaml",
+        ),
+        traffic_workload_path="inputs/traffic-workload.json",
+    )
     observation_failure = None
     try:
         simulator._write_execution_observations()
@@ -490,7 +406,7 @@ def main(argv: list[str] | None = None) -> int:
         f"{producer_snapshot['plan_count']} Plans / "
         f"{producer_snapshot['transition_count']} formal transitions"
     )
-    print(f"runtime handoff: {handoff_manifest}")
+    print(f"Runner artifact: {artifact_manifest}")
     print(f"start: {arguments.output / 'start.sh'}")
     print(f"run: {arguments.output / 'run.sh'}")
     print(f"launch: {arguments.output / 'launch.sh'}")
@@ -498,7 +414,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Inspection index: {arguments.output / 'inspection/index.html'}")
     if tool_failures:
         print(
-            "Inspection side-work failures did not invalidate runtime handoff: "
+            "Inspection side-work failures did not invalidate Runner artifact: "
             + ", ".join(sorted(tool_failures)),
             file=sys.stderr,
         )

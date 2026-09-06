@@ -44,7 +44,6 @@ def render_runner_page(data: dict[str, Any]) -> str:
 .graph-bar.work { top:17px; height:20px; padding:3px 6px; border:1px solid var(--cyan); border-radius:5px; background:#624a88; }
 .graph-bar.work.micro-span { min-width:0; padding:0; border:0; border-radius:1px; }
 .graph-bar.kind-main_activation { background:#8b5d25; }
-.graph-bar.kind-generation_reclaim_work, .graph-bar.kind-physical_reclaim_work { background:#674e3e; }
 .graph-foundation-notch { position:absolute; top:10px; z-index:4; width:12px; height:32px; padding:0; border:0; border-radius:0; background:transparent; transform:translateX(-50%); }
 .graph-foundation-notch::before { content:""; position:absolute; left:5px; top:2px; bottom:2px; border-left:2px solid var(--warn); }
 .graph-foundation-notch::after { content:""; position:absolute; left:2px; top:0; border-left:4px solid transparent; border-right:4px solid transparent; border-top:6px solid var(--warn); }
@@ -67,7 +66,6 @@ def render_runner_page(data: dict[str, Any]) -> str:
 .graph-local-bar { position:absolute; top:10px; height:16px; min-width:0; border-radius:3px; background:#624a88; }
 .graph-local-bar.phase { height:20px; background:#315b7b; border:1px solid var(--blue); }
 .graph-local-bar.main_activation { background:#8b5d25; }
-.graph-local-bar.generation_reclaim_work, .graph-local-bar.physical_reclaim_work { background:#674e3e; }
 .graph-local-point { position:absolute; top:7px; width:2px; height:24px; background:var(--cyan); transform:translateX(-1px); }
 .graph-local-point.foundation { background:var(--warn); }
 .binding-tree { display:grid; gap:10px; }
@@ -145,9 +143,16 @@ def render_runner_page(data: dict[str, Any]) -> str:
 
 <section><h2 id="timing-title"></h2><div class="grid stats" id="timing-stats"></div></section>
 <section class="card scroll"><h3 id="activation-title"></h3><div id="activation-table"></div></section>
+<section class="card scroll">
+  <h3>Detailed timing / 详细计时</h3>
+  <p class="muted">Formal Main only. Operation-family wall time includes request/ACK waits. Command, helper, barriers and operations are nested; their durations must not be added together.</p>
+  <div id="operation-timing-table"></div>
+  <h4>Parent / helper envelope (inclusive where named)</h4><div id="envelope-timing-table"></div>
+  <h4>Pacing and unattributed residuals</h4><div id="pacing-timing-table"></div><div id="residual-timing-table"></div>
+  <details><summary>Per-boundary counts, timestamps and lifecycle accounting</summary><div id="detailed-timing-evidence"></div></details>
+</section>
 
-<section><h2 id="maintenance-title"></h2><div class="grid overview" id="maintenance"></div></section>
-<section class="card scroll"><h3 id="preparation-table-title"></h3><div id="preparation-table"></div></section>
+<section class="card scroll"></section>
 
 <section>
   <h2>Scale safety / 规模安全</h2>
@@ -194,96 +199,86 @@ const STRINGS={
   zh:{
     lang:"zh-CN",title:"BPF Runner 检查工具",eyebrow:"运行后 · 离线 · 只读",footer:"Skyseed v2 仓库内离线检查 artifact",
     introTitle:"Runner 生命周期运行后证据",introCopy:"本静态页面组合了 detached 的最终/最后已知 Runner 摘要与完整记录事件历史；它不是实时视图，也不具有控制行为。",cleanedNote:"cleanup 完成后，frontier 值是历史事实：“Last active” 不表示网络当前仍处于 active 状态。",
-    guideTitle:"如何阅读 / How to read",guideIntro:"普通用户建议依次阅读 Overview、图形执行时间轴、Timing 和 Maintenance；raw JSON 与深层 evidence 主要用于 debugging。",
+    guideTitle:"如何阅读 / How to read",guideIntro:"普通用户建议依次阅读 Overview、图形执行时间轴、Timing 和 Cleanup；raw JSON 与深层 evidence 主要用于 debugging。",
     guideTerms:[
       ["ACTIVE","最后已经真正生效的 nominal network state。cleanup 后它只是一项历史事实。"],
-      ["READY","已经准备完成、等待未来 nominal boundary 由 Main 激活的状态。"],
-      ["INPUT","Runner 已经获得到多远的未来 compiled work，不代表这些工作已经 READY。"],
-      ["Preparation lookahead","Maintenance 相对 ACTIVE 尝试提前准备的未来时间范围。"],
-      ["Preparation boundary depth","连续 READY future boundaries 的显式数量上限；它与 nominal-time lookahead 共同限制提前准备。"],
+      ["Runner artifact","运行前已密封且完整验证的有限 precomputed execution artifact。"],
       ["Headroom","准备完成时距 nominal boundary 尚余的时间；正值越大，准备余量越多。"],
       ["Runtime foundation","Runner 已冻结并 attach 的具体 live Compose deployment instances。"],
       ["PID / netns binding","节点容器 incarnation 的进程与 network namespace identity，用于 runtime correctness 与 stale detection。"],
       ["Foundation token","由 Compose project 与全部 frozen binding facts 派生的本次 Runner foundation identity。"],
       ["Main","唯一负责在 boundary 改变 active network semantics 的执行角色。"],
-      ["Maintenance","并行准备 future state，并回收已满足条件的 retired state。"],
       ["Generation","current default tc-BPF dataplane 的内部转发版本机制，不是通用 Runner architecture concept。"],
-      ["Reclaim","在安全条件满足后删除 retired generation 或 physical resource。"],
+      ["Physical lifecycle","新 veth 的创建与撤销 veth 的删除都由 Main 在 activation boundary 执行。"],
       ["Start lag / Completion lag","Main 相对 nominal boundary 开始激活/完成激活的实际时间偏差。"]
     ],
-    overviewTitle:"概览",timelineTitle:"图形执行时间轴",timelineIntro:"横轴始终按 Runner 实际经过时间绘制，便于同时理解生命周期阶段与真正发生的工作。",graphTitle:"实际执行时间与 nominal time",graphGuide:["Lifecycle 横条表示 Runner 当时处于什么阶段，不表示 CPU 一直忙碌。","Work 横条的位置和长度表示工作实际发生的时间和耗时。","未来状态准备结束处的标记表示该状态已经 READY，正在等待对应 nominal time 激活。","Preparation 内的分隔表示 runtime foundation 已建立完成，后续开始提前准备未来状态。","很短的 work 在全局比例下可能只是一条细线；悬停或点击可在局部细节中查看。"],detailedTimelineTitle:"详细 Timeline 事件",detailedTimelineIntro:"用于 drill-down/debug；图形项的局部细节可继续定位到对应事件。",
-    timingTitle:"Timing",activationTitle:"Main 激活 timing",maintenanceTitle:"Maintenance",preparationTableTitle:"未来 boundary 准备",foundationTitle:"Runtime foundation / 运行期绑定",foundationIntro:"Runner 在 Preparation 中冻结的 live deployment instance bindings；本 section 不重新查询 Docker 或 kernel，并与 default tc-BPF dataplane realization evidence 分开。",bindingsTitle:"Frozen node bindings",
+    overviewTitle:"概览",timelineTitle:"图形执行时间轴",timelineIntro:"横轴始终按 Runner 实际经过时间绘制，便于同时理解生命周期阶段与真正发生的工作。",graphTitle:"实际执行时间与 nominal time",graphGuide:["Lifecycle 横条表示 Runner 当时处于什么阶段，不表示 CPU 一直忙碌。","Work 横条的位置和长度表示工作实际发生的时间和耗时。","Preparation 完成时 boundary 0 已实际激活；之后 Main 从 boundary 1 开始。","Preparation 内的分隔表示 runtime foundation 已建立完成，后续开始提前准备未来状态。","很短的 work 在全局比例下可能只是一条细线；悬停或点击可在局部细节中查看。"],detailedTimelineTitle:"详细 Timeline 事件",detailedTimelineIntro:"用于 drill-down/debug；图形项的局部细节可继续定位到对应事件。",
+    timingTitle:"Timing",activationTitle:"Main 激活 timing",foundationTitle:"Runtime foundation / 运行期绑定",foundationIntro:"Runner 在 Preparation 中冻结的 live deployment instance bindings；本 section 不重新查询 Docker 或 kernel，并与 default tc-BPF dataplane realization evidence 分开。",bindingsTitle:"Frozen node bindings",
     dataplaneTitle:"当前 default tc-BPF dataplane",dataplaneWarning:"仅展示正常 Runner lifecycle 已记录的证据。本 Tool 不运行 <code>ip</code>、<code>tc</code>、<code>bpftool</code>、Docker inspection、packet capture 或 traffic generation。",
     failuresTitle:"失败与 cleanup",boundariesTitle:"证据边界",rawTitle:"Raw detached Runner snapshot 与完整 event history",
-    overviewLabels:["Runtime 结果","Lifecycle 状态","执行模式","Last active frontier","捕获时 READY frontier","最后发布的 READY","INPUT frontier","Preparation time lookahead","Preparation boundary depth","捕获时 READY depth","READY limiting reason","成功 activations","Deadline misses","初始 preparation","Cleanup"],
-    overviewDetails:{historical:"cleanup 后的历史事实",lastActivation:"最后一次成功 activation",retained:n=>`保留 ${n} 个 READY item`,exhausted:v=>`已耗尽：${v}`,exit:v=>`exit ${v}`},
-    timingLabels:["初始 preparation","最近 Main activation","最大 Main activation","Maintenance READY preparation 总计","Forwarding reclaim 总计","Physical reclaim 总计","Cleanup"],
-    activationHeaders:["Nominal boundary","Start lag","Duration","Completion lag","已完成"],preparationHeaders:["Nominal boundary","Generation","状态物化","Runtime preparation","READY preparation 总计"],
-    maintenanceLabels:["捕获时 in flight","Maintenance 失败","INPUT advances","READY publications","Future preparations","Forward-priority decisions","Generation reclaims","Physical reclaims"],pending:n=>`捕获时 ${n} 个 pending`,
+    overviewLabels:["Runtime 结果","Lifecycle 状态","执行模式","执行契约","Last active frontier","Artifact end","Artifact boundaries","正式 Main activations","初始 preparation","Cleanup"],
+    overviewDetails:{historical:"cleanup 后的历史事实",lastActivation:"最后一次成功 activation",exit:v=>`exit ${v}`},
+    timingLabels:["初始 preparation","最近 Main activation","最大 Main activation","Cleanup"],
+    activationHeaders:["Nominal boundary","Start lag","Duration","Completion lag","已完成"],
     foundationLabels:["Compose project","Foundation token","Expected nodes","Bound nodes"],bindingHeaders:["Node","PID","netns","Container"],bindingFields:{nodeId:"完整 NodeId",service:"Service",containerId:"Container ID",containerName:"Container name",imageId:"Image ID",startedAt:"StartedAt"},bindingGroups:{groundStations:"地面站",satellites:"卫星",dynamicShell:"Dynamic Shell",other:"其他节点",orbit:id=>`轨道 ${id}`,count:n=>`${n} 个节点`},noBindings:"没有 frozen runtime bindings。",
-    dataplaneCards:["Dataplane foundation evidence","最新 capacity audit","最新 READY evidence","最新 activation evidence","Generation reclaim evidence","Physical reclaim evidence"],
-    failureCards:["Primary runtime error","Runtime cleanup 结果","Runner failure events","Capacity failures","Deadline misses","Dataplane cleanup evidence"],
+    dataplaneCards:["Dataplane foundation evidence","最新 capacity audit","最新 activation evidence"],
+    failureCards:["Primary runtime error","Runtime cleanup 结果","Runner failure events","Capacity failures","Dataplane cleanup evidence"],
     boundaryCards:[
-      ["Runner Inspection","Lifecycle、frontiers、Main、Maintenance、timing、readiness、capacity、reclaim、failure 与 cleanup。"],
+      ["Runner Inspection","Preparation、Main、frontiers、timing、capacity、failure 与 cleanup。"],
       ["Kernel/dataplane inspection","不进行新的 kernel reconstruction；只展示 Runner 工作期间已经返回的证据。"],
       ["Traffic telemetry","本 Tool 不收集 packet/byte/flow/path telemetry。"],
       ["Active validation","本 Tool 不生成 synthetic traffic，也不执行 expected-vs-actual assertion。"]
     ],
-    categories:{All:"全部",Preparation:"Preparation",Input:"INPUT",Maintenance:"Maintenance",READY:"READY",Main:"Main",Reclaim:"Reclaim",Failure:"Failure",Cleanup:"Cleanup"},
+    categories:{All:"全部",Preparation:"Preparation",Main:"Main",Failure:"Failure",Cleanup:"Cleanup"},
     graphGroups:{lifecycle:"Lifecycle",work:"Runner work"},
-    graphRows:{preparation_phase:"Preparation",automatic_run_phase:"Automatic run",cleanup_phase:"Cleanup",future_preparation:"准备未来状态",main_activation:"切换当前网络状态",reclaim_work:"回收旧状态"},
-    graphKinds:{preparation_phase:"Preparation 生命周期阶段",automatic_run_phase:"Automatic scheduling/waiting 生命周期阶段",cleanup_phase:"Cleanup 生命周期阶段",future_preparation:"Future preparation 工作",main_activation:"Main activation 工作",generation_reclaim_work:"Generation reclaim 工作",physical_reclaim_work:"Physical reclaim 工作",runtime_foundation_ready:"Runtime foundation 已就绪",ready_published:"对应 future preparation 完成后发布 READY"},
-    localDetail:{title:"局部细节",hint:"悬停图中的 work、READY 标记或 foundation 分隔；点击可固定。",pinned:"已固定",unpin:"取消固定",event:"查看详细事件",window:"局部时间窗口",actual:"实际事件时间",duration:"工作耗时",boundary:"Nominal time",generation:"Generation",none:"—"},
-    eventHeadlines:{preparation_start:"Preparation 开始",preparation_end:"初始 preparation 完成",input_advanced:"INPUT frontier 推进",input_exhausted:"INPUT supply 耗尽",runtime_foundation_ready:"Runtime foundation READY",maintenance_prepare_start:"未来 boundary preparation 开始",maintenance_prepare_end:"未来 boundary preparation 完成",ready_published:"READY boundary 发布",automatic_run_start:"Automatic execution 开始",automatic_run_end:"Automatic execution 完成",boundary_scheduled:"Nominal boundary 已调度",activation_start:"Main activation 开始",activation_end:"Main activation 完成",maintenance_forward_priority:"Maintenance 优先保证 forward coverage",maintenance_capacity_pressure:"Generation reclaim 为 future preparation 释放容量",generation_reclaimed:"Forwarding generation 已回收",resources_reclaimed:"Physical resources 已回收",capacity_audit_failure:"Capacity audit 失败",deadline_miss:"Nominal deadline miss",failure:"Runner failure 已记录",cleanup_start:"Cleanup 开始",runtime_cleanup_end:"Dataplane cleanup 完成",cleanup_end:"Runner cleanup 完成"},
-    words:{yes:"是",no:"否",none:"无",unknown:"未知",bootstrap:"bootstrap",boundary:"Boundary",nominalBoundary:"Nominal boundary",predecessor:"predecessor",headroom:"headroom",duration:"Duration",connections:"connections",nextAction:"下一动作",lastActive:"Last active frontier",recorded:"已记录的 Runner lifecycle evidence",notReady:"到期时尚未 READY",in:"用时",generation:"Generation",details:"记录详情",empty:"没有记录值。",noEvents:"此分类没有事件。",bounded:"bounded full range",notAvailable:"尚不可用",actual:"实际"},
-    enums:{completed:"已完成",interrupted:"已中断",failed:"失败","cleanup-failed":"cleanup 失败",cleaned:"已清理",prepared:"已准备",automatic:"automatic",manual:"manual",rolling:"rolling","bounded-full-range":"bounded full range",time:"time bound",depth:"depth bound",input:"input exhausted"}
+    graphRows:{preparation_phase:"Preparation",automatic_run_phase:"Automatic run",cleanup_phase:"Cleanup",main_activation:"切换当前网络状态"},
+    graphKinds:{preparation_phase:"Preparation 生命周期阶段",automatic_run_phase:"Automatic scheduling/waiting 生命周期阶段",cleanup_phase:"Cleanup 生命周期阶段",main_activation:"Main activation 工作",runtime_foundation_ready:"Runtime foundation 已就绪"},
+    localDetail:{title:"局部细节",hint:"悬停图中的 work、foundation 分隔；点击可固定。",pinned:"已固定",unpin:"取消固定",event:"查看详细事件",window:"局部时间窗口",actual:"实际事件时间",duration:"工作耗时",boundary:"Nominal time",generation:"Generation",none:"—"},
+    eventHeadlines:{preparation_start:"Preparation 开始",preparation_end:"初始 preparation 完成",runtime_foundation_ready:"Runtime foundation ready",automatic_run_start:"Automatic execution 开始",automatic_run_end:"Automatic execution 完成",boundary_scheduled:"Nominal boundary 已调度",activation_end:"Main activation 完成",capacity_audit_failure:"Capacity audit 失败",failure:"Runner failure 已记录",runtime_cleanup_end:"Dataplane cleanup 完成",cleanup_end:"Runner cleanup 完成"},
+    words:{yes:"是",no:"否",none:"无",unknown:"未知",bootstrap:"bootstrap",boundary:"Boundary",nominalBoundary:"Nominal boundary",predecessor:"predecessor",headroom:"headroom",duration:"Duration",connections:"connections",nextAction:"下一动作",lastActive:"Last active frontier",recorded:"已记录的 Runner lifecycle evidence",in:"用时",generation:"Generation",details:"记录详情",empty:"没有记录值。",noEvents:"此分类没有事件。",bounded:"bounded full range",notAvailable:"尚不可用",actual:"实际"},
+    enums:{completed:"已完成",interrupted:"已中断",failed:"失败","cleanup-failed":"cleanup 失败",cleaned:"已清理",prepared:"已准备",automatic:"automatic",manual:"manual","sealed-precomputed-only":"sealed precomputed only","exact-next-safe":"exact-next safe"}
   },
   en:{
     lang:"en",title:"BPF Runner Inspection Tool",eyebrow:"Post-run · offline · read-only",footer:"Skyseed v2 repository-local offline inspection artifact",
     introTitle:"Post-run Runner lifecycle evidence",introCopy:"This static page combines a detached final/last-known Runner summary with its complete recorded event history. It is not live and has no controller behavior.",cleanedNote:"After cleanup, frontier values are historical: “Last active” never means that the network is still active.",
-    guideTitle:"How to read / 如何阅读",guideIntro:"Most users should read Overview, the graphical timeline, Timing, and Maintenance first. Raw JSON and deep evidence are mainly for debugging.",
+    guideTitle:"How to read / 如何阅读",guideIntro:"Most users should read Overview, the graphical timeline, Timing, and Cleanup first. Raw JSON and deep evidence are mainly for debugging.",
     guideTerms:[
       ["ACTIVE","The last nominal network state that actually became active. After cleanup it is historical only."],
-      ["READY","State whose preparation is complete and is waiting for Main to activate it at a future nominal boundary."],
-      ["INPUT","How far into future compiled work the Runner has received; it does not imply that work is READY."],
-      ["Preparation lookahead","The future time range Maintenance tries to prepare ahead of ACTIVE."],
-      ["Preparation boundary depth","The explicit maximum number of continuous READY future boundaries; it bounds preparation together with nominal-time lookahead."],
+      ["Runner artifact","The finite precomputed execution artifact sealed and fully validated before runtime."],
       ["Headroom","Time remaining before the nominal boundary when preparation completed; a larger positive value means more margin."],
       ["Runtime foundation","The concrete live Compose deployment instances frozen and attached by the Runner."],
       ["PID / netns binding","The process and network-namespace identity of a node container incarnation, used for runtime correctness and stale detection."],
       ["Foundation token","This Runner foundation identity derived from the Compose project and all frozen binding facts."],
       ["Main","The sole execution role that changes active network semantics at a boundary."],
-      ["Maintenance","Prepares future state concurrently and reclaims retired state once its conditions are satisfied."],
       ["Generation","An internal forwarding-version mechanism of the current default tc-BPF dataplane, not a general Runner architecture concept."],
-      ["Reclaim","Removal of a retired generation or physical resource after its safety conditions are satisfied."],
+      ["Physical lifecycle","Main creates new veths and deletes withdrawn veths inside the activation boundary."],
       ["Start lag / Completion lag","The actual timing offset between the nominal boundary and Main starting/completing activation."]
     ],
-    overviewTitle:"Overview",timelineTitle:"Graphical execution timeline",timelineIntro:"The horizontal axis always preserves actual Runner elapsed time, showing lifecycle phases alongside work that really ran.",graphTitle:"Actual execution time and nominal time",graphGuide:["Lifecycle bars show which phase the Runner was in; they do not mean the CPU was continuously busy.","A work bar's position and length show when the work ran and how long it took.","The mark at the end of future-state preparation means that state is READY and waiting for its nominal activation time.","The separator inside Preparation means the runtime foundation is complete and advance preparation of future state can begin.","Very short work may appear as a thin line at the global scale; hover or click to inspect it in Local detail."],detailedTimelineTitle:"Detailed Timeline events",detailedTimelineIntro:"A drill-down/debug view. Local detail for a graphical item can continue to its recorded event.",
-    timingTitle:"Timing",activationTitle:"Main activation timing",maintenanceTitle:"Maintenance",preparationTableTitle:"Future-boundary preparation",foundationTitle:"Runtime foundation / 运行期绑定",foundationIntro:"Live deployment instance bindings frozen by Runner Preparation. This section makes no fresh Docker or kernel query and remains separate from default tc-BPF dataplane realization evidence.",bindingsTitle:"Frozen node bindings",
+    overviewTitle:"Overview",timelineTitle:"Graphical execution timeline",timelineIntro:"The horizontal axis always preserves actual Runner elapsed time, showing lifecycle phases alongside work that really ran.",graphTitle:"Actual execution time and nominal time",graphGuide:["Lifecycle bars show which phase the Runner was in; they do not mean the CPU was continuously busy.","A work bar's position and length show when the work ran and how long it took.","Preparation completes with boundary 0 active; formal Main begins at boundary 1.","The separator inside Preparation means the runtime foundation is complete and advance preparation of future state can begin.","Very short work may appear as a thin line at the global scale; hover or click to inspect it in Local detail."],detailedTimelineTitle:"Detailed Timeline events",detailedTimelineIntro:"A drill-down/debug view. Local detail for a graphical item can continue to its recorded event.",
+    timingTitle:"Timing",activationTitle:"Main activation timing",foundationTitle:"Runtime foundation / 运行期绑定",foundationIntro:"Live deployment instance bindings frozen by Runner Preparation. This section makes no fresh Docker or kernel query and remains separate from default tc-BPF dataplane realization evidence.",bindingsTitle:"Frozen node bindings",
     dataplaneTitle:"Current default tc-BPF dataplane",dataplaneWarning:"Recorded lifecycle evidence only. This Tool does not run <code>ip</code>, <code>tc</code>, <code>bpftool</code>, Docker inspection, packet capture, or traffic generation.",
     failuresTitle:"Failures & cleanup",boundariesTitle:"Evidence boundaries",rawTitle:"Raw detached Runner snapshot and event history",
-    overviewLabels:["Runtime outcome","Lifecycle state","Execution mode","Last active frontier","READY frontier at capture","Last READY published","INPUT frontier","Preparation time lookahead","Preparation boundary depth","READY depth at capture","READY limiting reason","Successful activations","Deadline misses","Initial preparation","Cleanup"],
-    overviewDetails:{historical:"historical after cleanup",lastActivation:"last successful activation",retained:n=>`${n} retained READY item(s)`,exhausted:v=>`exhausted: ${v}`,exit:v=>`exit ${v}`},
-    timingLabels:["Initial preparation","Recent Main activation","Max Main activation","Maintenance READY preparation total","Forwarding reclaim total","Physical reclaim total","Cleanup"],
-    activationHeaders:["Nominal boundary","Start lag","Duration","Completion lag","Completed"],preparationHeaders:["Nominal boundary","Generation","State materialization","Runtime preparation","Total READY preparation"],
-    maintenanceLabels:["In flight at capture","Maintenance failed","Input advances","READY publications","Future preparations","Forward-priority decisions","Generation reclaims","Physical reclaims"],pending:n=>`${n} pending at capture`,
+    overviewLabels:["Runtime outcome","Lifecycle state","Execution mode","Execution contract","Last active frontier","Artifact end","Artifact boundaries","Formal Main activations","Initial preparation","Cleanup"],
+    overviewDetails:{historical:"historical after cleanup",lastActivation:"last successful activation",exit:v=>`exit ${v}`},
+    timingLabels:["Initial preparation","Recent Main activation","Max Main activation","Cleanup"],
+    activationHeaders:["Nominal boundary","Start lag","Duration","Completion lag","Completed"],
     foundationLabels:["Compose project","Foundation token","Expected nodes","Bound nodes"],bindingHeaders:["Node","PID","netns","Container"],bindingFields:{nodeId:"Full NodeId",service:"Service",containerId:"Container ID",containerName:"Container name",imageId:"Image ID",startedAt:"StartedAt"},bindingGroups:{groundStations:"Ground Stations",satellites:"Satellites",dynamicShell:"Dynamic Shell",other:"Other nodes",orbit:id=>`Orbit ${id}`,count:n=>`${n} node${n===1?"":"s"}`},noBindings:"No frozen runtime bindings were recorded.",
-    dataplaneCards:["Dataplane foundation evidence","Latest capacity audit","Latest READY evidence","Latest activation evidence","Generation reclaim evidence","Physical reclaim evidence"],
-    failureCards:["Primary runtime error","Runtime cleanup outcome","Runner failure events","Capacity failures","Deadline misses","Dataplane cleanup evidence"],
+    dataplaneCards:["Dataplane foundation evidence","Latest capacity audit","Latest activation evidence"],
+    failureCards:["Primary runtime error","Runtime cleanup outcome","Runner failure events","Capacity failures","Dataplane cleanup evidence"],
     boundaryCards:[
-      ["Runner Inspection","Lifecycle, frontiers, Main, Maintenance, timing, readiness, capacity, reclaim, failure, and cleanup."],
+      ["Runner Inspection","Preparation, Main, frontiers, timing, capacity, failure, and cleanup."],
       ["Kernel/dataplane inspection","No fresh kernel reconstruction; only evidence already returned during Runner work."],
       ["Traffic telemetry","This Tool collects no packet/byte/flow/path telemetry."],
       ["Active validation","This Tool performs no synthetic traffic or expected-vs-actual assertion."]
     ],
-    categories:{All:"All",Preparation:"Preparation",Input:"INPUT",Maintenance:"Maintenance",READY:"READY",Main:"Main",Reclaim:"Reclaim",Failure:"Failure",Cleanup:"Cleanup"},
+    categories:{All:"All",Preparation:"Preparation",Main:"Main",Failure:"Failure",Cleanup:"Cleanup"},
     graphGroups:{lifecycle:"Lifecycle",work:"Runner work"},
-    graphRows:{preparation_phase:"Preparation",automatic_run_phase:"Automatic run",cleanup_phase:"Cleanup",future_preparation:"Prepare future state",main_activation:"Activate current network state",reclaim_work:"Reclaim retired state"},
-    graphKinds:{preparation_phase:"Preparation lifecycle phase",automatic_run_phase:"Automatic scheduling/waiting lifecycle phase",cleanup_phase:"Cleanup lifecycle phase",future_preparation:"Future preparation work",main_activation:"Main activation work",generation_reclaim_work:"Generation reclaim work",physical_reclaim_work:"Physical reclaim work",runtime_foundation_ready:"Runtime foundation ready",ready_published:"READY published after matching future preparation"},
-    localDetail:{title:"Local detail",hint:"Hover over work, a READY mark, or the foundation separator; click to pin it.",pinned:"Pinned",unpin:"Unpin",event:"View detailed event",window:"Local time window",actual:"Actual event time",duration:"Work duration",boundary:"Nominal time",generation:"Generation",none:"—"},
-    eventHeadlines:{preparation_start:"Preparation started",preparation_end:"Initial preparation completed",input_advanced:"INPUT frontier advanced",input_exhausted:"INPUT supply exhausted",runtime_foundation_ready:"Runtime foundation ready",maintenance_prepare_start:"Future boundary preparation started",maintenance_prepare_end:"Future boundary preparation completed",ready_published:"READY boundary published",automatic_run_start:"Automatic execution started",automatic_run_end:"Automatic execution completed",boundary_scheduled:"Nominal boundary scheduled",activation_start:"Main activation started",activation_end:"Main activation completed",maintenance_forward_priority:"Forward coverage took priority",maintenance_capacity_pressure:"Generation reclaim enabled forward preparation",generation_reclaimed:"Forwarding generation reclaimed",resources_reclaimed:"Physical resources reclaimed",capacity_audit_failure:"Capacity audit failed",deadline_miss:"Nominal deadline missed",failure:"Runner failure recorded",cleanup_start:"Cleanup started",runtime_cleanup_end:"Dataplane cleanup completed",cleanup_end:"Runner cleanup completed"},
-    words:{yes:"yes",no:"no",none:"none",unknown:"unknown",bootstrap:"bootstrap",boundary:"Boundary",nominalBoundary:"Nominal boundary",predecessor:"predecessor",headroom:"headroom",duration:"Duration",connections:"connections",nextAction:"Next action",lastActive:"Last active frontier",recorded:"Recorded Runner lifecycle evidence",notReady:"was not READY by its due time",in:"in",generation:"Generation",details:"Recorded details",empty:"No recorded values.",noEvents:"No events in this category.",bounded:"bounded full range",notAvailable:"not yet available",actual:"actual"},
-    enums:{completed:"completed",interrupted:"interrupted",failed:"failed","cleanup-failed":"cleanup failed",cleaned:"cleaned",prepared:"prepared",automatic:"automatic",manual:"manual",rolling:"rolling","bounded-full-range":"bounded full range",time:"time bound",depth:"depth bound",input:"input exhausted"}
+    graphRows:{preparation_phase:"Preparation",automatic_run_phase:"Automatic run",cleanup_phase:"Cleanup",main_activation:"Activate current network state"},
+    graphKinds:{preparation_phase:"Preparation lifecycle phase",automatic_run_phase:"Automatic scheduling/waiting lifecycle phase",cleanup_phase:"Cleanup lifecycle phase",main_activation:"Main activation work",runtime_foundation_ready:"Runtime foundation ready"},
+    localDetail:{title:"Local detail",hint:"Hover over work, the foundation separator; click to pin it.",pinned:"Pinned",unpin:"Unpin",event:"View detailed event",window:"Local time window",actual:"Actual event time",duration:"Work duration",boundary:"Nominal time",generation:"Generation",none:"—"},
+    eventHeadlines:{preparation_start:"Preparation started",preparation_end:"Initial preparation completed",runtime_foundation_ready:"Runtime foundation ready",automatic_run_start:"Automatic execution started",automatic_run_end:"Automatic execution completed",boundary_scheduled:"Nominal boundary scheduled",activation_end:"Main activation completed",capacity_audit_failure:"Capacity audit failed",failure:"Runner failure recorded",runtime_cleanup_end:"Dataplane cleanup completed",cleanup_end:"Runner cleanup completed"},
+    words:{yes:"yes",no:"no",none:"none",unknown:"unknown",bootstrap:"bootstrap",boundary:"Boundary",nominalBoundary:"Nominal boundary",predecessor:"predecessor",headroom:"headroom",duration:"Duration",connections:"connections",nextAction:"Next action",lastActive:"Last active frontier",recorded:"Recorded Runner lifecycle evidence",in:"in",generation:"Generation",details:"Recorded details",empty:"No recorded values.",noEvents:"No events in this category.",bounded:"bounded full range",notAvailable:"not yet available",actual:"actual"},
+    enums:{completed:"completed",interrupted:"interrupted",failed:"failed","cleanup-failed":"cleanup failed",cleaned:"cleaned",prepared:"prepared",automatic:"automatic",manual:"manual","sealed-precomputed-only":"sealed precomputed only","exact-next-safe":"exact-next safe"}
   }
 };
 
@@ -302,7 +297,7 @@ const table=(headers,rows)=>rows.length?`<table><thead><tr>${headers.map(value=>
 const shortBoundary=value=>value?fmtTime(value).split(" ").pop():null;
 
 function setStaticText(){
-  const text={"intro-title":s().introTitle,"intro-copy":s().introCopy,"cleaned-note":s().cleanedNote,"guide-title":s().guideTitle,"overview-title":s().overviewTitle,"timeline-title":s().timelineTitle,"timeline-intro":s().timelineIntro,"graph-title":s().graphTitle,"detailed-timeline-title":s().detailedTimelineTitle,"detailed-timeline-intro":s().detailedTimelineIntro,"timing-title":s().timingTitle,"activation-title":s().activationTitle,"maintenance-title":s().maintenanceTitle,"preparation-table-title":s().preparationTableTitle,"foundation-title":s().foundationTitle,"foundation-intro":s().foundationIntro,"bindings-title":s().bindingsTitle,"dataplane-title":s().dataplaneTitle,"failures-title":s().failuresTitle,"boundaries-title":s().boundariesTitle,"raw-title":s().rawTitle};
+  const text={"intro-title":s().introTitle,"intro-copy":s().introCopy,"cleaned-note":s().cleanedNote,"guide-title":s().guideTitle,"overview-title":s().overviewTitle,"timeline-title":s().timelineTitle,"timeline-intro":s().timelineIntro,"graph-title":s().graphTitle,"detailed-timeline-title":s().detailedTimelineTitle,"detailed-timeline-intro":s().detailedTimelineIntro,"timing-title":s().timingTitle,"activation-title":s().activationTitle,"foundation-title":s().foundationTitle,"foundation-intro":s().foundationIntro,"bindings-title":s().bindingsTitle,"dataplane-title":s().dataplaneTitle,"failures-title":s().failuresTitle,"boundaries-title":s().boundariesTitle,"raw-title":s().rawTitle};
   Object.entries(text).forEach(([id,value])=>document.getElementById(id).textContent=value);
   document.documentElement.lang=s().lang;
   document.title=s().title;
@@ -322,31 +317,21 @@ function renderOverview(){
   const badge=document.getElementById("outcome-badge");
   badge.textContent=enumText(overview.outcome).toUpperCase();
   badge.className=`status outcome-${overview.outcome}`;
-  const lookahead=overview.preparation_lookahead||{};
-  const lookaheadLabel=lookahead.mode==="bounded-full-range"?s().words.bounded:fmtSeconds(lookahead.seconds);
   const l=s().overviewLabels;
   document.getElementById("overview").innerHTML=[
     card(l[0],enumText(overview.outcome),s().overviewDetails.exit(overview.exit_code)),card(l[1],enumText(overview.lifecycle_state)),card(l[2],enumText(overview.execution_mode)),
-    card(l[3],fmtTime(overview.frontiers.last_active),overview.lifecycle_state==="cleaned"?s().overviewDetails.historical:s().overviewDetails.lastActivation),
-    card(l[4],fmtTime(overview.frontiers.ready_at_capture),s().overviewDetails.retained(overview.ready_count_at_capture??0)),card(l[5],fmtTime(overview.last_ready_published)),
-    card(l[6],fmtTime(overview.frontiers.input),s().overviewDetails.exhausted(yesNo(overview.input_exhausted))),card(l[7],lookaheadLabel,enumText(lookahead.mode)),
-    card(l[8],overview.preparation_boundary_depth),card(l[9],overview.ready_depth_at_capture),card(l[10],enumText(overview.ready_limiting_reason)),
-    card(l[11],overview.activation_count),card(l[12],overview.deadline_misses),card(l[13],fmtSeconds(overview.preparation_duration_seconds)),card(l[14],enumText(overview.cleanup_status),fmtSeconds(overview.cleanup_duration_seconds))
+    card(l[3],enumText(overview.execution_contract)),card(l[4],fmtTime(overview.frontiers.last_active),overview.lifecycle_state==="cleaned"?s().overviewDetails.historical:s().overviewDetails.lastActivation),
+    card(l[5],fmtTime(overview.frontiers.artifact_end)),
+    card(l[6],overview.artifact.boundary_count),card(l[7],overview.activation_count),card(l[8],fmtSeconds(overview.preparation_duration_seconds)),card(l[9],enumText(overview.cleanup_status),fmtSeconds(overview.cleanup_duration_seconds))
   ].join("");
 }
 
 function eventSummary(value){
   const d=value.details||{};const boundary=value.boundary_timestamp;const w=s().words;
-  if(value.event==="input_advanced"||value.event==="input_exhausted")return `INPUT ${d.input_frontier||w.notAvailable}`;
-  if(value.event==="maintenance_prepare_start"||value.event==="maintenance_prepare_end")return `${w.boundary} ${boundary||w.unknown}${typeof d.duration_seconds==="number"?` ${w.in} ${fmtSeconds(d.duration_seconds)}`:""}`;
-  if(value.event==="ready_published")return `${w.boundary} ${boundary||w.unknown}; ${w.predecessor} ${d.predecessor||w.bootstrap}; ${w.headroom} ${fmtSeconds(d.preparation_headroom_seconds)}`;
-  if(["boundary_scheduled","activation_start","activation_end"].includes(value.event))return `${w.boundary} ${boundary||w.unknown}${typeof d.duration_seconds==="number"?`; ${w.duration} ${fmtSeconds(d.duration_seconds)}`:""}`;
-  if(value.event==="deadline_miss")return `${w.boundary} ${boundary||w.unknown} ${w.notReady}`;
+  if(value.event==="boundary_scheduled")return `${w.boundary} ${boundary||w.unknown}`;
+  if(value.event==="activation_end")return `${w.boundary} ${boundary||w.unknown}; ${w.duration} ${fmtSeconds(d.main_seconds)}`;
   if(value.event==="failure")return `${d.phase||w.unknown}: ${d.error_type||"Error"}: ${d.error||""}`;
   if(value.event==="capacity_audit_failure")return `${d.scope||w.unknown}: ${d.reason||""}`;
-  if(value.event==="generation_reclaimed")return `${w.generation} ${d.generation??w.unknown}; ${fmtSeconds(d.duration_seconds)}`;
-  if(value.event==="resources_reclaimed")return `${d.deleted_connections??0} ${w.connections}; ${fmtSeconds(d.duration_seconds)}`;
-  if(value.event==="maintenance_forward_priority")return `${w.nextAction}: ${d.action||w.unknown}`;
   if(value.event==="preparation_end"||value.event==="cleanup_end")return `${w.duration} ${fmtSeconds(d.duration_seconds)}`;
   if(value.event==="automatic_run_end")return `${w.lastActive} ${d.active_frontier||w.none}`;
   return w.recorded;
@@ -369,7 +354,6 @@ function graphLabel(item){
   if(item.kind==="automatic_run_phase"||item.kind==="automatic_run_start")return "run()";
   if(item.kind==="cleanup_phase")return "cleanup()";
   if(item.kind==="runtime_foundation_ready")return "foundation";
-  if(item.kind==="future_preparation"||item.kind==="ready_published")return [boundary,generation].filter(Boolean).join(" · ");
   if(item.kind==="main_activation")return boundary||"activation";
   if(item.kind.includes("generation"))return generation||"generation";
   if(item.kind.includes("resources")||item.kind.includes("physical"))return "physical";
@@ -408,7 +392,6 @@ function renderGraph(){
         const label=graphLabel(item);const showLabel=width>=Math.max(1.5,label.length*.68);const microClass=item.visual==="work"&&width<1?" micro-span":"";
         const attached=[];const barDetail=detailItems.push({item,point:null,role:item.visual})-1;
         if(item.foundation_marker){const point=item.foundation_marker;const pointLeft=Math.min(100,Math.max(0,Number(point.elapsed_seconds)||0)/duration*100);const pointTitle=`${s().graphKinds[point.kind]??point.kind} | ${s().words.actual}: +${fmtSeconds(point.elapsed_seconds)}`;const pointDetail=detailItems.push({item,point,role:"foundation"})-1;attached.push(`<button type="button" class="graph-foundation-notch kind-${point.kind}" style="left:${pointLeft}%" data-detail="${pointDetail}" title="${esc(pointTitle)}" aria-label="${esc(pointTitle)}"></button>`);}
-        if(item.ready_marker){const point=item.ready_marker;const pointTitle=`${s().graphKinds[point.kind]??point.kind} | ${s().words.actual}: +${fmtSeconds(point.elapsed_seconds)}${point.boundary_timestamp?` | ${s().words.nominalBoundary}: ${fmtTime(point.boundary_timestamp)}`:""}`;const pointDetail=detailItems.push({item,point,role:"ready"})-1;attached.push(`<button type="button" class="graph-point graph-end-cap ready kind-${point.kind}" style="left:${Math.min(100,end/duration*100)}%" data-detail="${pointDetail}" title="${esc(pointTitle)}" aria-label="${esc(pointTitle)}"></button>`);}
         return `<button type="button" class="graph-bar ${item.visual}${microClass} kind-${item.kind}" style="left:${left}%;width:${width}%" data-detail="${barDetail}" title="${esc(title)}" aria-label="${esc(title)}">${showLabel?`<span>${esc(label)}</span>`:""}</button>${attached.join("")}`;
       }).join("");
       return `<div class="graph-row"><div class="graph-lane-label">${esc(s().graphRows[row.row]??row.row)}</div><div class="graph-plot">${items}</div></div>`;
@@ -427,15 +410,23 @@ function focusTimelineItem(index){
 
 function renderTiming(){
   const timing=DATA.timing;const l=s().timingLabels;
-  document.getElementById("timing-stats").innerHTML=[card(l[0],fmtSeconds(timing.preparation_duration_seconds)),card(l[1],fmtSeconds(timing.recent_activation_duration_seconds)),card(l[2],fmtSeconds(timing.max_activation_duration_seconds)),card(l[3],fmtSeconds(timing.maintenance_preparation_total_seconds)),card(l[4],fmtSeconds(timing.generation_reclaim_total_seconds)),card(l[5],fmtSeconds(timing.physical_reclaim_total_seconds)),card(l[6],fmtSeconds(timing.cleanup_duration_seconds))].join("");
+  document.getElementById("timing-stats").innerHTML=[card(l[0],fmtSeconds(timing.preparation_duration_seconds)),card(l[1],fmtSeconds(timing.recent_activation_duration_seconds)),card(l[2],fmtSeconds(timing.max_activation_duration_seconds)),card(l[3],fmtSeconds(timing.cleanup_duration_seconds))].join("");
   document.getElementById("activation-table").innerHTML=table(s().activationHeaders,timing.activations.map(value=>[fmtTime(value.boundary_timestamp),fmtSeconds(value.start_lag_seconds),fmtSeconds(value.duration_seconds),fmtSeconds(value.completion_lag_seconds),yesNo(value.completed)]));
-  document.getElementById("preparation-table").innerHTML=table(s().preparationHeaders,timing.maintenance_preparations.map(value=>[fmtTime(value.boundary_timestamp),value.generation,fmtSeconds(value.state_materialization_seconds),fmtSeconds(value.runtime_preparation_seconds),fmtSeconds(value.total_ready_preparation_seconds)]));
+  const detail=DATA.detailed_timing||{};
+  const seconds=value=>value==null?"—":Number(value).toPrecision(6)+" s";
+  document.getElementById("operation-timing-table").innerHTML=table(
+    ["Operation family","Total","p50 / boundary","p95 / boundary","Max","Operations total","Count / boundary: min · p50 · max"],
+    Object.entries(detail.operations||{}).map(([name,value])=>{const d=value.seconds,c=value.operations_per_boundary;return [name,seconds(d.total),seconds(d.p50),seconds(d.p95),seconds(d.max),c.total??"—",[c.min,c.p50,c.max].map(x=>x??"—").join(" · ")];}));
+  for(const [id,key] of [["envelope-timing-table","envelope"],["pacing-timing-table","pacing"],["residual-timing-table","residuals"]]){
+    document.getElementById(id).innerHTML=table(["Measurement","Samples","Total","p50","p95","Max"],Object.entries(detail[key]||{}).map(([name,d])=>[name,d.count,seconds(d.total),seconds(d.p50),seconds(d.p95),seconds(d.max)]));
+  }
+  document.getElementById("detailed-timing-evidence").innerHTML=[
+    evidenceCard("Accounting",detail.accounting),evidenceCard("Preparation / B0",{preparation:detail.preparation,startup:detail.startup}),
+    evidenceCard("Cleanup",detail.cleanup),evidenceCard("Actual kernel call counts",detail.kernel_calls),
+    evidenceCard("Exact boundary aggregates",detail.boundaries)].join("");
 }
 
-function renderMaintenance(){
-  const value=DATA.maintenance;const l=s().maintenanceLabels;
-  document.getElementById("maintenance").innerHTML=[card(l[0],yesNo(value.in_flight)),card(l[1],yesNo(value.failed)),card(l[2],value.input_advances),card(l[3],value.ready_publications),card(l[4],value.future_preparations),card(l[5],value.forward_priority_events),card(l[6],value.generation_reclaims,s().pending(value.pending_forwarding_reclaim??0)),card(l[7],value.physical_reclaims,s().pending(value.pending_physical_reclaim??0))].join("");
-}
+
 
 function renderScaleSafety(){
   const value=DATA.scale_safety||{};
@@ -446,8 +437,6 @@ function renderScaleSafety(){
     ["Amplification / 放大关系",value.amplification],
     ["Batching / 批处理",value.batching],
     ["Workers / 并发",value.workers],
-    ["Maintenance backlog / 维护积压",value.maintenance_backlog],
-    ["Supplier & normalization / 供给与规范化",value.maintenance_input],
     ["Resource health / 资源健康",value.resource_health],
     ["Observation completeness / 证据完整性",value.observation],
     ["Teardown / 拆卸",value.teardown],
@@ -485,15 +474,15 @@ function renderFoundation(){
 
 const evidenceCard=(title,value)=>`<details class="card evidence"><summary><strong>${esc(title)}</strong></summary><pre>${esc(pretty(value))}</pre></details>`;
 function renderEvidence(){
-  const dataplane=DATA.default_dataplane;const values=[dataplane.foundation,dataplane.latest_capacity_audit,dataplane.latest_ready,dataplane.latest_activation,dataplane.generation_reclaims,dataplane.physical_reclaims];
+  const dataplane=DATA.default_dataplane;const values=[dataplane.foundation,dataplane.latest_capacity_audit,dataplane.latest_activation];
   document.getElementById("dataplane").innerHTML=s().dataplaneCards.map((title,index)=>evidenceCard(title,values[index])).join("");
-  const fc=DATA.failures_cleanup;const failures=[fc.primary_error,fc.cleanup,fc.runner_failures,fc.capacity_failures,fc.deadline_misses,fc.runtime_cleanup_evidence];
+  const fc=DATA.failures_cleanup;const failures=[fc.primary_error,fc.cleanup,fc.runner_failures,fc.capacity_failures,fc.runtime_cleanup_evidence];
   document.getElementById("failures-cleanup").innerHTML=s().failureCards.map((title,index)=>evidenceCard(title,failures[index])).join("");
   document.getElementById("evidence-boundaries").innerHTML=s().boundaryCards.map(([title,description])=>`<div><strong>${esc(title)}</strong><p>${esc(description)}</p></div>`).join("");
 }
 
 function renderAll(){
-  setStaticText();renderGuide();renderOverview();renderGraph();renderTimelineFilters();renderDetailedTimeline();renderTiming();renderMaintenance();renderScaleSafety();renderFoundation();renderEvidence();document.getElementById("raw-json").textContent=pretty(DATA.raw);
+  setStaticText();renderGuide();renderOverview();renderGraph();renderTimelineFilters();renderDetailedTimeline();renderTiming();renderScaleSafety();renderFoundation();renderEvidence();document.getElementById("raw-json").textContent=pretty(DATA.raw);
   document.querySelectorAll("[data-language]").forEach(button=>{button.classList.toggle("active",button.dataset.language===currentLanguage);button.setAttribute("aria-pressed",button.dataset.language===currentLanguage?"true":"false");});
 }
 

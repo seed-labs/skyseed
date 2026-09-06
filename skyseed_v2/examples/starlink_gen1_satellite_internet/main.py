@@ -19,8 +19,6 @@ PROJECT_ROOT = EXAMPLE_ROOT.parents[1]
 DEFAULT_OUTPUT = EXAMPLE_ROOT / "output"
 COMPOSE_PROJECT_PREFIX = "skyseed_v2_starlink_gen1_satellite_internet"
 _PROJECT_NAME_FILE = "runtime/compose-project-name"
-_RUNNER_PREPARATION_LOOKAHEAD = timedelta(0)
-_RUNNER_PREPARATION_BOUNDARY_DEPTH = 1
 _REALIZATION_PRODUCER_IDENTITY = (
     "skyseed-v2-common-incremental-realization-producer-v1"
 )
@@ -34,6 +32,7 @@ from examples.starlink_gen1_satellite_internet.emu import (
 )
 from examples.starlink_gen1_satellite_internet.simu import (
     STARLINK_GEN1_FORMAL_BOUNDARY_COUNT,
+    STARLINK_GEN1_OBSERVATION_INTERVAL,
     create_starlink_gen1_planner,
     create_starlink_gen1_simulator,
     starlink_gen1_model_descriptors,
@@ -44,8 +43,8 @@ from skyseed_v2.compose.launcher import (
     _write_compose_build_plan,
     _write_compose_project_scripts,
 )
-from skyseed_v2.experiment._realization_handoff import (
-    _RealizationHandoffWriter,
+from skyseed_v2.backend.bpf._runner_artifact import (
+    _RunnerArtifactWriter,
 )
 from skyseed_v2.experiment._realization_producer import (
     _IncrementalRealizationProducer,
@@ -68,6 +67,8 @@ from tools._html import write_aggregate_index
 from tools._inspection_evidence import _PhysicalLinkInspectionWriter
 from tools.physical_world import write_physical_world_tool
 from tools.zone import write_zone_tool
+
+
 
 
 def _guard_existing_output(output: Path) -> None:
@@ -366,7 +367,7 @@ def _run_compiler_stage(
     PhysicalFrame,
     PhysicalLinkObservation,
 ]:
-    """Drain the one common producer into an incremental persisted handoff."""
+    """Drain the common producer completely, then seal the Runner artifact."""
 
     evidence_writer = _PhysicalLinkInspectionWriter(
         output / "inspection-evidence",
@@ -380,8 +381,8 @@ def _run_compiler_stage(
         evidence_path=output / "domain-history",
         formal_observation_sink=evidence_writer.record,
     )
-    staging = output / ".canonical-realizations"
-    writer = _RealizationHandoffWriter(
+    staging = output / ".runner-artifact"
+    writer = _RunnerArtifactWriter(
         staging,
         execution_observer=simulator.get_planner()._get_execution_observer(),
     )
@@ -472,7 +473,7 @@ def _run_compiler_stage(
     )
     _append_phase(
         phase_records,
-        "realization-writer",
+        "runner-artifact-writer",
         "persistence",
         writer_seconds,
         additive=True,
@@ -551,8 +552,8 @@ def _write_runtime_package(
 ) -> Path:
     """Publish the persisted Compiler stream and static deployment package."""
 
-    if staged_manifest != output / ".canonical-realizations/manifest.json":
-        raise ValueError("unexpected realization staging manifest")
+    if staged_manifest != output / ".runner-artifact/manifest.json":
+        raise ValueError("unexpected Runner artifact staging manifest")
     started_package = perf_counter()
     compose_project_name = f"{COMPOSE_PROJECT_PREFIX}-{uuid4().hex[:16]}"
 
@@ -600,16 +601,16 @@ def _write_runtime_package(
     )
 
     started = perf_counter()
-    handoff_directory = output / "runtime/realizations"
-    if handoff_directory.exists():
+    artifact_directory = output / "runtime/runner-artifact"
+    if artifact_directory.exists():
         raise FileExistsError(
-            f"runtime realization handoff already exists: {handoff_directory}"
+            f"Runner artifact already exists: {artifact_directory}"
         )
-    shutil.move(str(staged_manifest.parent), handoff_directory)
-    handoff_manifest = handoff_directory / "manifest.json"
+    shutil.move(str(staged_manifest.parent), artifact_directory)
+    artifact_manifest = artifact_directory / "manifest.json"
     _append_phase(
         phase_records,
-        "runtime-handoff-publication",
+        "runner-artifact-publication",
         "persistence",
         perf_counter() - started,
         additive=True,
@@ -623,19 +624,16 @@ def _write_runtime_package(
 
     started = perf_counter()
     timeline = simulator.get_timeline()
-    assert timeline.end_time is not None
     _write_execution_definition(
         output,
         generated_output_identity=compose_project_name,
-        preparation_lookahead=_RUNNER_PREPARATION_LOOKAHEAD,
-        preparation_boundary_depth=_RUNNER_PREPARATION_BOUNDARY_DEPTH,
         timeline_start=timeline.start_time,
         timeline_end=timeline.end_time,
         observation_interval=timeline.observation_interval,
         project_root=PROJECT_ROOT,
         example_root=EXAMPLE_ROOT,
-        realization_handoff=str(
-            handoff_manifest.relative_to(output).as_posix()
+        runner_artifact=str(
+            artifact_manifest.relative_to(output).as_posix()
         ),
         realization_producer=_REALIZATION_PRODUCER_IDENTITY,
     )
@@ -678,7 +676,7 @@ def _write_runtime_package(
         started_monotonic=started_package,
         ended_monotonic=package_ended,
     )
-    return handoff_manifest
+    return artifact_manifest
 
 
 def _run_dynamic_tools(
@@ -718,8 +716,8 @@ def _run_dynamic_tools(
                 "compiler_history_path": (
                     output / "domain-history/compiler.jsonl"
                 ),
-                "realization_manifest": (
-                    output / "runtime/realizations/manifest.json"
+                "runner_artifact_manifest": (
+                    output / "runtime/runner-artifact/manifest.json"
                 ),
                 "observation_path": (
                     inspection
@@ -980,7 +978,7 @@ def main(argv: list[str] | None = None) -> int:
                 staged_manifest=staged_manifest,
                 phase_records=phase_records,
             )
-            print(f"runtime handoff: {runtime_manifest}")
+            print(f"Runner artifact: {runtime_manifest}")
         results.update(
             _run_static_tools(
                 simulator,

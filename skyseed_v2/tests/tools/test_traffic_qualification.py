@@ -194,17 +194,31 @@ def _qualification() -> dict[str, object]:
             },
             {
                 "event": "activation_end",
+                "generation_publication_occurred": True,
                 "active_frontier": (START + timedelta(seconds=10)).isoformat(),
-                "duration_seconds": 0.04,
+                "main_seconds": 0.04,
+                "ideal_start_lag_seconds": 0.02,
+                "ideal_completion_lag_seconds": 0.06,
+                "runtime_apply_seconds": 0.03,
                 "activation_switch_seconds": 0.01,
+                "foundation_validation_succeeded": True,
+                "foundation_validation_timing_complete": True,
+                "foundation_validation_timing_status": "complete",
+                "foundation_validation_seconds": 0.005,
+                "foundation_validation_included_in_runtime_apply": True,
                 "generation_switch_start_monotonic_ns": ORIGIN_NS
                 + 5_000_000_000,
                 "generation_switch_end_monotonic_ns": ORIGIN_NS
                 + 5_010_000_000,
             },
             {
-                "event": "maintenance_prepare_end",
-                "duration_seconds": 0.2,
+                "event": "ready_published",
+                "preparation_seconds": 0.2,
+            },
+            {
+                "event": "boundary_scheduled",
+                "actual_readiness_wait_seconds": 0.02,
+                "ready_publication_lag_seconds": 0.01,
             },
             {
                 "event": "resource_health_checkpoint",
@@ -244,6 +258,73 @@ def test_qualification_classifies_only_active_published_runtime_evolution():
         START + timedelta(seconds=10)
     ).isoformat()
     assert result["runner_observer_effect"]["runner_rss_max_bytes"] == 123_456
+    assert result["runner_observer_effect"]["main_seconds"] == {
+        "count": 1,
+        "p50": 0.04,
+        "p95": 0.04,
+        "max": 0.04,
+    }
+    assert result["runner_observer_effect"]["start_lag_seconds"]["max"] == 0.02
+    assert result["runner_observer_effect"]["completion_lag_seconds"]["max"] == 0.06
+
+
+
+def test_current_activation_missing_optional_main_timing_remains_unavailable():
+    qualification = _qualification()
+    activation = next(
+        item
+        for item in qualification["runner_events"]
+        if item.get("event") == "activation_end"
+    )
+    activation.pop("main_seconds")
+    activation["runtime_apply_seconds"] = 0.03
+    activation["activation_switch_seconds"] = 0.01
+    activation["foundation_validation_seconds"] = None
+    activation["foundation_validation_timing_complete"] = False
+    activation["foundation_validation_timing_status"] = "missing"
+
+    result = _project_probe_qualification(
+        qualification,
+        ping_transactions=(),
+        telemetry_complete=True,
+        telemetry_losses=0,
+    )
+
+    assert result is not None
+    assert result["runner_observer_effect"]["main_seconds"] == {
+        "count": 0,
+        "p50": None,
+        "p95": None,
+        "max": None,
+    }
+    assert result["runner_observer_effect"]["main_seconds"]["max"] != 0.0
+
+
+def test_current_activation_unknown_main_timing_is_not_substituted() -> None:
+    qualification = _qualification()
+    activation = next(
+        item
+        for item in qualification["runner_events"]
+        if item.get("event") == "activation_end"
+    )
+    activation["main_seconds"] = "unknown"
+    activation["runtime_apply_seconds"] = 0.03
+    activation["activation_switch_seconds"] = 0.01
+
+    result = _project_probe_qualification(
+        qualification,
+        ping_transactions=(),
+        telemetry_complete=True,
+        telemetry_losses=0,
+    )
+
+    assert result is not None
+    assert result["runner_observer_effect"]["main_seconds"] == {
+        "count": 0,
+        "p50": None,
+        "p95": None,
+        "max": None,
+    }
 
 
 def test_incomplete_telemetry_is_an_infrastructure_failure_not_network_truth():

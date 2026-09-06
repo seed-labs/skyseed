@@ -24,11 +24,10 @@
 | activation boundary | compiled record for one formal transition, including a no-op transition |
 | RealizedRuntimeState | Runner-owned observation of live runtime state |
 | incremental realization producer | sole Timeline cursor and frame-to-observation-to-Plan-to-Compiler orchestrator |
-| precomputed mode | draining the common producer and persisting every realization before runtime |
-| future rolling mode | the same producer plus a bounded concurrent coordinator, buffer, and Runner consumer |
+| precomputed execution | draining the common producer and sealing the finite Runner artifact before runtime |
 | planned unreachable | explicit Route outcome such as Zone unserved or no operational path |
 | unexplained reachable loss | runtime failure while the compiled planned outcome says reachable |
-| detached Tool | read-only consumer of durable records that cannot affect semantic compute or runtime handoff |
+| detached Tool | read-only consumer of durable records that cannot affect semantic compute or Runner artifact validity |
 
 Physical, planned, compiled intended, and realized truths are never synonyms.
 Likewise, candidate, selected/acquiring, operational, routed, compiled, and

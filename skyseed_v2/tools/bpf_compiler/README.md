@@ -22,7 +22,7 @@ workload, add/update/remove breakdowns, semantic-precedence folding,
 intended-state cardinalities, stable Zone prefixes needed by Traffic, and
 optional Compiler stage timing from Observation. It deliberately does not
 duplicate every PlanTransition, backend intent, constraint object, and full
-intended state already owned by Plan evidence and the realization handoff.
+intended state already owned by Plan evidence and the sealed Runner artifact.
 The human page is a four-chart dashboard for intent workload,
 add/update/remove deltas, precedence folding modes, and Compiler timing. One
 shared formal-boundary cursor owns all focus. Timeline/chart clicks and the

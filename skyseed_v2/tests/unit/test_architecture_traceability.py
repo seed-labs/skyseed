@@ -144,7 +144,6 @@ def test_bpf_package_layout_and_private_residue_are_exact() -> None:
     } == {
         "__init__.py",
         "execution.py",
-        "_realization_handoff.py",
         "_realization_producer.py",
     }
     assert {
@@ -157,14 +156,17 @@ def test_bpf_package_layout_and_private_residue_are_exact() -> None:
         "compiled_realization.py",
         "compiler.py",
         "runner.py",
+        "_runner_artifact.py",
     }
     runner_private = BPF_PACKAGE_ROOT / "_runner"
     assert {
         path.name for path in runner_private.iterdir() if path.suffix == ".py"
     } == {
-        "__init__.py",
-        "event_history.py",
-        "privileged_runtime_command.py",
+            "__init__.py",
+            "kernel_netlink.py",
+            "event_history.py",
+            "privileged_runtime_command.py",
+            "process_incarnation.py",
         "runtime_realization.py",
         "traffic_telemetry.py",
         "traffic_telemetry_abi.py",
@@ -214,7 +216,7 @@ def test_bpf_package_layout_and_private_residue_are_exact() -> None:
     ):
         assert required in producer_source
     for required in (
-        "_PersistedRealizationSupplier(",
+        "_read_runner_artifact_manifest_snapshot(",
         "BpfRunner(",
         "runner.prepare()",
         "runner.run()",

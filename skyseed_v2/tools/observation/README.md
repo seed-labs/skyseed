@@ -10,7 +10,7 @@ selection, acquisition/lifecycle, GroundStation selection/ranking, validation,
 evidence projection and the non-additive planning rollup, Zone planning,
 parameter planning, Route planning, semantic transition/application,
 coordination/precedence, Plan publication, Compiler, realization producer,
-realization handoff writer, Runner, and Traffic.
+Runner artifact writer, Runner, and Traffic.
 
 Generation writes the base stream. For a generated runtime invocation, the
 private execution wrapper emits actual one-shot `runner-total` and

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from bisect import bisect_right
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 import json
@@ -84,7 +85,7 @@ def read_traffic_replay(
             "PhysicalFrame and planned formal timestamp coverage differ"
         )
     _validate_interface_generation_boundaries(
-        telemetry["interfaces"], planning["formal_transitions"]
+        telemetry["interfaces"], planning["formal_transitions"], telemetry["boundaries"]
     )
     if physical["frames"][0]["timestamp"] != telemetry["nominal_origin"]:
         raise ValueError("telemetry and formal PhysicalFrame origins differ")
@@ -113,6 +114,16 @@ def read_traffic_replay(
         }
         if not qualification["execution"]:
             raise ValueError("Traffic probe execution is empty")
+        completed = tuple(value for value in qualification["runner_events"]
+                          if value.get("event") == "activation_end")
+        if tuple((value.get("active_frontier"), value.get("active_generation"),
+                  value.get("generation_publication_occurred"), value.get("preparation"))
+                 for value in completed) != tuple(
+            (value["boundary_timestamp"], value["active_generation"],
+             value["generation_publication_occurred"], value["preparation"])
+            for value in telemetry["boundaries"]
+        ):
+            raise ValueError("Runner and Traffic completed boundary histories differ")
     return TrafficReplayRead(
         {
             "format_version": 4,
@@ -334,7 +345,8 @@ def _read_compiler(
         raw = artifact.get("realizations")
         if not isinstance(raw, list):
             raise TypeError("Compiler inspection realizations must be a list")
-        if artifact.get("format_version") == 3:
+        format_version = artifact.get("format_version")
+        if format_version in {3, 4}:
             realizations = tuple(
                 {
                     "realization_index": value["realization_index"],
@@ -356,8 +368,8 @@ def _read_compiler(
                 }
                 for value in raw
             )
-            source_kind = "compact-compiler-inspection-v3"
-        else:
+            source_kind = f"compact-compiler-inspection-v{format_version}"
+        elif format_version == 2:
             realizations = tuple(
                 {
                     "realization_index": value["realization_index"],
@@ -378,6 +390,10 @@ def _read_compiler(
                 for value in raw
             )
             source_kind = "full-compiler-inspection"
+        else:
+            raise ValueError(
+                "Compiler inspection format_version must be one of 2, 3, or 4"
+            )
     plans = planning["plans"]
     if len(realizations) != len(plans):
         raise ValueError("Compiler and Planner publication counts differ")
@@ -468,12 +484,57 @@ def _read_telemetry(path: Path) -> dict[str, object]:
         and loss_total == 0
     )
     interfaces = _read_interfaces(rows, by_slot=by_slot, by_node=by_node)
+    boundaries = _read_boundary_activations(rows)
+    completed = [value["main_end_monotonic_ns"] for value in boundaries]
+    starts = [value["main_start_monotonic_ns"] for value in boundaries]
+    generations = {value["active_generation"]: value for value in boundaries
+                   if value["generation_publication_occurred"]}
+    interface_index = {(value["generation"], value["node_slot"], value["ifindex"]): value
+                       for value in interfaces}
+    for packet in packets:
+        observed = packet["kernel_monotonic_ns"]
+        active_index = bisect_right(completed, observed) - 1
+        changing_index = bisect_right(starts, observed) - 1
+        packet["formal_boundary_timestamp"] = (
+            None if active_index < 0 else boundaries[active_index]["boundary_timestamp"]
+        )
+        packet["transition_boundary_timestamp"] = (
+            boundaries[changing_index]["boundary_timestamp"]
+            if changing_index > active_index else None
+        )
+        generation = generations.get(packet.get("generation"))
+        packet["generation_boundary_timestamp"] = (
+            None if generation is None else generation["boundary_timestamp"]
+        )
+        for direction in ("ingress", "egress"):
+            physical = (packet["node_slot"], packet.get(
+                "ingress_ifindex" if direction == "ingress" else "selected_egress_ifindex"))
+            identity = interface_index.get((packet.get("generation"), *physical))
+            validity = "exact-generation"
+            if changing_index > active_index:
+                transition = boundaries[changing_index]
+                # Add-before-withdraw keeps both endpoint sets physically live
+                # during this boundary. Never search unrelated past/future
+                # generations: a later incarnation may reuse an ifindex.
+                candidates = [value for selected in {
+                    transition["previous_generation"], transition["active_generation"]
+                } if (value := interface_index.get((selected, *physical))) is not None]
+                if len({value["logical_port_id"] for value in candidates}) > 1:
+                    raise ValueError("in-flight physical interface identity is ambiguous")
+                if identity is None and candidates:
+                    identity = candidates[0]
+                    validity = "in-flight-boundary"
+            packet[f"{direction}_identity"] = None if identity is None else {
+                **{name: identity[name] for name in ("connection_id", "peer_node_id", "logical_port_id")},
+                "validity": validity,
+            }
     return {
         "header": dict(headers[0]),
         "nominal_origin": nominal_origin.isoformat(),
         "monotonic_origin_ns": monotonic_origin,
         "nodes": tuple(sorted(by_slot.values(), key=lambda value: value["node_slot"])),
         "interfaces": interfaces,
+        "boundaries": boundaries,
         "packets": tuple(packets),
         "ping_transactions": _ping_transactions(
             tuple(packets), nodes_by_address=by_address
@@ -496,7 +557,9 @@ def _read_interfaces(
     connection_ends: dict[tuple[int, str], list[dict[str, Any]]] = defaultdict(
         list
     )
-    physical_identities: dict[tuple[int, int], tuple[str, str]] = {}
+    logical_identities: dict[int, tuple[str, str, str]] = {}
+    endpoint_ports: dict[tuple[str, str, str], int] = {}
+    generation_ports = set()
     for raw in _records(rows, "interface_identity"):
         value = dict(raw)
         generation = _integer(value.get("generation"), "generation")
@@ -512,6 +575,9 @@ def _read_interfaces(
         _timestamp(value.get("boundary_timestamp"), "boundary_timestamp")
         connection_id = _string(value.get("connection_id"), "connection_id")
         peer = _string(value.get("peer_node_id"), "peer_node_id")
+        port = _integer(value.get("logical_port_id"), "logical_port_id")
+        if not 0 < port <= 0xFFFFFFFF:
+            raise ValueError("logical port must be a nonzero uint32")
         if peer not in by_node:
             raise ValueError("interface identity references an unknown peer node")
         if value.get("validity") != "exact-generation":
@@ -519,15 +585,15 @@ def _read_interfaces(
         key = generation, slot, ifindex
         if key in interfaces:
             raise ValueError("traffic telemetry interface identity is not unique")
-        physical_key = slot, ifindex
-        identity = connection_id, peer
-        previous_identity = physical_identities.setdefault(
-            physical_key, identity
-        )
+        identity = value["node_id"], connection_id, peer
+        previous_identity = logical_identities.setdefault(port, identity)
         if previous_identity != identity:
-            raise ValueError(
-                "physical interface identity reuse is ambiguous across generations"
-            )
+            raise ValueError("logical interface identity reuse contradicts its endpoint")
+        if endpoint_ports.setdefault(identity, port) != port:
+            raise ValueError("logical port changed for the same connection endpoint")
+        if (generation, port) in generation_ports:
+            raise ValueError("generation logical interface identity is not unique")
+        generation_ports.add((generation, port))
         interfaces[key] = value
         connection_ends[(generation, connection_id)].append(value)
     for ends in connection_ends.values():
@@ -545,20 +611,50 @@ def _read_interfaces(
 def _validate_interface_generation_boundaries(
     interfaces: tuple[dict[str, Any], ...],
     formal_transitions: tuple[dict[str, Any], ...],
+    activations: tuple[dict[str, Any], ...],
 ) -> None:
-    boundaries: dict[int, str] = {}
+    if tuple(value["boundary_timestamp"] for value in activations) != tuple(
+        value["timestamp"] for value in formal_transitions[:len(activations)]
+    ):
+        raise ValueError("Runner completed boundary prefix differs from formal history")
+    boundaries = {value["active_generation"]: value["boundary_timestamp"]
+                  for value in activations if value["generation_publication_occurred"]}
     for value in interfaces:
         generation = value["generation"]
         boundary = value["boundary_timestamp"]
-        previous = boundaries.setdefault(generation, boundary)
-        if previous != boundary:
-            raise ValueError("interface generation-to-boundary mapping conflicts")
-    for generation, boundary in boundaries.items():
-        if (
-            generation >= len(formal_transitions)
-            or formal_transitions[generation]["timestamp"] != boundary
-        ):
+        if boundaries.get(generation) != boundary:
             raise ValueError("interface generation-to-boundary mapping differs")
+
+
+def _read_boundary_activations(rows: tuple[dict[str, Any], ...]) -> tuple[dict[str, Any], ...]:
+    """Read completed nominal boundaries separately from publication lifetimes."""
+    values = _records(rows, "boundary_activation")
+    previous_generation = 0xFFFFFFFF
+    previous_end = 0
+    for index, value in enumerate(values):
+        _timestamp(value.get("boundary_timestamp"), "boundary_timestamp")
+        generation = _integer(value.get("active_generation"), "active_generation")
+        start = _integer(value.get("main_start_monotonic_ns"), "main_start_monotonic_ns")
+        end = _integer(value.get("main_end_monotonic_ns"), "main_end_monotonic_ns")
+        published = value.get("generation_publication_occurred")
+        if (type(published) is not bool or value.get("previous_generation") != previous_generation
+            or value.get("preparation") is not (index == 0)
+            or start < previous_end or end < start):
+            raise ValueError("Runner boundary progression/timing evidence differs")
+        expected = (0 if index == 0 else previous_generation + 1) if published else previous_generation
+        if generation != expected or (index == 0 and not published):
+            raise ValueError("Runner generation lifetime contradicts publication")
+        switch_names = ("generation_switch_start_monotonic_ns", "generation_switch_end_monotonic_ns")
+        if published:
+            switch_start, switch_end = (_integer(value.get(name), name) for name in switch_names)
+            if not start <= switch_start <= switch_end <= end:
+                raise ValueError("Runner publication timing lies outside its boundary")
+        elif any(name in value for name in switch_names):
+            raise ValueError("reused generation must not invent publication timing")
+        previous_generation, previous_end = generation, end
+    if not values:
+        raise ValueError("traffic telemetry lacks completed boundary evidence")
+    return tuple(values)
 
 
 def _ping_transactions(
@@ -693,13 +789,17 @@ def _ping_transaction(
     }
 
 
-def _ping_direction(value: dict[str, Any] | None) -> dict[str, str] | None:
+def _ping_direction(value: dict[str, Any] | None) -> dict[str, Any] | None:
     if value is None:
         return None
     return {
         "source_ipv4": value["source_ipv4"],
         "destination_ipv4": value["destination_ipv4"],
         "simulation_timestamp": value["simulation_timestamp"],
+        **{key: value.get(key) for key in (
+            "kernel_monotonic_ns", "formal_boundary_timestamp", "transition_boundary_timestamp",
+            "generation", "generation_boundary_timestamp", "ingress_identity", "egress_identity",
+        )},
     }
 
 

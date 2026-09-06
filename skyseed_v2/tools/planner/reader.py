@@ -349,7 +349,7 @@ _COMPILER_HEADER = {
 _COMPILER_HEADER_V2 = {
     "record_type": "compiled_realization_history_header",
     "format_version": 2,
-    "semantic_payload_owner": "canonical realization handoff",
+    "semantic_payload_owner": "sealed Runner artifact",
     "projection": "compact-exact-compiler-inspection-v1",
 }
 _COMPILER_FIELDS = {

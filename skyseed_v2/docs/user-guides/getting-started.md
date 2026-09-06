@@ -34,9 +34,9 @@ python -m examples.mini_satellite_internet.main
 ```
 
 Generation drains the common incremental realization producer, writes
-`output/domain-history/`, persists the realization handoff, and creates runtime
-scripts plus detached inspection. Generated execution consumes only the
-persisted handoff.
+`output/domain-history/`, seals `output/runtime/runner-artifact/`, and creates
+runtime scripts plus detached inspection. Generated execution consumes only the
+verified finite artifact.
 
 Follow the generated `output/start.sh`, `run.sh`, and `cleanup.sh` controls only
 in an environment where Docker/network privileges are appropriate.
@@ -72,6 +72,7 @@ PhysicalWorld / PhysicalFrame
 → Planner / PlannedOperationalState
 → Plan
 → Compiler / BpfCompiledRealization
+→ sealed Runner artifact
 → Runner / RealizedRuntimeState
 ```
 

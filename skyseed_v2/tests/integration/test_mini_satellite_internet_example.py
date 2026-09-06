@@ -166,7 +166,7 @@ def test_mini_chain_uses_one_producer_and_preserves_all_boundaries(
     ) == 32
 
 
-def test_mini_observation_and_tool_failures_preserve_runtime_handoff(
+def test_mini_observation_and_tool_failures_preserve_runner_artifact(
     tmp_path: Path,
     monkeypatch,
     capsys,
@@ -195,7 +195,7 @@ def test_mini_observation_and_tool_failures_preserve_runtime_handoff(
     ) == 0
 
     for relative in (
-        "runtime/realizations/manifest.json",
+        "runtime/runner-artifact/manifest.json",
         "runtime/execution.json",
         "domain-history/domain-history-manifest.json",
         "start.sh",
@@ -205,8 +205,8 @@ def test_mini_observation_and_tool_failures_preserve_runtime_handoff(
     ):
         assert (output / relative).is_file()
     capture = capsys.readouterr()
-    assert "runtime handoff:" in capture.out
-    assert "did not invalidate runtime handoff" in capture.err
+    assert "Runner artifact:" in capture.out
+    assert "did not invalidate Runner artifact" in capture.err
     assert "inspection-batch" in capture.err
     assert "observation-evidence" in capture.err
 
@@ -552,6 +552,19 @@ def test_mini_main_builds_once_and_emits_current_round_b_outputs(
     assert "-m tools.runner" in run_script
     assert "-m tools.traffic" in run_script
     assert "tools.observation" in run_script
+    assert "inspection/runtime-runs/$INVOCATION_ID" in run_script
+    assert '--invocation-directory "$INVOCATION_DIR"' in run_script
+    assert '"$INVOCATION_DIR/runner/runner-invocation.json"' in run_script
+    assert '"$INVOCATION_DIR/runner/runner-events.jsonl"' in run_script
+    assert '"$INVOCATION_DIR/traffic/traffic-telemetry.jsonl"' in run_script
+    assert '"$INVOCATION_DIR/traffic/probe-execution.jsonl"' in run_script
+    assert (
+        '"$INVOCATION_DIR/observation/execution-observations.jsonl"'
+        in run_script
+    )
+    assert '--workload "$SCRIPT_DIR/inputs/traffic-workload.json"' in run_script
+    assert "inputs/shells.yaml" not in run_script
+    assert "inputs/ground_stations.yaml" not in run_script
     assert 'exit "$runner_tool_status"' not in run_script
     assert 'exit "$traffic_tool_status"' not in run_script
     assert '"$SCRIPT_DIR/start.sh"' in launch
@@ -625,10 +638,10 @@ def test_mini_main_builds_once_and_emits_current_round_b_outputs(
     execution = json.loads(
         (output / "runtime/execution.json").read_text(encoding="utf-8")
     )
-    assert execution["format_version"] == 2
+    assert execution["format_version"] == 3
     assert execution["generated_output_identity"] == project_name
     assert execution["progression"] == {
-        "strategy": "persisted-canonical-realization-handoff",
+        "strategy": "sealed-precomputed-runner-artifact",
         "producer": (
             "skyseed-v2-common-incremental-realization-producer-v1"
         ),
@@ -640,13 +653,12 @@ def test_mini_main_builds_once_and_emits_current_round_b_outputs(
         "bounded": True,
     }
     assert execution["runner"] == {
-        "preparation_lookahead_seconds": None,
-        "preparation_boundary_depth": None,
+        "execution_contract": "sealed-precomputed-only",
     }
-    assert execution["realization_handoff"]["realization_count"] == 32
-    assert execution["realization_handoff"]["format_version"] == 3
-    assert execution["realization_handoff"]["encoding"] == (
-        "deterministic-gzip-json-v1"
+    assert execution["runner_artifact"]["realization_count"] == 32
+    assert execution["runner_artifact"]["format_version"] == 3
+    assert execution["runner_artifact"]["encoding"] == (
+        "typed-packed-runtime-tables-v3"
     )
     assert [
         scope["label"] for scope in execution["source_fingerprint"]["scopes"]
@@ -664,7 +676,7 @@ def test_mini_main_builds_once_and_emits_current_round_b_outputs(
     output_text = capsys.readouterr().out
     assert f"runtime directory: {runtime_output}" in output_text
     assert "producer: 32 Plans / 64 formal transitions" in output_text
-    assert "runtime handoff:" in output_text
+    assert "Runner artifact:" in output_text
 
 
 def test_generation_guard_preserves_a_live_or_unverifiable_generation(
@@ -1132,7 +1144,7 @@ def test_mini_sources_delegate_formal_state_to_the_common_producer() -> None:
     assert execution_source.count("runner.prepare()") == 1
     assert execution_source.count("runner.run()") == 1
     assert execution_source.count("runner.cleanup()") == 1
-    assert "_PersistedRealizationSupplier(" in execution_source
+    assert "_read_runner_artifact_manifest_snapshot(" in execution_source
     for forbidden in (
         "write_runner_tool",
         "write_traffic_replay_tool",
@@ -1174,10 +1186,13 @@ def test_generation_and_persisted_execution_loops_stay_separate() -> None:
     ).read_text(encoding="utf-8")
 
     assert main_source.count("producer.produce_next_realization()") == 1
-    assert main_source.index("_write_realization_handoff(") < main_source.index(
+    assert main_source.count("_write_generated_run_script(") == 1
+    assert "def _write_execution_scripts(" not in main_source
+    assert main_source.index("_write_runner_artifact(") < main_source.index(
         "_write_execution_definition("
     )
-    assert "_PersistedRealizationSupplier(" in execution_source
+    assert "_read_runner_artifact_manifest_snapshot(" in execution_source
+    assert "future_realization_supplier" not in execution_source
     assert "produce_next_plan(" not in execution_source
     assert "produce_next_realization(" not in execution_source
     assert "compile_bpf(" not in execution_source

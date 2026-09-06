@@ -209,6 +209,16 @@ Python 项目依赖仍由 `pyproject.toml` 管理；`environment.yml` 只固定�
 Interpreter** 并选择 `skyseed_dev`。仓库设置会在后续新终端中激活已选择
 的解释器，但不能替代首次选择。
 
+BPF Runner 在一次性 Preparation 中完成全部 finite plan materialization、
+capacity/identity validation 与 generation-semantic BPF preload，并实际激活 boundary 0。
+`run()` 从 boundary 1 开始，使用长期 privileged channel、retained namespace
+sockets 和 direct netlink/BPF syscalls 提交当前 delta。没有 Maintenance thread 或
+runtime generation reclaim。`SKYSEED_BPF_RUNTIME_WORKERS` 限制 Preparation
+中独立 startup namespace audit/scaffolding 工作，以及 Main/Cleanup 的独立
+namespace 删除线程（1–64，默认不超过 CPU 数与 8）。删除线程在 Preparation
+建立并复用；每轮 Main 等待当轮物理删除全部完成。
+Main 只记录 compact boundary/barrier timing；bulk telemetry identity 写入由后台处理。
+
 ## 9. Offline Tooling Baseline
 
 从 `examples/complete_static_emulator/` 执行默认入口：

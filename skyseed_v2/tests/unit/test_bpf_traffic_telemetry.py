@@ -143,12 +143,25 @@ def test_initialize_binds_one_shared_ring_and_loss_map_to_each_node_program(
             "node_address": f"100.64.0.{slot + 1}",
             "active_links_capacity": 8,
             "routes_capacity": 8,
+            "bindings_capacity": 4,
         }
         for slot in (0, 1)
     )
 
     monkeypatch.setattr(command_module, "_pin_root", lambda _value: tmp_path / "pins")
     monkeypatch.setattr(command_module, "_assert_netns", lambda _node: None)
+    live_nodes = {}
+    monkeypatch.setattr(command_module, "_LIVE_NODES", live_nodes)
+    def retain(nodes):
+        for node in nodes:
+            live_nodes[node["key"]] = {**node, "maps": {},
+                "netlink": SimpleNamespace(initial_links=lambda group_end: 1, set_link=lambda *a, **k: None,
+                                            address=lambda *a, **k: None)}
+    monkeypatch.setattr(command_module, "_retain_namespaces", retain)
+    monkeypatch.setattr(command_module, "_probe_batch_update_support", lambda: True)
+    monkeypatch.setattr(command_module, "_open_pinned", lambda path: next(descriptors))
+    monkeypatch.setattr(command_module, "_GENERATION_FD", -1)
+
     monkeypatch.setattr(
         command_module,
         "_audit_node_addresses",
@@ -182,6 +195,7 @@ def test_initialize_binds_one_shared_ring_and_loss_map_to_each_node_program(
             "pin_root": "/sys/fs/bpf/skyseed-v2/run-telemetry-test",
             "nodes": nodes,
             "inactive_generation": 0xFFFFFFFF,
+            "retirement_group_end": 0x53530002,
             "telemetry_enabled": True,
             "node_address_range": "100.64.0.0/29",
             "zone_prefixes": (),
@@ -201,6 +215,9 @@ def test_initialize_binds_one_shared_ring_and_loss_map_to_each_node_program(
     assert all(facts["telemetry_ring_map"] == ring[1] for _, facts in program_calls)
     assert all(facts["telemetry_loss_map"] == losses[1] for _, facts in program_calls)
     assert result["traffic_telemetry"]["shared_ring_buffer"] is True
+    command_module._RETIREMENT_POOL.shutdown()
+    command_module._RETIREMENT_POOL = None
+    command_module._RETIREMENT_WORKERS = 0
 
 
 def test_ring_output_failure_path_converges_back_to_original_terminal_action(
@@ -219,6 +236,8 @@ def test_ring_output_failure_path_converges_back_to_original_terminal_action(
         10,
         11,
         12,
+        15,
+        16,
         telemetry_ring_map=13,
         telemetry_loss_map=14,
         node_slot=3,
@@ -254,6 +273,8 @@ def test_malformed_ipv4_ihl_leaves_icmp_metadata_invalid(
         10,
         11,
         12,
+        15,
+        16,
         telemetry_ring_map=13,
         telemetry_loss_map=14,
         node_slot=3,
@@ -321,7 +342,7 @@ def test_recorder_streams_identity_and_preserves_final_drain_prefix(
             },
         },
     )
-    recorder.write_generation_identity(
+    write_evidence = recorder.write_generation_identity(
         (
             {
                 "generation": 4,
@@ -335,6 +356,12 @@ def test_recorder_streams_identity_and_preserves_final_drain_prefix(
             },
         )
     )
+    assert write_evidence["record_count"] == 1
+    assert write_evidence["serialized_bytes"] > 0
+    assert write_evidence["serialization_seconds"] >= 0
+    assert write_evidence["write_flush_seconds"] >= 0
+    assert write_evidence["total_seconds"] >= 0
+    assert write_evidence["complete"] is True
     recorder.write_simulation_clock_anchor(
         nominal_origin="2026-01-01T00:00:00+00:00",
         monotonic_origin_seconds=123.25,
@@ -390,3 +417,40 @@ def test_durable_output_failure_is_reported_without_becoming_control_failure(
 
     assert stopped["complete"] is False
     assert stopped["failure"]["type"] in {"FileExistsError", "NotADirectoryError"}
+
+
+def test_identity_expansion_and_flush_run_only_on_background_writer(monkeypatch, tmp_path):
+    from threading import Event, Thread, current_thread
+    recorder = _TrafficTelemetryRecorder(tmp_path)
+    entered, release = Event(), Event()
+    written = []
+    main_thread = current_thread()
+    def write(records):
+        assert current_thread() is not main_thread
+        entered.set()
+        assert release.wait(2)
+        written.extend(records)
+    monkeypatch.setattr(recorder, "write_generation_identity", write)
+    monkeypatch.setattr(recorder, "_write", lambda record: None)
+    writer = Thread(target=recorder._write_queued_identities)
+    writer.start()
+    templates = ({"logical_port_id": 1, "generation": 0, "node_id": "a"},)
+    recorder.enqueue_generation_identity(templates, ({"logical_port_id": 1, "ifindex": 42},), (), {})
+    assert entered.wait(1)
+    # The blocked writer does not gate this next boundary's compact enqueue.
+    recorder.enqueue_generation_identity(templates, (), (), {})
+    release.set()
+    recorder._identity_queue.put(None)
+    writer.join(2)
+    assert not writer.is_alive()
+    assert [record["ifindex"] for record in written] == [42, 42]
+
+
+def test_formal_clock_anchor_is_queued_without_synchronous_flush(monkeypatch, tmp_path):
+    recorder = _TrafficTelemetryRecorder(tmp_path)
+    def forbidden(*args, **kwargs): raise AssertionError("clock anchor blocked on output")
+    monkeypatch.setattr(recorder, "_write", forbidden)
+    recorder.write_simulation_clock_anchor(nominal_origin="2026-01-01T00:00:00+00:00", monotonic_origin_seconds=123)
+    record = recorder._identity_queue.get_nowait()
+    assert record["record_type"] == "simulation_clock_anchor"
+    assert record["monotonic_origin_ns"] == 123_000_000_000

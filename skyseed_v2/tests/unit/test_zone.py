@@ -448,11 +448,11 @@ def test_custom_model_cannot_inject_or_duplicate_zones_or_select_nonmatch(
 def test_physical_world_zone_lifecycle_facade_identity_and_atomic_failure() -> None:
     simulation_definition = SimulationDefinition(
         SimulatorStaticInput(),
-        SimulationTimeline(
-            datetime(2026, 1, 1, tzinfo=timezone.utc),
-            None,
-            timedelta(seconds=10),
-        ),
+            SimulationTimeline(
+                datetime(2026, 1, 1, tzinfo=timezone.utc),
+                datetime(2026, 1, 1, tzinfo=timezone.utc),
+                timedelta(seconds=10),
+            ),
     )
     unconfigured = Simulator(simulation_definition).create_physical_world(
         position_model=CircularOrbitPositionModel()

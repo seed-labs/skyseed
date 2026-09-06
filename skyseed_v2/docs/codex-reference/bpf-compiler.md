@@ -73,21 +73,20 @@ truth.
 
 ## Persistence and Tools
 
-The realization handoff uses a strict format-version-3 checksum manifest and
-`deterministic-gzip-json-v1` records. Construction of the persisted supplier is
-the eager reader boundary: before `BpfRunner` exists, it validates the manifest,
-compressed and uncompressed hashes, sequence lineage, and references, then
-decodes the complete bounded sequence. It requires valid intent references,
-state fingerprints, equal adjacent realization intervals, and an exact next
-start boundary. It does not reconstruct the source Plan or repeat Compiler
-lowering; the aligned authoritative Plan remains in Planner history for Traffic,
-Tools, and qualification. Only the resulting immutable tuple reaches Runner.
-No pickle or live Planner object is accepted.
+After the producer is completely drained, the Runner artifact finalizer
+losslessly normalizes already-defined Compiler facts into a versioned typed
+packed binary and validates the complete finite sequence before sealing it.
+It does not rerun planning or Compiler lowering. The binary contains symbolic
+stable identities, not future live ifindexes. Before `BpfRunner` exists,
+generated execution verifies source/input identity, manifest and binary hashes,
+version, bounds, lineage, and timeline. Runner then uses a read-only mmap and
+indexed lazy boundary decoding; no rich `BpfCompiledRealization` sequence,
+source Plan, pickle, or live Planner object is reconstructed.
 
 The sealed `domain-history/compiler.jsonl` has a different, deliberately compact
 contract: lineage, fingerprints, timestamps, activation timestamps, and intent
 counts. It does not duplicate complete intended state or backend intentions;
-the canonical realization handoff owns that payload and
+the sealed Runner artifact owns that normalized runtime payload and
 `runtime/execution.json` anchors its hashes.
 
 The BPF Compiler Tool renders full Plan/realization values as lineage,

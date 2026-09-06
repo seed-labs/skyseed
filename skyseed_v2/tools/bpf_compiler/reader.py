@@ -4,9 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-import gzip
-from hashlib import sha256
-import json
 from pathlib import Path
 from typing import Any
 
@@ -20,9 +17,6 @@ from skyseed_v2.simulator.planning import (
     plan_to_data,
     plan_transition_to_data,
     planned_operational_state_to_data,
-)
-from skyseed_v2.experiment._realization_handoff import (
-    _read_persisted_realization_manifest_snapshot,
 )
 
 
@@ -52,7 +46,7 @@ def read_bpf_compiler_history(path: Path) -> dict[str, Any]:
     compact_header = {
         "record_type": "compiled_realization_history_header",
         "format_version": 2,
-        "semantic_payload_owner": "canonical realization handoff",
+        "semantic_payload_owner": "sealed Runner artifact",
         "projection": "compact-exact-compiler-inspection-v1",
     }
     if header not in (legacy_header, compact_header):
@@ -228,204 +222,16 @@ def _validate_compact_history_record(row: dict[str, Any]) -> None:
 
 def read_compact_bpf_compiler_evidence(
     compiler_history_path: Path,
-    realization_manifest_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Read compact Tool evidence, with a bounded legacy-v1 bridge.
-
-    New producer histories already contain the complete compact projection and
-    never touch handoff payloads here. A retained format-v1 history can be
-    upgraded for inspection by validating and scanning one persisted JSON
-    payload at a time; no Plan or realization object sequence is materialized.
-    """
+    """Read the complete compact Compiler history without runtime payload access."""
 
     history = read_bpf_compiler_history(compiler_history_path)
-    if history["header"]["format_version"] == 2:
-        return history
-    if realization_manifest_path is None:
+    if history["header"]["format_version"] != 2:
         raise ValueError(
-            "legacy Compiler evidence requires its persisted realization manifest"
+            "legacy Compiler history cannot be projected from the Runner artifact; "
+            "regenerate the bounded experiment"
         )
-    manifest = _read_persisted_realization_manifest_snapshot(
-        Path(realization_manifest_path)
-    )
-    entries = manifest["entries"]
-    rows = history["realizations"]
-    if len(entries) != len(rows):
-        raise ValueError("Compiler history and realization manifest count differ")
-    root = Path(str(manifest["manifest"])).parent
-    compact_rows = []
-    for index, (entry, row) in enumerate(zip(entries, rows, strict=True)):
-        path = root / str(entry["path"])
-        compressed = path.read_bytes()
-        if (
-            len(compressed) != entry["compressed_bytes"]
-            or sha256(compressed).hexdigest() != entry["sha256"]
-        ):
-            raise ValueError("persisted Compiler payload checksum differs")
-        try:
-            raw = gzip.decompress(compressed)
-        except OSError as error:
-            raise ValueError("persisted Compiler payload compression is invalid") from error
-        if (
-            len(raw) != entry["uncompressed_bytes"]
-            or sha256(raw).hexdigest() != entry["uncompressed_sha256"]
-        ):
-            raise ValueError("persisted Compiler payload checksum differs")
-        try:
-            value = json.loads(raw)
-        except json.JSONDecodeError as error:
-            raise ValueError("persisted Compiler payload JSON is invalid") from error
-        if not isinstance(value, dict):
-            raise ValueError("persisted Compiler payload must be an object")
-        compact_rows.append(
-            {**row, **_compact_handoff_projection(value, row, index=index)}
-        )
-    return {
-        "header": {
-            "record_type": "compiled_realization_history_header",
-            "format_version": 2,
-            "semantic_payload_owner": "canonical realization handoff",
-            "projection": "compact-exact-compiler-inspection-v1",
-            "compatibility_source": "validated-format-v1-history-and-v3-handoff",
-        },
-        "realizations": tuple(compact_rows),
-    }
-
-
-def _compact_handoff_projection(
-    value: dict[str, Any], row: dict[str, Any], *, index: int
-) -> dict[str, object]:
-    aligned = {
-        "source_plan_id": value.get("source_plan_id"),
-        "source_previous_plan_id": value.get("source_previous_plan_id"),
-        "physical_world_fingerprint": value.get("physical_world_fingerprint"),
-        "input_state_fingerprint": value.get("input_state_fingerprint"),
-        "output_state_fingerprint": value.get("output_state_fingerprint"),
-        "start_timestamp": value.get("start_timestamp"),
-        "end_timestamp": value.get("end_timestamp"),
-    }
-    if any(row[name] != item for name, item in aligned.items()):
-        raise ValueError("Compiler history and handoff lineage differ")
-    boundaries = value.get("compiled_activation_boundaries")
-    if not isinstance(boundaries, list) or [
-        item.get("timestamp") for item in boundaries if isinstance(item, dict)
-    ] != row["activation_timestamps"]:
-        raise ValueError("Compiler history and handoff boundaries differ")
-    families = {
-        "resources": value.get("resource_realizations"),
-        "parameters": value.get("parameter_realizations"),
-        "forwarding": value.get("forwarding_realizations"),
-        "zone_edges": value.get("zone_edge_realizations"),
-        "constraints": value.get("constraints"),
-    }
-    if any(not isinstance(values, list) for values in families.values()):
-        raise ValueError("Compiler handoff intent families are malformed")
-    expected_counts = {
-        "resource": len(families["resources"]),
-        "parameter": len(families["parameters"]),
-        "forwarding": len(families["forwarding"]),
-        "zone_edge": len(families["zone_edges"]),
-        "constraints": len(families["constraints"]),
-    }
-    if expected_counts != row["intent_counts"]:
-        raise ValueError("Compiler history and handoff intent counts differ")
-    operations: dict[str, dict[str, int]] = {}
-    by_time: dict[str, dict[str, dict[str, int]]] = {}
-    for family in ("resources", "forwarding", "zone_edges"):
-        counts: dict[str, int] = {}
-        for item in families[family]:
-            if not isinstance(item, dict):
-                raise ValueError("Compiler handoff intent is malformed")
-            operation = str(item.get("operation"))
-            counts[operation] = counts.get(operation, 0) + 1
-            timestamp = str(item.get("nominal_time"))
-            per_family = by_time.setdefault(timestamp, {}).setdefault(family, {})
-            per_family[operation] = per_family.get(operation, 0) + 1
-        operations[family] = dict(sorted(counts.items()))
-    operations["parameters"] = {"update": len(families["parameters"])}
-    for item in families["parameters"]:
-        timestamp = str(item.get("nominal_time"))
-        counts = by_time.setdefault(timestamp, {}).setdefault("parameters", {})
-        counts["update"] = counts.get("update", 0) + 1
-    operations["constraints"] = {"precedence": len(families["constraints"])}
-    workloads = []
-    for boundary in boundaries:
-        timestamp = boundary["timestamp"]
-        boundary_operations = {
-            family: dict(sorted(counts.items()))
-            for family, counts in sorted(by_time.get(timestamp, {}).items())
-        }
-        workloads.append(
-            {
-                "timestamp": timestamp,
-                "transition_fingerprint": boundary["transition_fingerprint"],
-                "operations": boundary_operations,
-                "delta_counts": _legacy_delta_counts(boundary_operations),
-                "operation_count": sum(
-                    sum(counts.values())
-                    for counts in boundary_operations.values()
-                ),
-            }
-        )
-    state = value.get("output_planned_state")
-    if not isinstance(state, dict):
-        raise ValueError("Compiler handoff planned state is malformed")
-    connections = state.get("operational_connections")
-    routes = state.get("route_outcomes")
-    zones = state.get("zone_service_assignments")
-    forwarding = value.get("intended_forwarding")
-    prefixes = value.get("zone_prefixes")
-    if any(
-        not isinstance(items, list)
-        for items in (connections, routes, zones, forwarding, prefixes)
-    ):
-        raise ValueError("Compiler handoff intended state is malformed")
-    reachable = sum(item.get("kind") == "reachable" for item in routes)
-    return {
-        "compact_summary": {
-            "activation_boundaries": len(boundaries),
-            "plan_transition_changes": 0,
-            "semantic_precedences": 0,
-            "resource_intents": len(families["resources"]),
-            "parameter_intents": len(families["parameters"]),
-            "forwarding_intents": len(families["forwarding"]),
-            "zone_edge_intents": len(families["zone_edges"]),
-            "constraints": len(families["constraints"]),
-            "intended_connections": len(connections),
-            "intended_resources": len(connections),
-            "intended_parameters": len(connections) * 2,
-            "intended_forwarding": len(forwarding),
-            "intended_zone_edges": sum(
-                item.get("satellite_id") is not None for item in zones
-            ),
-            "intended_zones": len(zones),
-            "planned_routes_reachable": reachable,
-            "planned_routes_unreachable": len(routes) - reachable,
-        },
-        "operation_counts": operations,
-        "boundary_workloads": workloads,
-        "intended_state_timestamp": state.get("timestamp"),
-        "zone_prefixes": prefixes,
-        "legacy_missing_plan_projection": (
-            "plan transition-change and semantic-precedence totals are unavailable"
-        ),
-    }
-
-
-def _legacy_delta_counts(
-    operations: dict[str, dict[str, int]],
-) -> dict[str, int]:
-    result = {"add": 0, "update": 0, "remove": 0}
-    for counts in operations.values():
-        for operation, count in counts.items():
-            if operation in {"add", "establish"}:
-                result["add"] += count
-            elif operation in {"change", "update"}:
-                result["update"] += count
-            elif operation in {"remove", "withdraw"}:
-                result["remove"] += count
-    return result
-
+    return history
 
 def _history_timestamp(value: object) -> datetime:
     text = _history_string(value, "timestamp")

@@ -1,7 +1,5 @@
 from dataclasses import FrozenInstanceError
 from datetime import datetime, timedelta, timezone
-from itertools import islice
-
 import pytest
 
 from skyseed_v2.simulator import SimulationTimeline
@@ -15,7 +13,7 @@ def test_bounded_timeline_yields_only_interval_aligned_timestamps() -> None:
         observation_interval=timedelta(seconds=10),
     )
 
-    assert timeline.is_bounded is True
+    assert not hasattr(timeline, "is_bounded")
     assert not hasattr(timeline, "slice_interval")
     assert tuple(timeline.iter_timestamps()) == (
         start,
@@ -24,25 +22,20 @@ def test_bounded_timeline_yields_only_interval_aligned_timestamps() -> None:
     )
 
 
-def test_unbounded_timeline_is_lazy_and_normalizes_to_utc() -> None:
+def test_timeline_requires_finite_end_and_normalizes_to_utc() -> None:
     local_timezone = timezone(timedelta(hours=8))
     start = datetime(2026, 1, 1, 8, 0, tzinfo=local_timezone)
     timeline = SimulationTimeline(
         start_time=start,
-        end_time=None,
+        end_time=start + timedelta(seconds=30),
         observation_interval=timedelta(seconds=10),
     )
 
     timestamps = timeline.iter_timestamps()
-    assert timeline.is_bounded is False
     assert iter(timestamps) is timestamps
     expected_start = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    assert tuple(islice(timestamps, 4)) == tuple(
+    assert tuple(timestamps) == tuple(
         expected_start + timedelta(seconds=10 * index) for index in range(4)
-    )
-    assert all(
-        timestamp.tzinfo is timezone.utc
-        for timestamp in islice(timestamps, 3)
     )
 
 
@@ -53,7 +46,9 @@ def test_unbounded_timeline_is_lazy_and_normalizes_to_utc() -> None:
 def test_timeline_rejects_non_positive_intervals(interval: timedelta) -> None:
     with pytest.raises(ValueError, match="observation_interval"):
         SimulationTimeline(
-            datetime(2026, 1, 1, tzinfo=timezone.utc), None, interval
+            datetime(2026, 1, 1, tzinfo=timezone.utc),
+            datetime(2026, 1, 1, tzinfo=timezone.utc),
+            interval,
         )
 
 
@@ -75,6 +70,8 @@ def test_timeline_rejects_invalid_order_and_naive_datetimes() -> None:
             end_time=aware - timedelta(seconds=1),
             observation_interval=timedelta(seconds=10),
         )
+    with pytest.raises(TypeError, match="end_time"):
+        SimulationTimeline(aware, None, timedelta(seconds=10))
 
 
 @pytest.mark.parametrize(
@@ -89,7 +86,7 @@ def test_timeline_rejects_invalid_order_and_naive_datetimes() -> None:
         ),
         (
             datetime(2026, 1, 1, tzinfo=timezone.utc),
-            None,
+            datetime(2026, 1, 2, tzinfo=timezone.utc),
             10,
             "observation_interval",
         ),

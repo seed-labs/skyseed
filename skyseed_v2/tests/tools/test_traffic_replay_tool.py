@@ -177,6 +177,16 @@ def _telemetry(
             "packet_records": 3,
         },
     ]
+    for index, frame in enumerate(planner_data["frames"]):
+        start = monotonic_origin + index * 10_000_000_000 - 1_000_000
+        rows.append({
+            "record_type": "boundary_activation", "boundary_timestamp": frame["timestamp"],
+            "active_generation": index, "previous_generation": 0xFFFFFFFF if index == 0 else index - 1,
+            "generation_publication_occurred": True, "preparation": index == 0,
+            "main_start_monotonic_ns": start, "main_end_monotonic_ns": start + 1_000_000,
+            "generation_switch_start_monotonic_ns": start + 100_000,
+            "generation_switch_end_monotonic_ns": start + 200_000,
+        })
     path.write_text(
         "".join(json.dumps(value) + "\n" for value in rows),
         encoding="utf-8",
@@ -358,6 +368,7 @@ def _interface_pair(
             "node_slot": first["node_slot"],
             "node_id": first["node_id"],
             "ifindex": first_ifindex,
+            "logical_port_id": 1,
             "interface": f"sv2-{first_ifindex}",
             "connection_id": connection,
             "peer_node_id": second["node_id"],
@@ -371,6 +382,7 @@ def _interface_pair(
             "node_slot": second["node_slot"],
             "node_id": second["node_id"],
             "ifindex": first_ifindex + 1,
+            "logical_port_id": 2,
             "interface": f"sv2-{first_ifindex + 1}",
             "connection_id": connection,
             "peer_node_id": first["node_id"],
@@ -471,6 +483,43 @@ def test_compact_compiler_history_retains_lineage_without_inventing_zone_prefix(
     assert data["transactions"][0]["planned_reachability"] == "reachable"
     assert data["transactions"][1]["planned_reachability"] == "unknown"
     assert data["transactions"][1]["classification"] == "unclassified"
+
+
+def test_compact_compiler_inspection_format_four_is_explicitly_supported(
+    tmp_path: Path, evidence_set
+) -> None:
+    compiler = tmp_path / "compiler-format-four.json"
+    value = json.loads(evidence_set["compiler_json"].read_text())
+    value["format_version"] = 4
+    compiler.write_text(json.dumps(value), encoding="utf-8")
+
+    data = collect_traffic_replay_data(
+        evidence_set["telemetry"],
+        evidence_set["frames"],
+        evidence_set["planning"],
+        compiler,
+    )
+
+    assert data["overview"]["compiler_evidence"] == (
+        "compact-compiler-inspection-v4"
+    )
+
+
+def test_unknown_compiler_inspection_format_fails_clearly(
+    tmp_path: Path, evidence_set
+) -> None:
+    compiler = tmp_path / "compiler-unknown-format.json"
+    value = json.loads(evidence_set["compiler_json"].read_text())
+    value["format_version"] = 99
+    compiler.write_text(json.dumps(value), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="format_version must be one of 2, 3, or 4"):
+        collect_traffic_replay_data(
+            evidence_set["telemetry"],
+            evidence_set["frames"],
+            evidence_set["planning"],
+            compiler,
+        )
 
 
 def test_reader_rejects_physical_frame_coverage_drift(
@@ -1367,9 +1416,17 @@ def test_qualification_inputs_project_plan_execution_and_runner_evidence(
                 "record_type": "runner_event",
                 "event": "activation_end",
                 "active_generation": index,
+                "generation_publication_occurred": True,
+                "preparation": index == 0,
                 "active_frontier": timestamp.isoformat(),
-                "duration_seconds": 0.01,
+                "main_seconds": 0.01,
+                "runtime_apply_seconds": 0.008,
                 "activation_switch_seconds": 0.001,
+                "foundation_validation_succeeded": True,
+                "foundation_validation_timing_complete": True,
+                "foundation_validation_timing_status": "complete",
+                "foundation_validation_seconds": 0.0005,
+                "foundation_validation_included_in_runtime_apply": True,
                 "generation_switch_start_monotonic_ns": (
                     1_000_000_000_000 + index * 10_000_000_000
                 ),
@@ -1402,6 +1459,12 @@ def test_qualification_inputs_project_plan_execution_and_runner_evidence(
         probe.revision_id
     )
     assert data["qualification"]["summary"]["global_evidence_complete"] is True
+    assert data["qualification"]["runner_observer_effect"]["main_seconds"] == {
+        "count": len(probe.nominal_boundaries) - 1,
+        "p50": 0.01,
+        "p95": 0.01,
+        "max": 0.01,
+    }
     assert all(
         value["execution_disposition"] == "not-run-rearmable"
         for value in data["qualification"]["episodes"]
@@ -1514,3 +1577,21 @@ def test_traffic_renderer_labels_probe_plan_construction_without_simulator_claim
     source = Path("tools/traffic/renderer.py").read_text(encoding="utf-8")
     assert "Traffic probe-plan construction" in source
     assert "Simulator Planner duration" not in source
+
+
+
+def test_actual_boundary_time_does_not_follow_ideal_clock_when_runner_lags(tmp_path, evidence_set):
+    telemetry, rows = _copied_telemetry(tmp_path, evidence_set)
+    for row in rows:
+        if row.get("record_type") == "boundary_activation" and not row["preparation"]:
+            for key in ("main_start_monotonic_ns", "main_end_monotonic_ns", "generation_switch_start_monotonic_ns", "generation_switch_end_monotonic_ns"):
+                row[key] += 20_000_000_000
+        if row.get("record_type") == "packet" and row["icmp"]["identifier"] == 10:
+            row["kernel_monotonic_ns"] += 23_000_000_000
+    _write_telemetry(telemetry, rows)
+    data = _collect(evidence_set, telemetry=telemetry)
+    transaction = next(value for value in data["transactions"] if value["identifier"] == 10)
+    assert transaction["request"]["simulation_timestamp"] == "2026-01-01T00:00:25+00:00"
+    assert transaction["formal_boundary_timestamp"] == "2026-01-01T00:00:00+00:00"
+    assert transaction["request"]["generation"] == 0
+    assert transaction["request"]["generation_boundary_timestamp"] == "2026-01-01T00:00:00+00:00"

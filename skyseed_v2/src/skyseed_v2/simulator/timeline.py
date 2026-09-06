@@ -21,7 +21,7 @@ class SimulationTimeline:
     """
 
     start_time: datetime
-    end_time: datetime | None
+    end_time: datetime
     observation_interval: timedelta
 
     def __post_init__(self) -> None:
@@ -31,27 +31,19 @@ class SimulationTimeline:
             raise ValueError("observation_interval must be greater than zero")
 
         start = normalize_utc_datetime(self.start_time, "start_time")
-        end = (
-            None
-            if self.end_time is None
-            else normalize_utc_datetime(self.end_time, "end_time")
-        )
-        if end is not None and end < start:
+        end = normalize_utc_datetime(self.end_time, "end_time")
+        if end < start:
             raise ValueError(
                 "end_time must be greater than or equal to start_time"
             )
         object.__setattr__(self, "start_time", start)
         object.__setattr__(self, "end_time", end)
 
-    @property
-    def is_bounded(self) -> bool:
-        return self.end_time is not None
-
     def iter_timestamps(self) -> Iterator[datetime]:
         """Yield interval-aligned timestamps without precomputing a sequence."""
 
         timestamp = self.start_time
-        while self.end_time is None or timestamp <= self.end_time:
+        while timestamp <= self.end_time:
             yield timestamp
             timestamp += self.observation_interval
 

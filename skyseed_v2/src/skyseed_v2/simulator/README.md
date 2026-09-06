@@ -18,7 +18,6 @@ classDiagram
         +start_time
         +end_time
         +observation_interval
-        +is_bounded
         +iter_timestamps()
     }
     class Simulator {
@@ -80,7 +79,6 @@ classDiagram
     class SimulationTimeline {
         <<immutable formal timestamp authority>>
         +end_time
-        +is_bounded
         +iter_timestamps()
         +observation_interval
         +start_time
@@ -100,5 +98,5 @@ classDiagram
 | Diagram class | Public contract | Required public members |
 |---|---|---|
 | `SimulationDefinition` | `skyseed_v2.simulator.SimulationDefinition` | `static_input`, `timeline` |
-| `SimulationTimeline` | `skyseed_v2.simulator.SimulationTimeline` | `end_time`, `is_bounded`, `iter_timestamps()`, `observation_interval`, `start_time` |
+| `SimulationTimeline` | `skyseed_v2.simulator.SimulationTimeline` | `end_time`, `iter_timestamps()`, `observation_interval`, `start_time` |
 | `Simulator` | `skyseed_v2.simulator.Simulator` | `create_physical_world()`, `create_planner()`, `get_definition()`, `get_physical_link_model()`, `get_physical_world()`, `get_planner()`, `get_timeline()` |

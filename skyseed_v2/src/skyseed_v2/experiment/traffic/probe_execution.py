@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import os
 from pathlib import Path
@@ -317,6 +317,24 @@ class TrafficProbeExecutor:
                 while next_action < len(actions) and actions[next_action][0] == offset:
                     same_time.append(actions[next_action])
                     next_action += 1
+                frontier_actions = [
+                    current_episode
+                    for _, current_action, current_episode in same_time
+                    if current_action == "frontier"
+                ]
+                if frontier_actions:
+                    if len(frontier_actions) != 1 or frontier_actions[0] is None:
+                        raise RuntimeError("Traffic scheduler duplicated a frontier")
+                    required_frontier = frontier_actions[0]
+                else:
+                    required_frontier = self._plan.coverage_start + timedelta(
+                        seconds=offset
+                    )
+                # Ideal wall-clock offsets only make an action eligible.  The
+                # corresponding Runner ACTIVE frontier remains semantic
+                # authority, so slowdown cannot complete or arm an episode
+                # against future live state.
+                self._await_published_frontier(required_frontier)
                 for _, current_action, current_episode in same_time:
                     if current_action == "complete":
                         assert current_episode is not None
@@ -327,15 +345,7 @@ class TrafficProbeExecutor:
                         assert current_episode is not None
                         self._start_episode(current_episode)
                         started.append(current_episode)
-                frontier_actions = [
-                    current_episode
-                    for _, current_action, current_episode in same_time
-                    if current_action == "frontier"
-                ]
                 if frontier_actions:
-                    if len(frontier_actions) != 1 or frontier_actions[0] is None:
-                        raise RuntimeError("Traffic scheduler duplicated a frontier")
-                    self._await_published_frontier(frontier_actions[0])
                     reconcile = [
                         episode
                         for episode in self._plan.episodes

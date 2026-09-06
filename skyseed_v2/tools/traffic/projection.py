@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from ipaddress import ip_address, ip_interface
 import json
+from math import isfinite
+from numbers import Real
 from typing import Any
 
 from skyseed_v2.simulator import (
@@ -115,6 +117,7 @@ def project_traffic_replay(observation: TrafficReplayRead) -> dict[str, Any]:
             "header": telemetry["header"],
             "nodes": telemetry["nodes"],
             "interfaces": telemetry["interfaces"],
+            "boundaries": telemetry["boundaries"],
             "packets": telemetry["packets"],
             "loss_records": telemetry["loss_records"],
             "recorder_end": telemetry["recorder_end"],
@@ -168,7 +171,7 @@ def _project_transactions(
     requested = []
     for index, value in enumerate(values):
         request = value["request"]
-        if request is None:
+        if request is None or request["formal_boundary_timestamp"] is None:
             results[index] = _project_transaction(
                 value,
                 boundary=None,
@@ -181,7 +184,7 @@ def _project_transactions(
         else:
             requested.append(
                 (
-                    datetime.fromisoformat(request["simulation_timestamp"]),
+                    datetime.fromisoformat(request["formal_boundary_timestamp"]),
                     index,
                     value,
                 )
@@ -374,10 +377,7 @@ def _project_transaction(
             if satellite_id is not None:
                 source_id = _node_id(satellite_id)
     route = _route_outcome(route_outcomes, source_id, target)
-    activation_associated = any(
-        abs((timestamp - activation).total_seconds()) <= 1.0
-        for activation in activation_times
-    )
+    activation_associated = request.get("transition_boundary_timestamp") is not None
     if route is None:
         reachability = "unknown"
         reason = None
@@ -556,6 +556,7 @@ def _project_probe_qualification(
             str(item["active_frontier"]),
         )
         for item in activations
+        if item.get("generation_publication_occurred") is True
     )
     actual_frontier = (
         None
@@ -806,20 +807,9 @@ def _project_probe_qualification(
             key=lambda item: (item["anomaly_count"], item["active_frontier"]),
         )
     )
-    ready_durations = [
-        float(item["duration_seconds"])
-        for item in runner_events
-        if item.get("event") == "maintenance_prepare_end"
-        and item.get("duration_seconds") is not None
-    ]
-    main_durations = [float(item["duration_seconds"]) for item in activations]
-    maintenance_durations = [
-        float(item["duration_seconds"])
-        for item in runner_events
-        if str(item.get("event", "")).startswith("maintenance_")
-        and str(item.get("event", "")).endswith("_end")
-        and item.get("duration_seconds") is not None
-    ]
+    formal_activations = tuple(item for item in activations if item.get("preparation") is not True)
+    main_durations = [duration for item in formal_activations
+                      if (duration := _optional_non_negative_seconds(item.get("main_seconds"))) is not None]
     rss_values = [
         int(item["runner_rss_bytes"])
         for item in runner_events
@@ -889,25 +879,22 @@ def _project_probe_qualification(
             "executor_complete": execution_complete,
             "cleanup_complete": executor_end.get("cleanup_complete") is True,
             "global_evidence_complete": evidence_complete,
-            "active_activation_count": len(activations),
+            "active_activation_count": sum(item.get("preparation") is not True for item in activations),
+            "completed_boundary_count": len(activations),
             "active_frontier": (
                 None if actual_frontier is None else actual_frontier.isoformat()
             ),
         },
         "runner_observer_effect": {
-            "ready_seconds": _distribution(ready_durations),
             "main_seconds": _distribution(main_durations),
-            "maintenance_max_seconds": max(maintenance_durations, default=0.0),
-            "deadline_misses": sum(
-                item.get("event") == "deadline_miss" for item in runner_events
-            ),
-            "readiness_wait_max_seconds": max(
-                (
-                    float(item.get("readiness_dependency_wait_seconds", 0.0))
-                    for item in activations
-                ),
-                default=0.0,
-            ),
+            "start_lag_seconds": _distribution([
+                value for item in formal_activations
+                if (value := _optional_non_negative_seconds(item.get("ideal_start_lag_seconds"))) is not None
+            ]),
+            "completion_lag_seconds": _distribution([
+                value for item in formal_activations
+                if (value := _optional_non_negative_seconds(item.get("ideal_completion_lag_seconds"))) is not None
+            ]),
             "runner_rss_max_bytes": max(rss_values, default=None),
         },
         "worst_flow": worst_flow,
@@ -981,6 +968,13 @@ def _distribution(values: list[float]) -> dict[str, float | int | None]:
         "p95": _percentile(ordered, 0.95),
         "max": ordered[-1],
     }
+
+
+def _optional_non_negative_seconds(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        return None
+    seconds = float(value)
+    return seconds if isfinite(seconds) and seconds >= 0 else None
 
 
 def _percentile(values: list[float], quantile: float) -> float:

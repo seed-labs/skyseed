@@ -18,14 +18,15 @@ flowchart LR
     OBS --> PL["Planner / Plan"]
     PL --> COMP["backend/bpf Compiler"]
     COMP --> REAL["BpfCompiledRealization"]
-    REAL --> RUN["BpfRunner"]
+    REAL --> ART["sealed Runner artifact"]
+    ART --> RUN["BpfRunner"]
 ```
 
 `experiment/_realization_producer.py` is the private cross-domain composition
 that owns the Timeline cursor, calls the physical-link Model and Planner, and
-compiles published Plans. Precomputed generation drains it and persists a
-strict versioned realization handoff. Generated execution supplies those
-persisted values to Runner.
+compiles published Plans. Precomputed generation drains it completely and seals
+a strict versioned typed packed Runner artifact. Generated execution verifies
+and supplies that finite artifact to Runner; no producer remains at runtime.
 
 `compose/` is an optional deployment utility and owns no semantic or Runner
 lifecycle. `shared/` contains only narrow neutral values and private mechanical

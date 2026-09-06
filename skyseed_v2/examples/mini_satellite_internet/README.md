@@ -2,7 +2,7 @@
 
 Mini is the bounded end-to-end generated-runtime reference. It creates the
 static Emulator, projects one Simulator, drains the common incremental
-realization producer, persists compiled realizations, and packages Runner and
+realization producer, seals a finite Runner artifact, and packages Runner and
 Traffic execution.
 
 ```bash
@@ -43,7 +43,7 @@ down Route workers.
 ```text
 output/
 ├── inputs/                         immutable generation snapshots
-├── runtime/                        compiled Docker project and realization handoff
+├── runtime/                        Docker project and runner-artifact/
 ├── domain-history/
 │   ├── physical-frames.jsonl
 │   ├── planning.jsonl.gz
@@ -56,14 +56,21 @@ output/
 └── cleanup.sh
 ```
 
-Generated execution validates the format-version-3 manifest and its
-`deterministic-gzip-json-v1` realization records, then supplies only persisted
-realizations to BpfRunner. Planning and compilation do not run during Runner
-maintenance.
+Generated execution validates source/input identity plus the artifact manifest,
+typed packed binary, version, offsets, lengths, counts, and hashes. BpfRunner
+opens the binary with read-only mmap. Planning and compilation do not run during
+Runner execution.
+
+Mini delegates `run.sh` and `launch.sh` publication to the common generated
+runtime-control writer used by canonical production output. Each live run owns
+one immutable `inspection/runtime-runs/<INVOCATION_ID>/` root for raw Runner,
+Traffic, and Observation evidence; top-level inspection pages remain detached
+derived views. Mini supplies only its distinct required-input inventory and
+optional Traffic workload path to that common owner.
 
 After runtime, Runner and Traffic Tools consume durable records. Traffic uses
 explicit planned Route outcomes to distinguish planned-unreachable probes from
 activation-time transience and unexplained loss.
 
-Every Tool is best-effort relative to the valid compute/runtime handoff: a Tool
-failure is reported but cannot invalidate the persisted realization sequence.
+Every Tool is best-effort relative to the valid Runner artifact: a Tool failure
+is reported but cannot invalidate runtime input.

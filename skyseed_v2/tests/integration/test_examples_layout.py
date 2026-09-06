@@ -145,12 +145,12 @@ def test_precomputed_examples_use_the_one_incremental_producer() -> None:
     assert "_RollingRealizationSupplier" not in starlink_source
 
 
-def test_runtime_handoff_precedes_best_effort_observation_and_tools() -> None:
+def test_runner_artifact_precedes_best_effort_observation_and_tools() -> None:
     mini_source = inspect.getsource(mini)
-    assert mini_source.index("_write_realization_handoff(") < mini_source.index(
+    assert mini_source.index("_write_runner_artifact(") < mini_source.index(
         "simulator._write_execution_observations()"
     )
-    assert mini_source.index("_write_execution_scripts(") < mini_source.index(
+    assert mini_source.index("_write_generated_run_script(") < mini_source.index(
         "simulator._write_execution_observations()"
     )
     assert mini_source.index("simulator._write_execution_observations()") < (
@@ -184,12 +184,32 @@ def test_exact_frame_facts_are_inspected_only_through_physical_world() -> None:
 
 
 def test_mini_generated_run_script_is_persisted_only(tmp_path: Path) -> None:
-    mini._write_execution_scripts(tmp_path)
+    assert mini._write_generated_run_script is _write_generated_run_script
+    assert not hasattr(mini, "_write_execution_scripts")
+    assert "_write_generated_run_script(" in inspect.getsource(mini.main)
+    mini._write_generated_run_script(
+        tmp_path,
+        python_executable=sys.executable,
+        compiler_tool_directory="bpf-compiler",
+        tool_package_parent=PROJECT_ROOT,
+        required_input_paths=(
+            "inputs/scenario.yaml",
+            "inputs/zones.yaml",
+        ),
+        traffic_workload_path="inputs/traffic-workload.json",
+    )
     source = (tmp_path / "run.sh").read_text(encoding="utf-8")
-    assert "runtime/realizations/manifest.json" in source
+    assert "runtime/runner-artifact/manifest.json" in source
+    assert "runtime/runner-artifact/runner-runtime.bin" in source
     assert "domain-history/physical-frames.jsonl" in source
     assert "domain-history/planning.jsonl.gz" in source
     assert "bpf-compiler-inspection.json" in source
+    assert "inspection/runtime-runs/$INVOCATION_ID" in source
+    assert "--invocation-directory \"$INVOCATION_DIR\"" in source
+    assert '"$INVOCATION_DIR/runner/runner-events.jsonl"' in source
+    assert '"$INVOCATION_DIR/traffic/probe-execution.jsonl"' in source
+    assert '"$INVOCATION_DIR/observation/execution-observations.jsonl"' in source
+    assert "inputs/traffic-workload.json" in source
     assert "--physical-frames" in source
     assert "--planning" in source
     assert "--slice" not in source
@@ -206,7 +226,7 @@ def test_starlink_generated_run_script_is_persisted_only(tmp_path: Path) -> None
     )
     source = (tmp_path / "run.sh").read_text(encoding="utf-8")
     for required in (
-        "runtime/realizations/manifest.json",
+        "runtime/runner-artifact/manifest.json",
         "domain-history/physical-frames.jsonl",
         "domain-history/planning.jsonl.gz",
         "--bpf-compiler",

@@ -76,7 +76,7 @@ rollups. Four canvas trends make workload, deltas, folding modes, and Compiler
 timing primary; one shared boundary cursor derives all structured detail, and
 the realization selector is only a synchronized jump shortcut. The Tool retains the small lineage/activation/Zone-prefix contract
 needed by Traffic but does not duplicate every raw intent and intended-state
-object. The realization handoff remains semantic payload owner. It never
+object. The sealed Runner artifact remains semantic payload owner. It never
 recompiles.
 
 Traffic accepts `--physical-frames` and `--planning` alongside Compiler
@@ -90,7 +90,7 @@ ISL selection, acquisition/lifecycle, GroundStation selection/ranking,
 validation, evidence projection and planning rollup, Zone planning,
 parameter planning, Route planning, transition/application,
 coordination/precedence, Plan publication, Compiler, realization producer,
-realization handoff writer, Runner, and Traffic.
+Runner artifact writer, Runner, and Traffic.
 
 Observation records preserve invocation, component, stage, scope, duration
 role, real run-relative monotonic start/end, work/resource counts, Tool wall
@@ -121,7 +121,7 @@ diagnostic merge does not introduce a public runtime-state contract.
 ## Failure isolation
 
 A Tool reads only existing records and writes only its own output. Tool failure
-must not invalidate a generated runtime handoff or cause semantic computation
+must not invalidate a sealed Runner artifact or cause semantic computation
 to rerun. Generated `run.sh` preserves a successful runtime outcome when any
 detached Runner, Traffic, Observation, or aggregate-index Tool fails, reports a
 warning, and exits with the domain execution status. Missing, stale, malformed,

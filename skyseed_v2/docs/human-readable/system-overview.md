@@ -18,7 +18,8 @@ flowchart LR
     PLAN --> COMP["BPF Compiler"]
     PW --> COMP
     COMP --> REAL["BpfCompiledRealization"]
-    REAL --> RUN["BpfRunner"]
+    REAL --> ART["sealed Runner artifact"]
+    ART --> RUN["BpfRunner"]
     RUN --> LIVE["RealizedRuntimeState"]
 ```
 
@@ -41,7 +42,8 @@ This prevents three common category errors:
 Simulator owns one Timeline, one PhysicalWorld, and one public Planner. The
 incremental realization producer sits in experiment orchestration because it
 owns the Timeline cursor and crosses from Simulator facts into Compiler output.
-Precomputed execution drains this one producer and persists its realizations.
+Precomputed execution drains this one producer completely and seals a compact
+Runner artifact before live replay begins.
 
 Legend: `-->` is an owned reference or invocation from the composition root;
 the producer coordinates but does not absorb the referenced owner's authority.
@@ -57,11 +59,15 @@ flowchart TB
     PROD --> PHY["PhysicalLinkModel"]
     PROD --> COMP["Compiler"]
     PROD --> EVID["physical / planning / compiler evidence"]
-    HANDOFF["persisted realization handoff"] --> RUN["Runner"]
+    ART["typed packed Runner artifact"] --> RUN["Runner"]
 ```
 
-Runner never synchronously requests heavy semantic progression. Future rolling
-work will add a bounded concurrent coordinator around the same producer.
+Runner never requests semantic progression. It has complete finite future
+knowledge from the artifact, while future live Connections remain absent until
+their activation boundary creates them. One-shot Preparation builds all finite
+plans, prewrites all semantic generations, and activates boundary 0. Formal Main
+starts at boundary 1 and applies only prepared deltas through a retained privileged
+channel. Cleanup owns final teardown; no Maintenance thread is needed.
 
 ## Canonical S3
 
@@ -76,13 +82,13 @@ and 30 compiled realizations.
 
 ## Evidence and inspection
 
-The producer writes compact physical-frame, planning, and Compiler JSONL
-streams under one terminal hash seal. A separate checksum handoff owns each
-complete compiled realization, and generated execution anchors that handoff.
+The producer writes compact physical-frame, planning, and Compiler streams under
+one terminal hash seal. A separate manifest plus typed packed binary owns the
+normalized symbolic runtime tables, and generated execution anchors that artifact.
 Detached Tools render Physical World, Zone, Planner, BPF Compiler,
 Observation, Runner, and Traffic views. Physical World retains exact
 `PhysicalFrame` inspection without a separate PhysicalFrame Tool. Tools cannot become a
-dependency of compute or runtime handoff.
+dependency of compute or runtime execution.
 
 Full S3 persisted runtime qualification remains a later stage; offline
 compilation is not a runtime claim.

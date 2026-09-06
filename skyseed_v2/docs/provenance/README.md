@@ -14,3 +14,5 @@ Retained material:
 - v1 S4 static scenario investigation;
 - native Linux environment reproduction notes and smoke configuration;
 - final Compose v2 S4-scale experiment.
+- [finite Runner correction and work-reduction milestone](runner-optimization-20260907.md),
+  with a compressed archive of original Runner evidence from four S3 runs.

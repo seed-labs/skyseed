@@ -38,7 +38,7 @@ consumer invents fallback state.
 - Compiler does not rerun physical or planning algorithms.
 - Every transition remains an activation boundary for Runner.
 - Heavy semantic work never runs synchronously in Runner maintenance.
-- A Tool cannot invalidate a valid compute or runtime handoff.
+- A Tool cannot invalidate valid compute evidence or a sealed Runner artifact.
 
 ## Atomicity and cleanup
 

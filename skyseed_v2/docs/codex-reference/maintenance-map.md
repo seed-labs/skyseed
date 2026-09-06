@@ -32,7 +32,7 @@ Change the owning contract, tests, examples, and docs together.
 | `simulator/{timeline,simulator}.py` | Timeline and one-owner lifecycle tests |
 | `experiment/_realization_producer.py` | cursor/prehistory/counts/buffering/cleanup and canonical producer qualification |
 | `backend/bpf/compiler.py`, compiled realization | bootstrap/steady lineage, semantic lowering, no-op activation, wrong-source tests |
-| realization handoff/execution | deterministic persistence, checksums, persisted-only Runner supply |
+| Runner artifact/execution | deterministic typed persistence, seals, mmap open, precomputed-only Runner execution |
 | Traffic | explicit planned-unreachable and reachable-loss classification |
 | `tools/` | detached reader/projection/schema tests and browser visual gate |
 | maintained examples | complete, Mini, S3 contract, packaging, stage progression |

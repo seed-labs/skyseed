@@ -3,7 +3,7 @@
 | Example | Role | Entry |
 |---|---|---|
 | `complete_static_emulator` | smallest public construction and Plan-to-Compiler teaching chain | `python -m examples.complete_static_emulator.main` |
-| `mini_satellite_internet` | bounded generated runtime with common producer, persisted handoff, Runner and Traffic integration | `python -m examples.mini_satellite_internet.main` |
+| `mini_satellite_internet` | bounded generated runtime with common producer, sealed Runner artifact, Runner and Traffic integration | `python -m examples.mini_satellite_internet.main` |
 | `starlink_gen1_satellite_internet` | canonical S3 offline physical, Planner, and Compiler qualification | `python -m examples.starlink_gen1_satellite_internet.main --through compiler` |
 
 All maintained examples construct the same domain chain:
@@ -17,9 +17,9 @@ SimulationTimeline
 → BPF Compiler / BpfCompiledRealization
 ```
 
-The deployment-capable examples persist compiled realizations before Runner
-execution. No example contains a separate batch algorithm or synchronous heavy
-semantic callback from Runner maintenance.
+The deployment-capable examples completely drain compilation and seal a typed
+packed artifact before Runner execution. No producer or semantic callback
+exists in Runner maintenance.
 
 Each entry anchors its default output to its own source directory, independent
 of the caller's current working directory:
@@ -30,7 +30,7 @@ examples/<example>/output/
 ├── domain-history/         generated semantic history
 ├── inspection/             generated human-facing Tools
 ├── inspection-evidence/    detached non-authoritative Tool evidence
-└── runtime/                generated runtime package and realization handoff
+└── runtime/                generated package and runner-artifact/
 ```
 
 These directories are generated output, not source-controlled example

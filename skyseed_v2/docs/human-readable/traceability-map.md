@@ -13,7 +13,7 @@
 | incremental cross-domain progression | experiment orchestration | `experiment/_realization_producer.py` | [producer/runtime](../codex-reference/producer-runtime-contracts.md) |
 | semantic-to-BPF lowering | BPF backend | `backend/bpf/compiler.py` | [Compiler](../codex-reference/bpf-compiler.md) |
 | compiled intended state | BPF backend | `backend/bpf/compiled_realization.py` | [Compiler](../codex-reference/bpf-compiler.md) |
-| persisted realization handoff | experiment orchestration | `experiment/_realization_handoff.py` | [producer/runtime](../codex-reference/producer-runtime-contracts.md) |
+| sealed Runner artifact | BPF backend private boundary | `backend/bpf/_runner_artifact.py` | [producer/runtime](../codex-reference/producer-runtime-contracts.md) |
 | live BPF lifecycle | BPF backend | `backend/bpf/runner.py`, `_runner/` | [ownership](../codex-reference/ownership-lifecycle.md) |
 | Traffic classification | experiment Traffic | `experiment/traffic/`, `tools/traffic/` | [inspection](../codex-reference/inspection-tools.md) |
 | detached inspection | top-level Tools | `tools/physical_world`, `physical_frame`, `planner`, `bpf_compiler`, `runner`, `observation`, `traffic`, `zone` | [inspection](../codex-reference/inspection-tools.md) |
@@ -26,7 +26,7 @@ PhysicalWorld.frame_at(timestamp)
 PhysicalLinkModel.compute_observation(physical_world, frame, request)
 Planner.observe(frame, observation)
 compile_bpf(plan, physical_world, previous_realization)
-BpfRunner consumes persisted BpfCompiledRealization values
+BpfRunner consumes one sealed typed packed Runner artifact
 ```
 
 ## Canonical qualification facts

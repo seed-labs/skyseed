@@ -22,15 +22,10 @@ def _event(name: str, when: float, **facts) -> dict[str, object]:
 
 def _snapshot() -> dict[str, object]:
     boundary = "2026-01-01T00:00:00+00:00"
-    input_frontier = "2026-01-01T00:04:00+00:00"
     events = (
-        _event("preparation_start", 10.0, preparation_lookahead="0:03:00"),
         _event(
-            "input_advanced",
-            10.5,
-            realization_count=1,
-            input_frontier=input_frontier,
-            boundary_count=1,
+            "preparation_start", 10.0,
+            execution_contract="sealed-precomputed-only",
         ),
         _event(
             "runtime_foundation_ready",
@@ -39,21 +34,28 @@ def _snapshot() -> dict[str, object]:
             capacity_high_water=7,
         ),
         _event(
-            "maintenance_prepare_start",
-            12.0,
+            "ready_published",
+            13.5,
             boundary_timestamp=boundary,
             generation=0,
-        ),
-        _event(
-            "maintenance_prepare_end",
-            13.0,
-            boundary_timestamp=boundary,
-            generation=0,
-            duration_seconds=1.0,
-            state_materialization_seconds=0.25,
+            predecessor_time=None,
+            preparation_seconds=1.0,
             target_active_interface_entries=7,
             target_route_entries=3,
             generation_map_update_operations=10,
+            boundary_decode_seconds=0.02,
+            draft_timings={
+                "draft_state_materialization_seconds": 0.03,
+                "derived_view_build_seconds": 0.04,
+                "symbolic_request_grouping_seconds": 0.01,
+                "draft_total_seconds": 0.08,
+            },
+            draft_completed_monotonic_seconds=12.0,
+            post_main_finalize_seconds=0.4,
+            privileged_preparation_seconds=0.3,
+            preparation_result_validation_seconds=0.04,
+            public_ready_publication_seconds=0.01,
+            parent_helper_envelope={"request_json_bytes": 1234},
             execution_metrics={
                 "external_processes": 2,
                 "namespace_processes": 2,
@@ -62,31 +64,19 @@ def _snapshot() -> dict[str, object]:
                 "worker_limit": 2,
                 "batch_sizes": [3, 7],
             },
+            expected_active_generation=0xFFFFFFFF,
+            prepared_resources=4,
         ),
         _event(
             "capacity_audit_end",
             13.0,
-            scope="boundary",
-            boundary_timestamp=boundary,
+            scope="sealed-artifact-exact-demand",
             capacity={"generation": 0, "headroom": 2},
-        ),
-        _event(
-            "ready_published",
-            13.5,
-            boundary_timestamp=boundary,
-            predecessor=None,
-            ready_frontier=boundary,
-            input_frontier=input_frontier,
-            preparation_headroom_seconds=0.0,
-            generation=0,
-            expected_active_generation=0xFFFFFFFF,
-            prepared_resources=4,
         ),
         _event(
             "preparation_end",
             14.0,
             duration_seconds=4.0,
-            input_frontier=input_frontier,
             ready_frontier=boundary,
             active_frontier=None,
         ),
@@ -95,19 +85,26 @@ def _snapshot() -> dict[str, object]:
             "boundary_scheduled",
             16.0,
             boundary_timestamp=boundary,
-            scheduled_wall=16.0,
+            actual_readiness_wait_seconds=0.0,
+            ready_publication_lead_seconds=2.5,
+            ready_publication_lag_seconds=0.0,
         ),
-        _event("activation_start", 16.0, start_lag_seconds=0.001),
         _event(
             "activation_end",
             16.2,
-            duration_seconds=0.2,
-            completion_lag_seconds=0.201,
+            boundary_timestamp=boundary,
+            main_seconds=0.2,
+            ideal_start_lag_seconds=0.001,
+            ideal_completion_lag_seconds=0.201,
             active_frontier=boundary,
             ready_frontier=None,
             active_generation=0,
-            readiness_dependency_wait_seconds=0.0,
+            foundation_validation_succeeded=True,
             foundation_validation_seconds=0.03,
+            foundation_validation_timing_complete=True,
+            foundation_validation_timing_status="complete",
+            foundation_validation_scope="privileged-child-preflight",
+            foundation_validation_included_in_runtime_apply=True,
             runtime_apply_seconds=0.1,
             activation_switch_seconds=0.001,
             retirement_seconds=0.01,
@@ -116,17 +113,35 @@ def _snapshot() -> dict[str, object]:
                 "grouped_operation_count": 4,
                 "affected_node_count": 1,
             },
+            activation_phases={
+                "pre_publication": {
+                    "duration_seconds": 0.03,
+                    "submitted_task_count": 1,
+                    "nonempty_task_count": 1,
+                }
+            },
+            activation_phase_reconciliation={"counters_complete": True},
+            parent_main_tail={"outer_ledger_update_seconds": 0.001},
+            parent_helper_envelope={
+                "request_json_bytes": 4321,
+                "response_json_bytes": 2345,
+            },
+        ),
+        _event(
+            "backend_execution_ended",
+            16.99,
+            execution_class="generation-reclaim",
+            admitted_service_seconds=0.05,
+            failed=False,
         ),
         _event(
             "generation_reclaimed",
             17.0,
-            duration_seconds=0.05,
             generation=0,
             deleted_entries=7,
         ),
         _event("automatic_run_end", 18.0, active_frontier=boundary),
         _event("private_detail_only", 18.5, retained=True),
-        _event("cleanup_start", 19.0),
         _event(
             "runtime_cleanup_end",
             19.5,
@@ -136,22 +151,23 @@ def _snapshot() -> dict[str, object]:
         _event("cleanup_end", 20.0, duration_seconds=1.0),
     )
     return {
-        "format_version": 1,
+        "format_version": 2,
         "runner": {
             "lifecycle_state": "cleaned",
             "execution_mode": "automatic",
+            "execution_contract": "sealed-precomputed-only",
             "frontiers": {
                 "last_active": boundary,
-                "ready_at_capture": None,
-                "input": input_frontier,
+                "artifact_end": boundary,
             },
-            "input_exhausted": True,
-            "preparation_lookahead": {"mode": "rolling", "seconds": 180.0},
-            "preparation_boundary_depth": 8,
+            "artifact": {
+            "artifact_type": "skyseed-v2-runner-runtime-artifact",
+                "format_version": 2,
+                "encoding": "typed-packed-runtime-tables-v3",
+                "boundary_count": 1,
+                "rich_compiled_realizations_reconstructed": False,
+            },
             "activation_count": 1,
-            "ready_count_at_capture": 0,
-            "ready_depth_at_capture": 0,
-            "ready_limiting_reason": "input",
             "runtime_foundation": {
                 "compose_project_name": "runner-tool-test",
                 "foundation_token": "foundation-test-token",
@@ -169,12 +185,6 @@ def _snapshot() -> dict[str, object]:
                         "started_at": "2026-01-01T00:00:00Z",
                     },
                 ),
-            },
-            "maintenance": {
-                "in_flight": False,
-                "failed": False,
-                "pending_forwarding_reclaim": 0,
-                "pending_physical_reclaim": 0,
             },
         },
         "events": events,
@@ -209,16 +219,8 @@ def test_projection_curates_complete_trace_without_runner_side_indexes() -> None
     assert data["overview"]["frontiers"]["last_active"] == (
         "2026-01-01T00:00:00+00:00"
     )
-    assert data["overview"]["last_ready_published"] == (
-        "2026-01-01T00:00:00+00:00"
-    )
-    assert data["overview"]["preparation_lookahead"] == {
-        "mode": "rolling",
-        "seconds": 180.0,
-    }
-    assert data["overview"]["preparation_boundary_depth"] == 8
-    assert data["overview"]["ready_depth_at_capture"] == 0
-    assert data["overview"]["ready_limiting_reason"] == "input"
+    assert data["overview"]["execution_contract"] == "sealed-precomputed-only"
+    assert data["overview"]["artifact"]["boundary_count"] == 1
     assert data["scale_safety"]["batching"] == {
         "observed_batch_count": 2,
         "batch_sizes": (3, 7),
@@ -229,13 +231,19 @@ def test_projection_curates_complete_trace_without_runner_side_indexes() -> None
         "namespace_processes": 2,
         "bpf_syscalls": 10,
     }
+    assert data["scale_safety"]["main_subphases"][0]["main_seconds"] == 0.2
     assert data["scale_safety"]["main_subphases"][0][
-        "foundation_validation_seconds"
-    ] == 0.03
+        "activation_phase_reconciliation"
+    ]["counters_complete"] is True
+    assert data["scale_safety"]["main_subphases"][0]["activation_phases"][
+        "pre_publication"
+    ]["submitted_task_count"] == 1
+    assert data["scale_safety"]["main_subphases"][0][
+        "parent_helper_envelope"
+    ]["request_json_bytes"] == 4321
     assert data["timing"]["activations"] == (
         {
             "boundary_timestamp": "2026-01-01T00:00:00+00:00",
-            "scheduled_wall": 16.0,
             "start_lag_seconds": 0.001,
             "duration_seconds": 0.2,
             "completion_lag_seconds": 0.201,
@@ -243,21 +251,11 @@ def test_projection_curates_complete_trace_without_runner_side_indexes() -> None
             "active_frontier": "2026-01-01T00:00:00+00:00",
         },
     )
-    assert data["timing"]["maintenance_preparations"] == (
-        {
-            "boundary_timestamp": "2026-01-01T00:00:00+00:00",
-            "runtime_preparation_seconds": 1.0,
-            "state_materialization_seconds": 0.25,
-            "total_ready_preparation_seconds": 1.25,
-            "generation": 0,
-        },
-    )
-    assert data["timing"]["maintenance_preparation_total_seconds"] == 1.25
     assert [
         value["event"]
         for value in data["timeline"]
         if value["monotonic_seconds"] == 16.0
-    ] == ["boundary_scheduled", "activation_start"]
+    ] == ["boundary_scheduled"]
     assert "private_detail_only" not in {
         value["event"] for value in data["timeline"]
     }
@@ -265,6 +263,63 @@ def test_projection_curates_complete_trace_without_runner_side_indexes() -> None
     assert data["raw"]["events"]["count"] == len(_snapshot()["events"])
     assert data["default_dataplane"]["kind"] == "default-tc-bpf"
     assert data["default_dataplane"]["fresh_kernel_inspection"] is False
+
+
+def test_projection_does_not_fabricate_missing_current_main_timing() -> None:
+    snapshot = _snapshot()
+    activation = next(
+        value
+        for value in snapshot["events"]
+        if value["event"] == "activation_end"
+    )
+    activation["main_seconds"] = None
+
+    data = collect_runner_data(snapshot, _outcome())
+
+    assert data["timing"]["activations"][0]["duration_seconds"] is None
+    assert data["timing"]["recent_activation_duration_seconds"] is None
+    assert data["timing"]["max_activation_duration_seconds"] is None
+    assert data["scale_safety"]["main_subphases"][0]["main_seconds"] is None
+
+
+
+
+def test_projection_preserves_incomplete_post_publication_failure_truth() -> None:
+    snapshot = _snapshot()
+    snapshot["events"] = (*snapshot["events"], {
+        "event": "failure",
+        "phase": "activation",
+        "target_boundary": "2026-01-01T00:00:10+00:00",
+        "last_completed_active_frontier": "2026-01-01T00:00:00+00:00",
+        "active_frontier": "2026-01-01T00:00:00+00:00",
+        "lifecycle_state": "failed",
+        "semantic_outcome": "target-transition-incomplete",
+        "live_mutation_started": True,
+        "generation_publication_occurred": True,
+        "target_transition_complete": False,
+        "live_state_may_be_partial": True,
+        "failure_phase": "withdrawn-veth-deletion",
+        "failure_type": "RuntimeError",
+        "failure_message": "delete failed",
+        "candidate_rollback_attempted": False,
+        "candidate_rollback_complete": None,
+        "deleted_connections_complete": False,
+        "cleanup_ownership_retained": True,
+        "cleanup_required": True,
+        "cleanup_connections": [{"connection": "owned-residue"}],
+    })
+    projected = collect_runner_data(
+        snapshot, _outcome()
+    )["scale_safety"]["main_subphases"][-1]
+    assert projected["generation_publication_occurred"] is True
+    assert projected["target_transition_complete"] is False
+    assert projected["active_frontier"] == "2026-01-01T00:00:00+00:00"
+    assert projected["semantic_outcome"] == "target-transition-incomplete"
+    assert projected["live_state_may_be_partial"] is True
+    assert projected["deleted_connections_complete"] is False
+    assert projected["cleanup_connections"] == [
+        {"connection": "owned-residue"}
+    ]
 
 
 def test_projection_detaches_runtime_foundation_scalar_bindings() -> None:
@@ -315,31 +370,14 @@ def test_graphical_timeline_uses_elapsed_time_and_nominal_boundaries() -> None:
         "kind": "runtime_foundation_ready",
         "elapsed_seconds": 1.0,
         "boundary_timestamp": None,
-        "target_timeline_index": 2,
+        "target_timeline_index": 1,
         "generation": None,
     }
     automatic = groups["lifecycle"]["automatic_run_phase"][0]
     assert automatic["elapsed_start_seconds"] == 5.0
     assert automatic["elapsed_end_seconds"] == 8.0
     assert automatic["completed"] is True
-    assert automatic["target_timeline_index"] == 7
-    assert groups["work"]["future_preparation"][0] == {
-        "kind": "future_preparation",
-        "visual": "work",
-        "elapsed_start_seconds": 2.0,
-        "elapsed_end_seconds": 3.0,
-        "boundary_timestamp": "2026-01-01T00:00:00+00:00",
-        "target_timeline_index": 4,
-        "generation": 0,
-        "completed": True,
-        "ready_marker": {
-            "kind": "ready_published",
-            "elapsed_seconds": 3.5,
-            "boundary_timestamp": "2026-01-01T00:00:00+00:00",
-            "target_timeline_index": 5,
-            "generation": 0,
-        },
-    }
+    assert automatic["target_timeline_index"] == 3
     assert set(groups) == {"lifecycle", "work"}
     assert not any(
         value["kind"] == "automatic_run_start"
@@ -348,12 +386,9 @@ def test_graphical_timeline_uses_elapsed_time_and_nominal_boundaries() -> None:
         for value in values
     )
     activation = groups["work"]["main_activation"][0]
-    assert activation["elapsed_start_seconds"] == 6.0
+    assert activation["elapsed_start_seconds"] == pytest.approx(6.0)
     assert activation["elapsed_end_seconds"] == pytest.approx(6.2)
     assert activation["boundary_timestamp"] == "2026-01-01T00:00:00+00:00"
-    reclaim = groups["work"]["reclaim_work"][0]
-    assert reclaim["elapsed_start_seconds"] == pytest.approx(6.95)
-    assert reclaim["elapsed_end_seconds"] == 7.0
     cleanup = groups["lifecycle"]["cleanup_phase"][0]
     assert cleanup["elapsed_start_seconds"] == 9.0
     assert cleanup["elapsed_end_seconds"] == 10.0
@@ -442,8 +477,8 @@ def test_artifact_bundle_is_standalone_complete_and_checksummed(
         "如何阅读 / How to read",
         "Runtime foundation / 运行期绑定",
         "Frozen node bindings",
-        "Preparation boundary depth",
-        "READY limiting reason",
+        "Runner artifact",
+        "Preparation completes with boundary 0 active",
         'data-language="zh"',
         'data-language="en"',
         'id="graphical-timeline"',
@@ -452,6 +487,13 @@ def test_artifact_bundle_is_standalone_complete_and_checksummed(
         assert required in page
     for forbidden in ("fetch(", "WebSocket", "EventSource", "http://", "https://"):
         assert forbidden not in page
+    for retired_runner_event in (
+        "maintenance_prepare_start",
+        "maintenance_prepare_end",
+        "activation_start",
+        "cleanup_start",
+    ):
+        assert retired_runner_event not in page
     data = json.loads(
         (tmp_path / "runner-inspection.json").read_text(encoding="utf-8")
     )
@@ -676,7 +718,6 @@ def test_bilingual_renderer_reuses_one_evidence_dataset_without_raw_translation(
         'id="timeline-title"',
         'id="foundation-title"',
         'id="timing-title"',
-        'id="maintenance-title"',
         'id="dataplane-title"',
         'id="failures-title"',
         'id="detailed-timeline-title"',
@@ -686,13 +727,10 @@ def test_bilingual_renderer_reuses_one_evidence_dataset_without_raw_translation(
     assert [page.index(marker) for marker in ordered_sections] == sorted(
         page.index(marker) for marker in ordered_sections
     )
-    assert "end/duration*100" in page
     assert "Automatic scheduling/waiting lifecycle phase" in page
     assert "Lifecycle 横条表示 Runner 当时处于什么阶段" in page
     assert "work 在全局比例下可能只是一条细线" in page
-    assert "准备未来状态" in page
     assert "切换当前网络状态" in page
-    assert "回收旧状态" in page
     assert "Cyan end-cap" not in page
     assert "青色 end-cap" not in page
     assert "amber notch" not in page
@@ -701,7 +739,6 @@ def test_bilingual_renderer_reuses_one_evidence_dataset_without_raw_translation(
     assert "pinnedGraphDetail" in page
     assert 'addEventListener("mouseenter"' in page
     assert 'data-local-event' in page
-    assert "graph-end-cap ready" in page
     assert "transform:translateX(-14px)" in page
     assert "graph-foundation-notch" in page
     assert "classifyBinding" in page
@@ -744,3 +781,40 @@ def test_tool_has_no_live_runner_kernel_or_controller_dependency() -> None:
             called_attributes
             & {"prepare", "run", "activate_next", "cleanup", "execute"}
         ), path
+
+
+def test_detailed_timing_keeps_inclusive_envelopes_out_of_exclusive_main_accounting():
+    from tools.runner.projection import _detailed_timing
+    event = _event("activation_end", 110, boundary_timestamp="2026-01-01T00:00:05+00:00",
+        preparation=False, detailed_timing_version=1, main_seconds=10.0,
+        main_start_monotonic_seconds=100.0, main_end_monotonic_seconds=110.0,
+        helper_pacing_anchor_monotonic_ns=102_000_000_000,
+        helper_activation_start_monotonic_ns=102_000_000_000,
+        helper_activation_evidence_monotonic_ns=107_800_000_000,
+        generation_publication_occurred=True,
+        command_timing={"command_seconds":8.0,"json_encode_seconds":.5,"channel_write_seconds":.5,
+            "channel_wait_seconds":6.5,"response_decode_seconds":.5,
+            "write_start_monotonic_ns":101_000_000_000,"read_end_monotonic_ns":108_000_000_000,
+            "helper":{"request_decode_seconds":.2,"dispatch_seconds":6.0,
+                "request_decoded_monotonic_ns":101_900_000_000,"dispatch_start_monotonic_ns":102_000_000_000}},
+        parent_runtime_timing={"request_preparation_seconds":1.0,"result_ledger_seconds":.5},
+        activation_phases={"pre_publication":{"duration_seconds":2.0},
+            "active_generation_publication":{"duration_seconds":.5},"post_publication":{"duration_seconds":3.0}},
+        operation_timings={"pre_veth_creation":{"duration_seconds":1.0,"operation_count":4},
+            "post_veth_deletion":{"duration_seconds":2.0,"operation_count":3},
+            "active_generation_update":{"duration_seconds":.5,"operation_count":1}})
+    schedule = _event("boundary_scheduled", 100, boundary_timestamp=event["boundary_timestamp"],
+        ideal_activation_monotonic_seconds=99.0,paced_not_before_monotonic_seconds=99.75)
+    detail = _detailed_timing((schedule,event))
+    residual = detail["boundaries"][0]["residuals"]
+    assert residual["main_unattributed_seconds"] == pytest.approx(.5)
+    assert residual["exchange_unattributed_seconds"] == pytest.approx(.7)
+    assert residual["helper_dispatch_unattributed_seconds"] == pytest.approx(.2)
+    assert residual["pre_barrier_unattributed_seconds"] == pytest.approx(1.0)
+    assert residual["post_barrier_unattributed_seconds"] == pytest.approx(1.0)
+    assert residual["helper_activation_outside_barriers_seconds"] == pytest.approx(.3)
+    assert detail["boundaries"][0]["pacing"]["pacing_carry_seconds"] == pytest.approx(.75)
+    assert detail["boundaries"][0]["pacing"]["start_after_deadline_seconds"] == pytest.approx(.25)
+    assert detail["operations"]["pre_veth_creation"]["operations_per_boundary"]["total"] == 4
+    assert detail["main_exceeding_five_seconds"] == 1
+    assert detail["kernel_calls"] == {}  # no substitute zeros for absent counters
