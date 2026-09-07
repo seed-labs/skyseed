@@ -2,7 +2,7 @@
 
 | Contract | Primary owner | Main implementation | Reference |
 |---|---|---|---|
-| formal timestamp sequence | Simulator | `simulator/timeline.py` | [Timeline/Plan](../codex-reference/timeline-plan-contracts.md) |
+| finite formal timestamp sequence | Simulator | `simulator/timeline.py` | [Timeline/Plan](../codex-reference/timeline-plan-contracts.md) |
 | physical aggregate and frame | Simulator physical | `simulator/physical/world.py`, `physical_frame.py` | [physical contracts](../codex-reference/physical-world-zone-contracts.md) |
 | physical candidate observation | Simulator physical + built-in Model | `simulator/physical/physical_link.py`, `models/geometric_physical_link.py` | [Model contracts](../codex-reference/model-contracts.md) |
 | operational state and transitions | Simulator planning | `simulator/planning/values.py` | [operational values](../codex-reference/operational-values.md) |
@@ -16,7 +16,7 @@
 | sealed Runner artifact | BPF backend private boundary | `backend/bpf/_runner_artifact.py` | [producer/runtime](../codex-reference/producer-runtime-contracts.md) |
 | live BPF lifecycle | BPF backend | `backend/bpf/runner.py`, `_runner/` | [ownership](../codex-reference/ownership-lifecycle.md) |
 | Traffic classification | experiment Traffic | `experiment/traffic/`, `tools/traffic/` | [inspection](../codex-reference/inspection-tools.md) |
-| detached inspection | top-level Tools | `tools/physical_world`, `physical_frame`, `planner`, `bpf_compiler`, `runner`, `observation`, `traffic`, `zone` | [inspection](../codex-reference/inspection-tools.md) |
+| detached inspection | top-level Tools | `tools/physical_world`, `planner`, `bpf_compiler`, `runner`, `observation`, `traffic`, `zone` | [inspection](../codex-reference/inspection-tools.md) |
 | public facade | Simulator package | `simulator/__init__.py` | [public imports](../codex-reference/public-imports.md) |
 
 ## Frozen cross-layer calls
@@ -28,6 +28,13 @@ Planner.observe(frame, observation)
 compile_bpf(plan, physical_world, previous_realization)
 BpfRunner consumes one sealed typed packed Runner artifact
 ```
+
+The Runner constructor takes `compose_project_name` and the finite
+`runtime_artifact` manifest path. Indexed decoding completes in Preparation,
+which physically activates B0; formal Main executes B1 and later prepared
+deltas. Private artifact, Linux execution, startup identity and observation
+files are mapped under their existing owner in the
+[repository map](repository-map.md).
 
 ## Canonical qualification facts
 

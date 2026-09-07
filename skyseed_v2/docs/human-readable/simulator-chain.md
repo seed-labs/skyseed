@@ -54,11 +54,19 @@ and drains the remaining Plans.
 
 ## Persistence
 
-Each compiled realization is appended to the deterministic versioned handoff.
-Before Runner construction, generated execution eagerly validates every hash,
-structurally decodes the full bounded sequence, and validates lineage. Runner then
-pulls only from the validated immutable tuple. Semantic and persistence work is
-complete before runtime maintenance begins.
+While the producer advances, the private BPF artifact writer incrementally
+normalizes each compiled realization into deterministic typed packed runtime
+records and accumulates finite capacity demand. After complete producer drain,
+it validates and seals the finite artifact. Generated execution verifies source
+and input identity plus artifact hashes and metadata before Runner construction.
+
+`BpfRunner` receives the sealed artifact path. Its one-shot Preparation opens
+the binary read-only with `mmap`, decodes the complete indexed sequence, derives
+all immutable activation deltas and wire commands, prewrites semantic
+generations, and physically activates B0. Reader indexing does not defer
+decoding into formal execution. `run()` begins the formal clock and executes
+B1 and later prepared deltas. There is no realization-object tuple handoff,
+runtime producer, or Maintenance phase.
 
 The example entry points in `examples/` expose this same chain at different
 scales; none implements a second planning or compilation algorithm.

@@ -40,8 +40,8 @@ operation breakdowns, folding, boundary workload, intended-state cardinality,
 and lineage/activation/Zone-prefix evidence. Its compact
 Compiler-history reader validates only lineage, fingerprints, activation
 timestamps, and intent counts. The compact stream does not reconstruct the
-complete realization owned by the separate checksum handoff. Neither Tool runs
-its owning algorithm.
+normalized runtime payload owned by the sealed finite Runner artifact. Neither
+Tool runs its owning algorithm.
 Durable reads require the terminal sibling manifest and verify exact byte/hash,
 Timeline cadence, stream counts, cross-stream lineage, replay fingerprints, and
 final frontiers before rendering.
@@ -118,7 +118,7 @@ default human view has no giant realization table or raw JSON dump.
 Observation groups the actual chain: physical projection, physical-link
 observation, ISL selection, lifecycle, GroundStation selection/ranking,
 validation, evidence projection and rollup, Zone/parameter/Route planning,
-transition application, precedence, publication, Compiler, producer, handoff
+transition application, precedence, publication, Compiler, producer, artifact
 writer, Runner, and Traffic. Each generated runtime invocation adds actual
 `runner-total` and `traffic-total` rollups to the completed generation records
 in its own `inspection/runtime-runs/<invocation-id>/observation/` stream.
@@ -139,6 +139,22 @@ generation, and final hashing. Category totals and residual are labelled as
 outer diagnostic wall time; nested Planner/Compiler rollups are not added to
 their child stages. Interleaved accumulated durations remain numeric aggregate
 rows and are never drawn as fabricated contiguous spans.
+
+## Runner and Traffic runtime evidence
+
+Preparation includes complete artifact decoding, finite delta construction,
+semantic prewrites and physical B0 activation. Runner views keep B0 in startup
+evidence and exclude it from formal Main counts and timing distributions. Main
+begins at B1; its duration includes the current boundary's joined physical
+deletion. Concurrent deletion task-duration sums are not elapsed Main time.
+
+Generation publication and completed formal ACTIVE are separate facts. Reused
+generations have no fabricated publication interval. Traffic preserves each
+packet's kernel generation, interface incarnation and completed/in-flight
+boundary attribution separately from the ideal presentation clock. Logical ports
+retain endpoint identity across recreation; a new live ifindex has its own
+generation identity record. Asynchronous identity expansion belongs to existing
+observation facilities and does not create a network lifecycle or gate Main.
 
 ## Failure isolation
 

@@ -4,6 +4,11 @@ Skyseed v2 supports one execution contract: finite precomputed generation
 followed by live replay. `skyseed_v2.experiment._realization_producer` owns the
 private cross-domain compute cursor; it never exists inside `BpfRunner`.
 
+The public input is `BpfRunner(*, compose_project_name: str,
+runtime_artifact: Path)`, with a `pathlib.Path` to the sealed manifest. Backend
+`_runner_artifact.py` replaces the removed experiment realization handoff; it
+packages and reads compiled facts without becoming a new domain owner.
+
 ## Producer contract
 
 `_IncrementalRealizationProducer` is constructed with one finite
@@ -26,6 +31,12 @@ and seals a small format-v3 manifest. It does
 not replan Connections, choose Routes, reinterpret Plans, or perform new backend
 policy lowering.
 
+Generation's `_RunnerArtifactWriter.append()` calls `_validate_sequence_pair`
+for predecessor/world/state-fingerprint continuity, equal cadence and exact
+next starts; it also validates normalized boundary references and the packed
+round trip. Finalization seals those generation-time checks. The execution
+entry and artifact reader do not repeat this sequence-relationship validation.
+
 The artifact consists of:
 
 | Artifact | Authority |
@@ -41,11 +52,16 @@ sealed Runner artifact as the semantic payload owner.
 Before `BpfRunner` construction, generated execution verifies
 `runtime/execution.json`, source and input fingerprints, manifest hash, version,
 seal, binary length/hash, and timeline metadata. Runner opens the verified file
-read-only with `mmap` during Preparation, validates table bounds, and decodes all
-indexed boundaries before formal runtime. It does not reconstruct rich
-`BpfCompiledRealization` or `PlannedOperationalState` objects. The complete
+read-only with `mmap` during Preparation, validates the binary header/index
+bounds, and decodes all indexed boundaries before formal runtime. It does not
+reconstruct rich `BpfCompiledRealization` or `PlannedOperationalState` objects. The complete
 finite sequence is materialized into private immutable activation delta plans
 only during Preparation.
+Decoding checks each record's hash and operation count. Metadata/hash validation
+and these binary checks are distinct from generation-time sequence validation.
+Indexed access is a reader capability, not a lazy Runner execution lifecycle.
+Capacity accumulators and prepared/derived records are private backend
+representations, not additional domain components.
 
 ## Durable domain evidence
 
@@ -66,9 +82,9 @@ readers reject incomplete or mixed evidence.
 ## Runner lifecycle
 
 `BpfRunner` owns one-shot Preparation, formal Main, cleanup, and realized-state
-snapshots. Preparation opens and validates the sealed finite artifact, decodes
-all boundaries, materializes and validates the complete finite sequence, and
-builds immutable delta plans and their activation JSON wire representation.
+snapshots. Preparation opens the sealed finite artifact, validates its metadata
+and binary structure, decodes every record, and builds the complete sequence of
+immutable delta plans and their activation JSON wire representation.
 Artifact-local caches reuse decoded identities/timestamps; Preparation reuses
 previous route/access state, stable names/slots, and route-by-interface indexes.
 It discovers container incarnations once, retains
@@ -91,6 +107,8 @@ Exactly one endpoint per pair carries the nonzero group. Independent namespace
 batches use bounded persistent helper workers initialized in Preparation; one
 worker owns each socket and all batches join before Main completes. Cleanup
 uses the same owned cohorts, retains uncertain ownership, and closes the workers.
+The workers and retirement ledger belong to this existing helper. There is no
+cross-boundary deletion service.
 Candidate rollback deletes individual new pairs because their future groups can
 also contain previously live pairs. Generation-semantic maps remain immutable throughout formal
 runtime. Future veths remain absent until their own boundary.
@@ -125,6 +143,8 @@ start/end timestamps; reuse carries neither switch timestamps nor a fabricated
 publication duration. Interface snapshots are emitted once per generation and
 are keyed by generation, node slot, and live ifindex with stable logical ports.
 A background writer performs snapshot expansion and serialization.
+It belongs to existing observation facilities, not Maintenance or an independent
+network lifecycle.
 
 Detached Traffic inspection verifies the completed boundary prefix against
 formal history and maps each generation to its actual publication boundary.

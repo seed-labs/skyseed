@@ -56,10 +56,19 @@ output/
 └── cleanup.sh
 ```
 
-Generated execution validates source/input identity plus the artifact manifest,
-typed packed binary, version, offsets, lengths, counts, and hashes. BpfRunner
-opens the binary with read-only mmap. Planning and compilation do not run during
-Runner execution.
+Generation's writer validates the finite sequence relationships before sealing.
+Generated execution validates source/input identity, manifest schema/seal,
+binary length/hash and timeline metadata. BpfRunner opens the binary with
+read-only mmap, checks its header/index bounds and decodes the entire indexed
+sequence with per-record checks during Preparation. Preparation builds all deltas,
+prewrites semantic generations and physically activates B0. Formal `run()` starts at B1 and completes the
+remaining 63 boundaries. Planning and compilation do not run during Runner
+execution.
+
+`main.py` generates all output, realizations, the artifact and controls before
+deployment. Generated `start.sh` deploys; `run.sh` starts Runner/Traffic;
+`launch.sh` combines start and run. `cleanup.sh` remains independent. The common
+[example operating sequence](../README.md) describes these responsibilities.
 
 Mini delegates `run.sh` and `launch.sh` publication to the common generated
 runtime-control writer used by canonical production output. Each live run owns

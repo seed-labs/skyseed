@@ -1,7 +1,7 @@
 # Public imports
 
 Public domain contracts are imported from package facades. Private producer,
-handoff, observation, and backend intent helpers are intentionally not exported.
+artifact, observation, and backend intent helpers are intentionally not exported.
 
 ## Shared
 
@@ -101,10 +101,25 @@ from skyseed_v2.backend.bpf import (
 ```
 
 The Compiler call accepts exactly `Plan`, `PhysicalWorld`, and the previous
-realization. Backend intention classes and producer/handoff helpers are private.
+realization. Backend intention classes and producer/artifact helpers are private.
 `RealizedRuntimeState` names Runner-owned live truth in architecture diagrams;
 it is observed through the detached `BpfRunner.inspection_snapshot()` handoff,
 not exported as a second public state object.
+
+The Runner constructor is `BpfRunner(*, compose_project_name: str,
+runtime_artifact: Path)`, where `Path` is `pathlib.Path` and names the sealed
+finite artifact manifest. It replaces `future_realization_supplier` and removes
+the `preparation_lookahead` and `preparation_boundary_depth` arguments.
+`prepare()` fully prepares the sequence and physically activates B0 once;
+`run()` executes B1 onward, or `activate_next()` manually advances the same
+ordered prepared deltas. Automatic and manual execution are exclusive.
+`cleanup()` owns teardown; `inspection_snapshot()` exposes detached live facts.
+See the [BPF owner README](../../src/skyseed_v2/backend/bpf/README.md).
+
+`SimulationTimeline` requires finite start/end datetimes and a positive
+observation interval. Its public members are `start_time`, `end_time`,
+`observation_interval`, and `iter_timestamps()`; `is_bounded` is removed.
+See the [Timeline contract](timeline-plan-contracts.md).
 
 ## Tool imports
 

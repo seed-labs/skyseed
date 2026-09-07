@@ -144,7 +144,11 @@ classDiagram
 
 Every formal transition creates a compiled activation boundary, including an
 empty transition. A realization owns intended state; Runner owns realized
-state.
+state. The intended-work edge crosses the sealed finite backend artifact;
+`BpfRunner` receives its manifest path, not a rich realization sequence. The
+artifact and prepared/derived records are private representations, so the public
+class diagram does not add owners for them. Runner decodes the full sequence
+and activates B0 in Preparation; formal Main begins at B1.
 
 ## Model realization
 

@@ -12,9 +12,9 @@ skyseed_v2/
 │   │   ├── models/                   built-in physical Models
 │   │   ├── input/                    immutable Simulator inputs
 │   │   ├── simulator.py              composition root
-│   │   └── timeline.py               formal timestamp authority
+│   │   └── timeline.py               finite formal timestamp authority
 │   ├── backend/bpf/               Compiler, compiled realization, Runner
-│   ├── experiment/                producer, persisted handoff, generated execution, Traffic
+│   ├── experiment/                producer, generation binding, execution, Traffic
 │   ├── compose/                   deployment utility
 │   └── shared/                    narrow neutral values and private mechanics
 ├── tools/                         detached inspection readers/projectors/renderers
@@ -48,6 +48,28 @@ simulator/physical/
 ├── zone.py            Zone geometry/layout/membership
 └── README.md          local contract
 ```
+
+## Private BPF artifact and execution files
+
+These files implement existing backend responsibilities; they introduce no
+public domain component or independent lifecycle owner.
+
+| File under `src/skyseed_v2/backend/bpf/` | Responsibility |
+|---|---|
+| `_runner_artifact.py` | Backend artifact packaging and indexed reading; normalize compiled facts, accumulate capacity, and validate/seal the finite sequence. |
+| `_runner/runtime_realization.py` | Derive and prepare immutable finite deltas and wire commands, prewrite generations, and apply current-boundary results. |
+| `_runner/privileged_runtime_command.py` | Existing persistent helper, retained namespace sockets/BPF descriptors, bounded deletion workers and owned retirement ledger. |
+| `_runner/kernel_netlink.py` | Private Linux netlink execution and kernel acknowledgments. |
+| `_runner/process_incarnation.py` | Startup process and namespace identity capture. |
+| `_runner/event_history.py`, `_runner/traffic_telemetry.py` | Existing asynchronous event and identity observation facilities. |
+
+The old `experiment/_realization_handoff.py` is removed. Experiment orchestration
+uses the backend artifact writer and records generated source/input binding;
+Runner reads and fully decodes the artifact during Preparation. Prepared and
+derived records, capacity accumulation, logical ports and live bindings remain
+private representations. All deletion jobs for a boundary join inside Main;
+the helper's ledger is cleanup responsibility, not a cross-boundary service.
+These files remain inside the BPF owner group in the dependency graph below.
 
 ## Exact collapsed production import graph
 

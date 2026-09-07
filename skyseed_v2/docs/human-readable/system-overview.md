@@ -67,7 +67,15 @@ knowledge from the artifact, while future live Connections remain absent until
 their activation boundary creates them. One-shot Preparation builds all finite
 plans, prewrites all semantic generations, and activates boundary 0. Formal Main
 starts at boundary 1 and applies only prepared deltas through a retained privileged
-channel. Cleanup owns final teardown; no Maintenance thread is needed.
+channel. Cleanup owns final teardown. Maintenance, READY production/waits,
+deferred generation completion and runtime generation reclaim are removed.
+
+Generation publication is a forwarding subphase. A formal boundary becomes
+ACTIVE only after its complete Main delta, including withdrawals and joined
+physical deletion, succeeds. The retained helper owns its deletion workers and
+retirement ledger; it provides no cross-boundary deletion service. Asynchronous
+identity writing stays in existing observation facilities. These implementation
+details and private logical ports/live bindings add no domain owner or Port entity.
 
 ## Canonical S3
 
@@ -90,5 +98,7 @@ Observation, Runner, and Traffic views. Physical World retains exact
 `PhysicalFrame` inspection without a separate PhysicalFrame Tool. Tools cannot become a
 dependency of compute or runtime execution.
 
-Full S3 persisted runtime qualification remains a later stage; offline
-compilation is not a runtime claim.
+Offline compilation alone is not a runtime claim. The finite Runner milestone's
+implementation, full S3 runtime evidence and documentation have passed Work
+review, as recorded in [CURRENT](../CURRENT.md); historical evidence remains in
+its linked provenance.

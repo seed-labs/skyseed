@@ -44,13 +44,17 @@ Zone backend work orders readiness before forwarding publication and retirement.
 ## Persistence
 
 Precomputed generation drains the producer, validates the full finite compiled
-sequence, incrementally seals its exact mechanical runtime-capacity demand, and
-seals deterministic format-v2 typed packed runtime tables. Before
+sequence, incrementally derives its exact mechanical runtime-capacity demand,
+and seals deterministic format-v3 typed packed runtime tables. Before
 `BpfRunner` construction, generated execution checks source/input identity,
-manifest and binary hashes, version, bounds, lineage, and cadence. Runner opens
-the binary read-only with `mmap` and decodes indexed boundary records without
-reconstructing rich compiled or planned-state objects. No live Planner, online
-supplier, or pickle is loaded.
+manifest and binary hashes, version/seal and timeline metadata. Predecessor,
+state-fingerprint continuity, equal cadence and exact next starts are checked
+by the writer during generation. Runner opens the binary read-only with `mmap`
+during Preparation and checks its header/index bounds. Although the reader
+supports indexed access, Runner decodes every boundary during Preparation,
+without reconstructing rich compiled or planned-state objects. No live Planner,
+online supplier, or pickle
+is loaded.
 
 The compact `domain-history/compiler.jsonl` is separate: it seals lineage,
 fingerprints, activation timestamps, and intent counts, while naming the
@@ -60,10 +64,26 @@ their sequence and manifest hashes.
 
 ## Runner
 
+The public constructor is:
+
+```text
+BpfRunner(*, compose_project_name: str, runtime_artifact: Path)
+```
+
+`runtime_artifact` must be a `pathlib.Path` to the sealed finite artifact
+manifest. Construction records the inputs; `prepare()` requires the named
+deployment to be started and performs the one-shot work below. The former
+`future_realization_supplier`, `preparation_lookahead`, and
+`preparation_boundary_depth` arguments are removed. After Preparation, choose either
+`run()` for automatic execution or `activate_next()` for manual advancement of
+the same sequence; those choices are mutually exclusive. `cleanup()` owns
+teardown, including after failure. `inspection_snapshot()` exposes detached
+Runner facts, including the last completed formal ACTIVE frontier.
+
 `BpfRunner` owns one-shot Preparation, formal Main, cleanup, and realized-state
-snapshots. Preparation opens and validates the sealed finite artifact, decodes
-all boundaries, materializes and validates the complete finite sequence, and
-builds immutable delta plans and their activation JSON wire representation.
+snapshots. Preparation opens the sealed finite artifact, validates its metadata
+and binary structure, decodes every record, and builds the complete sequence of
+immutable delta plans and their activation JSON wire representation.
 Artifact-local caches reuse decoded identities/timestamps; Preparation reuses
 previous route/access state, stable names/slots, and route-by-interface indexes.
 It discovers container incarnations once, retains
@@ -120,6 +140,15 @@ each nominal offset. Lateness consumes available idle time; an overrun executes
 the next boundary when available and reports actual lag. All transitions remain
 sequential and complete, with no skipped boundaries or reset origin. The helper
 arrival clock is observational. Manual activation uses the same ordered plans.
+
+Deletion workers and the owned retirement ledger belong to the existing helper;
+all current-boundary jobs join before Main completes. There is no cross-boundary
+deletion service. Asynchronous identity writing belongs to existing observation
+facilities. Artifact packaging/reading in `_runner_artifact.py`, prepared records,
+capacity accumulation, and the Linux execution and startup identity helpers
+are private implementation details, not public domain components. Their file
+responsibilities are described in the [private Runner README](_runner/README.md)
+and [repository map](../../../../docs/human-readable/repository-map.md).
 
 The private BPF logical port is a non-zero uint32 allocated by the finite
 artifact writer for one node-side connection endpoint. The manifest stores each

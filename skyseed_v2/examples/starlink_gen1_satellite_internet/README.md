@@ -38,8 +38,8 @@ generated `cleanup.sh` before replacing an output with a live Compose project.
 
 `physical-world` creates static and first-frame inspection. `planner` drains
 the same incremental producer through its Planner-only pull seam and seals
-planning evidence without invoking Compiler. `compiler` drains that producer's
-complete finite realization sequence, seals the Runner artifact, and packages
+planning evidence without invoking Compiler. `compiler` (the default) drains
+that producer's complete finite realization sequence, seals the Runner artifact, and packages
 generated runtime input. There is no second Timeline cursor or batch planning
 path, and no producer survives into runtime.
 
@@ -53,9 +53,10 @@ the accepted 714 cross-plane / 12 underfilled oracle.
 
 The selected output root contains detached inspection, compact exact
 `inspection-evidence/physical-link-observations.jsonl.gz`,
-`domain-history/{physical-frames,planning,compiler}.jsonl`, the terminal
-`domain-history-manifest.json`, and, in Compiler mode, a checksum-verified
-sealed typed packed Runner artifact plus runtime package.
+`domain-history/physical-frames.jsonl`, `domain-history/planning.jsonl.gz`,
+`domain-history/compiler.jsonl`, the terminal
+`domain-history/domain-history-manifest.json`, and, in Compiler mode, a
+checksum-verified sealed typed packed Runner artifact plus runtime package.
 
 Physical World and Planner provide map-first linked 3D/2D workspaces with
 per-timestamp chunks, exact focused candidate relationships, and concrete Model
@@ -76,17 +77,25 @@ records. Every inspection surface is detached and never reruns its Model.
 Traffic's persisted probe plan is projected incrementally from each live
 Plan/realization pair while Compiler production already owns those values. The
 runtime-packaging phase publishes that compact derived artifact; it does not
-reread Plan history or reconstruct rich compiled objects. Runner remains the
-sole consumer of the validated precomputed artifact.
+reread Plan history or reconstruct rich compiled objects. Runner is the live
+executor of the validated precomputed artifact. It decodes every indexed boundary
+during Preparation, before physical B0 activation and formal execution from B1.
 
 ## Qualification boundary
 
 This entry performs offline semantic and compilation work only. It does not
 start the full S3 Compose deployment. Runtime qualification uses generated
-`start.sh`, `run.sh`, and independent `cleanup.sh`, and waits for detached tools.
+controls after `main.py` has generated complete output, realizations and the
+artifact: `start.sh` deploys, `run.sh` starts Runner/Traffic, and `launch.sh`
+combines start and run. `cleanup.sh` remains independent. Runtime qualification
+also waits for detached Tools; see the [common operating sequence](../README.md).
 Preserve prior qualification directories: regeneration must use a fresh explicit
 `--output`, because replacing the default output recursively removes its children.
 Runner completes B0 in Preparation and all 120 formal transitions through the
 600-second frontier. Physical grouped deletion remains inside Main; fixed-origin
 pacing retains actual lateness. Completion and Traffic qualification are separate
 outcomes, recorded in invocation-owned evidence.
+
+The Runner milestone's implementation, S3 evidence and documentation have passed
+Work review, as tracked in [CURRENT](../../docs/CURRENT.md). This guide preserves
+the historical qualification outcomes, including Traffic's WARN classification.

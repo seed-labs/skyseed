@@ -38,6 +38,13 @@ parallel/batch limits, service expectations, and verification policy. On
 `SINGLE` and `BATCHED` are caller-selected strategies, never an implicit
 fallback sequence.
 
+The canonical generated `start.sh` is a separate thin Compose control, not a
+call to `ComposeProjectLauncher`. The optional launcher explicitly defaults to
+`--parallel 16`; current generated scripts set neither `--parallel` nor
+`COMPOSE_PARALLEL_LIMIT`. Their effective concurrency cannot be inferred from
+the launcher default. Build-context grouping and historical host settings are
+explained in the [deployment decision record](../provenance/optimization-decision-history.md#d2).
+
 ## Invariants
 
 - one launcher instance addresses one resolved Compose file/project;

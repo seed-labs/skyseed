@@ -28,13 +28,14 @@ Maintained Tools:
 - `traffic/`: explicit planned reachability and telemetry replay.
 
 The physical/planning/compiler evidence streams are
-`domain-history/{physical-frames,planning,compiler}.jsonl`. Traffic consumes
+`domain-history/physical-frames.jsonl`, `domain-history/planning.jsonl.gz`, and
+`domain-history/compiler.jsonl`. Traffic consumes
 physical and planning histories explicitly rather than reconstructing semantic
 truth from missing runtime entries.
 
 Tools never call PositionModel, PhysicalLinkModel, Planner Models,
 `compile_bpf`, or Runner lifecycle actions. They do not own fact retention.
-Tool failure is isolated from a valid runtime handoff.
+Tool failure is isolated from the valid sealed Runner artifact.
 Generated `run.sh` reports detached Tool failure as a warning and preserves a
 successful domain-runtime exit status.
 

@@ -24,6 +24,10 @@ PhysicalWorld, physical-link Model, and one public Planner. Cross-domain
 experiment orchestration owns the incremental realization producer. The
 Compiler and Runner remain downstream backend boundaries.
 
+`SimulationTimeline` is finite: construction requires `start_time`, `end_time`,
+and a positive `observation_interval`. Its iterator remains the sole formal
+timestamp authority; there is no unbounded form or `is_bounded` member.
+
 ## State separation
 
 The system keeps four different truths explicit:
@@ -159,8 +163,9 @@ exact mechanical runtime-capacity demand while each normalized boundary is hot,
 validates the full finite sequence, and publishes the artifact-v3 terminal
 manifest seal. Before `BpfRunner`
 construction, generated execution verifies source/input identity, manifest and
-binary hashes, version, bounds, and timeline. Runner opens the binary with
-read-only `mmap`; it does not reconstruct the rich `BpfCompiledRealization` or
+binary hashes, version/seal and timeline metadata. During Preparation, Runner
+opens the binary with read-only `mmap` and checks its header and index bounds;
+it does not reconstruct the rich `BpfCompiledRealization` or
 `PlannedOperationalState` graph. No producer, supplier, input frontier,
 exhaustion protocol, or online planning path exists during replay.
 
@@ -192,17 +197,26 @@ separates readiness, forwarding publication, and retirement. Empty semantic
 transitions still create activation boundaries.
 
 The authoritative Plan remains in Planner history rather than being copied into
-every realization. Persisted realization readers verify checksums, schema,
-references, state fingerprints, lineage, equal cadence, and exact next starts;
-they do not reconstruct Plans or repeat Compiler lowering. Full semantic
+every realization. During generation, the artifact writer validates predecessor
+and state-fingerprint continuity, equal cadence, exact next starts, and boundary
+references before sealing the sequence. Execution verifies identity, hashes and
+metadata; Preparation checks the binary header/index bounds and decodes every
+record with its hash and operation-count checks. Readers do not repeat the
+writer's sequence-relationship validation or Compiler lowering. Full semantic
 qualification and Traffic inspection use the aligned authoritative Plan stream.
 
 ## Runner and Traffic
 
+The public constructor is `BpfRunner(*, compose_project_name: str,
+runtime_artifact: Path)`. The `pathlib.Path` names the sealed finite artifact
+manifest; the realization-object/supplier constructor input and old experiment
+realization handoff are removed. The reader supports indexed access, but Runner
+decodes the entire sequence during Preparation, not on demand during Main.
+
 `BpfRunner` owns one-shot Preparation, formal Main, cleanup, and realized-state
-snapshots. Preparation opens and validates the sealed finite artifact, decodes
-all boundaries, materializes and validates the complete finite sequence, and
-builds immutable delta plans and their activation JSON wire representation.
+snapshots. Preparation opens the sealed finite artifact, validates its metadata
+and binary structure, decodes every record, and builds the complete sequence of
+immutable delta plans and their activation JSON wire representation.
 Artifact-local caches reuse decoded identities/timestamps; Preparation reuses
 previous route/access state, stable names/slots, and route-by-interface indexes.
 It discovers container incarnations once, retains
@@ -260,6 +274,16 @@ the next boundary when available and reports actual lag. All transitions remain
 sequential and complete, with no skipped boundaries or reset origin. The helper
 arrival clock is observational. Manual activation uses the same ordered plans.
 
+The persistent helper owns its deletion workers and retirement ledger. Every
+current-boundary deletion job joins before Main completes; worker reuse does
+not create a cross-boundary deletion service. Asynchronous identity writing
+belongs to existing observation facilities, not Maintenance or a new network
+lifecycle. `_runner_artifact.py` packages and reads backend artifacts;
+`kernel_netlink.py` implements private Linux execution; `process_incarnation.py`
+captures startup identity. Prepared/derived records and capacity accumulation
+remain private backend mechanics, with no new domain component or lifecycle
+authority. Simulator, Planner and Compiler ownership is unchanged.
+
 The private BPF logical port is a non-zero uint32 allocated by the finite
 artifact writer for one node-side connection endpoint. The manifest stores each
 connection and both endpoint IDs explicitly; IDs survive withdrawal/recreation
@@ -292,11 +316,19 @@ replacement for the planned Route outcome.
 
 Traffic's ideal wall-clock deadlines are pacing evidence and action eligibility,
 not live-state authority. Episode arm, reconcile, migration, and completion wait
-for the corresponding actually published Runner ACTIVE frontier, so a slowed
+for the corresponding completed Runner ACTIVE frontier, so a slowed
 Runner neither exposes future actions early nor truncates an episode merely
 because its ideal deadline passed.
 
 ## Durable evidence and Tools
+
+For Mini and Starlink's Compiler mode, `main.py` completes semantic generation,
+compiled realizations, the sealed artifact, output and control scripts before
+deployment. `start.sh` deploys; `run.sh` starts Runner/Traffic; `launch.sh`
+combines start and run; `cleanup.sh` is independent. Detached Tools render the
+already-produced evidence without participating in network lifecycle.
+The deployable `complete_static_emulator` teaching Example keeps its own
+start/cleanup controls; it does not package this Runner start/run/launch chain.
 
 One producer invocation may write:
 

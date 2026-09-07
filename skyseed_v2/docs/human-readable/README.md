@@ -10,6 +10,8 @@ diagram has exactly one maintenance home:
 - [terminology navigation](terminology.md)
 - [repository/import map](repository-map.md)
 - [examples/Tools/tests traceability](traceability-map.md)
+- [已采用优化与宿主机配置](optimization-decisions.md), with links to the
+  [detailed decision history](../provenance/optimization-decision-history.md)
 
 `object-model.md` is the only global object/class diagram. Complete local
 class/member diagrams live only in each production owner package README under

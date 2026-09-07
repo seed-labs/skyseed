@@ -17,9 +17,28 @@ SimulationTimeline
 → BPF Compiler / BpfCompiledRealization
 ```
 
-The deployment-capable examples completely drain compilation and seal a typed
+Mini and Starlink's Compiler mode completely drain compilation and seal a typed
 packed artifact before Runner execution. No producer or semantic callback
-exists in Runner maintenance.
+exists during Runner Main. One-shot Preparation decodes and prepares the complete
+finite sequence and physically activates B0; formal run executes B1 onward.
+
+Mini and Starlink Compiler mode use the same operating sequence:
+
+| Entry/control | Responsibility |
+|---|---|
+| `main.py` | Generate complete output, compiled realizations, sealed finite Runner artifact and controls. |
+| generated `start.sh` | Deploy the generated Compose project. |
+| generated `run.sh` | Start Runner/Traffic against that deployment and write invocation evidence and detached runtime inspection. |
+| generated `launch.sh` | Combine start and run. |
+| generated `cleanup.sh` | Independently tear down the owned deployment. |
+
+The smaller teaching example and the Starlink physical-world/Planner stages
+retain their narrower generation scope. They do not run the finite Runner.
+
+The [optimization explanation](../docs/human-readable/optimization-decisions.md)
+and [deployment decision record](../docs/provenance/optimization-decision-history.md#d2)
+explain build-context reuse, the actual concurrency settings of each entry,
+and this host's configuration history.
 
 Each entry anchors its default output to its own source directory, independent
 of the caller's current working directory:
@@ -39,7 +58,7 @@ content. For normal human inspection, open `output/inspection/index.html`.
 Run either from the repository root with `python -m examples.<example>.main`
 or from that example directory with `python main.py`. Use `--output PATH` for
 an explicit alternate root. Generation replaces only that owned output root
-when override is enabled. For deployment-capable examples, run the generated
+when override is enabled. For any deployed example, run the generated
 `cleanup.sh` before regenerating an output whose Compose project still exists.
 
 `starlink_gen1_satellite_internet` preserves the full canonical scenario: 720

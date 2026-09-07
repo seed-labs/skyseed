@@ -10,15 +10,22 @@ Repository documentation has three current audiences.
 - [`codex-reference/`](codex-reference/) maps contracts to owners and files.
 - [`user-guides/`](user-guides/) contains runnable entry points and inspection
   workflows.
+- [已采用优化的中文说明](human-readable/optimization-decisions.md) explains
+  mechanisms and tradeoffs by responsibility; its
+  [decision history](provenance/optimization-decision-history.md) links source
+  checkpoints, retained measurements and host-configuration observations.
+  These records explain adopted choices without adding architecture authority.
 
 The current production chain is:
 
 ```text
-PhysicalWorld / PhysicalFrame
+SimulationTimeline
+→ PhysicalWorld / PhysicalFrame
 → PhysicalLinkObservation
 → Planner / PlannedOperationalState
 → Plan
 → Compiler / BpfCompiledRealization
+→ sealed Runner artifact
 → Runner / RealizedRuntimeState
 ```
 

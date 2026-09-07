@@ -1,7 +1,8 @@
 # Current implementation state
 
-Skyseed v2 is on the Round-B atomic Network Planner cutover. The current tree
-has one intended production chain:
+Skyseed v2 retains the Round-B atomic Network Planner architecture and the
+accepted finite Runner correction and performance-optimization implementation.
+The current tree has one intended production chain:
 
 ```text
 SimulationTimeline
@@ -24,20 +25,34 @@ the BPF backend owns compilation and runtime realization.
 The former semantic slicing and Topology-as-physical-owner paths are retired
 completely. They are neither fallbacks nor alternate production routes.
 
-## Runner milestone closed; next investigation
+## Runner milestone accepted after Work review
 
-On 2026-09-07 the user authorized closing, committing and pushing the finite
-Runner correction and work-reduction milestone. The historical scope, measured
-comparison and archived raw evidence are recorded in
+The cumulative finite Runner correction and performance-optimization
+implementation and its S3 evidence have passed independent Work review at
+checkpoint
+`6e8652a01b7e796a5a901bf45387fcad3d353a9e` on `feature/skyseed-v2`, relative to
+implementation baseline `1b3d14cb296caefd2e87d1811cea8dcff08fab51`.
+The historical scope, measured comparison and archived raw evidence remain in
 [`provenance/runner-optimization-20260907.md`](provenance/runner-optimization-20260907.md).
-Traffic's retained WARN classification is not a blocker for this handoff; it is
+Traffic's retained WARN classification is accepted for this milestone; it is
 not relabelled PASS. No additional S3 run is required for the closeout.
 
-The next discussion/investigation concerns the compute-side producer and the
-modules it advances. The producer remains experiment-owned orchestration;
-Simulator still owns PhysicalWorld and Planner, and the BPF backend owns
-Compiler. This next direction does not authorize new changes to those contracts
-or restart the completed Runner investigation.
+Work independently reviewed and accepted the documentation in `7a6d9a3`,
+including the corrected artifact-validation stage responsibilities, the Mini /
+Starlink Compiler scope of the Runner controls, and the adopted optimization
+and host-configuration decision records. Implementation, S3 evidence and
+documentation review are complete; this closeout only synchronizes final status
+and publishes the reviewed milestone.
+
+The selected milestone branch is
+`backup/skyseed-v2-runner-optimization-20260907`, at the same final documentation
+commit as `feature/skyseed-v2`. Remote ref equality is a separate post-push
+verification, not a claim made by this status record.
+
+The compute-side producer and the modules it advances remain a subsequent
+discussion/investigation direction after this closeout. This direction does not
+authorize changes to Simulator, Planner, Compiler, or producer ownership, or
+restart the completed Runner investigation.
 
 ## Canonical behavior
 
@@ -56,15 +71,34 @@ Plan/world/state lineage. `compile_bpf` consumes only the Plan, exact
 PhysicalWorld, and previous compiled realization. Empty transitions preserve
 formal time.
 
-## Architecture delta: precomputed-only runtime cutover
+## Architecture delta: cumulative implementation and documentation closeout
 
-The semantic chain and ownership boundaries remain intact. Compute now always
-finishes before runtime: the private producer is drained, compiled backend facts
-are normalized into versioned typed packed tables, immutable validation finishes
-before the terminal seal, and Runner opens indexed records through read-only
-`mmap`. Live startup does not reconstruct rich compiled or planned-state
-objects. There is no online supplier, replay input frontier/exhaustion,
-availability lookahead/depth, or rolling/full-range runtime mode split.
+This documentation-only closeout changes no executable architecture. The
+cumulative implementation delta is non-empty:
+
+- `SimulationTimeline` requires a finite `end_time`; the optional unbounded
+  form and `is_bounded` member are removed.
+- `BpfRunner(*, compose_project_name: str, runtime_artifact: Path)` consumes a
+  sealed finite backend artifact. The old realization-object/supplier handoff
+  and `experiment/_realization_handoff.py` are removed.
+- Compute drains the producer and seals typed packed runtime tables before
+  execution. Runner decodes the complete sequence during one-shot Preparation,
+  physically activates B0, then executes prepared B1-and-later Main deltas.
+  Maintenance, READY production/waits, deferred generation completion and
+  runtime generation reclaim are removed.
+- Mini and Starlink Compiler mode generate the complete artifact and controls
+  before deployment;
+  Traffic and detached Tools consume the aligned persisted evidence and
+  distinguish generation publication from completed formal boundaries.
+
+Simulator/Planner/Compiler ownership and public package exports remain unchanged;
+there is no new public domain owner or independent lifecycle authority.
+Artifact packaging/reading lives in private BPF backend code. Logical ports,
+live bindings, prepared records and capacity accumulation are backend
+representations. Retained privileged resources, current-boundary deletion
+workers and their retirement ledger, and fixed-origin pacing are private Runner
+execution details; asynchronous identity writing stays in existing observation
+facilities. There is no cross-boundary deletion service or new network lifecycle.
 
 ## Maintained execution mode
 
@@ -77,9 +111,9 @@ with strict cumulative semantic map demand, generation count, and the
 add-before-withdraw physical/interface high-water.
 
 `BpfRunner` owns one-shot Preparation, formal Main, cleanup, and realized-state
-snapshots. Preparation opens and validates the sealed finite artifact, decodes
-all boundaries, materializes and validates the complete finite sequence, and
-builds immutable delta plans and their activation JSON wire representation.
+snapshots. Preparation opens the sealed finite artifact, validates its metadata
+and binary structure, decodes every record, and builds the complete sequence of
+immutable delta plans and their activation JSON wire representation.
 Artifact-local caches reuse decoded identities/timestamps; Preparation reuses
 previous route/access state, stable names/slots, and route-by-interface indexes.
 It discovers container incarnations once, retains
@@ -209,3 +243,5 @@ Round B.
 - [producer and persisted runtime](codex-reference/producer-runtime-contracts.md)
 - [public imports](codex-reference/public-imports.md)
 - [inspection guide](user-guides/inspection-tools.md)
+- [已采用优化与宿主机配置](human-readable/optimization-decisions.md)
+- [evidence-linked decision history](provenance/optimization-decision-history.md)

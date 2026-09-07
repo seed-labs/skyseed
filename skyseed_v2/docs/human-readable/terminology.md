@@ -2,7 +2,7 @@
 
 | Term | Current meaning |
 |---|---|
-| SimulationTimeline | inclusive formal timestamp sequence with one observation interval |
+| SimulationTimeline | finite cadence-aligned formal timestamp sequence with required start/end and one positive observation interval; end is an inclusive bound |
 | PhysicalWorld | authoritative static physical aggregate and requested-time projection owner |
 | PhysicalFrame | exact timestamp plus complete immutable positions |
 | PhysicalLinkRequest | Planner-created bounded candidate scope for one physical evaluation |
@@ -22,6 +22,11 @@
 | CoordinationPolicy | precedence-only policy over semantic event references |
 | BpfCompiledRealization | compiled intended state and backend intentions for one Plan boundary |
 | activation boundary | compiled record for one formal transition, including a no-op transition |
+| sealed Runner artifact | backend-owned finite typed packed runtime input, with terminal manifest, identity/hash seals and capacity demand |
+| Preparation | Runner's one-shot complete finite decoding, validation, delta preparation and semantic prewrite, ending with physical B0 activation |
+| Main | execution of the prepared current-boundary delta; formal run begins at B1 |
+| generation publication | forwarding selection subphase inside a boundary; it does not prove whole-boundary completion |
+| formal ACTIVE frontier | latest completely executed boundary, including withdrawals and all joined physical deletion |
 | RealizedRuntimeState | Runner-owned observation of live runtime state |
 | incremental realization producer | sole Timeline cursor and frame-to-observation-to-Plan-to-Compiler orchestrator |
 | precomputed execution | draining the common producer and sealing the finite Runner artifact before runtime |
@@ -32,3 +37,10 @@
 Physical, planned, compiled intended, and realized truths are never synonyms.
 Likewise, candidate, selected/acquiring, operational, routed, compiled, and
 realized are distinct lifecycle meanings.
+
+Logical endpoint ports and live ifindex bindings are private BPF representations,
+not domain Port entities. Prepared records, capacity accumulators, retained
+execution resources and helper-owned retirement workers/ledger remain private
+Runner/backend mechanics. Asynchronous identity writing is observation work.
+None creates a public domain owner, Maintenance phase, or independent network
+lifecycle; current-boundary deletion finishes inside Main.

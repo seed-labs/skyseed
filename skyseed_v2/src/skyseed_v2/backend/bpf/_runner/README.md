@@ -3,10 +3,15 @@
 This directory groups private capabilities owned by `../runner.py`. It adds no
 public type, lifecycle owner, dataplane plugin, or execution mode.
 
+The sibling `../_runner_artifact.py` owns backend artifact packaging and reading.
+Its indexed decoding capability is consumed in full during Runner Preparation.
+Prepared/derived records and finite capacity accumulation in these private
+files do not constitute new domain components.
+
 | File | Responsibility |
 |---|---|
 | `runtime_realization.py` | Validate finite capacity, materialize all plans in Preparation, prewrite semantic generations, and submit immutable Main deltas. |
-| `privileged_runtime_command.py` | Own the persistent privileged command loop, retained namespace/BPF descriptors, publication barriers, and raw BPF loader. |
+| `privileged_runtime_command.py` | Own the persistent privileged command loop, retained namespace sockets/BPF descriptors, publication barriers, raw BPF loader, bounded deletion workers and retirement ledger. |
 | `kernel_netlink.py` | Encode Linux rtnetlink UAPI requests for veth, link, qdisc, BPF attachment, route, neighbour and address mutations; require kernel ACKs. |
 | `process_incarnation.py` | Capture and validate the complete startup PID/start-time/netns identity set. |
 | `event_history.py` | Queue compact events and write them outside Main. |
@@ -15,9 +20,9 @@ public type, lifecycle owner, dataplane plugin, or execution mode.
 | `traffic_telemetry_abi.py` | Define the existing private packet-event layout shared by producer and collector. |
 
 `BpfRunner` owns one-shot Preparation, formal Main, cleanup, and realized-state
-snapshots. Preparation opens and validates the sealed finite artifact, decodes
-all boundaries, materializes and validates the complete finite sequence, and
-builds immutable delta plans and their activation JSON wire representation.
+snapshots. Preparation opens the sealed finite artifact, validates its metadata
+and binary structure, decodes every record, and builds the complete sequence of
+immutable delta plans and their activation JSON wire representation.
 Artifact-local caches reuse decoded identities/timestamps; Preparation reuses
 previous route/access state, stable names/slots, and route-by-interface indexes.
 It discovers container incarnations once, retains
@@ -40,6 +45,8 @@ Exactly one endpoint per pair carries the nonzero group. Independent namespace
 batches use bounded persistent helper workers initialized in Preparation; one
 worker owns each socket and all batches join before Main completes. Cleanup
 uses the same owned cohorts, retains uncertain ownership, and closes the workers.
+Worker reuse never carries deletion jobs across Main boundaries or creates an
+independent deletion service.
 Candidate rollback deletes individual new pairs because their future groups can
 also contain previously live pairs. Generation-semantic maps remain immutable throughout formal
 runtime. Future veths remain absent until their own boundary.
@@ -77,6 +84,8 @@ start/end timestamps; reuse carries neither switch timestamps nor a fabricated
 publication duration. Interface snapshots are emitted once per generation and
 are keyed by generation, node slot, and live ifindex with stable logical ports.
 A background writer performs snapshot expansion and serialization.
+This writer belongs to the existing observation facilities; it is neither
+Maintenance nor an independent network lifecycle owner.
 
 Detached Traffic inspection verifies the completed boundary prefix against
 formal history and maps each generation to its actual publication boundary.

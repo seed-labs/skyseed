@@ -73,15 +73,22 @@ truth.
 
 ## Persistence and Tools
 
-After the producer is completely drained, the Runner artifact finalizer
-losslessly normalizes already-defined Compiler facts into a versioned typed
-packed binary and validates the complete finite sequence before sealing it.
+As the producer advances, the backend Runner artifact writer losslessly
+normalizes already-defined Compiler facts into a versioned typed packed binary
+and accumulates exact capacity demand. Its append path checks predecessor and
+state-fingerprint continuity, equal cadence, exact next starts, and boundary
+references. After complete producer drain, it publishes the terminal seal over
+the sequence validated during generation.
 It does not rerun planning or Compiler lowering. The binary contains symbolic
 stable identities, not future live ifindexes. Before `BpfRunner` exists,
 generated execution verifies source/input identity, manifest and binary hashes,
-version, bounds, lineage, and timeline. Runner then uses a read-only mmap and
-indexed lazy boundary decoding; no rich `BpfCompiledRealization` sequence,
-source Plan, pickle, or live Planner object is reconstructed.
+version/seal and timeline metadata. During Preparation, artifact open checks
+the binary header and index bounds. The reader supports indexed decoding with
+per-record hash and operation-count checks; it does not repeat the writer's
+sequence-relationship validation. Runner consumes every indexed boundary during
+one-shot Preparation, before physically activating B0. Formal Main starts at
+B1 with prepared deltas. No rich `BpfCompiledRealization` sequence, source Plan,
+pickle, or live Planner object is reconstructed.
 
 The sealed `domain-history/compiler.jsonl` has a different, deliberately compact
 contract: lineage, fingerprints, timestamps, activation timestamps, and intent

@@ -1,15 +1,20 @@
 # Timeline, formal boundaries, and Plan publication
 
-`SimulationTimeline` owns only a normalized inclusive interval and formal
-observation cadence. `iter_timestamps()` is the sole timestamp sequence
-authority. `PhysicalWorld.frame_at(timestamp)` is a stateless requested-time
+`SimulationTimeline` owns only a normalized finite interval and formal
+observation cadence. Both `start_time` and `end_time` are required datetimes;
+there is no optional unbounded end or `is_bounded` member.
+`iter_timestamps()` is the sole timestamp sequence authority.
+`PhysicalWorld.frame_at(timestamp)` is a stateless requested-time
 projection and does not own progression.
 
 ## Formal timestamps
 
-The Timeline validates aware UTC inputs, positive observation interval,
-inclusive start/end alignment, and deterministic iteration. Canonical S3 uses
-5-second spacing over ten minutes, yielding 121 formal timestamps.
+The Timeline normalizes aware datetime inputs to UTC, requires a positive
+observation interval and an end no earlier than the start, and iterates
+deterministically. It yields `start_time + k * observation_interval` while the
+timestamp is at most `end_time`; an off-cadence end does not add an extra
+timestamp. Canonical S3 has an aligned end and uses 5-second spacing over ten
+minutes, yielding 121 formal timestamps.
 
 Every accepted frame/observation pair must match the next formal timestamp.
 The producer owns the iterator and calls `frame_at` exactly once for each

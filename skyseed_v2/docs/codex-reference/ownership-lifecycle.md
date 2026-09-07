@@ -42,8 +42,10 @@ crosses Simulator and backend domains. The producer owns the sole Timeline
 cursor, bounded pending Plan queue, previous-realization pointer, per-invocation
 evidence directory, and cleanup sequencing.
 
-Precomputed orchestration owns `_RunnerArtifactWriter` until finalize. It drains
-the producer before publishing a terminal manifest and typed packed binary.
+Precomputed orchestration owns the `_RunnerArtifactWriter` instance until
+finalize; its packaging/reading implementation belongs to backend
+`_runner_artifact.py`. It drains the producer before publishing a terminal
+manifest and typed packed binary.
 Generated execution verifies source/input identity and artifact seals before
 `BpfRunner` construction. Runner owns a read-only mmap and decodes every indexed boundary in one-shot
 Preparation; it owns no producer or rich compiled-object sequence.
@@ -55,9 +57,9 @@ or live state. Each immutable `BpfCompiledRealization` owns one Plan-boundary
 semantic output, formal activation records, backend intentions, and lineage.
 
 `BpfRunner` owns one-shot Preparation, formal Main, cleanup, and realized-state
-snapshots. Preparation opens and validates the sealed finite artifact, decodes
-all boundaries, materializes and validates the complete finite sequence, and
-builds immutable delta plans and their activation JSON wire representation.
+snapshots. Preparation opens the sealed finite artifact, validates its metadata
+and binary structure, decodes every record, and builds the complete sequence of
+immutable delta plans and their activation JSON wire representation.
 Artifact-local caches reuse decoded identities/timestamps; Preparation reuses
 previous route/access state, stable names/slots, and route-by-interface indexes.
 It discovers container incarnations once, retains
@@ -115,6 +117,15 @@ the next boundary when available and reports actual lag. All transitions remain
 sequential and complete, with no skipped boundaries or reset origin. The helper
 arrival clock is observational. Manual activation uses the same ordered plans.
 
+The existing privileged helper owns deletion workers and the physical retirement
+ledger. All current-boundary jobs join inside Main; none continues as a
+cross-boundary deletion service. Its retained sockets/descriptors and the
+private Linux execution and startup identity helpers add no lifecycle authority.
+Prepared records, finite capacity accumulation and logical ports/live bindings
+are backend representations, not domain components or Port entities.
+Asynchronous identity expansion belongs to the existing observation facilities,
+not Maintenance or a new network lifecycle.
+
 ## Tools and evidence
 
 Every semantic producer owns its record schema and append timing. The shared
@@ -135,4 +146,4 @@ On any exception it closes the Planner before propagating failure. Runner
 cleanup remains independent and follows its own lifecycle.
 
 There is no second progression owner, runtime-selected alternate chain, online
-runtime supplier, or synchronous semantic callback from Runner maintenance.
+runtime supplier, or semantic progression callback during Runner Main.

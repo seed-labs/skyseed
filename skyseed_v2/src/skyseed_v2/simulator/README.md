@@ -3,6 +3,14 @@
 This package owns `SimulationDefinition`, `SimulationTimeline`, `Simulator`,
 and the public facade for physical and planning contracts.
 
+`SimulationTimeline(start_time: datetime, end_time: datetime,
+observation_interval: timedelta)` requires a finite end. It normalizes aware
+start/end inputs to UTC, rejects an end before the start and a non-positive
+interval, and lazily yields interval-aligned timestamps through the end bound.
+The end itself is yielded only when it lies on that cadence. The former
+optional end and `is_bounded` member are removed; Timeline remains an immutable
+value, and the experiment producer still owns its sole progression cursor.
+
 ## Local assembly / ownership map
 
 Legend: `*--` is lifecycle composition. PhysicalWorld and Planner are sibling
